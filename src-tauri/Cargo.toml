@@ -1,0 +1,30 @@
+# The Tauri shell is its OWN workspace so the root `cargo build` stays free of
+# Tauri/webkit system deps. Depends on BOTH engine cores by path.
+[package]
+name = "sentient-manager-app"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["The SENTIENT Authors"]
+description = "SENTIENT Platform Manager — desktop app"
+
+[workspace]
+
+[lib]
+name = "sentient_manager_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+sentient-installer-core = { path = "../crates/sentient-installer-core" }
+sentient-backup-core = { path = "../crates/sentient-backup-core" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+chrono = { version = "0.4", features = ["clock"] }

@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SENTIENT Platform Manager</title>
+  <style>
+    :root { --bg:#eef2f4; --panel:#ffffff; --line:#d3dde2; --fg:#1b2429; --muted:#5c6b73; --accent:#2f9e8f; --accent2:#31525a; --ok:#2f9e8f; --err:#c0392b; --input:#f3f7f9; }
+    :root[data-theme="dark"] { --bg:#161e22; --panel:#1f2a30; --line:#33454e; --fg:#e6edf0; --muted:#93a4ad; --accent:#2f9e8f; --accent2:#243138; --ok:#57d1a0; --err:#e5675b; --input:#18232a; }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) { --bg:#161e22; --panel:#1f2a30; --line:#33454e; --fg:#e6edf0; --muted:#93a4ad; --accent:#2f9e8f; --accent2:#243138; --ok:#57d1a0; --err:#e5675b; --input:#18232a; }
+    }
+    * { box-sizing:border-box; }
+    html, body { height:100%; }
+    body { margin:0; font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); display:flex; flex-direction:column; overflow:hidden; }
+    .statusbar { display:flex; align-items:center; gap:10px; padding:9px 16px; background:var(--accent2); color:#eaf1f2; flex-shrink:0; }
+    .statusbar img { width:22px; height:22px; }
+    .statusbar .name { font-weight:600; }
+    .statusbar .spacer { flex:1; }
+    .statusbar .ver { font-size:12px; opacity:.8; }
+
+    /* step rail */
+    .rail { display:flex; gap:6px; padding:12px 20px; border-bottom:1px solid var(--line); background:var(--panel); flex-shrink:0; overflow-x:auto; }
+    .chip { display:flex; align-items:center; gap:8px; padding:6px 12px; border-radius:20px; color:var(--muted); font-size:12.5px; font-weight:600; white-space:nowrap; }
+    .chip .n { width:20px; height:20px; border-radius:50%; background:var(--line); color:var(--fg); display:grid; place-items:center; font-size:11px; }
+    .chip.active { color:var(--fg); } .chip.active .n { background:var(--accent); color:#04211d; }
+    .chip.done { color:var(--ok); } .chip.done .n { background:var(--ok); color:#04211d; }
+
+    main { flex:1; overflow:auto; padding:24px 30px; }
+    .wrap { max-width:660px; margin:0 auto; }
+    h1 { margin:0 0 4px; font-size:21px; font-weight:650; }
+    .sub { color:var(--muted); margin:0 0 20px; }
+    .view { display:none; }
+
+    .checks { display:flex; flex-direction:column; gap:8px; }
+    .check { display:flex; align-items:flex-start; gap:12px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+    .check .icon { width:22px; height:22px; flex-shrink:0; margin-top:1px; }
+    .check .label { font-weight:600; }
+    .check .detail { color:var(--muted); font-size:12.5px; margin-top:2px; }
+    .s-pass { color:var(--ok); } .s-setup { color:var(--accent); } .s-fail { color:var(--err); } .s-unknown { color:var(--muted); }
+
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin-bottom:14px; }
+    .actions { display:flex; justify-content:space-between; align-items:center; margin-top:22px; gap:12px; }
+    button { background:var(--accent); color:#04211d; border:0; border-radius:8px; padding:10px 20px; font-weight:600; cursor:pointer; }
+    button:disabled { opacity:.5; cursor:default; }
+    button.ghost { background:transparent; color:var(--fg); border:1px solid var(--line); }
+    button.warn { background:var(--err); color:#fff; }
+    .note { color:var(--muted); font-size:12.5px; }
+    .summary { margin:16px 0 0; font-size:13px; }
+    .summary.bad { color:var(--err); }
+
+    .pbar { height:8px; background:var(--line); border-radius:4px; overflow:hidden; margin-bottom:10px; }
+    .pbar > .fill { height:100%; width:35%; background:var(--accent); border-radius:4px; position:relative; }
+    .pbar.run > .fill::after { content:''; position:absolute; inset:0; background:linear-gradient(90deg,transparent,rgba(255,255,255,.5),transparent); animation:sh 1.1s linear infinite; }
+    @keyframes sh { 0%{transform:translateX(-100%)} 100%{transform:translateX(100%)} }
+    .pstep { font-weight:600; margin-bottom:8px; }
+    .plog { margin:0; max-height:180px; overflow:auto; font-size:12px; color:var(--muted); white-space:pre-wrap; background:var(--input); border:1px solid var(--line); border-radius:6px; padding:10px; }
+    .spin { animation:spin 1s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-pass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></symbol>
+    <symbol id="i-setup" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></symbol>
+    <symbol id="i-fail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></symbol>
+    <symbol id="i-unknown" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
+    <symbol id="i-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></symbol>
+  </svg>
+
+  <div class="statusbar">
+    <img src="logo.png" alt="" />
+    <span class="name">SENTIENT Platform Manager</span>
+    <span class="spacer"></span>
+    <span class="ver">v0.1.6</span>
+  </div>
+
+  <div class="rail" id="rail">
+    <div class="chip active" data-step="checks"><span class="n">1</span> System check</div>
+    <div class="chip" data-step="wsl"><span class="n">2</span> WSL2</div>
+    <div class="chip" data-step="docker"><span class="n">3</span> Docker</div>
+    <div class="chip" data-step="deploy"><span class="n">4</span> Deploy SENTIENT</div>
+  </div>
+
+  <main>
+    <div class="wrap">
+      <!-- ===== CHECKS ===== -->
+      <section class="view" id="checksView" style="display:block">
+        <h1>System check</h1>
+        <p class="sub">Making sure your PC is ready. Nothing is changed at this step.</p>
+        <div class="checks" id="checks"></div>
+        <div class="summary" id="summary"></div>
+        <div class="actions">
+          <button class="ghost" id="recheck">Re-check</button>
+          <button id="toWsl" disabled>Continue</button>
+        </div>
+      </section>
+
+      <!-- ===== WSL2 ===== -->
+      <section class="view" id="wslView">
+        <h1>Set up WSL2</h1>
+        <p class="sub">SENTIENT runs in Docker inside WSL2 (Windows Subsystem for Linux). This installs and enables it.</p>
+
+        <div id="wslStart" class="card">
+          <p class="note" style="margin-top:0" id="wslResumeNote"></p>
+          <button id="wslBtn">Set up WSL2</button>
+        </div>
+
+        <div id="wslProgress" class="card" style="display:none">
+          <div class="pbar" id="wslPbar"><div class="fill"></div></div>
+          <div class="pstep" id="wslStep"></div>
+          <p class="note" style="margin:2px 0 10px">This can take several minutes — the window stays responsive, please wait.</p>
+          <pre class="plog" id="wslLog"></pre>
+        </div>
+
+        <div id="wslReboot" class="card" style="display:none">
+          <div class="pstep">Restart required</div>
+          <p class="note">Windows needs to restart to finish enabling WSL2. The installer will
+            resume automatically after you sign back in.</p>
+          <div class="actions" style="margin-top:12px; justify-content:flex-start; gap:10px">
+            <button class="warn" id="rebootBtn">Restart now</button>
+            <button class="ghost" id="rebootLater">I'll restart later</button>
+          </div>
+        </div>
+
+        <div id="wslReady" class="card" style="display:none">
+          <div class="pstep s-pass">✓ WSL2 is ready</div>
+          <p class="note">WSL2 is installed and running.</p>
+        </div>
+
+        <div class="actions">
+          <button class="ghost" id="backChecks">Back</button>
+          <button id="toDocker" disabled>Continue</button>
+        </div>
+      </section>
+
+      <!-- ===== DOCKER ===== -->
+      <section class="view" id="dockerView">
+        <h1>Docker Engine</h1>
+        <p class="sub">Creates a dedicated Ubuntu distro inside WSL2 and installs Docker Engine in it.</p>
+
+        <div id="dockerStart" class="card">
+          <button id="dockerBtn">Set up Docker</button>
+        </div>
+
+        <div id="dockerProgress" class="card" style="display:none">
+          <div class="pbar" id="dkPbar"><div class="fill"></div></div>
+          <div class="pstep" id="dkStep"></div>
+          <p class="note" style="margin:2px 0 10px">Downloads ~350 MB and installs Docker — a few minutes. The window stays responsive.</p>
+          <pre class="plog" id="dkLog"></pre>
+        </div>
+
+        <div id="dockerReady" class="card" style="display:none">
+          <div class="pstep s-pass">✓ Docker Engine is ready</div>
+          <p class="note">The dedicated SENTIENT distro is set up with Docker running.</p>
+        </div>
+
+        <div class="actions">
+          <button class="ghost" id="backWsl">Back</button>
+          <button id="toDeploy" disabled>Continue</button>
+        </div>
+      </section>
+
+      <!-- ===== DEPLOY ===== -->
+      <section class="view" id="deployView">
+        <h1>Deploy SENTIENT</h1>
+        <p class="sub">Pull the SENTIENT images and start the stack. It'll be at localhost:8080 when ready.</p>
+
+        <div id="deployStart" class="card">
+          <button id="deployBtn">Deploy SENTIENT</button>
+        </div>
+
+        <div id="deployProgress" class="card" style="display:none">
+          <div class="pbar" id="dpPbar"><div class="fill"></div></div>
+          <div class="pstep" id="dpStep"></div>
+          <p class="note" style="margin:2px 0 10px">First run pulls ~1 GB of images and initializes the database — a few minutes. The window stays responsive.</p>
+          <pre class="plog" id="dpLog"></pre>
+        </div>
+
+        <div id="deployReady" class="card" style="display:none">
+          <div class="pstep s-pass">✓ SENTIENT is running</div>
+          <p class="note">Open <b>http://localhost:8080</b> and sign in as sys-admin:<br>
+            &nbsp;&nbsp;<b>admin@sentient.local</b> &nbsp;/&nbsp; <b>admin123</b><br>
+            It starts automatically on login from now on.</p>
+          <button id="openBtn" style="margin-top:10px">Open SENTIENT</button>
+        </div>
+
+        <div class="actions"><button class="ghost" id="backDocker">Back</button><span></span></div>
+      </section>
+    </div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

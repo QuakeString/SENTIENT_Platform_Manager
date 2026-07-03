@@ -1,0 +1,8 @@
+/target
+/src-tauri/target
+**/*.rs.bk
+dist/
+.DS_Store
+/src-tauri/gen/
+/src-tauri/pgtools/bin/*
+!/src-tauri/pgtools/bin/.gitkeep

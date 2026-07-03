@@ -1,0 +1,40 @@
+# Root workspace for the SENTIENT Platform Manager. Holds the two reusable engine
+# crates (backup/restore + install/provision). The Tauri shell in src-tauri/ is
+# its own workspace and depends on both by path.
+[workspace]
+resolver = "2"
+members = [
+    "crates/sentient-backup-core",
+    "crates/sentient-installer-core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["The SENTIENT Authors"]
+repository = "https://github.com/QuakeString/SENTIENT_Platform_Manager"
+
+[workspace.dependencies]
+# shared
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+chrono = { version = "0.4", features = ["serde"] }
+# backup engine
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util", "fs"] }
+tokio-postgres = "0.7"
+thiserror = "2"
+zstd = "0.13"
+tar = "0.4"
+sha2 = "0.10"
+which = "7"
+futures-util = "0.3"
+bytes = "1"
+age = "0.10"
+# installer engine
+sysinfo = "0.32"
+ureq = "2"

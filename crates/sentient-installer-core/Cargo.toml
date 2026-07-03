@@ -1,0 +1,23 @@
+[package]
+name = "sentient-installer-core"
+description = "UI-agnostic engine for the SENTIENT installer: preflight checks + provisioning"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "sentient_installer_core"
+path = "src/lib.rs"
+
+# Headless CLI to run the checks (handy for testing without the GUI).
+[[bin]]
+name = "sicheck"
+path = "src/bin/sicheck.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sysinfo.workspace = true
+ureq.workspace = true

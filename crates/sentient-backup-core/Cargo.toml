@@ -1,0 +1,38 @@
+[package]
+name = "sentient-backup-core"
+description = "UI-agnostic engine for backing up and restoring a SENTIENT deployment"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "sentient_backup_core"
+path = "src/lib.rs"
+
+# Headless CLI over the same engine the GUI uses.
+[[bin]]
+name = "sbr"
+path = "src/bin/sbr.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zstd.workspace = true
+tar.workspace = true
+sha2.workspace = true
+chrono.workspace = true
+which.workspace = true
+futures-util.workspace = true
+bytes.workspace = true
+age.workspace = true
+
+# CLI-only
+clap.workspace = true
+anyhow.workspace = true
+tracing-subscriber.workspace = true
