@@ -1,0 +1,2 @@
+# Placeholder so the pgtools resource glob always matches. Real pg tools
+# are staged here at build time (Windows) by scripts/fetch_pgtools.py.
