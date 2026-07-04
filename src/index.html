@@ -40,6 +40,9 @@
     .content { flex:1; overflow:auto; padding:22px 26px; min-width:0; }
     .page { display:none; max-width:900px; }
     .page.active { display:block; }
+    /* Sticky action footer — keeps the primary button visible while the body
+       above scrolls, action on the right (mirrors the wizard footer). */
+    .pagefoot { position:sticky; bottom:0; display:flex; justify-content:space-between; align-items:center; gap:12px; background:var(--bg); border-top:1px solid var(--line); padding:12px 0 4px; margin-top:8px; }
     .page h1 { margin:0 0 4px; font-size:20px; font-weight:650; }
     .page .sub { color:var(--muted); margin:0 0 20px; font-size:13px; }
     .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin-bottom:16px; }
@@ -155,7 +158,7 @@
       <div class="grow"></div>
       <div class="nav" data-view="settings"><svg class="icon"><use href="#i-settings"/></svg> Settings</div>
       <div class="foot">
-        <span>v0.4.1</span>
+        <span>v0.4.2</span>
         <button class="iconbtn" id="themeToggle" title="Toggle light / dark">
           <svg class="icon"><use id="themeIcon" href="#i-moon" /></svg>
         </button>
@@ -430,14 +433,14 @@
               <span class="hint" id="encHint"></span>
             </div>
           </div>
-          <div class="row" style="align-items:center">
-            <button id="backupBtn">Back up…</button>
-            <span class="status" id="backupStatus" style="margin-top:0"></span>
-          </div>
           <div class="progress" id="bProgress" style="display:none">
             <div class="pbar" id="bBar"><div class="fill"></div></div>
             <div class="prow"><span class="pstep" id="bStep"></span><button class="link" id="bToggle" type="button">▸ Details</button></div>
             <pre class="plog" id="bLog" style="display:none"></pre>
+          </div>
+          <div class="pagefoot">
+            <span class="status" id="backupStatus" style="margin-top:0"></span>
+            <button id="backupBtn">Back up</button>
           </div>
         </div>
       </section>
@@ -468,14 +471,14 @@
               <span class="hint">This backup is password-protected.</span>
             </div>
           </div>
-          <div class="row" style="align-items:center">
-            <button id="restoreBtn" disabled>Restore</button>
-            <span class="status" id="restoreStatus" style="margin-top:0"></span>
-          </div>
           <div class="progress" id="rProgress" style="display:none">
             <div class="pbar" id="rBar"><div class="fill"></div></div>
             <div class="prow"><span class="pstep" id="rStep"></span><button class="link" id="rToggle" type="button">▸ Details</button></div>
             <pre class="plog" id="rLog" style="display:none"></pre>
+          </div>
+          <div class="pagefoot">
+            <span class="status" id="restoreStatus" style="margin-top:0"></span>
+            <button id="restoreBtn" disabled>Restore</button>
           </div>
         </div>
       </section>
