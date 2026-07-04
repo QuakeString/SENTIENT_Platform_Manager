@@ -105,10 +105,10 @@
     button.warn { background:var(--err); color:#fff; }
     /* Setup: fill the height so the step's nav buttons stay pinned to the bottom
        regardless of how much content the step has. */
-    #setupPage.active { display:flex; flex-direction:column; min-height:100%; }
+    #setupPage.active { display:flex; flex-direction:column; height:100%; }
     #setupPage .rail { flex-shrink:0; }
-    #setupPage .view.active { display:flex; flex-direction:column; flex:1 1 auto; }
-    #setupPage .view > .actions { margin-top:auto; padding-top:16px; }
+    #setupPage .view.active { display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow:auto; }
+    #setupPage .view > .actions { margin-top:auto; position:sticky; bottom:0; background:var(--bg); padding:12px 0 2px; border-top:1px solid var(--line); }
     .summary { margin:16px 0 0; font-size:13px; }
     .summary.bad { color:var(--err); }
     .pbar.run > .fill { width:35%; }
@@ -155,7 +155,7 @@
       <div class="grow"></div>
       <div class="nav" data-view="settings"><svg class="icon"><use href="#i-settings"/></svg> Settings</div>
       <div class="foot">
-        <span>v0.4.0</span>
+        <span>v0.4.1</span>
         <button class="iconbtn" id="themeToggle" title="Toggle light / dark">
           <svg class="icon"><use id="themeIcon" href="#i-moon" /></svg>
         </button>

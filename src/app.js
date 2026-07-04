@@ -720,6 +720,7 @@ async function initSetup() {
 
 // ---- Setup wiring ------------------------------------------------------------
 $("recheckBtn").addEventListener("click", recheck);
+$("toComponents").addEventListener("click", () => showStep("components"));
 $("toConfigure").addEventListener("click", () => { renderReco(); showStep("configure"); });
 $("backChecks").addEventListener("click", () => showStep("checks"));
 $("customizeBtn").addEventListener("click", () => { $("recoCard").style.display = "none"; $("customCard").style.display = ""; });
