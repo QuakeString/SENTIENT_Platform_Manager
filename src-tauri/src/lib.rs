@@ -171,6 +171,51 @@ fn arm_autostart() -> Result<(), String> {
     Ok(())
 }
 
+// ---- manage the deployed stack (M3: Status + Update) -------------------------
+
+#[tauri::command]
+async fn stack_status() -> distro::StackStatus {
+    tauri::async_runtime::spawn_blocking(distro::status)
+        .await
+        .unwrap_or(distro::StackStatus { installed: false, running: false, containers: Vec::new() })
+}
+
+#[tauri::command]
+async fn stack_control(action: String, on_progress: Channel<InstProgress>) -> Result<(), String> {
+    sentient_installer_core::cancel::reset();
+    let ch = on_progress;
+    tauri::async_runtime::spawn_blocking(move || {
+        let sink: InstProgressFn = Arc::new(move |p| {
+            let _ = ch.send(p);
+        });
+        distro::control(sink, &action)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn stack_logs(tail: Option<u32>) -> String {
+    let tail = tail.unwrap_or(200);
+    tauri::async_runtime::spawn_blocking(move || distro::logs(tail))
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn update_stack(on_progress: Channel<InstProgress>) -> Result<(), String> {
+    sentient_installer_core::cancel::reset();
+    let ch = on_progress;
+    tauri::async_runtime::spawn_blocking(move || {
+        let sink: InstProgressFn = Arc::new(move |p| {
+            let _ = ch.send(p);
+        });
+        distro::update(sink)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ---- install-state persistence (survives reboots) ----------------------------
 
 fn state_file(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -445,6 +490,7 @@ pub fn run() {
             preflight, install_wsl, wsl_ready, setup_docker, docker_ready,
             deploy_sentient, sentient_running, open_sentient,
             cancel_step, cleanup_install,
+            stack_status, stack_control, stack_logs, update_stack,
             get_state, set_state, arm_resume, reboot_now,
             // backup
             inspect, backup, restore, create_database, default_categories,

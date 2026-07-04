@@ -124,6 +124,8 @@
     <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></symbol>
     <symbol id="i-connection" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></symbol>
     <symbol id="i-setup" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></symbol>
+    <symbol id="i-status" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></symbol>
+    <symbol id="i-update" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></symbol>
     <symbol id="i-pass" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></symbol>
     <symbol id="i-todo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></symbol>
     <symbol id="i-fail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></symbol>
@@ -144,6 +146,8 @@
   <div class="shell">
     <nav class="sidebar">
       <div class="nav active" data-view="setup"><svg class="icon"><use href="#i-setup"/></svg> Setup</div>
+      <div class="nav" data-view="status"><svg class="icon"><use href="#i-status"/></svg> Status</div>
+      <div class="nav" data-view="update"><svg class="icon"><use href="#i-update"/></svg> Update</div>
       <div class="nav" data-view="connection"><svg class="icon"><use href="#i-connection"/></svg> Connection</div>
       <div class="nav" data-view="backup"><svg class="icon"><use href="#i-backup"/></svg> Backup</div>
       <div class="nav" data-view="restore"><svg class="icon"><use href="#i-restore"/></svg> Restore</div>
@@ -151,7 +155,7 @@
       <div class="grow"></div>
       <div class="nav" data-view="settings"><svg class="icon"><use href="#i-settings"/></svg> Settings</div>
       <div class="foot">
-        <span>v0.3.0</span>
+        <span>v0.4.0</span>
         <button class="iconbtn" id="themeToggle" title="Toggle light / dark">
           <svg class="icon"><use id="themeIcon" href="#i-moon" /></svg>
         </button>
@@ -287,6 +291,81 @@
 
           <div class="actions"><button class="ghost" id="backConfigure">Back</button><span></span></div>
         </section>
+      </section>
+
+      <!-- ===== STATUS ===== -->
+      <section class="page" id="statusPage">
+        <div class="row" style="justify-content:space-between; align-items:center">
+          <h1 style="margin:0">Status</h1>
+          <button class="ghost" id="stRefreshBtn">Refresh</button>
+        </div>
+        <p class="sub">The SENTIENT stack running in the local WSL distro.</p>
+
+        <div class="needs-conn" id="statusNotInstalled">SENTIENT isn't installed yet — go to <b>Setup</b> to install it.</div>
+
+        <div id="statusBody" style="display:none">
+          <div class="card">
+            <div class="row" style="justify-content:space-between; align-items:center; gap:10px">
+              <div class="conn-status" id="statusBadge" style="color:var(--fg); font-size:14px"><span class="dot"></span> —</div>
+              <div class="row" style="gap:8px">
+                <button id="stStartBtn">Start</button>
+                <button class="ghost" id="stRestartBtn">Restart</button>
+                <button class="warn" id="stStopBtn">Stop</button>
+                <button id="stOpenBtn" style="display:none">Open</button>
+              </div>
+            </div>
+            <table style="margin-top:14px">
+              <thead><tr><th>Container</th><th>State</th><th>Status</th></tr></thead>
+              <tbody id="containers"></tbody>
+            </table>
+          </div>
+
+          <div class="card" id="stProgress" style="display:none">
+            <div class="pstep" id="stStep"></div>
+            <pre class="plog" id="stLog" style="margin-top:8px"></pre>
+          </div>
+
+          <div class="card">
+            <div class="row" style="justify-content:space-between; align-items:center">
+              <h2 style="margin:0">Logs</h2>
+              <button class="ghost" id="logsRefreshBtn">Refresh logs</button>
+            </div>
+            <pre class="plog" id="logsBox" style="max-height:280px; margin-top:10px">Click “Refresh logs” to load the latest container output.</pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== UPDATE ===== -->
+      <section class="page" id="updatePage">
+        <h1>Update</h1>
+        <p class="sub">Pull the latest SENTIENT image, apply any database migrations, and restart.</p>
+
+        <div class="needs-conn" id="updateNotInstalled">SENTIENT isn't installed yet — go to <b>Setup</b> to install it.</div>
+
+        <div id="updateBody" style="display:none">
+          <div id="upStart" class="card">
+            <p class="hint" style="margin-top:0">This checks Docker Hub for a newer <b>quakestring/sentient</b> image. Your data is kept; the database schema is migrated if the new version needs it. The server is briefly stopped during migration.</p>
+            <button id="updateBtn">Update now</button>
+          </div>
+
+          <div id="upProgress" class="card" style="display:none">
+            <div class="pbar run" id="upPbar"><div class="fill"></div></div>
+            <div class="pstep" id="upStep" style="margin-top:8px"></div>
+            <pre class="plog" id="upLog" style="margin-top:10px"></pre>
+            <div class="actions" style="margin-top:12px"><button class="warn" id="upCancelBtn">Cancel…</button><span></span></div>
+          </div>
+
+          <div id="upDone" class="card" style="display:none">
+            <div class="pstep s-pass">✓ SENTIENT updated to the latest image</div>
+            <button id="upOpenBtn" style="margin-top:10px">Open SENTIENT</button>
+          </div>
+
+          <div id="upFailed" class="card" style="display:none">
+            <div class="pstep" id="upFailMsg" style="color:var(--err)">Update stopped.</div>
+            <p class="hint">If it reported breaking schema changes, review the log above and run the upgrade manually. Otherwise clean up and retry.</p>
+            <div class="row" style="margin-top:10px; gap:10px"><button id="upRetryBtn">Retry</button><button class="ghost" id="upCleanupBtn">Clean up leftovers…</button></div>
+          </div>
+        </div>
       </section>
 
       <!-- ===== CONNECTION ===== -->

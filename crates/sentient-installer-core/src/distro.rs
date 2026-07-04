@@ -294,6 +294,145 @@ pub fn setup(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     }
 }
 
+// ============================ manage (M3) ====================================
+
+#[derive(serde::Serialize)]
+pub struct ContainerStatus {
+    pub name: String,
+    pub state: String,  // running | exited | created | …
+    pub status: String, // human ("Up 3 minutes", "Exited (0) 1 min ago")
+}
+
+#[derive(serde::Serialize)]
+pub struct StackStatus {
+    pub installed: bool, // distro present AND a compose file written
+    pub running: bool,   // the `sentient` container is up
+    pub containers: Vec<ContainerStatus>,
+}
+
+/// Snapshot of the deployed stack — used by the Status section.
+pub fn status() -> StackStatus {
+    #[cfg(windows)]
+    {
+        let present = distro_present();
+        let installed = present
+            && sys::output("wsl.exe", &["-d", DISTRO, "-u", "root", "--", "bash", "-lc",
+                &format!("test -f {COMPOSE_PATH}")])
+                .map(|(ok, _, _)| ok)
+                .unwrap_or(false);
+
+        let mut containers = Vec::new();
+        if present {
+            if let Some((_, out, _)) = sys::output("wsl.exe", &[
+                "-d", DISTRO, "-u", "root", "--", "docker", "ps", "-a",
+                "--filter", "name=sentient",
+                "--format", "{{.Names}}|{{.State}}|{{.Status}}",
+            ]) {
+                for line in sys::decode(&out).lines() {
+                    let parts: Vec<&str> = line.trim().splitn(3, '|').collect();
+                    if parts.len() == 3 && !parts[0].is_empty() {
+                        containers.push(ContainerStatus {
+                            name: parts[0].to_string(),
+                            state: parts[1].to_string(),
+                            status: parts[2].to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        let running = containers.iter().any(|c| c.name == "sentient" && c.state == "running");
+        StackStatus { installed, running, containers }
+    }
+    #[cfg(not(windows))]
+    {
+        StackStatus { installed: false, running: false, containers: Vec::new() }
+    }
+}
+
+/// Start / stop / restart the deployed stack. `action` ∈ start|stop|restart.
+pub fn control(sink: ProgressFn, action: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let (label, sub) = match action {
+            "start" => ("Starting SENTIENT", "up -d"),
+            "stop" => ("Stopping SENTIENT", "stop"),
+            "restart" => ("Restarting SENTIENT", "restart"),
+            _ => return Err(format!("unknown action: {action}")),
+        };
+        sink(Progress::Step { name: label.into() });
+        indistro_stream(&sink, &format!("docker compose -f {COMPOSE_PATH} {sub}"))?;
+        sink(Progress::Done { message: format!("{label} — done.") });
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = action;
+        sink(Progress::Error { message: "Stack control is Windows-only.".into() });
+        Err("Windows only".into())
+    }
+}
+
+/// The last `tail` lines of the combined container logs.
+pub fn logs(tail: u32) -> String {
+    #[cfg(windows)]
+    {
+        sys::output("wsl.exe", &["-d", DISTRO, "-u", "root", "--", "bash", "-lc",
+            &format!("docker compose -f {COMPOSE_PATH} logs --no-color --tail {tail} 2>&1")])
+            .map(|(_, out, _)| sys::decode(&out))
+            .unwrap_or_else(|| "Could not read logs.".into())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = tail;
+        String::new()
+    }
+}
+
+/// Update the stack: pull the latest images, apply DB migrations, restart.
+/// Follows the reference upgrade flow (stop server → migrate → start) so a
+/// running server never races the migration. Cancellable.
+pub fn update(sink: ProgressFn) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        macro_rules! bail_if_cancelled {
+            () => { if crate::cancel::is_cancelled() { return Err("Cancelled.".into()); } };
+        }
+
+        sink(Progress::Step { name: "Pulling the latest SENTIENT images".into() });
+        indistro_stream(&sink, &format!("docker compose -f {COMPOSE_PATH} pull"))?;
+        bail_if_cancelled!();
+
+        // Stop the server so it doesn't run against the DB during migration
+        // (postgres stays up).
+        sink(Progress::Step { name: "Stopping the server for migration".into() });
+        let _ = indistro_stream(&sink, &format!("docker compose -f {COMPOSE_PATH} stop sentient"));
+        bail_if_cancelled!();
+
+        // Apply schema migrations for the new image. Refuses (non-zero) if the
+        // jump has breaking changes — surface that so the user can act.
+        sink(Progress::Step { name: "Applying database migrations (if any)".into() });
+        if let Err(e) = indistro_stream(&sink, &format!(
+            "docker compose -f {COMPOSE_PATH} run --rm -e UPGRADE_SENTIENT=true sentient"
+        )) {
+            bail_if_cancelled!();
+            return Err(format!(
+                "Migration step failed: {e}. If it reported breaking changes, review the log and run the upgrade manually."
+            ));
+        }
+        bail_if_cancelled!();
+
+        sink(Progress::Step { name: "Starting SENTIENT on the new image".into() });
+        indistro_stream(&sink, &format!("docker compose -f {COMPOSE_PATH} up -d"))?;
+        sink(Progress::Done { message: "SENTIENT updated to the latest image.".into() });
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        sink(Progress::Error { message: "Update is Windows-only.".into() });
+        Err("Windows only".into())
+    }
+}
+
 // ---- helpers (Windows) -------------------------------------------------------
 
 #[cfg(windows)]

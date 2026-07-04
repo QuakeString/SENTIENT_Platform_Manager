@@ -211,6 +211,8 @@ function showView(name) {
   const page = $(name + "Page");
   if (page) page.classList.add("active");
   if (name === "history") loadHistory();
+  if (name === "status") loadStatus();
+  if (name === "update") refreshUpdateGate();
 }
 
 function setConnStatus(text, state) {
@@ -700,6 +702,7 @@ async function initSetup() {
   if (state === "deployed") {
     showStep("install");
     showInstallDone();
+    showView("status"); // once installed, land on Status instead of the wizard
   } else if (state === "docker_ready" || state === "wsl_ready") {
     showStep("install");
     autoInstall(); // resume — readiness checks skip the finished phases
@@ -741,3 +744,131 @@ $("rebootLater").addEventListener("click", () => installCard("installStart"));
 $("openBtn").addEventListener("click", () => invoke("open_sentient", { port: readConfig().http_port }));
 $("backConfigure").addEventListener("click", () => showStep("configure"));
 initSetup();
+
+// ===========================================================================
+// Status + Update (M3) — manage the already-deployed stack.
+// ===========================================================================
+function fmtState(s) {
+  return s === "running"
+    ? '<span style="color:var(--ok); font-weight:600">running</span>'
+    : `<span style="color:var(--muted)">${s}</span>`;
+}
+
+async function loadStatus() {
+  if (!invoke) return;
+  let st;
+  try { st = await invoke("stack_status"); } catch { return; }
+  $("statusNotInstalled").style.display = st.installed ? "none" : "";
+  $("statusBody").style.display = st.installed ? "" : "none";
+  if (!st.installed) return;
+  $("statusBadge").innerHTML = st.running
+    ? '<span class="dot" style="background:var(--ok)"></span> Running'
+    : '<span class="dot"></span> Stopped';
+  $("stStartBtn").disabled = st.running;
+  $("stStopBtn").disabled = !st.running;
+  $("stRestartBtn").disabled = !st.running;
+  $("stOpenBtn").style.display = st.running ? "" : "none";
+  $("containers").innerHTML = st.containers.length
+    ? st.containers.map((c) => `<tr><td>${c.name}</td><td>${fmtState(c.state)}</td><td class="cat-note">${c.status}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="cat-note">No containers yet.</td></tr>`;
+}
+
+function stMsg(p) {
+  if (p.type === "step") $("stStep").textContent = p.name;
+  else if (p.type === "log") { const l = $("stLog"); l.textContent += p.line + "\n"; l.scrollTop = l.scrollHeight; }
+  else if (p.type === "done") $("stStep").textContent = "✓ " + p.message;
+  else if (p.type === "error") $("stStep").textContent = "✗ " + p.message;
+}
+
+async function stackAction(action) {
+  ["stStartBtn", "stStopBtn", "stRestartBtn"].forEach((id) => ($(id).disabled = true));
+  $("stProgress").style.display = "";
+  $("stLog").textContent = "";
+  $("stStep").textContent = "Working…";
+  const ch = new Channel(); ch.onmessage = stMsg;
+  try { await invoke("stack_control", { action, onProgress: ch }); }
+  catch (e) { $("stStep").textContent = "Failed: " + e; }
+  finally { await loadStatus(); }
+}
+
+async function loadLogs() {
+  $("logsBox").textContent = "Loading…";
+  try { $("logsBox").textContent = (await invoke("stack_logs", { tail: 300 })) || "(no output)"; }
+  catch (e) { $("logsBox").textContent = "Error: " + e; }
+}
+
+// ---- Update ------------------------------------------------------------------
+function upCard(which) {
+  for (const id of ["upStart", "upProgress", "upDone", "upFailed"]) {
+    $(id).style.display = id === which ? "" : "none";
+  }
+}
+async function refreshUpdateGate() {
+  if (!invoke) return;
+  let st;
+  try { st = await invoke("stack_status"); } catch { return; }
+  $("updateNotInstalled").style.display = st.installed ? "none" : "";
+  $("updateBody").style.display = st.installed ? "" : "none";
+  if (st.installed) upCard("upStart");
+}
+function upMsg(p) {
+  const bar = $("upPbar"), fill = bar.querySelector(".fill");
+  if (p.type === "step") { $("upStep").textContent = p.name; bar.classList.add("run"); fill.style.width = "35%"; }
+  else if (p.type === "percent") { bar.classList.remove("run"); fill.style.width = Math.round(p.value * 100) + "%"; }
+  else if (p.type === "log") { const l = $("upLog"); l.textContent += p.line + "\n"; l.scrollTop = l.scrollHeight; }
+  else if (p.type === "done") { $("upStep").textContent = "✓ " + p.message; }
+  else if (p.type === "error") { $("upStep").textContent = "✗ " + p.message; }
+}
+async function runUpdate() {
+  upCard("upProgress");
+  $("upLog").textContent = "";
+  $("upStep").textContent = "Starting…";
+  $("upCancelBtn").disabled = false;
+  const ch = new Channel(); ch.onmessage = upMsg;
+  try {
+    await invoke("update_stack", { onProgress: ch });
+    upCard("upDone");
+  } catch (e) {
+    const m = String(e);
+    $("upFailMsg").textContent = /cancel/i.test(m) ? "Update cancelled." : "Update stopped: " + m;
+    upCard("upFailed");
+  }
+}
+async function cancelUpdate() {
+  const ok = confirm(
+    "Cancel the update?\n\n" +
+    "The current step stops. Your data is safe, but a partly-applied update may need a cleanup + retry. WSL2 and Docker stay installed."
+  );
+  if (!ok) return;
+  $("upCancelBtn").disabled = true;
+  $("upStep").textContent = "Cancelling…";
+  try { await invoke("cancel_step"); } catch { /* ignore */ }
+}
+async function cleanupUpdate() {
+  const ok = confirm(
+    "Clean up leftovers?\n\n" +
+    "Stops and removes the SENTIENT containers and reclaims disk from partial pulls so you can retry cleanly. WSL2 and Docker stay installed."
+  );
+  if (!ok) return;
+  upCard("upProgress");
+  $("upLog").textContent = "";
+  $("upStep").textContent = "Cleaning up…";
+  $("upCancelBtn").disabled = true;
+  const ch = new Channel(); ch.onmessage = upMsg;
+  try { await invoke("cleanup_install", { onProgress: ch }); $("upFailMsg").textContent = "Cleanup done — ready to retry."; }
+  catch (e) { $("upFailMsg").textContent = "Cleanup error: " + e; }
+  upCard("upFailed");
+}
+
+// ---- wiring ------------------------------------------------------------------
+$("stRefreshBtn").addEventListener("click", loadStatus);
+$("stStartBtn").addEventListener("click", () => stackAction("start"));
+$("stStopBtn").addEventListener("click", () => stackAction("stop"));
+$("stRestartBtn").addEventListener("click", () => stackAction("restart"));
+$("stOpenBtn").addEventListener("click", () => invoke("open_sentient", { port: readConfig().http_port }));
+$("logsRefreshBtn").addEventListener("click", loadLogs);
+$("updateBtn").addEventListener("click", runUpdate);
+$("upRetryBtn").addEventListener("click", runUpdate);
+$("upCancelBtn").addEventListener("click", cancelUpdate);
+$("upCleanupBtn").addEventListener("click", cleanupUpdate);
+$("upOpenBtn").addEventListener("click", () => invoke("open_sentient", { port: readConfig().http_port }));
