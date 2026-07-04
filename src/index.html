@@ -158,7 +158,7 @@
       <div class="grow"></div>
       <div class="nav" data-view="settings"><svg class="icon"><use href="#i-settings"/></svg> Settings</div>
       <div class="foot">
-        <span>v0.4.3</span>
+        <span>v0.4.4</span>
         <button class="iconbtn" id="themeToggle" title="Toggle light / dark">
           <svg class="icon"><use id="themeIcon" href="#i-moon" /></svg>
         </button>
@@ -218,7 +218,7 @@
             <h2>Recommended settings</h2>
             <table><tbody id="recoSummary"></tbody></table>
             <div class="actions" style="margin-top:14px">
-              <button class="ghost" id="customizeBtn">Customize…</button><span></span>
+              <button class="ghost" id="customizeBtn">Customize</button><span></span>
             </div>
           </div>
 
@@ -267,7 +267,7 @@
             <div id="instStep" class="hint" style="margin-top:8px"></div>
             <pre class="plog" id="instLog" style="margin-top:10px"></pre>
             <div class="actions" style="margin-top:12px">
-              <button class="warn" id="cancelInstallBtn">Cancel…</button><span></span>
+              <button class="warn" id="cancelInstallBtn">Cancel</button><span></span>
             </div>
           </div>
 
@@ -288,7 +288,7 @@
             <p class="hint">Some steps may have left containers or partial downloads behind. You can clean them up, then retry.</p>
             <div class="row" style="margin-top:10px; gap:10px">
               <button id="retryInstallBtn">Retry install</button>
-              <button class="ghost" id="cleanupBtn">Clean up leftovers…</button>
+              <button class="ghost" id="cleanupBtn">Clean up leftovers</button>
             </div>
           </div>
 
@@ -355,7 +355,7 @@
             <div class="pbar run" id="upPbar"><div class="fill"></div></div>
             <div class="pstep" id="upStep" style="margin-top:8px"></div>
             <pre class="plog" id="upLog" style="margin-top:10px"></pre>
-            <div class="actions" style="margin-top:12px"><button class="warn" id="upCancelBtn">Cancel…</button><span></span></div>
+            <div class="actions" style="margin-top:12px"><button class="warn" id="upCancelBtn">Cancel</button><span></span></div>
           </div>
 
           <div id="upDone" class="card" style="display:none">
@@ -366,7 +366,7 @@
           <div id="upFailed" class="card" style="display:none">
             <div class="pstep" id="upFailMsg" style="color:var(--err)">Update stopped.</div>
             <p class="hint">If it reported breaking schema changes, review the log above and run the upgrade manually. Otherwise clean up and retry.</p>
-            <div class="row" style="margin-top:10px; gap:10px"><button id="upRetryBtn">Retry</button><button class="ghost" id="upCleanupBtn">Clean up leftovers…</button></div>
+            <div class="row" style="margin-top:10px; gap:10px"><button id="upRetryBtn">Retry</button><button class="ghost" id="upCleanupBtn">Clean up leftovers</button></div>
           </div>
         </div>
       </section>
@@ -463,7 +463,7 @@
           </div>
           <div class="card">
             <div class="row" style="align-items:center">
-              <button class="ghost" id="pickBtn">Choose backup file…</button>
+              <button class="ghost" id="pickBtn">Choose backup file</button>
               <span class="hint" id="pickedName">No file selected.</span>
             </div>
             <div class="row" id="restorePassRow" style="display:none; margin-top:10px; align-items:end">
