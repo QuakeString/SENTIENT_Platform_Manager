@@ -251,6 +251,15 @@ pub fn setup(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     {
         std::fs::create_dir_all(install_dir).map_err(|e| e.to_string())?;
 
+        // A distro left half-imported by a cancelled or failed run makes every
+        // later command fail cryptically. If one exists but doesn't answer,
+        // unregister it so it re-imports clean.
+        if distro_present() && !distro_healthy() {
+            sink(Progress::Step { name: "Resetting an unresponsive SENTIENT distro".into() });
+            let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
+            let _ = sys::output("wsl.exe", &["--unregister", DISTRO]);
+        }
+
         if !distro_present() {
             let rootfs = install_dir.join("ubuntu.rootfs.tar.gz");
             sink(Progress::Step { name: "Downloading Ubuntu base image (~350 MB)".into() });
@@ -266,6 +275,14 @@ pub fn setup(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
                 "--version", "2",
             ])?;
             let _ = std::fs::remove_file(&rootfs);
+        }
+
+        // Verify the distro actually runs a command before configuring it —
+        // catches a broken import or a WSL that still needs a Windows restart.
+        if let Err(e) = distro_probe() {
+            return Err(format!(
+                "The SENTIENT WSL distro isn't responding ({e}). If you just installed WSL2, restart Windows and try again; otherwise use “Clean up leftovers” and retry."
+            ));
         }
 
         sink(Progress::Step { name: "Enabling systemd".into() });
@@ -435,6 +452,27 @@ pub fn update(sink: ProgressFn) -> Result<(), String> {
 
 // ---- helpers (Windows) -------------------------------------------------------
 
+/// Run a trivial command in the distro; returns the stderr on failure. This is
+/// the exact `bash -lc` path the real steps use, so it catches a broken import
+/// *and* a login shell that won't start.
+#[cfg(windows)]
+fn distro_probe() -> Result<(), String> {
+    match sys::output("wsl.exe", &["-d", DISTRO, "-u", "root", "--", "bash", "-lc", "echo ok"]) {
+        Some((true, out, _)) if sys::decode(&out).contains("ok") => Ok(()),
+        Some((_, _, err)) => {
+            let e = sys::decode(&err);
+            let e = e.trim();
+            Err(if e.is_empty() { "no response".into() } else { e.to_string() })
+        }
+        None => Err("could not run wsl.exe".into()),
+    }
+}
+
+#[cfg(windows)]
+fn distro_healthy() -> bool {
+    distro_probe().is_ok()
+}
+
 #[cfg(windows)]
 fn distro_present() -> bool {
     sys::output("wsl.exe", &["-l", "-q"])
@@ -462,7 +500,19 @@ fn indistro(sink: &ProgressFn, bash: &str) -> Result<(), String> {
         Some((ok, out, err)) => {
             emit(sink, &out);
             emit(sink, &err);
-            if ok { Ok(()) } else { Err(format!("in-distro command failed: {bash}")) }
+            if ok {
+                Ok(())
+            } else {
+                // Surface the actual stderr — "in-distro command failed: <cmd>"
+                // with no reason is useless for diagnosis.
+                let detail = sys::decode(&err);
+                let detail = detail.trim();
+                Err(if detail.is_empty() {
+                    format!("in-distro command failed: {bash}")
+                } else {
+                    format!("{detail} (while running: {bash})")
+                })
+            }
         }
         None => Err("could not run wsl.exe".into()),
     }
