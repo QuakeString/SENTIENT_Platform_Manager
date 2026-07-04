@@ -29,24 +29,53 @@ pub fn is_ready() -> bool {
 #[cfg_attr(not(windows), allow(dead_code))]
 const COMPOSE_PATH: &str = "/opt/sentient/docker-compose.yml";
 
+/// User-chosen deploy parameters. Defaults match the reference compose; the
+/// wizard shows these as "recommended" and lets the user customize them.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DeployConfig {
+    pub db_name: String,
+    pub db_user: String,
+    pub db_password: String,
+    pub http_port: u16,
+    pub mqtt_port: u16,
+    pub coap_port: u16,
+    pub load_demo: bool,
+}
+
+impl Default for DeployConfig {
+    fn default() -> Self {
+        Self {
+            db_name: "sentient".into(),
+            db_user: "sentient".into(),
+            db_password: "sentient".into(),
+            http_port: 8080,
+            mqtt_port: 1883,
+            coap_port: 5683,
+            load_demo: false,
+        }
+    }
+}
+
 /// The SENTIENT stack — a trimmed, image-pull version of the reference compose
-/// (no `build:`, no host-specific bind mounts).
+/// (no `build:`, no host-specific bind mounts). `@@TOKENS@@` are filled from the
+/// user's `DeployConfig`. The container's internal port stays 8080; only the
+/// published host port varies.
 #[cfg_attr(not(windows), allow(dead_code))]
-const COMPOSE: &str = r#"services:
+const COMPOSE_TEMPLATE: &str = r#"services:
   postgres:
     image: "timescale/timescaledb:2.26.1-pg18"
     container_name: sentient-postgres
     restart: always
     command: ["postgres","-c","shared_preload_libraries=timescaledb","-c","max_connections=100","-c","shared_buffers=128MB"]
     environment:
-      POSTGRES_DB: sentient
-      POSTGRES_USER: sentient
-      POSTGRES_PASSWORD: sentient
+      POSTGRES_DB: @@DB_NAME@@
+      POSTGRES_USER: @@DB_USER@@
+      POSTGRES_PASSWORD: @@DB_PASS@@
       PGDATA: /var/lib/postgresql/data
     volumes:
       - postgres_data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL","pg_isready -U sentient -d sentient"]
+      test: ["CMD-SHELL","pg_isready -U @@DB_USER@@ -d @@DB_NAME@@"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -58,16 +87,16 @@ const COMPOSE: &str = r#"services:
       postgres:
         condition: service_healthy
     ports:
-      - "8080:8080"
-      - "1883:1883"
-      - "5683:5683/udp"
+      - "@@HTTP_PORT@@:8080"
+      - "@@MQTT_PORT@@:1883"
+      - "@@COAP_PORT@@:5683/udp"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      DATABASE_URL: postgresql://sentient:sentient@postgres:5432/sentient
-      POSTGRES_USER: sentient
-      POSTGRES_PASSWORD: sentient
-      POSTGRES_DB: sentient
+      DATABASE_URL: postgresql://@@DB_USER@@:@@DB_PASS@@@postgres:5432/@@DB_NAME@@
+      POSTGRES_USER: @@DB_USER@@
+      POSTGRES_PASSWORD: @@DB_PASS@@
+      POSTGRES_DB: @@DB_NAME@@
       DATABASE_POOL_MAX: "24"
       DATABASE_POOL_MIN: "8"
       TS_TYPE: sql
@@ -86,12 +115,24 @@ volumes:
   sentient_data:
 "#;
 
-/// Is the SENTIENT web server responding on :8080 inside the distro?
-pub fn is_running() -> bool {
+#[cfg_attr(not(windows), allow(dead_code))]
+fn compose(cfg: &DeployConfig) -> String {
+    COMPOSE_TEMPLATE
+        .replace("@@DB_NAME@@", &cfg.db_name)
+        .replace("@@DB_USER@@", &cfg.db_user)
+        .replace("@@DB_PASS@@", &cfg.db_password)
+        .replace("@@HTTP_PORT@@", &cfg.http_port.to_string())
+        .replace("@@MQTT_PORT@@", &cfg.mqtt_port.to_string())
+        .replace("@@COAP_PORT@@", &cfg.coap_port.to_string())
+}
+
+/// Is the SENTIENT web server answering on the published HTTP port inside the
+/// distro? (The Windows host reaches the same port via WSL localhost-forwarding.)
+pub fn is_running(http_port: u16) -> bool {
     #[cfg(windows)]
     {
-        sys::output("wsl.exe", &["-d", DISTRO, "-u", "root", "--", "bash", "-lc",
-            "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080"])
+        let cmd = format!("curl -s -o /dev/null -w '%{{http_code}}' http://localhost:{http_port}");
+        sys::output("wsl.exe", &["-d", DISTRO, "-u", "root", "--", "bash", "-lc", &cmd])
             .map(|(_, out, _)| {
                 let c = sys::decode(&out);
                 let c = c.trim();
@@ -100,57 +141,106 @@ pub fn is_running() -> bool {
             .unwrap_or(false)
     }
     #[cfg(not(windows))]
-    false
+    {
+        let _ = http_port;
+        false
+    }
 }
 
-/// Phase 3: write the compose into the distro, pull images, start the stack, and
-/// wait for the web server to answer.
-pub fn deploy(sink: ProgressFn) -> Result<(), String> {
+/// Phase 3: write the compose into the distro, pull images, install the schema,
+/// start the stack, and wait for the web server to answer. Cancellable.
+pub fn deploy(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     #[cfg(windows)]
     {
+        macro_rules! bail_if_cancelled {
+            () => {
+                if crate::cancel::is_cancelled() {
+                    return Err("Cancelled.".into());
+                }
+            };
+        }
+
         sink(Progress::Step { name: "Writing the SENTIENT configuration".into() });
         let script = format!(
-            "mkdir -p /opt/sentient && cat > {COMPOSE_PATH} <<'SENTIENTEOF'\n{COMPOSE}\nSENTIENTEOF\n"
+            "mkdir -p /opt/sentient && cat > {COMPOSE_PATH} <<'SENTIENTEOF'\n{}\nSENTIENTEOF\n",
+            compose(cfg)
         );
         indistro(&sink, &script)?;
+        bail_if_cancelled!();
 
         sink(Progress::Step { name: "Pulling SENTIENT images (first time, a few minutes)".into() });
         indistro_stream(&sink, &format!("docker compose -f {COMPOSE_PATH} pull"))?;
+        bail_if_cancelled!();
 
         // The SENTIENT server validates the DB schema at boot and REFUSES to
         // start on a fresh/empty database (with `restart: always` it would then
-        // crash-loop and never answer on :8080). Run the one-time installer
-        // first — `compose run` brings up postgres via depends_on, installs the
-        // schema + system resources, then exits. On a re-run against an
-        // already-installed DB the installer exits non-zero ("refuses to
-        // overwrite an existing schema"); that's expected, so we log and carry
-        // on rather than hard-fail. The readiness probe below is the real gate.
+        // crash-loop and never answer). Run the one-time installer first —
+        // `compose run` brings up postgres via depends_on, installs the schema +
+        // system resources, then exits. On a re-run against an already-installed
+        // DB the installer exits non-zero ("refuses to overwrite an existing
+        // schema"); that's expected, so we log and carry on rather than
+        // hard-fail. The readiness probe below is the real gate.
+        let demo = if cfg.load_demo { " -e LOAD_DEMO=true" } else { "" };
         sink(Progress::Step { name: "Installing the SENTIENT database (first run, one-time)".into() });
         if let Err(e) = indistro_stream(&sink, &format!(
-            "docker compose -f {COMPOSE_PATH} run --rm -e INSTALL_SENTIENT=true sentient"
+            "docker compose -f {COMPOSE_PATH} run --rm -e INSTALL_SENTIENT=true{demo} sentient"
         )) {
+            bail_if_cancelled!();
             sink(Progress::Log { line: format!(
                 "note: install step returned an error ({e}). If the database was already installed this is expected — continuing."
             ) });
         }
+        bail_if_cancelled!();
 
         sink(Progress::Step { name: "Starting SENTIENT".into() });
         indistro_stream(&sink, &format!("docker compose -f {COMPOSE_PATH} up -d"))?;
 
         sink(Progress::Step { name: "Waiting for SENTIENT to become ready".into() });
+        let url = format!("http://localhost:{}", cfg.http_port);
         for i in 0..72 {
-            if is_running() {
-                sink(Progress::Done { message: "SENTIENT is running at http://localhost:8080".into() });
+            bail_if_cancelled!();
+            if is_running(cfg.http_port) {
+                sink(Progress::Done { message: format!("SENTIENT is running at {url}") });
                 return Ok(());
             }
             sink(Progress::Log { line: format!("waiting for SENTIENT to start… ({}s)", i * 5) });
             std::thread::sleep(std::time::Duration::from_secs(5));
         }
-        Err("SENTIENT didn't answer on :8080 in time — it may still be initializing the database.".into())
+        Err("SENTIENT didn't answer in time — it may still be initializing the database.".into())
     }
     #[cfg(not(windows))]
     {
+        let _ = cfg;
         sink(Progress::Error { message: "Deploy is Windows-only.".into() });
+        Err("Windows only".into())
+    }
+}
+
+/// Tear down a partial/cancelled deploy: stop & remove the SENTIENT containers,
+/// network and volumes, and reclaim disk from half-pulled images. Leaves the WSL
+/// distro + Docker Engine in place so re-running the deploy starts clean. Every
+/// sub-command is best-effort (the stack may not exist yet), so this never fails
+/// hard on a missing container/compose file.
+pub fn cleanup(sink: ProgressFn) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        sink(Progress::Step { name: "Stopping and removing SENTIENT containers and volumes".into() });
+        let _ = indistro_stream(&sink, &format!(
+            "docker compose -f {COMPOSE_PATH} down -v --remove-orphans 2>/dev/null || true"
+        ));
+        // Belt-and-suspenders in case the containers exist without the compose file.
+        let _ = indistro_stream(&sink,
+            "docker rm -f sentient sentient-postgres 2>/dev/null || true");
+
+        sink(Progress::Step { name: "Reclaiming disk from partial image pulls".into() });
+        let _ = indistro_stream(&sink, "docker image prune -f 2>/dev/null || true");
+
+        sink(Progress::Done { message: "Cleanup complete — you can safely retry the install.".into() });
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        sink(Progress::Error { message: "Cleanup is Windows-only.".into() });
         Err("Windows only".into())
     }
 }
@@ -216,7 +306,7 @@ fn distro_present() -> bool {
 /// Run a native `wsl.exe` command (UTF-16 output), stream it, error on failure.
 #[cfg(windows)]
 fn wsl_native(sink: &ProgressFn, args: &[&str]) -> Result<(), String> {
-    match sys::output("wsl.exe", args) {
+    match sys::output_tracked("wsl.exe", args) {
         Some((ok, out, err)) => {
             emit(sink, &out);
             emit(sink, &err);
@@ -251,6 +341,7 @@ fn indistro_stream(sink: &ProgressFn, bash: &str) -> Result<(), String> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| e.to_string())?;
+    crate::cancel::register_pid(child.id());
     let stdout = child.stdout.take().expect("piped");
     let stderr = child.stderr.take().expect("piped");
     let (s1, s2) = (sink.clone(), sink.clone());
@@ -267,7 +358,14 @@ fn indistro_stream(sink: &ProgressFn, bash: &str) -> Result<(), String> {
     let status = child.wait().map_err(|e| e.to_string())?;
     let _ = t1.join();
     let _ = t2.join();
-    if status.success() { Ok(()) } else { Err(format!("in-distro command failed: {bash}")) }
+    crate::cancel::clear_pid();
+    if crate::cancel::is_cancelled() {
+        Err("Cancelled.".into())
+    } else if status.success() {
+        Ok(())
+    } else {
+        Err(format!("in-distro command failed: {bash}"))
+    }
 }
 
 #[cfg(windows)]
@@ -292,6 +390,9 @@ fn download(url: &str, dest: &Path, sink: &ProgressFn) -> Result<(), String> {
     let mut done: u64 = 0;
     let mut last = -1i64;
     loop {
+        if crate::cancel::is_cancelled() {
+            return Err("Cancelled.".into());
+        }
         let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
         if n == 0 {
             break;

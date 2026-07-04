@@ -41,6 +41,7 @@ pub struct WslResult {
 
 #[tauri::command]
 async fn install_wsl(on_progress: Channel<InstProgress>) -> WslResult {
+    sentient_installer_core::cancel::reset();
     let ch = on_progress;
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let sink: InstProgressFn = Arc::new(move |p| {
@@ -53,6 +54,30 @@ async fn install_wsl(on_progress: Channel<InstProgress>) -> WslResult {
     WslResult { ready: outcome.ready, reboot_required: outcome.reboot_required }
 }
 
+/// Ask the running install step to stop: kills the in-flight child process and
+/// sets a flag its loops check. The step's command then returns an error the
+/// frontend treats as "cancelled".
+#[tauri::command]
+fn cancel_step() {
+    sentient_installer_core::cancel::request();
+}
+
+/// Tear down a partial/cancelled deploy (containers, volumes, dangling images).
+/// Leaves WSL + Docker in place so the install can be retried cleanly.
+#[tauri::command]
+async fn cleanup_install(on_progress: Channel<InstProgress>) -> Result<(), String> {
+    sentient_installer_core::cancel::reset();
+    let ch = on_progress;
+    tauri::async_runtime::spawn_blocking(move || {
+        let sink: InstProgressFn = Arc::new(move |p| {
+            let _ = ch.send(p);
+        });
+        distro::cleanup(sink)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn wsl_ready() -> bool {
     tauri::async_runtime::spawn_blocking(wsl::is_ready).await.unwrap_or(false)
@@ -60,6 +85,7 @@ async fn wsl_ready() -> bool {
 
 #[tauri::command]
 async fn setup_docker(app: tauri::AppHandle, on_progress: Channel<InstProgress>) -> Result<(), String> {
+    sentient_installer_core::cancel::reset();
     let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let ch = on_progress;
     tauri::async_runtime::spawn_blocking(move || {
@@ -78,13 +104,18 @@ async fn docker_ready() -> bool {
 }
 
 #[tauri::command]
-async fn deploy_sentient(on_progress: Channel<InstProgress>) -> Result<(), String> {
+async fn deploy_sentient(
+    on_progress: Channel<InstProgress>,
+    config: Option<distro::DeployConfig>,
+) -> Result<(), String> {
+    sentient_installer_core::cancel::reset();
+    let cfg = config.unwrap_or_default();
     let ch = on_progress;
     let res = tauri::async_runtime::spawn_blocking(move || {
         let sink: InstProgressFn = Arc::new(move |p| {
             let _ = ch.send(p);
         });
-        distro::deploy(sink)
+        distro::deploy(sink, &cfg)
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -95,20 +126,28 @@ async fn deploy_sentient(on_progress: Channel<InstProgress>) -> Result<(), Strin
 }
 
 #[tauri::command]
-async fn sentient_running() -> bool {
-    tauri::async_runtime::spawn_blocking(distro::is_running).await.unwrap_or(false)
+async fn sentient_running(port: Option<u16>) -> bool {
+    let port = port.unwrap_or(8080);
+    tauri::async_runtime::spawn_blocking(move || distro::is_running(port))
+        .await
+        .unwrap_or(false)
 }
 
 #[tauri::command]
-fn open_sentient() -> Result<(), String> {
+fn open_sentient(port: Option<u16>) -> Result<(), String> {
+    let port = port.unwrap_or(8080);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         std::process::Command::new("cmd")
-            .args(["/c", "start", "", "http://localhost:8080"])
+            .args(["/c", "start", "", &format!("http://localhost:{port}")])
             .creation_flags(0x0800_0000)
             .spawn()
             .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = port;
     }
     Ok(())
 }
@@ -405,6 +444,7 @@ pub fn run() {
             // installer
             preflight, install_wsl, wsl_ready, setup_docker, docker_ready,
             deploy_sentient, sentient_running, open_sentient,
+            cancel_step, cleanup_install,
             get_state, set_state, arm_resume, reboot_now,
             // backup
             inspect, backup, restore, create_database, default_categories,

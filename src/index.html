@@ -33,7 +33,9 @@
     .nav:hover { background:var(--input); color:var(--fg); }
     .nav.active { background:var(--accent); color:#04211d; }
     .sidebar .grow { flex:1; }
-    .sidebar .foot { color:var(--muted); font-size:11px; padding:6px 12px; }
+    .sidebar .foot { color:var(--muted); font-size:11px; padding:2px 8px 2px 12px; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .sidebar .foot .iconbtn { color:var(--muted); }
+    .sidebar .foot .iconbtn:hover { background:var(--input); color:var(--fg); }
 
     .content { flex:1; overflow:auto; padding:22px 26px; min-width:0; }
     .page { display:none; max-width:900px; }
@@ -89,8 +91,8 @@
     .view { display:none; }
     .view.active { display:block; }
     .checks { display:flex; flex-direction:column; gap:8px; }
-    .check { display:flex; align-items:flex-start; gap:12px; background:var(--input); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
-    .check .icon { width:22px; height:22px; flex-shrink:0; margin-top:1px; }
+    .check { display:flex; align-items:center; gap:12px; background:var(--input); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+    .check .icon { width:22px; height:22px; flex-shrink:0; }
     .check .label { font-weight:600; }
     .check .detail { color:var(--muted); font-size:12.5px; margin-top:2px; }
     .s-pass { color:var(--ok); } .s-setup { color:var(--accent); } .s-fail { color:var(--err); } .s-unknown { color:var(--muted); }
@@ -101,6 +103,12 @@
     .comp .cd { color:var(--muted); font-size:12.5px; margin-top:2px; }
     .actions { display:flex; justify-content:space-between; align-items:center; margin-top:22px; gap:12px; }
     button.warn { background:var(--err); color:#fff; }
+    /* Setup: fill the height so the step's nav buttons stay pinned to the bottom
+       regardless of how much content the step has. */
+    #setupPage.active { display:flex; flex-direction:column; min-height:100%; }
+    #setupPage .rail { flex-shrink:0; }
+    #setupPage .view.active { display:flex; flex-direction:column; flex:1 1 auto; }
+    #setupPage .view > .actions { margin-top:auto; padding-top:16px; }
     .summary { margin:16px 0 0; font-size:13px; }
     .summary.bad { color:var(--err); }
     .pbar.run > .fill { width:35%; }
@@ -131,9 +139,6 @@
     <div class="brand"><img src="logo.png" alt="" /> SENTIENT Platform Manager</div>
     <div class="spacer"></div>
     <div class="conn-status" id="connStatus"><span class="dot"></span> Not connected</div>
-    <button class="iconbtn" id="themeToggle" title="Toggle light / dark">
-      <svg class="icon"><use id="themeIcon" href="#i-moon" /></svg>
-    </button>
   </div>
 
   <div class="shell">
@@ -145,7 +150,12 @@
       <div class="nav" data-view="history"><svg class="icon"><use href="#i-history"/></svg> History</div>
       <div class="grow"></div>
       <div class="nav" data-view="settings"><svg class="icon"><use href="#i-settings"/></svg> Settings</div>
-      <div class="foot">v0.2.1</div>
+      <div class="foot">
+        <span>v0.3.0</span>
+        <button class="iconbtn" id="themeToggle" title="Toggle light / dark">
+          <svg class="icon"><use id="themeIcon" href="#i-moon" /></svg>
+        </button>
+      </div>
     </nav>
 
     <main class="content">
@@ -154,9 +164,8 @@
         <div class="rail">
           <div class="chip active" data-step="checks"><span class="n">1</span> System check</div>
           <div class="chip" data-step="components"><span class="n">2</span> Components</div>
-          <div class="chip" data-step="wsl"><span class="n">3</span> WSL2</div>
-          <div class="chip" data-step="docker"><span class="n">4</span> Docker</div>
-          <div class="chip" data-step="deploy"><span class="n">5</span> Deploy</div>
+          <div class="chip" data-step="configure"><span class="n">3</span> Configure</div>
+          <div class="chip" data-step="install"><span class="n">4</span> Install</div>
         </div>
 
         <!-- checks -->
@@ -189,62 +198,94 @@
           </div>
           <div class="actions">
             <button class="ghost" id="backChecks">Back</button>
-            <button id="toWsl">Continue</button>
+            <button id="toConfigure">Continue</button>
           </div>
         </section>
 
-        <!-- wsl -->
-        <section class="view" id="wslView">
-          <h1>Install WSL2</h1>
-          <p class="sub">SENTIENT runs in a lightweight Linux environment (WSL2) on Windows.</p>
-          <div id="wslStart" class="card"><button id="wslBtn">Install WSL2</button></div>
-          <div id="wslProgress" class="card" style="display:none">
-            <div class="pbar" id="wslPbar"><div class="fill"></div></div>
-            <div class="pstep" id="wslStep"></div>
-            <pre class="plog" id="wslLog"></pre>
+        <!-- configure -->
+        <section class="view" id="configureView">
+          <h1>Configuration</h1>
+          <p class="sub">These recommended settings work out of the box. Customize them only if you need to.</p>
+
+          <div class="card" id="recoCard">
+            <h2>Recommended settings</h2>
+            <table><tbody id="recoSummary"></tbody></table>
+            <div class="actions" style="margin-top:14px">
+              <button class="ghost" id="customizeBtn">Customize…</button><span></span>
+            </div>
           </div>
-          <div id="wslReboot" class="card" style="display:none">
+
+          <div class="card" id="customCard" style="display:none">
+            <h2>Custom settings</h2>
+            <div class="row">
+              <label>Database name<input id="cfgDbName" value="sentient" /></label>
+              <label>Database user<input id="cfgDbUser" value="sentient" /></label>
+              <label>Database password<input id="cfgDbPass" value="sentient" /></label>
+            </div>
+            <div class="row" style="margin-top:12px">
+              <label>Web port (HTTP)<input id="cfgHttpPort" type="number" value="8080" style="min-width:110px" /></label>
+              <label>MQTT port<input id="cfgMqttPort" type="number" value="1883" style="min-width:110px" /></label>
+              <label>CoAP port (UDP)<input id="cfgCoapPort" type="number" value="5683" style="min-width:110px" /></label>
+            </div>
+            <label class="comp" style="color:inherit; margin-top:14px">
+              <input type="checkbox" id="cfgLoadDemo" />
+              <span><span class="ct">Load demo data</span> <span class="badge">optional</span>
+                <span class="cd">Seed demo tenants, devices and dashboards so there's something to explore. Leave off for a clean install.</span></span>
+            </label>
+            <p class="warn" id="cfgError" style="min-height:16px; margin:8px 0 0"></p>
+            <div class="actions" style="margin-top:6px">
+              <button class="ghost" id="resetDefaultsBtn">Reset to recommended</button><span></span>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button class="ghost" id="backComponents">Back</button>
+            <button id="toInstall">Continue</button>
+          </div>
+        </section>
+
+        <!-- install (automated: WSL2 → Docker → deploy) -->
+        <section class="view" id="installView">
+          <h1>Install SENTIENT</h1>
+          <p class="sub">This sets up WSL2, Docker Engine, and deploys SENTIENT automatically. It may restart your PC once — it'll resume on its own.</p>
+
+          <div id="installStart" class="card">
+            <div id="installPlan" class="hint"></div>
+            <button id="startInstallBtn" style="margin-top:14px">Start install</button>
+          </div>
+
+          <div id="installProgress" class="card" style="display:none">
+            <div class="pstep" id="instPhase" style="margin-bottom:8px"></div>
+            <div class="pbar run" id="instPbar"><div class="fill"></div></div>
+            <div id="instStep" class="hint" style="margin-top:8px"></div>
+            <pre class="plog" id="instLog" style="margin-top:10px"></pre>
+            <div class="actions" style="margin-top:12px">
+              <button class="warn" id="cancelInstallBtn">Cancel…</button><span></span>
+            </div>
+          </div>
+
+          <div id="installReboot" class="card" style="display:none">
             <div class="pstep s-setup">A restart is required to finish installing WSL2</div>
-            <p class="note">Your progress is saved. After the restart, this app reopens and continues automatically.</p>
+            <p class="hint">Your progress and settings are saved. After the restart, this app reopens and continues the install automatically.</p>
             <div class="row" style="margin-top:10px; gap:10px"><button id="rebootBtn" class="warn">Restart now</button><button id="rebootLater" class="ghost">I'll restart later</button></div>
           </div>
-          <div id="wslReady" class="card" style="display:none"><div class="pstep s-pass">✓ WSL2 is ready</div></div>
-          <div class="actions"><button class="ghost" id="backComponents">Back</button><button id="toDocker" disabled>Continue</button></div>
-        </section>
 
-        <!-- docker -->
-        <section class="view" id="dockerView">
-          <h1>Install Docker Engine</h1>
-          <p class="sub">Docker Engine runs inside WSL2 — no Docker Desktop needed.</p>
-          <div id="dockerStart" class="card"><button id="dockerBtn">Install Docker Engine</button></div>
-          <div id="dockerProgress" class="card" style="display:none">
-            <div class="pbar" id="dkPbar"><div class="fill"></div></div>
-            <div class="pstep" id="dkStep"></div>
-            <pre class="plog" id="dkLog"></pre>
-          </div>
-          <div id="dockerReady" class="card" style="display:none"><div class="pstep s-pass">✓ Docker Engine is ready</div></div>
-          <div class="actions"><button class="ghost" id="backWsl">Back</button><button id="toDeploy" disabled>Continue</button></div>
-        </section>
-
-        <!-- deploy -->
-        <section class="view" id="deployView">
-          <h1>Deploy SENTIENT</h1>
-          <p class="sub">Pull the SENTIENT images and start the stack. It'll be at localhost:8080 when ready.</p>
-          <div id="deployStart" class="card"><button id="deployBtn">Deploy SENTIENT</button></div>
-          <div id="deployProgress" class="card" style="display:none">
-            <div class="pbar" id="dpPbar"><div class="fill"></div></div>
-            <div class="pstep" id="dpStep"></div>
-            <p class="note hint" style="margin:2px 0 10px">First run pulls ~1 GB of images and initializes the database — a few minutes. The window stays responsive.</p>
-            <pre class="plog" id="dpLog"></pre>
-          </div>
-          <div id="deployReady" class="card" style="display:none">
+          <div id="installDone" class="card" style="display:none">
             <div class="pstep s-pass">✓ SENTIENT is running</div>
-            <p class="hint">Open <b>http://localhost:8080</b> and sign in as sys-admin:<br>
-              &nbsp;&nbsp;<b>admin@sentient.local</b> &nbsp;/&nbsp; <b>admin123</b><br>
-              It starts automatically on login from now on.</p>
+            <p class="hint" id="doneHint"></p>
             <button id="openBtn" style="margin-top:10px">Open SENTIENT</button>
           </div>
-          <div class="actions"><button class="ghost" id="backDocker">Back</button><span></span></div>
+
+          <div id="installFailed" class="card" style="display:none">
+            <div class="pstep" id="failMsg" style="color:var(--err)">Install stopped.</div>
+            <p class="hint">Some steps may have left containers or partial downloads behind. You can clean them up, then retry.</p>
+            <div class="row" style="margin-top:10px; gap:10px">
+              <button id="retryInstallBtn">Retry install</button>
+              <button class="ghost" id="cleanupBtn">Clean up leftovers…</button>
+            </div>
+          </div>
+
+          <div class="actions"><button class="ghost" id="backConfigure">Back</button><span></span></div>
         </section>
       </section>
 

@@ -25,7 +25,7 @@ pub fn is_ready() -> bool {
 #[cfg(windows)]
 fn step(sink: &ProgressFn, name: &str, program: &str, args: &[&str]) {
     sink(Progress::Step { name: name.into() });
-    match sys::output(program, args) {
+    match sys::output_tracked(program, args) {
         Some((_, out, err)) => {
             for bytes in [out, err] {
                 for line in sys::decode(&bytes).lines() {

@@ -470,11 +470,18 @@ document.querySelectorAll('input[name="themeMode"]').forEach((r) =>
 init();
 
 // ===========================================================================
-// Setup wizard: System check -> Components -> WSL2 -> Docker -> Deploy.
-// Ported from the standalone installer; shares invoke/Channel/$ above.
+// Setup wizard: System check → Components → Configure → Install (automated).
+// The Install step drives WSL2 → Docker → deploy back-to-back, survives the
+// WSL reboot (resumes on relaunch), and can be cancelled (with confirmation)
+// then cleaned up. Shares invoke / Channel / $ defined above.
 // ===========================================================================
-const STEPS = ["checks", "components", "wsl", "docker", "deploy"];
+const STEPS = ["checks", "components", "configure", "install"];
 const CHECK_ICON = { pass: "i-pass", setup: "i-todo", fail: "i-fail", unknown: "i-unknown" };
+const CFG_DEFAULTS = {
+  db_name: "sentient", db_user: "sentient", db_password: "sentient",
+  http_port: 8080, mqtt_port: 1883, coap_port: 5683, load_demo: false,
+};
+let installing = false; // guard against double-starts
 
 function showStep(name) {
   document.querySelectorAll("#setupPage .chip").forEach((c) => {
@@ -532,183 +539,176 @@ async function recheck() {
   }
 }
 
-// ---- Step 3: WSL2 ------------------------------------------------------------
-function wslMode(mode) {
-  // mode: "start" | "reboot" | "ready"
-  $("wslStart").style.display = mode === "start" ? "" : "none";
-  $("wslReboot").style.display = mode === "reboot" ? "" : "none";
-  $("wslReady").style.display = mode === "ready" ? "" : "none";
-  $("toDocker").disabled = mode !== "ready";
+// ---- Step 3: configure -------------------------------------------------------
+function readConfig() {
+  const num = (id, d) => { const v = parseInt($(id).value, 10); return Number.isFinite(v) ? v : d; };
+  return {
+    db_name: ($("cfgDbName").value || "").trim() || CFG_DEFAULTS.db_name,
+    db_user: ($("cfgDbUser").value || "").trim() || CFG_DEFAULTS.db_user,
+    db_password: $("cfgDbPass").value || CFG_DEFAULTS.db_password,
+    http_port: num("cfgHttpPort", CFG_DEFAULTS.http_port),
+    mqtt_port: num("cfgMqttPort", CFG_DEFAULTS.mqtt_port),
+    coap_port: num("cfgCoapPort", CFG_DEFAULTS.coap_port),
+    load_demo: $("cfgLoadDemo").checked,
+  };
+}
+function applyConfig(c) {
+  $("cfgDbName").value = c.db_name; $("cfgDbUser").value = c.db_user; $("cfgDbPass").value = c.db_password;
+  $("cfgHttpPort").value = c.http_port; $("cfgMqttPort").value = c.mqtt_port; $("cfgCoapPort").value = c.coap_port;
+  $("cfgLoadDemo").checked = !!c.load_demo;
+}
+function renderReco() {
+  const c = readConfig();
+  const rows = [
+    ["Database", `${c.db_name} (user ${c.db_user})`],
+    ["Web address", `http://localhost:${c.http_port}`],
+    ["MQTT / CoAP ports", `${c.mqtt_port} / ${c.coap_port}`],
+    ["Demo data", c.load_demo ? "Yes" : "No (clean install)"],
+    ["Client app", $("compClient").checked ? "Install too" : "Skip"],
+  ];
+  $("recoSummary").innerHTML = rows
+    .map(([k, v]) => `<tr><td class="cat-note" style="width:42%">${k}</td><td>${v}</td></tr>`)
+    .join("");
+}
+function validateConfig(c) {
+  const ports = [["Web", c.http_port], ["MQTT", c.mqtt_port], ["CoAP", c.coap_port]];
+  for (const [n, p] of ports) if (!(p >= 1 && p <= 65535)) return `${n} port must be between 1 and 65535.`;
+  if (new Set(ports.map(([, p]) => p)).size !== ports.length) return "The Web, MQTT and CoAP ports must all be different.";
+  if (!c.db_name || !c.db_user) return "Database name and user can't be empty.";
+  return null;
+}
+async function persistConfig() {
+  try { await invoke("setting_set", { key: "install_config", value: JSON.stringify(readConfig()) }); } catch { /* store off */ }
+}
+async function loadConfig() {
+  try {
+    const s = await invoke("setting_get", { key: "install_config" });
+    if (s) applyConfig({ ...CFG_DEFAULTS, ...JSON.parse(s) });
+  } catch { /* no saved config */ }
+  renderReco();
 }
 
-async function setupWsl() {
-  $("wslBtn").disabled = true;
-  $("wslProgress").style.display = "";
-  $("wslPbar").classList.add("run");
-  $("wslLog").textContent = "";
-  $("wslStep").textContent = "Starting…";
-
-  const ch = new Channel();
-  ch.onmessage = (p) => {
-    if (p.type === "step") $("wslStep").textContent = p.name;
-    else if (p.type === "log") {
-      const l = $("wslLog");
-      l.textContent += p.line + "\n";
-      l.scrollTop = l.scrollHeight;
-    } else if (p.type === "done") $("wslStep").textContent = "✓ " + p.message;
-    else if (p.type === "error") $("wslStep").textContent = "✗ " + p.message;
-  };
-
-  try {
-    const res = await invoke("install_wsl", { onProgress: ch });
-    $("wslPbar").classList.remove("run");
-    if (res.ready) {
-      await invoke("set_state", { step: "wsl_ready" });
-      wslMode("ready");
-    } else if (res.reboot_required) {
-      await invoke("set_state", { step: "wsl_pending_reboot" });
-      await invoke("arm_resume");
-      wslMode("reboot");
-    }
-  } catch (e) {
-    $("wslPbar").classList.remove("run");
-    $("wslStep").textContent = "Failed: " + e;
-    $("wslBtn").disabled = false;
+// ---- Step 4: install (automated WSL2 → Docker → deploy) ----------------------
+function installCard(which) {
+  for (const id of ["installStart", "installProgress", "installReboot", "installDone", "installFailed"]) {
+    $(id).style.display = id === which ? "" : "none";
   }
 }
-
-// ---- Step 4: Docker ---------------------------------------------------------
-function dockerMode(mode) {
-  // mode: "start" | "ready"
-  $("dockerStart").style.display = mode === "start" ? "" : "none";
-  $("dockerReady").style.display = mode === "ready" ? "" : "none";
-  $("toDeploy").disabled = mode !== "ready";
+function instMsg(p) {
+  const bar = $("instPbar"), fill = bar.querySelector(".fill");
+  if (p.type === "step") { $("instStep").textContent = p.name; bar.classList.add("run"); fill.style.width = "35%"; }
+  else if (p.type === "percent") { bar.classList.remove("run"); fill.style.width = Math.round(p.value * 100) + "%"; }
+  else if (p.type === "log") { const l = $("instLog"); l.textContent += p.line + "\n"; l.scrollTop = l.scrollHeight; }
+  else if (p.type === "done") { $("instStep").textContent = "✓ " + p.message; }
+  else if (p.type === "error") { $("instStep").textContent = "✗ " + p.message; }
+}
+function instChannel() { const ch = new Channel(); ch.onmessage = instMsg; return ch; }
+function setPhase(n, total, label) {
+  $("instPhase").textContent = `Step ${n} of ${total} · ${label}`;
+  $("instLog").textContent = "";
 }
 
-async function setupDocker() {
-  $("dockerBtn").disabled = true;
-  $("dockerStart").style.display = "none";
-  $("dockerProgress").style.display = "";
-  $("dkLog").textContent = "";
-  $("dkStep").textContent = "Starting…";
-  const bar = $("dkPbar"), fill = bar.querySelector(".fill");
-  bar.classList.add("run");
-  fill.style.width = "30%";
-
-  const ch = new Channel();
-  ch.onmessage = (p) => {
-    if (p.type === "step") {
-      $("dkStep").textContent = p.name;
-      bar.classList.add("run");
-      fill.style.width = "30%";
-    } else if (p.type === "percent") {
-      bar.classList.remove("run");
-      fill.style.width = Math.round(p.value * 100) + "%";
-    } else if (p.type === "log") {
-      const l = $("dkLog");
-      l.textContent += p.line + "\n";
-      l.scrollTop = l.scrollHeight;
-    } else if (p.type === "done") {
-      bar.classList.remove("run");
-      fill.style.width = "100%";
-      $("dkStep").textContent = "✓ " + p.message;
-    } else if (p.type === "error") {
-      bar.classList.remove("run");
-      $("dkStep").textContent = "✗ " + p.message;
-    }
-  };
-
+async function autoInstall() {
+  if (installing || !invoke) return;
+  installing = true;
+  installCard("installProgress");
+  $("cancelInstallBtn").disabled = false;
   try {
-    await invoke("setup_docker", { onProgress: ch });
+    // Phase 1 — WSL2 (may require a reboot; resumes automatically after)
+    setPhase(1, 3, "WSL2");
+    if (!(await invoke("wsl_ready"))) {
+      const res = await invoke("install_wsl", { onProgress: instChannel() });
+      if (res.reboot_required) {
+        await invoke("set_state", { step: "wsl_pending_reboot" });
+        await invoke("arm_resume");
+        installing = false;
+        installCard("installReboot");
+        return;
+      }
+    }
+    await invoke("set_state", { step: "wsl_ready" });
+
+    // Phase 2 — Docker Engine
+    setPhase(2, 3, "Docker Engine");
+    if (!(await invoke("docker_ready"))) {
+      await invoke("setup_docker", { onProgress: instChannel() });
+    }
     await invoke("set_state", { step: "docker_ready" });
-    dockerMode("ready");
-  } catch (e) {
-    bar.classList.remove("run");
-    $("dkStep").textContent = "Failed: " + e;
-    $("dockerBtn").disabled = false;
-    $("dockerStart").style.display = "";
-  }
-}
 
-// ---- Step 5: Deploy ---------------------------------------------------------
-function deployMode(mode) {
-  $("deployStart").style.display = mode === "start" ? "" : "none";
-  $("deployReady").style.display = mode === "ready" ? "" : "none";
-}
-
-async function setupDeploy() {
-  $("deployBtn").disabled = true;
-  $("deployStart").style.display = "none";
-  $("deployProgress").style.display = "";
-  $("dpLog").textContent = "";
-  $("dpStep").textContent = "Starting…";
-  const bar = $("dpPbar"), fill = bar.querySelector(".fill");
-  bar.classList.add("run");
-  fill.style.width = "30%";
-
-  const ch = new Channel();
-  ch.onmessage = (p) => {
-    if (p.type === "step") {
-      $("dpStep").textContent = p.name;
-      bar.classList.add("run");
-      fill.style.width = "30%";
-    } else if (p.type === "log") {
-      const l = $("dpLog");
-      l.textContent += p.line + "\n";
-      l.scrollTop = l.scrollHeight;
-    } else if (p.type === "done") {
-      bar.classList.remove("run");
-      fill.style.width = "100%";
-      $("dpStep").textContent = "✓ " + p.message;
-    } else if (p.type === "error") {
-      bar.classList.remove("run");
-      $("dpStep").textContent = "✗ " + p.message;
-    }
-  };
-
-  try {
-    await invoke("deploy_sentient", { onProgress: ch });
+    // Phase 3 — deploy the stack with the chosen config
+    setPhase(3, 3, "Deploy SENTIENT");
+    await invoke("deploy_sentient", { onProgress: instChannel(), config: readConfig() });
     await invoke("set_state", { step: "deployed" });
-    deployMode("ready");
+
+    installing = false;
+    showInstallDone();
   } catch (e) {
-    bar.classList.remove("run");
-    $("dpStep").textContent = "Failed: " + e;
-    $("deployBtn").disabled = false;
-    $("deployStart").style.display = "";
+    installing = false;
+    const msg = String(e);
+    $("failMsg").textContent = /cancel/i.test(msg) ? "Install cancelled." : "Install stopped: " + msg;
+    installCard("installFailed");
   }
+}
+
+function showInstallDone() {
+  const url = `http://localhost:${readConfig().http_port}`;
+  $("doneHint").innerHTML =
+    `Open <b>${url}</b> and sign in as sys-admin:<br>&nbsp;&nbsp;<b>admin@sentient.local</b> &nbsp;/&nbsp; <b>admin123</b><br>It starts automatically on login from now on.`;
+  installCard("installDone");
+}
+
+async function cancelInstall() {
+  const ok = confirm(
+    "Cancel the install?\n\n" +
+    "The step that's running now will be stopped. This can leave half-downloaded images or partially-created containers behind — you'll be offered a cleanup afterwards. Anything that already finished (WSL2, Docker) stays installed."
+  );
+  if (!ok) return;
+  $("cancelInstallBtn").disabled = true;
+  $("instStep").textContent = "Cancelling…";
+  try { await invoke("cancel_step"); } catch { /* ignore */ }
+}
+
+async function cleanupLeftovers() {
+  const ok = confirm(
+    "Clean up leftovers?\n\n" +
+    "This stops and removes the SENTIENT containers and their data volumes, and reclaims disk from partially-pulled images, so you can retry from a clean state. WSL2 and Docker Engine stay installed."
+  );
+  if (!ok) return;
+  installCard("installProgress");
+  setPhase(1, 1, "Cleanup");
+  $("cancelInstallBtn").disabled = true;
+  try {
+    await invoke("cleanup_install", { onProgress: instChannel() });
+    $("failMsg").textContent = "Cleanup done — ready to retry.";
+  } catch (e) {
+    $("failMsg").textContent = "Cleanup error: " + e;
+  }
+  installCard("installFailed");
 }
 
 // ---- Setup init / resume -----------------------------------------------------
 async function initSetup() {
-  // Restore the remembered Client choice (M1).
-  try {
-    const c = await invoke("setting_get", { key: "install_client" });
-    if (c === "1") $("compClient").checked = true;
-  } catch { /* store unavailable */ }
+  try { const c = await invoke("setting_get", { key: "install_client" }); if (c === "1") $("compClient").checked = true; } catch { /* store off */ }
+  await loadConfig();
+  $("installPlan").innerHTML =
+    "Ready to set up <b>WSL2</b>, <b>Docker Engine</b>, and deploy the <b>SENTIENT</b> stack. This can take several minutes and may restart your PC once.";
 
   if (!invoke) return;
   let state = "checks";
   try { state = await invoke("get_state"); } catch { /* default */ }
 
   if (state === "deployed") {
-    showStep("deploy");
-    deployMode("ready");
-  } else if (state === "docker_ready") {
-    showStep("docker");
-    dockerMode("ready");
-  } else if (state === "wsl_ready") {
-    showStep("wsl");
-    wslMode("ready");
+    showStep("install");
+    showInstallDone();
+  } else if (state === "docker_ready" || state === "wsl_ready") {
+    showStep("install");
+    autoInstall(); // resume — readiness checks skip the finished phases
   } else if (state === "wsl_pending_reboot") {
-    showStep("wsl");
-    // resumed after a reboot — re-verify
-    const ready = await invoke("wsl_ready").catch(() => false);
-    if (ready) {
+    showStep("install");
+    if (await invoke("wsl_ready").catch(() => false)) {
       await invoke("set_state", { step: "wsl_ready" });
-      wslMode("ready");
-    } else {
-      wslMode("start");
     }
+    autoInstall(); // continues the install automatically after the reboot
   } else {
     showStep("checks");
     recheck();
@@ -717,22 +717,27 @@ async function initSetup() {
 
 // ---- Setup wiring ------------------------------------------------------------
 $("recheckBtn").addEventListener("click", recheck);
-$("toComponents").addEventListener("click", () => showStep("components"));
+$("toConfigure").addEventListener("click", () => { renderReco(); showStep("configure"); });
 $("backChecks").addEventListener("click", () => showStep("checks"));
-$("toWsl").addEventListener("click", () => {
-  try { invoke("setting_set", { key: "install_client", value: $("compClient").checked ? "1" : "0" }); } catch { /* store off */ }
-  showStep("wsl");
-  wslMode($("wslReady").style.display === "" ? "ready" : "start");
-});
+$("customizeBtn").addEventListener("click", () => { $("recoCard").style.display = "none"; $("customCard").style.display = ""; });
+$("resetDefaultsBtn").addEventListener("click", () => { applyConfig(CFG_DEFAULTS); $("cfgError").textContent = ""; });
 $("backComponents").addEventListener("click", () => showStep("components"));
-$("wslBtn").addEventListener("click", setupWsl);
+$("toInstall").addEventListener("click", async () => {
+  const c = readConfig();
+  const err = validateConfig(c);
+  if (err) { $("cfgError").textContent = err; $("recoCard").style.display = "none"; $("customCard").style.display = ""; return; }
+  $("cfgError").textContent = "";
+  try { await invoke("setting_set", { key: "install_client", value: $("compClient").checked ? "1" : "0" }); } catch { /* store off */ }
+  await persistConfig();
+  showStep("install");
+  installCard("installStart");
+});
+$("startInstallBtn").addEventListener("click", autoInstall);
+$("retryInstallBtn").addEventListener("click", autoInstall);
+$("cancelInstallBtn").addEventListener("click", cancelInstall);
+$("cleanupBtn").addEventListener("click", cleanupLeftovers);
 $("rebootBtn").addEventListener("click", () => invoke("reboot_now"));
-$("rebootLater").addEventListener("click", () => { $("wslReboot").style.display = "none"; });
-$("toDocker").addEventListener("click", () => { showStep("docker"); dockerMode($("dockerReady").style.display === "" ? "ready" : "start"); });
-$("backWsl").addEventListener("click", () => showStep("wsl"));
-$("dockerBtn").addEventListener("click", setupDocker);
-$("toDeploy").addEventListener("click", () => { showStep("deploy"); deployMode($("deployReady").style.display === "" ? "ready" : "start"); });
-$("backDocker").addEventListener("click", () => showStep("docker"));
-$("deployBtn").addEventListener("click", setupDeploy);
-$("openBtn").addEventListener("click", () => invoke("open_sentient"));
+$("rebootLater").addEventListener("click", () => installCard("installStart"));
+$("openBtn").addEventListener("click", () => invoke("open_sentient", { port: readConfig().http_port }));
+$("backConfigure").addEventListener("click", () => showStep("configure"));
 initSetup();

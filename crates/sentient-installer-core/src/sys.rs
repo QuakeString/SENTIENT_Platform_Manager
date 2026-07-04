@@ -23,6 +23,25 @@ pub(crate) fn output(program: &str, args: &[&str]) -> Option<(bool, Vec<u8>, Vec
     Some((o.status.success(), o.stdout, o.stderr))
 }
 
+/// Like `output`, but registers the child PID with the cancellation module for
+/// the duration of the call so a Cancel request can kill this (possibly slow)
+/// process. Use for long provisioning commands, not quick probes.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn output_tracked(program: &str, args: &[&str]) -> Option<(bool, Vec<u8>, Vec<u8>)> {
+    use std::process::Stdio;
+    let child = command(program)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    crate::cancel::register_pid(child.id());
+    let o = child.wait_with_output();
+    crate::cancel::clear_pid();
+    let o = o.ok()?;
+    Some((o.status.success(), o.stdout, o.stderr))
+}
+
 /// `wsl.exe` writes UTF-16LE on many Windows builds; decode either encoding.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn decode(bytes: &[u8]) -> String {
