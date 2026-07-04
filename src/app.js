@@ -5,6 +5,22 @@ const invoke = window.__TAURI__?.core?.invoke;
 const Channel = window.__TAURI__?.core?.Channel;
 
 const $ = (id) => document.getElementById(id);
+
+// Append a line to a <pre> log, capping it to the last N lines so a flood of
+// output (e.g. `docker compose pull` progress) can't grow the DOM unbounded and
+// spike CPU. Trims only when it gets big, to keep the common path cheap.
+const LOG_MAX_LINES = 400;
+function logAppend(el, line) {
+  el.textContent += line + "\n";
+  if (el.textContent.length > 48000) {
+    const lines = el.textContent.split("\n");
+    if (lines.length > LOG_MAX_LINES) {
+      el.textContent = lines.slice(lines.length - LOG_MAX_LINES).join("\n");
+    }
+  }
+  el.scrollTop = el.scrollHeight;
+}
+
 let categories = []; // last inspect result
 let restoreFile = null; // chosen archive path
 let profilesList = []; // saved connection profiles
@@ -91,9 +107,7 @@ function ProgressView(prefix) {
         el("Step").textContent = `[${p.index}/${p.total}] ${p.name}`;
         fill().style.width = Math.round((p.index / p.total) * 100) + "%";
       } else if (p.type === "log") {
-        const lg = el("Log");
-        lg.textContent += p.line + "\n";
-        lg.scrollTop = lg.scrollHeight;
+        logAppend(el("Log"), p.line);
       } else if (p.type === "done") {
         el("Step").textContent = "✓ " + p.message;
         fill().style.width = "100%";
@@ -613,7 +627,7 @@ function instMsg(p) {
   const bar = $("instPbar"), fill = bar.querySelector(".fill");
   if (p.type === "step") { $("instStep").textContent = p.name; bar.classList.add("run"); fill.style.width = "35%"; }
   else if (p.type === "percent") { bar.classList.remove("run"); fill.style.width = Math.round(p.value * 100) + "%"; }
-  else if (p.type === "log") { const l = $("instLog"); l.textContent += p.line + "\n"; l.scrollTop = l.scrollHeight; }
+  else if (p.type === "log") logAppend($("instLog"), p.line);
   else if (p.type === "done") { $("instStep").textContent = "✓ " + p.message; }
   else if (p.type === "error") { $("instStep").textContent = "✗ " + p.message; }
 }
@@ -802,7 +816,7 @@ async function loadStatus() {
 
 function stMsg(p) {
   if (p.type === "step") $("stStep").textContent = p.name;
-  else if (p.type === "log") { const l = $("stLog"); l.textContent += p.line + "\n"; l.scrollTop = l.scrollHeight; }
+  else if (p.type === "log") logAppend($("stLog"), p.line);
   else if (p.type === "done") $("stStep").textContent = "✓ " + p.message;
   else if (p.type === "error") $("stStep").textContent = "✗ " + p.message;
 }
@@ -837,7 +851,7 @@ async function uninstall() {
   const ch = new Channel();
   ch.onmessage = (p) => {
     if (p.type === "step") $("uninStep").textContent = p.name;
-    else if (p.type === "log") { const l = $("uninLog"); l.textContent += p.line + "\n"; l.scrollTop = l.scrollHeight; }
+    else if (p.type === "log") logAppend($("uninLog"), p.line);
     else if (p.type === "done") $("uninStep").textContent = "✓ " + p.message;
     else if (p.type === "error") $("uninStep").textContent = "✗ " + p.message;
   };
@@ -861,7 +875,7 @@ async function makeShortcut() {
   const ch = new Channel();
   ch.onmessage = (p) => {
     if (p.type === "step") $("kioskStep").textContent = p.name;
-    else if (p.type === "log") { const l = $("kioskLog"); l.textContent += p.line + "\n"; l.scrollTop = l.scrollHeight; }
+    else if (p.type === "log") logAppend($("kioskLog"), p.line);
     else if (p.type === "done") $("kioskStep").textContent = "✓ " + p.message;
     else if (p.type === "error") $("kioskStep").textContent = "✗ " + p.message;
   };
@@ -888,7 +902,7 @@ function upMsg(p) {
   const bar = $("upPbar"), fill = bar.querySelector(".fill");
   if (p.type === "step") { $("upStep").textContent = p.name; bar.classList.add("run"); fill.style.width = "35%"; }
   else if (p.type === "percent") { bar.classList.remove("run"); fill.style.width = Math.round(p.value * 100) + "%"; }
-  else if (p.type === "log") { const l = $("upLog"); l.textContent += p.line + "\n"; l.scrollTop = l.scrollHeight; }
+  else if (p.type === "log") logAppend($("upLog"), p.line);
   else if (p.type === "done") { $("upStep").textContent = "✓ " + p.message; }
   else if (p.type === "error") { $("upStep").textContent = "✗ " + p.message; }
 }

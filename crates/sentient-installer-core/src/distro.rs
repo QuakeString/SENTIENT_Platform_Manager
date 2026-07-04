@@ -562,16 +562,12 @@ fn indistro_stream(sink: &ProgressFn, bash: &str) -> Result<(), String> {
     let stdout = child.stdout.take().expect("piped");
     let stderr = child.stderr.take().expect("piped");
     let (s1, s2) = (sink.clone(), sink.clone());
-    let t1 = std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
-            s1(Progress::Log { line });
-        }
-    });
-    let t2 = std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
-            s2(Progress::Log { line });
-        }
-    });
+    // `docker compose pull` emits hundreds of transient progress lines a second
+    // ("<layer> Downloading …MB"). Forwarding every one floods the IPC channel
+    // and spikes the UI's CPU. Throttle to a few lines/sec per stream, but never
+    // drop lines that look like errors or milestones.
+    let t1 = std::thread::spawn(move || throttle_lines(stdout, &s1));
+    let t2 = std::thread::spawn(move || throttle_lines(stderr, &s2));
     let status = child.wait().map_err(|e| e.to_string())?;
     let _ = t1.join();
     let _ = t2.join();
@@ -582,6 +578,32 @@ fn indistro_stream(sink: &ProgressFn, bash: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("in-distro command failed: {bash}"))
+    }
+}
+
+/// Forward lines from a child stream to the sink, throttled to a few per second
+/// so high-frequency progress output (docker pull) can't flood the UI. Error and
+/// milestone lines always pass through.
+#[cfg(windows)]
+fn throttle_lines<R: std::io::Read>(reader: R, sink: &ProgressFn) {
+    use std::io::BufRead;
+    use std::time::{Duration, Instant};
+    let mut last: Option<Instant> = None;
+    for line in std::io::BufReader::new(reader).lines().map_while(Result::ok) {
+        let lower = line.to_ascii_lowercase();
+        let important = lower.contains("error")
+            || lower.contains("failed")
+            || lower.contains("warning")
+            || line.contains("Pulled")
+            || line.contains("Pull complete")
+            || line.contains("Started")
+            || line.contains("Healthy");
+        let now = Instant::now();
+        let due = last.map_or(true, |t| now.duration_since(t) >= Duration::from_millis(150));
+        if important || due {
+            last = Some(now);
+            sink(Progress::Log { line });
+        }
     }
 }
 

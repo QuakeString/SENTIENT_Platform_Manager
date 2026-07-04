@@ -45,6 +45,9 @@ fn step(sink: &ProgressFn, name: &str, program: &str, args: &[&str]) {
 pub fn install(sink: ProgressFn) -> WslOutcome {
     #[cfg(windows)]
     {
+        sink(Progress::Log {
+            line: "Windows is provisioning WSL2. These steps are handled by Windows itself and can be quiet for a minute or two (features, kernel download) — please wait.".into(),
+        });
         step(&sink, "Installing WSL2 (features + kernel)", "wsl.exe", &["--install", "--no-distribution"]);
         step(&sink, "Updating the WSL kernel", "wsl.exe", &["--update"]);
         step(&sink, "Setting the default version to 2", "wsl.exe", &["--set-default-version", "2"]);
