@@ -131,14 +131,18 @@ fn compose(cfg: &DeployConfig) -> String {
 pub fn is_running(http_port: u16) -> bool {
     #[cfg(windows)]
     {
-        let cmd = format!("curl -s -o /dev/null -w '%{{http_code}}' http://localhost:{http_port}");
-        sys::output("wsl.exe", &["-d", DISTRO, "-u", "root", "--", "bash", "-lc", &cmd])
-            .map(|(_, out, _)| {
-                let c = sys::decode(&out);
-                let c = c.trim();
-                c.len() == 3 && c != "000"
-            })
-            .unwrap_or(false)
+        // Run curl directly (no `bash -lc`) and judge by its EXIT CODE, not its
+        // stdout: a login shell can print MOTD/profile noise that broke the old
+        // "stdout is exactly a 3-digit code" check and made a running server
+        // look dead. curl exits 0 once it gets any HTTP response (2xx/3xx/4xx),
+        // and non-zero (7) when the connection is refused.
+        let url = format!("http://localhost:{http_port}");
+        sys::output("wsl.exe", &[
+            "-d", DISTRO, "-u", "root", "--",
+            "curl", "-s", "-o", "/dev/null", "--max-time", "4", &url,
+        ])
+        .map(|(ok, _, _)| ok)
+        .unwrap_or(false)
     }
     #[cfg(not(windows))]
     {
@@ -241,6 +245,30 @@ pub fn cleanup(sink: ProgressFn) -> Result<(), String> {
     #[cfg(not(windows))]
     {
         sink(Progress::Error { message: "Cleanup is Windows-only.".into() });
+        Err("Windows only".into())
+    }
+}
+
+/// Remove SENTIENT entirely: unregister the WSL distro (which deletes the
+/// containers, volumes, images, Docker and the compose file — everything lives
+/// on the distro's disk). Leaves WSL2 itself installed. The manager app is
+/// untouched (uninstall it via Windows "Add or remove programs").
+pub fn uninstall(sink: ProgressFn) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        if distro_present() {
+            sink(Progress::Step { name: "Removing the SENTIENT WSL distro and all its data".into() });
+            let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
+            let _ = sys::output("wsl.exe", &["--unregister", DISTRO]);
+        } else {
+            sink(Progress::Log { line: "No SENTIENT distro found — nothing to remove.".into() });
+        }
+        sink(Progress::Done { message: "SENTIENT and its Docker environment were removed.".into() });
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        sink(Progress::Error { message: "Uninstall is Windows-only.".into() });
         Err("Windows only".into())
     }
 }

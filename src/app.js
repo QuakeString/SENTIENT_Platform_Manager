@@ -160,10 +160,10 @@ function renderCategories() {
   syncTeleOpts();
 }
 
-async function connect() {
+async function connect(navigate = true, quiet = false) {
   if (!invoke) { setStatus("Not running inside Tauri.", true); return; }
   $("connect").disabled = true;
-  setStatus("Connecting…");
+  if (!quiet) setStatus("Connecting…");
   try {
     const res = await invoke("inspect", conn());
     categories = res.categories;
@@ -175,19 +175,23 @@ async function connect() {
       ` — ${res.table_count} tables, ${humanBytes(res.total_bytes)} total.`
     );
     const c = conn();
+    // Remember the last connection so it auto-fills + reconnects next launch.
     try {
       await invoke("setting_set", {
         key: "last_conn",
         value: JSON.stringify({ host: c.host, port: c.port, dbname: c.dbname, user: c.user }),
       });
+      await invoke("set_last_password", { password: c.password || "" });
     } catch { /* store unavailable */ }
     renderCategories();
     updateGating();
-    showView("backup");
+    if (navigate) showView("backup");
   } catch (e) {
     connected = false;
-    setStatus("Error: " + e, true);
-    setConnStatus("Connection failed", "err");
+    if (!quiet) {
+      setStatus("Error: " + e, true);
+      setConnStatus("Connection failed", "err");
+    }
     updateGating();
   } finally {
     $("connect").disabled = false;
@@ -449,11 +453,20 @@ async function init() {
       $("encryptChk").checked = true;
       $("encryptFields").style.display = "";
     }
+    // Restore the last password and quietly reconnect (no view switch, no error
+    // banner if it can't reach the DB right now).
+    try {
+      const pw = await invoke("get_last_password");
+      if (pw) $("password").value = pw;
+    } catch { /* keychain unavailable */ }
+    if ($("host").value && $("password").value) {
+      connect(false, true);
+    }
   } catch { /* no saved settings */ }
 }
 
 $("themeToggle").addEventListener("click", toggleTheme);
-$("connect").addEventListener("click", connect);
+$("connect").addEventListener("click", () => connect());
 $("backupBtn").addEventListener("click", backup);
 $("createDbBtn").addEventListener("click", createDb);
 $("pickBtn").addEventListener("click", pickRestoreFile);
@@ -811,6 +824,35 @@ async function loadLogs() {
   catch (e) { $("logsBox").textContent = "Error: " + e; }
 }
 
+async function uninstall() {
+  const ok = confirm(
+    "Uninstall SENTIENT?\n\n" +
+    "This permanently deletes the SENTIENT containers, the database and ALL its data (volumes), and the WSL distro, and removes the desktop shortcut and autostart. WSL2 and this Manager app are kept. This cannot be undone."
+  );
+  if (!ok) return;
+  $("uninstallBtn").disabled = true;
+  $("uninProg").style.display = "";
+  $("uninLog").textContent = "";
+  $("uninStep").textContent = "Removing…";
+  const ch = new Channel();
+  ch.onmessage = (p) => {
+    if (p.type === "step") $("uninStep").textContent = p.name;
+    else if (p.type === "log") { const l = $("uninLog"); l.textContent += p.line + "\n"; l.scrollTop = l.scrollHeight; }
+    else if (p.type === "done") $("uninStep").textContent = "✓ " + p.message;
+    else if (p.type === "error") $("uninStep").textContent = "✗ " + p.message;
+  };
+  try {
+    await invoke("uninstall_sentient", { onProgress: ch });
+    $("uninStep").textContent = "✓ SENTIENT removed.";
+    await loadStatus();      // now shows "not installed"
+    showStep("checks");      // reset the Setup wizard to a fresh state
+  } catch (e) {
+    $("uninStep").textContent = "Failed: " + e;
+  } finally {
+    $("uninstallBtn").disabled = false;
+  }
+}
+
 async function makeShortcut() {
   $("mkShortcutBtn").disabled = true;
   $("kioskProg").style.display = "";
@@ -894,6 +936,7 @@ async function cleanupUpdate() {
 // ---- wiring ------------------------------------------------------------------
 $("stRefreshBtn").addEventListener("click", loadStatus);
 $("mkShortcutBtn").addEventListener("click", makeShortcut);
+$("uninstallBtn").addEventListener("click", uninstall);
 $("stStartBtn").addEventListener("click", () => stackAction("start"));
 $("stStopBtn").addEventListener("click", () => stackAction("stop"));
 $("stRestartBtn").addEventListener("click", () => stackAction("restart"));

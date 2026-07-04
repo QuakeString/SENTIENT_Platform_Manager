@@ -160,6 +160,24 @@ pub fn get_connection_password(_app: AppHandle, id: i64) -> Result<Option<String
     keyring_get(id)
 }
 
+// The password of the last successful connection, so the app can auto-fill (and
+// reconnect) on next launch. Stored in the OS keychain, never in SQLite.
+#[tauri::command]
+pub fn set_last_password(password: String) -> Result<(), String> {
+    keyring::Entry::new(KEYRING_SERVICE, "last")
+        .and_then(|e| e.set_password(&password))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_last_password() -> Result<Option<String>, String> {
+    match keyring::Entry::new(KEYRING_SERVICE, "last").and_then(|e| e.get_password()) {
+        Ok(p) => Ok(Some(p)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 // ---- History -----------------------------------------------------------------
 #[derive(Serialize)]
 pub struct BackupRow {

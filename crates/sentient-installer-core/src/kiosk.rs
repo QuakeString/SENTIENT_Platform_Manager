@@ -40,6 +40,10 @@ impl Browser {
 #[cfg(windows)]
 const CHROME_MSI: &str = "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi";
 
+/// The SENTIENT kiosk-shortcut icon, embedded so it's always available on disk.
+#[cfg(windows)]
+const KIOSK_ICO: &[u8] = include_bytes!("../assets/kiosk.ico");
+
 #[cfg(windows)]
 fn file(p: String) -> Option<PathBuf> {
     let pb = PathBuf::from(p);
@@ -142,18 +146,18 @@ fn ps_quote(s: &str) -> String {
 }
 
 /// Ensure a browser, then create Desktop + Start Menu kiosk shortcuts pointing at
-/// `http://localhost:<port>`. `icon_location` is a Windows IconLocation string
-/// (e.g. `C:\path\sentient.exe,0`) — the manager exe carries the SENTIENT icon.
-pub fn create_shortcut(
-    sink: &ProgressFn,
-    icon_location: &str,
-    port: u16,
-    work_dir: &Path,
-) -> Result<(), String> {
+/// `http://localhost:<port>`, using the embedded SENTIENT icon.
+pub fn create_shortcut(sink: &ProgressFn, port: u16, work_dir: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
         let (browser, exe) = ensure_browser(sink, work_dir)?;
         let args = browser.kiosk_args(port);
+
+        // Drop the icon next to the app data so the shortcut always has it.
+        std::fs::create_dir_all(work_dir).ok();
+        let ico = work_dir.join("sentient-kiosk.ico");
+        std::fs::write(&ico, KIOSK_ICO).map_err(|e| e.to_string())?;
+        let icon_location = ico.to_string_lossy().to_string();
 
         sink(Progress::Step { name: "Creating the SENTIENT desktop shortcut".into() });
         std::fs::create_dir_all(work_dir).ok();
@@ -176,7 +180,7 @@ foreach ($dir in $targets) {{
 "#,
             exe = ps_quote(&exe.to_string_lossy()),
             args = ps_quote(&args),
-            icon = ps_quote(icon_location),
+            icon = ps_quote(&icon_location),
         );
         let ps1 = work_dir.join("mk_kiosk_shortcut.ps1");
         std::fs::write(&ps1, &script).map_err(|e| e.to_string())?;
@@ -206,8 +210,40 @@ foreach ($dir in $targets) {{
     }
     #[cfg(not(windows))]
     {
-        let _ = (icon_location, port, work_dir);
+        let _ = (port, work_dir);
         sink(Progress::Error { message: "Kiosk shortcut is Windows-only.".into() });
         Err("Windows only".into())
+    }
+}
+
+/// Delete the Desktop + Start Menu SENTIENT shortcuts (used by uninstall).
+pub fn remove_shortcuts(sink: &ProgressFn, work_dir: &Path) {
+    #[cfg(windows)]
+    {
+        let script = r#"foreach ($dir in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
+  $lnk = Join-Path $dir 'SENTIENT.lnk'
+  if (Test-Path $lnk) { Remove-Item $lnk -Force -ErrorAction SilentlyContinue; Write-Output ("removed: " + $lnk) }
+}"#;
+        std::fs::create_dir_all(work_dir).ok();
+        let ps1 = work_dir.join("rm_kiosk_shortcut.ps1");
+        if std::fs::write(&ps1, script).is_ok() {
+            if let Some((_, o, _)) = sys::output(
+                "powershell",
+                &["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                  &ps1.to_string_lossy()],
+            ) {
+                for line in sys::decode(&o).lines() {
+                    let l = line.trim();
+                    if !l.is_empty() {
+                        sink(Progress::Log { line: l.into() });
+                    }
+                }
+            }
+            let _ = std::fs::remove_file(&ps1);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (sink, work_dir);
     }
 }

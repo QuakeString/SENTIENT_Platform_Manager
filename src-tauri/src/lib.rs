@@ -192,18 +192,56 @@ async fn create_kiosk_shortcut(
 ) -> Result<(), String> {
     sentient_installer_core::cancel::reset();
     let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let icon = format!("{},0", exe.display());
     let port = port.unwrap_or(8080);
     let ch = on_progress;
     tauri::async_runtime::spawn_blocking(move || {
         let sink: InstProgressFn = Arc::new(move |p| {
             let _ = ch.send(p);
         });
-        kiosk::create_shortcut(&sink, &icon, port, &dir)
+        kiosk::create_shortcut(&sink, port, &dir)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Remove SENTIENT: unregister the WSL distro (deletes containers/volumes/Docker),
+/// delete the kiosk shortcuts, drop the autostart task, and reset install state.
+#[tauri::command]
+async fn uninstall_sentient(
+    app: tauri::AppHandle,
+    on_progress: Channel<InstProgress>,
+) -> Result<(), String> {
+    sentient_installer_core::cancel::reset();
+    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let ch = on_progress;
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        let sink: InstProgressFn = Arc::new(move |p| {
+            let _ = ch.send(p);
+        });
+        distro::uninstall(sink.clone())?;
+        kiosk::remove_shortcuts(&sink, &dir);
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    remove_autostart();
+    if let Some(p) = state_file(&app) {
+        let _ = std::fs::remove_file(p);
+    }
+    res
+}
+
+/// Delete the login autostart task (best-effort; mirror of `arm_autostart`).
+fn remove_autostart() {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("schtasks")
+            .args(["/delete", "/tn", "SENTIENT Autostart", "/f"])
+            .creation_flags(0x0800_0000)
+            .output();
+    }
 }
 
 // ---- manage the deployed stack (M3: Status + Update) -------------------------
@@ -525,14 +563,15 @@ pub fn run() {
             preflight, install_wsl, wsl_ready, setup_docker, docker_ready,
             deploy_sentient, sentient_running, open_sentient,
             cancel_step, cleanup_install,
-            kiosk_browser, create_kiosk_shortcut,
+            kiosk_browser, create_kiosk_shortcut, uninstall_sentient,
             stack_status, stack_control, stack_logs, update_stack,
             get_state, set_state, arm_resume, reboot_now,
             // backup
             inspect, backup, restore, create_database, default_categories,
             file_store_status, is_encrypted, pick_save_path, pick_open_path,
             store::list_connections, store::save_connection, store::delete_connection,
-            store::get_connection_password, store::list_backup_history,
+            store::get_connection_password, store::set_last_password, store::get_last_password,
+            store::list_backup_history,
             store::list_restore_history, store::clear_history,
             store::setting_get, store::setting_set
         ])
