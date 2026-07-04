@@ -117,6 +117,23 @@ pub fn deploy(sink: ProgressFn) -> Result<(), String> {
         sink(Progress::Step { name: "Pulling SENTIENT images (first time, a few minutes)".into() });
         indistro_stream(&sink, &format!("docker compose -f {COMPOSE_PATH} pull"))?;
 
+        // The SENTIENT server validates the DB schema at boot and REFUSES to
+        // start on a fresh/empty database (with `restart: always` it would then
+        // crash-loop and never answer on :8080). Run the one-time installer
+        // first — `compose run` brings up postgres via depends_on, installs the
+        // schema + system resources, then exits. On a re-run against an
+        // already-installed DB the installer exits non-zero ("refuses to
+        // overwrite an existing schema"); that's expected, so we log and carry
+        // on rather than hard-fail. The readiness probe below is the real gate.
+        sink(Progress::Step { name: "Installing the SENTIENT database (first run, one-time)".into() });
+        if let Err(e) = indistro_stream(&sink, &format!(
+            "docker compose -f {COMPOSE_PATH} run --rm -e INSTALL_SENTIENT=true sentient"
+        )) {
+            sink(Progress::Log { line: format!(
+                "note: install step returned an error ({e}). If the database was already installed this is expected — continuing."
+            ) });
+        }
+
         sink(Progress::Step { name: "Starting SENTIENT".into() });
         indistro_stream(&sink, &format!("docker compose -f {COMPOSE_PATH} up -d"))?;
 
