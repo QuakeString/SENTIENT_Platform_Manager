@@ -173,7 +173,7 @@ pub fn deploy(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
         bail_if_cancelled!();
 
         sink(Progress::Step { name: "Pulling SENTIENT images (first time, a few minutes)".into() });
-        indistro_stream(&sink, &format!("docker compose -f {COMPOSE_PATH} pull"))?;
+        pull_images(&sink, COMPOSE_PATH)?;
         bail_if_cancelled!();
 
         // The SENTIENT server validates the DB schema at boot and REFUSES to
@@ -444,7 +444,7 @@ pub fn update(sink: ProgressFn) -> Result<(), String> {
         }
 
         sink(Progress::Step { name: "Pulling the latest SENTIENT images".into() });
-        indistro_stream(&sink, &format!("docker compose -f {COMPOSE_PATH} pull"))?;
+        pull_images(&sink, COMPOSE_PATH)?;
         bail_if_cancelled!();
 
         // Stop the server so it doesn't run against the DB during migration
@@ -578,6 +578,99 @@ fn indistro_stream(sink: &ProgressFn, bash: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("in-distro command failed: {bash}"))
+    }
+}
+
+/// Parse a Docker size token like "5.243MB", "1.049kB", "128B" into bytes.
+#[cfg(windows)]
+fn parse_size(s: &str) -> Option<f64> {
+    let s = s.trim();
+    let (num, mult) = if let Some(n) = s.strip_suffix("GB") { (n, 1e9) }
+        else if let Some(n) = s.strip_suffix("MB") { (n, 1e6) }
+        else if let Some(n) = s.strip_suffix("kB") { (n, 1e3) }
+        else if let Some(n) = s.strip_suffix("KB") { (n, 1e3) }
+        else if let Some(n) = s.strip_suffix("B") { (n, 1.0) }
+        else { return None };
+    num.trim().parse::<f64>().ok().map(|v| v * mult)
+}
+
+/// `docker compose pull` with a *clean* summary instead of the per-layer
+/// firehose: aggregates bytes across all layers and emits one line/second —
+/// "Downloaded 342 MB  (12.4 MB/s)" — plus a "✓ <image> pulled" per image.
+#[cfg(windows)]
+fn pull_images(sink: &ProgressFn, compose_path: &str) -> Result<(), String> {
+    use std::collections::HashMap;
+    use std::io::BufRead;
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let mut child = sys::command("wsl.exe")
+        .args(["-d", DISTRO, "-u", "root", "--", "bash", "-lc",
+               &format!("docker compose -f {compose_path} pull")])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    crate::cancel::register_pid(child.id());
+    let stdout = child.stdout.take().expect("piped");
+    let stderr = child.stderr.take().expect("piped");
+
+    // Merge both streams into one channel so a single loop can aggregate.
+    let (tx, rx) = mpsc::channel::<String>();
+    let tx2 = tx.clone();
+    let h1 = std::thread::spawn(move || {
+        for l in std::io::BufReader::new(stdout).lines().map_while(Result::ok) { let _ = tx.send(l); }
+    });
+    let h2 = std::thread::spawn(move || {
+        for l in std::io::BufReader::new(stderr).lines().map_while(Result::ok) { let _ = tx2.send(l); }
+    });
+
+    sink(Progress::Log { line: "Downloading images…".into() });
+    let mut layers: HashMap<String, f64> = HashMap::new(); // layer id -> bytes so far
+    let mut last_emit = Instant::now();
+    let mut last_total = 0.0_f64;
+    let mut err_tail = String::new();
+
+    for line in rx {
+        let t = line.trim();
+        let parts: Vec<&str> = t.split_whitespace().collect();
+        if parts.len() >= 3 && parts[1] == "Downloading" {
+            if let Some(b) = parse_size(parts[2]) {
+                layers.insert(parts[0].to_string(), b);
+            }
+        } else if parts.first() == Some(&"Image") && t.contains("Pulled") {
+            sink(Progress::Log { line: format!("✓ {} pulled", parts.get(1).copied().unwrap_or("image")) });
+        } else if t.to_ascii_lowercase().contains("error") || t.contains("denied") {
+            err_tail = t.to_string();
+        }
+
+        let now = Instant::now();
+        if now.duration_since(last_emit) >= Duration::from_millis(1000) {
+            let total: f64 = layers.values().sum();
+            let dt = now.duration_since(last_emit).as_secs_f64();
+            let speed = if dt > 0.0 { (total - last_total).max(0.0) / dt } else { 0.0 };
+            last_total = total;
+            last_emit = now;
+            sink(Progress::Log { line: format!("Downloaded {:.0} MB  ({:.1} MB/s)", total / 1e6, speed / 1e6) });
+        }
+    }
+    let _ = h1.join();
+    let _ = h2.join();
+    let status = child.wait().map_err(|e| e.to_string())?;
+    crate::cancel::clear_pid();
+
+    if crate::cancel::is_cancelled() {
+        return Err("Cancelled.".into());
+    }
+    let total: f64 = layers.values().sum();
+    if status.success() {
+        sink(Progress::Log { line: format!("✓ Images downloaded ({:.0} MB total).", total / 1e6) });
+        Ok(())
+    } else if !err_tail.is_empty() {
+        Err(err_tail)
+    } else {
+        Err("Pulling the SENTIENT images failed.".into())
     }
 }
 
