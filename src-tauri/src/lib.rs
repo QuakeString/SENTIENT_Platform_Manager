@@ -13,6 +13,7 @@ use tauri::Manager;
 // installer engine
 use sentient_installer_core::checks::{self, Check};
 use sentient_installer_core::distro;
+use sentient_installer_core::kiosk;
 use sentient_installer_core::progress::{Progress as InstProgress, ProgressFn as InstProgressFn};
 use sentient_installer_core::wsl;
 
@@ -169,6 +170,40 @@ fn arm_autostart() -> Result<(), String> {
     }
     #[cfg(not(windows))]
     Ok(())
+}
+
+// ---- kiosk launcher (browser shortcut) ---------------------------------------
+
+#[tauri::command]
+async fn kiosk_browser() -> String {
+    tauri::async_runtime::spawn_blocking(|| match kiosk::detect() {
+        Some((b, _)) => b.label().to_lowercase(),
+        None => "none".into(),
+    })
+    .await
+    .unwrap_or_else(|_| "none".into())
+}
+
+#[tauri::command]
+async fn create_kiosk_shortcut(
+    app: tauri::AppHandle,
+    on_progress: Channel<InstProgress>,
+    port: Option<u16>,
+) -> Result<(), String> {
+    sentient_installer_core::cancel::reset();
+    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let icon = format!("{},0", exe.display());
+    let port = port.unwrap_or(8080);
+    let ch = on_progress;
+    tauri::async_runtime::spawn_blocking(move || {
+        let sink: InstProgressFn = Arc::new(move |p| {
+            let _ = ch.send(p);
+        });
+        kiosk::create_shortcut(&sink, &icon, port, &dir)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ---- manage the deployed stack (M3: Status + Update) -------------------------
@@ -490,6 +525,7 @@ pub fn run() {
             preflight, install_wsl, wsl_ready, setup_docker, docker_ready,
             deploy_sentient, sentient_running, open_sentient,
             cancel_step, cleanup_install,
+            kiosk_browser, create_kiosk_shortcut,
             stack_status, stack_control, stack_logs, update_stack,
             get_state, set_state, arm_resume, reboot_now,
             // backup

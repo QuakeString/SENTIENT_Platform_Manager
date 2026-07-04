@@ -158,7 +158,7 @@
       <div class="grow"></div>
       <div class="nav" data-view="settings"><svg class="icon"><use href="#i-settings"/></svg> Settings</div>
       <div class="foot">
-        <span>v0.4.5</span>
+        <span>v0.5.0</span>
         <button class="iconbtn" id="themeToggle" title="Toggle light / dark">
           <svg class="icon"><use id="themeIcon" href="#i-moon" /></svg>
         </button>
@@ -198,9 +198,9 @@
                 <span class="cd">The server: PostgreSQL/TimescaleDB + the SENTIENT stack, in Docker inside WSL2.</span></span>
             </label>
             <label class="comp" style="color:inherit">
-              <input type="checkbox" id="compClient" />
-              <span><span class="ct">SENTIENT Client</span> <span class="badge">optional</span>
-                <span class="cd">The desktop app end-users run to connect to SENTIENT. You can install it later. <em>(Installer coming soon — the choice is remembered.)</em></span></span>
+              <input type="checkbox" id="compKiosk" checked />
+              <span><span class="ct">Desktop kiosk launcher</span> <span class="badge">recommended</span>
+                <span class="cd">A “SENTIENT” shortcut on the Desktop and Start Menu that opens the app full-screen (kiosk) in your browser. Installs Google Chrome automatically if no supported browser is found.</span></span>
             </label>
           </div>
           <div class="actions">
@@ -326,6 +326,20 @@
           <div class="card" id="stProgress" style="display:none">
             <div class="pstep" id="stStep"></div>
             <pre class="plog" id="stLog" style="margin-top:8px"></pre>
+          </div>
+
+          <div class="card">
+            <div class="row" style="justify-content:space-between; align-items:center; gap:10px">
+              <div>
+                <b>Desktop kiosk shortcut</b>
+                <div class="cat-note">Opens SENTIENT full-screen in your browser. Recreate it if you moved or lost it.</div>
+              </div>
+              <button class="ghost" id="mkShortcutBtn">Create shortcut</button>
+            </div>
+            <div id="kioskProg" style="display:none; margin-top:10px">
+              <div class="pstep" id="kioskStep"></div>
+              <pre class="plog" id="kioskLog" style="margin-top:8px"></pre>
+            </div>
           </div>
 
           <div class="card">

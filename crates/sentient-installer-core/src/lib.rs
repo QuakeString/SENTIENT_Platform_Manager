@@ -4,6 +4,7 @@
 pub mod cancel;
 pub mod checks;
 pub mod distro;
+pub mod kiosk;
 pub mod progress;
 mod sys;
 pub mod wsl;

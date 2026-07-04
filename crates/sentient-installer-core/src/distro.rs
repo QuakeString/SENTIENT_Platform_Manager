@@ -569,7 +569,7 @@ fn emit(sink: &ProgressFn, bytes: &[u8]) {
 
 /// Download a URL to a file, reporting percent progress.
 #[cfg(windows)]
-fn download(url: &str, dest: &Path, sink: &ProgressFn) -> Result<(), String> {
+pub(crate) fn download(url: &str, dest: &Path, sink: &ProgressFn) -> Result<(), String> {
     use std::io::{Read, Write};
     let resp = ureq::get(url).call().map_err(|e| e.to_string())?;
     let total: u64 = resp.header("Content-Length").and_then(|s| s.parse().ok()).unwrap_or(0);

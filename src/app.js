@@ -566,7 +566,7 @@ function renderReco() {
     ["Web address", `http://localhost:${c.http_port}`],
     ["MQTT / CoAP ports", `${c.mqtt_port} / ${c.coap_port}`],
     ["Demo data", c.load_demo ? "Yes" : "No (clean install)"],
-    ["Client app", $("compClient").checked ? "Install too" : "Skip"],
+    ["Kiosk launcher", $("compKiosk").checked ? "Desktop shortcut (Chrome if needed)" : "Skip"],
   ];
   $("recoSummary").innerHTML = rows
     .map(([k, v]) => `<tr><td class="cat-note" style="width:42%">${k}</td><td>${v}</td></tr>`)
@@ -615,9 +615,11 @@ async function autoInstall() {
   installing = true;
   installCard("installProgress");
   $("cancelInstallBtn").disabled = false;
+  const kiosk = $("compKiosk").checked;
+  const total = kiosk ? 4 : 3;
   try {
     // Phase 1 — WSL2 (may require a reboot; resumes automatically after)
-    setPhase(1, 3, "WSL2");
+    setPhase(1, total, "WSL2");
     if (!(await invoke("wsl_ready"))) {
       const res = await invoke("install_wsl", { onProgress: instChannel() });
       if (res.reboot_required) {
@@ -631,16 +633,27 @@ async function autoInstall() {
     await invoke("set_state", { step: "wsl_ready" });
 
     // Phase 2 — Docker Engine
-    setPhase(2, 3, "Docker Engine");
+    setPhase(2, total, "Docker Engine");
     if (!(await invoke("docker_ready"))) {
       await invoke("setup_docker", { onProgress: instChannel() });
     }
     await invoke("set_state", { step: "docker_ready" });
 
     // Phase 3 — deploy the stack with the chosen config
-    setPhase(3, 3, "Deploy SENTIENT");
+    setPhase(3, total, "Deploy SENTIENT");
     await invoke("deploy_sentient", { onProgress: instChannel(), config: readConfig() });
     await invoke("set_state", { step: "deployed" });
+
+    // Phase 4 — optional desktop kiosk launcher (installs Chrome if needed).
+    // Non-fatal: SENTIENT is already up, so a shortcut hiccup shouldn't fail it.
+    if (kiosk) {
+      setPhase(4, total, "Desktop kiosk shortcut");
+      try {
+        await invoke("create_kiosk_shortcut", { onProgress: instChannel(), port: readConfig().http_port });
+      } catch (e) {
+        instMsg({ type: "log", line: "Shortcut step skipped: " + e });
+      }
+    }
 
     installing = false;
     showInstallDone();
@@ -690,7 +703,7 @@ async function cleanupLeftovers() {
 
 // ---- Setup init / resume -----------------------------------------------------
 async function initSetup() {
-  try { const c = await invoke("setting_get", { key: "install_client" }); if (c === "1") $("compClient").checked = true; } catch { /* store off */ }
+  try { const c = await invoke("setting_get", { key: "install_kiosk" }); if (c === "0") $("compKiosk").checked = false; } catch { /* store off */ }
   await loadConfig();
   $("installPlan").innerHTML =
     "Ready to set up <b>WSL2</b>, <b>Docker Engine</b>, and deploy the <b>SENTIENT</b> stack. This can take several minutes and may restart your PC once.";
@@ -731,7 +744,7 @@ $("toInstall").addEventListener("click", async () => {
   const err = validateConfig(c);
   if (err) { $("cfgError").textContent = err; $("recoCard").style.display = "none"; $("customCard").style.display = ""; return; }
   $("cfgError").textContent = "";
-  try { await invoke("setting_set", { key: "install_client", value: $("compClient").checked ? "1" : "0" }); } catch { /* store off */ }
+  try { await invoke("setting_set", { key: "install_kiosk", value: $("compKiosk").checked ? "1" : "0" }); } catch { /* store off */ }
   await persistConfig();
   showStep("install");
   installCard("installStart");
@@ -796,6 +809,23 @@ async function loadLogs() {
   $("logsBox").textContent = "Loading…";
   try { $("logsBox").textContent = (await invoke("stack_logs", { tail: 300 })) || "(no output)"; }
   catch (e) { $("logsBox").textContent = "Error: " + e; }
+}
+
+async function makeShortcut() {
+  $("mkShortcutBtn").disabled = true;
+  $("kioskProg").style.display = "";
+  $("kioskLog").textContent = "";
+  $("kioskStep").textContent = "Working…";
+  const ch = new Channel();
+  ch.onmessage = (p) => {
+    if (p.type === "step") $("kioskStep").textContent = p.name;
+    else if (p.type === "log") { const l = $("kioskLog"); l.textContent += p.line + "\n"; l.scrollTop = l.scrollHeight; }
+    else if (p.type === "done") $("kioskStep").textContent = "✓ " + p.message;
+    else if (p.type === "error") $("kioskStep").textContent = "✗ " + p.message;
+  };
+  try { await invoke("create_kiosk_shortcut", { onProgress: ch, port: readConfig().http_port }); }
+  catch (e) { $("kioskStep").textContent = "Failed: " + e; }
+  finally { $("mkShortcutBtn").disabled = false; }
 }
 
 // ---- Update ------------------------------------------------------------------
@@ -863,6 +893,7 @@ async function cleanupUpdate() {
 
 // ---- wiring ------------------------------------------------------------------
 $("stRefreshBtn").addEventListener("click", loadStatus);
+$("mkShortcutBtn").addEventListener("click", makeShortcut);
 $("stStartBtn").addEventListener("click", () => stackAction("start"));
 $("stStopBtn").addEventListener("click", () => stackAction("stop"));
 $("stRestartBtn").addEventListener("click", () => stackAction("restart"));
