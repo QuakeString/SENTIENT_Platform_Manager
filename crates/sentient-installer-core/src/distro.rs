@@ -371,28 +371,31 @@ pub fn status(http_port: u16) -> StackStatus {
 
         let mut containers = Vec::new();
         if present {
+            // Run through `bash -lc` (the invocation path we know works) and use
+            // only `.Status` (universally supported — `.State` and `--filter`
+            // have bitten us via the bare `wsl -- docker` exec). Derive the state
+            // from the human status ("Up …" == running).
             if let Some((_, out, _)) = sys::output("wsl.exe", &[
-                "-d", DISTRO, "-u", "root", "--", "docker", "ps", "-a",
-                "--filter", "name=sentient",
-                "--format", "{{.Names}}|{{.State}}|{{.Status}}",
+                "-d", DISTRO, "-u", "root", "--", "bash", "-lc",
+                "docker ps -a --format '{{.Names}}|{{.Status}}'",
             ]) {
                 for line in sys::decode(&out).lines() {
-                    let parts: Vec<&str> = line.trim().splitn(3, '|').collect();
-                    if parts.len() == 3 && !parts[0].is_empty() {
-                        containers.push(ContainerStatus {
-                            name: parts[0].to_string(),
-                            state: parts[1].to_string(),
-                            status: parts[2].to_string(),
-                        });
+                    if let Some((name, status)) = line.trim().split_once('|') {
+                        if name == "sentient" || name == "sentient-postgres" {
+                            let state = if status.starts_with("Up") { "running" } else { "stopped" };
+                            containers.push(ContainerStatus {
+                                name: name.to_string(),
+                                state: state.to_string(),
+                                status: status.to_string(),
+                            });
+                        }
                     }
                 }
             }
         }
         // The `sentient` container's own state, OR — as a robust fallback — the
-        // HTTP probe (state parsing can miss a just-started container).
-        let container_up = containers
-            .iter()
-            .any(|c| c.name == "sentient" && (c.state == "running" || c.state == "restarting"));
+        // HTTP probe (in case the listing is momentarily empty on a cold boot).
+        let container_up = containers.iter().any(|c| c.name == "sentient" && c.state == "running");
         let running = installed && (container_up || is_running(http_port));
         StackStatus { installed, running, containers }
     }
