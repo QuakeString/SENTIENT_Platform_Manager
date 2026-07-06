@@ -259,8 +259,9 @@ fn remove_autostart() {
 // ---- manage the deployed stack (M3: Status + Update) -------------------------
 
 #[tauri::command]
-async fn stack_status() -> distro::StackStatus {
-    tauri::async_runtime::spawn_blocking(distro::status)
+async fn stack_status(port: Option<u16>) -> distro::StackStatus {
+    let port = port.unwrap_or(8080);
+    tauri::async_runtime::spawn_blocking(move || distro::status(port))
         .await
         .unwrap_or(distro::StackStatus { installed: false, running: false, containers: Vec::new() })
 }

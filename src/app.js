@@ -671,6 +671,23 @@ async function autoInstall() {
     await invoke("deploy_sentient", { onProgress: instChannel(), config: readConfig() });
     await invoke("set_state", { step: "deployed" });
 
+    // Point the Backup tab at the freshly-installed local DB and connect it, so
+    // "Connection" is ready without the user re-entering anything.
+    try {
+      const c = readConfig();
+      $("host").value = "localhost";
+      $("port").value = 5432;
+      $("dbname").value = c.db_name;
+      $("user").value = c.db_user;
+      $("password").value = c.db_password;
+      await invoke("setting_set", {
+        key: "last_conn",
+        value: JSON.stringify({ host: "localhost", port: 5432, dbname: c.db_name, user: c.db_user }),
+      });
+      await invoke("set_last_password", { password: c.db_password });
+      connect(false, true); // quiet, no view switch
+    } catch { /* non-fatal */ }
+
     // Phase 4 — optional desktop kiosk launcher (installs Chrome if needed).
     // Non-fatal: SENTIENT is already up, so a shortcut hiccup shouldn't fail it.
     if (kiosk) {
@@ -799,7 +816,7 @@ function fmtState(s) {
 async function loadStatus() {
   if (!invoke) return;
   let st;
-  try { st = await invoke("stack_status"); } catch { return; }
+  try { st = await invoke("stack_status", { port: readConfig().http_port }); } catch { return; }
   $("statusNotInstalled").style.display = st.installed ? "none" : "";
   $("statusBody").style.display = st.installed ? "" : "none";
   if (!st.installed) return;
@@ -860,7 +877,9 @@ async function uninstall() {
     await invoke("uninstall_sentient", { onProgress: ch });
     $("uninStep").textContent = "✓ SENTIENT removed.";
     await loadStatus();      // now shows "not installed"
+    installCard("installStart");
     showStep("checks");      // reset the Setup wizard to a fresh state
+    recheck();
   } catch (e) {
     $("uninStep").textContent = "Failed: " + e;
   } finally {
@@ -894,7 +913,7 @@ function upCard(which) {
 async function refreshUpdateGate() {
   if (!invoke) return;
   let st;
-  try { st = await invoke("stack_status"); } catch { return; }
+  try { st = await invoke("stack_status", { port: readConfig().http_port }); } catch { return; }
   $("updateNotInstalled").style.display = st.installed ? "none" : "";
   $("updateBody").style.display = st.installed ? "" : "none";
   if (st.installed) upCard("upStart");

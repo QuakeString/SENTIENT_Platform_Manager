@@ -67,6 +67,8 @@ const COMPOSE_TEMPLATE: &str = r#"services:
     container_name: sentient-postgres
     restart: always
     command: ["postgres","-c","shared_preload_libraries=timescaledb","-c","max_connections=100","-c","shared_buffers=128MB"]
+    ports:
+      - "5432:5432"
     environment:
       POSTGRES_DB: @@DB_NAME@@
       POSTGRES_USER: @@DB_USER@@
@@ -355,8 +357,9 @@ pub struct StackStatus {
     pub containers: Vec<ContainerStatus>,
 }
 
-/// Snapshot of the deployed stack — used by the Status section.
-pub fn status() -> StackStatus {
+/// Snapshot of the deployed stack — used by the Status section. `http_port` is
+/// the published web port, used as a reliable "is it actually serving?" probe.
+pub fn status(http_port: u16) -> StackStatus {
     #[cfg(windows)]
     {
         let present = distro_present();
@@ -385,11 +388,17 @@ pub fn status() -> StackStatus {
                 }
             }
         }
-        let running = containers.iter().any(|c| c.name == "sentient" && c.state == "running");
+        // The `sentient` container's own state, OR — as a robust fallback — the
+        // HTTP probe (state parsing can miss a just-started container).
+        let container_up = containers
+            .iter()
+            .any(|c| c.name == "sentient" && (c.state == "running" || c.state == "restarting"));
+        let running = installed && (container_up || is_running(http_port));
         StackStatus { installed, running, containers }
     }
     #[cfg(not(windows))]
     {
+        let _ = http_port;
         StackStatus { installed: false, running: false, containers: Vec::new() }
     }
 }
