@@ -743,6 +743,7 @@ async function initSetup() {
     showStep("install");
     showInstallDone();
     showView("status"); // once installed, land on Status instead of the wizard
+    try { await invoke("ensure_autostart"); } catch { /* migrate old autostart task */ }
   } else if (state === "docker_ready" || state === "wsl_ready") {
     showStep("install");
     autoInstall(); // resume — readiness checks skip the finished phases

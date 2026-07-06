@@ -157,10 +157,14 @@ fn arm_autostart() -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        // Boot the distro and start the Docker daemon — that's all. The compose
+        // file has `restart: always`, so Docker restarts the EXISTING containers
+        // itself. Do NOT run `docker compose up -d` here: it re-converges the
+        // stack on every boot and recreates the containers each time.
         let out = std::process::Command::new("schtasks")
             .args([
                 "/create", "/tn", "SENTIENT Autostart", "/tr",
-                "wsl -d sentient -- docker compose -f /opt/sentient/docker-compose.yml up -d",
+                "wsl -d sentient -u root -- systemctl start docker",
                 "/sc", "onlogon", "/rl", "highest", "/f",
             ])
             .creation_flags(0x0800_0000)
@@ -170,6 +174,14 @@ fn arm_autostart() -> Result<(), String> {
     }
     #[cfg(not(windows))]
     Ok(())
+}
+
+/// Re-write the autostart task with the current (fixed) command. Called on launch
+/// for deployed installs so existing machines migrate off the old recreate-on-
+/// boot task without needing a redeploy.
+#[tauri::command]
+fn ensure_autostart() -> Result<(), String> {
+    arm_autostart()
 }
 
 // ---- kiosk launcher (browser shortcut) ---------------------------------------
@@ -565,7 +577,7 @@ pub fn run() {
             cancel_step, cleanup_install,
             kiosk_browser, create_kiosk_shortcut, uninstall_sentient,
             stack_status, stack_control, stack_logs, update_stack,
-            get_state, set_state, arm_resume, reboot_now,
+            get_state, set_state, arm_resume, reboot_now, ensure_autostart,
             // backup
             inspect, backup, restore, create_database, default_categories,
             file_store_status, is_encrypted, pick_save_path, pick_open_path,
