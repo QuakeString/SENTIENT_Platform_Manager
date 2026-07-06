@@ -153,24 +153,49 @@ fn open_sentient(port: Option<u16>) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+const KEEPALIVE_VBS: &str = r#"C:\ProgramData\SENTIENT\keepalive.vbs"#;
+
 fn arm_autostart() -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        // Boot the distro and start the Docker daemon — that's all. The compose
-        // file has `restart: always`, so Docker restarts the EXISTING containers
-        // itself. Do NOT run `docker compose up -d` here: it re-converges the
-        // stack on every boot and recreates the containers each time.
+        // WSL2 shuts a distro down when no session is attached to it — even with
+        // systemd — so Docker + the containers stop when idle, and only come
+        // back when a `wsl` command boots the distro. To keep the stack running
+        // in the background we hold a session open: a hidden keep-alive that
+        // starts Docker (restart:always then brings the containers up) and sleeps
+        // forever. It's launched from a VBScript so no console window appears.
+        //
+        // Path has no spaces (C:\ProgramData\SENTIENT) so the schtasks /tr value
+        // needs no quoting.
+        let dir = std::path::Path::new(KEEPALIVE_VBS).parent().unwrap();
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let vbs = concat!(
+            "CreateObject(\"WScript.Shell\").Run ",
+            "\"wsl -d sentient -u root -- sh -c ",
+            "\"\"systemctl start docker >/dev/null 2>&1; exec sleep infinity\"\"\", 0, False\r\n"
+        );
+        std::fs::write(KEEPALIVE_VBS, vbs).map_err(|e| e.to_string())?;
+
         let out = std::process::Command::new("schtasks")
             .args([
                 "/create", "/tn", "SENTIENT Autostart", "/tr",
-                "wsl -d sentient -u root -- systemctl start docker",
+                &format!("wscript.exe //B //Nologo {KEEPALIVE_VBS}"),
                 "/sc", "onlogon", "/rl", "highest", "/f",
             ])
             .creation_flags(0x0800_0000)
             .output()
             .map_err(|e| e.to_string())?;
-        if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).into_owned()) }
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+        }
+        // Start the keep-alive now so the stack stays up without a re-login.
+        let _ = std::process::Command::new("schtasks")
+            .args(["/run", "/tn", "SENTIENT Autostart"])
+            .creation_flags(0x0800_0000)
+            .output();
+        Ok(())
     }
     #[cfg(not(windows))]
     Ok(())
@@ -244,15 +269,20 @@ async fn uninstall_sentient(
     res
 }
 
-/// Delete the login autostart task (best-effort; mirror of `arm_autostart`).
+/// Delete the login autostart task + keep-alive script (best-effort).
 fn remove_autostart() {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         let _ = std::process::Command::new("schtasks")
+            .args(["/end", "/tn", "SENTIENT Autostart"])
+            .creation_flags(0x0800_0000)
+            .output();
+        let _ = std::process::Command::new("schtasks")
             .args(["/delete", "/tn", "SENTIENT Autostart", "/f"])
             .creation_flags(0x0800_0000)
             .output();
+        let _ = std::fs::remove_file(KEEPALIVE_VBS);
     }
 }
 
