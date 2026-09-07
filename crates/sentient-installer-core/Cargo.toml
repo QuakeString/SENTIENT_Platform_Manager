@@ -16,6 +16,12 @@ path = "src/lib.rs"
 name = "sicheck"
 path = "src/bin/sicheck.rs"
 
+# Headless driver for the native deployment engine — the same
+# "exercise the core without the GUI" role sicheck plays for the checks.
+[[bin]]
+name = "sinative"
+path = "src/bin/sinative.rs"
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

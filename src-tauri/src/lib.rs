@@ -14,6 +14,7 @@ use tauri::Manager;
 use sentient_installer_core::checks::{self, Check};
 use sentient_installer_core::distro;
 use sentient_installer_core::kiosk;
+use sentient_installer_core::native;
 use sentient_installer_core::progress::{Progress as InstProgress, ProgressFn as InstProgressFn};
 use sentient_installer_core::wsl;
 
@@ -332,6 +333,212 @@ async fn update_stack(on_progress: Channel<InstProgress>) -> Result<(), String> 
     .map_err(|e| e.to_string())?
 }
 
+// ---- native deployment mode (no WSL2, no Docker) -----------------------------
+//
+// Mirrors the Docker commands above one-for-one so the frontend can pick a mode
+// and call the matching pair. The engine lives in `installer_core::native`.
+
+/// What the wizard sends. Every field is optional so the UI can send only what
+/// the operator changed; the defaults are the supported layout.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NativeOptions {
+    pub install_dir: Option<String>,
+    pub pg_dir: Option<String>,
+    pub state_dir: Option<String>,
+    pub db_name: Option<String>,
+    pub db_user: Option<String>,
+    pub db_password: Option<String>,
+    pub pg_superuser_password: Option<String>,
+    pub http_port: Option<u16>,
+    pub mqtt_port: Option<u16>,
+    pub coap_port: Option<u16>,
+    pub pg_port: Option<u16>,
+    pub load_demo: bool,
+    /// Offline install: directory holding the pre-downloaded archives. When
+    /// absent the engine fetches them over the network instead.
+    pub bundle_dir: Option<String>,
+    /// Online install: base URL to fetch archives from. Ignored when
+    /// `bundle_dir` is set.
+    pub base_url: Option<String>,
+    /// Reused across setup/deploy calls so the signing secret stays stable for
+    /// one install; generated when absent.
+    pub jwt_secret: Option<String>,
+}
+
+impl Default for NativeOptions {
+    fn default() -> Self {
+        Self {
+            install_dir: None, pg_dir: None, state_dir: None,
+            db_name: None, db_user: None, db_password: None,
+            pg_superuser_password: None,
+            http_port: None, mqtt_port: None, coap_port: None, pg_port: None,
+            load_demo: false, bundle_dir: None, base_url: None, jwt_secret: None,
+        }
+    }
+}
+
+impl NativeOptions {
+    fn into_config(self) -> native::NativeConfig {
+        let source = match (&self.bundle_dir, &self.base_url) {
+            (Some(dir), _) => native::ArtifactSource::Bundled { dir: PathBuf::from(dir) },
+            (None, Some(url)) => native::ArtifactSource::Remote { base_url: url.clone() },
+            (None, None) => native::ArtifactSource::Remote { base_url: String::new() },
+        };
+        native::NativeConfig {
+            install_dir: PathBuf::from(
+                self.install_dir.unwrap_or_else(|| r"C:\Program Files\SENTIENT".into()),
+            ),
+            pg_dir: PathBuf::from(self.pg_dir.unwrap_or_else(|| r"C:\PostgreSQL\18".into())),
+            state_dir: PathBuf::from(
+                self.state_dir.unwrap_or_else(|| r"C:\ProgramData\SENTIENT".into()),
+            ),
+            db_name: self.db_name.unwrap_or_else(|| "sentient".into()),
+            db_user: self.db_user.unwrap_or_else(|| "sentient".into()),
+            db_password: self.db_password.unwrap_or_else(|| "sentient".into()),
+            pg_superuser_password: self
+                .pg_superuser_password
+                .unwrap_or_else(|| "sentient".into()),
+            http_port: self.http_port.unwrap_or(8080),
+            mqtt_port: self.mqtt_port.unwrap_or(1883),
+            coap_port: self.coap_port.unwrap_or(5683),
+            pg_port: self.pg_port.unwrap_or(5432),
+            load_demo: self.load_demo,
+            source,
+            jwt_secret: self.jwt_secret.unwrap_or_else(native::generate_secret),
+        }
+    }
+}
+
+/// Can this build offer the native mode? The wizard hides the choice when not.
+#[tauri::command]
+fn native_supported() -> bool {
+    native::supported()
+}
+
+/// Fail fast when an offline bundle is missing an archive, before the operator
+/// commits to an install that would die halfway through.
+#[tauri::command]
+fn native_verify_bundle(options: Option<NativeOptions>) -> Result<(), String> {
+    let cfg = options.unwrap_or_default().into_config();
+    native::verify_bundle(&cfg.source)
+}
+
+#[tauri::command]
+async fn native_status(options: Option<NativeOptions>) -> native::NativeStatus {
+    let cfg = options.unwrap_or_default().into_config();
+    tauri::async_runtime::spawn_blocking(move || native::status(&cfg))
+        .await
+        .unwrap_or(native::NativeStatus {
+            installed: false,
+            running: false,
+            services: Vec::new(),
+        })
+}
+
+/// Phase 1 — PostgreSQL + TimescaleDB.
+#[tauri::command]
+async fn native_setup(
+    on_progress: Channel<InstProgress>,
+    options: Option<NativeOptions>,
+) -> Result<(), String> {
+    sentient_installer_core::cancel::reset();
+    let cfg = options.unwrap_or_default().into_config();
+    let ch = on_progress;
+    tauri::async_runtime::spawn_blocking(move || {
+        let sink: InstProgressFn = Arc::new(move |p| {
+            let _ = ch.send(p);
+        });
+        native::setup(sink, &cfg)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Phase 2 — database, schema, service, start.
+#[tauri::command]
+async fn native_deploy(
+    on_progress: Channel<InstProgress>,
+    options: Option<NativeOptions>,
+) -> Result<(), String> {
+    sentient_installer_core::cancel::reset();
+    let cfg = options.unwrap_or_default().into_config();
+    let ch = on_progress;
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        let sink: InstProgressFn = Arc::new(move |p| {
+            let _ = ch.send(p);
+        });
+        native::deploy(sink, &cfg)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if res.is_ok() {
+        let _ = arm_autostart();
+    }
+    res
+}
+
+#[tauri::command]
+async fn native_control(
+    on_progress: Channel<InstProgress>,
+    action: String,
+) -> Result<(), String> {
+    let ch = on_progress;
+    tauri::async_runtime::spawn_blocking(move || {
+        let sink: InstProgressFn = Arc::new(move |p| {
+            let _ = ch.send(p);
+        });
+        native::control(sink, &action)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn native_logs(options: Option<NativeOptions>, tail: Option<u32>) -> String {
+    let cfg = options.unwrap_or_default().into_config();
+    let tail = tail.unwrap_or(200);
+    tauri::async_runtime::spawn_blocking(move || native::logs(&cfg, tail))
+        .await
+        .unwrap_or_default()
+}
+
+/// Remove SENTIENT but keep the database cluster and its data.
+#[tauri::command]
+async fn native_uninstall(
+    on_progress: Channel<InstProgress>,
+    options: Option<NativeOptions>,
+) -> Result<(), String> {
+    let cfg = options.unwrap_or_default().into_config();
+    let ch = on_progress;
+    tauri::async_runtime::spawn_blocking(move || {
+        let sink: InstProgressFn = Arc::new(move |p| {
+            let _ = ch.send(p);
+        });
+        native::uninstall(sink, &cfg)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Destructive: removes PostgreSQL and every byte of data with it.
+#[tauri::command]
+async fn native_cleanup(
+    on_progress: Channel<InstProgress>,
+    options: Option<NativeOptions>,
+) -> Result<(), String> {
+    let cfg = options.unwrap_or_default().into_config();
+    let ch = on_progress;
+    tauri::async_runtime::spawn_blocking(move || {
+        let sink: InstProgressFn = Arc::new(move |p| {
+            let _ = ch.send(p);
+        });
+        native::cleanup(sink, &cfg)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ---- install-state persistence (survives reboots) ----------------------------
 
 fn state_file(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -608,6 +815,9 @@ pub fn run() {
             cancel_step, cleanup_install,
             kiosk_browser, create_kiosk_shortcut, uninstall_sentient,
             stack_status, stack_control, stack_logs, update_stack,
+            // native mode (no WSL2/Docker)
+            native_supported, native_verify_bundle, native_status, native_setup,
+            native_deploy, native_control, native_logs, native_uninstall, native_cleanup,
             get_state, set_state, arm_resume, reboot_now, ensure_autostart,
             // backup
             inspect, backup, restore, create_database, default_categories,
