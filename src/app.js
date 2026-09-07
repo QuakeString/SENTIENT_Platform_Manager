@@ -559,7 +559,13 @@ async function recheck() {
   $("checksList").innerHTML =
     '<div class="check"><svg class="icon spin s-unknown"><use href="#i-spin"/></svg><div><div class="label">Checking…</div></div></div>';
   try {
-    renderChecks(await invoke("preflight"));
+    // The two modes need different prerequisites: WSL/virtualization/Docker for
+    // the container mode, free ports and no competing PostgreSQL for native.
+    renderChecks(
+      deployMode() === "native"
+        ? await invoke("native_preflight", { offline: isOfflineBundle() })
+        : await invoke("preflight")
+    );
   } catch (e) {
     $("checksSummary").className = "summary bad";
     $("checksSummary").textContent = "Check failed: " + e;
@@ -569,6 +575,51 @@ async function recheck() {
 }
 
 // ---- Step 3: configure -------------------------------------------------------
+/// The mode SENTIENT was actually installed with, as opposed to whatever the
+/// Components radio currently shows. Cached after the first lookup.
+///
+/// Installs made before this setting existed were all Docker, so that is the
+/// fallback rather than the new default.
+let _installedMode = null;
+async function installedMode() {
+  if (_installedMode) return _installedMode;
+  try {
+    const v = await invoke("setting_get", { key: "deploy_mode" });
+    if (v === "native" || v === "docker") { _installedMode = v; return v; }
+  } catch { /* store off */ }
+  _installedMode = "docker";
+  return _installedMode;
+}
+
+/// Which deployment mode the operator picked on the Components step.
+function deployMode() {
+  const el = document.getElementById("modeDocker");
+  return el && el.checked ? "docker" : "native";
+}
+
+/// True when this build carries its archives (an offline bundle) rather than
+/// downloading them. Set by the packaging step; absent means online.
+function isOfflineBundle() {
+  return Boolean(window.__SENTIENT_BUNDLE_DIR__);
+}
+
+/// The native engine takes the same numbers as the Docker one, plus where to
+/// get its archives from.
+function readNativeOptions() {
+  const c = readConfig();
+  const o = {
+    dbName: c.db_name,
+    dbUser: c.db_user,
+    dbPassword: c.db_password,
+    httpPort: c.http_port,
+    mqttPort: c.mqtt_port,
+    coapPort: c.coap_port,
+    loadDemo: Boolean(c.load_demo),
+  };
+  if (isOfflineBundle()) o.bundleDir = window.__SENTIENT_BUNDLE_DIR__;
+  return o;
+}
+
 function readConfig() {
   const num = (id, d) => { const v = parseInt($(id).value, 10); return Number.isFinite(v) ? v : d; };
   return {
@@ -643,6 +694,62 @@ async function autoInstall() {
   installCard("installProgress");
   $("cancelInstallBtn").disabled = false;
   const kiosk = $("compKiosk").checked;
+
+  // ---- native mode: no WSL2, no Docker, so two phases instead of three ----
+  if (deployMode() === "native") {
+    const totalN = kiosk ? 3 : 2;
+    try {
+      if (isOfflineBundle()) {
+        // Fail before touching the machine if the bundle is incomplete.
+        await invoke("native_verify_bundle", { options: readNativeOptions() });
+      }
+      setPhase(1, totalN, "PostgreSQL + TimescaleDB");
+      await invoke("native_setup", { onProgress: instChannel(), options: readNativeOptions() });
+
+      setPhase(2, totalN, "Install SENTIENT");
+      await invoke("native_deploy", { onProgress: instChannel(), options: readNativeOptions() });
+      await invoke("set_state", { step: "deployed" });
+      // Status/Update/Uninstall run in later sessions, when the radio on the
+      // Components step means nothing. Remember what was actually installed.
+      try { await invoke("setting_set", { key: "deploy_mode", value: "native" }); } catch { /* store off */ }
+
+      // Same courtesy as the Docker path: point the Backup tab at the DB we
+      // just created so "Connection" is ready without retyping anything.
+      try {
+        const c = readConfig();
+        $("host").value = "localhost";
+        $("port").value = 5432;
+        $("dbname").value = c.db_name;
+        $("user").value = c.db_user;
+        $("password").value = c.db_password;
+        await invoke("setting_set", {
+          key: "last_conn",
+          value: JSON.stringify({ host: "localhost", port: 5432, dbname: c.db_name, user: c.db_user }),
+        });
+        await invoke("set_last_password", { password: c.db_password });
+        connect(false, true);
+      } catch { /* non-fatal */ }
+
+      if (kiosk) {
+        setPhase(3, totalN, "Desktop kiosk shortcut");
+        try {
+          await invoke("create_kiosk_shortcut", { onProgress: instChannel(), port: readConfig().http_port });
+        } catch (e) {
+          instMsg({ type: "log", line: "Shortcut step skipped: " + e });
+        }
+      }
+      installing = false;
+      $("cancelInstallBtn").disabled = true;
+      installCard("installDone");
+      return;
+    } catch (e) {
+      installing = false;
+      $("cancelInstallBtn").disabled = true;
+      instMsg({ type: "error", message: String(e) });
+      return;
+    }
+  }
+
   const total = kiosk ? 4 : 3;
   try {
     // Phase 1 — WSL2 (may require a reboot; resumes automatically after)
@@ -670,6 +777,7 @@ async function autoInstall() {
     setPhase(3, total, "Deploy SENTIENT");
     await invoke("deploy_sentient", { onProgress: instChannel(), config: readConfig() });
     await invoke("set_state", { step: "deployed" });
+    try { await invoke("setting_set", { key: "deploy_mode", value: "docker" }); } catch { /* store off */ }
 
     // Point the Backup tab at the freshly-installed local DB and connect it, so
     // "Connection" is ready without the user re-entering anything.
@@ -816,7 +924,15 @@ function fmtState(s) {
 async function loadStatus() {
   if (!invoke) return;
   let st;
-  try { st = await invoke("stack_status", { port: readConfig().http_port }); } catch { return; }
+  const mode = await installedMode();
+  try {
+    st = mode === "native"
+      ? await invoke("native_status", { options: readNativeOptions() })
+      : await invoke("stack_status", { port: readConfig().http_port });
+  } catch { return; }
+  // The native engine reports `services`; the Docker one reports `containers`.
+  // Normalise so the table below renders either without knowing which.
+  st.rows = mode === "native" ? (st.services || []) : (st.containers || []);
   $("statusNotInstalled").style.display = st.installed ? "none" : "";
   $("statusBody").style.display = st.installed ? "" : "none";
   if (!st.installed) return;
@@ -827,9 +943,9 @@ async function loadStatus() {
   $("stStopBtn").disabled = !st.running;
   $("stRestartBtn").disabled = !st.running;
   $("stOpenBtn").style.display = st.running ? "" : "none";
-  $("containers").innerHTML = st.containers.length
-    ? st.containers.map((c) => `<tr><td>${c.name}</td><td>${fmtState(c.state)}</td><td class="cat-note">${c.status}</td></tr>`).join("")
-    : `<tr><td colspan="3" class="cat-note">No containers yet.</td></tr>`;
+  $("containers").innerHTML = st.rows.length
+    ? st.rows.map((c) => `<tr><td>${c.name}</td><td>${fmtState(c.state)}</td><td class="cat-note">${c.status}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="cat-note">${mode === "native" ? "No services yet." : "No containers yet."}</td></tr>`;
 }
 
 function stMsg(p) {
@@ -845,21 +961,38 @@ async function stackAction(action) {
   $("stLog").textContent = "";
   $("stStep").textContent = "Working…";
   const ch = new Channel(); ch.onmessage = stMsg;
-  try { await invoke("stack_control", { action, onProgress: ch }); }
+  try {
+    await ((await installedMode()) === "native"
+      ? invoke("native_control", { action, onProgress: ch })
+      : invoke("stack_control", { action, onProgress: ch }));
+  }
   catch (e) { $("stStep").textContent = "Failed: " + e; }
   finally { await loadStatus(); }
 }
 
 async function loadLogs() {
   $("logsBox").textContent = "Loading…";
-  try { $("logsBox").textContent = (await invoke("stack_logs", { tail: 300 })) || "(no output)"; }
+  try {
+    $("logsBox").textContent =
+      ((await installedMode()) === "native"
+        ? await invoke("native_logs", { options: readNativeOptions(), tail: 300 })
+        : await invoke("stack_logs", { tail: 300 })) || "(no output)";
+  }
   catch (e) { $("logsBox").textContent = "Error: " + e; }
 }
 
 async function uninstall() {
+  // The two modes destroy different things, and the confirmation has to say
+  // exactly which — this is the one irreversible button in the app.
+  const mode = await installedMode();
   const ok = confirm(
-    "Uninstall SENTIENT?\n\n" +
-    "This permanently deletes the SENTIENT containers, the database and ALL its data (volumes), and the WSL distro, and removes the desktop shortcut and autostart. WSL2 and this Manager app are kept. This cannot be undone."
+    mode === "native"
+      ? "Uninstall SENTIENT?\n\n" +
+        "This removes the SENTIENT and PostgreSQL Windows services, the installed program files, " +
+        "and the database with ALL its data, plus the desktop shortcut and autostart. " +
+        "This Manager app is kept. This cannot be undone."
+      : "Uninstall SENTIENT?\n\n" +
+        "This permanently deletes the SENTIENT containers, the database and ALL its data (volumes), and the WSL distro, and removes the desktop shortcut and autostart. WSL2 and this Manager app are kept. This cannot be undone."
   );
   if (!ok) return;
   $("uninstallBtn").disabled = true;
@@ -874,7 +1007,11 @@ async function uninstall() {
     else if (p.type === "error") $("uninStep").textContent = "✗ " + p.message;
   };
   try {
-    await invoke("uninstall_sentient", { onProgress: ch });
+    await (mode === "native"
+      ? invoke("native_cleanup", { onProgress: ch, options: readNativeOptions() })
+      : invoke("uninstall_sentient", { onProgress: ch }));
+    try { await invoke("setting_set", { key: "deploy_mode", value: "" }); } catch { /* store off */ }
+    _installedMode = null;
     $("uninStep").textContent = "✓ SENTIENT removed.";
     await loadStatus();      // now shows "not installed"
     installCard("installStart");

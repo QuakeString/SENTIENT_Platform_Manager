@@ -416,6 +416,16 @@ fn native_supported() -> bool {
     native::supported()
 }
 
+/// Preflight for the native mode — a different list from `preflight()`, which
+/// asks about WSL2, virtualization and Docker. None of those apply here.
+#[tauri::command]
+async fn native_preflight(offline: Option<bool>) -> Vec<Check> {
+    let offline = offline.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || checks::run_native(offline))
+        .await
+        .unwrap_or_default()
+}
+
 /// Fail fast when an offline bundle is missing an archive, before the operator
 /// commits to an install that would die halfway through.
 #[tauri::command]
@@ -816,7 +826,7 @@ pub fn run() {
             kiosk_browser, create_kiosk_shortcut, uninstall_sentient,
             stack_status, stack_control, stack_logs, update_stack,
             // native mode (no WSL2/Docker)
-            native_supported, native_verify_bundle, native_status, native_setup,
+            native_supported, native_preflight, native_verify_bundle, native_status, native_setup,
             native_deploy, native_control, native_logs, native_uninstall, native_cleanup,
             get_state, set_state, arm_resume, reboot_now, ensure_autostart,
             // backup

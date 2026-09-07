@@ -1,6 +1,11 @@
 //! Read-only preflight checks. Nothing here changes the system — it only reports
-//! whether each prerequisite for installing SENTIENT (WSL2 + Docker Engine) is
-//! satisfied, will be set up by the installer, or is a blocker the user must fix.
+//! whether each prerequisite for installing SENTIENT is satisfied, will be set
+//! up by the installer, or is a blocker the user must fix.
+//!
+//! Two sets, because the two deployment modes need different things:
+//! [`run_all`] for the WSL2 + Docker mode, [`run_native`] for the native mode
+//! (see [`crate::native`]), which needs neither but does need free ports and no
+//! competing PostgreSQL.
 
 use serde::Serialize;
 
@@ -44,6 +49,104 @@ pub fn run_all() -> Vec<Check> {
         disk_space(),
         internet(),
     ]
+}
+
+/// Preflight for the **native** mode. Deliberately a different list: WSL,
+/// virtualization and Docker are irrelevant when nothing is containerised, and
+/// asking about them would only confuse the operator.
+///
+/// `offline` selects whether reachability of the download hosts matters.
+pub fn run_native(offline: bool) -> Vec<Check> {
+    let mut v = vec![windows_version(), administrator(), disk_space(), ports_free()];
+    v.push(existing_postgres());
+    if !offline {
+        v.push(download_hosts());
+    }
+    v
+}
+
+/// The ports the native stack binds. Something already listening is a hard
+/// blocker: the installer would otherwise complete and then the service would
+/// crash-loop on bind, which reads as "the install is broken".
+fn ports_free() -> Check {
+    use std::net::TcpListener;
+    // (port, what wants it)
+    const WANTED: [(u16, &str); 4] =
+        [(8080, "HTTP"), (1883, "MQTT"), (5683, "CoAP"), (5432, "PostgreSQL")];
+    let busy: Vec<String> = WANTED
+        .iter()
+        .filter(|(p, _)| TcpListener::bind(("127.0.0.1", *p)).is_err())
+        .map(|(p, what)| format!("{p} ({what})"))
+        .collect();
+    if busy.is_empty() {
+        check("ports", "Required ports", Status::Pass, "8080, 1883, 5683 and 5432 are free.")
+    } else {
+        check(
+            "ports",
+            "Required ports",
+            Status::Fail,
+            format!(
+                "already in use: {} — stop whatever is listening, or choose different ports.",
+                busy.join(", ")
+            ),
+        )
+    }
+}
+
+/// A PostgreSQL that we did not install is a genuine hazard: the installer would
+/// register a second service against the same port, and only one can hold the
+/// data directory. Report it rather than failing later in a confusing way.
+fn existing_postgres() -> Check {
+    #[cfg(windows)]
+    {
+        let svc = ps(
+            "(Get-Service -Name 'postgres*','*postgresql*' -ErrorAction SilentlyContinue |              Where-Object { $_.Name -ne 'sentient-postgresql' } | Select-Object -Expand Name) -join ', '",
+        );
+        if svc.trim().is_empty() {
+            return check(
+                "postgres-conflict",
+                "Existing PostgreSQL",
+                Status::Pass,
+                "No other PostgreSQL service found.",
+            );
+        }
+        return check(
+            "postgres-conflict",
+            "Existing PostgreSQL",
+            Status::Fail,
+            format!(
+                "another PostgreSQL service is installed ({}). Remove it, or point SENTIENT at it instead of installing its own.",
+                svc.trim()
+            ),
+        );
+    }
+    #[cfg(not(windows))]
+    check("postgres-conflict", "Existing PostgreSQL", Status::Unknown, "Windows only.")
+}
+
+/// Online installs pull PostgreSQL from EDB and TimescaleDB from GitHub. Check
+/// both, since a network that reaches one may be blocked from the other.
+fn download_hosts() -> Check {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+    let reachable = |host: &str| -> bool {
+        host.to_socket_addrs()
+            .ok()
+            .and_then(|mut a| a.next())
+            .map(|addr| TcpStream::connect_timeout(&addr, Duration::from_secs(5)).is_ok())
+            .unwrap_or(false)
+    };
+    let edb = reachable("get.enterprisedb.com:443");
+    let gh = reachable("github.com:443");
+    match (edb, gh) {
+        (true, true) => check("downloads", "Download servers", Status::Pass, "EDB and GitHub are reachable."),
+        (false, true) => check("downloads", "Download servers", Status::Fail,
+            "Can't reach get.enterprisedb.com (PostgreSQL). Use an offline bundle instead."),
+        (true, false) => check("downloads", "Download servers", Status::Fail,
+            "Can't reach github.com (TimescaleDB). Use an offline bundle instead."),
+        (false, false) => check("downloads", "Download servers", Status::Fail,
+            "No access to the download servers. Use an offline bundle instead."),
+    }
 }
 
 // ---- command helper ----------------------------------------------------------

@@ -195,7 +195,23 @@
             <label class="comp" style="color:inherit">
               <input type="checkbox" id="compPlatform" checked disabled />
               <span><span class="ct">SENTIENT Platform</span> <span class="badge">required</span>
-                <span class="cd">The server: PostgreSQL/TimescaleDB + the SENTIENT stack, in Docker inside WSL2.</span></span>
+                <span class="cd">The server: PostgreSQL with TimescaleDB, plus the SENTIENT stack.</span></span>
+            </label>
+          </div>
+
+          <h2 style="margin-top:22px">How should it run?</h2>
+          <div class="card" id="modeCard">
+            <label class="comp" style="color:inherit">
+              <input type="radio" name="deployMode" id="modeNative" value="native" checked />
+              <span><span class="ct">Directly on Windows</span> <span class="badge">recommended</span>
+                <span class="cd">Installs PostgreSQL and SENTIENT as Windows services. No WSL2, no Docker,
+                  fewer moving parts, and it works on machines with no internet access.</span></span>
+            </label>
+            <label class="comp" style="color:inherit">
+              <input type="radio" name="deployMode" id="modeDocker" value="docker" />
+              <span><span class="ct">In Docker (WSL2)</span>
+                <span class="cd">Runs the stack in containers inside WSL2. Choose this if you already
+                  standardise on Docker, or want the container images rather than native services.</span></span>
             </label>
             <label class="comp" style="color:inherit">
               <input type="checkbox" id="compKiosk" checked />
