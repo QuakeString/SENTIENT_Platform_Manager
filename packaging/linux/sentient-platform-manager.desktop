@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=SENTIENT Platform Manager
+GenericName=Platform Manager
+Comment=Install, run, update and back up the SENTIENT platform
+Exec=sentient-platform-manager
+Icon=sentient-platform-manager
+Terminal=false
+Categories=System;Settings;
+Keywords=SENTIENT;IIoT;SCADA;
+StartupWMClass=sentient-manager-app

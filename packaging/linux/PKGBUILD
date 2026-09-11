@@ -1,0 +1,45 @@
+# Maintainer: INVENIA SYSTEMS <support@invenia.in>
+pkgname=sentient-platform-manager
+pkgver=0.6.6
+pkgrel=1
+pkgdesc="Install, run, update and back up the SENTIENT platform"
+arch=('x86_64')
+url="https://github.com/QuakeString/SENTIENT_Platform_Manager"
+license=('Apache-2.0')
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'librsvg' 'hicolor-icon-theme')
+makedepends=('rust' 'pkgconf')
+optdepends=('docker: run SENTIENT and PostgreSQL as containers'
+            'docker-compose: the compose stacks the manager drives'
+            'postgresql-libs: psql and pg_dump, used by backup and restore')
+source=("spm-$pkgver.tar.gz" 'sentient-platform-manager.desktop')
+sha256sums=('SKIP' 'SKIP')
+# makepkg's defaults fight this build: its LTO flags turn the vendored sqlite3
+# objects into bitcode, and Arch's rustc links with lld, which then drops the
+# archive members rusqlite needs (undefined sqlite3_step at link time). Build
+# with the plain toolchain flags instead.
+options=(!lto !debug)
+
+build() {
+  cd "$srcdir/spm-$pkgver/src-tauri"
+  # The Tauri shell is its own workspace and embeds the static frontend at
+  # compile time, so a plain cargo build is a complete app — no bundler needed
+  # for a distro package, which supplies its own .desktop file and icons.
+  export CARGO_HOME="$srcdir/cargo"
+  export CARGO_TARGET_DIR="$srcdir/target"
+  export RUSTUP_TOOLCHAIN=stable
+  export RUSTFLAGS="-C link-arg=-fuse-ld=bfd"
+  unset CARGO_ENCODED_RUSTFLAGS LDFLAGS CFLAGS CXXFLAGS
+  cargo build --release --locked
+}
+
+package() {
+  install -Dm755 "$srcdir/target/release/sentient-manager-app" \
+                 "$pkgdir/usr/bin/sentient-platform-manager"
+  install -Dm644 "$srcdir/sentient-platform-manager.desktop" \
+                 "$pkgdir/usr/share/applications/sentient-platform-manager.desktop"
+  local icons="$srcdir/spm-$pkgver/src-tauri/icons"
+  install -Dm644 "$icons/32x32.png"   "$pkgdir/usr/share/icons/hicolor/32x32/apps/sentient-platform-manager.png"
+  install -Dm644 "$icons/64x64.png"   "$pkgdir/usr/share/icons/hicolor/64x64/apps/sentient-platform-manager.png"
+  install -Dm644 "$icons/128x128.png" "$pkgdir/usr/share/icons/hicolor/128x128/apps/sentient-platform-manager.png"
+  install -Dm644 "$icons/icon.png"    "$pkgdir/usr/share/icons/hicolor/512x512/apps/sentient-platform-manager.png"
+}
