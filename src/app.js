@@ -453,6 +453,10 @@ async function init() {
   initTheme();
   updateGating();
   if (!invoke) return;
+  // An offline build ships its archives in a `payload` folder beside the exe.
+  // Resolve it once so the wizard can choose Bundled over Remote without the
+  // operator needing to know which build they were handed.
+  try { BUNDLE_DIR = await invoke("native_bundle_dir"); } catch { BUNDLE_DIR = null; }
   await loadProfiles();
   try {
     const last = await invoke("setting_get", { key: "last_conn" });
@@ -578,8 +582,12 @@ async function recheck() {
 /// The mode SENTIENT was actually installed with, as opposed to whatever the
 /// Components radio currently shows. Cached after the first lookup.
 ///
-/// Installs made before this setting existed were all Docker, so that is the
-/// fallback rather than the new default.
+/// The stored setting is only written by an install that ran through this
+/// wizard, so it is absent for perfectly ordinary cases: an upgrade from a
+/// build that predates it, a stack provisioned by hand, or the headless
+/// driver. Rather than guessing, ask the machine — if the native services are
+/// registered, it is a native install. Docker remains the fallback, since
+/// every install predating this setting was one.
 let _installedMode = null;
 async function installedMode() {
   if (_installedMode) return _installedMode;
@@ -587,6 +595,15 @@ async function installedMode() {
     const v = await invoke("setting_get", { key: "deploy_mode" });
     if (v === "native" || v === "docker") { _installedMode = v; return v; }
   } catch { /* store off */ }
+  try {
+    const st = await invoke("native_status", { options: readNativeOptions() });
+    if (st && st.installed) {
+      _installedMode = "native";
+      // Remember it, so the probe only happens once per machine.
+      try { await invoke("setting_set", { key: "deploy_mode", value: "native" }); } catch { /* store off */ }
+      return _installedMode;
+    }
+  } catch { /* native engine unavailable (non-Windows build) */ }
   _installedMode = "docker";
   return _installedMode;
 }
@@ -597,10 +614,11 @@ function deployMode() {
   return el && el.checked ? "docker" : "native";
 }
 
-/// True when this build carries its archives (an offline bundle) rather than
-/// downloading them. Set by the packaging step; absent means online.
+/// Path to the bundled payload when this copy shipped with one, else null.
+/// Resolved once at start-up by asking the backend to look beside the exe.
+let BUNDLE_DIR = null;
 function isOfflineBundle() {
-  return Boolean(window.__SENTIENT_BUNDLE_DIR__);
+  return Boolean(BUNDLE_DIR);
 }
 
 /// The native engine takes the same numbers as the Docker one, plus where to
@@ -616,7 +634,7 @@ function readNativeOptions() {
     coapPort: c.coap_port,
     loadDemo: Boolean(c.load_demo),
   };
-  if (isOfflineBundle()) o.bundleDir = window.__SENTIENT_BUNDLE_DIR__;
+  if (BUNDLE_DIR) o.bundleDir = BUNDLE_DIR;
   return o;
 }
 

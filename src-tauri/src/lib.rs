@@ -270,6 +270,22 @@ async fn uninstall_sentient(
     res
 }
 
+/// Everything an uninstall must clear beyond the stack itself: kiosk shortcuts,
+/// the login autostart task, and the wizard's install-state file.
+///
+/// Shared by both deployment modes deliberately — when only the Docker path did
+/// this, a native uninstall left the desktop shortcut and the scheduled task
+/// behind, pointing at a SENTIENT that no longer existed.
+fn remove_desktop_integration(app: &tauri::AppHandle, sink: &InstProgressFn) {
+    if let Ok(dir) = app.path().app_local_data_dir() {
+        kiosk::remove_shortcuts(sink, &dir);
+    }
+    remove_autostart();
+    if let Some(p) = state_file(app) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
 /// Delete the login autostart task + keep-alive script (best-effort).
 fn remove_autostart() {
     #[cfg(windows)]
@@ -410,6 +426,14 @@ impl NativeOptions {
     }
 }
 
+/// Path to a bundled offline payload, if this copy shipped with one.
+/// The wizard uses it to pick `Bundled` over `Remote` without the operator
+/// having to know which build they were given.
+#[tauri::command]
+fn native_bundle_dir() -> Option<String> {
+    native::bundled_payload_dir().map(|p| p.display().to_string())
+}
+
 /// Can this build offer the native mode? The wizard hides the choice when not.
 #[tauri::command]
 fn native_supported() -> bool {
@@ -516,37 +540,45 @@ async fn native_logs(options: Option<NativeOptions>, tail: Option<u32>) -> Strin
 /// Remove SENTIENT but keep the database cluster and its data.
 #[tauri::command]
 async fn native_uninstall(
+    app: tauri::AppHandle,
     on_progress: Channel<InstProgress>,
     options: Option<NativeOptions>,
 ) -> Result<(), String> {
     let cfg = options.unwrap_or_default().into_config();
     let ch = on_progress;
-    tauri::async_runtime::spawn_blocking(move || {
+    let res = tauri::async_runtime::spawn_blocking(move || {
         let sink: InstProgressFn = Arc::new(move |p| {
             let _ = ch.send(p);
         });
-        native::uninstall(sink, &cfg)
+        let r = native::uninstall(sink.clone(), &cfg);
+        (r, sink)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    remove_desktop_integration(&app, &res.1);
+    res.0
 }
 
 /// Destructive: removes PostgreSQL and every byte of data with it.
 #[tauri::command]
 async fn native_cleanup(
+    app: tauri::AppHandle,
     on_progress: Channel<InstProgress>,
     options: Option<NativeOptions>,
 ) -> Result<(), String> {
     let cfg = options.unwrap_or_default().into_config();
     let ch = on_progress;
-    tauri::async_runtime::spawn_blocking(move || {
+    let res = tauri::async_runtime::spawn_blocking(move || {
         let sink: InstProgressFn = Arc::new(move |p| {
             let _ = ch.send(p);
         });
-        native::cleanup(sink, &cfg)
+        let r = native::cleanup(sink.clone(), &cfg);
+        (r, sink)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    remove_desktop_integration(&app, &res.1);
+    res.0
 }
 
 // ---- install-state persistence (survives reboots) ----------------------------
@@ -826,7 +858,7 @@ pub fn run() {
             kiosk_browser, create_kiosk_shortcut, uninstall_sentient,
             stack_status, stack_control, stack_logs, update_stack,
             // native mode (no WSL2/Docker)
-            native_supported, native_preflight, native_verify_bundle, native_status, native_setup,
+            native_supported, native_preflight, native_verify_bundle, native_bundle_dir, native_status, native_setup,
             native_deploy, native_control, native_logs, native_uninstall, native_cleanup,
             get_state, set_state, arm_resume, reboot_now, ensure_autostart,
             // backup

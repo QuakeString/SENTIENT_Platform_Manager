@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>SENTIENT Platform Manager Setup</title>
+<style>
+  /* Everything here is vector or text, so it renders through the WebView's DPI
+     pipeline and stays sharp at any display scaling — the whole reason this
+     installer exists instead of an NSIS package. */
+  :root{
+    --teal:#175c53; --teal-600:#2f9e8f; --teal-050:#eef6f4;
+    --ink:#14211f; --muted:#6b7b78; --line:#e3ebe9; --bg:#ffffff;
+    --radius:10px;
+  }
+  *{box-sizing:border-box; -webkit-user-select:none; user-select:none}
+  html,body{height:100%; overflow:hidden}
+  body{
+    margin:0; display:flex; background:var(--bg); color:var(--ink);
+    font:14px/1.55 "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* ---------- brand rail ---------- */
+  aside{
+    width:212px; flex:none; padding:26px 20px 18px;
+    background:linear-gradient(170deg,#ffffff 0%,var(--teal-050) 100%);
+    border-right:1px solid var(--line);
+    display:flex; flex-direction:column; align-items:center; text-align:center;
+  }
+  aside .mark{width:84px; height:84px; margin-top:6px}
+  aside .mark svg, aside .mark img{width:100%; height:100%; display:block}
+  aside h1{font-size:19px; font-weight:600; line-height:1.2;
+           margin:18px 0 3px; letter-spacing:.2px; color:var(--teal); white-space:nowrap}
+  aside h2{font-size:12.5px; font-weight:400; line-height:1.3; margin:0;
+           color:var(--teal-600); letter-spacing:.3px; white-space:nowrap}
+  aside .ver{margin:13px 0 0; padding-top:11px; border-top:1px solid var(--line);
+             font-size:11px; letter-spacing:.4px; color:#93a6a2; min-width:96px}
+  aside .motif{width:100%; flex:1; min-height:0; margin:6px 0 0; display:block; overflow:visible}
+  aside .foot{margin-top:10px; font-size:10px; letter-spacing:.9px; color:#9fb0ac}
+  /* ---------- content ---------- */
+  main{flex:1; display:flex; flex-direction:column; padding:26px 28px 16px; min-width:0; min-height:0}
+  h3{font-size:20px; font-weight:600; line-height:1.25; margin:0 0 8px}
+  p.lede{margin:0 0 18px; color:var(--muted); max-width:44ch}
+  .grow{flex:1; min-height:0}
+  label.field{display:block; font-size:12px; color:var(--muted); margin:0 0 6px}
+  .row{display:flex; gap:8px}
+  input[type=text]{
+    flex:1; min-width:0; padding:9px 11px; border:1px solid var(--line);
+    border-radius:var(--radius); font:inherit; color:var(--ink); background:#fff;
+    -webkit-user-select:text; user-select:text;
+  }
+  input[type=text]:focus{outline:none; border-color:var(--teal-600); box-shadow:0 0 0 3px rgba(47,158,143,.15)}
+  .checks{margin-top:20px; display:flex; flex-direction:column; gap:11px}
+  .check{display:flex; gap:10px; align-items:flex-start; cursor:pointer}
+  .check input{margin:2px 0 0; accent-color:var(--teal-600); width:15px; height:15px}
+  .check span{font-size:13px}
+  .meta{margin-top:14px; font-size:12px; color:var(--muted)}
+  ul.bullets{margin:2px 0 0; padding:0; list-style:none; display:flex; flex-direction:column; gap:9px}
+  ul.bullets li{position:relative; padding-left:22px; font-size:13px; color:var(--ink)}
+  .choices{display:flex; flex-direction:column; gap:9px; margin-top:2px}
+  .choice{display:flex; gap:10px; align-items:flex-start; padding:11px 13px;
+          border:1px solid var(--line); border-radius:9px; cursor:pointer;
+          transition:border-color .15s, background .15s}
+  .choice:hover{background:#f8fbfa}
+  .choice:has(input:checked){border-color:var(--teal-600); background:var(--teal-050)}
+  .choice input{margin:2px 0 0; accent-color:var(--teal-600); width:15px; height:15px}
+  .choice b{display:block; font-size:13px; font-weight:600}
+  .choice em{display:block; font-style:normal; font-size:12px; color:var(--muted); margin-top:2px}
+  ul.bullets li::before{
+    content:""; position:absolute; left:2px; top:6px; width:7px; height:7px;
+    border-radius:50%; background:var(--teal-600);
+  }
+  /* ---------- progress ---------- */
+  .bar{height:6px; border-radius:99px; background:var(--teal-050); overflow:hidden; margin:26px 0 12px}
+  .bar > i{display:block; height:100%; width:0; border-radius:99px;
+           background:linear-gradient(90deg,var(--teal-600),var(--teal));
+           transition:width .35s cubic-bezier(.4,0,.2,1)}
+  .status{font-size:13px; color:var(--muted); min-height:20px}
+  /* ---------- done ---------- */
+  .tick{width:46px;height:46px;border-radius:50%;background:var(--teal-050);
+        display:flex;align-items:center;justify-content:center;margin-bottom:14px}
+  .tick svg{width:24px;height:24px;stroke:var(--teal-600);fill:none;stroke-width:2.4;
+            stroke-linecap:round;stroke-linejoin:round}
+  /* ---------- actions ---------- */
+  footer{display:flex; justify-content:flex-end; gap:8px; padding-top:12px;
+          border-top:1px solid var(--line); flex:none}
+  button{
+    position:relative; overflow:hidden;          /* clips the ripple */
+    font-size:13px; padding:6px 15px; border-radius:7px; border:1px solid var(--line);
+    background:#fff; color:var(--ink); cursor:pointer; min-width:88px;
+    transition:background .16s ease, border-color .16s ease,
+               box-shadow .16s ease, transform .06s ease;
+  }
+  button:hover:not(:disabled){background:#f6faf9}
+  /* pressed: a touch of travel reads as a real button without moving layout */
+  button:active:not(:disabled){transform:translateY(1px)}
+  /* keyboard focus only — a ring on every mouse click would be noise */
+  button:focus-visible{outline:none; box-shadow:0 0 0 3px rgba(47,158,143,.32)}
+  button.primary{background:var(--teal); border-color:var(--teal); color:#fff;
+                 box-shadow:0 1px 2px rgba(23,92,83,.22)}
+  button.primary:hover:not(:disabled){background:#12514a; box-shadow:0 2px 6px rgba(23,92,83,.28)}
+  button.primary:active:not(:disabled){box-shadow:0 1px 1px rgba(23,92,83,.2)}
+  button:disabled{opacity:.5; cursor:default}
+
+  /* ripple: one span, positioned at the pointer, scaled out and faded */
+  .ripple{
+    position:absolute; border-radius:50%; pointer-events:none;
+    transform:scale(0); opacity:.38; background:currentColor;
+    animation:ripple .5s cubic-bezier(.25,.8,.4,1) forwards;
+  }
+  button.primary .ripple{background:#fff; opacity:.34}
+  @keyframes ripple{ to{ transform:scale(1); opacity:0 } }
+
+  /* the choice cards and checkboxes deserve the same feedback */
+  .choice:active{transform:translateY(1px)}
+  .choice{transition:border-color .16s, background .16s, transform .06s}
+  .check span{transition:color .16s}
+  .check:hover span{color:var(--teal)}
+  @media (prefers-reduced-motion: reduce){
+    *{animation-duration:.01ms !important; transition-duration:.01ms !important}
+  }
+  .page{display:none; flex-direction:column; flex:1; min-height:0}
+  .page.on{display:flex}
+  .err{color:#b3261e; font-size:13px; margin-top:10px; white-space:pre-wrap}
+</style>
+</head>
+<body>
+  <aside>
+    <div class="mark"><img id="logo" src="logo.svg" alt="" /></div>
+    <h1>SENTIENT</h1>
+    <h2>Platform Manager</h2>
+    <div class="ver" id="sideVer"></div>
+
+    <!-- Abstract brand motif: concentric arcs sweeping from the lower left with
+         a few nodes riding one of them — a quiet nod to telemetry radiating from
+         a plant, rather than decoration for its own sake. Inline SVG, so it
+         stays sharp at any display scaling like everything else here. -->
+    <svg class="motif" viewBox="0 0 212 210" aria-hidden="true">
+      <defs>
+        <linearGradient id="fade" x1="0" y1="1" x2="1" y2="0">
+          <stop offset="0%"  stop-color="#2f9e8f" stop-opacity=".34"/>
+          <stop offset="70%" stop-color="#2f9e8f" stop-opacity=".10"/>
+          <stop offset="100%" stop-color="#2f9e8f" stop-opacity="0"/>
+        </linearGradient>
+        <linearGradient id="fade2" x1="0" y1="1" x2="1" y2="0">
+          <stop offset="0%"  stop-color="#175c53" stop-opacity=".20"/>
+          <stop offset="80%" stop-color="#175c53" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <g fill="none" stroke-linecap="round">
+        <path d="M-6 210 A 74 74 0 0 1 68 136"  stroke="url(#fade2)" stroke-width="1.6"/>
+        <path d="M-6 210 A 112 112 0 0 1 106 98" stroke="url(#fade)"  stroke-width="1.9"/>
+        <path d="M-6 210 A 150 150 0 0 1 144 60" stroke="url(#fade)"  stroke-width="1.4"/>
+        <path d="M-6 210 A 188 188 0 0 1 182 22" stroke="url(#fade2)" stroke-width="1"/>
+      </g>
+      <g fill="#2f9e8f">
+        <circle cx="106" cy="98"  r="3.1" opacity=".55"/>
+        <circle cx="58"  cy="132" r="2.2" opacity=".38"/>
+        <circle cx="150" cy="66"  r="1.9" opacity=".28"/>
+      </g>
+    </svg>
+
+    <div class="foot">INVENIA SYSTEMS</div>
+  </aside>
+
+  <main>
+    <!-- 1. welcome -->
+    <section class="page on" id="pWelcome">
+      <h3>Install SENTIENT Platform Manager</h3>
+      <p class="lede">One app to install, run, update and back up the SENTIENT
+        platform on this machine.</p>
+      <ul class="bullets">
+        <li>Installs PostgreSQL and the SENTIENT platform, or deploys it in Docker</li>
+        <li>Starts, stops and updates the stack, and shows its logs</li>
+        <li>Takes encrypted backups and restores them</li>
+      </ul>
+      <div class="grow"></div>
+      <footer>
+        <button id="cancel1">Cancel</button>
+        <button class="primary" id="toOptions">Continue</button>
+      </footer>
+    </section>
+
+    <!-- 1b. already installed: repair / update / uninstall -->
+    <section class="page" id="pMaintain">
+      <h3 id="mTitle">SENTIENT Platform Manager is installed</h3>
+      <p class="lede" id="mLede"></p>
+      <div class="choices">
+        <label class="choice"><input type="radio" name="act" value="repair" checked />
+          <span><b id="cRepairT">Repair</b><em id="cRepairD">Reinstall the current version over the existing one.</em></span></label>
+        <label class="choice"><input type="radio" name="act" value="uninstall" />
+          <span><b>Uninstall</b><em>Remove the Platform Manager from this computer.</em></span></label>
+      </div>
+      <div class="grow"></div>
+      <footer>
+        <button id="cancelM">Cancel</button>
+        <button class="primary" id="goAct">Continue</button>
+      </footer>
+    </section>
+
+    <!-- 2. options -->
+    <section class="page" id="pOptions">
+      <h3>Choose where to install</h3>
+      <p class="lede">You can keep the recommended location or pick another folder.</p>
+      <label class="field" for="dir">Install location</label>
+      <div class="row">
+        <input type="text" id="dir" spellcheck="false" />
+        <button id="browse">Browse…</button>
+      </div>
+      <div class="checks">
+        <label class="check"><input type="checkbox" id="cbDesktop" checked /><span>Create a Desktop shortcut</span></label>
+        <label class="check"><input type="checkbox" id="cbStart" checked /><span>Add to the Start Menu</span></label>
+      </div>
+      <div class="meta" id="sizeNote"></div>
+      <div class="grow"></div>
+      <footer>
+        <button id="back2">Back</button>
+        <button class="primary" id="doInstall">Install</button>
+      </footer>
+    </section>
+
+    <!-- 3. installing -->
+    <section class="page" id="pInstall">
+      <h3>Installing</h3>
+      <p class="lede">This only takes a moment.</p>
+      <div class="bar"><i id="barFill"></i></div>
+      <div class="status" id="status">Starting…</div>
+      <div class="err" id="error"></div>
+      <div class="grow"></div>
+      <footer><button id="closeFail" style="display:none">Close</button></footer>
+    </section>
+
+    <!-- 3b. uninstalling -->
+    <section class="page" id="pRemoving">
+      <h3>Removing</h3>
+      <p class="lede">Taking the Platform Manager off this computer.</p>
+      <div class="bar"><i id="rmFill"></i></div>
+      <div class="status" id="rmStatus">Starting…</div>
+      <div class="err" id="rmError"></div>
+      <div class="grow"></div>
+      <footer><button id="rmClose" style="display:none">Close</button></footer>
+    </section>
+
+    <!-- 4b. removed -->
+    <section class="page" id="pRemoved">
+      <div class="tick"><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></div>
+      <h3>Uninstall complete</h3>
+      <p class="lede">SENTIENT Platform Manager has been removed.</p>
+      <div class="grow"></div>
+      <footer><button class="primary" id="rmFinish">Close</button></footer>
+    </section>
+
+    <!-- 4. done -->
+    <section class="page" id="pDone">
+      <div class="tick"><svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></div>
+      <h3>Installation complete</h3>
+      <p class="lede" id="doneWhere"></p>
+      <label class="check" style="margin-top:-8px">
+        <input type="checkbox" id="cbLaunch" checked /><span>Open SENTIENT Platform Manager now</span>
+      </label>
+      <div class="grow"></div>
+      <footer><button class="primary" id="finish">Finish</button></footer>
+    </section>
+  </main>
+
+<script>
+// Ripple, hand-rolled: a Material-style press without a design-system
+// dependency. An installer that must work air-gapped can't pull a CDN, and
+// vendoring one for five buttons would cost more than it returns.
+document.addEventListener("pointerdown", e => {
+  const btn = e.target.closest("button");
+  if (!btn || btn.disabled) return;
+  const r = btn.getBoundingClientRect();
+  const size = Math.max(r.width, r.height) * 2;
+  const span = document.createElement("span");
+  span.className = "ripple";
+  span.style.width = span.style.height = size + "px";
+  span.style.left = (e.clientX - r.left - size / 2) + "px";
+  span.style.top  = (e.clientY - r.top  - size / 2) + "px";
+  span.addEventListener("animationend", () => span.remove());
+  btn.appendChild(span);
+});
+
+const invoke = window.__TAURI__.core.invoke;
+const listen = window.__TAURI__.event.listen;
+const $ = id => document.getElementById(id);
+let installedPath = "";
+
+function show(id){
+  document.querySelectorAll(".page").forEach(p => p.classList.toggle("on", p.id === id));
+}
+
+let ENV = null;
+
+(async function init(){
+  ENV = await invoke("environment");
+  $("dir").value = ENV.default_dir;
+  $("sizeNote").textContent = `Requires about ${ENV.payload_mb} MB of disk space.`;
+  $("sideVer").textContent = `Version ${ENV.version}`;
+
+  if (ENV.mode === "uninstall") {           // called from Apps & features
+    show("pMaintain");
+    document.querySelector('input[value="uninstall"]').checked = true;
+    $("mLede").textContent = `Version ${ENV.installed_version || ENV.version} is installed.`;
+  } else if (ENV.mode === "maintenance") {  // run again while installed
+    show("pMaintain");
+    if (ENV.is_update) {
+      $("mTitle").textContent = "A newer version is available";
+      $("cRepairT").textContent = "Update";
+      $("cRepairD").textContent = `Replace version ${ENV.installed_version} with ${ENV.version}.`;
+      $("mLede").textContent = `Version ${ENV.installed_version} is installed on this computer.`;
+    } else {
+      $("mLede").textContent = `Version ${ENV.installed_version || ENV.version} is already installed.`;
+    }
+  }
+})();
+
+$("cancelM").onclick = () => invoke("quit");
+$("rmClose").onclick = () => invoke("quit");
+$("rmFinish").onclick = () => invoke("quit");
+
+$("goAct").onclick = () => {
+  const act = document.querySelector('input[name="act"]:checked').value;
+  if (act === "uninstall") { runUninstall(); } else { show("pOptions"); }
+};
+
+listen("progress", e => {
+  $("rmFill").style.width = e.payload.percent + "%";
+  $("rmStatus").textContent = e.payload.message;
+});
+
+async function runUninstall(){
+  show("pRemoving");
+  try {
+    await invoke("uninstall", { dir: ENV.install_dir || ENV.default_dir });
+    setTimeout(() => show("pRemoved"), 400);
+  } catch (err) {
+    $("rmStatus").textContent = "Uninstall failed";
+    $("rmError").textContent = String(err);
+    $("rmClose").style.display = "";
+  }
+}
+
+$("toOptions").onclick = () => show("pOptions");
+$("back2").onclick     = () => show("pWelcome");
+$("cancel1").onclick   = () => invoke("quit");
+$("closeFail").onclick = () => invoke("quit");
+
+$("browse").onclick = async () => {
+  const picked = await invoke("pick_folder", { current: $("dir").value });
+  if (picked) $("dir").value = picked;
+};
+
+listen("progress", e => {
+  $("barFill").style.width = e.payload.percent + "%";
+  $("status").textContent  = e.payload.message;
+});
+
+$("doInstall").onclick = async () => {
+  show("pInstall");
+  try {
+    installedPath = await invoke("install", {
+      dir: $("dir").value,
+      desktopShortcut: $("cbDesktop").checked,
+      startMenu: $("cbStart").checked,
+    });
+    $("doneWhere").textContent = "Installed to " + $("dir").value;
+    setTimeout(() => show("pDone"), 400);
+  } catch (err) {
+    $("status").textContent = "Installation failed";
+    $("error").textContent  = String(err);
+    $("closeFail").style.display = "";
+  }
+};
+
+$("finish").onclick = async () => {
+  if ($("cbLaunch").checked && installedPath) {
+    try { await invoke("launch", { path: installedPath }); } catch {}
+  }
+  invoke("quit");
+};
+</script>
+</body>
+</html>

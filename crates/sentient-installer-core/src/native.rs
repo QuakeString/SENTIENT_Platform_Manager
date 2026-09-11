@@ -56,7 +56,7 @@ const APP_SERVICE: &str = "SentientServer";
 #[derive(Debug, Clone)]
 pub enum ArtifactSource {
     /// Offline bundle — every archive already sits next to the installer
-    /// (shipped inside the IPM package). Nothing touches the network.
+    /// (shipped inside the Platform Manager package). Nothing touches the network.
     Bundled { dir: PathBuf },
     /// Online — fetch from a manifest-provided base URL, verifying SHA-256.
     Remote { base_url: String },
@@ -436,6 +436,8 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         return Err("database prerequisites are not installed — run setup first".into());
     }
 
+    stage_payload(&sink, cfg)?;
+
     step(&sink, "Creating the SENTIENT database");
     // Idempotent by tolerating "already exists" rather than probing first: the
     // probe is racy and the error is harmless.
@@ -498,6 +500,7 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     for _ in 0..90 {
         bail_if_cancelled()?;
         if is_running(cfg.http_port) {
+            register_uninstall_entry(&sink, cfg);
             sink(Progress::Done {
                 message: format!("SENTIENT is serving on http://localhost:{}", cfg.http_port),
             });
@@ -624,6 +627,79 @@ fn register_app_service(cfg: &NativeConfig) -> Result<(), String> {
     Ok(())
 }
 
+/// Registry key backing the "Apps & features" entry.
+const ARP_KEY: &str =
+    r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\SENTIENT";
+
+/// Register SENTIENT in Add/Remove Programs.
+///
+/// Without this the platform is invisible to Windows: services running, files
+/// in Program Files, and nothing in "Apps & features" — so the only way to
+/// remove it is to already know the Platform Manager exists. Every other
+/// Windows product registers here, and operators reasonably expect it.
+///
+/// Uses `reg.exe` rather than a registry crate to avoid pulling a dependency
+/// into the engine for six writes.
+fn register_uninstall_entry(sink: &ProgressFn, cfg: &NativeConfig) {
+    // Clicking "Uninstall" opens the Platform Manager, which owns the teardown
+    // (it has to stop services and drop a database — not something to do from
+    // a bare registry command with no confirmation).
+    let manager = PathBuf::from(r"C:\Program Files\SENTIENT Platform Manager")
+        .join("SENTIENT Platform Manager.exe");
+    let icon = cfg.app_bin().join("sentient-server.exe");
+    let size_kb = dir_size_kb(&cfg.install_dir);
+
+    let mut values: Vec<(&str, &str, String)> = vec![
+        ("DisplayName", "REG_SZ", "SENTIENT Platform".into()),
+        ("Publisher", "REG_SZ", "INVENIA SYSTEMS".into()),
+        ("InstallLocation", "REG_SZ", cfg.install_dir.display().to_string()),
+        ("DisplayIcon", "REG_SZ", icon.display().to_string()),
+        ("NoModify", "REG_DWORD", "1".into()),
+        ("NoRepair", "REG_DWORD", "1".into()),
+    ];
+    if manager.exists() {
+        values.push(("UninstallString", "REG_SZ", format!("\"{}\"", manager.display())));
+    }
+    if size_kb > 0 {
+        values.push(("EstimatedSize", "REG_DWORD", size_kb.to_string()));
+    }
+
+    for (name, kind, data) in values {
+        let ok = sys::output(
+            "reg.exe",
+            &["add", ARP_KEY, "/v", name, "/t", kind, "/d", &data, "/f"],
+        )
+        .map(|(ok, _, _)| ok)
+        .unwrap_or(false);
+        if !ok {
+            log(sink, format!("note: could not write the {name} uninstall entry"));
+        }
+    }
+}
+
+/// Remove the Add/Remove Programs entry. Best-effort: a stale entry pointing at
+/// files that no longer exist is worse than none.
+fn remove_uninstall_entry() {
+    let _ = sys::output("reg.exe", &["delete", ARP_KEY, "/f"]);
+}
+
+/// Installed size in KB, for the size column in "Apps & features".
+fn dir_size_kb(dir: &Path) -> u64 {
+    fn walk(dir: &Path, total: &mut u64) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            match entry.metadata() {
+                Ok(m) if m.is_dir() => walk(&entry.path(), total),
+                Ok(m) => *total += m.len(),
+                Err(_) => {}
+            }
+        }
+    }
+    let mut total = 0u64;
+    walk(dir, &mut total);
+    total / 1024
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle (mirrors distro.rs so the Tauri layer can dispatch uniformly)
 // ---------------------------------------------------------------------------
@@ -745,6 +821,7 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
 /// Remove the platform but KEEP the database cluster and its data.
 pub fn uninstall(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     step(&sink, "Stopping and removing the SENTIENT service");
+    remove_uninstall_entry();
     let _ = sc(&["stop", APP_SERVICE]);
     std::thread::sleep(std::time::Duration::from_secs(2));
     let winsw = cfg.install_dir.join("services").join(format!("{APP_SERVICE}.exe"));
@@ -754,7 +831,7 @@ pub fn uninstall(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         let _ = sc(&["delete", APP_SERVICE]);
     }
     for item in ["bin", "ui", "conf", "services", "logs"] {
-        let _ = std::fs::remove_dir_all(cfg.install_dir.join(item));
+        remove_tree_retrying(&cfg.install_dir.join(item));
     }
     sink(Progress::Done {
         message: "SENTIENT removed. The database cluster was left in place.".into(),
@@ -777,17 +854,87 @@ pub fn cleanup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     } else if service_exists(PG_SERVICE) {
         let _ = sc(&["delete", PG_SERVICE]);
     }
-    let _ = std::fs::remove_dir_all(&cfg.pg_dir);
-    let _ = std::fs::remove_dir_all(&cfg.install_dir);
+    // Windows can still hold handles for a moment after a service stops, so a
+    // single remove_dir_all can leave the tree half-deleted. Retry briefly.
+    for dir in [&cfg.pg_dir, &cfg.install_dir, &cfg.state_dir] {
+        remove_tree_retrying(dir);
+    }
     sink(Progress::Done { message: "Everything removed.".into() });
     Ok(())
+}
+
+/// Delete a directory tree, tolerating the handles Windows may still hold for a
+/// short while after a service stops. Without the retry the first pass deletes
+/// most of the tree and leaves the root behind, which then reads as "the
+/// uninstall did not work".
+fn remove_tree_retrying(dir: &Path) {
+    for attempt in 0..5 {
+        if !dir.exists() {
+            return;
+        }
+        if std::fs::remove_dir_all(dir).is_ok() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400 * (attempt + 1)));
+    }
 }
 
 /// What an offline bundle has to contain for [`setup`] and [`deploy`] to run
 /// with no network at all. Surfaced so the packaging step and the preflight
 /// check agree on one list instead of drifting apart.
 pub fn required_bundle_files() -> &'static [&'static str] {
-    &[PG_ZIP, TSDB_ZIP]
+    &[PG_ZIP, TSDB_ZIP, "sentient-payload.tar"]
+}
+
+/// Where a bundled payload lives: a `payload` directory beside the Platform
+/// Manager's own executable, which is what the installer lays down for an
+/// offline install. Returns None when this is an online build.
+pub fn bundled_payload_dir() -> Option<PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.join("payload");
+    if required_bundle_files().iter().all(|f| dir.join(f).exists()) {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
+/// Unpack the SENTIENT payload (server, installer, UI, data, service wrapper)
+/// into the install directory.
+///
+/// The engine downloads PostgreSQL and TimescaleDB from their vendors, but
+/// SENTIENT itself has to come from us — from the bundle for an offline
+/// install, or later from a release manifest for an online one. Without this
+/// step `deploy` would reach the schema installer and find nothing to run.
+fn stage_payload(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
+    if cfg.app_bin().join("sentient-install.exe").exists() {
+        return Ok(());                      // already staged
+    }
+    let ArtifactSource::Bundled { dir } = &cfg.source else {
+        return Err(
+            "The SENTIENT program files are missing and this is not an offline \
+             bundle. Use the offline installer, or configure a release manifest."
+                .into(),
+        );
+    };
+    let tar = dir.join("sentient-payload.tar");
+    if !tar.exists() {
+        return Err(format!("the offline bundle is missing {}", tar.display()));
+    }
+    step(sink, "Unpacking the SENTIENT program files");
+    std::fs::create_dir_all(&cfg.install_dir)
+        .map_err(|e| format!("create {}: {e}", cfg.install_dir.display()))?;
+    let (ok, _, err) = sys::output_tracked(
+        "tar.exe",
+        &["-xf", &tar.to_string_lossy(), "-C", &cfg.install_dir.to_string_lossy()],
+    )
+    .ok_or_else(|| "could not run tar.exe".to_string())?;
+    if !ok {
+        return Err(format!("unpacking the payload failed: {}", sys::decode(&err)));
+    }
+    if !cfg.app_bin().join("sentient-install.exe").exists() {
+        return Err("the payload unpacked but sentient-install.exe is not where expected".into());
+    }
+    Ok(())
 }
 
 /// Preflight for the offline path: report anything the bundle is missing before

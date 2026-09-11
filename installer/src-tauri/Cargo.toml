@@ -1,0 +1,35 @@
+# Its own workspace: the repo root only claims crates/*, and a Tauri app
+# needs its own target dir anyway.
+[workspace]
+
+[package]
+name = "sentient-setup"
+description = "SENTIENT Platform Manager installer"
+version = "0.6.6"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["The SENTIENT Authors"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Only for DWM_WINDOW_CORNER_PREFERENCE — Windows 11 rounds standard frames, but
+# the WebView host window needs to be told explicitly.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_WindowsAndMessaging",   # MessageBoxW for the pre-flight gate
+] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

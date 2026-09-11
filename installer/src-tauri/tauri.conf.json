@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "SENTIENT Platform Manager",
+  "productName": "SENTIENT Setup",
   "version": "0.6.6",
-  "identifier": "com.quakestring.sentient-manager",
+  "identifier": "com.inveniasystems.sentient-setup",
   "build": {
     "frontendDist": "../src"
   },
@@ -10,11 +10,15 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "SENTIENT Platform Manager",
-        "width": 900,
-        "height": 660,
-        "minWidth": 680,
-        "minHeight": 520
+        "title": "SENTIENT Platform Manager Setup",
+        "width": 620,
+        "height": 430,
+        "resizable": false,
+        "maximizable": false,
+        "center": true,
+        "decorations": true,
+        "minWidth": 620,
+        "minHeight": 430
       }
     ],
     "security": {
@@ -30,11 +34,7 @@
       "icons/icon.png",
       "icons/icon.ico"
     ],
-    "resources": [
-      "pgtools/bin/*"
-    ],
     "publisher": "INVENIA SYSTEMS",
-    "copyright": "Copyright 2026 INVENIA SYSTEMS",
-    "shortDescription": "Install, run, update and back up the SENTIENT platform"
+    "copyright": "Copyright 2026 INVENIA SYSTEMS"
   }
 }

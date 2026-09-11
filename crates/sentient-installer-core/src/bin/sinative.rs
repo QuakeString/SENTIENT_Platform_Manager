@@ -117,7 +117,7 @@ fn main() {
 /// Lay out the package tree the real installer bundle would ship, from
 /// artifacts staged by the caller under `<root>/payload`.
 ///
-/// Mirrors what IPM's packaging step must produce, so `deploy` is exercised
+/// Mirrors what the Platform Manager's packaging step must produce, so `deploy` is exercised
 /// against the same layout it will see in production.
 fn stage(cfg: &NativeConfig) -> Result<(), String> {
     let payload = cfg.state_dir.parent().unwrap().join("payload");
