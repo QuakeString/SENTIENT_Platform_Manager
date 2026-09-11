@@ -422,6 +422,10 @@ impl NativeOptions {
             load_demo: self.load_demo,
             source,
             jwt_secret: self.jwt_secret.unwrap_or_else(native::generate_secret),
+            // Production licence server unless the wizard is ever taught
+            // otherwise; explicit in the service env so it is visible.
+            license_server_url: "https://license.invenia.in".into(),
+            extra_env: Vec::new(),
         }
     }
 }

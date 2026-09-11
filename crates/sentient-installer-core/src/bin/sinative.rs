@@ -55,8 +55,30 @@ fn cfg_for(root: &str) -> NativeConfig {
         pg_port: 5433,
         load_demo: true,
         source: ArtifactSource::Remote { base_url: String::new() },
+        license_server_url: std::env::var("SINATIVE_LICENSE_SERVER_URL")
+            .unwrap_or_else(|_| "https://license.invenia.in".into()),
+        // SINATIVE_EXTRA_ENV="K=V;K2=V2" — e.g. a short heartbeat interval
+        // so a test run doesn't wait an hour between chain steps.
+        extra_env: std::env::var("SINATIVE_EXTRA_ENV")
+            .unwrap_or_default()
+            .split(';')
+            .filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.trim().into(), v.trim().into())))
+            .collect(),
         jwt_secret: "sinative-harness-secret-key-not-for-production-0123".into(),
     }
+}
+
+/// If the caller pre-staged the offline bundle (the same three files the
+/// packaged installer ships) under `<root>/payload`, install from it rather
+/// than downloading — which is also the only way to exercise the offline
+/// path headlessly.
+fn with_bundle_if_staged(mut cfg: NativeConfig, root: &str) -> NativeConfig {
+    let payload = if root == "-" { PathBuf::from(r"C:\payload") } else { PathBuf::from(root).join("payload") };
+    if native::required_bundle_files().iter().all(|f| payload.join(f).exists()) {
+        println!("using offline bundle in {}", payload.display());
+        cfg.source = ArtifactSource::Bundled { dir: payload };
+    }
+    cfg
 }
 
 fn sink() -> sentient_installer_core::progress::ProgressFn {
@@ -79,6 +101,7 @@ fn main() {
     let (cmd, root) = (args[1].as_str(), args[2].as_str());
     // `-` means "the real default layout" — what the wizard installs.
     let cfg = if root == "-" { cfg_default() } else { cfg_for(root) };
+    let cfg = with_bundle_if_staged(cfg, root);
 
     let result = match cmd {
         "stage" => stage(&cfg),

@@ -87,6 +87,15 @@ pub struct NativeConfig {
     pub pg_port: u16,
     pub load_demo: bool,
     pub source: ArtifactSource,
+    /// Licence server the installed instance phones home to. Written into
+    /// the service environment explicitly rather than left to the binary's
+    /// built-in default, so an operator can see and change it in
+    /// conf/sentient.env. Defaults to production.
+    pub license_server_url: String,
+    /// Extra environment for the service, appended verbatim. What a test
+    /// harness uses to shorten the heartbeat interval, and what an operator
+    /// uses for the odd site-specific override without editing the XML.
+    pub extra_env: Vec<(String, String)>,
     /// Secret for signing JWTs. Generated per install — never defaulted.
     pub jwt_secret: String,
 }
@@ -256,12 +265,56 @@ pub fn is_running(http_port: u16) -> bool {
 
 /// Install and start PostgreSQL with TimescaleDB.
 ///
+/// Name of the redistributable as shipped in the offline bundle and as
+/// published by Microsoft.
+pub const VC_REDIST_EXE: &str = "vc_redist.x64.exe";
+const VC_REDIST_URL: &str = "https://aka.ms/vs/17/release/vc_redist.x64.exe";
+
+/// Install the Visual C++ 2015–2022 x64 runtime if it is missing.
+///
+/// Checks for vcruntime140_1.dll specifically: vcruntime140.dll alone is
+/// not enough for binaries built with VS2019 or later, and a box can easily
+/// have one without the other. Optional in the bundle — when it is absent
+/// and the runtime is missing, the online path downloads it.
+fn ensure_vc_runtime(sink: &ProgressFn, source: &ArtifactSource, dl: &Path) -> Result<(), String> {
+    let system32 = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let dll = Path::new(&system32).join("System32").join("vcruntime140_1.dll");
+    if dll.exists() {
+        return Ok(());
+    }
+    step(sink, "Installing the Visual C++ runtime (PostgreSQL needs it)");
+    let exe = obtain(sink, source, VC_REDIST_EXE, VC_REDIST_URL, dl)?;
+    let res = sys::output_tracked(&exe.to_string_lossy(), &["/install", "/quiet", "/norestart"]);
+    // 3010 = installed, reboot pending; the runtime is usable immediately.
+    let ok = matches!(res, Some((true, _, _)))
+        || matches!(&res, Some((false, out, _)) if sys::decode(out).contains("3010"));
+    if !ok || !dll.exists() {
+        return Err(format!(
+            "The Visual C++ runtime could not be installed ({} is still missing). Install \
+             \"Microsoft Visual C++ 2015-2022 Redistributable (x64)\" from Microsoft and run \
+             setup again.",
+            dll.display()
+        ));
+    }
+    Ok(())
+}
+
 /// **Uses the binaries ZIP, never the EDB graphical installer.** The GUI
 /// installer cannot run in a service/session-0 context: it exits 1 and writes
 /// no log at all, which is impossible to diagnose from a wizard. Extract +
 /// `initdb` + `pg_ctl register` is deterministic and works unattended.
 pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     let dl = cfg.download_dir();
+
+    // ---- Visual C++ runtime ----
+    // PostgreSQL 18's binaries need vcruntime140_1.dll, which a fresh
+    // Windows install does not have (it arrives with Visual Studio, many
+    // games, and most vendor apps — which is why a developer's machine
+    // never shows the problem). Without it postgres.exe dies at load with
+    // STATUS_DLL_NOT_FOUND before printing anything, and initdb reports
+    // an empty error. Found on a clean Windows 10 box during testing.
+    ensure_vc_runtime(&sink, &cfg.source, &dl)?;
+    bail_if_cancelled()?;
 
     // ---- PostgreSQL ----
     if !cfg.pg_bin().join("psql.exe").exists() {
@@ -312,8 +365,26 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         let _ = std::fs::remove_file(&pwfile);
         match res {
             Some((true, _, _)) => {}
-            Some((false, _, err)) => return Err(format!("initdb: {}", sys::decode(&err))),
+            Some((false, out, err)) => {
+                return Err(format!(
+                    "initdb failed: {} {}",
+                    sys::decode(&err).trim(),
+                    sys::decode(&out).trim()
+                ))
+            }
             None => return Err("could not run initdb".into()),
+        }
+        // A zero exit is not proof: on Windows initdb re-launches itself
+        // under a restricted token, and if that child never starts the
+        // parent can still return quietly. The cluster is the evidence.
+        if !cfg.pg_data().join("PG_VERSION").exists() {
+            return Err(
+                "initdb reported success but created no database cluster. On Windows this \
+                 usually means postgres.exe cannot start at all — most often a missing \
+                 Visual C++ runtime (vcruntime140_1.dll) — or that initdb was run from a \
+                 non-interactive session with an elevated token."
+                    .into(),
+            );
         }
     } else {
         log(&sink, "database cluster already initialised");
@@ -533,8 +604,12 @@ fn service_env(cfg: &NativeConfig) -> Vec<(String, String)> {
         ("HTTP_PORT".into(), cfg.http_port.to_string()),
         ("MQTT_PORT".into(), cfg.mqtt_port.to_string()),
         ("COAP_PORT".into(), cfg.coap_port.to_string()),
+        ("LICENSE_SERVER_URL".into(), cfg.license_server_url.clone()),
         ("RUST_LOG".into(), "info".into()),
     ]
+    .into_iter()
+    .chain(cfg.extra_env.iter().cloned())
+    .collect()
 }
 
 /// Escape the few characters that would otherwise break the service XML.
