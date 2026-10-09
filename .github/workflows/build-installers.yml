@@ -3,7 +3,8 @@ name: build-installers
 # Builds the Windows installer and the Linux packages (.deb + AppImage). Run
 # manually (Actions -> build-installers -> Run workflow, pick debug/release) or
 # on a version tag (debug by default — fast, for iteration; trigger a manual
-# release build for a shippable installer).
+# release build for a shippable installer). Also runs (debug) on a PR that edits
+# this file, so a change to the installer build is proven before it merges.
 on:
   workflow_dispatch:
     inputs:
@@ -14,6 +15,8 @@ on:
         default: debug
   push:
     tags: ["v*"]
+  pull_request:
+    paths: [".github/workflows/build-installers.yml"]
 
 env:
   CARGO_TERM_COLOR: always
