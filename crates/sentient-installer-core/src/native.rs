@@ -19,6 +19,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::progress::{Progress, ProgressFn};
+use crate::stack::{self, ChTuning, ClickhouseConn, Flavor, PgTuning, Tuning};
 use crate::sys;
 
 // ---------------------------------------------------------------------------
@@ -98,6 +99,19 @@ pub struct NativeConfig {
     pub extra_env: Vec<(String, String)>,
     /// Secret for signing JWTs. Generated per install — never defaulted.
     pub jwt_secret: String,
+    /// Where telemetry lives. Windows installs TimescaleDB (the only tier the
+    /// bundled PostgreSQL ships); Linux offers stock and ClickHouse too.
+    pub flavor: Flavor,
+    /// The same knobs the Docker engine writes into the compose file.
+    pub tuning: Tuning,
+    pub pg: PgTuning,
+    /// ClickHouse (Linux, hybrid flavour only).
+    pub ch: ChTuning,
+    pub ch_db: String,
+    pub ch_user: String,
+    pub ch_password: String,
+    pub ch_http_port: u16,
+    pub ch_native_port: u16,
 }
 
 impl NativeConfig {
@@ -241,9 +255,16 @@ fn service_state(name: &str) -> String {
 /// True when the prerequisites are provisioned: PostgreSQL present, its service
 /// registered, and TimescaleDB's extension files in place.
 pub fn is_ready(cfg: &NativeConfig) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::native_linux::is_ready(cfg);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
     cfg.pg_bin().join("psql.exe").exists()
         && cfg.pg_dir.join("share").join("extension").join("timescaledb.control").exists()
         && service_exists(PG_SERVICE)
+    }
 }
 
 /// Is the platform actually serving? Same contract as `distro::is_running` — an
@@ -304,6 +325,12 @@ fn ensure_vc_runtime(sink: &ProgressFn, source: &ArtifactSource, dl: &Path) -> R
 /// no log at all, which is impossible to diagnose from a wizard. Extract +
 /// `initdb` + `pg_ctl register` is deterministic and works unattended.
 pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::native_linux::setup(sink, cfg);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
     let dl = cfg.download_dir();
 
     // ---- Visual C++ runtime ----
@@ -471,6 +498,7 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
 
     sink(Progress::Done { message: "Database prerequisites ready".into() });
     Ok(())
+    }
 }
 
 /// Poll until the cluster accepts connections. `pg_ctl register` returns as soon
@@ -503,6 +531,12 @@ fn wait_for_postgres(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String
 ///
 /// Assumes [`setup`] has run.
 pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::native_linux::deploy(sink, cfg);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
     if !is_ready(cfg) {
         return Err("database prerequisites are not installed — run setup first".into());
     }
@@ -580,6 +614,7 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
     Err("SENTIENT did not start listening within 90s — check the service log".into())
+    }
 }
 
 /// The environment the server needs, in one place.
@@ -587,7 +622,7 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
 /// Returned as pairs rather than a file because the service wrapper injects
 /// them as `<env>` elements — see [`register_app_service`] for why an env file
 /// is not an option.
-fn service_env(cfg: &NativeConfig) -> Vec<(String, String)> {
+pub(crate) fn service_env(cfg: &NativeConfig) -> Vec<(String, String)> {
     let reports = cfg.state_dir.join("reports");
     let vc = cfg.state_dir.join("vc-repos");
     let _ = std::fs::create_dir_all(&reports);
@@ -601,15 +636,27 @@ fn service_env(cfg: &NativeConfig) -> Vec<(String, String)> {
         ("REPORT_OUTPUT_DIR".into(), reports.display().to_string()),
         ("VC_REPOS_PATH".into(), vc.display().to_string()),
         ("JWT_SECRET".into(), cfg.jwt_secret.clone()),
-        ("HTTP_PORT".into(), cfg.http_port.to_string()),
-        ("MQTT_PORT".into(), cfg.mqtt_port.to_string()),
-        ("COAP_PORT".into(), cfg.coap_port.to_string()),
+        // The server binds SERVER__HOST:SERVER__PORT. (MQTT and CoAP listen
+        // ports are Connectivity settings inside SENTIENT, not environment.)
+        ("SERVER__HOST".into(), "0.0.0.0".into()),
+        ("SERVER__PORT".into(), cfg.http_port.to_string()),
         ("LICENSE_SERVER_URL".into(), cfg.license_server_url.clone()),
-        ("RUST_LOG".into(), "info".into()),
     ]
     .into_iter()
+    .chain(stack::storage_env(cfg.flavor, Some(&clickhouse_conn(cfg)), &cfg.tuning))
+    .chain(stack::tuning_env(&cfg.tuning))
     .chain(cfg.extra_env.iter().cloned())
     .collect()
+}
+
+/// How the server reaches a ClickHouse on the same machine (Linux hybrid).
+pub(crate) fn clickhouse_conn(cfg: &NativeConfig) -> ClickhouseConn {
+    ClickhouseConn {
+        url: format!("http://127.0.0.1:{}", cfg.ch_http_port),
+        database: cfg.ch_db.clone(),
+        user: cfg.ch_user.clone(),
+        password: cfg.ch_password.clone(),
+    }
 }
 
 /// Escape the few characters that would otherwise break the service XML.
@@ -796,6 +843,12 @@ pub struct NativeStatus {
 }
 
 pub fn status(cfg: &NativeConfig) -> NativeStatus {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::native_linux::status(cfg);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
     let services = [PG_SERVICE, APP_SERVICE]
         .iter()
         .map(|n| {
@@ -817,18 +870,26 @@ pub fn status(cfg: &NativeConfig) -> NativeStatus {
         running: is_running(cfg.http_port),
         services,
     }
+    }
 }
 
 /// start | stop | restart, applied in dependency order.
-pub fn control(sink: ProgressFn, action: &str) -> Result<(), String> {
+pub fn control(sink: ProgressFn, cfg: &NativeConfig, action: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::native_linux::control(sink, cfg, action);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+    let _ = cfg;
     let ordered: Vec<&str> = match action {
         // Bring the database up first and take it down last.
         "start" => vec![PG_SERVICE, APP_SERVICE],
         "stop" => vec![APP_SERVICE, PG_SERVICE],
         "restart" => {
-            control(sink.clone(), "stop")?;
+            control(sink.clone(), cfg, "stop")?;
             std::thread::sleep(std::time::Duration::from_secs(2));
-            return control(sink, "start");
+            return control(sink, cfg, "start");
         }
         other => return Err(format!("unknown action: {other}")),
     };
@@ -840,9 +901,16 @@ pub fn control(sink: ProgressFn, action: &str) -> Result<(), String> {
         let _ = sc(&[action, svc]);
     }
     Ok(())
+    }
 }
 
 pub fn logs(cfg: &NativeConfig, tail: u32) -> String {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::native_linux::logs(cfg, tail);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
     let path = cfg.install_dir.join("logs").join(format!("{APP_SERVICE}.out.log"));
     let Ok(text) = std::fs::read_to_string(&path) else {
         return format!("no log file yet at {}", path.display());
@@ -850,6 +918,7 @@ pub fn logs(cfg: &NativeConfig, tail: u32) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.len().saturating_sub(tail as usize);
     lines[start..].join("\n")
+    }
 }
 
 /// Replace the platform binaries and UI in place, then restart.
@@ -857,6 +926,12 @@ pub fn logs(cfg: &NativeConfig, tail: u32) -> String {
 /// The database is untouched: the server applies pending migrations itself at
 /// boot, exactly as the Docker mode relies on.
 pub fn update(sink: ProgressFn, cfg: &NativeConfig, payload: &Path) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::native_linux::update(sink, cfg, payload);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
     step(&sink, "Stopping SENTIENT");
     let _ = sc(&["stop", APP_SERVICE]);
     std::thread::sleep(std::time::Duration::from_secs(3));
@@ -876,6 +951,7 @@ pub fn update(sink: ProgressFn, cfg: &NativeConfig, payload: &Path) -> Result<()
     let _ = sc(&["start", APP_SERVICE]);
     sink(Progress::Done { message: "Update applied".into() });
     Ok(())
+    }
 }
 
 fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
@@ -895,6 +971,12 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
 
 /// Remove the platform but KEEP the database cluster and its data.
 pub fn uninstall(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::native_linux::uninstall(sink, cfg);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
     step(&sink, "Stopping and removing the SENTIENT service");
     remove_uninstall_entry();
     let _ = sc(&["stop", APP_SERVICE]);
@@ -912,10 +994,17 @@ pub fn uninstall(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         message: "SENTIENT removed. The database cluster was left in place.".into(),
     });
     Ok(())
+    }
 }
 
 /// Full teardown, including PostgreSQL and every byte of data. Destructive.
 pub fn cleanup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::native_linux::cleanup(sink, cfg);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
     uninstall(sink.clone(), cfg)?;
     step(&sink, "Removing PostgreSQL");
     let _ = sc(&["stop", PG_SERVICE]);
@@ -936,6 +1025,7 @@ pub fn cleanup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     }
     sink(Progress::Done { message: "Everything removed.".into() });
     Ok(())
+    }
 }
 
 /// Delete a directory tree, tolerating the handles Windows may still hold for a
@@ -957,20 +1047,40 @@ fn remove_tree_retrying(dir: &Path) {
 /// What an offline bundle has to contain for [`setup`] and [`deploy`] to run
 /// with no network at all. Surfaced so the packaging step and the preflight
 /// check agree on one list instead of drifting apart.
-pub fn required_bundle_files() -> &'static [&'static str] {
-    &[PG_ZIP, TSDB_ZIP, "sentient-payload.tar"]
+pub fn required_bundle_files() -> Vec<String> {
+    if cfg!(windows) {
+        vec![PG_ZIP.into(), TSDB_ZIP.into(), "sentient-payload.tar".into()]
+    } else {
+        // Databases come from the distribution's packages on Linux; only the
+        // platform itself has to be carried.
+        vec![linux_payload_name()]
+    }
+}
+
+/// `sentient-payload-linux-<arch>.tar` — the Linux counterpart of
+/// `sentient-payload.tar`, arch-tagged because a Pi and a PC need different
+/// binaries and one bundle directory may hold both.
+pub fn linux_payload_name() -> String {
+    format!("sentient-payload-linux-{}.tar", std::env::consts::ARCH)
 }
 
 /// Where a bundled payload lives: a `payload` directory beside the Platform
 /// Manager's own executable, which is what the installer lays down for an
 /// offline install. Returns None when this is an online build.
 pub fn bundled_payload_dir() -> Option<PathBuf> {
-    let dir = std::env::current_exe().ok()?.parent()?.join("payload");
-    if required_bundle_files().iter().all(|f| dir.join(f).exists()) {
-        Some(dir)
-    } else {
-        None
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(beside) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("payload"))) {
+        candidates.push(beside);
     }
+    // A Linux package installs the binary in /usr/bin; its payload lives in
+    // the package's own share directory instead.
+    #[cfg(not(windows))]
+    {
+        candidates.push(PathBuf::from("/usr/share/sentient-platform-manager/payload"));
+        candidates.push(PathBuf::from("/opt/sentient-platform-manager/payload"));
+    }
+    let required = required_bundle_files();
+    candidates.into_iter().find(|dir| required.iter().all(|f| dir.join(f).exists()))
 }
 
 /// Unpack the SENTIENT payload (server, installer, UI, data, service wrapper)
@@ -1018,9 +1128,8 @@ pub fn verify_bundle(src: &ArtifactSource) -> Result<(), String> {
     let ArtifactSource::Bundled { dir } = src else {
         return Ok(());
     };
-    let missing: Vec<&str> = required_bundle_files()
-        .iter()
-        .copied()
+    let missing: Vec<String> = required_bundle_files()
+        .into_iter()
         .filter(|f| !dir.join(f).exists())
         .collect();
     if missing.is_empty() {
@@ -1060,7 +1169,7 @@ pub fn generate_secret() -> String {
 
 /// True when this build can offer the native mode at all.
 pub fn supported() -> bool {
-    cfg!(windows)
+    cfg!(any(windows, target_os = "linux"))
 }
 
 #[allow(dead_code)]

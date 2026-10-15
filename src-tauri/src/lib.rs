@@ -67,14 +67,18 @@ fn cancel_step() {
 /// Tear down a partial/cancelled deploy (containers, volumes, dangling images).
 /// Leaves WSL + Docker in place so the install can be retried cleanly.
 #[tauri::command]
-async fn cleanup_install(on_progress: Channel<InstProgress>) -> Result<(), String> {
+async fn cleanup_install(
+    on_progress: Channel<InstProgress>,
+    config: Option<distro::DeployConfig>,
+) -> Result<(), String> {
     sentient_installer_core::cancel::reset();
+    let cfg = config.unwrap_or_default();
     let ch = on_progress;
     tauri::async_runtime::spawn_blocking(move || {
         let sink: InstProgressFn = Arc::new(move |p| {
             let _ = ch.send(p);
         });
-        distro::cleanup(sink)
+        distro::cleanup(sink, &cfg)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -82,6 +86,9 @@ async fn cleanup_install(on_progress: Channel<InstProgress>) -> Result<(), Strin
 
 #[tauri::command]
 async fn wsl_ready() -> bool {
+    if cfg!(not(windows)) {
+        return true; // Docker runs on the host itself; there is no WSL phase
+    }
     tauri::async_runtime::spawn_blocking(wsl::is_ready).await.unwrap_or(false)
 }
 
@@ -149,7 +156,10 @@ fn open_sentient(port: Option<u16>) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        let _ = port;
+        std::process::Command::new("xdg-open")
+            .arg(format!("http://localhost:{port}"))
+            .spawn()
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -248,15 +258,17 @@ async fn create_kiosk_shortcut(
 async fn uninstall_sentient(
     app: tauri::AppHandle,
     on_progress: Channel<InstProgress>,
+    config: Option<distro::DeployConfig>,
 ) -> Result<(), String> {
     sentient_installer_core::cancel::reset();
     let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let cfg = config.unwrap_or_default();
     let ch = on_progress;
     let res = tauri::async_runtime::spawn_blocking(move || {
         let sink: InstProgressFn = Arc::new(move |p| {
             let _ = ch.send(p);
         });
-        distro::uninstall(sink.clone())?;
+        distro::uninstall(sink.clone(), &cfg)?;
         kiosk::remove_shortcuts(&sink, &dir);
         Ok::<(), String>(())
     })
@@ -306,44 +318,54 @@ fn remove_autostart() {
 // ---- manage the deployed stack (M3: Status + Update) -------------------------
 
 #[tauri::command]
-async fn stack_status(port: Option<u16>) -> distro::StackStatus {
-    let port = port.unwrap_or(8080);
-    tauri::async_runtime::spawn_blocking(move || distro::status(port))
+async fn stack_status(config: Option<distro::DeployConfig>) -> distro::StackStatus {
+    let cfg = config.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || distro::status(&cfg))
         .await
         .unwrap_or(distro::StackStatus { installed: false, running: false, containers: Vec::new() })
 }
 
 #[tauri::command]
-async fn stack_control(action: String, on_progress: Channel<InstProgress>) -> Result<(), String> {
+async fn stack_control(
+    action: String,
+    on_progress: Channel<InstProgress>,
+    config: Option<distro::DeployConfig>,
+) -> Result<(), String> {
     sentient_installer_core::cancel::reset();
+    let cfg = config.unwrap_or_default();
     let ch = on_progress;
     tauri::async_runtime::spawn_blocking(move || {
         let sink: InstProgressFn = Arc::new(move |p| {
             let _ = ch.send(p);
         });
-        distro::control(sink, &action)
+        distro::control(sink, &cfg, &action)
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn stack_logs(tail: Option<u32>) -> String {
+async fn stack_logs(tail: Option<u32>, config: Option<distro::DeployConfig>) -> String {
     let tail = tail.unwrap_or(200);
-    tauri::async_runtime::spawn_blocking(move || distro::logs(tail))
+    let cfg = config.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || distro::logs(&cfg, tail))
         .await
         .unwrap_or_default()
 }
 
 #[tauri::command]
-async fn update_stack(on_progress: Channel<InstProgress>) -> Result<(), String> {
+async fn update_stack(
+    on_progress: Channel<InstProgress>,
+    config: Option<distro::DeployConfig>,
+) -> Result<(), String> {
     sentient_installer_core::cancel::reset();
+    let cfg = config.unwrap_or_default();
     let ch = on_progress;
     tauri::async_runtime::spawn_blocking(move || {
         let sink: InstProgressFn = Arc::new(move |p| {
             let _ = ch.send(p);
         });
-        distro::update(sink)
+        distro::update(sink, &cfg)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -354,23 +376,19 @@ async fn update_stack(on_progress: Channel<InstProgress>) -> Result<(), String> 
 // Mirrors the Docker commands above one-for-one so the frontend can pick a mode
 // and call the matching pair. The engine lives in `installer_core::native`.
 
-/// What the wizard sends. Every field is optional so the UI can send only what
-/// the operator changed; the defaults are the supported layout.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+/// What the wizard sends for a native install: the same stack configuration
+/// the Docker mode uses (flattened — database, ports, flavour, tuning) plus
+/// where things go on disk. Every field is optional; the defaults are the
+/// supported layout for the host OS.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
 pub struct NativeOptions {
+    #[serde(flatten)]
+    pub stack: distro::DeployConfig,
     pub install_dir: Option<String>,
     pub pg_dir: Option<String>,
     pub state_dir: Option<String>,
-    pub db_name: Option<String>,
-    pub db_user: Option<String>,
-    pub db_password: Option<String>,
     pub pg_superuser_password: Option<String>,
-    pub http_port: Option<u16>,
-    pub mqtt_port: Option<u16>,
-    pub coap_port: Option<u16>,
-    pub pg_port: Option<u16>,
-    pub load_demo: bool,
     /// Offline install: directory holding the pre-downloaded archives. When
     /// absent the engine fetches them over the network instead.
     pub bundle_dir: Option<String>,
@@ -382,18 +400,6 @@ pub struct NativeOptions {
     pub jwt_secret: Option<String>,
 }
 
-impl Default for NativeOptions {
-    fn default() -> Self {
-        Self {
-            install_dir: None, pg_dir: None, state_dir: None,
-            db_name: None, db_user: None, db_password: None,
-            pg_superuser_password: None,
-            http_port: None, mqtt_port: None, coap_port: None, pg_port: None,
-            load_demo: false, bundle_dir: None, base_url: None, jwt_secret: None,
-        }
-    }
-}
-
 impl NativeOptions {
     fn into_config(self) -> native::NativeConfig {
         let source = match (&self.bundle_dir, &self.base_url) {
@@ -401,31 +407,40 @@ impl NativeOptions {
             (None, Some(url)) => native::ArtifactSource::Remote { base_url: url.clone() },
             (None, None) => native::ArtifactSource::Remote { base_url: String::new() },
         };
+        let (install_dir, pg_dir, state_dir) = if cfg!(windows) {
+            (r"C:\Program Files\SENTIENT", r"C:\PostgreSQL\18", r"C:\ProgramData\SENTIENT")
+        } else {
+            ("/opt/sentient", "", "/var/lib/sentient")
+        };
+        let st = self.stack;
         native::NativeConfig {
-            install_dir: PathBuf::from(
-                self.install_dir.unwrap_or_else(|| r"C:\Program Files\SENTIENT".into()),
-            ),
-            pg_dir: PathBuf::from(self.pg_dir.unwrap_or_else(|| r"C:\PostgreSQL\18".into())),
-            state_dir: PathBuf::from(
-                self.state_dir.unwrap_or_else(|| r"C:\ProgramData\SENTIENT".into()),
-            ),
-            db_name: self.db_name.unwrap_or_else(|| "sentient".into()),
-            db_user: self.db_user.unwrap_or_else(|| "sentient".into()),
-            db_password: self.db_password.unwrap_or_else(|| "sentient".into()),
-            pg_superuser_password: self
-                .pg_superuser_password
-                .unwrap_or_else(|| "sentient".into()),
-            http_port: self.http_port.unwrap_or(8080),
-            mqtt_port: self.mqtt_port.unwrap_or(1883),
-            coap_port: self.coap_port.unwrap_or(5683),
-            pg_port: self.pg_port.unwrap_or(5432),
-            load_demo: self.load_demo,
+            install_dir: PathBuf::from(self.install_dir.unwrap_or_else(|| install_dir.into())),
+            pg_dir: PathBuf::from(self.pg_dir.unwrap_or_else(|| pg_dir.into())),
+            state_dir: PathBuf::from(self.state_dir.unwrap_or_else(|| state_dir.into())),
+            db_name: st.db_name,
+            db_user: st.db_user,
+            db_password: st.db_password,
+            pg_superuser_password: self.pg_superuser_password.unwrap_or_else(|| "sentient".into()),
+            http_port: st.http_port,
+            mqtt_port: st.mqtt_port,
+            coap_port: st.coap_port,
+            pg_port: st.pg_port,
+            load_demo: st.load_demo,
             source,
             jwt_secret: self.jwt_secret.unwrap_or_else(native::generate_secret),
-            // Production licence server unless the wizard is ever taught
-            // otherwise; explicit in the service env so it is visible.
-            license_server_url: "https://license.invenia.in".into(),
-            extra_env: Vec::new(),
+            license_server_url: st.license_server_url,
+            extra_env: Vec::new(), // `tuning.extra_env` carries the operator's overrides
+            // Windows ships one tier (the bundled PostgreSQL has TimescaleDB);
+            // Linux honours the wizard's choice.
+            flavor: if cfg!(windows) { sentient_installer_core::stack::Flavor::Timescaledb } else { st.flavor },
+            tuning: st.tuning,
+            pg: st.pg,
+            ch: st.ch,
+            ch_db: st.ch_db,
+            ch_user: st.ch_user,
+            ch_password: st.ch_password,
+            ch_http_port: st.ch_http_port,
+            ch_native_port: st.ch_native_port,
         }
     }
 }
@@ -436,6 +451,29 @@ impl NativeOptions {
 #[tauri::command]
 fn native_bundle_dir() -> Option<String> {
     native::bundled_payload_dir().map(|p| p.display().to_string())
+}
+
+/// What the wizard is running on. Everything OS-specific in the UI — which
+/// checks run, which deployment modes are offered, what they are called —
+/// keys off this rather than off compile-time assumptions in the HTML.
+#[derive(serde::Serialize)]
+struct HostOs {
+    os: &'static str,
+    arch: &'static str,
+}
+
+#[tauri::command]
+fn host_os() -> HostOs {
+    HostOs { os: std::env::consts::OS, arch: std::env::consts::ARCH }
+}
+
+/// Preflight for a specific (OS, mode) pair; see `checks::run_for`.
+#[tauri::command]
+async fn preflight_for(mode: String, offline: Option<bool>, ports: Option<Vec<(u16, String)>>) -> Vec<Check> {
+    let offline = offline.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || sentient_installer_core::checks::run_for(&mode, offline, ports.as_deref()))
+        .await
+        .unwrap_or_default()
 }
 
 /// Can this build offer the native mode? The wizard hides the choice when not.
@@ -520,13 +558,15 @@ async fn native_deploy(
 async fn native_control(
     on_progress: Channel<InstProgress>,
     action: String,
+    options: Option<NativeOptions>,
 ) -> Result<(), String> {
+    let cfg = options.unwrap_or_default().into_config();
     let ch = on_progress;
     tauri::async_runtime::spawn_blocking(move || {
         let sink: InstProgressFn = Arc::new(move |p| {
             let _ = ch.send(p);
         });
-        native::control(sink, &action)
+        native::control(sink, &cfg, &action)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -862,7 +902,7 @@ pub fn run() {
             kiosk_browser, create_kiosk_shortcut, uninstall_sentient,
             stack_status, stack_control, stack_logs, update_stack,
             // native mode (no WSL2/Docker)
-            native_supported, native_preflight, native_verify_bundle, native_bundle_dir, native_status, native_setup,
+            native_supported, host_os, preflight_for, native_preflight, native_verify_bundle, native_bundle_dir, native_status, native_setup,
             native_deploy, native_control, native_logs, native_uninstall, native_cleanup,
             get_state, set_state, arm_resume, reboot_now, ensure_autostart,
             // backup

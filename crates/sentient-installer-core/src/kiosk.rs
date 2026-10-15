@@ -1,6 +1,8 @@
-//! Kiosk launcher (Windows): detect an installed browser (Chrome/Firefox),
-//! install Chrome silently if none is found, and create Desktop + Start Menu
-//! shortcuts that open SENTIENT full-screen (`--kiosk`) in that browser. The
+//! Kiosk launcher: detect an installed browser (Chrome/Firefox), install
+//! Chrome silently if none is found (Windows), and create Desktop + menu
+//! shortcuts that open SENTIENT full-screen (`--kiosk`) in that browser. On
+//! Linux the shortcuts are `.desktop` entries for whichever Chromium-family
+//! browser or Firefox is on PATH. The
 //! shortcut carries the SENTIENT icon (borrowed from the manager exe). Taskbar
 //! pinning is intentionally not attempted — Windows 10/11 block it for
 //! automation; the user can right-click → Pin to taskbar in one step.
@@ -25,7 +27,6 @@ impl Browser {
         }
     }
     /// Kiosk command-line arguments (the URL is appended by the caller).
-    #[cfg(windows)]
     fn kiosk_args(self, port: u16) -> String {
         match self {
             Browser::Chrome => format!(
@@ -107,7 +108,43 @@ pub fn detect() -> Option<(Browser, PathBuf)> {
         None
     }
     #[cfg(not(windows))]
-    None
+    {
+        for (bin, b) in [
+            ("chromium", Browser::Chrome), ("chromium-browser", Browser::Chrome),
+            ("google-chrome", Browser::Chrome), ("google-chrome-stable", Browser::Chrome),
+            ("brave", Browser::Chrome), ("brave-browser", Browser::Chrome), ("microsoft-edge", Browser::Chrome),
+            ("firefox", Browser::Firefox), ("firefox-esr", Browser::Firefox),
+        ] {
+            if let Some(p) = which(bin) {
+                return Some((b, p));
+            }
+        }
+        None
+    }
+}
+
+#[cfg(not(windows))]
+fn which(bin: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).map(|d| d.join(bin)).find(|p| p.is_file())
+}
+
+/// Where a `.desktop` launcher goes for the current user: the applications
+/// menu, and the Desktop folder when there is one.
+#[cfg(not(windows))]
+fn desktop_entry_paths() -> Vec<PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let data_home = std::env::var("XDG_DATA_HOME").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| format!("{home}/.local/share"));
+    let mut v = vec![PathBuf::from(format!("{data_home}/applications/sentient-kiosk.desktop"))];
+    let desktop = std::process::Command::new("xdg-user-dir").arg("DESKTOP").output().ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("{home}/Desktop"));
+    if Path::new(&desktop).is_dir() {
+        v.push(PathBuf::from(format!("{desktop}/sentient-kiosk.desktop")));
+    }
+    v
 }
 
 /// A browser we can drive in kiosk mode — the existing one, or Chrome installed
@@ -210,9 +247,29 @@ foreach ($dir in $targets) {{
     }
     #[cfg(not(windows))]
     {
-        let _ = (port, work_dir);
-        sink(Progress::Error { message: "Kiosk shortcut is Windows-only.".into() });
-        Err("Windows only".into())
+        use std::os::unix::fs::PermissionsExt;
+        let _ = work_dir;
+        let (browser, exe) = detect().ok_or_else(|| {
+            "No supported browser found (Chromium, Chrome, Brave, Edge or Firefox). Install one and add the kiosk shortcut again.".to_string()
+        })?;
+        sink(Progress::Step { name: "Creating the SENTIENT desktop launcher".into() });
+        let entry = format!(
+            "[Desktop Entry]\nType=Application\nName=SENTIENT\nComment=Launch SENTIENT (kiosk mode)\n\
+             Exec={} {}\nIcon=sentient-platform-manager\nTerminal=false\nCategories=Network;\nStartupNotify=true\n",
+            exe.display(), browser.kiosk_args(port)
+        );
+        for path in desktop_entry_paths() {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).ok();
+            }
+            std::fs::write(&path, &entry).map_err(|e| format!("write {}: {e}", path.display()))?;
+            // Desktop files on the Desktop folder need the exec bit for most
+            // environments to offer "Launch" rather than "Untrusted".
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+            sink(Progress::Log { line: format!("launcher: {}", path.display()) });
+        }
+        sink(Progress::Done { message: format!("Desktop launcher created — opens SENTIENT in {}.", browser.label()) });
+        Ok(())
     }
 }
 
@@ -244,6 +301,11 @@ pub fn remove_shortcuts(sink: &ProgressFn, work_dir: &Path) {
     }
     #[cfg(not(windows))]
     {
-        let _ = (sink, work_dir);
+        let _ = work_dir;
+        for path in desktop_entry_paths() {
+            if path.exists() && std::fs::remove_file(&path).is_ok() {
+                sink(Progress::Log { line: format!("removed: {}", path.display()) });
+            }
+        }
     }
 }

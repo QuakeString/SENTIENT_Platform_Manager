@@ -1,6 +1,6 @@
 # Maintainer: INVENIA SYSTEMS <support@invenia.in>
 pkgname=sentient-platform-manager
-pkgver=0.6.6
+pkgver=0.7.0
 pkgrel=1
 pkgdesc="Install, run, update and back up the SENTIENT platform"
 arch=('x86_64')

@@ -22,6 +22,11 @@ path = "src/bin/sicheck.rs"
 name = "sinative"
 path = "src/bin/sinative.rs"
 
+# Headless driver for the Docker deployment engine.
+[[bin]]
+name = "sidocker"
+path = "src/bin/sidocker.rs"
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

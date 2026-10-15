@@ -4,6 +4,8 @@
 pub mod cancel;
 pub mod checks;
 pub mod distro;
+pub(crate) mod exec;
+pub mod stack;
 pub mod kiosk;
 /// Native Windows deployment (PostgreSQL + TimescaleDB + the server as a
 /// service) — the no-Docker, no-WSL alternative to [`distro`].
@@ -11,6 +13,10 @@ pub mod kiosk;
 /// hash to. Keeps the download host out of the code.
 pub mod manifest;
 pub mod native;
+/// Native Linux deployment (distribution PostgreSQL, optional ClickHouse,
+/// SENTIENT as a systemd unit) — what [`native`] delegates to on Linux.
+#[cfg(target_os = "linux")]
+pub mod native_linux;
 pub mod progress;
 mod sys;
 pub mod wsl;

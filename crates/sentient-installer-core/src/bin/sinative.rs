@@ -1,4 +1,5 @@
-//! `sinative` — drive the native Windows deployment engine headlessly.
+//! `sinative` — drive the native deployment engine headlessly (Windows
+//! services or Linux systemd, whichever this binary was built for).
 //!
 //! Companion to `sicheck`: the same "exercise the core without the GUI" idea,
 //! but for [`native`] rather than the preflight checks. It is a test harness,
@@ -22,14 +23,21 @@ use std::sync::Arc;
 
 use sentient_installer_core::native::{self, ArtifactSource, NativeConfig};
 use sentient_installer_core::progress::Progress;
+use sentient_installer_core::stack::{ChTuning, Flavor, PgTuning, Tuning};
 
 /// Production defaults, matching `NativeOptions::default` in the Tauri layer so
 /// the harness exercises exactly the layout the wizard will install.
 fn cfg_default() -> NativeConfig {
     let mut c = cfg_for("C:\\_unused");
-    c.install_dir = PathBuf::from(r"C:\Program Files\SENTIENT");
-    c.pg_dir = PathBuf::from(r"C:\PostgreSQL\18");
-    c.state_dir = PathBuf::from(r"C:\ProgramData\SENTIENT");
+    if cfg!(windows) {
+        c.install_dir = PathBuf::from(r"C:\Program Files\SENTIENT");
+        c.pg_dir = PathBuf::from(r"C:\PostgreSQL\18");
+        c.state_dir = PathBuf::from(r"C:\ProgramData\SENTIENT");
+    } else {
+        c.install_dir = PathBuf::from("/opt/sentient");
+        c.pg_dir = PathBuf::new();
+        c.state_dir = PathBuf::from("/var/lib/sentient");
+    }
     c.http_port = 8080;
     c.mqtt_port = 1883;
     c.coap_port = 5683;
@@ -65,6 +73,20 @@ fn cfg_for(root: &str) -> NativeConfig {
             .filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.trim().into(), v.trim().into())))
             .collect(),
         jwt_secret: "sinative-harness-secret-key-not-for-production-0123".into(),
+        // SINATIVE_FLAVOR=stock|timescaledb|clickhouse. Windows only has
+        // TimescaleDB; Linux defaults to the reference hybrid.
+        flavor: std::env::var("SINATIVE_FLAVOR")
+            .ok()
+            .and_then(|v| Flavor::parse(&v))
+            .unwrap_or(if cfg!(windows) { Flavor::Timescaledb } else { Flavor::Clickhouse }),
+        tuning: Tuning::default(),
+        pg: PgTuning::default(),
+        ch: ChTuning::default(),
+        ch_db: "sentient".into(),
+        ch_user: "sentient".into(),
+        ch_password: "sentient".into(),
+        ch_http_port: 8123,
+        ch_native_port: 9000,
     }
 }
 
@@ -73,7 +95,11 @@ fn cfg_for(root: &str) -> NativeConfig {
 /// than downloading — which is also the only way to exercise the offline
 /// path headlessly.
 fn with_bundle_if_staged(mut cfg: NativeConfig, root: &str) -> NativeConfig {
-    let payload = if root == "-" { PathBuf::from(r"C:\payload") } else { PathBuf::from(root).join("payload") };
+    let payload = if root == "-" {
+        PathBuf::from(if cfg!(windows) { r"C:\payload" } else { "/var/lib/sentient-payload" })
+    } else {
+        PathBuf::from(root).join("payload")
+    };
     if native::required_bundle_files().iter().all(|f| payload.join(f).exists()) {
         println!("using offline bundle in {}", payload.display());
         cfg.source = ArtifactSource::Bundled { dir: payload };
@@ -118,7 +144,7 @@ fn main() {
         }
         "control" => {
             let action = args.get(3).map(|s| s.as_str()).unwrap_or("restart");
-            native::control(sink(), action)
+            native::control(sink(), &cfg, action)
         }
         "logs" => {
             println!("{}", native::logs(&cfg, 40));

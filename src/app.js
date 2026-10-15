@@ -450,6 +450,9 @@ function toggleEncrypt() {
 }
 
 async function init() {
+  try { HOST = await invoke("host_os"); } catch { /* pre-host_os backend: assume Windows */ }
+  renderModes();
+  renderConfigForm();
   initTheme();
   updateGating();
   if (!invoke) return;
@@ -510,10 +513,6 @@ init();
 // ===========================================================================
 const STEPS = ["checks", "components", "configure", "install"];
 const CHECK_ICON = { pass: "i-pass", setup: "i-todo", fail: "i-fail", unknown: "i-unknown" };
-const CFG_DEFAULTS = {
-  db_name: "sentient", db_user: "sentient", db_password: "sentient",
-  http_port: 8080, mqtt_port: 1883, coap_port: 5683, load_demo: false,
-};
 let installing = false; // guard against double-starts
 
 function showStep(name) {
@@ -544,16 +543,54 @@ function renderChecks(list) {
   const fails = list.filter((c) => c.status === "fail");
   const setups = list.filter((c) => c.status === "setup");
   const s = $("checksSummary");
+  const modeTitle = (MODES[isLinux() ? "linux" : "windows"].find((m) => m.id === deployMode()) || {}).title || deployMode();
   if (fails.length) {
+    // The checks depend on the mode chosen on the NEXT step, so a blocker
+    // here must not trap the operator on this step: they may be about to pick
+    // the other mode. The Install step re-checks the final choice and gates
+    // there instead.
     s.className = "summary bad";
-    s.textContent = `${fails.length} blocker${fails.length > 1 ? "s" : ""} must be resolved before installing.`;
-    $("toComponents").disabled = true;
+    s.innerHTML = `${fails.length} blocker${fails.length > 1 ? "s" : ""} for “${modeTitle}”. Resolve ${fails.length > 1 ? "them" : "it"}, or choose a different way to run SENTIENT on the next step.`;
   } else {
     s.className = "summary";
     s.textContent = setups.length
-      ? `Ready — the installer will set up ${setups.length} item${setups.length > 1 ? "s" : ""}.`
-      : "Everything's ready.";
-    $("toComponents").disabled = false;
+      ? `Ready for “${modeTitle}” — the installer will set up ${setups.length} item${setups.length > 1 ? "s" : ""}.`
+      : `Everything's ready for “${modeTitle}”.`;
+  }
+  $("toComponents").disabled = false;
+  return fails;
+}
+
+/// The TCP ports the chosen configuration binds, for the port check.
+function configuredPorts() {
+  const c = readConfig();
+  const docker = deployMode() === "docker";
+  const p = [[c.http_port, "HTTP"], [c.pg_port, "PostgreSQL"]];
+  if (docker) p.push([c.mqtt_port, "MQTT"], [c.mqtts_port, "MQTTS"]);
+  if (c.flavor === "clickhouse") p.push([c.ch_http_port, "ClickHouse HTTP"], [c.ch_native_port, "ClickHouse native"]);
+  return p;
+}
+
+/// Final gate: re-run the checks for the mode actually chosen and refuse to
+/// start while a blocker remains. Called whenever the Install step is shown.
+async function gateInstall() {
+  if (!invoke) return;
+  const btn = $("startInstallBtn"), note = $("installGate");
+  btn.disabled = true;
+  note.textContent = "Checking this machine for the chosen mode…";
+  try {
+    const list = await invoke("preflight_for", { mode: preflightMode(), offline: isOfflineBundle(), ports: configuredPorts() });
+    const fails = list.filter((c) => c.status === "fail");
+    if (fails.length) {
+      note.innerHTML = `<b style="color:var(--err)">Cannot start:</b> ` +
+        fails.map((c) => `<b>${c.label}</b> — ${c.detail}`).join("<br>") +
+        `<br>Fix ${fails.length > 1 ? "these" : "this"} and come back, or go back and choose a different way to run SENTIENT.`;
+      return;
+    }
+    note.textContent = "";
+    btn.disabled = false;
+  } catch (e) {
+    note.textContent = "Check failed: " + e;
   }
 }
 
@@ -565,11 +602,7 @@ async function recheck() {
   try {
     // The two modes need different prerequisites: WSL/virtualization/Docker for
     // the container mode, free ports and no competing PostgreSQL for native.
-    renderChecks(
-      deployMode() === "native"
-        ? await invoke("native_preflight", { offline: isOfflineBundle() })
-        : await invoke("preflight")
-    );
+    renderChecks(await invoke("preflight_for", { mode: preflightMode(), offline: isOfflineBundle() }));
   } catch (e) {
     $("checksSummary").className = "summary bad";
     $("checksSummary").textContent = "Check failed: " + e;
@@ -603,87 +636,429 @@ async function installedMode() {
       try { await invoke("setting_set", { key: "deploy_mode", value: "native" }); } catch { /* store off */ }
       return _installedMode;
     }
-  } catch { /* native engine unavailable (non-Windows build) */ }
+  } catch { /* native engine unavailable */ }
   _installedMode = "docker";
   return _installedMode;
 }
 
+/// What the wizard is running on — filled from the backend at start-up.
+let HOST = { os: "windows", arch: "x86_64" };
+function isLinux() { return HOST.os === "linux"; }
+
 /// Which deployment mode the operator picked on the Components step.
 function deployMode() {
-  const el = document.getElementById("modeDocker");
-  return el && el.checked ? "docker" : "native";
+  const el = document.querySelector('input[name="deployMode"]:checked');
+  return el ? el.value : (isLinux() ? "docker" : "native");
 }
 
-/// Path to the bundled payload when this copy shipped with one, else null.
-/// Resolved once at start-up by asking the backend to look beside the exe.
-let BUNDLE_DIR = null;
+/// Time-series storage flavour chosen on the Components step. The Windows
+/// native tier is TimescaleDB (the bundled PostgreSQL ships it); everywhere
+/// else the reference hybrid is the default.
+function flavor() {
+  if (!isLinux() && deployMode() === "native") return "timescaledb";
+  const el = document.querySelector('input[name="flavor"]:checked');
+  return el ? el.value : "clickhouse";
+}
+function flavorLabel() {
+  return (FLAVORS.find((f) => f.id === flavor()) || {}).title || "PostgreSQL";
+}
+
+/// The preflight list is keyed by host OS *and* mode, so a Linux machine is
+/// never asked about a Windows build number.
+function preflightMode() {
+  return `${isLinux() ? "linux" : "windows"}-${deployMode()}`;
+}
+
+const MODES = {
+  windows: [
+    { id: "native", title: "Directly on Windows", badge: "recommended", checked: true,
+      desc: "Installs PostgreSQL and SENTIENT as Windows services. No WSL2, no Docker, fewer moving parts, and it works on machines with no internet access." },
+    { id: "docker", title: "In Docker (WSL2)", badge: "",
+      desc: "Runs the stack in containers inside WSL2. Choose this if you already standardise on Docker, or want the container images rather than native services." },
+  ],
+  linux: [
+    { id: "docker", title: "In Docker on this machine", badge: "recommended", checked: true,
+      desc: "Runs SENTIENT's own compose stack with the Docker already on this machine (installed from your distribution if missing). The same containers the Linux release ships as; upgrades are an image pull." },
+    { id: "native", title: "Natively with systemd", badge: "",
+      desc: "PostgreSQL (and ClickHouse) from your distribution's packages and SENTIENT as a systemd service, no containers. For machines that don't run Docker." },
+  ],
+};
+
+const FLAVORS = [
+  { id: "clickhouse", title: "PostgreSQL + ClickHouse", badge: "recommended", checked: true,
+    desc: "Entities in PostgreSQL, telemetry history in ClickHouse. Handles the highest write rates and the longest retention; what the reference deployment runs." },
+  { id: "timescaledb", title: "PostgreSQL + TimescaleDB", badge: "",
+    desc: "Everything in one PostgreSQL with TimescaleDB hypertables. One database to back up; the tier the Windows native install uses." },
+  { id: "stock", title: "PostgreSQL only", badge: "",
+    desc: "Plain PostgreSQL. Smallest footprint, for small sites and single-board computers." },
+];
+
+function optionHtml(name, o) {
+  return `<label class="comp" style="color:inherit" data-opt="${o.id}">
+    <input type="radio" name="${name}" id="${name}-${o.id}" value="${o.id}" ${o.checked ? "checked" : ""} />
+    <span><span class="ct">${o.title}</span> ${o.badge ? `<span class="badge">${o.badge}</span>` : ""}
+      <span class="cd">${o.desc}</span></span></label>`;
+}
+
+function renderModes() {
+  const card = document.getElementById("modeCard");
+  if (!card) return;
+  const list = MODES[isLinux() ? "linux" : "windows"];
+  card.innerHTML = list.map((o) => optionHtml("deployMode", o)).join("");
+  card.querySelectorAll('input[name="deployMode"]').forEach((el) =>
+    el.addEventListener("change", () => { renderFlavors(); refreshCfgVisibility(); recheck(); }));
+  renderFlavors();
+}
+
+/// The flavour choice applies wherever the compose/systemd engines can honour
+/// it: every Docker install, and Linux native (minus TimescaleDB, which no
+/// distribution packages). Windows native is fixed to TimescaleDB.
+function renderFlavors() {
+  const block = document.getElementById("flavorBlock");
+  const card = document.getElementById("flavorCard");
+  if (!block || !card) return;
+  const mode = deployMode();
+  const show = isLinux() || mode === "docker";
+  block.hidden = !show;
+  if (!card.children.length) {
+    card.innerHTML = FLAVORS.map((o) => optionHtml("flavor", o)).join("");
+    card.querySelectorAll('input[name="flavor"]').forEach((el) =>
+      el.addEventListener("change", () => { refreshCfgVisibility(); updatePlatformDesc(); }));
+  }
+  const tsdb = card.querySelector('[data-opt="timescaledb"]');
+  const tsdbHidden = isLinux() && mode === "native";
+  tsdb.hidden = tsdbHidden;
+  if (tsdbHidden && tsdb.querySelector("input").checked) card.querySelector("#flavor-clickhouse").checked = true;
+  updatePlatformDesc();
+}
+
+function updatePlatformDesc() {
+  const el = document.getElementById("platformDesc");
+  if (el) el.textContent = `The server and web UI, with ${flavorLabel()} as its storage.`;
+}
+
 function isOfflineBundle() {
   return Boolean(BUNDLE_DIR);
 }
 
-/// The native engine takes the same numbers as the Docker one, plus where to
-/// get its archives from.
+/// The native engine takes the same stack configuration as the Docker one,
+/// plus where to get its archives from.
 function readNativeOptions() {
-  const c = readConfig();
-  const o = {
-    dbName: c.db_name,
-    dbUser: c.db_user,
-    dbPassword: c.db_password,
-    httpPort: c.http_port,
-    mqttPort: c.mqtt_port,
-    coapPort: c.coap_port,
-    loadDemo: Boolean(c.load_demo),
-  };
-  if (BUNDLE_DIR) o.bundleDir = BUNDLE_DIR;
+  const o = { ...readConfig() };
+  if (BUNDLE_DIR) o.bundle_dir = BUNDLE_DIR;
   return o;
 }
 
+// ---- configuration model -------------------------------------------------------
+// One table drives the form, the defaults, the summary and validation. Keys
+// are the snake_case names the backend's DeployConfig deserialises; `modes`
+// and `flavors` limit a field to where the engine can honour it.
+const CFG_GROUPS = [
+  { id: "basics", basics: true, fields: [
+    { key: "db_name", label: "Database name", type: "text", def: "sentient" },
+    { key: "db_user", label: "Database user", type: "text", def: "sentient" },
+    { key: "db_password", label: "Database password", type: "text", def: "sentient" },
+    { key: "http_port", label: "Web port (HTTP)", type: "number", def: 8080 },
+    { key: "mqtt_port", label: "MQTT port", type: "number", def: 1883, modes: ["docker"] },
+    { key: "coap_port", label: "CoAP port (UDP)", type: "number", def: 5683, modes: ["docker"] },
+    { key: "load_demo", label: "Load demo data", type: "checkbox", def: false, badge: "optional",
+      hint: "Seed demo tenants, devices and dashboards so there's something to explore. Leave off for a clean install." },
+  ]},
+  { id: "identity", title: "Identity & licensing", hint: "Two nodes reporting the same service id are treated as one node.", fields: [
+    { key: "instance_id", label: "Instance id", type: "text", def: () => deployMode() === "docker" ? "sentient-docker-01" : "sentient-01" },
+    { key: "service_id", label: "Service id", type: "text", def: "st-node-1" },
+    { key: "license_server_url", label: "Licence server URL", type: "text", def: "https://license.invenia.in" },
+  ]},
+  { id: "stack", title: "Containers & image", modes: ["docker"], fields: [
+    { key: "stack_name", label: "Stack name", type: "text", def: "sentient", fh: "Prefix for container and volume names; change it to run a second stack beside an existing one." },
+    { key: "image", label: "SENTIENT image", type: "text", def: "quakestring/sentient:latest", fh: "Offline sites point this at the tag loaded with docker load." },
+    { key: "log_max_size", label: "Container log size", type: "text", def: "100m" },
+    { key: "log_max_file", label: "Container log files kept", type: "number", def: 10 },
+  ]},
+  { id: "ports", title: "More ports", fields: [
+    { key: "pg_port", label: "PostgreSQL port", type: "number", def: 5432 },
+    { key: "mqtts_port", label: "MQTTS port", type: "number", def: 8883, modes: ["docker"] },
+    { key: "coaps_port", label: "CoAPS port (UDP)", type: "number", def: 5684, modes: ["docker"] },
+    { key: "ch_http_port", label: "ClickHouse HTTP port", type: "number", def: 8123, flavors: ["clickhouse"] },
+    { key: "ch_native_port", label: "ClickHouse native port", type: "number", def: 9000, flavors: ["clickhouse"] },
+  ]},
+  { id: "pg", title: "PostgreSQL server", hint: "Applied at start. Sizes use PostgreSQL units: 128MB, 2GB.", fields: [
+    { key: "pg_max_connections", label: "max_connections", type: "number", def: 100 },
+    { key: "pg_shared_buffers", label: "shared_buffers", type: "text", def: "128MB" },
+    { key: "pg_work_mem", label: "work_mem", type: "text", def: "2MB" },
+    { key: "pg_effective_cache_size", label: "effective_cache_size", type: "text", def: "384MB" },
+  ]},
+  { id: "ch", title: "ClickHouse", flavors: ["clickhouse"], hint: "ClickHouse's own defaults assume a dedicated server; these assume the whole stack shares one modest machine.", fields: [
+    { key: "ch_db", label: "ClickHouse database", type: "text", def: "sentient" },
+    { key: "ch_user", label: "ClickHouse user", type: "text", def: "sentient" },
+    { key: "ch_password", label: "ClickHouse password", type: "text", def: "sentient" },
+    { key: "ch_mark_cache_bytes", label: "Mark cache (bytes)", type: "number", def: 268435456 },
+    { key: "ch_uncompressed_cache_bytes", label: "Uncompressed cache (bytes)", type: "number", def: 134217728 },
+    { key: "ts_latest_cache_max_entries", label: "Latest-values cache entries", type: "number", def: 1000000, fh: "In-process cache of the latest value per key; entries live until evicted by size." },
+  ]},
+  { id: "pools", title: "Connection pools", hint: "Primary pool serves requests; the secondary pool serves background writers.", fields: [
+    { key: "db_pool_primary_min", label: "Primary pool min", type: "number", def: 16 },
+    { key: "db_pool_primary_max", label: "Primary pool max", type: "number", def: 48 },
+    { key: "database_pool_min", label: "Secondary pool min", type: "number", def: 8 },
+    { key: "database_pool_max", label: "Secondary pool max", type: "number", def: 24 },
+  ]},
+  { id: "batch", title: "Write batching", hint: "Rows per batch, writer threads, and the longest a row waits (ms) before a partial batch is flushed.", fields: [
+    { key: "sql_ts_batch_size", label: "Telemetry batch size", type: "number", def: 8000 },
+    { key: "sql_ts_batch_threads", label: "Telemetry threads", type: "number", def: 5 },
+    { key: "sql_ts_batch_max_delay_ms", label: "Telemetry max delay (ms)", type: "number", def: 100 },
+    { key: "sql_ts_latest_batch_size", label: "Latest-values batch size", type: "number", def: 4000 },
+    { key: "sql_ts_latest_batch_threads", label: "Latest-values threads", type: "number", def: 5 },
+    { key: "sql_ts_latest_batch_max_delay_ms", label: "Latest-values max delay (ms)", type: "number", def: 50 },
+    { key: "sql_attributes_batch_size", label: "Attributes batch size", type: "number", def: 4000 },
+    { key: "sql_attributes_batch_threads", label: "Attributes threads", type: "number", def: 5 },
+    { key: "sql_attributes_batch_max_delay_ms", label: "Attributes max delay (ms)", type: "number", def: 50 },
+  ]},
+  { id: "caches", title: "Entity caches", hint: "Maximum entries and time-to-live in minutes.", fields: [
+    { key: "cache_devices_max_size", label: "Devices: max entries", type: "number", def: 100000 },
+    { key: "cache_devices_ttl", label: "Devices: TTL (min)", type: "number", def: 1440 },
+    { key: "cache_devices_null_ttl", label: "Devices: not-found TTL (min)", type: "number", def: 5 },
+    { key: "cache_device_profiles_max_size", label: "Device profiles: max entries", type: "number", def: 10000 },
+    { key: "cache_device_profiles_ttl", label: "Device profiles: TTL (min)", type: "number", def: 1440 },
+    { key: "cache_asset_profiles_max_size", label: "Asset profiles: max entries", type: "number", def: 10000 },
+    { key: "cache_asset_profiles_ttl", label: "Asset profiles: TTL (min)", type: "number", def: 1440 },
+  ]},
+  { id: "retention", title: "Retention & cleanup", hint: "0 keeps forever.", fields: [
+    { key: "audit_log_ttl_days", label: "Audit log TTL (days)", type: "number", def: 0 },
+    { key: "notifications_ttl_days", label: "Notifications TTL (days)", type: "number", def: 0 },
+    { key: "event_cleanup_interval_secs", label: "Event cleanup interval (s)", type: "number", def: 3600 },
+    { key: "events_ttl_secs", label: "Events TTL (s)", type: "number", def: 0 },
+    { key: "debug_events_ttl_secs", label: "Debug events TTL (s)", type: "number", def: 604800 },
+    { key: "event_cleanup_enabled", label: "Event cleanup enabled", type: "checkbox", def: true, hint: "Periodically purge expired events, audit-log rows and finished jobs." },
+  ]},
+  { id: "logging", title: "Logging & extra environment", fields: [
+    { key: "rust_log", label: "RUST_LOG", type: "text", def: "info,sentient_api=info" },
+    { key: "analytics_enabled", label: "Analytics enabled", type: "checkbox", def: true, hint: "Run the batch analytics / event pipelines." },
+    { key: "extra_env", label: "Extra environment — NAME=value, one per line", type: "textarea", def: [], fh: "Appended last, so it overrides any setting above." },
+  ]},
+];
+const CFG_FIELDS = CFG_GROUPS.flatMap((g) => g.fields.map((f) => ({ ...f, group: g })));
+const fieldDef = (f) => (typeof f.def === "function" ? f.def() : f.def);
+function cfgDefaults() {
+  const d = { flavor: flavor() };
+  for (const f of CFG_FIELDS) d[f.key] = fieldDef(f);
+  return d;
+}
+function fieldVisible(f) {
+  const g = f.group || {};
+  const ok = (o) => (!o.modes || o.modes.includes(deployMode())) && (!o.flavors || o.flavors.includes(flavor()));
+  return ok(g) && ok(f);
+}
+
+function fieldHtml(f) {
+  const id = `cfg_${f.key}`;
+  if (f.type === "checkbox") {
+    return `<label class="comp" style="color:inherit" data-key="${f.key}">
+      <input type="checkbox" id="${id}" />
+      <span><span class="ct">${f.label}</span> ${f.badge ? `<span class="badge">${f.badge}</span>` : ""}
+        ${f.hint ? `<span class="cd">${f.hint}</span>` : ""}</span></label>`;
+  }
+  const help = f.fh ? `<span class="fh">${f.fh}</span>` : "";
+  if (f.type === "textarea") {
+    return `<label class="wide" data-key="${f.key}">${f.label}<textarea id="${id}" spellcheck="false"></textarea>${help}</label>`;
+  }
+  return `<label data-key="${f.key}">${f.label}<input id="${id}" type="${f.type === "number" ? "number" : "text"}" />${help}</label>`;
+}
+
+/// One group's fields: the value fields on a grid, the on/off ones listed
+/// under it (a checkbox in a grid cell leaves a ragged hole).
+function groupBodyHtml(fields) {
+  const boxes = fields.filter((f) => f.type === "checkbox");
+  const rest = fields.filter((f) => f.type !== "checkbox");
+  return (rest.length ? `<div class="fieldgrid">${rest.map(fieldHtml).join("")}</div>` : "")
+    + (boxes.length ? `<div class="checkgrid">${boxes.map(fieldHtml).join("")}</div>` : "");
+}
+
+/// Build the form once; visibility is refreshed as the mode/flavour change.
+let _cfgRendered = false;
+function renderConfigForm() {
+  if (_cfgRendered) return;
+  _cfgRendered = true;
+  const basics = CFG_GROUPS.find((g) => g.basics);
+  $("cfgBasics").innerHTML = groupBodyHtml(basics.fields);
+  $("cfgGroups").innerHTML = CFG_GROUPS.filter((g) => !g.basics).map((g) =>
+    `<details class="cfg-group" data-group="${g.id}">
+      <summary>${g.title}<span class="gh" id="gh_${g.id}"></span></summary>
+      <div class="body">
+        ${g.hint ? `<p class="hint">${g.hint}</p>` : ""}
+        ${groupBodyHtml(g.fields)}
+      </div>
+    </details>`).join("");
+  document.querySelectorAll("#customCard input, #customCard textarea").forEach((el) =>
+    el.addEventListener("input", () => { updateGroupBadges(); $("cfgError").textContent = ""; }));
+  applyConfig(cfgDefaults());
+  refreshCfgVisibility();
+}
+
+function refreshCfgVisibility() {
+  if (!_cfgRendered) return;
+  for (const f of CFG_FIELDS) {
+    const el = document.querySelector(`#customCard [data-key="${f.key}"]`);
+    if (el) el.hidden = !fieldVisible(f);
+  }
+  for (const g of CFG_GROUPS.filter((g) => !g.basics)) {
+    const el = document.querySelector(`#customCard [data-group="${g.id}"]`);
+    if (el) el.hidden = !g.fields.some((f) => fieldVisible({ ...f, group: g }));
+  }
+  updateGroupBadges();
+}
+
+function changedFields(c = readConfig()) {
+  const d = cfgDefaults();
+  return CFG_FIELDS.filter((f) => fieldVisible(f) && JSON.stringify(c[f.key]) !== JSON.stringify(d[f.key]));
+}
+function updateGroupBadges() {
+  const changed = changedFields();
+  for (const g of CFG_GROUPS.filter((g) => !g.basics)) {
+    const n = changed.filter((f) => f.group.id === g.id).length;
+    const el = $(`gh_${g.id}`);
+    if (el) el.textContent = n ? `${n} changed` : "";
+  }
+}
+
+function parseExtraEnv(text) {
+  return String(text || "").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#"))
+    .map((l) => { const i = l.indexOf("="); return i < 0 ? { name: l, value: "" } : { name: l.slice(0, i).trim(), value: l.slice(i + 1).trim() }; });
+}
+
 function readConfig() {
-  const num = (id, d) => { const v = parseInt($(id).value, 10); return Number.isFinite(v) ? v : d; };
-  return {
-    db_name: ($("cfgDbName").value || "").trim() || CFG_DEFAULTS.db_name,
-    db_user: ($("cfgDbUser").value || "").trim() || CFG_DEFAULTS.db_user,
-    db_password: $("cfgDbPass").value || CFG_DEFAULTS.db_password,
-    http_port: num("cfgHttpPort", CFG_DEFAULTS.http_port),
-    mqtt_port: num("cfgMqttPort", CFG_DEFAULTS.mqtt_port),
-    coap_port: num("cfgCoapPort", CFG_DEFAULTS.coap_port),
-    load_demo: $("cfgLoadDemo").checked,
-  };
+  const c = { flavor: flavor() };
+  for (const f of CFG_FIELDS) {
+    const el = $(`cfg_${f.key}`);
+    const d = fieldDef(f);
+    if (!el) { c[f.key] = d; continue; }
+    if (f.type === "checkbox") c[f.key] = el.checked;
+    else if (f.type === "number") { const v = parseInt(el.value, 10); c[f.key] = Number.isFinite(v) ? v : d; }
+    else if (f.type === "textarea") c[f.key] = parseExtraEnv(el.value);
+    else c[f.key] = (el.value || "").trim() || d;
+  }
+  return c;
 }
 function applyConfig(c) {
-  $("cfgDbName").value = c.db_name; $("cfgDbUser").value = c.db_user; $("cfgDbPass").value = c.db_password;
-  $("cfgHttpPort").value = c.http_port; $("cfgMqttPort").value = c.mqtt_port; $("cfgCoapPort").value = c.coap_port;
-  $("cfgLoadDemo").checked = !!c.load_demo;
+  for (const f of CFG_FIELDS) {
+    const el = $(`cfg_${f.key}`);
+    if (!el) continue;
+    const v = c[f.key] !== undefined ? c[f.key] : fieldDef(f);
+    if (f.type === "checkbox") el.checked = Boolean(v);
+    else if (f.type === "textarea") el.value = (Array.isArray(v) ? v : []).map((e) => `${e.name}=${e.value}`).join("\n");
+    else el.value = v;
+  }
+  updateGroupBadges();
 }
 function renderReco() {
   const c = readConfig();
+  const docker = deployMode() === "docker";
   const rows = [
-    ["Database", `${c.db_name} (user ${c.db_user})`],
+    ["Runs", (MODES[isLinux() ? "linux" : "windows"].find((m) => m.id === deployMode()) || {}).title || deployMode()],
+    ["Storage", flavorLabel()],
+    ["Database", `${c.db_name} (user ${c.db_user}${c.pg_port !== 5432 ? `, port ${c.pg_port}` : ""})`],
     ["Web address", `http://localhost:${c.http_port}`],
-    ["MQTT / CoAP ports", `${c.mqtt_port} / ${c.coap_port}`],
-    ["Demo data", c.load_demo ? "Yes" : "No (clean install)"],
-    ["Kiosk launcher", $("compKiosk").checked ? "Desktop shortcut (Chrome if needed)" : "Skip"],
   ];
+  if (docker) rows.push(["MQTT / CoAP ports", `${c.mqtt_port} / ${c.coap_port}`]);
+  rows.push(["Demo data", c.load_demo ? "Yes" : "No (clean install)"]);
+  rows.push(["Kiosk launcher", $("compKiosk").checked ? (isLinux() ? "Desktop launcher" : "Desktop shortcut (Chrome if needed)") : "Skip"]);
+  const changed = changedFields(c).filter((f) => !f.group.basics);
+  rows.push(["Advanced", changed.length
+    ? `${changed.length} changed — ${changed.slice(0, 6).map((f) => f.label).join(", ")}${changed.length > 6 ? ", …" : ""}`
+    : "Reference defaults"]);
   $("recoSummary").innerHTML = rows
     .map(([k, v]) => `<tr><td class="cat-note" style="width:42%">${k}</td><td>${v}</td></tr>`)
     .join("");
 }
 function validateConfig(c) {
-  const ports = [["Web", c.http_port], ["MQTT", c.mqtt_port], ["CoAP", c.coap_port]];
+  const ident = /^[A-Za-z0-9_]+$/;
+  const badPw = /[\s'"\\@/:#?&$`]/;
+  const docker = deployMode() === "docker";
+  const ch = c.flavor === "clickhouse";
+  for (const [n, v] of [["Database name", c.db_name], ["Database user", c.db_user]])
+    if (!ident.test(v)) return `${n} may only contain letters, digits and underscores.`;
+  if (badPw.test(c.db_password)) return "Database password may not contain spaces, quotes or @ / : # ? & $ ` \\.";
+  if (docker && !ident.test(c.stack_name)) return "Stack name may only contain letters, digits and underscores.";
+  if (docker && /\s/.test(c.image)) return "Image must be a Docker image reference like quakestring/sentient:latest.";
+  if (ch) {
+    for (const [n, v] of [["ClickHouse database", c.ch_db], ["ClickHouse user", c.ch_user]])
+      if (!ident.test(v)) return `${n} may only contain letters, digits and underscores.`;
+    if (badPw.test(c.ch_password)) return "ClickHouse password may not contain spaces, quotes or @ / : # ? & $ ` \\.";
+  }
+  if (!/^https?:\/\/\S+$/.test(c.license_server_url)) return "Licence server URL must start with http:// or https://.";
+  const ports = [["Web", c.http_port], ["PostgreSQL", c.pg_port]];
+  if (docker) ports.push(["MQTT", c.mqtt_port], ["MQTTS", c.mqtts_port], ["CoAP", c.coap_port], ["CoAPS", c.coaps_port]);
+  if (ch) ports.push(["ClickHouse HTTP", c.ch_http_port], ["ClickHouse native", c.ch_native_port]);
   for (const [n, p] of ports) if (!(p >= 1 && p <= 65535)) return `${n} port must be between 1 and 65535.`;
-  if (new Set(ports.map(([, p]) => p)).size !== ports.length) return "The Web, MQTT and CoAP ports must all be different.";
-  if (!c.db_name || !c.db_user) return "Database name and user can't be empty.";
+  if (new Set(ports.map(([, p]) => p)).size !== ports.length) return "Every port must be different.";
+  for (const f of CFG_FIELDS)
+    if (f.type === "number" && fieldVisible(f) && !(c[f.key] >= 0)) return `${f.label} must be a non-negative number.`;
+  for (const e of c.extra_env) if (!ident.test(e.name)) return `Extra variable "${e.name}" is not a valid environment variable name.`;
   return null;
 }
 async function persistConfig() {
   try { await invoke("setting_set", { key: "install_config", value: JSON.stringify(readConfig()) }); } catch { /* store off */ }
 }
 async function loadConfig() {
+  renderConfigForm();
   try {
     const s = await invoke("setting_get", { key: "install_config" });
-    if (s) applyConfig({ ...CFG_DEFAULTS, ...JSON.parse(s) });
+    if (s) {
+      const saved = JSON.parse(s);
+      applyConfig({ ...cfgDefaults(), ...saved });
+      const fl = document.getElementById(`flavor-${saved.flavor}`);
+      if (fl && !fl.closest("label").hidden) fl.checked = true;
+    }
   } catch { /* no saved config */ }
+  refreshCfgVisibility();
   renderReco();
+}
+
+/// Mode-specific copy for the Install step, set when the step is entered.
+function renderInstallPlan() {
+  const docker = deployMode() === "docker";
+  let plan, sub;
+  if (docker && !isLinux()) {
+    plan = "Ready to set up <b>WSL2</b>, <b>Docker Engine</b>, and deploy the <b>SENTIENT</b> stack. This can take several minutes and may restart your PC once.";
+    sub = "This sets up WSL2, Docker Engine, and deploys SENTIENT automatically. It may restart your PC once — it'll resume on its own.";
+  } else if (docker) {
+    plan = `Ready to make sure <b>Docker</b> is available, then deploy the <b>SENTIENT</b> stack (${flavorLabel()}). Pulling the images takes a few minutes the first time. You may be asked for your password if Docker has to be installed.`;
+    sub = "This installs Docker from your distribution if needed and deploys SENTIENT's compose stack.";
+  } else if (isLinux()) {
+    plan = `Ready to install <b>${flavorLabel()}</b> from your distribution's packages and set up <b>SENTIENT</b> as a systemd service. You will be asked for your password.`;
+    sub = "This installs the databases from your distribution and registers SENTIENT as a systemd service.";
+  } else {
+    plan = "Ready to install <b>PostgreSQL + TimescaleDB</b> and set up <b>SENTIENT</b> as Windows services. No WSL2, no Docker.";
+    sub = "This installs PostgreSQL and SENTIENT as Windows services.";
+  }
+  $("installPlan").innerHTML = plan;
+  $("installSub").textContent = sub;
+}
+
+/// Wording that depends on the host OS and the installed mode.
+async function applyOsTexts() {
+  const about = $("aboutText");
+  if (about) {
+    about.textContent = isLinux()
+      ? "SENTIENT Platform Manager — one app to install, run, update, and back up the SENTIENT platform. Deploys the stack with Docker or as systemd services; backs up and restores the database with selective components and password-lock encryption."
+      : "SENTIENT Platform Manager — one app to install, run, update, and back up the SENTIENT platform. Installs SENTIENT as Windows services or in Docker (WSL2); backs up and restores the database with selective components and password-lock encryption.";
+  }
+  const mode = _installedMode || deployMode();
+  const docker = mode === "docker";
+  $("containersHead").textContent = docker ? "Container" : "Service";
+  $("statusSub").textContent = docker
+    ? (isLinux() ? "The SENTIENT compose stack running in Docker on this machine." : "The SENTIENT stack running in the local WSL distro.")
+    : (isLinux() ? "The SENTIENT systemd services on this machine." : "The SENTIENT Windows services on this machine.");
+  $("uninstallNote").innerHTML = docker
+    ? (isLinux()
+      ? "Permanently removes the stack's containers, images, the database and <b>all its data</b> (volumes), the desktop launcher and autostart. Docker itself and this Manager app are kept."
+      : "Permanently removes the stack, the database and <b>all its data</b>, the WSL distro, the autostart entry and the desktop shortcut. WSL2 and this Manager app are kept.")
+    : (isLinux()
+      ? "Permanently removes the SENTIENT service and program files, its database and <b>all its data</b>, and the desktop launcher. The PostgreSQL/ClickHouse packages and this Manager app are kept."
+      : "Permanently removes the SENTIENT and PostgreSQL Windows services, the program files, the database and <b>all its data</b>, the autostart entry and the desktop shortcut. This Manager app is kept.");
+  $("updateHint").textContent = docker
+    ? "This pulls a newer SENTIENT image from the registry. Your data is kept; the database schema is migrated if the new version needs it. The server is briefly stopped during migration."
+    : "Native installs are updated by running a newer Platform Manager bundle, which replaces the program files in place and lets the server migrate the database at start.";
+  $("updateBtn").style.display = docker ? "" : "none";
 }
 
 // ---- Step 4: install (automated WSL2 → Docker → deploy) ----------------------
@@ -706,129 +1081,104 @@ function setPhase(n, total, label) {
   $("instLog").textContent = "";
 }
 
+/// Point the Backup tab at the freshly installed local DB and connect quietly,
+/// so "Connection" is ready without the operator retyping anything.
+async function pointBackupTabAtDb(c) {
+  try {
+    $("host").value = "localhost";
+    $("port").value = c.pg_port;
+    $("dbname").value = c.db_name;
+    $("user").value = c.db_user;
+    $("password").value = c.db_password;
+    await invoke("setting_set", {
+      key: "last_conn",
+      value: JSON.stringify({ host: "localhost", port: c.pg_port, dbname: c.db_name, user: c.db_user }),
+    });
+    await invoke("set_last_password", { password: c.db_password });
+    connect(false, true); // quiet, no view switch
+  } catch { /* non-fatal */ }
+}
+
 async function autoInstall() {
   if (installing || !invoke) return;
   installing = true;
   installCard("installProgress");
   $("cancelInstallBtn").disabled = false;
   const kiosk = $("compKiosk").checked;
+  const mode = deployMode();
+  const c = readConfig();
 
-  // ---- native mode: no WSL2, no Docker, so two phases instead of three ----
-  if (deployMode() === "native") {
-    const totalN = kiosk ? 3 : 2;
-    try {
-      if (isOfflineBundle()) {
-        // Fail before touching the machine if the bundle is incomplete.
-        await invoke("native_verify_bundle", { options: readNativeOptions() });
-      }
-      setPhase(1, totalN, "PostgreSQL + TimescaleDB");
+  // The phases differ by mode and OS: Windows Docker needs WSL2 first, Linux
+  // Docker just needs Docker, native needs the databases then the platform.
+  const phases = [];
+  if (mode === "native") {
+    phases.push({ label: `Databases: ${flavorLabel()}`, run: async () => {
+      if (isOfflineBundle()) await invoke("native_verify_bundle", { options: readNativeOptions() }); // fail before touching the machine
       await invoke("native_setup", { onProgress: instChannel(), options: readNativeOptions() });
-
-      setPhase(2, totalN, "Install SENTIENT");
+    } });
+    phases.push({ label: "Install SENTIENT", run: async () => {
       await invoke("native_deploy", { onProgress: instChannel(), options: readNativeOptions() });
       await invoke("set_state", { step: "deployed" });
-      // Status/Update/Uninstall run in later sessions, when the radio on the
-      // Components step means nothing. Remember what was actually installed.
-      try { await invoke("setting_set", { key: "deploy_mode", value: "native" }); } catch { /* store off */ }
-
-      // Same courtesy as the Docker path: point the Backup tab at the DB we
-      // just created so "Connection" is ready without retyping anything.
-      try {
-        const c = readConfig();
-        $("host").value = "localhost";
-        $("port").value = 5432;
-        $("dbname").value = c.db_name;
-        $("user").value = c.db_user;
-        $("password").value = c.db_password;
-        await invoke("setting_set", {
-          key: "last_conn",
-          value: JSON.stringify({ host: "localhost", port: 5432, dbname: c.db_name, user: c.db_user }),
-        });
-        await invoke("set_last_password", { password: c.db_password });
-        connect(false, true);
-      } catch { /* non-fatal */ }
-
-      if (kiosk) {
-        setPhase(3, totalN, "Desktop kiosk shortcut");
-        try {
-          await invoke("create_kiosk_shortcut", { onProgress: instChannel(), port: readConfig().http_port });
-        } catch (e) {
-          instMsg({ type: "log", line: "Shortcut step skipped: " + e });
+    } });
+  } else {
+    if (!isLinux()) {
+      phases.push({ label: "WSL2", run: async () => {
+        if (!(await invoke("wsl_ready"))) {
+          const res = await invoke("install_wsl", { onProgress: instChannel() });
+          if (res.reboot_required) {
+            await invoke("set_state", { step: "wsl_pending_reboot" });
+            await invoke("arm_resume");
+            return "reboot";
+          }
         }
-      }
-      installing = false;
-      $("cancelInstallBtn").disabled = true;
-      installCard("installDone");
-      return;
-    } catch (e) {
-      installing = false;
-      $("cancelInstallBtn").disabled = true;
-      instMsg({ type: "error", message: String(e) });
-      return;
+        await invoke("set_state", { step: "wsl_ready" });
+      } });
     }
+    phases.push({ label: "Docker Engine", run: async () => {
+      if (!(await invoke("docker_ready"))) await invoke("setup_docker", { onProgress: instChannel() });
+      await invoke("set_state", { step: "docker_ready" });
+    } });
+    phases.push({ label: `Deploy SENTIENT (${flavorLabel()})`, run: async () => {
+      await invoke("deploy_sentient", { onProgress: instChannel(), config: c });
+      await invoke("set_state", { step: "deployed" });
+    } });
+  }
+  if (kiosk) {
+    // Non-fatal: SENTIENT is already up, so a shortcut hiccup shouldn't fail it.
+    phases.push({ label: isLinux() ? "Desktop launcher" : "Desktop kiosk shortcut", optional: true, run: async () => {
+      await invoke("create_kiosk_shortcut", { onProgress: instChannel(), port: c.http_port });
+    } });
   }
 
-  const total = kiosk ? 4 : 3;
   try {
-    // Phase 1 — WSL2 (may require a reboot; resumes automatically after)
-    setPhase(1, total, "WSL2");
-    if (!(await invoke("wsl_ready"))) {
-      const res = await invoke("install_wsl", { onProgress: instChannel() });
-      if (res.reboot_required) {
-        await invoke("set_state", { step: "wsl_pending_reboot" });
-        await invoke("arm_resume");
+    for (let i = 0; i < phases.length; i++) {
+      const ph = phases[i];
+      setPhase(i + 1, phases.length, ph.label);
+      if (ph.optional) {
+        try { await ph.run(); } catch (e) { instMsg({ type: "log", line: "Shortcut step skipped: " + e }); }
+        continue;
+      }
+      const outcome = await ph.run();
+      if (outcome === "reboot") {
         installing = false;
         installCard("installReboot");
         return;
       }
-    }
-    await invoke("set_state", { step: "wsl_ready" });
-
-    // Phase 2 — Docker Engine
-    setPhase(2, total, "Docker Engine");
-    if (!(await invoke("docker_ready"))) {
-      await invoke("setup_docker", { onProgress: instChannel() });
-    }
-    await invoke("set_state", { step: "docker_ready" });
-
-    // Phase 3 — deploy the stack with the chosen config
-    setPhase(3, total, "Deploy SENTIENT");
-    await invoke("deploy_sentient", { onProgress: instChannel(), config: readConfig() });
-    await invoke("set_state", { step: "deployed" });
-    try { await invoke("setting_set", { key: "deploy_mode", value: "docker" }); } catch { /* store off */ }
-
-    // Point the Backup tab at the freshly-installed local DB and connect it, so
-    // "Connection" is ready without the user re-entering anything.
-    try {
-      const c = readConfig();
-      $("host").value = "localhost";
-      $("port").value = 5432;
-      $("dbname").value = c.db_name;
-      $("user").value = c.db_user;
-      $("password").value = c.db_password;
-      await invoke("setting_set", {
-        key: "last_conn",
-        value: JSON.stringify({ host: "localhost", port: 5432, dbname: c.db_name, user: c.db_user }),
-      });
-      await invoke("set_last_password", { password: c.db_password });
-      connect(false, true); // quiet, no view switch
-    } catch { /* non-fatal */ }
-
-    // Phase 4 — optional desktop kiosk launcher (installs Chrome if needed).
-    // Non-fatal: SENTIENT is already up, so a shortcut hiccup shouldn't fail it.
-    if (kiosk) {
-      setPhase(4, total, "Desktop kiosk shortcut");
-      try {
-        await invoke("create_kiosk_shortcut", { onProgress: instChannel(), port: readConfig().http_port });
-      } catch (e) {
-        instMsg({ type: "log", line: "Shortcut step skipped: " + e });
+      if (ph.label.startsWith("Deploy") || ph.label === "Install SENTIENT") {
+        // Status/Update/Uninstall run in later sessions, when the radio on the
+        // Components step means nothing. Remember what was actually installed.
+        try { await invoke("setting_set", { key: "deploy_mode", value: mode }); } catch { /* store off */ }
+        _installedMode = mode;
+        await pointBackupTabAtDb(c);
       }
     }
-
     installing = false;
+    $("cancelInstallBtn").disabled = true;
+    await applyOsTexts();
     showInstallDone();
   } catch (e) {
     installing = false;
+    $("cancelInstallBtn").disabled = true;
     const msg = String(e);
     $("failMsg").textContent = /cancel/i.test(msg) ? "Install cancelled." : "Install stopped: " + msg;
     installCard("installFailed");
@@ -837,15 +1187,17 @@ async function autoInstall() {
 
 function showInstallDone() {
   const url = `http://localhost:${readConfig().http_port}`;
+  const auto = deployMode() === "docker" && !isLinux() ? "It starts automatically on login from now on." : "It starts automatically with the machine from now on.";
   $("doneHint").innerHTML =
-    `Open <b>${url}</b> and sign in as sys-admin:<br>&nbsp;&nbsp;<b>admin@sentient.local</b> &nbsp;/&nbsp; <b>admin123</b><br>It starts automatically on login from now on.`;
+    `Open <b>${url}</b> and sign in as sys-admin:<br>&nbsp;&nbsp;<b>admin@sentient.local</b> &nbsp;/&nbsp; <b>admin123</b><br>${auto}`;
   installCard("installDone");
 }
 
 async function cancelInstall() {
+  const keep = deployMode() === "docker" ? (isLinux() ? "Docker" : "WSL2, Docker") : "the database packages";
   const ok = confirm(
     "Cancel the install?\n\n" +
-    "The step that's running now will be stopped. This can leave half-downloaded images or partially-created containers behind — you'll be offered a cleanup afterwards. Anything that already finished (WSL2, Docker) stays installed."
+    `The step that's running now will be stopped. This can leave half-finished pieces behind — you'll be offered a cleanup afterwards. Anything that already finished (${keep}) stays installed.`
   );
   if (!ok) return;
   $("cancelInstallBtn").disabled = true;
@@ -854,16 +1206,21 @@ async function cancelInstall() {
 }
 
 async function cleanupLeftovers() {
+  const native = deployMode() === "native";
   const ok = confirm(
     "Clean up leftovers?\n\n" +
-    "This stops and removes the SENTIENT containers and their data volumes, and reclaims disk from partially-pulled images, so you can retry from a clean state. WSL2 and Docker Engine stay installed."
+    (native
+      ? "This removes the SENTIENT service, program files and its database so you can retry from a clean state. The database packages stay installed."
+      : `This stops and removes the SENTIENT containers and their data volumes, and reclaims disk from partially-pulled images, so you can retry from a clean state. ${isLinux() ? "Docker stays" : "WSL2 and Docker Engine stay"} installed.`)
   );
   if (!ok) return;
   installCard("installProgress");
   setPhase(1, 1, "Cleanup");
   $("cancelInstallBtn").disabled = true;
   try {
-    await invoke("cleanup_install", { onProgress: instChannel() });
+    await (native
+      ? invoke("native_cleanup", { onProgress: instChannel(), options: readNativeOptions() })
+      : invoke("cleanup_install", { onProgress: instChannel(), config: readConfig() }));
     $("failMsg").textContent = "Cleanup done — ready to retry.";
   } catch (e) {
     $("failMsg").textContent = "Cleanup error: " + e;
@@ -873,16 +1230,21 @@ async function cleanupLeftovers() {
 
 // ---- Setup init / resume -----------------------------------------------------
 async function initSetup() {
+  if (!invoke) return;
+  // init() resolves the host OS too, but runs concurrently; every text and
+  // check below keys off it, so make sure it is known before rendering.
+  try { HOST = await invoke("host_os"); } catch { /* assume Windows */ }
   try { const c = await invoke("setting_get", { key: "install_kiosk" }); if (c === "0") $("compKiosk").checked = false; } catch { /* store off */ }
   await loadConfig();
-  $("installPlan").innerHTML =
-    "Ready to set up <b>WSL2</b>, <b>Docker Engine</b>, and deploy the <b>SENTIENT</b> stack. This can take several minutes and may restart your PC once.";
+  renderInstallPlan();
 
   if (!invoke) return;
   let state = "checks";
   try { state = await invoke("get_state"); } catch { /* default */ }
 
   if (state === "deployed") {
+    await installedMode();
+    await applyOsTexts();
     showStep("install");
     showInstallDone();
     showView("status"); // once installed, land on Status instead of the wizard
@@ -900,28 +1262,43 @@ async function initSetup() {
     showStep("checks");
     recheck();
   }
+  await applyOsTexts();
 }
 
 // ---- Setup wiring ------------------------------------------------------------
 $("recheckBtn").addEventListener("click", recheck);
 $("toComponents").addEventListener("click", () => showStep("components"));
-$("toConfigure").addEventListener("click", () => { renderReco(); showStep("configure"); });
+$("toConfigure").addEventListener("click", () => { refreshCfgVisibility(); showCustom(false); showStep("configure"); });
 $("backChecks").addEventListener("click", () => showStep("checks"));
-$("customizeBtn").addEventListener("click", () => { $("recoCard").style.display = "none"; $("customCard").style.display = ""; });
-$("resetDefaultsBtn").addEventListener("click", () => { applyConfig(CFG_DEFAULTS); $("cfgError").textContent = ""; });
+/// Recommended ⇄ Customize. A switch, not the old one-way button: the
+/// summary stays one click away, and the chosen pane is remembered while the
+/// wizard is open.
+function showCustom(on) {
+  $("recoCard").style.display = on ? "none" : "";
+  $("customCard").style.display = on ? "" : "none";
+  $("segReco").classList.toggle("on", !on);
+  $("segCustom").classList.toggle("on", on);
+  if (!on) renderReco();
+}
+$("segReco").addEventListener("click", () => showCustom(false));
+$("segCustom").addEventListener("click", () => showCustom(true));
+$("resetDefaultsBtn").addEventListener("click", () => { applyConfig(cfgDefaults()); $("cfgError").textContent = ""; });
 $("backComponents").addEventListener("click", () => showStep("components"));
 $("toInstall").addEventListener("click", async () => {
   const c = readConfig();
   const err = validateConfig(c);
-  if (err) { $("cfgError").textContent = err; $("recoCard").style.display = "none"; $("customCard").style.display = ""; return; }
+  if (err) { $("cfgError").textContent = err; showCustom(true); return; }
   $("cfgError").textContent = "";
   try { await invoke("setting_set", { key: "install_kiosk", value: $("compKiosk").checked ? "1" : "0" }); } catch { /* store off */ }
   await persistConfig();
+  renderInstallPlan();
   showStep("install");
   installCard("installStart");
+  gateInstall();
 });
 $("startInstallBtn").addEventListener("click", autoInstall);
 $("retryInstallBtn").addEventListener("click", autoInstall);
+$("rebootLater").addEventListener("click", gateInstall);
 $("cancelInstallBtn").addEventListener("click", cancelInstall);
 $("cleanupBtn").addEventListener("click", cleanupLeftovers);
 $("rebootBtn").addEventListener("click", () => invoke("reboot_now"));
@@ -946,7 +1323,7 @@ async function loadStatus() {
   try {
     st = mode === "native"
       ? await invoke("native_status", { options: readNativeOptions() })
-      : await invoke("stack_status", { port: readConfig().http_port });
+      : await invoke("stack_status", { config: readConfig() });
   } catch { return; }
   // The native engine reports `services`; the Docker one reports `containers`.
   // Normalise so the table below renders either without knowing which.
@@ -981,8 +1358,8 @@ async function stackAction(action) {
   const ch = new Channel(); ch.onmessage = stMsg;
   try {
     await ((await installedMode()) === "native"
-      ? invoke("native_control", { action, onProgress: ch })
-      : invoke("stack_control", { action, onProgress: ch }));
+      ? invoke("native_control", { action, onProgress: ch, options: readNativeOptions() })
+      : invoke("stack_control", { action, onProgress: ch, config: readConfig() }));
   }
   catch (e) { $("stStep").textContent = "Failed: " + e; }
   finally { await loadStatus(); }
@@ -994,7 +1371,7 @@ async function loadLogs() {
     $("logsBox").textContent =
       ((await installedMode()) === "native"
         ? await invoke("native_logs", { options: readNativeOptions(), tail: 300 })
-        : await invoke("stack_logs", { tail: 300 })) || "(no output)";
+        : await invoke("stack_logs", { tail: 300, config: readConfig() })) || "(no output)";
   }
   catch (e) { $("logsBox").textContent = "Error: " + e; }
 }
@@ -1003,15 +1380,7 @@ async function uninstall() {
   // The two modes destroy different things, and the confirmation has to say
   // exactly which — this is the one irreversible button in the app.
   const mode = await installedMode();
-  const ok = confirm(
-    mode === "native"
-      ? "Uninstall SENTIENT?\n\n" +
-        "This removes the SENTIENT and PostgreSQL Windows services, the installed program files, " +
-        "and the database with ALL its data, plus the desktop shortcut and autostart. " +
-        "This Manager app is kept. This cannot be undone."
-      : "Uninstall SENTIENT?\n\n" +
-        "This permanently deletes the SENTIENT containers, the database and ALL its data (volumes), and the WSL distro, and removes the desktop shortcut and autostart. WSL2 and this Manager app are kept. This cannot be undone."
-  );
+  const ok = confirm("Uninstall SENTIENT?\n\n" + $("uninstallNote").textContent + " This cannot be undone.");
   if (!ok) return;
   $("uninstallBtn").disabled = true;
   $("uninProg").style.display = "";
@@ -1027,7 +1396,7 @@ async function uninstall() {
   try {
     await (mode === "native"
       ? invoke("native_cleanup", { onProgress: ch, options: readNativeOptions() })
-      : invoke("uninstall_sentient", { onProgress: ch }));
+      : invoke("uninstall_sentient", { onProgress: ch, config: readConfig() }));
     try { await invoke("setting_set", { key: "deploy_mode", value: "" }); } catch { /* store off */ }
     _installedMode = null;
     $("uninStep").textContent = "✓ SENTIENT removed.";
@@ -1068,7 +1437,13 @@ function upCard(which) {
 async function refreshUpdateGate() {
   if (!invoke) return;
   let st;
-  try { st = await invoke("stack_status", { port: readConfig().http_port }); } catch { return; }
+  const mode = await installedMode();
+  try {
+    st = mode === "native"
+      ? await invoke("native_status", { options: readNativeOptions() })
+      : await invoke("stack_status", { config: readConfig() });
+  } catch { return; }
+  await applyOsTexts();
   $("updateNotInstalled").style.display = st.installed ? "none" : "";
   $("updateBody").style.display = st.installed ? "" : "none";
   if (st.installed) upCard("upStart");
@@ -1088,7 +1463,7 @@ async function runUpdate() {
   $("upCancelBtn").disabled = false;
   const ch = new Channel(); ch.onmessage = upMsg;
   try {
-    await invoke("update_stack", { onProgress: ch });
+    await invoke("update_stack", { onProgress: ch, config: readConfig() });
     upCard("upDone");
   } catch (e) {
     const m = String(e);
@@ -1099,7 +1474,7 @@ async function runUpdate() {
 async function cancelUpdate() {
   const ok = confirm(
     "Cancel the update?\n\n" +
-    "The current step stops. Your data is safe, but a partly-applied update may need a cleanup + retry. WSL2 and Docker stay installed."
+    "The current step stops. Your data is safe, but a partly-applied update may need a cleanup + retry. Docker stays installed."
   );
   if (!ok) return;
   $("upCancelBtn").disabled = true;
@@ -1109,7 +1484,7 @@ async function cancelUpdate() {
 async function cleanupUpdate() {
   const ok = confirm(
     "Clean up leftovers?\n\n" +
-    "Stops and removes the SENTIENT containers and reclaims disk from partial pulls so you can retry cleanly. WSL2 and Docker stay installed."
+    "Stops and removes the SENTIENT containers and reclaims disk from partial pulls so you can retry cleanly. Docker stays installed."
   );
   if (!ok) return;
   upCard("upProgress");
@@ -1117,7 +1492,7 @@ async function cleanupUpdate() {
   $("upStep").textContent = "Cleaning up…";
   $("upCancelBtn").disabled = true;
   const ch = new Channel(); ch.onmessage = upMsg;
-  try { await invoke("cleanup_install", { onProgress: ch }); $("upFailMsg").textContent = "Cleanup done — ready to retry."; }
+  try { await invoke("cleanup_install", { onProgress: ch, config: readConfig() }); $("upFailMsg").textContent = "Cleanup done — ready to retry."; }
   catch (e) { $("upFailMsg").textContent = "Cleanup error: " + e; }
   upCard("upFailed");
 }
