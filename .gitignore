@@ -12,3 +12,7 @@ dist/
 /installer/src-tauri/target/
 /installer/src-tauri/payload/*
 !/installer/src-tauri/payload/.gitkeep
+
+# GPUI app and spike build output
+/app/target/
+/spike/*/target/

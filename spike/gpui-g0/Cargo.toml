@@ -1,0 +1,12 @@
+# G0 spike: does GPUI + GPUI Kit render acceptably on our Windows targets
+# (VM, Remote Desktop, physical Win10)? Throwaway; its own workspace.
+[workspace]
+
+[package]
+name = "gpui-g0"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[dependencies]
+gpui-kit = "=0.7.3"
