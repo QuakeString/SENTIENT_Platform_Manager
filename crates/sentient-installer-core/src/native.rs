@@ -1024,8 +1024,7 @@ pub fn status(cfg: &NativeConfig) -> NativeStatus {
 pub fn stop_server(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        let _ = (sink, cfg);
-        return Err("stop_server is Windows-only".into());
+        return crate::native_linux::stop_server(sink, cfg);
     }
     #[cfg(not(target_os = "linux"))]
     {

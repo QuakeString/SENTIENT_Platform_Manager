@@ -20,15 +20,90 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{
-    APP_SERVICE, NativeConfig, clickhouse_conn, copy_tree, is_running, log, psql, sc, service_state, step,
-    stop_server,
-};
+use super::{NativeConfig, clickhouse_conn, copy_tree, is_running, log, step, stop_server};
 use crate::progress::{Progress, ProgressFn};
 use crate::stack::Flavor;
 use crate::sys;
 
-const ITEMS: [&str; 3] = ["bin", "ui", "data"];
+use platform::{ITEMS, free_bytes, installer_name, psql, service_running, start_service};
+
+/// What differs between Windows (services, psql.exe as the PostgreSQL
+/// superuser) and Linux (systemd, `runuser postgres psql`; the job runs as
+/// root there).
+#[cfg(windows)]
+mod platform {
+    use super::super::{APP_SERVICE, NativeConfig, sc, service_state};
+    use crate::sys;
+
+    pub const ITEMS: &[&str] = &["bin", "ui", "data"];
+
+    pub fn psql(cfg: &NativeConfig, db: &str, sql: &str) -> Result<String, String> {
+        super::super::psql(cfg, db, sql)
+    }
+
+    pub fn installer_name() -> &'static str {
+        "sentient-install.exe"
+    }
+
+    pub fn start_service() {
+        let _ = sc(&["start", APP_SERVICE]);
+    }
+
+    pub fn service_running() -> bool {
+        service_state(APP_SERVICE) == "running"
+    }
+
+    /// Free bytes on the drive holding PostgreSQL.
+    pub fn free_bytes(cfg: &NativeConfig) -> Option<u64> {
+        let drive = cfg.pg_dir.to_string_lossy().chars().next()?;
+        let script = format!("(Get-PSDrive -Name '{drive}').Free");
+        let (ok, out, _) = sys::output("powershell.exe", &["-NoProfile", "-Command", &script])?;
+        if !ok {
+            return None;
+        }
+        sys::decode(&out).trim().parse().ok()
+    }
+}
+
+#[cfg(not(windows))]
+mod platform {
+    use super::super::NativeConfig;
+    use crate::sys;
+
+    pub const ITEMS: &[&str] = &["bin", "ui", "data", "fonts"];
+
+    pub fn psql(cfg: &NativeConfig, db: &str, sql: &str) -> Result<String, String> {
+        let port = cfg.pg_port.to_string();
+        match sys::output("runuser", &["-u", "postgres", "--", "psql", "-p", &port, "-d", db, "-v", "ON_ERROR_STOP=1", "-tAc", sql]) {
+            Some((true, out, _)) => Ok(sys::decode(&out).trim().to_string()),
+            Some((false, _, err)) => Err(format!("psql: {}", sys::decode(&err).trim())),
+            None => Err("could not run psql (the update runs as root)".into()),
+        }
+    }
+
+    pub fn installer_name() -> &'static str {
+        "sentient-install"
+    }
+
+    pub fn start_service() {
+        let _ = sys::output("systemctl", &["start", "sentient"]);
+    }
+
+    pub fn service_running() -> bool {
+        sys::output("systemctl", &["is-active", "--quiet", "sentient"]).map(|(ok, _, _)| ok).unwrap_or(false)
+    }
+
+    /// Free bytes where PostgreSQL keeps its data.
+    pub fn free_bytes(cfg: &NativeConfig) -> Option<u64> {
+        let dir = psql(cfg, "postgres", "SHOW data_directory").ok()?;
+        let (ok, out, _) = sys::output("df", &["-Pk", &dir])?;
+        if !ok {
+            return None;
+        }
+        let line = sys::decode(&out).lines().nth(1)?.to_string();
+        line.split_whitespace().nth(3)?.parse::<u64>().ok().map(|kb| kb * 1024)
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct UpdateOptions {
@@ -52,17 +127,6 @@ pub(crate) fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-/// Free bytes on the drive holding `path`.
-fn free_bytes(path: &Path) -> Option<u64> {
-    let drive = path.to_string_lossy().chars().next()?;
-    let script = format!("(Get-PSDrive -Name '{drive}').Free");
-    let (ok, out, _) = sys::output("powershell.exe", &["-NoProfile", "-Command", &script])?;
-    if !ok {
-        return None;
-    }
-    sys::decode(&out).trim().parse().ok()
-}
-
 /// Run `f` with no one connected to the database, then let connections in
 /// again whatever happened.
 fn exclusive<T>(cfg: &NativeConfig, db: &str, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
@@ -84,7 +148,7 @@ fn snapshot_database(sink: &ProgressFn, cfg: &NativeConfig, snapshot: &str) -> R
         .parse()
         .map_err(|e| format!("database size: {e}"))?;
     let need = size + size / 5 + (1 << 30);
-    if let Some(free) = free_bytes(&cfg.pg_dir) {
+    if let Some(free) = free_bytes(cfg) {
         if free < need {
             return Err(format!(
                 "Not enough disk space for the copy of the database taken before updating: it is {} GB and {} GB are free. Free some space and run the update again; nothing has been changed.",
@@ -121,7 +185,7 @@ fn older_snapshots(cfg: &NativeConfig, keep: &str) -> Vec<String> {
 
 /// The new version's schema tool against this database. Returns its output.
 fn run_upgrade(cfg: &NativeConfig, bin: &Path, data: &Path, dry_run: bool, accept_breaking: bool) -> Result<String, String> {
-    let installer = bin.join("sentient-install.exe");
+    let installer = bin.join(installer_name());
     if !installer.exists() {
         return Err(format!("{} is missing from the package", installer.display()));
     }
@@ -150,7 +214,7 @@ fn run_upgrade(cfg: &NativeConfig, bin: &Path, data: &Path, dry_run: bool, accep
             let text = format!("{}{}", sys::decode(&out), sys::decode(&err));
             if ok { Ok(text) } else { Err(text) }
         }
-        None => Err("could not run sentient-install.exe".into()),
+        None => Err(format!("could not run {}", installer.display())),
     }
 }
 
@@ -182,13 +246,13 @@ fn swap_in(cfg: &NativeConfig, staging: &Path) -> Result<(), String> {
     let back = rollback_dir(cfg);
     let _ = std::fs::remove_dir_all(&back);
     std::fs::create_dir_all(&back).map_err(|e| format!("create {}: {e}", back.display()))?;
-    for item in ITEMS {
+    for item in ITEMS.iter().copied() {
         let live = cfg.install_dir.join(item);
         if live.exists() {
             std::fs::rename(&live, back.join(item)).map_err(|e| format!("move {} aside: {e}", live.display()))?;
         }
     }
-    for item in ITEMS {
+    for item in ITEMS.iter().copied() {
         let from = staging.join(item);
         if from.exists() {
             copy_tree(&from, &cfg.install_dir.join(item))?;
@@ -199,7 +263,7 @@ fn swap_in(cfg: &NativeConfig, staging: &Path) -> Result<(), String> {
 
 fn swap_back(cfg: &NativeConfig) -> Result<(), String> {
     let back = rollback_dir(cfg);
-    for item in ITEMS {
+    for item in ITEMS.iter().copied() {
         let saved = back.join(item);
         if !saved.exists() {
             continue;
@@ -214,7 +278,7 @@ fn swap_back(cfg: &NativeConfig) -> Result<(), String> {
 /// Start SENTIENT and wait until it answers and is still up a little later.
 fn start_and_check(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     step(sink, "Starting SENTIENT");
-    let _ = sc(&["start", APP_SERVICE]);
+    start_service();
     let mut up = false;
     for _ in 0..180 {
         if is_running(cfg.http_port) {
@@ -229,7 +293,7 @@ fn start_and_check(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> 
     step(sink, "Checking SENTIENT stays up");
     for _ in 0..20 {
         std::thread::sleep(std::time::Duration::from_secs(1));
-        if service_state(APP_SERVICE) != "running" || !is_running(cfg.http_port) {
+        if !service_running() || !is_running(cfg.http_port) {
             return Err("SENTIENT started but stopped again".into());
         }
     }
@@ -238,12 +302,13 @@ fn start_and_check(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> 
 
 /// Update to the program files unpacked in `staging` (bin, ui, data).
 pub fn safe_update(sink: ProgressFn, cfg: &NativeConfig, staging: &Path, opts: &UpdateOptions) -> Result<UpdateReport, String> {
-    if !staging.join("bin").join("sentient-server.exe").exists() {
-        return Err(format!("{} does not hold a SENTIENT package (bin\\sentient-server.exe)", staging.display()));
+    let server = if cfg!(windows) { "sentient-server.exe" } else { "sentient-server" };
+    if !staging.join("bin").join(server).exists() {
+        return Err(format!("{} does not hold a SENTIENT package (bin/{server})", staging.display()));
     }
 
     if let Err(e) = stop_server(&sink, cfg) {
-        let _ = sc(&["start", APP_SERVICE]);
+        start_service();
         return Err(e);
     }
 

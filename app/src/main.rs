@@ -18,6 +18,7 @@ mod maintenance;
 mod manager;
 mod migration;
 mod mode;
+mod rootjob;
 mod secrets;
 mod self_install;
 mod theme;

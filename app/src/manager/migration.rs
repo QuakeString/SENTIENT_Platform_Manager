@@ -29,6 +29,8 @@ pub struct MigrationPage {
     job: Entity<Job>,
     /// What earlier changes kept; None while it is being read.
     kept: Option<Result<Vec<Kept>, String>>,
+    /// Native Linux: the operator asked to see it (it needs the password).
+    kept_asked: bool,
     _observe: Subscription,
     _tasks: Vec<Task<()>>,
 }
@@ -60,16 +62,32 @@ impl MigrationPage {
             cx.notify();
         });
         let state = record.as_ref().and_then(migration::load_state);
-        let mut page = Self { record, state, target: None, confirm: false, job, kept: None, _observe, _tasks: Vec::new() };
+        let mut page = Self { record, state, target: None, confirm: false, job, kept: None, kept_asked: false, _observe, _tasks: Vec::new() };
         page.refresh_kept(cx);
         page
     }
 
     fn refresh_kept(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
+        // Native Linux reads it as root: only when asked, not on every visit.
+        if crate::rootjob::needed(&record) && !self.kept_asked {
+            self.kept = Some(Ok(Vec::new()));
+            return;
+        }
         self.kept = None;
         let task = cx.spawn(async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { kept::list(&record) }).await;
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    if crate::rootjob::needed(&record) {
+                        let noop = sentient_installer_core::progress::noop();
+                        crate::rootjob::run(&["kept".to_string()], &noop)
+                            .map(|lines| lines.iter().filter_map(|l| kept::decode(l)).collect())
+                    } else {
+                        kept::list(&record)
+                    }
+                })
+                .await;
             this.update(cx, |page, cx| {
                 page.kept = Some(result);
                 cx.notify();
@@ -97,7 +115,12 @@ impl MigrationPage {
                 let item = item.clone();
                 this.update(cx, |page, cx| {
                     let Some(record) = page.record.clone() else { return };
-                    page.job.update(cx, |job, cx| job.start(move |sink| kept::remove(&record, &item, sink), cx));
+                    if crate::rootjob::needed(&record) {
+                        let args = vec!["remove-kept".to_string(), item.name.clone()];
+                        page.job.update(cx, |job, cx| job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
+                    } else {
+                        page.job.update(cx, |job, cx| job.start(move |sink| kept::remove(&record, &item, sink), cx));
+                    }
                 })
                 .ok();
                 true
@@ -114,12 +137,22 @@ impl MigrationPage {
         else {
             return;
         };
-        self.job.update(cx, |job, cx| job.start(move |sink| migration::run(record, target, sink).map(|_| ()), cx));
+        if crate::rootjob::needed(&record) {
+            let args = vec!["migrate".to_string(), target.as_str().to_string()];
+            self.job.update(cx, |job, cx| job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
+        } else {
+            self.job.update(cx, |job, cx| job.start(move |sink| migration::run(record, target, sink).map(|_| ()), cx));
+        }
     }
 
     fn resume(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
-        self.job.update(cx, |job, cx| job.start(move |sink| migration::resume(record, sink), cx));
+        if crate::rootjob::needed(&record) {
+            let args = vec!["resume-migration".to_string()];
+            self.job.update(cx, |job, cx| job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
+        } else {
+            self.job.update(cx, |job, cx| job.start(move |sink| migration::resume(record, sink), cx));
+        }
     }
 }
 
@@ -217,6 +250,7 @@ impl Render for MigrationPage {
                 ),
         };
 
+        let root_only = crate::rootjob::needed(record) && !self.kept_asked;
         let kept_panel = match &self.kept {
             None => ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Kept after earlier changes"))
@@ -226,8 +260,23 @@ impl Render for MigrationPage {
                 .child(div().text_sm().text_color(theme.danger).child(format!("Could not look: {e}"))),
             Some(Ok(items)) => ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Kept after earlier changes"))
-                .when(items.is_empty(), |p| {
+                .when(items.is_empty() && !root_only, |p| {
                     p.child(div().text_sm().text_color(theme.muted_foreground).child("Nothing: no old history and no database copies."))
+                })
+                .when(root_only, |p| {
+                    p.child(
+                        h_flex().child(
+                            Button::new("show-kept")
+                                .outline()
+                                .small()
+                                .label("Show (asks for the administrator password)")
+                                .disabled(busy)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.kept_asked = true;
+                                    this.refresh_kept(cx);
+                                })),
+                        ),
+                    )
                 })
                 .when(!items.is_empty(), |p| {
                     p.child(div().text_sm().text_color(theme.muted_foreground).child(

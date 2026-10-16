@@ -7,6 +7,8 @@
 mod pages;
 mod plan;
 
+pub(crate) use plan::{InstallPlan, run as run_install};
+
 #[cfg(windows)]
 pub use plan::provision_clickhouse_wsl;
 

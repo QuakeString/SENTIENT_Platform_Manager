@@ -1,9 +1,9 @@
 // Copyright © 2016-2026 The SENTIENT Authors
 
 //! Updating SENTIENT, shared by Setup's Update and the manager's Update
-//! screen. Native Windows installations and Docker installations go through
-//! the safe update (native::safe_update, distro::docker_ops): dry run,
-//! database copy, roll back on failure. Native Linux replaces the files.
+//! screen. Every installation goes through a safe update (native::safe_update
+//! for Windows and Linux services, distro::docker_ops for Docker): dry run,
+//! database copy, roll back on failure.
 
 use std::path::{Path, PathBuf};
 
@@ -22,16 +22,18 @@ pub fn package_version(package: &Path) -> Option<String> {
     std::fs::read_to_string(package.join("VERSION")).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
-/// A package folder (with `sentient-payload.tar`) unpacked into
-/// `state_dir/update-staging`, or a folder that is already unpacked.
-#[cfg_attr(not(windows), allow(dead_code))]
+/// A package folder unpacked into `state_dir/update-staging`, or a folder
+/// that is already unpacked. Windows packages hold `sentient-payload.tar`,
+/// Linux packages `sentient-payload-linux-<arch>.tar`.
 fn staged(sink: &ProgressFn, record: &InstallationRecord, package: &Path) -> Result<(PathBuf, bool), String> {
-    if package.join("bin").join("sentient-server.exe").exists() {
+    let server = if cfg!(windows) { "sentient-server.exe" } else { "sentient-server" };
+    if package.join("bin").join(server).exists() {
         return Ok((package.to_path_buf(), false));
     }
-    let tar = package.join("sentient-payload.tar");
+    let tar_name = if cfg!(windows) { "sentient-payload.tar".to_string() } else { native::linux_payload_name() };
+    let tar = package.join(&tar_name);
     if !tar.exists() {
-        return Err(format!("{} is not a SENTIENT package (no sentient-payload.tar)", package.display()));
+        return Err(format!("{} is not a SENTIENT package (no {tar_name})", package.display()));
     }
     let staging = record.state_dir.join("update-staging");
     let _ = std::fs::remove_dir_all(&staging);
@@ -39,7 +41,8 @@ fn staged(sink: &ProgressFn, record: &InstallationRecord, package: &Path) -> Res
     step(sink, "Unpacking the new SENTIENT");
     // Windows' own bsdtar: a Git-for-Windows tar earlier on PATH reads
     // "C:\…" as a remote host.
-    let ok = std::process::Command::new(r"C:\Windows\System32\tar.exe")
+    let tar_exe = if cfg!(windows) { r"C:\Windows\System32\tar.exe" } else { "tar" };
+    let ok = std::process::Command::new(tar_exe)
         .arg("-xf")
         .arg(&tar)
         .arg("-C")
@@ -70,7 +73,7 @@ pub fn run(
                 report.previous_image.map(|t| format!(" and the previous image as {t}")).unwrap_or_default()
             );
         }
-        Engine::Native if cfg!(windows) => {
+        Engine::Native => {
             let package = package.ok_or("Choose the folder of the new SENTIENT package first.")?;
             version = package_version(package);
             let cfg = record.native_config_with_secrets()?;
@@ -90,11 +93,6 @@ pub fn run(
                 report.snapshot,
                 report.previous_files.display()
             );
-        }
-        Engine::Native => {
-            let package = package.ok_or("Choose the folder of the new SENTIENT package first.")?;
-            version = package_version(package);
-            native::update(sink.clone(), &record.native_config(), &package.join(native::linux_payload_name()))?;
         }
     }
     let mut updated = record;

@@ -311,7 +311,8 @@ fn ch_provision_sql(cfg: &NativeConfig) -> String {
     format!(
         "CREATE USER IF NOT EXISTS {u} IDENTIFIED WITH sha256_password BY '{p}'; \
          CREATE DATABASE IF NOT EXISTS {d}; \
-         GRANT ALL ON {d}.* TO {u};",
+         GRANT ALL ON {d}.* TO {u}; \
+         GRANT SELECT ON system.parts TO {u};",
         u = cfg.ch_user, p = cfg.ch_password, d = cfg.ch_db
     )
 }
@@ -415,6 +416,81 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     Err("SENTIENT did not start listening within 90s — check the service log".into())
 }
 
+/// The passwords SENTIENT runs with, read back from its environment file
+/// (root-only: through polkit unless the job already runs as root).
+#[derive(Debug, Clone, Default)]
+pub struct EnvSecrets {
+    pub db_password: String,
+    pub jwt_secret: String,
+    pub ch_password: String,
+}
+
+/// `KEY='value'` lines as [`env_file_body`] writes them.
+fn env_value(text: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    let raw = text.lines().find_map(|l| l.strip_prefix(&prefix))?;
+    let inner = raw.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')).unwrap_or(raw);
+    Some(inner.replace("'\\''", "'"))
+}
+
+pub fn read_secrets(_cfg: &NativeConfig) -> Result<EnvSecrets, String> {
+    let (ok, out, err) = exec::privileged_output(&format!("cat {ENV_FILE}")).ok_or("could not read the SENTIENT environment")?;
+    if !ok {
+        return Err(format!("read {ENV_FILE}: {}", err.trim()));
+    }
+    // postgresql://user:password@host:port/db
+    let url = env_value(&out, "DATABASE_URL").ok_or("the environment file has no DATABASE_URL")?;
+    let db_password = url
+        .split_once("://")
+        .and_then(|(_, rest)| rest.rsplit_once('@'))
+        .and_then(|(cred, _)| cred.split_once(':'))
+        .map(|(_, p)| p.to_string())
+        .ok_or("DATABASE_URL carries no password")?;
+    Ok(EnvSecrets {
+        db_password,
+        jwt_secret: env_value(&out, "JWT_SECRET").unwrap_or_default(),
+        ch_password: env_value(&out, "CLICKHOUSE_PASSWORD").unwrap_or_default(),
+    })
+}
+
+/// ClickHouse's service is installed although the installation no longer
+/// uses it (a migration away from ClickHouse keeps it, with its history).
+pub fn clickhouse_left_behind(cfg: &NativeConfig) -> bool {
+    // Running or set to start at boot; removing it disables it (the program
+    // itself stays installed).
+    let enabled = sys::output("systemctl", &["is-enabled", "--quiet", CH_UNIT]).map(|(ok, _, _)| ok).unwrap_or(false);
+    !cfg.flavor.uses_clickhouse() && unit_exists(CH_UNIT) && (enabled || unit_state(CH_UNIT) == "running")
+}
+
+/// Remove SENTIENT's ClickHouse database and stop and disable the service.
+/// The program stays installed. Cannot be undone.
+pub fn remove_clickhouse(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
+    step(sink, "Removing ClickHouse's SENTIENT data and stopping the service");
+    exec::run_privileged(
+        sink,
+        &format!(
+            "clickhouse-client --port {} -q {} || true
+systemctl disable --now {CH_UNIT}
+",
+            cfg.ch_native_port,
+            shq(&format!("DROP DATABASE IF EXISTS {}", cfg.ch_db))
+        ),
+    )
+}
+
+/// Stop the SENTIENT unit alone (PostgreSQL keeps running) and wait.
+pub fn stop_server(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
+    step(sink, "Stopping SENTIENT");
+    exec::run_privileged(sink, &format!("systemctl stop {APP_UNIT}"))?;
+    for _ in 0..60 {
+        if !crate::native::is_running(cfg.http_port) {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    Err("SENTIENT did not stop within a minute".into())
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -474,8 +550,9 @@ pub fn logs(_cfg: &NativeConfig, tail: u32) -> String {
         .unwrap_or_else(|| format!("no log yet at {path}"))
 }
 
-/// Replace the platform files from a new payload tar and restart. The
-/// database is untouched: the server applies pending migrations at boot.
+/// Replace the platform files from a new payload tar and restart, without
+/// the safe update's copy and checks (native::safe_update is the update the
+/// manager runs).
 pub fn update(sink: ProgressFn, cfg: &NativeConfig, payload: &Path) -> Result<(), String> {
     let inst = shq(&cfg.install_dir.display().to_string());
     step(&sink, "Replacing the platform files");

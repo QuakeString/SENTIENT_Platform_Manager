@@ -45,8 +45,7 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, String> {
 fn conn(record: &InstallationRecord, dbname: &str) -> Result<ConnConfig, String> {
     let password = match record.engine {
         Engine::Docker => sentient_installer_core::distro::docker_ops::read_secrets(&record.stack)?.db_password,
-        Engine::Native => crate::secrets::get(crate::secrets::Secret::Database)
-            .ok_or("The database password is not in the secret store.")?,
+        Engine::Native => record.native_config_with_secrets()?.db_password,
     };
     Ok(ConnConfig {
         host: "127.0.0.1".into(),
@@ -122,6 +121,15 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
             detail: "No longer used; holds the history from when this installation used ClickHouse".into(),
         });
     }
+    #[cfg(target_os = "linux")]
+    if record.engine == Engine::Native && sentient_installer_core::native_linux::clickhouse_left_behind(&record.native_config()) {
+        kept.push(Kept {
+            kind: KeptKind::ClickHouse,
+            name: "ClickHouse (service)".into(),
+            bytes: None,
+            detail: "No longer used; holds the history from when this installation used ClickHouse".into(),
+        });
+    }
     #[cfg(windows)]
     if record.engine == Engine::Native
         && record.flavor() != Flavor::Clickhouse
@@ -170,6 +178,9 @@ pub fn remove(record: &InstallationRecord, item: &Kept, sink: ProgressFn) -> Res
         KeptKind::ClickHouse if record.engine == Engine::Docker => {
             sentient_installer_core::distro::docker_ops::remove_clickhouse(&sink, &record.stack)?
         }
+        #[cfg(target_os = "linux")]
+        KeptKind::ClickHouse => sentient_installer_core::native_linux::remove_clickhouse(&sink, &record.native_config())?,
+        #[cfg(not(target_os = "linux"))]
         KeptKind::ClickHouse => remove_clickhouse(&sink)?,
     }
     sink(Progress::Done { message: format!("Removed {}.", item.name) });
@@ -195,6 +206,29 @@ pub fn remove_clickhouse(sink: &ProgressFn) -> Result<(), String> {
         let _ = sink;
         Err("ClickHouse in WSL2 exists on Windows only.".into())
     }
+}
+
+/// One item as a line, for the root job's output (crate::rootjob).
+pub fn encode(k: &Kept) -> String {
+    let kind = match k.kind {
+        KeptKind::History => "history",
+        KeptKind::DatabaseCopy => "database",
+        KeptKind::ClickHouse => "clickhouse",
+    };
+    format!("KEPT\t{kind}\t{}\t{}\t{}", k.name, k.bytes.map(|b| b.to_string()).unwrap_or_default(), k.detail)
+}
+
+pub fn decode(line: &str) -> Option<Kept> {
+    let mut f = line.strip_prefix("KEPT\t")?.splitn(4, '\t');
+    let kind = match f.next()? {
+        "history" => KeptKind::History,
+        "database" => KeptKind::DatabaseCopy,
+        _ => KeptKind::ClickHouse,
+    };
+    let name = f.next()?.to_string();
+    let bytes = f.next()?.parse().ok();
+    let detail = f.next().unwrap_or_default().to_string();
+    Some(Kept { kind, name, bytes, detail })
 }
 
 /// "1.2 GB"

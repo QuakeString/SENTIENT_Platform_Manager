@@ -90,8 +90,18 @@ impl InstallationRecord {
     /// for operations that rewrite the service (repair).
     pub fn native_config_with_secrets(&self) -> Result<NativeConfig, String> {
         use crate::secrets::{Secret, get};
-        let missing = |what: &str| format!("The {what} is not in the secret store (%ProgramData%\\SENTIENT\\secrets); this cannot continue without it.");
         let mut cfg = self.native_config();
+        // Linux keeps them only in SENTIENT's environment file (root-only).
+        #[cfg(target_os = "linux")]
+        {
+            let s = sentient_installer_core::native_linux::read_secrets(&cfg)?;
+            cfg.db_password = s.db_password;
+            cfg.jwt_secret = s.jwt_secret;
+            cfg.ch_password = s.ch_password;
+            return Ok(cfg);
+        }
+        #[allow(unreachable_code)]
+        let missing = |what: &str| format!("The {what} is not in the secret store (%ProgramData%\\SENTIENT\\secrets); this cannot continue without it.");
         cfg.db_password = get(Secret::Database).ok_or_else(|| missing("database password"))?;
         cfg.pg_superuser_password = get(Secret::PostgresAdmin).ok_or_else(|| missing("PostgreSQL admin password"))?;
         cfg.jwt_secret = get(Secret::Jwt).ok_or_else(|| missing("sign-in signing secret"))?;

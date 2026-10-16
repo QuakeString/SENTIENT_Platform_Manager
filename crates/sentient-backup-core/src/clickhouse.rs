@@ -96,13 +96,24 @@ impl ChConn {
             .map_err(|e| Error::msg(format!("count {table}: {e}")))
     }
 
-    /// The active monthly partitions of `ts_kv`, oldest first.
+    /// The active monthly partitions of `ts_kv`, oldest first. From the part
+    /// list when the user may read it (cheap), else from the table itself (a
+    /// user granted only its own database, as on native Linux before 0.8).
     pub fn history_partitions(&self) -> Result<Vec<String>> {
-        let sql = format!(
+        let lines = |text: String| -> Vec<String> {
+            text.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()
+        };
+        let parts = format!(
             "SELECT DISTINCT partition FROM system.parts WHERE database = currentDatabase() \
              AND table = '{HISTORY_TABLE}' AND active ORDER BY partition"
         );
-        Ok(self.text(&sql)?.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+        match self.text(&parts) {
+            Ok(text) => Ok(lines(text)),
+            Err(e) if e.to_string().contains("ACCESS_DENIED") => Ok(lines(
+                self.text(&format!("SELECT DISTINCT _partition_id FROM {HISTORY_TABLE} ORDER BY _partition_id"))?,
+            )),
+            Err(e) => Err(e),
+        }
     }
 }
 

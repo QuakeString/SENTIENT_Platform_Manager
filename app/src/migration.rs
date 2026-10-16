@@ -49,8 +49,8 @@ pub struct MigrationState {
     pub aside: Option<String>,
     pub backup: PathBuf,
     pub done: bool,
-    /// Docker, leaving ClickHouse: its password, which the new compose file no
-    /// longer holds (Windows keeps it in the secret store).
+    /// Leaving ClickHouse on Docker or Linux: its password, which the new
+    /// configuration no longer holds (Windows keeps it in the secret store).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub old_ch_password: String,
 }
@@ -89,7 +89,8 @@ pub fn targets(record: &InstallationRecord) -> Result<Vec<Flavor>, &'static str>
     let all = [Flavor::Stock, Flavor::Timescaledb, Flavor::Clickhouse];
     match record.engine {
         Engine::Native if cfg!(windows) => Ok(all.into_iter().filter(|f| *f != record.flavor()).collect()),
-        Engine::Native => Err("In-place migration of native Linux installations arrives in a later version."),
+        // TimescaleDB is not packaged by Linux distributions.
+        Engine::Native => Ok([Flavor::Stock, Flavor::Clickhouse].into_iter().filter(|f| *f != record.flavor()).collect()),
         Engine::Docker if cfg!(windows) => {
             Err("SENTIENT runs natively on Windows; in-place migration covers native Windows installations and Docker on Linux.")
         }
@@ -315,8 +316,11 @@ pub fn run(record: InstallationRecord, target: Flavor, sink: ProgressFn) -> Resu
         aside: aside.clone(),
         backup: backup_file,
         done: false,
+        // Windows keeps it in the secret store; elsewhere the configuration
+        // that held it is rewritten by the switch.
         old_ch_password: match (&old, from) {
             (Setup::Docker(c), Flavor::Clickhouse) => c.ch_password.clone(),
+            (Setup::Native(c), Flavor::Clickhouse) if !cfg!(windows) => c.ch_password.clone(),
             _ => String::new(),
         },
     };
@@ -400,9 +404,20 @@ fn prepare_clickhouse_wsl(record: &InstallationRecord, new: &mut NativeConfig, s
     Ok(())
 }
 
+/// Linux: ClickHouse as a native service, installed by the same setup step
+/// as a fresh install (the vendor's pinned static build); deploy then creates
+/// its user and database.
 #[cfg(not(windows))]
-fn prepare_clickhouse_wsl(_: &InstallationRecord, _: &mut NativeConfig, _: &ProgressFn) -> Result<(), String> {
-    Err("ClickHouse for native installations is set up on Windows only in this version.".into())
+fn prepare_clickhouse_wsl(_: &InstallationRecord, new: &mut NativeConfig, sink: &ProgressFn) -> Result<(), String> {
+    step(sink, "Preparing ClickHouse");
+    if new.ch_password.is_empty() {
+        new.ch_password = native::generate_secret().chars().take(32).collect();
+    }
+    if distro::clickhouse_answers(new.ch_http_port) {
+        log(sink, "ClickHouse is already running");
+        return Ok(());
+    }
+    native::setup(sink.clone(), new)
 }
 
 /// With SENTIENT stopped: shape PostgreSQL's ts_kv for the target and, when
@@ -496,8 +511,9 @@ fn copy_history(record: &InstallationRecord, setup: &Setup, state: &mut Migratio
 /// When leaving ClickHouse the configuration no longer holds its password:
 /// Windows keeps it in the secret store, Docker in the migration state.
 fn clickhouse_password(record: &InstallationRecord, state: &MigrationState) -> Result<String, String> {
-    match record.engine {
-        Engine::Docker if !state.old_ch_password.is_empty() => Ok(state.old_ch_password.clone()),
-        _ => secrets::get(Secret::Clickhouse).ok_or_else(|| "The ClickHouse password is not in the secret store.".to_string()),
+    if !state.old_ch_password.is_empty() {
+        return Ok(state.old_ch_password.clone());
     }
+    let _ = record;
+    secrets::get(Secret::Clickhouse).ok_or_else(|| "The ClickHouse password is not in the secret store.".to_string())
 }

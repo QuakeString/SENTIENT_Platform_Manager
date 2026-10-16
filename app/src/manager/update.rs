@@ -63,9 +63,18 @@ impl UpdatePage {
         let Some(record) = self.record.clone() else { return };
         let package = self.package.clone();
         let accept = self.accept_breaking;
-        self.job.update(cx, |job, cx| {
-            job.start(move |sink| crate::updating::run(record, package.as_deref(), accept, sink).map(|_| ()), cx)
-        });
+        if crate::rootjob::needed(&record) {
+            let mut args = vec!["update".to_string()];
+            args.extend(package.map(|p| p.display().to_string()));
+            if accept {
+                args.push("--accept-breaking".into());
+            }
+            self.job.update(cx, |job, cx| job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
+        } else {
+            self.job.update(cx, |job, cx| {
+                job.start(move |sink| crate::updating::run(record, package.as_deref(), accept, sink).map(|_| ()), cx)
+            });
+        }
     }
 }
 
