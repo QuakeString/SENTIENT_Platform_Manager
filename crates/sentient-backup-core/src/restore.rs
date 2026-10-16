@@ -231,49 +231,82 @@ fn pg_restore_stream(
     // steps like index ATTACH don't get their idle connection dropped by a
     // NAT/firewall on a remote/wifi link. Password stays in PGPASSWORD.
     let conninfo = crate::pg_tools::conninfo(cfg);
+
+    // TimescaleDB's own catalog metadata (uuid, install_timestamp, …) is
+    // written by CREATE EXTENSION in the target database and re-written by
+    // the extension while the restore runs, so restoring the source's rows on
+    // top fails on metadata_pkey and --exit-on-error aborts everything. Skip
+    // just that table's data: the target keeps its own identity, as a fresh
+    // TimescaleDB database should. That needs pg_restore's table of contents
+    // (-l / -L), which needs the archive as a file rather than a pipe.
+    let archive = dump_zst.with_extension("dump");
+    {
+        let zf = File::open(dump_zst).map_err(|e| Error::msg(format!("open dump: {e}")))?;
+        let mut dec = zstd::stream::Decoder::new(zf).map_err(|e| Error::msg(format!("decompress dump: {e}")))?;
+        let mut out = File::create(&archive).map_err(|e| Error::msg(format!("write dump: {e}")))?;
+        io::copy(&mut dec, &mut out).map_err(|e| Error::msg(format!("decompress dump: {e}")))?;
+    }
+    let toc = crate::pg_tools::command(&tools.pg_restore)
+        .arg("-l")
+        .arg(&archive)
+        .output()
+        .map_err(|e| Error::msg(format!("listing the dump: {e}")))?;
+    if !toc.status.success() {
+        return Err(Error::msg(format!(
+            "listing the dump failed: {}",
+            String::from_utf8_lossy(&toc.stderr).trim()
+        )));
+    }
+    let list: String = String::from_utf8_lossy(&toc.stdout)
+        .lines()
+        .filter(|l| !l.contains("TABLE DATA _timescaledb_catalog metadata "))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let list_file = dump_zst.with_extension("toc");
+    std::fs::write(&list_file, list).map_err(|e| Error::msg(format!("write restore list: {e}")))?;
+
     let mut child = crate::pg_tools::command(&tools.pg_restore)
         .args(["--no-password", "--verbose", "--exit-on-error", "-d", &conninfo])
+        .arg("-L")
+        .arg(&list_file)
+        .arg(&archive)
         .env("PGPASSWORD", &cfg.password)
-        .stdin(Stdio::piped())
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| Error::msg(format!("spawning pg_restore: {e}")))?;
 
-    let mut stdin = child.stdin.take().expect("piped stdin");
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
 
-    let dump_path = dump_zst.to_path_buf();
-    let feeder = std::thread::spawn(move || -> io::Result<()> {
-        let zf = File::open(&dump_path)?;
-        let mut dec = zstd::stream::Decoder::new(zf)?;
-        io::copy(&mut dec, &mut stdin)?;
-        use std::io::Write;
-        stdin.flush()
-    });
     let sink_o = sink.clone();
     let out_t = std::thread::spawn(move || drain(stdout, sink_o));
     let sink_e = sink.clone();
     let err_t = std::thread::spawn(move || drain(stderr, sink_e));
 
     let status = child.wait().map_err(|e| Error::msg(e.to_string()))?;
-    let feed = feeder.join();
     let _ = out_t.join();
-    let _ = err_t.join();
+    let last_err = err_t.join().unwrap_or_default();
+    let _ = std::fs::remove_file(&archive);
+    let _ = std::fs::remove_file(&list_file);
 
-    if let Ok(Err(e)) = feed {
-        return Err(Error::msg(format!("feeding dump to pg_restore: {e}")));
-    }
     if !status.success() {
-        return Err(Error::msg(format!("pg_restore failed ({status})")));
+        return Err(Error::msg(format!("pg_restore failed ({status}): {}", last_err.join(" | "))));
     }
     Ok(())
 }
 
-fn drain<R: Read>(r: R, sink: ProgressFn) {
+/// Forward each line to the sink; return the last few, for error messages.
+fn drain<R: Read>(r: R, sink: ProgressFn) -> Vec<String> {
     use std::io::BufRead;
+    let mut last: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     for line in io::BufReader::new(r).lines().map_while(std::result::Result::ok) {
+        if last.len() == 3 {
+            last.pop_front();
+        }
+        last.push_back(line.clone());
         sink(Progress::Log { line });
     }
+    last.into()
 }

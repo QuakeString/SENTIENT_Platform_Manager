@@ -245,7 +245,7 @@ pub fn ports_free_of(wanted: &[(u16, String)]) -> Check {
             "Required ports",
             Status::Fail,
             format!(
-                "already in use: {} — stop whatever is listening, or choose different ports on the Configure step.",
+                "already in use: {} — stop whatever is listening, or choose different ports on the Network ports page.",
                 busy.join(", ")
             ),
         )

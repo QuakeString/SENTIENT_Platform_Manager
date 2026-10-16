@@ -43,8 +43,8 @@ pub const TSDB_ZIP: &str = "timescaledb-postgresql-18-windows-amd64.zip";
 pub const TSDB_URL: &str = "https://github.com/timescale/timescaledb/releases/download/2.29.2/timescaledb-postgresql-18-windows-amd64.zip";
 
 /// Windows service names we register.
-const PG_SERVICE: &str = "sentient-postgresql";
-const APP_SERVICE: &str = "SentientServer";
+pub const PG_SERVICE: &str = "sentient-postgresql";
+pub const APP_SERVICE: &str = "SentientServer";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -553,7 +553,11 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     let _ = psql(cfg, "postgres", &format!(
         "CREATE DATABASE {} OWNER {};", cfg.db_name, cfg.db_user
     ));
-    psql(cfg, &cfg.db_name, "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")?;
+    // Plain PostgreSQL keeps ts_kv as an ordinary partitioned table; only
+    // the TimescaleDB tier gets the extension.
+    if cfg.flavor == Flavor::Timescaledb {
+        psql(cfg, &cfg.db_name, "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")?;
+    }
     bail_if_cancelled()?;
 
     step(&sink, "Writing the configuration");
@@ -578,7 +582,14 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         args.push("--load-demo".into());
     }
     let argrefs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    match sys::output_tracked(&installer.to_string_lossy(), &argrefs) {
+    // The schema installer creates the ts_kv hypertable unless told not to;
+    // this choice cannot be changed in place later.
+    let timescale = if cfg.flavor == Flavor::Timescaledb { "true" } else { "false" };
+    match sys::output_tracked_env(
+        &installer.to_string_lossy(),
+        &argrefs,
+        &[("SENTIENT_TIMESCALE_ENABLED", timescale)],
+    ) {
         Some((true, out, _)) => {
             for line in sys::decode(&out).lines().rev().take(3).collect::<Vec<_>>().iter().rev() {
                 log(&sink, (*line).to_string());
@@ -617,6 +628,44 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     }
 }
 
+/// Apply the PostgreSQL server parameters from `cfg.pg` and restart the
+/// database so they take effect. One `ALTER SYSTEM` per psql call: it cannot
+/// run inside the implicit transaction of a multi-statement command.
+pub fn apply_pg_tuning(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
+    step(sink, "Tuning PostgreSQL");
+    let pg = &cfg.pg;
+    let quote = |v: &str| format!("'{}'", v.replace('\'', "''"));
+    let settings = [
+        ("max_connections", pg.pg_max_connections.to_string()),
+        ("shared_buffers", quote(&pg.pg_shared_buffers)),
+        ("work_mem", quote(&pg.pg_work_mem)),
+        ("effective_cache_size", quote(&pg.pg_effective_cache_size)),
+    ];
+    for (name, value) in settings {
+        psql(cfg, "postgres", &format!("ALTER SYSTEM SET {name} = {value};"))?;
+    }
+    // max_connections and shared_buffers only change on a restart.
+    let _ = sc(&["stop", PG_SERVICE]);
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let _ = sc(&["start", PG_SERVICE]);
+    wait_for_postgres(sink, cfg)
+}
+
+/// Replace the sys-admin sign-in the schema installer creates
+/// (`admin@sentient.local`) with the operator's choice. `password_hash` is an
+/// Argon2 PHC string, the format SENTIENT's `PasswordService` verifies.
+pub fn set_admin_account(cfg: &NativeConfig, email: &str, password_hash: &str) -> Result<(), String> {
+    let lit = |v: &str| format!("'{}'", v.replace('\'', "''"));
+    let sql = format!(
+        "UPDATE user_credentials SET password = {hash} WHERE user_id = \
+           (SELECT id FROM tb_user WHERE authority = 'SYS_ADMIN' AND email = 'admin@sentient.local'); \
+         UPDATE tb_user SET email = {email} WHERE authority = 'SYS_ADMIN' AND email = 'admin@sentient.local';",
+        hash = lit(password_hash),
+        email = lit(email),
+    );
+    psql(cfg, &cfg.db_name, &sql).map(|_| ())
+}
+
 /// The environment the server needs, in one place.
 ///
 /// Returned as pairs rather than a file because the service wrapper injects
@@ -646,7 +695,16 @@ pub(crate) fn service_env(cfg: &NativeConfig) -> Vec<(String, String)> {
     .chain(stack::storage_env(cfg.flavor, Some(&clickhouse_conn(cfg)), &cfg.tuning))
     .chain(stack::tuning_env(&cfg.tuning))
     .chain(cfg.extra_env.iter().cloned())
-    .collect()
+    .fold(Vec::new(), |mut env: Vec<(String, String)>, (k, v)| {
+        // Later entries win, so an operator's override (extra_env, last)
+        // replaces the value the engine derived instead of being written as
+        // a second, ambiguous <env> element.
+        match env.iter_mut().find(|(name, _)| *name == k) {
+            Some(slot) => slot.1 = v,
+            None => env.push((k, v)),
+        }
+        env
+    })
 }
 
 /// How the server reaches a ClickHouse on the same machine (Linux hybrid).
@@ -780,7 +838,7 @@ fn register_uninstall_entry(sink: &ProgressFn, cfg: &NativeConfig) {
         ("NoRepair", "REG_DWORD", "1".into()),
     ];
     if manager.exists() {
-        values.push(("UninstallString", "REG_SZ", format!("\"{}\"", manager.display())));
+        values.push(("UninstallString", "REG_SZ", format!("\"{}\" --uninstall", manager.display())));
     }
     if size_kb > 0 {
         values.push(("EstimatedSize", "REG_DWORD", size_kb.to_string()));
