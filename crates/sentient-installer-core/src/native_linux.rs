@@ -3,7 +3,7 @@
 //! under `/opt/sentient`, no containers.
 //!
 //! Same surface as [`crate::native`] (which delegates here on Linux) and
-//! [`crate::distro`], so the Tauri layer dispatches on the chosen mode
+//! [`crate::distro`], so the app dispatches on the chosen mode
 //! without special-casing. Everything that writes outside the user's home
 //! runs as root through [`crate::exec::run_privileged`] — one script per
 //! phase, so polkit asks for the password once per phase rather than once
@@ -147,14 +147,19 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
 
     // `--no-block`: a container or a box with a stuck dependency can leave
     // `systemctl start` waiting on a job; the readiness loop is the real gate.
+    // Up to 4 minutes: the distribution's unit waits for network-online, and
+    // where systemd-networkd is enabled but manages nothing (many servers,
+    // every container) that target only arrives after wait-online's own
+    // 2-minute timeout.
     let mut script = format!(
         "set -e\n{install}\
          systemctl enable --no-block --now {PG_UNIT}\n\
-         for i in $(seq 1 90); do runuser -u postgres -- pg_isready -q && break; sleep 1; done\n\
+         echo '>> Waiting for PostgreSQL to start (can take two minutes while the system waits for the network)'\n\
+         for i in $(seq 1 240); do runuser -u postgres -- pg_isready -q && break; sleep 1; done\n\
          runuser -u postgres -- psql -v ON_ERROR_STOP=1 -qAt {alter}\n\
          systemctl restart --no-block {PG_UNIT}\n\
          sleep 2\n\
-         for i in $(seq 1 90); do runuser -u postgres -- pg_isready -q -p {port} && break; sleep 1; done\n\
+         for i in $(seq 1 240); do runuser -u postgres -- pg_isready -q -p {port} && break; sleep 1; done\n\
          runuser -u postgres -- pg_isready -p {port}\n",
         port = cfg.pg_port,
     );
@@ -313,6 +318,17 @@ fn ch_provision_sql(cfg: &NativeConfig) -> String {
 
 /// Lay down the platform, create the database, install the schema, register
 /// and start the unit. Assumes [`setup`] has run.
+/// Run SQL against the SENTIENT database as the postgres superuser.
+pub(crate) fn run_sql(cfg: &NativeConfig, sql: &str) -> Result<(), String> {
+    let script = format!(
+        "runuser -u postgres -- psql -p {} -d {} -v ON_ERROR_STOP=1 -qAt -c {}",
+        cfg.pg_port,
+        shq(&cfg.db_name),
+        shq(sql)
+    );
+    exec::run_privileged(&crate::progress::noop(), &script)
+}
+
 pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     if !is_ready(cfg) {
         return Err("database prerequisites are not installed — run setup first".into());
