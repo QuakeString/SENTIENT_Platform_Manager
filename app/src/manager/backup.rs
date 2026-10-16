@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     input::{Input, InputState},
@@ -60,6 +60,11 @@ pub struct BackupPage {
     restore_passphrase: Entity<InputState>,
     restore_db: Entity<InputState>,
     restore: Entity<Job>,
+    /// The database the running restore writes into, then the last one
+    /// restored successfully (offered to be put into service).
+    restoring: Option<String>,
+    restored: Option<String>,
+    switch: Entity<Job>,
     _tasks: Vec<Task<()>>,
     _observe: Vec<Subscription>,
 }
@@ -115,9 +120,21 @@ impl BackupPage {
         let restore_db = cx.new(|cx| InputState::new(window, cx).default_value("sentient_restored"));
         let backup = cx.new(|_| Job::new());
         let restore = cx.new(|_| Job::new());
+        let switch = cx.new(|_| Job::new());
         let _observe = vec![
             cx.observe(&backup, |_, _, cx| cx.notify()),
-            cx.observe(&restore, |_, _, cx| cx.notify()),
+            cx.observe(&restore, |page: &mut Self, job, cx| {
+                if matches!(job.read(cx).state(), JobState::Done(_)) {
+                    page.restored = page.restoring.take();
+                }
+                cx.notify();
+            }),
+            cx.observe(&switch, |page: &mut Self, job, cx| {
+                if matches!(job.read(cx).state(), JobState::Done(_)) {
+                    page.restored = None;
+                }
+                cx.notify();
+            }),
         ];
         Self {
             record,
@@ -135,6 +152,9 @@ impl BackupPage {
             restore_passphrase,
             restore_db,
             restore,
+            restoring: None,
+            restored: None,
+            switch,
             _tasks: Vec::new(),
             _observe,
         }
@@ -319,6 +339,8 @@ impl BackupPage {
             clickhouse: self.ch_conn(Some(target.clone()), cx),
         };
         let live_ch = self.record.as_ref().map(|r| r.stack.ch_db.clone()).unwrap_or_default();
+        self.restoring = Some(target.clone());
+        self.restored = None;
         self.restore.update(cx, |job, cx| {
             job.start(
                 move |sink| {
@@ -336,6 +358,35 @@ impl BackupPage {
                 },
                 cx,
             )
+        });
+    }
+
+    /// Put the restored database into service, after a confirmation.
+    fn confirm_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(record), Some(name)) = (self.record.clone(), self.restored.clone()) else { return };
+        let this = cx.entity().downgrade();
+        let text = format!(
+            "SENTIENT stops and starts again on the data in {name}. Its current database is kept under another name (listed under Migration, Kept after earlier changes); if SENTIENT does not start on the restored data, the current data is put back."
+        );
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let this = this.clone();
+            let record = record.clone();
+            let name = name.clone();
+            dialog.title("Put the restored data into service?").description(text.clone()).confirm().ok_text("Switch").on_ok(move |_, _, cx| {
+                let (record, name) = (record.clone(), name.clone());
+                this.update(cx, |page, cx| {
+                    page.switch.update(cx, |job, cx| {
+                        if crate::rootjob::needed(&record) {
+                            let args = vec!["use-restored".to_string(), name];
+                            job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx)
+                        } else {
+                            job.start(move |sink| crate::restore_switch::run(&record, &name, sink).map(|_| ()), cx)
+                        }
+                    });
+                })
+                .ok();
+                true
+            })
         });
     }
 
@@ -375,9 +426,10 @@ impl Render for BackupPage {
             return page.child(ui::not_installed(&theme));
         };
         let clickhouse = record.flavor() == Flavor::Clickhouse;
-        let busy = self.backup.read(cx).is_running() || self.restore.read(cx).is_running();
+        let busy = self.backup.read(cx).is_running() || self.restore.read(cx).is_running() || self.switch.read(cx).is_running();
         let backup_status = self.job_view(&self.backup, cx);
         let restore_status = self.job_view(&self.restore, cx);
+        let switch_status = self.job_view(&self.switch, cx);
 
         let categories = self.inspection.as_ref().map(|i| {
             i.categories
@@ -530,7 +582,23 @@ impl Render for BackupPage {
                             .on_click(cx.listener(|this, _, _, cx| this.run_restore(cx))),
                     ),
                 )
-                .children(restore_status),
+                .children(restore_status)
+                .when_some(self.restored.clone(), |p, name| {
+                    p.child(
+                        h_flex()
+                            .gap_3()
+                            .items_center()
+                            .child(div().text_sm().child(format!("The backup is restored into {name}, next to the data SENTIENT uses.")))
+                            .child(
+                                Button::new("use-restored")
+                                    .outline()
+                                    .label("Put the restored data into service")
+                                    .disabled(busy)
+                                    .on_click(cx.listener(|this, _, window, cx| this.confirm_switch(window, cx))),
+                            ),
+                    )
+                })
+                .children(switch_status),
         )
     }
 }

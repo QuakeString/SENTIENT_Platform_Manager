@@ -25,7 +25,8 @@ use sentient_installer_core::stack::Flavor;
 use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | migrate <stock|timescaledb|clickhouse> | resume-migration | \
-update [<package folder>] [--accept-breaking] | kept | remove-kept <name>";
+update [<package folder>] [--accept-breaking] | backup <file> | restore <file> <database> | \
+use-restored <database> | kept | remove-kept <name>";
 
 /// A console for the output: release builds on Windows have none of their
 /// own, so use the one the job was started from.
@@ -127,6 +128,18 @@ pub fn run(args: &[String]) -> i32 {
             let package = args.iter().skip(1).find(|a| !a.starts_with("--")).map(PathBuf::from);
             crate::updating::run(record, package.as_deref(), accept, sink.clone()).map(|_| ())
         }
+        "backup" => match args.get(1) {
+            Some(file) => crate::backup_jobs::backup(&record, std::path::Path::new(file), sink.clone()),
+            None => Err(USAGE.into()),
+        },
+        "restore" => match (args.get(1), args.get(2)) {
+            (Some(file), Some(db)) => crate::backup_jobs::restore(&record, std::path::Path::new(file), db, sink.clone()),
+            _ => Err(USAGE.into()),
+        },
+        "use-restored" => match args.get(1) {
+            Some(name) => crate::restore_switch::run(&record, name, sink.clone()).map(|_| ()),
+            None => Err(USAGE.into()),
+        },
         "kept" => crate::kept::list(&record).map(|items| {
             if json {
                 for k in items {

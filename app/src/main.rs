@@ -7,6 +7,7 @@
 
 mod agent;
 mod assets;
+mod backup_jobs;
 mod catalog;
 mod elevate;
 mod headless;
@@ -18,6 +19,7 @@ mod maintenance;
 mod manager;
 mod migration;
 mod mode;
+mod restore_switch;
 mod rootjob;
 mod secrets;
 mod self_install;

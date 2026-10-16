@@ -24,6 +24,9 @@ pub enum KeptKind {
     DatabaseCopy,
     /// ClickHouse in WSL2, set up but no longer used.
     ClickHouse,
+    /// A ClickHouse database besides the live one (a restore, or the data
+    /// from before a restore was put into service).
+    ClickhouseDatabase,
 }
 
 #[derive(Debug, Clone)]
@@ -94,7 +97,7 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
                 name,
             });
         }
-        let pattern = format!("^{}_(before|failed)_update_[0-9]{{12}}$", regex_escape(&db));
+        let pattern = format!("^{}_(before_update|failed_update|before_restore)_[0-9]{{12}}$", regex_escape(&db));
         for row in pg
             .query(
                 "SELECT datname::text, pg_database_size(datname) FROM pg_database WHERE datname ~ $1 ORDER BY datname",
@@ -106,6 +109,8 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
             let name: String = row.get(0);
             let detail = if name.contains("_failed_update_") {
                 "The database a failed update left behind"
+            } else if name.contains("_before_restore_") {
+                "The database from before a restore was put into service"
             } else {
                 "Copy of the database from before an update"
             };
@@ -142,6 +147,37 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
             detail: "No longer used; holds the history from when this installation used ClickHouse".into(),
         });
     }
+    // ClickHouse databases besides SENTIENT's own.
+    if record.flavor() == sentient_installer_core::stack::Flavor::Clickhouse {
+        if let Ok(setup) = crate::migration::Setup::current(record) {
+            let ch = setup.ch();
+            let live = ch.database.clone();
+            let admin = ch.with_database("default");
+            let sizes: std::collections::HashMap<String, i64> = admin
+                .text("SELECT database, sum(bytes_on_disk) FROM system.parts WHERE active GROUP BY database FORMAT TSV")
+                .map(|t| {
+                    t.lines()
+                        .filter_map(|l| l.split_once('\t'))
+                        .filter_map(|(d, b)| Some((d.to_string(), b.trim().parse().ok()?)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Ok(text) = admin.text(&format!(
+                "SELECT name FROM system.databases \
+                 WHERE name NOT IN ('{live}', 'system', 'default', 'INFORMATION_SCHEMA', 'information_schema') \
+                 ORDER BY name FORMAT TSV"
+            )) {
+                for name in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                    kept.push(Kept {
+                        kind: KeptKind::ClickhouseDatabase,
+                        detail: "ClickHouse data: a restore, or the history from before a restore was put into service".into(),
+                        bytes: sizes.get(name).copied(),
+                        name: name.to_string(),
+                    });
+                }
+            }
+        }
+    }
     Ok(kept)
 }
 
@@ -166,6 +202,12 @@ pub fn remove(record: &InstallationRecord, item: &Kept, sink: ProgressFn) -> Res
                 let pg = mv::connect(&cfg).await.map_err(|e| e.to_string())?;
                 pg.batch_execute(&sql).await.map_err(|e| e.to_string())
             })??;
+        }
+        KeptKind::ClickhouseDatabase => {
+            let ch = crate::migration::Setup::current(record)?.ch();
+            ch.with_database("default")
+                .text(&format!("DROP DATABASE {} SYNC", item.name))
+                .map_err(|e| e.to_string())?;
         }
         KeptKind::DatabaseCopy => {
             let cfg = conn(record, "postgres")?;
@@ -214,6 +256,7 @@ pub fn encode(k: &Kept) -> String {
         KeptKind::History => "history",
         KeptKind::DatabaseCopy => "database",
         KeptKind::ClickHouse => "clickhouse",
+        KeptKind::ClickhouseDatabase => "chdb",
     };
     format!("KEPT\t{kind}\t{}\t{}\t{}", k.name, k.bytes.map(|b| b.to_string()).unwrap_or_default(), k.detail)
 }
@@ -223,6 +266,7 @@ pub fn decode(line: &str) -> Option<Kept> {
     let kind = match f.next()? {
         "history" => KeptKind::History,
         "database" => KeptKind::DatabaseCopy,
+        "chdb" => KeptKind::ClickhouseDatabase,
         _ => KeptKind::ClickHouse,
     };
     let name = f.next()?.to_string();

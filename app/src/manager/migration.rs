@@ -106,6 +106,7 @@ impl MigrationPage {
                 kept::KeptKind::History => "and the history in it",
                 kept::KeptKind::DatabaseCopy => "and everything in that database",
                 kept::KeptKind::ClickHouse => "with its WSL2 distro, its data and the hidden service account",
+                kept::KeptKind::ClickhouseDatabase => "and the ClickHouse history in it",
             }
         );
         window.open_alert_dialog(cx, move |dialog, _, _| {

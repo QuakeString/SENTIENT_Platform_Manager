@@ -26,6 +26,8 @@ pub struct Job {
     step: SharedString,
     percent: Option<f32>,
     log: Vec<SharedString>,
+    /// The latest completion message a step reported.
+    last_done: Option<SharedString>,
     _task: Option<Task<()>>,
 }
 
@@ -36,6 +38,7 @@ impl Job {
             step: SharedString::default(),
             percent: None,
             log: Vec::new(),
+            last_done: None,
             _task: None,
         }
     }
@@ -76,6 +79,7 @@ impl Job {
         self.step = SharedString::default();
         self.percent = None;
         self.log.clear();
+        self.last_done = None;
         cx.notify();
 
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<Progress>();
@@ -112,18 +116,18 @@ impl Job {
             }
             Progress::Log { line } => self.log.push(crate::ui::strip_ansi(&line).into()),
             Progress::Percent { value } => self.percent = Some((value * 100.0).clamp(0.0, 100.0)),
-            Progress::Done { message } => self.state = JobState::Done(message.into()),
-            Progress::Error { message } => self.state = JobState::Failed(message.into()),
+            // Steps inside a job report their own completion ("SENTIENT is
+            // serving…" from a deploy in the middle of a migration): the job
+            // itself ends only when its work returns, with the last message.
+            Progress::Done { message } => self.last_done = Some(message.into()),
+            Progress::Error { message } => self.log.push(message.into()),
         }
     }
 
     fn finish(&mut self, result: Result<(), String>) {
-        match result {
-            Err(message) => self.state = JobState::Failed(message.into()),
-            Ok(()) if self.state == JobState::Running => {
-                self.state = JobState::Done("Finished".into())
-            }
-            Ok(()) => {}
-        }
+        self.state = match result {
+            Err(message) => JobState::Failed(message.into()),
+            Ok(()) => JobState::Done(self.last_done.take().unwrap_or_else(|| "Finished".into())),
+        };
     }
 }

@@ -131,21 +131,21 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, String> {
 
 /// One configuration of the installation, passwords included.
 #[derive(Clone)]
-enum Setup {
+pub(crate) enum Setup {
     Native(Box<NativeConfig>),
     Docker(DeployConfig),
 }
 
 impl Setup {
     /// The installation as it is, with its passwords.
-    fn current(record: &InstallationRecord) -> Result<Setup, String> {
+    pub(crate) fn current(record: &InstallationRecord) -> Result<Setup, String> {
         match record.engine {
             Engine::Native => Ok(Setup::Native(Box::new(record.native_config_with_secrets()?))),
             Engine::Docker => Ok(Setup::Docker(docker_ops::with_secrets(&record.stack)?)),
         }
     }
 
-    fn flavor(&self) -> Flavor {
+    pub(crate) fn flavor(&self) -> Flavor {
         match self {
             Setup::Native(c) => c.flavor,
             Setup::Docker(c) => c.flavor,
@@ -167,7 +167,7 @@ impl Setup {
         }
     }
 
-    fn pg(&self) -> ConnConfig {
+    pub(crate) fn pg(&self) -> ConnConfig {
         let (port, db, user, password) = match self {
             Setup::Native(c) => (c.pg_port, &c.db_name, &c.db_user, &c.db_password),
             Setup::Docker(c) => (c.pg_port, &c.db_name, &c.db_user, &c.db_password),
@@ -175,7 +175,7 @@ impl Setup {
         ConnConfig { host: "127.0.0.1".into(), port, dbname: db.clone(), user: user.clone(), password: password.clone() }
     }
 
-    fn ch(&self) -> ChConn {
+    pub(crate) fn ch(&self) -> ChConn {
         let (port, db, user, password) = match self {
             Setup::Native(c) => (c.ch_http_port, &c.ch_db, &c.ch_user, &c.ch_password),
             Setup::Docker(c) => (c.ch_http_port, &c.ch_db, &c.ch_user, &c.ch_password),
@@ -191,7 +191,7 @@ impl Setup {
     }
 
     /// Stop SENTIENT alone; PostgreSQL keeps running.
-    fn stop(&self, sink: &ProgressFn) -> Result<(), String> {
+    pub(crate) fn stop(&self, sink: &ProgressFn) -> Result<(), String> {
         match self {
             Setup::Native(c) => native::stop_server(sink, c),
             Setup::Docker(c) => docker_ops::stop_app(sink, c),
@@ -199,7 +199,7 @@ impl Setup {
     }
 
     /// Start SENTIENT as it was configured, after a failed step.
-    fn restart_as_was(&self, sink: &ProgressFn) {
+    pub(crate) fn restart_as_was(&self, sink: &ProgressFn) {
         let _ = match self {
             Setup::Native(c) => native::control(sink.clone(), c, "start"),
             Setup::Docker(c) => distro::control(sink.clone(), c, "start"),
