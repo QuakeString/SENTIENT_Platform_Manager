@@ -27,6 +27,8 @@ pub struct RestoreOptions {
     pub file_store_paths: Vec<(String, PathBuf)>,
     /// Password for an encrypted (age) archive; required iff it's encrypted.
     pub passphrase: Option<String>,
+    /// Target ClickHouse, required when the backup holds ClickHouse telemetry.
+    pub clickhouse: Option<crate::clickhouse::ChConn>,
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +124,40 @@ pub async fn run(
         }
     }
 
+    // ClickHouse telemetry: into an empty store, every part counted.
+    if let Some(section) = &manifest.clickhouse {
+        steps.step("Restoring ClickHouse telemetry");
+        let Some(ch) = opts.clickhouse.clone() else {
+            cleanup();
+            return Err(Error::msg(
+                "this backup holds ClickHouse telemetry; restore it into a PostgreSQL + ClickHouse install",
+            ));
+        };
+        let section = section.clone();
+        let files: Vec<(crate::clickhouse::ChMember, std::path::PathBuf)> = section
+            .members
+            .iter()
+            .filter_map(|m| members.get(&m.member).map(|p| (m.clone(), p.clone())))
+            .collect();
+        let sink_ch = sink.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<()> {
+            crate::clickhouse::ensure_empty(&ch)?;
+            for (entry, file) in files {
+                let rows = crate::clickhouse::import(&ch, &entry, &file)?;
+                sink_ch(Progress::Log {
+                    line: format!("  ClickHouse {} {}: {rows} rows", entry.table, entry.partition),
+                });
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| Error::msg(format!("ClickHouse restore panicked: {e}")))?;
+        if let Err(e) = result {
+            cleanup();
+            return Err(e);
+        }
+    }
+
     // File stores.
     let mut restored_stores = 0usize;
     for entry in &manifest.file_stores {
@@ -161,7 +197,7 @@ pub fn is_encrypted(path: &Path) -> Result<bool> {
     Ok(magic[..n].starts_with(b"age-encryption.org"))
 }
 
-/// Extract manifest.json + every `db/*` and `files/*` member to temp files.
+/// Extract manifest.json + every `db/*`, `clickhouse/*` and `files/*` member to temp files.
 /// Transparently decrypts an age-encrypted archive when a passphrase is given.
 fn read_archive(input: &Path, passphrase: Option<&str>) -> Result<(Manifest, HashMap<String, PathBuf>)> {
     let f = File::open(input).map_err(|e| Error::msg(format!("opening backup: {e}")))?;
@@ -193,7 +229,7 @@ fn read_archive(input: &Path, passphrase: Option<&str>) -> Result<(Manifest, Has
             let mut buf = String::new();
             e.read_to_string(&mut buf).map_err(|e| Error::msg(e.to_string()))?;
             manifest = Some(serde_json::from_str(&buf).map_err(|e| Error::msg(format!("bad manifest: {e}")))?);
-        } else if path.starts_with("db/") || path.starts_with("files/") {
+        } else if path.starts_with("db/") || path.starts_with("clickhouse/") || path.starts_with("files/") {
             let safe = path.replace(['/', '\\'], "_");
             let tmp = input.with_extension(format!("{safe}.tmp"));
             let mut out = File::create(&tmp).map_err(|e| Error::msg(e.to_string()))?;

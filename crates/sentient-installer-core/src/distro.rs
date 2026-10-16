@@ -268,6 +268,37 @@ fn app_env(cfg: &DeployConfig) -> Vec<(String, String)> {
 /// files: same images, same PostgreSQL flags, same ClickHouse drop-in (as a
 /// sibling file bind-mounted in — inline `configs` need Compose ≥ 2.23 and a
 /// distribution's Docker can be older), same volume-name pinning.
+/// The ClickHouse service, shared by the full stack and the ClickHouse-only
+/// stack (Windows hybrid: SENTIENT and PostgreSQL native, ClickHouse here).
+fn clickhouse_service(cfg: &DeployConfig) -> String {
+    let n = cfg.names();
+    let mut y = String::new();
+    y.push_str(&format!("  clickhouse:\n    image: {}\n    container_name: {}\n    restart: unless-stopped\n", yq(CH_IMAGE), n.ch));
+    y.push_str(&format!(
+        "    environment:\n      CLICKHOUSE_DB: {}\n      CLICKHOUSE_USER: {}\n      CLICKHOUSE_PASSWORD: {}\n      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: \"1\"\n",
+        yq(&cfg.ch_db), yq(&cfg.ch_user), yq(&cfg.ch_password)
+    ));
+    y.push_str("    ulimits:\n      nofile:\n        soft: 262144\n        hard: 262144\n");
+    y.push_str(&format!(
+        "    volumes:\n      - clickhouse_data:/var/lib/clickhouse\n      - {}\n",
+        yq(&format!("{}:/etc/clickhouse-server/config.d/sentient.xml:ro", cfg.ch_config_path()))
+    ));
+    y.push_str(&format!("    ports:\n      - \"{}:8123\"\n      - \"{}:9000\"\n", cfg.ch_http_port, cfg.ch_native_port));
+    y.push_str("    healthcheck:\n      test: [\"CMD-SHELL\", \"wget -qO- http://127.0.0.1:8123/ping || exit 1\"]\n      interval: 10s\n      timeout: 5s\n      retries: 12\n\n");
+    y
+}
+
+/// A stack holding ClickHouse alone.
+pub fn compose_clickhouse_only(cfg: &DeployConfig) -> String {
+    let n = cfg.names();
+    format!(
+        "name: {}\n\nservices:\n{}volumes:\n  clickhouse_data:\n    name: {}\n",
+        cfg.stack_name,
+        clickhouse_service(cfg),
+        n.vol_ch
+    )
+}
+
 pub fn compose(cfg: &DeployConfig) -> String {
     let n = cfg.names();
     let mut y = String::new();
@@ -301,18 +332,7 @@ pub fn compose(cfg: &DeployConfig) -> String {
 
     // ---- clickhouse ----
     if cfg.flavor.uses_clickhouse() {
-        y.push_str(&format!("  clickhouse:\n    image: {}\n    container_name: {}\n    restart: unless-stopped\n", yq(CH_IMAGE), n.ch));
-        y.push_str(&format!(
-            "    environment:\n      CLICKHOUSE_DB: {}\n      CLICKHOUSE_USER: {}\n      CLICKHOUSE_PASSWORD: {}\n      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: \"1\"\n",
-            yq(&cfg.ch_db), yq(&cfg.ch_user), yq(&cfg.ch_password)
-        ));
-        y.push_str("    ulimits:\n      nofile:\n        soft: 262144\n        hard: 262144\n");
-        y.push_str(&format!(
-            "    volumes:\n      - clickhouse_data:/var/lib/clickhouse\n      - {}\n",
-            yq(&format!("{}:/etc/clickhouse-server/config.d/sentient.xml:ro", cfg.ch_config_path()))
-        ));
-        y.push_str(&format!("    ports:\n      - \"{}:8123\"\n      - \"{}:9000\"\n", cfg.ch_http_port, cfg.ch_native_port));
-        y.push_str("    healthcheck:\n      test: [\"CMD-SHELL\", \"wget -qO- http://127.0.0.1:8123/ping || exit 1\"]\n      interval: 10s\n      timeout: 5s\n      retries: 12\n\n");
+        y.push_str(&clickhouse_service(cfg));
     }
 
     // ---- sentient ----
@@ -519,6 +539,44 @@ macro_rules! bail_if_cancelled {
     };
 }
 
+/// Bring up ClickHouse alone (Windows hybrid). The ports are published inside
+/// the WSL distro; WSL2's localhost forwarding makes them reachable from
+/// Windows as 127.0.0.1, which is where the native SENTIENT looks.
+pub fn deploy_clickhouse(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
+    cfg.validate()?;
+    if !is_ready() {
+        return Err("Docker is not reachable — run the Docker setup step first.".into());
+    }
+    sink(Progress::Step { name: "Writing the ClickHouse configuration".into() });
+    write_host_file(&sink, &cfg.compose_path(), &compose_clickhouse_only(cfg))?;
+    write_host_file(&sink, &cfg.ch_config_path(), &stack::clickhouse_config_xml(&cfg.ch, None, None))?;
+    bail_if_cancelled!();
+    sink(Progress::Step { name: "Pulling the ClickHouse image".into() });
+    run_stream(&sink, &cfg.compose_cmd("pull"))?;
+    bail_if_cancelled!();
+    sink(Progress::Step { name: "Starting ClickHouse".into() });
+    run_stream(&sink, &cfg.compose_cmd("up -d"))?;
+    for i in 0..60 {
+        bail_if_cancelled!();
+        if clickhouse_answers(cfg.ch_http_port) {
+            sink(Progress::Log { line: format!("ClickHouse answers on 127.0.0.1:{}", cfg.ch_http_port) });
+            return Ok(());
+        }
+        sink(Progress::Log { line: format!("waiting for ClickHouse… ({}s)", i * 2) });
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    Err(format!("ClickHouse did not answer on 127.0.0.1:{} within two minutes", cfg.ch_http_port))
+}
+
+/// GET /ping from this side (Windows, through WSL2's localhost forwarding).
+pub fn clickhouse_answers(http_port: u16) -> bool {
+    ureq::get(&format!("http://127.0.0.1:{http_port}/ping"))
+        .timeout(std::time::Duration::from_secs(3))
+        .call()
+        .map(|r| r.status() == 200)
+        .unwrap_or(false)
+}
+
 /// Write the stack, pull images, install the schema, start, wait for HTTP.
 pub fn deploy(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     cfg.validate()?;
@@ -683,12 +741,14 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     }
 
     sink(Progress::Step { name: "Enabling systemd".into() });
-    run(&sink, r"printf '[boot]\nsystemd=true\n' > /etc/wsl.conf")?;
+    // The distro is SENTIENT's alone: without Windows' PATH, a Docker
+    // Desktop docker.exe there cannot pass for the distro's own Docker.
+    run(&sink, r"printf '[boot]\nsystemd=true\n[interop]\nappendWindowsPath=false\n' > /etc/wsl.conf")?;
     // restart the distro so systemd becomes PID 1
     let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
 
     sink(Progress::Step { name: "Installing Docker Engine (a few minutes)".into() });
-    run_stream(&sink, "command -v docker >/dev/null 2>&1 || (curl -fsSL https://get.docker.com | sh)")?;
+    run_stream(&sink, "[ -x /usr/bin/docker ] || (curl -fsSL https://get.docker.com | sh)")?;
 
     sink(Progress::Step { name: "Starting Docker".into() });
     run(&sink, "systemctl enable --now docker")?;
@@ -1108,6 +1168,17 @@ mod tests {
         assert!(y.contains("name: st-ch-data"));
         assert!(y.contains("CLICKHOUSE_URL: \"http://clickhouse:8123\""));
         assert!(y.contains("image: \"postgres:18-alpine\""));
+    }
+
+    #[test]
+    fn clickhouse_only_stack_has_clickhouse_and_nothing_else() {
+        let cfg = DeployConfig { stack_name: "sentient-ch".into(), flavor: Flavor::Clickhouse, ..DeployConfig::default() };
+        let y = compose_clickhouse_only(&cfg);
+        assert!(y.contains("  clickhouse:\n"));
+        assert!(y.contains("container_name: \"sentient-ch-clickhouse\"") || y.contains("container_name: sentient-ch-clickhouse"));
+        assert!(!y.contains("  postgres:\n") && !y.contains("  sentient:\n"));
+        assert!(y.contains("\"8123:8123\"") && y.contains("\"9000:9000\""));
+        assert!(y.contains("name: sentient-ch-ch-data"));
     }
 
     #[test]

@@ -31,6 +31,8 @@ which.workspace = true
 futures-util.workspace = true
 bytes.workspace = true
 age.workspace = true
+# ClickHouse telemetry over its HTTP interface.
+ureq.workspace = true
 
 # CLI-only
 clap.workspace = true

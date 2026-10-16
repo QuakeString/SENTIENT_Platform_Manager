@@ -1,9 +1,9 @@
 //! Progress reporting for provisioning steps — the engine calls a sink; the GUI
 //! streams it into the window (app/src/jobs.rs), the CLI prints it.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Progress {
     /// A new high-level step started.

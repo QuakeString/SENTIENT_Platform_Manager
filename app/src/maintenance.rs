@@ -4,10 +4,7 @@
 //! installed (or "Uninstall" in Apps & features). Update installs the
 //! SENTIENT in this package; Repair re-registers the services and restores
 //! the program files; Uninstall removes SENTIENT and, if asked, its data.
-//! Change database opens Migration, which is plan item C.
-
-#[cfg(windows)]
-use std::path::Path;
+//! Change database opens the Platform Manager on its Migration screen.
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
@@ -57,9 +54,9 @@ impl Action {
 
     fn describe(self) -> &'static str {
         match self {
-            Action::Update => "Install the SENTIENT version in this package. Take a backup first; SENTIENT applies its database changes when it starts.",
+            Action::Update => "Install the SENTIENT version in this package. The database is copied first and everything is put back if the update fails.",
             Action::Repair => "Re-register the services and restore missing program files. Data and settings are kept.",
-            Action::ChangeDatabase => "Move to another database type. Arrives with Migration in a later version.",
+            Action::ChangeDatabase => "Move to another database type, history included. Opens the Platform Manager's Migration screen.",
             Action::Uninstall => "Stop and remove SENTIENT and the Platform Manager. You choose whether to keep the data.",
         }
     }
@@ -86,55 +83,16 @@ fn step(sink: &ProgressFn, name: &str) {
     sink(Progress::Step { name: name.into() });
 }
 
-/// Unpack the package's `sentient-payload.tar` into a staging folder, the
-/// layout `native::update` copies from on Windows (bin, ui, data).
-#[cfg(windows)]
-fn stage_package(bundle: &Path, staging: &Path) -> Result<(), String> {
-    let _ = std::fs::remove_dir_all(staging);
-    std::fs::create_dir_all(staging).map_err(|e| format!("create {}: {e}", staging.display()))?;
-    let tar = bundle.join("sentient-payload.tar");
-    // Windows' own bsdtar: a Git-for-Windows tar earlier on PATH reads
-    // "C:\…" as a remote host.
-    let ok = std::process::Command::new(r"C:\Windows\System32\tar.exe")
-        .arg("-xf")
-        .arg(&tar)
-        .arg("-C")
-        .arg(staging)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if ok { Ok(()) } else { Err(format!("Could not unpack {}", tar.display())) }
-}
-
 fn run_update(record: InstallationRecord, sink: ProgressFn) -> Result<(), String> {
-    let mut version = None;
-    match record.engine {
-        Engine::Docker => distro::update(sink.clone(), &record.stack)?,
-        Engine::Native => {
-            let bundle = native::bundled_payload_dir()
-                .ok_or("This copy of setup has no SENTIENT package next to it (a payload folder).")?;
-            version = std::fs::read_to_string(bundle.join("VERSION")).ok().map(|v| v.trim().to_string());
-            #[cfg(windows)]
-            {
-                let staging = record.state_dir.join("update-staging");
-                step(&sink, "Unpacking the new SENTIENT");
-                stage_package(&bundle, &staging)?;
-                native::update(sink.clone(), &record.native_config(), &staging)?;
-                let _ = std::fs::remove_dir_all(&staging);
-            }
-            #[cfg(not(windows))]
-            native::update(sink.clone(), &record.native_config(), &bundle.join(native::linux_payload_name()))?;
-        }
+    let bundle = native::bundled_payload_dir();
+    if record.engine == Engine::Native && bundle.is_none() {
+        return Err("This copy of setup has no SENTIENT package next to it (a payload folder).".into());
     }
+    let mut updated = crate::updating::run(record, bundle.as_deref(), false, sink.clone())?;
     step(&sink, "Updating the Platform Manager");
     self_install::install_manager()?;
-    let mut updated = record;
-    if let Some(v) = version {
-        updated.sentient_version = v;
-    }
     updated.manager_version = env!("CARGO_PKG_VERSION").into();
     save_record(&updated)?;
-    sink(Progress::Done { message: format!("SENTIENT {} is installed.", updated.sentient_version) });
     Ok(())
 }
 
@@ -163,6 +121,20 @@ fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: ProgressFn) 
         (Engine::Docker, false) => distro::cleanup(sink.clone(), &record.stack)?,
         (Engine::Native, true) => native::uninstall(sink.clone(), &record.native_config())?,
         (Engine::Native, false) => native::cleanup(sink.clone(), &record.native_config())?,
+    }
+    // Windows hybrid: ClickHouse's distro belongs to its own account. Keeping
+    // the data keeps both; otherwise the account deletes its distro, then
+    // the account and its boot task go.
+    #[cfg(windows)]
+    if record.engine == Engine::Native
+        && record.flavor() == sentient_installer_core::stack::Flavor::Clickhouse
+        && !keep_data
+    {
+        use sentient_installer_core::clickhouse_wsl;
+        if let Some(password) = crate::secrets::get(crate::secrets::Secret::ClickhouseAccount) {
+            let _ = clickhouse_wsl::run_as_account(&sink, &password, &self_install::manager_exe(), "unregister");
+        }
+        clickhouse_wsl::remove_account(&sink);
     }
     if !keep_data {
         crate::secrets::forget_all();
@@ -208,6 +180,11 @@ impl Maintenance {
 
     fn confirm(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
         if action == Action::ChangeDatabase {
+            let exe = self_install::manager_exe();
+            let exe = if exe.exists() { exe } else { std::env::current_exe().unwrap_or(exe) };
+            if std::process::Command::new(&exe).args(["--manager", "--page", "migration"]).spawn().is_ok() {
+                window.remove_window();
+            }
             return;
         }
         let this = cx.entity().downgrade();
@@ -283,7 +260,7 @@ impl Render for Maintenance {
         }
 
         let cards = Action::ALL.into_iter().map(|action| {
-            let available = action != Action::ChangeDatabase;
+            let available = true;
             h_flex()
                 .id(action.id())
                 .gap_4()

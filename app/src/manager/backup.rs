@@ -6,9 +6,9 @@
 //! one `.sentient-backup` file with a checksum per member; restore into an
 //! empty database.
 //!
-//! ClickHouse telemetry is not part of the engine yet (plan item B); the
-//! screen says so on ClickHouse installs rather than producing a backup that
-//! silently lacks the history.
+//! On a PostgreSQL + ClickHouse install the backup also holds ClickHouse's
+//! telemetry, and a restore puts it in a new ClickHouse database of the same
+//! name as the new PostgreSQL one, so neither touches the live data.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -25,6 +25,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use sentient_backup_core::backup::{self, BackupOptions, FileStoreSpec, Selection};
+use sentient_backup_core::clickhouse::{self, ChConn};
 use sentient_backup_core::db::{self, CategoryReport, ConnConfig, DbInspector};
 use sentient_backup_core::progress as bk;
 use sentient_backup_core::restore::{self, RestoreOptions};
@@ -44,6 +45,8 @@ struct Inspection {
 pub struct BackupPage {
     record: Option<InstallationRecord>,
     password: Entity<InputState>,
+    /// ClickHouse installs only.
+    ch_password: Entity<InputState>,
     inspection: Option<Inspection>,
     inspect_error: Option<SharedString>,
     include: HashSet<String>,
@@ -86,6 +89,8 @@ impl BackupPage {
     pub fn new(record: Option<InstallationRecord>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let saved = crate::secrets::get(crate::secrets::Secret::Database).unwrap_or_default();
         let password = cx.new(|cx| InputState::new(window, cx).masked(true).default_value(saved));
+        let saved_ch = crate::secrets::get(crate::secrets::Secret::Clickhouse).unwrap_or_default();
+        let ch_password = cx.new(|cx| InputState::new(window, cx).masked(true).default_value(saved_ch));
         let telemetry_days = cx.new(|cx| InputState::new(window, cx).default_value("30"));
         let passphrase = cx.new(|cx| {
             InputState::new(window, cx).masked(true).placeholder("Optional: encrypt the backup")
@@ -112,6 +117,7 @@ impl BackupPage {
         Self {
             record,
             password,
+            ch_password,
             inspection: None,
             inspect_error: None,
             include: HashSet::new(),
@@ -137,6 +143,18 @@ impl BackupPage {
             dbname: dbname.unwrap_or_else(|| st.db_name.clone()),
             user: st.db_user.clone(),
             password: self.password.read(cx).value().to_string(),
+        })
+    }
+
+    /// This install's ClickHouse, when it has one, signed in as SENTIENT's user.
+    fn ch_conn(&self, database: Option<String>, cx: &App) -> Option<ChConn> {
+        let record = self.record.as_ref()?;
+        let st = &record.stack;
+        (record.flavor() == Flavor::Clickhouse).then(|| ChConn {
+            url: format!("http://127.0.0.1:{}", st.ch_http_port),
+            database: database.unwrap_or_else(|| st.ch_db.clone()),
+            user: st.ch_user.clone(),
+            password: self.ch_password.read(cx).value().to_string(),
         })
     }
 
@@ -237,7 +255,8 @@ impl BackupPage {
             })
             .collect();
         let passphrase = Some(self.passphrase.read(cx).value().to_string()).filter(|p| !p.is_empty());
-        let opts = BackupOptions { output, selection, file_stores, zstd_level: 10, passphrase };
+        let clickhouse = self.ch_conn(None, cx);
+        let opts = BackupOptions { output, selection, file_stores, zstd_level: 10, passphrase, clickhouse };
         self.backup.update(cx, |job, cx| {
             job.start(
                 move |sink| {
@@ -292,13 +311,19 @@ impl BackupPage {
                 ("vc-repos".into(), state_dir.join("vc-repos")),
             ],
             passphrase: Some(self.restore_passphrase.read(cx).value().to_string()).filter(|p| !p.is_empty()),
+            clickhouse: self.ch_conn(Some(target.clone()), cx),
         };
+        let live_ch = self.record.as_ref().map(|r| r.stack.ch_db.clone()).unwrap_or_default();
         self.restore.update(cx, |job, cx| {
             job.start(
                 move |sink| {
                     block_on(async {
                         sink(Progress::Step { name: format!("Creating the empty database {target}") });
                         db::create_database(&admin, &target).await.map_err(|e| e.to_string())?;
+                        if let Some(ch) = &opts.clickhouse {
+                            sink(Progress::Step { name: format!("Creating the ClickHouse database {target}") });
+                            clickhouse::clone_schema(ch, &live_ch).map_err(|e| e.to_string())?;
+                        }
                         restore::run(&conn, &opts, bridge(sink.clone())).await.map_err(|e| e.to_string())
                     })??;
                     sink(Progress::Done { message: format!("Restored into the database {target}") });
@@ -371,18 +396,7 @@ impl Render for BackupPage {
         });
         let can_backup = !busy && self.inspection.is_some() && self.output.is_some();
 
-        page.when(clickhouse, |p| {
-            p.child(
-                div()
-                    .p_3()
-                    .rounded(theme.radius)
-                    .bg(theme.warning)
-                    .text_color(theme.warning_foreground)
-                    .text_sm()
-                    .child("This installation keeps its telemetry history in ClickHouse, which backups do not include yet. A backup here holds the PostgreSQL data only."),
-            )
-        })
-        .child(
+        page.child(
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Back up"))
                 .child(
@@ -396,6 +410,15 @@ impl Render for BackupPage {
                                 .child(div().text_xs().text_color(theme.muted_foreground).child("Database password"))
                                 .child(Input::new(&self.password).mask_toggle()),
                         )
+                        .when(clickhouse, |r| {
+                            r.child(
+                                v_flex()
+                                    .gap_1p5()
+                                    .w_64()
+                                    .child(div().text_xs().text_color(theme.muted_foreground).child("ClickHouse password"))
+                                    .child(Input::new(&self.ch_password).mask_toggle()),
+                            )
+                        })
                         .child(
                             Button::new("inspect")
                                 .outline()
@@ -458,7 +481,7 @@ impl Render for BackupPage {
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Restore"))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
-                    "Restores into a new, empty database next to the current one. Every part is checked against its checksum first.",
+                    "Restores into a new, empty database next to the current one (in ClickHouse too, on a ClickHouse install). Every part is checked against its checksum first.",
                 ))
                 .child(
                     h_flex()

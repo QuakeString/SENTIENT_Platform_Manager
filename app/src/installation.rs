@@ -8,7 +8,7 @@
 //! in the service configuration the installer wrote, and nothing the manager
 //! does to a running installation (status, control, logs, update) needs them.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use sentient_installer_core::distro::{self, DeployConfig};
 use sentient_installer_core::native::{self, ArtifactSource, NativeConfig};
@@ -66,15 +66,18 @@ impl InstallationRecord {
         }
     }
 
-    /// The native configuration with the secrets from the credential store,
+    /// The native configuration with the secrets from the secret store,
     /// for operations that rewrite the service (repair).
     pub fn native_config_with_secrets(&self) -> Result<NativeConfig, String> {
         use crate::secrets::{Secret, get};
-        let missing = |what: &str| format!("The {what} is not in Credential Manager; repair cannot re-register the service without it.");
+        let missing = |what: &str| format!("The {what} is not in the secret store (%ProgramData%\\SENTIENT\\secrets); this cannot continue without it.");
         let mut cfg = self.native_config();
         cfg.db_password = get(Secret::Database).ok_or_else(|| missing("database password"))?;
         cfg.pg_superuser_password = get(Secret::PostgresAdmin).ok_or_else(|| missing("PostgreSQL admin password"))?;
         cfg.jwt_secret = get(Secret::Jwt).ok_or_else(|| missing("sign-in signing secret"))?;
+        if cfg.flavor == Flavor::Clickhouse {
+            cfg.ch_password = get(Secret::Clickhouse).ok_or_else(|| missing("ClickHouse password"))?;
+        }
         Ok(cfg)
     }
 
@@ -153,19 +156,30 @@ impl Platform {
         match self {
             Platform::Native(cfg) => {
                 let st = native::status(cfg);
-                Snapshot {
-                    installed: st.installed,
-                    serving: st.running,
-                    services: st
-                        .services
-                        .into_iter()
-                        .map(|s| Service {
-                            running: s.state == "running",
-                            name: s.name,
-                            detail: s.status,
-                        })
-                        .collect(),
+                let mut services: Vec<Service> = st
+                    .services
+                    .into_iter()
+                    .map(|s| Service {
+                        running: s.state == "running",
+                        name: s.name,
+                        detail: s.status,
+                    })
+                    .collect();
+                // Windows hybrid: ClickHouse lives in WSL2 under its own
+                // account; its health is whether it answers.
+                if cfg!(windows) && cfg.flavor == Flavor::Clickhouse {
+                    let up = distro::clickhouse_answers(cfg.ch_http_port);
+                    services.push(Service {
+                        name: "ClickHouse (WSL2)".into(),
+                        running: up,
+                        detail: if up {
+                            format!("Answering on 127.0.0.1:{}", cfg.ch_http_port)
+                        } else {
+                            "Not answering — it starts about half a minute after boot".into()
+                        },
+                    });
                 }
+                Snapshot { installed: st.installed, serving: st.running, services }
             }
             Platform::Docker(cfg) => {
                 let st = distro::status(cfg);
@@ -202,16 +216,6 @@ impl Platform {
     }
 
     /// Native installs update from a package folder; Docker pulls the image.
-    pub fn update(&self, sink: ProgressFn, package: Option<&Path>) -> Result<(), String> {
-        match self {
-            Platform::Native(cfg) => {
-                let dir = package.ok_or("Choose the folder of the new SENTIENT package first.")?;
-                native::update(sink, cfg, dir)
-            }
-            Platform::Docker(cfg) => distro::update(sink, cfg),
-        }
-    }
-
     pub fn needs_package(&self) -> bool {
         matches!(self, Platform::Native(_))
     }

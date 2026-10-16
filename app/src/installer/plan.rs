@@ -10,7 +10,9 @@ use argon2::password_hash::{PasswordHasher, SaltString, rand_core::OsRng};
 use sentient_installer_core::distro::{self, DeployConfig};
 use sentient_installer_core::native::{self, ArtifactSource, NativeConfig};
 use sentient_installer_core::progress::{Progress, ProgressFn};
-use sentient_installer_core::stack::{EnvVar, Flavor};
+use sentient_installer_core::stack::EnvVar;
+#[cfg(windows)]
+use sentient_installer_core::stack::Flavor;
 
 use crate::catalog::PG_PREFIX;
 use crate::installation::{Engine, InstallationRecord};
@@ -19,7 +21,7 @@ use crate::self_install;
 
 pub use crate::self_install::Shortcuts;
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct InstallPlan {
     /// Native services, or (Linux only) the Docker stack.
     pub engine: Engine,
@@ -121,6 +123,128 @@ impl InstallPlan {
     }
 }
 
+/// The error `run` returns when Windows must restart to finish enabling
+/// WSL2. The plan is saved first and setup continues after the next logon.
+pub const RESTART_REQUIRED: &str = "Windows must restart to finish enabling WSL2.";
+
+/// Passwords of a saved plan, kept apart from it: they go to the secret
+/// store (crate::secrets), the rest to a plain file.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PendingSecrets {
+    db: String,
+    pg_admin: String,
+    admin: String,
+    clickhouse: String,
+}
+
+fn pending_path() -> PathBuf {
+    crate::installation::record_path().with_file_name("pending-install.json")
+}
+
+/// Save the plan and arrange for setup to continue after the restart.
+fn save_pending(plan: &InstallPlan) -> Result<(), String> {
+    let secrets = PendingSecrets {
+        db: plan.stack.db_password.clone(),
+        pg_admin: plan.pg_superuser_password.clone(),
+        admin: plan.admin_password.clone(),
+        clickhouse: plan.stack.ch_password.clone(),
+    };
+    crate::secrets::save(Secret::PendingInstall, &serde_json::to_string(&secrets).map_err(|e| e.to_string())?)?;
+    let mut bare = plan.clone();
+    bare.stack.db_password.clear();
+    bare.stack.ch_password.clear();
+    bare.pg_superuser_password.clear();
+    bare.admin_password.clear();
+    let path = pending_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&bare).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    #[cfg(windows)]
+    {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let value = format!("\"{}\" --resume", exe.display());
+        let ok = std::process::Command::new("reg.exe")
+            .args([
+                "add", r"HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce",
+                "/v", "SENTIENT Setup", "/t", "REG_SZ", "/d", &value, "/f",
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            return Err("could not arrange for setup to continue after the restart".into());
+        }
+    }
+    Ok(())
+}
+
+/// The plan saved before a restart, if there is one; removed once read.
+pub fn take_pending() -> Option<InstallPlan> {
+    let path = pending_path();
+    let mut plan: InstallPlan = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+    let secrets: PendingSecrets = serde_json::from_str(&crate::secrets::get(Secret::PendingInstall)?).ok()?;
+    plan.stack.db_password = secrets.db;
+    plan.pg_superuser_password = secrets.pg_admin;
+    plan.admin_password = secrets.admin;
+    plan.stack.ch_password = secrets.clickhouse;
+    let _ = std::fs::remove_file(&path);
+    crate::secrets::forget(Secret::PendingInstall);
+    Some(plan)
+}
+
+/// Restart Windows in a few seconds.
+pub fn restart_now() {
+    #[cfg(windows)]
+    let _ = std::process::Command::new("shutdown.exe")
+        .args(["/r", "/t", "5", "/c", "Restarting to finish installing SENTIENT"])
+        .spawn();
+}
+
+/// ClickHouse in Docker inside WSL2, owned by the hidden account
+/// (sentient_installer_core::clickhouse_wsl). Windows only.
+#[cfg(windows)]
+fn install_clickhouse_wsl(plan: &InstallPlan, manager: &std::path::Path, sink: &ProgressFn) -> Result<(), String> {
+    use sentient_installer_core::wsl;
+    if !wsl::is_ready() {
+        let outcome = wsl::install(sink.clone());
+        if outcome.reboot_required {
+            save_pending(plan)?;
+            return Err(RESTART_REQUIRED.into());
+        }
+    }
+    provision_clickhouse_wsl(&plan.configured_stack(), manager, sink)
+}
+
+/// With WSL2 ready: the hidden account, its distro with Docker and ClickHouse
+/// (`stack`'s ClickHouse settings and password), started at every boot.
+/// Also used by Migration.
+#[cfg(windows)]
+pub fn provision_clickhouse_wsl(stack: &DeployConfig, manager: &std::path::Path, sink: &ProgressFn) -> Result<(), String> {
+    use sentient_installer_core::clickhouse_wsl;
+    let password = crate::secrets::get(Secret::ClickhouseAccount).unwrap_or_else(clickhouse_wsl::new_password);
+    clickhouse_wsl::ensure_account(sink, &password)?;
+    crate::secrets::save(Secret::ClickhouseAccount, &password)?;
+
+    // The account's stack: ClickHouse alone, under the reference names.
+    let ch = DeployConfig { flavor: Flavor::Clickhouse, ..stack.clone() };
+    let config = clickhouse_wsl::work_dir().join("config.json");
+    std::fs::write(&config, serde_json::to_string(&ch).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("write {}: {e}", config.display()))?;
+    step(sink, "Installing WSL2, Docker and ClickHouse as the service account");
+    clickhouse_wsl::run_as_account(sink, &password, manager, "provision")?;
+    step(sink, "Starting ClickHouse at every boot");
+    clickhouse_wsl::register_keepalive(&password)?;
+    for _ in 0..60 {
+        if distro::clickhouse_answers(ch.ch_http_port) {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    Err(format!("ClickHouse is installed but does not answer on 127.0.0.1:{}", ch.ch_http_port))
+}
+
 fn step(sink: &ProgressFn, name: &str) {
     sink(Progress::Step { name: name.into() });
 }
@@ -136,16 +260,13 @@ fn hash_password(password: &str) -> Result<String, String> {
 /// Run the install. Each task reports through `sink`; the first failure stops
 /// the run and is returned.
 pub fn run(plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
-    if cfg!(windows) && plan.stack.flavor == Flavor::Clickhouse {
-        return Err(
-            "PostgreSQL + ClickHouse on Windows (ClickHouse in Docker inside WSL2) is the next phase \
-             of this work. Choose PostgreSQL only or PostgreSQL + TimescaleDB for now."
-                .into(),
-        );
-    }
-
     step(&sink, "Installing the Platform Manager");
     let manager = self_install::install_manager()?;
+    // ClickHouse first: SENTIENT's schema installer creates its tables there.
+    #[cfg(windows)]
+    if plan.stack.flavor == Flavor::Clickhouse {
+        install_clickhouse_wsl(&plan, &manager, &sink)?;
+    }
     let admin_hash = hash_password(&plan.admin_password)?;
 
     match plan.engine {
@@ -170,7 +291,11 @@ pub fn run(plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
                 (Secret::Database, &plan.stack.db_password),
                 (Secret::PostgresAdmin, &plan.pg_superuser_password),
                 (Secret::Jwt, &cfg.jwt_secret),
+                (Secret::Clickhouse, &plan.stack.ch_password),
             ] {
+                if value.is_empty() {
+                    continue;
+                }
                 if let Err(e) = crate::secrets::save(secret, value) {
                     sink(Progress::Log { line: format!("note: {e}") });
                 }

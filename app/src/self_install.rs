@@ -13,7 +13,7 @@
 pub const PRODUCT: &str = "SENTIENT Platform Manager";
 
 /// What setup creates besides the program itself.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Shortcuts {
     pub autostart: bool,
     pub desktop_sentient: bool,
@@ -125,10 +125,16 @@ mod imp {
     /// Delete the manager's folder once this process has exited (it may be
     /// running from there).
     pub fn remove_manager_later() {
-        let dir = manager_dir();
-        let _ = quiet("cmd.exe")
-            .args(["/c", &format!("ping -n 4 127.0.0.1 >nul & rmdir /s /q \"{}\"", dir.display())])
-            .spawn();
+        // PowerShell rather than cmd: Rust escapes embedded quotes in a way
+        // cmd does not read, which left the folder behind. It waits for this
+        // process (which may be running from that folder) to exit first.
+        let script = format!(
+            "Wait-Process -Id {pid} -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1; \
+             Remove-Item -LiteralPath '{dir}' -Recurse -Force -ErrorAction SilentlyContinue",
+            pid = std::process::id(),
+            dir = manager_dir().display().to_string().replace('\'', "''"),
+        );
+        let _ = quiet("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).spawn();
     }
 
     /// Start with Windows (delayed automatic) or by hand.

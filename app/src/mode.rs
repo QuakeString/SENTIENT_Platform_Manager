@@ -25,7 +25,7 @@ impl AppMode {
     pub fn detect() -> Self {
         for arg in std::env::args().skip(1) {
             match arg.as_str() {
-                "--install" => return Self::Install,
+                "--install" | "--resume" => return Self::Install,
                 "--maintenance" | "--uninstall" => return Self::Maintenance,
                 "--manager" => return Self::Manager,
                 _ => {}

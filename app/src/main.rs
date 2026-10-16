@@ -5,6 +5,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent;
 mod assets;
 mod catalog;
 mod elevate;
@@ -13,11 +14,13 @@ mod installer;
 mod jobs;
 mod maintenance;
 mod manager;
+mod migration;
 mod mode;
 mod secrets;
 mod self_install;
 mod theme;
 mod ui;
+mod updating;
 
 use gpui_kit::component::ThemeMode;
 use gpui_kit::*;
@@ -25,6 +28,12 @@ use gpui_kit::*;
 use mode::AppMode;
 
 fn main() {
+    // Agent mode runs as the hidden ClickHouse account: no window, no
+    // elevation (that account is not an administrator).
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--clickhouse-agent") {
+        std::process::exit(agent::run(args.get(2).map(String::as_str).unwrap_or("")));
+    }
     if !elevate::ensure_admin() {
         return;
     }

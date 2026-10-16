@@ -33,3 +33,4 @@ serde_json.workspace = true
 sysinfo.workspace = true
 ureq.workspace = true
 sha2.workspace = true   # verify every downloaded artifact
+chrono.workspace = true  # names of the update and migration snapshots

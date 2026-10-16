@@ -7,6 +7,9 @@
 mod pages;
 mod plan;
 
+#[cfg(windows)]
+pub use plan::provision_clickhouse_wsl;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -117,7 +120,13 @@ fn secret(window: &mut Window, cx: &mut Context<Installer>) -> Entity<InputState
 
 impl Installer {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let d = DeployConfig::default();
+        // After a restart for WSL2: the saved plan, to continue where it stopped.
+        let resumed = std::env::args().any(|a| a == "--resume").then(plan::take_pending).flatten();
+        let mut d = DeployConfig::default();
+        if let Some(p) = &resumed {
+            d.http_port = p.stack.http_port;
+        }
+        let admin_email = resumed.as_ref().map(|p| p.admin_email.clone()).unwrap_or_default();
         let fields = Fields {
             install_dir: input(window, cx, if cfg!(windows) { r"C:\Program Files\SENTIENT" } else { "/opt/sentient" }),
             data_dir: input(window, cx, if cfg!(windows) { r"C:\PostgreSQL\18" } else { "" }),
@@ -136,7 +145,7 @@ impl Installer {
             mqtts_port: input(window, cx, &d.mqtts_port.to_string()),
             coap_port: input(window, cx, &d.coap_port.to_string()),
             coaps_port: input(window, cx, &d.coaps_port.to_string()),
-            admin_email: input(window, cx, ""),
+            admin_email: input(window, cx, &admin_email),
             admin_password: secret(window, cx),
             admin_confirm: secret(window, cx),
             search: cx.new(|cx| {
@@ -204,6 +213,13 @@ impl Installer {
             _subscriptions: vec![search_sub, install_sub],
         };
         this.run_checks(cx);
+        if let Some(plan) = resumed {
+            this.accepted = true;
+            this.flavor = Some(plan.stack.flavor);
+            this.engine = plan.engine;
+            this.step = INSTALL;
+            this.install.update(cx, |job, cx| job.start(move |sink| plan::run(plan, sink), cx));
+        }
         // Development aid: open the wizard on a given page to inspect it.
         #[cfg(debug_assertions)]
         if let Some(step) = std::env::var("SPM_WIZARD_STEP").ok().and_then(|s| s.parse::<usize>().ok()) {

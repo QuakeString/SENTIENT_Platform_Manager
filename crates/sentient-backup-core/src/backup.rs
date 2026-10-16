@@ -92,6 +92,8 @@ pub struct BackupOptions {
     pub zstd_level: i32,
     /// If set, the whole archive is passphrase-encrypted with age (scrypt).
     pub passphrase: Option<String>,
+    /// ClickHouse holding the telemetry, when the install uses it.
+    pub clickhouse: Option<crate::clickhouse::ChConn>,
 }
 
 impl Default for BackupOptions {
@@ -102,6 +104,7 @@ impl Default for BackupOptions {
             file_stores: Vec::new(),
             zstd_level: 10,
             passphrase: None,
+            clickhouse: None,
         }
     }
 }
@@ -145,7 +148,8 @@ fn exclude_data_args(sel: &Selection) -> Vec<String> {
 pub async fn run(cfg: &ConnConfig, opts: &BackupOptions, sink: ProgressFn) -> Result<BackupSummary> {
     let tmode = opts.selection.telemetry_mode();
     let telem_extra = if tmode == TelemetryMode::None { 0 } else { 1 };
-    let total_steps = 3 + telem_extra + opts.file_stores.len() as u32;
+    let ch_extra = u32::from(opts.clickhouse.is_some() && tmode != TelemetryMode::None);
+    let total_steps = 3 + telem_extra + ch_extra + opts.file_stores.len() as u32;
     let mut steps = Steps::new(sink.clone(), total_steps);
 
     steps.step("Connecting and inspecting");
@@ -215,6 +219,42 @@ pub async fn run(cfg: &ConnConfig, opts: &BackupOptions, sink: ProgressFn) -> Re
         });
     }
 
+    // ClickHouse telemetry: history by monthly partition, then latest values.
+    let mut ch_section = None;
+    if let (Some(ch), true) = (&opts.clickhouse, tmode != TelemetryMode::None) {
+        steps.step("Exporting ClickHouse telemetry");
+        let since = match tmode {
+            TelemetryMode::LastDays(d) => Some(crate::clickhouse::partition_days_ago(d)),
+            _ => None,
+        };
+        let ch = ch.clone();
+        let base = opts.output.clone();
+        let level = opts.zstd_level;
+        let sink_ch = sink.clone();
+        let (version, exported) = tokio::task::spawn_blocking(move || {
+            crate::clickhouse::export_all(&ch, since.as_deref(), &base, level, &|line| {
+                sink_ch(crate::progress::Progress::Log { line })
+            })
+        })
+        .await
+        .map_err(|e| Error::msg(format!("ClickHouse export panicked: {e}")))??;
+        let mut entries = Vec::new();
+        for e in exported {
+            members.push(StagedMember {
+                archive_path: e.entry.member.clone(),
+                temp: e.temp,
+                sha256: e.sha256,
+                bytes: e.bytes,
+            });
+            entries.push(e.entry);
+        }
+        ch_section = Some(crate::clickhouse::ChSection {
+            database: opts.clickhouse.as_ref().map(|c| c.database.clone()).unwrap_or_default(),
+            version,
+            members: entries,
+        });
+    }
+
     // File stores (only ones passed in — caller filters by selected+reachable).
     for fs in &opts.file_stores {
         steps.step(format!("Archiving file store '{}'", fs.id));
@@ -279,6 +319,7 @@ pub async fn run(cfg: &ConnConfig, opts: &BackupOptions, sink: ProgressFn) -> Re
         } else {
             EncryptionInfo::none()
         },
+        clickhouse: ch_section,
     };
     write_archive(&opts.output, &manifest, &members, opts.passphrase.as_deref())?;
     for m in &members {

@@ -33,4 +33,4 @@ serde_json = "1"
 
 # Database password in Windows Credential Manager (see src/secrets.rs).
 [target.'cfg(windows)'.dependencies]
-keyring = { version = "3", features = ["windows-native"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

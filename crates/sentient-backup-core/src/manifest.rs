@@ -21,6 +21,9 @@ pub struct Manifest {
     #[serde(default)]
     pub file_stores: Vec<FileStoreEntry>,
     pub encryption: EncryptionInfo,
+    /// Telemetry held in ClickHouse (PostgreSQL + ClickHouse installs).
+    #[serde(default)]
+    pub clickhouse: Option<crate::clickhouse::ChSection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

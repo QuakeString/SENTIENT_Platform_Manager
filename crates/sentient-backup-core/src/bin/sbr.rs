@@ -36,6 +36,60 @@ enum Cmd {
     Backup(BackupArgs),
     /// Restore a .sentient-backup archive into an (empty) database.
     Restore(RestoreArgs),
+    /// Copy telemetry history (and latest values) between stores when an
+    /// installation changes database type. Re-runnable: copied months are skipped.
+    MoveTelemetry(MoveArgs),
+    /// Rebuild PostgreSQL's ts_kv as a plain table or a TimescaleDB hypertable,
+    /// keeping the existing one under another name.
+    TsLayout(LayoutArgs),
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Direction {
+    /// PostgreSQL --from-table → ClickHouse ts_kv
+    PgToCh,
+    /// ClickHouse ts_kv → PostgreSQL ts_kv
+    ChToPg,
+    /// PostgreSQL --from-table → PostgreSQL ts_kv
+    PgToPg,
+}
+
+#[derive(Args)]
+struct MoveArgs {
+    #[command(flatten)]
+    conn: ConnArgs,
+    #[command(flatten)]
+    ch: ChArgs,
+    #[arg(long, value_enum)]
+    direction: Direction,
+    #[arg(long, default_value = "ts_kv")]
+    from_table: String,
+    /// Copy history before this moment (epoch ms); default now.
+    #[arg(long)]
+    cutover: Option<i64>,
+    /// Also move the latest values.
+    #[arg(long)]
+    latest: bool,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum TargetLayout {
+    Plain,
+    Hypertable,
+}
+
+#[derive(Args)]
+struct LayoutArgs {
+    #[command(flatten)]
+    conn: ConnArgs,
+    #[arg(long, value_enum)]
+    to: TargetLayout,
+    /// Name to keep the existing ts_kv under.
+    #[arg(long)]
+    aside: String,
+    /// SENTIENT's data/sql/schema-ts-timescale.sql (for --to hypertable).
+    #[arg(long)]
+    timescale_sql: Option<PathBuf>,
 }
 
 #[derive(Args, Clone)]
@@ -52,10 +106,37 @@ struct ConnArgs {
     password: String,
 }
 
+/// ClickHouse holding the telemetry (PostgreSQL + ClickHouse installs).
+#[derive(Args, Clone)]
+struct ChArgs {
+    /// e.g. http://127.0.0.1:8123 — omit for installs without ClickHouse.
+    #[arg(long = "clickhouse-url")]
+    ch_url: Option<String>,
+    #[arg(long = "clickhouse-database", default_value = "sentient")]
+    ch_database: String,
+    #[arg(long = "clickhouse-user", default_value = "sentient")]
+    ch_user: String,
+    #[arg(long = "clickhouse-password", env = "CLICKHOUSE_PASSWORD", default_value = "")]
+    ch_password: String,
+}
+
+impl ChArgs {
+    fn conn(&self) -> Option<sentient_backup_core::clickhouse::ChConn> {
+        self.ch_url.clone().map(|url| sentient_backup_core::clickhouse::ChConn {
+            url,
+            database: self.ch_database.clone(),
+            user: self.ch_user.clone(),
+            password: self.ch_password.clone(),
+        })
+    }
+}
+
 #[derive(Args)]
 struct BackupArgs {
     #[command(flatten)]
     conn: ConnArgs,
+    #[command(flatten)]
+    ch: ChArgs,
     /// Output archive path.
     #[arg(short, long, default_value = "sentient.sentient-backup")]
     output: PathBuf,
@@ -87,6 +168,8 @@ struct BackupArgs {
 struct RestoreArgs {
     #[command(flatten)]
     conn: ConnArgs,
+    #[command(flatten)]
+    ch: ChArgs,
     /// Backup archive to restore.
     #[arg(short, long)]
     input: PathBuf,
@@ -102,6 +185,10 @@ struct RestoreArgs {
     /// Password for an encrypted backup.
     #[arg(long = "encrypt-password", env = "SBR_BACKUP_PASSWORD")]
     encrypt_password: Option<String>,
+    /// Create --clickhouse-database first, with the schema of this database
+    /// (the live one), to restore beside the live telemetry.
+    #[arg(long = "clickhouse-clone-from")]
+    clickhouse_clone_from: Option<String>,
 }
 
 impl From<&ConnArgs> for ConnConfig {
@@ -170,6 +257,7 @@ async fn main() -> Result<()> {
                 file_stores,
                 zstd_level: a.level,
                 passphrase: a.encrypt_password.clone(),
+                clickhouse: a.ch.conn(),
             };
             let s = backup::run(&ConnConfig::from(&a.conn), &opts, cli_sink()).await?;
             println!(
@@ -179,6 +267,49 @@ async fn main() -> Result<()> {
             );
             println!("  dump sha256: {}", s.dump_sha256);
         }
+        Cmd::MoveTelemetry(a) => {
+            use sentient_backup_core::telemetry_move as mv;
+            let pg = mv::connect(&ConnConfig::from(&a.conn)).await?;
+            let cutover = a.cutover.unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+            let sink = cli_sink();
+            let need_ch = || a.ch.conn().ok_or_else(|| anyhow::anyhow!("--clickhouse-url is required"));
+            let report = match a.direction {
+                Direction::PgToCh => {
+                    let ch = need_ch()?;
+                    let r = mv::history_pg_to_ch(&pg, &a.from_table, &ch, cutover, &sink).await?;
+                    if a.latest {
+                        mv::latest_pg_to_ch(&pg, &ch, &sink).await?;
+                    }
+                    r
+                }
+                Direction::ChToPg => {
+                    let ch = need_ch()?;
+                    if a.latest {
+                        mv::latest_ch_to_pg(&pg, &ch, &sink).await?;
+                    }
+                    mv::history_ch_to_pg(&pg, &ch, cutover, &sink).await?
+                }
+                Direction::PgToPg => mv::history_pg_to_pg(&pg, &a.from_table, cutover, &sink).await?,
+            };
+            println!(
+                "✓ {} month(s) copied ({} rows), {} already there",
+                report.windows_copied, report.rows, report.windows_skipped
+            );
+        }
+        Cmd::TsLayout(a) => {
+            use sentient_backup_core::telemetry_move as mv;
+            let pg = mv::connect(&ConnConfig::from(&a.conn)).await?;
+            let sink = cli_sink();
+            mv::set_aside(&pg, &a.aside, &sink).await?;
+            match a.to {
+                TargetLayout::Plain => mv::create_plain(&pg).await?,
+                TargetLayout::Hypertable => {
+                    let path = a.timescale_sql.as_ref().ok_or_else(|| anyhow::anyhow!("--timescale-sql is required"))?;
+                    mv::create_hypertable(&pg, &std::fs::read_to_string(path)?).await?;
+                }
+            }
+            println!("✓ ts_kv is now {:?}", mv::layout(&pg, "ts_kv").await?);
+        }
         Cmd::Restore(a) => {
             let mut file_store_paths = Vec::new();
             if let Some(p) = &a.reports_path {
@@ -187,11 +318,15 @@ async fn main() -> Result<()> {
             if let Some(p) = &a.vc_repos_path {
                 file_store_paths.push(("vc-repos".to_string(), p.clone()));
             }
+            if let (Some(template), Some(ch)) = (&a.clickhouse_clone_from, a.ch.conn()) {
+                sentient_backup_core::clickhouse::clone_schema(&ch, template)?;
+            }
             let opts = RestoreOptions {
                 input: a.input.clone(),
                 allow_nonempty: a.allow_nonempty,
                 file_store_paths,
                 passphrase: a.encrypt_password.clone(),
+                clickhouse: a.ch.conn(),
             };
             let s = restore::run(&ConnConfig::from(&a.conn), &opts, cli_sink()).await?;
             println!(

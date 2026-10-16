@@ -2,16 +2,16 @@
 
 //! Update: install a newer SENTIENT. Native installs update from a package
 //! folder (the offline bundle of the new release); Docker installs pull the
-//! image. SENTIENT applies its database migrations itself when it starts.
-//!
-//! Backup-first and roll-back-on-failure arrive with feature D (see the plan);
-//! until then the screen says so plainly.
+//! image. On Windows the update is safe: the database is copied, the schema
+//! changes are dry-run first, and a failure puts the previous version back
+//! (crate::updating).
 
 use std::path::PathBuf;
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex,
     button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
     progress::Progress,
 };
 use gpui_kit::*;
@@ -24,6 +24,7 @@ use crate::ui::{self, Tone};
 pub struct UpdatePage {
     record: Option<InstallationRecord>,
     package: Option<PathBuf>,
+    accept_breaking: bool,
     job: Entity<Job>,
     _observe: Subscription,
 }
@@ -31,8 +32,13 @@ pub struct UpdatePage {
 impl UpdatePage {
     pub fn new(record: Option<InstallationRecord>, cx: &mut Context<Self>) -> Self {
         let job = cx.new(|_| Job::new());
-        let _observe = cx.observe(&job, |_, _, cx| cx.notify());
-        Self { record, package: None, job, _observe }
+        let _observe = cx.observe(&job, |page: &mut Self, job, cx| {
+            if matches!(job.read(cx).state(), JobState::Done(_)) {
+                page.record = InstallationRecord::load();
+            }
+            cx.notify();
+        });
+        Self { record, package: None, accept_breaking: false, job, _observe }
     }
 
     fn choose_package(&mut self, cx: &mut Context<Self>) {
@@ -54,11 +60,11 @@ impl UpdatePage {
     }
 
     fn run(&mut self, cx: &mut Context<Self>) {
-        let Some(record) = &self.record else { return };
-        let platform = record.platform();
+        let Some(record) = self.record.clone() else { return };
         let package = self.package.clone();
+        let accept = self.accept_breaking;
         self.job.update(cx, |job, cx| {
-            job.start(move |sink| platform.update(sink, package.as_deref()), cx)
+            job.start(move |sink| crate::updating::run(record, package.as_deref(), accept, sink).map(|_| ()), cx)
         });
     }
 }
@@ -69,7 +75,7 @@ impl Render for UpdatePage {
         let page = ui::page(
             &theme,
             "Update",
-            "Install a newer SENTIENT. Database changes are applied when it starts.",
+            "Install a newer SENTIENT, with its database changes, and go back automatically if it fails.",
         );
         let Some(record) = &self.record else {
             return page.child(ui::not_installed(&theme));
@@ -110,11 +116,20 @@ impl Render for UpdatePage {
                             )),
                     )
                 })
+                .when(native && cfg!(windows), |panel| {
+                    panel.child(div().text_sm().text_color(theme.muted_foreground).child(
+                        "SENTIENT stops while it updates. The database is copied first, the new version's database changes are tried out before they are made, and if anything fails the previous version is put back and started.",
+                    ))
+                })
                 .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme.warning_foreground)
-                        .child("Take a backup first (Backup and restore). Automatic backup and roll-back are coming."),
+                    Checkbox::new("accept-breaking")
+                        .label("Accept breaking changes (only after reading what the update reports)")
+                        .checked(self.accept_breaking)
+                        .disabled(busy)
+                        .on_change(cx.listener(|this, value: &bool, _, cx| {
+                            this.accept_breaking = *value;
+                            cx.notify();
+                        })),
                 )
                 .child(
                     h_flex().child(

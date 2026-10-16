@@ -337,7 +337,7 @@ impl Installer {
                         .bg(theme.info)
                         .text_color(theme.info_foreground)
                         .text_sm()
-                        .child("A restart may be needed: setup installs WSL2 and Docker for ClickHouse and continues automatically afterwards. This option is being completed in the next phase of the installer; installing it from this build stops with a message."),
+                        .child("ClickHouse runs in Docker inside WSL2 under its own hidden service account, so it starts at boot with nobody signed in. If WSL2 is not enabled yet, Windows restarts once and setup continues by itself."),
                 )
             })
     }
@@ -597,6 +597,16 @@ impl Installer {
         rows.extend(vec![
             ("Database", self.flavor.map(flavor_label).unwrap_or("Not chosen").to_string(), 3),
             ("PostgreSQL", format!("{} as {} on port {}", v(&f.pg_db), v(&f.pg_user), v(&f.pg_port)), 4),
+        ]);
+        if self.flavor == Some(Flavor::Clickhouse) {
+            let place = if cfg!(windows) { "Docker in WSL2" } else { "Docker" };
+            rows.push((
+                "ClickHouse",
+                format!("{} as {} on port {} ({place})", v(&f.ch_db), v(&f.ch_user), v(&f.ch_http_port)),
+                4,
+            ));
+        }
+        rows.extend(vec![
             (
                 "Ports",
                 format!(
@@ -659,9 +669,28 @@ impl Installer {
                     .child(div().text_sm().child(step))
                     .when_some(percent, |c, p| c.child(Progress::new("install-progress").value(p))),
             )
+            .when(matches!(&state, JobState::Failed(m) if m.as_ref() == super::plan::RESTART_REQUIRED), |c| {
+                c.child(
+                    v_flex()
+                        .gap_2()
+                        .p_3()
+                        .rounded(theme.radius)
+                        .bg(theme.info)
+                        .text_color(theme.info_foreground)
+                        .text_sm()
+                        .child(div().font_weight(FontWeight::MEDIUM).child("Restart required"))
+                        .child("Windows must restart to finish enabling WSL2 for ClickHouse. Setup continues by itself after you sign in again; your choices are kept.")
+                        .child(h_flex().child(
+                            Button::new("restart-now")
+                                .primary()
+                                .label("Restart now")
+                                .on_click(|_, _, _| super::plan::restart_now()),
+                        )),
+                )
+            })
             .when_some(
                 match &state {
-                    JobState::Failed(m) => Some(m.clone()),
+                    JobState::Failed(m) if m.as_ref() != super::plan::RESTART_REQUIRED => Some(m.clone()),
                     _ => None,
                 },
                 |c, message| {

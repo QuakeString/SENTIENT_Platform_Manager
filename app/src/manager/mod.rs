@@ -7,6 +7,7 @@
 mod backup;
 mod control;
 mod logs;
+mod migration;
 mod status;
 mod update;
 
@@ -105,19 +106,41 @@ pub struct Manager {
     logs: Option<Entity<logs::LogsPage>>,
     update: Option<Entity<update::UpdatePage>>,
     backup: Option<Entity<backup::BackupPage>>,
+    migration: Option<Entity<migration::MigrationPage>>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl Manager {
     pub fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
+        // `--page migration` (from Setup's Change database).
+        let args: Vec<String> = std::env::args().collect();
+        let page = args
+            .windows(2)
+            .find(|w| w[0] == "--page")
+            .and_then(|w| Page::ALL.into_iter().find(|p| p.id() == w[1]))
+            .unwrap_or(Page::Status);
         Self {
-            page: Page::Status,
+            page,
             record: InstallationRecord::load(),
             status: None,
             control: None,
             logs: None,
             update: None,
             backup: None,
+            migration: None,
+            _subscriptions: Vec::new(),
         }
+    }
+
+    /// The record changed (a migration): every screen starts again from it.
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        self.record = InstallationRecord::load();
+        self.status = None;
+        self.control = None;
+        self.logs = None;
+        self.update = None;
+        self.backup = None;
+        cx.notify();
     }
 
     fn nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -213,6 +236,14 @@ impl Manager {
                 .get_or_insert_with(|| cx.new(|cx| backup::BackupPage::new(record, window, cx)))
                 .clone()
                 .into_any_element(),
+            Page::Migration => {
+                if self.migration.is_none() {
+                    let page = cx.new(|cx| migration::MigrationPage::new(record, cx));
+                    self._subscriptions.push(cx.subscribe(&page, |this, _, _: &migration::RecordChanged, cx| this.reload(cx)));
+                    self.migration = Some(page);
+                }
+                self.migration.clone().unwrap().into_any_element()
+            }
             page => {
                 let theme = cx.theme().clone();
                 ui::page(&theme, page.title(), page.summary())

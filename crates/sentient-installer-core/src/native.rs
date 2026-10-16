@@ -16,6 +16,9 @@
 //! record the traps that cost time, because each one silently produces a broken
 //! install rather than an error.
 
+
+pub mod safe_update;
+
 use std::path::{Path, PathBuf};
 
 use crate::progress::{Progress, ProgressFn};
@@ -619,11 +622,19 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     // The schema installer creates the ts_kv hypertable unless told not to;
     // this choice cannot be changed in place later.
     let timescale = if cfg.flavor == Flavor::Timescaledb { "true" } else { "false" };
-    match sys::output_tracked_env(
-        &installer.to_string_lossy(),
-        &argrefs,
-        &[("SENTIENT_TIMESCALE_ENABLED", timescale)],
-    ) {
+    // With ClickHouse the installer also creates the ClickHouse schema; it
+    // takes the connection from the same variables the server reads.
+    let ch = clickhouse_conn(cfg);
+    let mut env: Vec<(&str, &str)> = vec![("SENTIENT_TIMESCALE_ENABLED", timescale)];
+    if cfg.flavor == Flavor::Clickhouse {
+        env.extend([
+            ("CLICKHOUSE_URL", ch.url.as_str()),
+            ("CLICKHOUSE_DATABASE", ch.database.as_str()),
+            ("CLICKHOUSE_USER", ch.user.as_str()),
+            ("CLICKHOUSE_PASSWORD", ch.password.as_str()),
+        ]);
+    }
+    match sys::output_tracked_env(&installer.to_string_lossy(), &argrefs, &env) {
         Some((true, out, _)) => {
             for line in sys::decode(&out).lines().rev().take(3).collect::<Vec<_>>().iter().rev() {
                 log(&sink, (*line).to_string());
@@ -978,6 +989,28 @@ pub fn status(cfg: &NativeConfig) -> NativeStatus {
 }
 
 /// start | stop | restart, applied in dependency order.
+/// Stop the SENTIENT service only, leaving PostgreSQL up, and wait until it
+/// has stopped (database work that must not race the server follows).
+pub fn stop_server(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (sink, cfg);
+        return Err("stop_server is Windows-only".into());
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+    step(sink, "Stopping SENTIENT");
+    let _ = sc(&["stop", APP_SERVICE]);
+    for _ in 0..60 {
+        if service_state(APP_SERVICE).contains("STOPPED") && !is_running(cfg.http_port) {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    Err("SENTIENT did not stop within a minute".into())
+    }
+}
+
 pub fn control(sink: ProgressFn, cfg: &NativeConfig, action: &str) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {

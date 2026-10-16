@@ -3,6 +3,9 @@
 
 pub mod cancel;
 pub mod checks;
+/// ClickHouse for a native Windows install: Docker in WSL2, owned by a
+/// hidden service account so it runs from boot.
+pub mod clickhouse_wsl;
 pub mod distro;
 pub(crate) mod exec;
 pub mod stack;
