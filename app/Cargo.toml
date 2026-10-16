@@ -1,0 +1,36 @@
+# The SENTIENT Platform Manager on GPUI: one program that is the installer
+# (SENTIENT-Setup.exe), the maintenance tool (setup run again) and the
+# management app (Start menu). Its own workspace, like src-tauri, so the
+# engines' workspace stays free of UI dependencies.
+[workspace]
+
+[package]
+name = "sentient-platform-manager"
+version = "0.8.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["The SENTIENT Authors"]
+publish = false
+
+[build-dependencies]
+winresource = "0.1"
+
+[dependencies]
+# Exact pin: GPUI's API changes between releases (see
+# docs/GPUI_PLATFORM_MANAGER_PLAN.md, Pinned versions).
+gpui-kit = "=0.7.3"
+sentient-installer-core = { path = "../crates/sentient-installer-core" }
+sentient-backup-core = { path = "../crates/sentient-backup-core" }
+# The backup engine is async on tokio; jobs run it on a small runtime of their own.
+tokio = { version = "1", features = ["rt"] }
+futures = "0.3"
+# The same hashing SENTIENT verifies (common/src/security/password.rs).
+argon2 = { version = "0.5", features = ["std"] }
+chrono = "0.4"
+sysinfo = "0.32"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Database password in Windows Credential Manager (see src/secrets.rs).
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }

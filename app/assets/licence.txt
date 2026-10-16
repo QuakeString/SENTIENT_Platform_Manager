@@ -1,0 +1,5 @@
+[LICENCE TEXT]
+
+The SENTIENT end-user licence agreement goes here before release. This file
+(app/assets/licence.txt) is shown on the Welcome page of SENTIENT Setup and
+must be replaced with the agreement approved by INVENIA SYSTEMS.

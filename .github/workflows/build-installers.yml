@@ -95,6 +95,45 @@ jobs:
           if-no-files-found: error
           path: dist/*.exe
 
+  # The GPUI installer + Platform Manager (app/): one exe. The offline package
+  # (PostgreSQL, TimescaleDB, SENTIENT payload) is assembled from it by
+  # scripts/package-windows.ps1 where the payload files are.
+  gpui-windows:
+    name: GPUI setup (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+      - name: Build
+        working-directory: app
+        shell: bash
+        run: |
+          if [ "${{ github.event.inputs.profile }}" = "release" ]; then
+            cargo build --release; echo "PROFILE=release" >> "$GITHUB_ENV"
+          else
+            cargo build; echo "PROFILE=debug" >> "$GITHUB_ENV"
+          fi
+      - name: Test
+        working-directory: app
+        run: cargo test
+      - name: Stage
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path app\Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $exe = "app\target\$env:PROFILE\sentient-platform-manager.exe"
+          if ((Get-Item $exe).VersionInfo.FileVersion -ne $v) { throw "FileVersion does not match Cargo.toml $v" }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item $exe "dist\SENTIENT-Setup-manager-$v.exe"
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-setup-windows
+          if-no-files-found: error
+          path: dist/*.exe
+
   linux:
     name: linux packages
     # 22.04 (glibc 2.35) rather than ubuntu-latest so the .deb / AppImage also

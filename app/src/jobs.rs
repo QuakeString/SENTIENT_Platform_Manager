@@ -1,0 +1,129 @@
+// Copyright © 2016-2026 The SENTIENT Authors
+
+//! Runs blocking engine work (installer-core, backup-core) off the UI thread
+//! and streams its progress into a view.
+//!
+//! The engines report through a `ProgressFn` callback that may be called from
+//! any thread. [`Job::start`] hands the engine a callback that forwards into a
+//! channel, and a foreground task drains that channel into the job's state,
+//! notifying the views that render it. The channel closes when the engine
+//! returns and drops the callback, so the drain loop ends on its own.
+
+use futures::StreamExt as _;
+use gpui_kit::{Context, SharedString, Task};
+use sentient_installer_core::progress::{Progress, ProgressFn};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum JobState {
+    Idle,
+    Running,
+    Done(SharedString),
+    Failed(SharedString),
+}
+
+pub struct Job {
+    state: JobState,
+    step: SharedString,
+    percent: Option<f32>,
+    log: Vec<SharedString>,
+    _task: Option<Task<()>>,
+}
+
+impl Job {
+    pub fn new() -> Self {
+        Self {
+            state: JobState::Idle,
+            step: SharedString::default(),
+            percent: None,
+            log: Vec::new(),
+            _task: None,
+        }
+    }
+
+    pub fn state(&self) -> &JobState {
+        &self.state
+    }
+
+    pub fn step(&self) -> &SharedString {
+        &self.step
+    }
+
+    /// Fraction of the current step, 0–100, when the engine reports one.
+    pub fn percent(&self) -> Option<f32> {
+        self.percent
+    }
+
+    pub fn log(&self) -> &[SharedString] {
+        &self.log
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.state == JobState::Running
+    }
+
+    /// Run `work` on a background thread. It receives the progress sink and
+    /// returns `Err(message)` on failure. Starting a job while one runs is
+    /// ignored.
+    pub fn start(
+        &mut self,
+        work: impl FnOnce(ProgressFn) -> Result<(), String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_running() {
+            return;
+        }
+        self.state = JobState::Running;
+        self.step = SharedString::default();
+        self.percent = None;
+        self.log.clear();
+        cx.notify();
+
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<Progress>();
+        let sink: ProgressFn = std::sync::Arc::new(move |p| {
+            let _ = tx.unbounded_send(p);
+        });
+        let worker = cx.background_executor().spawn(async move { work(sink) });
+        self._task = Some(cx.spawn(async move |this, cx| {
+            while let Some(progress) = rx.next().await {
+                if this
+                    .update(cx, |job, cx| {
+                        job.apply(progress);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            let result = worker.await;
+            this.update(cx, |job, cx| {
+                job.finish(result);
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    fn apply(&mut self, progress: Progress) {
+        match progress {
+            Progress::Step { name } => {
+                self.step = name.into();
+                self.percent = None;
+            }
+            Progress::Log { line } => self.log.push(line.into()),
+            Progress::Percent { value } => self.percent = Some((value * 100.0).clamp(0.0, 100.0)),
+            Progress::Done { message } => self.state = JobState::Done(message.into()),
+            Progress::Error { message } => self.state = JobState::Failed(message.into()),
+        }
+    }
+
+    fn finish(&mut self, result: Result<(), String>) {
+        match result {
+            Err(message) => self.state = JobState::Failed(message.into()),
+            Ok(()) if self.state == JobState::Running => {
+                self.state = JobState::Done("Finished".into())
+            }
+            Ok(()) => {}
+        }
+    }
+}
