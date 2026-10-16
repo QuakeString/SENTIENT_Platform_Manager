@@ -156,7 +156,10 @@ pub fn run(record: InstallationRecord, target: Flavor, sink: ProgressFn) -> Resu
     log(&sink, format!("Backup: {}", backup_file.display()));
 
     // 3. Stop, prepare the stores.
-    native::stop_server(&sink, &old)?;
+    if let Err(e) = native::stop_server(&sink, &old) {
+        let _ = native::control(sink.clone(), &old, "start");
+        return Err(e);
+    }
     let cutover = chrono::Utc::now().timestamp_millis();
     let aside_name = format!("ts_kv_{}_{}", from.as_str(), chrono::Utc::now().format("%Y%m%d%H%M"));
     let prepared = block_on(prepare_stores(&old, &new, from, target, &aside_name, &sink))?;
@@ -175,7 +178,7 @@ pub fn run(record: InstallationRecord, target: Flavor, sink: ProgressFn) -> Resu
     let mut state = MigrationState { from, to: target, cutover, aside: aside.clone(), backup: backup_file, done: false };
     if let Err(e) = native::deploy(sink.clone(), &new) {
         log(&sink, format!("SENTIENT did not start on the new type ({e}); putting it back"));
-        let undo = block_on(undo_stores(&old, aside.as_deref(), target))?;
+        let undo = block_on(undo_stores(&old, aside.as_deref()))?;
         if let Err(u) = undo {
             log(&sink, format!("could not put ts_kv back: {u}"));
         }
@@ -260,8 +263,11 @@ async fn prepare_stores(
     let msink = bridge(sink.clone());
     let pg = mv::connect(&pg_conn(old)).await.map_err(|e| e.to_string())?;
     let mut aside = None;
+    // Decided by ts_kv as it is, not by the previous type: an installation
+    // that went TimescaleDB → ClickHouse still has its hypertable.
+    let layout = mv::layout(&pg, "ts_kv").await.map_err(|e| e.to_string())?;
     match target {
-        Flavor::Timescaledb => {
+        Flavor::Timescaledb if layout != mv::Layout::Hypertable => {
             let sql_path = timescale_sql(new);
             let sql = std::fs::read_to_string(&sql_path).map_err(|e| format!("read {}: {e}", sql_path.display()))?;
             if mv::set_aside(&pg, aside_name, &msink).await.map_err(|e| e.to_string())? {
@@ -269,14 +275,14 @@ async fn prepare_stores(
             }
             mv::create_hypertable(&pg, &sql).await.map_err(|e| e.to_string())?;
         }
-        Flavor::Stock if from == Flavor::Timescaledb => {
+        // SENTIENT on plain PostgreSQL writes into monthly partitions.
+        Flavor::Stock if layout != mv::Layout::Partitioned => {
             if mv::set_aside(&pg, aside_name, &msink).await.map_err(|e| e.to_string())? {
                 aside = Some(aside_name.to_string());
             }
-            mv::create_plain(&pg).await.map_err(|e| e.to_string())?;
+            mv::create_partitioned(&pg).await.map_err(|e| e.to_string())?;
         }
-        // Stock from ClickHouse keeps its plain ts_kv; ClickHouse needs
-        // nothing from PostgreSQL's layout.
+        // Already the right shape; ClickHouse needs nothing from it.
         _ => {}
     }
     if from == Flavor::Clickhouse {
@@ -286,11 +292,8 @@ async fn prepare_stores(
 }
 
 /// Put ts_kv back as it was after a failed switch.
-async fn undo_stores(old: &NativeConfig, aside: Option<&str>, target: Flavor) -> Result<(), String> {
+async fn undo_stores(old: &NativeConfig, aside: Option<&str>) -> Result<(), String> {
     let Some(aside) = aside else { return Ok(()) };
-    if !matches!(target, Flavor::Timescaledb | Flavor::Stock) {
-        return Ok(());
-    }
     let pg = mv::connect(&pg_conn(old)).await.map_err(|e| e.to_string())?;
     pg.batch_execute(&format!(
         "DROP TABLE IF EXISTS ts_kv; ALTER TABLE {aside} RENAME TO ts_kv; ALTER INDEX IF EXISTS {aside}_pkey RENAME TO ts_kv_pkey;"

@@ -229,7 +229,7 @@ fn start_and_check(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> 
     step(sink, "Checking SENTIENT stays up");
     for _ in 0..20 {
         std::thread::sleep(std::time::Duration::from_secs(1));
-        if !service_state(APP_SERVICE).contains("RUNNING") || !is_running(cfg.http_port) {
+        if service_state(APP_SERVICE) != "running" || !is_running(cfg.http_port) {
             return Err("SENTIENT started but stopped again".into());
         }
     }
@@ -242,7 +242,10 @@ pub fn safe_update(sink: ProgressFn, cfg: &NativeConfig, staging: &Path, opts: &
         return Err(format!("{} does not hold a SENTIENT package (bin\\sentient-server.exe)", staging.display()));
     }
 
-    stop_server(&sink, cfg)?;
+    if let Err(e) = stop_server(&sink, cfg) {
+        let _ = sc(&["start", APP_SERVICE]);
+        return Err(e);
+    }
 
     step(&sink, "Checking the new version's database changes (dry run)");
     let dry = match run_upgrade(cfg, &staging.join("bin"), &staging.join("data"), true, opts.accept_breaking) {

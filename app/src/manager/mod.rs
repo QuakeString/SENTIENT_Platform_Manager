@@ -121,7 +121,7 @@ impl Manager {
             .unwrap_or(Page::Status);
         Self {
             page,
-            record: InstallationRecord::load(),
+            record: InstallationRecord::load().inspect(InstallationRecord::use_pg_tools),
             status: None,
             control: None,
             logs: None,

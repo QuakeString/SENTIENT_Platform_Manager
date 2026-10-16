@@ -381,12 +381,23 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
          if ! {inst}/bin/sentient-install --database-url {url} --data-dir {inst}/data{demo} 2>&1 | tail -n 3; then\n\
            echo '>> note: the schema installer returned an error. If the database was already installed this is expected — continuing.'\n\
          fi\n\
+         {stock_fix}\
          echo '>> Registering the SENTIENT service'\n\
          cat > {UNIT_FILE} <<'SENTIENTEOF'\n{unit}SENTIENTEOF\n\
          systemctl daemon-reload\n\
          systemctl enable {APP_UNIT} >/dev/null 2>&1\n\
          systemctl restart {APP_UNIT}\n",
         env = env_file_body(cfg), unit = unit_body(cfg), inst = shq(&install_dir), url = shq(&db_url),
+        stock_fix = if cfg.flavor == stack::Flavor::Stock {
+            format!(
+                "runuser -u postgres -- psql -p {} -d {} -v ON_ERROR_STOP=1 -qAt -c {}\n",
+                cfg.pg_port,
+                shq(&cfg.db_name),
+                shq(&crate::native::stock_ts_kv_sql(&cfg.db_user))
+            )
+        } else {
+            String::new()
+        },
     ));
     exec::run_privileged(&sink, &script)?;
     bail_if_cancelled()?;

@@ -51,6 +51,17 @@ impl InstallationRecord {
         serde_json::from_str(&text).ok()
     }
 
+    /// Point the backup engine at the pg_dump and pg_restore beside this
+    /// installation's PostgreSQL (native Windows has no client tools on
+    /// PATH). Called once at start-up, before any job thread exists.
+    pub fn use_pg_tools(&self) {
+        if cfg!(windows) && self.engine == Engine::Native {
+            let bin = self.pg_dir.join("bin");
+            std::env::set_var("SBR_PG_DUMP", bin.join("pg_dump.exe"));
+            std::env::set_var("SBR_PG_RESTORE", bin.join("pg_restore.exe"));
+        }
+    }
+
     pub fn flavor(&self) -> Flavor {
         self.stack.flavor
     }

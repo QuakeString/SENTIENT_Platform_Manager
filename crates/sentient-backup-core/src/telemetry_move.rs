@@ -59,6 +59,9 @@ const PLAIN_TS_KV: &str = "CREATE TABLE IF NOT EXISTS ts_kv (
 pub enum Layout {
     Missing,
     Plain,
+    /// `PARTITION BY RANGE (ts)`, one `ts_kv_YYYY_MM` per month: what
+    /// SENTIENT on plain PostgreSQL writes into.
+    Partitioned,
     Hypertable,
 }
 
@@ -101,6 +104,13 @@ pub async fn layout(pg: &Client, table: &str) -> Result<Layout> {
         .get(0);
     if !exists {
         return Ok(Layout::Missing);
+    }
+    let partitioned: bool = pg
+        .query_one("SELECT relkind = 'p' FROM pg_class WHERE oid = to_regclass($1)", &[&format!("public.{table}")])
+        .await?
+        .get(0);
+    if partitioned {
+        return Ok(Layout::Partitioned);
     }
     let timescale: bool = pg
         .query_one("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb')", &[])
@@ -147,6 +157,23 @@ pub async fn set_aside(pg: &Client, aside: &str, sink: &ProgressFn) -> Result<bo
         )
         .await?;
     }
+    if current == Layout::Partitioned {
+        // The monthly partitions keep their names through a rename of the
+        // parent; the new ts_kv needs those names.
+        let children: Vec<String> = pg
+            .query("SELECT c.relname::text FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid WHERE i.inhparent = 'public.ts_kv'::regclass", &[])
+            .await?
+            .iter()
+            .map(|r| r.get(0))
+            .collect();
+        for child in children {
+            let renamed = child.replacen("ts_kv", aside, 1);
+            pg.batch_execute(&format!(
+                "ALTER TABLE {child} RENAME TO {renamed}; ALTER INDEX IF EXISTS {child}_pkey RENAME TO {renamed}_pkey;"
+            ))
+            .await?;
+        }
+    }
     pg.batch_execute(&format!(
         "ALTER TABLE ts_kv RENAME TO {aside}; ALTER INDEX IF EXISTS ts_kv_pkey RENAME TO {aside}_pkey;"
     ))
@@ -158,6 +185,26 @@ pub async fn set_aside(pg: &Client, aside: &str, sink: &ProgressFn) -> Result<bo
 /// Create `ts_kv` as SENTIENT's plain table.
 pub async fn create_plain(pg: &Client) -> Result<()> {
     pg.batch_execute(PLAIN_TS_KV).await?;
+    Ok(())
+}
+
+/// Create `ts_kv` partitioned by month, the shape SENTIENT on plain
+/// PostgreSQL writes into (it adds `ts_kv_YYYY_MM` as months begin).
+pub async fn create_partitioned(pg: &Client) -> Result<()> {
+    let ddl = PLAIN_TS_KV.trim_end().strip_suffix(')').unwrap_or(PLAIN_TS_KV);
+    pg.batch_execute(&format!("{ddl}) PARTITION BY RANGE (ts)")).await?;
+    Ok(())
+}
+
+/// The month's partition of a partitioned `ts_kv`, named and bounded as
+/// SENTIENT names and bounds it (`ts_kv_YYYY_MM`, UTC month in ms).
+async fn ensure_partition(pg: &Client, w: &Window) -> Result<()> {
+    let (y, m) = w.label.split_at(4);
+    pg.batch_execute(&format!(
+        "CREATE TABLE IF NOT EXISTS ts_kv_{y}_{m} PARTITION OF ts_kv FOR VALUES FROM ({}) TO ({})",
+        w.start, w.end
+    ))
+    .await?;
     Ok(())
 }
 
@@ -404,6 +451,7 @@ pub async fn history_pg_to_ch(
 /// ClickHouse `ts_kv` → PostgreSQL `ts_kv`. Rows already in PostgreSQL win.
 pub async fn history_ch_to_pg(pg: &Client, ch: &ChConn, cutover: i64, sink: &ProgressFn) -> Result<MoveReport> {
     let mut report = MoveReport::default();
+    let partitioned = layout(pg, "ts_kv").await? == Layout::Partitioned;
     let ch_conn = ch.clone();
     let range = tokio::task::spawn_blocking(move || ch_range(&ch_conn, cutover))
         .await
@@ -427,6 +475,9 @@ pub async fn history_ch_to_pg(pg: &Client, ch: &ChConn, cutover: i64, sink: &Pro
             report.windows_skipped += 1;
             log(sink, format!("  {} already copied ({} rows)", w.label, want.0));
             continue;
+        }
+        if partitioned {
+            ensure_partition(pg, w).await?;
         }
         staging(pg).await?;
         ch_to_pg_stream(
@@ -458,6 +509,7 @@ pub async fn history_ch_to_pg(pg: &Client, ch: &ChConn, cutover: i64, sink: &Pro
 /// A set-aside PostgreSQL copy → the new `ts_kv`, inside PostgreSQL.
 pub async fn history_pg_to_pg(pg: &Client, from: &str, cutover: i64, sink: &ProgressFn) -> Result<MoveReport> {
     let mut report = MoveReport::default();
+    let partitioned = layout(pg, "ts_kv").await? == Layout::Partitioned;
     let Some((min, max)) = pg_range(pg, from, cutover).await? else {
         log(sink, format!("  {from}: no history before the switch"));
         return Ok(report);
@@ -473,6 +525,9 @@ pub async fn history_pg_to_pg(pg: &Client, from: &str, cutover: i64, sink: &Prog
             report.windows_skipped += 1;
             log(sink, format!("  {} already copied ({} rows)", w.label, want.0));
             continue;
+        }
+        if partitioned {
+            ensure_partition(pg, w).await?;
         }
         pg.batch_execute(&format!(
             "INSERT INTO ts_kv ({COLS}) SELECT {COLS} FROM {from} WHERE {filter} ON CONFLICT DO NOTHING"

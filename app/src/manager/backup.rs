@@ -32,7 +32,7 @@ use sentient_backup_core::restore::{self, RestoreOptions};
 use sentient_installer_core::progress::{Progress, ProgressFn};
 use sentient_installer_core::stack::Flavor;
 
-use crate::installation::{Engine, InstallationRecord};
+use crate::installation::InstallationRecord;
 use crate::jobs::{Job, JobState};
 use crate::ui::{self, Tone};
 
@@ -105,15 +105,6 @@ impl BackupPage {
             cx.observe(&backup, |_, _, cx| cx.notify()),
             cx.observe(&restore, |_, _, cx| cx.notify()),
         ];
-        // pg_dump of a native install is the one beside its server.
-        if let Some(r) = &record {
-            if cfg!(windows) && r.engine == Engine::Native {
-                let bin = r.pg_dir.join("bin");
-                // Safe: set once, before any backup thread starts.
-                std::env::set_var("SBR_PG_DUMP", bin.join("pg_dump.exe"));
-                std::env::set_var("SBR_PG_RESTORE", bin.join("pg_restore.exe"));
-            }
-        }
         Self {
             record,
             password,

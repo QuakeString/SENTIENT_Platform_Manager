@@ -651,6 +651,9 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         }
         None => return Err("could not run sentient-install.exe".into()),
     }
+    if cfg.flavor == Flavor::Stock {
+        psql(cfg, &cfg.db_name, &stock_ts_kv_sql(&cfg.db_user))?;
+    }
     bail_if_cancelled()?;
 
     step(&sink, "Registering the SENTIENT service");
@@ -765,6 +768,25 @@ pub(crate) fn service_env(cfg: &NativeConfig) -> Vec<(String, String)> {
 }
 
 /// How the server reaches a ClickHouse on the same machine (Linux hybrid).
+/// Plain PostgreSQL: SENTIENT writes telemetry into monthly partitions
+/// (`ts_kv_YYYY_MM`) but its schema installer creates `ts_kv` as a plain
+/// table, so every write fails with "ts_kv is not partitioned". On a fresh,
+/// empty install, replace it with the partitioned table the server expects.
+pub(crate) fn stock_ts_kv_sql(owner: &str) -> String {
+    format!(
+        "DO $$ BEGIN \
+           IF (SELECT relkind FROM pg_class WHERE oid = to_regclass('public.ts_kv')) = 'r' \
+              AND NOT EXISTS (SELECT 1 FROM ts_kv) THEN \
+             DROP TABLE ts_kv; \
+             CREATE TABLE ts_kv (entity_id uuid NOT NULL, key int NOT NULL, ts bigint NOT NULL, \
+               bool_v boolean, str_v varchar(10000000), long_v bigint, dbl_v double precision, json_v json, \
+               CONSTRAINT ts_kv_pkey PRIMARY KEY (entity_id, key, ts)) PARTITION BY RANGE (ts); \
+             ALTER TABLE ts_kv OWNER TO \"{owner}\"; \
+           END IF; \
+         END $$;"
+    )
+}
+
 pub(crate) fn clickhouse_conn(cfg: &NativeConfig) -> ClickhouseConn {
     ClickhouseConn {
         url: format!("http://127.0.0.1:{}", cfg.ch_http_port),
@@ -1002,7 +1024,7 @@ pub fn stop_server(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> 
     step(sink, "Stopping SENTIENT");
     let _ = sc(&["stop", APP_SERVICE]);
     for _ in 0..60 {
-        if service_state(APP_SERVICE).contains("STOPPED") && !is_running(cfg.http_port) {
+        if service_state(APP_SERVICE) == "stopped" && !is_running(cfg.http_port) {
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_secs(1));

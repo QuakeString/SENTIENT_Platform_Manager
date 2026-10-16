@@ -75,6 +75,7 @@ struct MoveArgs {
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum TargetLayout {
     Plain,
+    Partitioned,
     Hypertable,
 }
 
@@ -303,6 +304,7 @@ async fn main() -> Result<()> {
             mv::set_aside(&pg, &a.aside, &sink).await?;
             match a.to {
                 TargetLayout::Plain => mv::create_plain(&pg).await?,
+                TargetLayout::Partitioned => mv::create_partitioned(&pg).await?,
                 TargetLayout::Hypertable => {
                     let path = a.timescale_sql.as_ref().ok_or_else(|| anyhow::anyhow!("--timescale-sql is required"))?;
                     mv::create_hypertable(&pg, &std::fs::read_to_string(path)?).await?;
