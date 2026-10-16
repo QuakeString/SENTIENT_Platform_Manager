@@ -96,21 +96,38 @@ Excluded: cluster-only (`NATS_URL`, `VALKEY_URL`, `MESSAGE_BUS_TYPE`,
 Status · Control · Logs · Update · Backup / Restore · Migration · Settings ·
 Repair / Uninstall. No licence features.
 
-## Feature work after the port (A–D)
+## Feature work after the port (A–D) — as built
 
-- **A. Windows hybrid** — native SENTIENT + PostgreSQL, ClickHouse in WSL2.
-  The building blocks exist (`stack::storage_env` with a `ClickhouseConn`,
-  the WSL2/Docker engine in `distro.rs`); missing is the combined flow,
-  readiness ordering and supervision.
-- **B. Backup v2** — add ClickHouse (history + latest, per-month chunks with
-  checksums), record the flavour in the manifest, restore across flavours,
-  restore over an existing install.
-- **C. Migrations** — detect flavour + versions; backup first; convert
-  (PG/TimescaleDB → ClickHouse via SENTIENT's `--backfill-clickhouse`;
-  ClickHouse → PG by export + import); verify row counts; pinned-version
-  upgrades with rollback.
-- **D. Native update parity** — backup first, run the upgrade step, health
-  check, roll back on failure.
+Done 2026-10-16/17, each verified end to end (commits on `feature/gpui`).
+
+- **A. Windows hybrid** — native SENTIENT + PostgreSQL, ClickHouse in Docker
+  in SENTIENT's WSL2 distro, owned by the hidden local account
+  `sentient-clickhouse` with an on-start task (runs with nobody signed in;
+  survives a reboot). The account's WSL has no WSLg (its compositor crashed
+  in a session without a display, ~120 MB dump each time). Secrets are
+  machine-wide (DPAPI, `%ProgramData%\SENTIENT\secrets`).
+- **B. Backup v2** — ClickHouse history per month (Native format, checksum
+  per member) and latest values; restore into a new ClickHouse database
+  beside the live one. Plain PostgreSQL's monthly `ts_kv` partitions are kept
+  out of the dump (history travels once, in the telemetry member).
+  *Not built:* restore across database types, restore over an existing
+  install.
+- **C. Migrations** — any direction between plain PostgreSQL, TimescaleDB and
+  ClickHouse on Windows native and Linux Docker; plain ↔ ClickHouse on native
+  Linux (no TimescaleDB packages). Backup first, switch SENTIENT (about a
+  minute down), then copy history month by month while it runs, each month
+  checked, re-runnable; the old history is kept and listed under "Kept after
+  earlier changes" for removal. SPM streams the rows itself
+  (`telemetry_move`) instead of SENTIENT's `--backfill-clickhouse`, which
+  needs ClickHouse to reach PostgreSQL and has no reverse direction.
+- **D. Safe update** — every engine: dry run (breaking changes need explicit
+  acceptance), database copied inside PostgreSQL (`CREATE DATABASE …
+  TEMPLATE`), files or image swapped, schema upgrade, health check (HTTP),
+  automatic rollback of files/image and database on failure.
+
+Headless: `--job install|migrate|resume-migration|update|kept|remove-kept`
+for servers without a desktop; on native Linux the window and headless runs
+hand such jobs to a root copy of the program (pkexec, else `sudo -n`).
 
 ## Phases
 
