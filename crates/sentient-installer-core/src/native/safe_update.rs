@@ -48,7 +48,7 @@ fn rollback_dir(cfg: &NativeConfig) -> PathBuf {
     cfg.install_dir.join("previous-version")
 }
 
-fn quote_ident(name: &str) -> String {
+pub(crate) fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
@@ -155,7 +155,7 @@ fn run_upgrade(cfg: &NativeConfig, bin: &Path, data: &Path, dry_run: bool, accep
 }
 
 /// The `[BREAKING]` lines of a dry run, with what follows each.
-fn breaking_changes(output: &str) -> Vec<String> {
+pub(crate) fn breaking_changes(output: &str) -> Vec<String> {
     let lines: Vec<&str> = output.lines().collect();
     let mut found = Vec::new();
     for (i, line) in lines.iter().enumerate() {
@@ -173,7 +173,7 @@ fn breaking_changes(output: &str) -> Vec<String> {
     found
 }
 
-fn last_lines(text: &str, n: usize) -> String {
+pub(crate) fn last_lines(text: &str, n: usize) -> String {
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     lines[lines.len().saturating_sub(n)..].join("\n")
 }

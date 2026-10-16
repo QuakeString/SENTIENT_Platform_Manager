@@ -87,9 +87,23 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, String> {
 
 impl BackupPage {
     pub fn new(record: Option<InstallationRecord>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let saved = crate::secrets::get(crate::secrets::Secret::Database).unwrap_or_default();
+        // Docker keeps the stack's passwords in its compose file.
+        let docker = record
+            .as_ref()
+            .filter(|r| r.engine == crate::installation::Engine::Docker)
+            .and_then(|r| sentient_installer_core::distro::docker_ops::read_secrets(&r.stack).ok());
+        let saved = docker
+            .as_ref()
+            .map(|s| s.db_password.clone())
+            .or_else(|| crate::secrets::get(crate::secrets::Secret::Database))
+            .unwrap_or_default();
         let password = cx.new(|cx| InputState::new(window, cx).masked(true).default_value(saved));
-        let saved_ch = crate::secrets::get(crate::secrets::Secret::Clickhouse).unwrap_or_default();
+        let saved_ch = docker
+            .as_ref()
+            .map(|s| s.ch_password.clone())
+            .filter(|p| !p.is_empty())
+            .or_else(|| crate::secrets::get(crate::secrets::Secret::Clickhouse))
+            .unwrap_or_default();
         let ch_password = cx.new(|cx| InputState::new(window, cx).masked(true).default_value(saved_ch));
         let telemetry_days = cx.new(|cx| InputState::new(window, cx).default_value("30"));
         let passphrase = cx.new(|cx| {

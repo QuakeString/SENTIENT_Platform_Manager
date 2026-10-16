@@ -125,12 +125,17 @@ struct StagedMember {
     bytes: u64,
 }
 
-fn exclude_data_args(sel: &Selection) -> Vec<String> {
-    // Telemetry is ALWAYS handled via COPY, never included in the pg_dump.
+fn exclude_data_args(sel: &Selection, ts_kv_partitions: &[String]) -> Vec<String> {
+    // Telemetry is ALWAYS handled via COPY, never included in the pg_dump:
+    // ts_kv, a hypertable's chunks, and on plain PostgreSQL its monthly
+    // partitions (tables of their own, which excluding ts_kv does not reach).
     let mut args = vec![
         "--exclude-table-data=public.ts_kv".into(),
         "--exclude-table-data=_timescaledb_internal.*".into(),
     ];
+    for p in ts_kv_partitions {
+        args.push(format!("--exclude-table-data={p}"));
+    }
     for c in catalog() {
         if c.kind == CategoryKind::Configuration
             || c.kind == CategoryKind::TelemetryHistorical
@@ -158,6 +163,8 @@ pub async fn run(cfg: &ConnConfig, opts: &BackupOptions, sink: ProgressFn) -> Re
     let tables = db.tables_with_true_sizes().await?;
     let report = build_report(&tables);
 
+    let ts_kv_partitions = db.partitions_of("public.ts_kv").await?;
+
     let tools = PgTools::resolve()?;
     steps.log(tools.dump_version().unwrap_or_else(|_| "pg_dump: unknown version".into()));
 
@@ -174,7 +181,7 @@ pub async fn run(cfg: &ConnConfig, opts: &BackupOptions, sink: ProgressFn) -> Re
     let opts2 = opts.clone();
     let sink2 = sink.clone();
     let (tmp_dump, dump_sha, dump_bytes) =
-        tokio::task::spawn_blocking(move || dump_compressed(&tools, &cfg2, &opts2, sink2))
+        tokio::task::spawn_blocking(move || dump_compressed(&tools, &cfg2, &opts2, &ts_kv_partitions, sink2))
             .await
             .map_err(|e| Error::msg(format!("dump task panicked: {e}")))??;
 
@@ -342,6 +349,7 @@ fn dump_compressed(
     tools: &PgTools,
     cfg: &ConnConfig,
     opts: &BackupOptions,
+    ts_kv_partitions: &[String],
     sink: ProgressFn,
 ) -> Result<(PathBuf, String, u64)> {
     let mut args: Vec<String> = vec![
@@ -351,7 +359,7 @@ fn dump_compressed(
         "-d".into(),
         crate::pg_tools::conninfo(cfg),
     ];
-    for a in exclude_data_args(&opts.selection) {
+    for a in exclude_data_args(&opts.selection, ts_kv_partitions) {
         args.push(a);
     }
 

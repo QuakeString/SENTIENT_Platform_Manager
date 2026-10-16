@@ -1,10 +1,9 @@
 // Copyright © 2016-2026 The SENTIENT Authors
 
 //! Updating SENTIENT, shared by Setup's Update and the manager's Update
-//! screen. Native Windows installations go through the safe update
-//! (sentient_installer_core::native::safe_update): database copy, dry run,
-//! roll back on failure. Docker pulls and migrates; native Linux replaces
-//! the files.
+//! screen. Native Windows installations and Docker installations go through
+//! the safe update (native::safe_update, distro::docker_ops): dry run,
+//! database copy, roll back on failure. Native Linux replaces the files.
 
 use std::path::{Path, PathBuf};
 
@@ -62,7 +61,15 @@ pub fn run(
     let mut version = None;
     let mut message = String::new();
     match record.engine {
-        Engine::Docker => distro::update(sink.clone(), &record.stack)?,
+        Engine::Docker => {
+            let cfg = distro::docker_ops::with_secrets(&record.stack)?;
+            let report = distro::docker_ops::safe_update(sink.clone(), &cfg, accept_breaking)?;
+            message = format!(
+                " The database from before the update is kept as {}{}, until the next update.",
+                report.snapshot,
+                report.previous_image.map(|t| format!(" and the previous image as {t}")).unwrap_or_default()
+            );
+        }
         Engine::Native if cfg!(windows) => {
             let package = package.ok_or("Choose the folder of the new SENTIENT package first.")?;
             version = package_version(package);

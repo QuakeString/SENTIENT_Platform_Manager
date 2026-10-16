@@ -302,13 +302,21 @@ pub fn is_ready(cfg: &NativeConfig) -> bool {
 /// HTTP probe, not a process check, because a live port is the only thing that
 /// proves the stack is usable.
 pub fn is_running(http_port: u16) -> bool {
-    use std::net::TcpStream;
-    use std::time::Duration;
-    TcpStream::connect_timeout(
-        &([127, 0, 0, 1], http_port).into(),
-        Duration::from_millis(600),
-    )
-    .is_ok()
+    http_answers(http_port)
+}
+
+/// SENTIENT answers HTTP on the port: any response, whatever its status. A
+/// bare TCP connect is not enough: Docker's port proxy accepts connections
+/// while nothing is serving behind it.
+pub fn http_answers(http_port: u16) -> bool {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_millis(800))
+        .timeout(std::time::Duration::from_secs(3))
+        .build();
+    match agent.get(&format!("http://127.0.0.1:{http_port}/")).call() {
+        Ok(_) | Err(ureq::Error::Status(_, _)) => true,
+        Err(ureq::Error::Transport(_)) => false,
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -257,6 +257,10 @@ mod imp {
     pub fn set_autostart(_services: &[&str], _automatic: bool) {}
 
     pub fn write_record(path: &Path, json: &str) -> Result<(), String> {
+        // No password prompt when this user may write it anyway.
+        if path.parent().is_some_and(|d| d.is_dir()) && std::fs::write(path, json).is_ok() {
+            return Ok(());
+        }
         let tmp = std::env::temp_dir().join("sentient-installation.json");
         std::fs::write(&tmp, json).map_err(|e| format!("write {}: {e}", tmp.display()))?;
         let result = run(

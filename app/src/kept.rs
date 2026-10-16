@@ -43,8 +43,11 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, String> {
 }
 
 fn conn(record: &InstallationRecord, dbname: &str) -> Result<ConnConfig, String> {
-    let password = crate::secrets::get(crate::secrets::Secret::Database)
-        .ok_or("The database password is not in the secret store.")?;
+    let password = match record.engine {
+        Engine::Docker => sentient_installer_core::distro::docker_ops::read_secrets(&record.stack)?.db_password,
+        Engine::Native => crate::secrets::get(crate::secrets::Secret::Database)
+            .ok_or("The database password is not in the secret store.")?,
+    };
     Ok(ConnConfig {
         host: "127.0.0.1".into(),
         port: record.stack.pg_port,
@@ -57,12 +60,9 @@ fn conn(record: &InstallationRecord, dbname: &str) -> Result<ConnConfig, String>
 /// Everything kept on this installation. Blocking: call from a job or a
 /// background task.
 pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
-    if record.engine != Engine::Native {
-        return Ok(Vec::new());
-    }
     let db = record.stack.db_name.clone();
     let cfg = conn(record, &db)?;
-    let mut kept = block_on(async move {
+    let mut kept: Vec<Kept> = block_on(async move {
         let pg = mv::connect(&cfg).await.map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         // Set-aside history: top-level tables only (not partitions), with
@@ -114,8 +114,19 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
         }
         Ok::<_, String>(out)
     })??;
+    if record.engine == Engine::Docker && sentient_installer_core::distro::docker_ops::clickhouse_left_behind(&record.stack) {
+        kept.push(Kept {
+            kind: KeptKind::ClickHouse,
+            name: "ClickHouse (container)".into(),
+            bytes: None,
+            detail: "No longer used; holds the history from when this installation used ClickHouse".into(),
+        });
+    }
     #[cfg(windows)]
-    if record.flavor() != Flavor::Clickhouse && sentient_installer_core::clickhouse_wsl::is_installed() {
+    if record.engine == Engine::Native
+        && record.flavor() != Flavor::Clickhouse
+        && sentient_installer_core::clickhouse_wsl::is_installed()
+    {
         kept.push(Kept {
             kind: KeptKind::ClickHouse,
             name: "ClickHouse (WSL2)".into(),
@@ -123,8 +134,6 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
             detail: "No longer used; holds the history from when this installation used ClickHouse".into(),
         });
     }
-    #[cfg(not(windows))]
-    let _ = &mut kept;
     Ok(kept)
 }
 
@@ -157,6 +166,9 @@ pub fn remove(record: &InstallationRecord, item: &Kept, sink: ProgressFn) -> Res
                 let pg = mv::connect(&cfg).await.map_err(|e| e.to_string())?;
                 pg.batch_execute(&sql).await.map_err(|e| e.to_string())
             })??;
+        }
+        KeptKind::ClickHouse if record.engine == Engine::Docker => {
+            sentient_installer_core::distro::docker_ops::remove_clickhouse(&sink, &record.stack)?
         }
         KeptKind::ClickHouse => remove_clickhouse(&sink)?,
     }

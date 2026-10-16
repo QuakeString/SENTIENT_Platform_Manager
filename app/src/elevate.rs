@@ -26,6 +26,11 @@ mod imp {
         s.encode_wide().chain(std::iter::once(0)).collect()
     }
 
+    pub fn is_admin() -> bool {
+        // SAFETY: no arguments; reads the process token.
+        unsafe { IsUserAnAdmin() != 0 }
+    }
+
     /// True when this process may continue; false when it has handed over
     /// to an elevated copy (or the operator declined) and should exit.
     pub fn ensure_admin() -> bool {
@@ -51,9 +56,16 @@ mod imp {
 }
 
 #[cfg(windows)]
-pub use imp::ensure_admin;
+pub use imp::{ensure_admin, is_admin};
 
 #[cfg(not(windows))]
 pub fn ensure_admin() -> bool {
+    true
+}
+
+/// Headless jobs do their privileged steps through polkit on Linux, so only
+/// Windows needs an elevated start.
+#[cfg(not(windows))]
+pub fn is_admin() -> bool {
     true
 }

@@ -9,6 +9,7 @@ mod agent;
 mod assets;
 mod catalog;
 mod elevate;
+mod headless;
 mod installation;
 mod installer;
 mod jobs;
@@ -34,6 +35,9 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--clickhouse-agent") {
         std::process::exit(agent::run(args.get(2).map(String::as_str).unwrap_or("")));
+    }
+    if args.get(1).map(String::as_str) == Some("--job") {
+        std::process::exit(headless::run(&args[2..]));
     }
     if !elevate::ensure_admin() {
         return;

@@ -17,6 +17,8 @@ use crate::stack::{self, ChTuning, ClickhouseConn, EnvVar, Flavor, PgTuning, Tun
 use crate::sys;
 
 pub const DISTRO: &str = "sentient";
+
+pub mod docker_ops;
 #[cfg_attr(not(windows), allow(dead_code))]
 const ROOTFS_URL: &str =
     "https://cloud-images.ubuntu.com/wsl/releases/24.04/current/ubuntu-noble-wsl-amd64-24.04lts.rootfs.tar.gz";
@@ -78,6 +80,11 @@ pub struct DeployConfig {
     #[serde(flatten)]
     pub tuning: Tuning,
     pub load_demo: bool,
+    /// PostgreSQL runs on the TimescaleDB image whatever the flavour: set once
+    /// a database has had the extension (a migration away from TimescaleDB
+    /// keeps the old hypertable, which only that image can read).
+    #[serde(default)]
+    pub keep_timescale_image: bool,
 }
 
 impl Default for DeployConfig {
@@ -107,6 +114,7 @@ impl Default for DeployConfig {
             log_max_file: 10,
             tuning: Tuning { instance_id: "sentient-docker-01".into(), ..Tuning::default() },
             load_demo: false,
+            keep_timescale_image: false,
         }
     }
 }
@@ -305,7 +313,7 @@ pub fn compose(cfg: &DeployConfig) -> String {
     y.push_str(&format!("name: {}\n\nservices:\n", cfg.stack_name));
 
     // ---- postgres ----
-    let (pg_image, preload) = if cfg.flavor.uses_timescaledb() {
+    let (pg_image, preload) = if cfg.flavor.uses_timescaledb() || cfg.keep_timescale_image {
         (PG_IMAGE_TIMESCALE, "timescaledb")
     } else {
         (PG_IMAGE_STOCK, "")
@@ -521,9 +529,7 @@ pub fn is_running(http_port: u16) -> bool {
     }
     #[cfg(not(windows))]
     {
-        use std::net::TcpStream;
-        use std::time::Duration;
-        TcpStream::connect_timeout(&([127, 0, 0, 1], http_port).into(), Duration::from_millis(600)).is_ok()
+        crate::native::http_answers(http_port)
     }
 }
 
