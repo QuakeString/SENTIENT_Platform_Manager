@@ -110,8 +110,11 @@ Done 2026-10-16/17, each verified end to end (commits on `feature/gpui`).
   per member) and latest values; restore into a new ClickHouse database
   beside the live one. Plain PostgreSQL's monthly `ts_kv` partitions are kept
   out of the dump (history travels once, in the telemetry member).
-  *Not built:* restore across database types, restore over an existing
-  install.
+  "Put the restored data into service" then swaps it in (PostgreSQL rename,
+  ClickHouse `EXCHANGE TABLES`), keeping the data from before and swapping
+  back if SENTIENT does not start on it.
+  *Not built:* restore across database types (a backup restores into the
+  type it was taken from; migrate afterwards).
 - **C. Migrations** — any direction between plain PostgreSQL, TimescaleDB and
   ClickHouse on Windows native and Linux Docker; plain ↔ ClickHouse on native
   Linux (no TimescaleDB packages). Backup first, switch SENTIENT (about a
@@ -125,7 +128,8 @@ Done 2026-10-16/17, each verified end to end (commits on `feature/gpui`).
   TEMPLATE`), files or image swapped, schema upgrade, health check (HTTP),
   automatic rollback of files/image and database on failure.
 
-Headless: `--job install|migrate|resume-migration|update|kept|remove-kept`
+Headless: `--job install|migrate|resume-migration|update|backup|restore|
+use-restored|uninstall|kept|remove-kept`
 for servers without a desktop; on native Linux the window and headless runs
 hand such jobs to a root copy of the program (pkexec, else `sudo -n`).
 
