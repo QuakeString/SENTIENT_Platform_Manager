@@ -1,97 +1,267 @@
 // Copyright © 2016-2026 The SENTIENT Authors
 
 //! Installing the Platform Manager itself, the part of setup that is not
-//! SENTIENT: copy this program into Program Files, add shortcuts, and leave
-//! the uninstall entry pointing at it. Ported from the former Tauri setup
-//! program (`installer/src-tauri/src/main.rs`).
-
-use std::path::{Path, PathBuf};
-use std::process::Command;
+//! SENTIENT: put this program where it lives, add shortcuts, and write the
+//! installation record. One API, one implementation per OS:
+//!
+//! - Windows: `C:\Program Files\SENTIENT Platform Manager`, Start menu and
+//!   desktop shortcuts; the engine's Apps & features entry points here.
+//! - Linux: `/opt/sentient-platform-manager`, a command in `/usr/local/bin`,
+//!   and application-menu entries. Writes there run as root through polkit
+//!   (one password prompt per step).
 
 pub const PRODUCT: &str = "SENTIENT Platform Manager";
 
-/// Where the manager lives once installed. The engine's Apps & features
-/// entry points its Uninstall button here.
-pub fn manager_dir() -> PathBuf {
-    PathBuf::from(r"C:\Program Files").join(PRODUCT)
+/// What setup creates besides the program itself.
+#[derive(Clone)]
+pub struct Shortcuts {
+    pub autostart: bool,
+    pub desktop_sentient: bool,
+    pub desktop_manager: bool,
+    pub start_menu: bool,
+    pub kiosk: bool,
 }
 
-pub fn manager_exe() -> PathBuf {
-    manager_dir().join(format!("{PRODUCT}.exe"))
-}
+pub use imp::*;
 
-const DESKTOP: &str = r"C:\Users\Public\Desktop";
-const START_MENU: &str = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs";
+#[cfg(windows)]
+mod imp {
+    use super::{PRODUCT, Shortcuts};
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
 
-fn quiet(program: &str) -> Command {
-    #[allow(unused_mut)]
-    let mut c = Command::new(program);
-    #[cfg(windows)]
-    {
+    const DESKTOP: &str = r"C:\Users\Public\Desktop";
+    const START_MENU: &str = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs";
+
+    pub fn manager_dir() -> PathBuf {
+        PathBuf::from(r"C:\Program Files").join(PRODUCT)
+    }
+
+    pub fn manager_exe() -> PathBuf {
+        manager_dir().join(format!("{PRODUCT}.exe"))
+    }
+
+    fn quiet(program: &str) -> Command {
         use std::os::windows::process::CommandExt;
+        let mut c = Command::new(program);
         c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        c
     }
-    c
-}
 
-/// Copy the running program to `manager_exe()`. Skipped when it already runs
-/// from there (repair from an installed copy).
-pub fn install_manager() -> Result<PathBuf, String> {
-    let me = std::env::current_exe().map_err(|e| format!("locate this program: {e}"))?;
-    let target = manager_exe();
-    if me == target {
-        return Ok(target);
+    /// Copy the running program to `manager_exe()`. Skipped when it already
+    /// runs from there (repair from an installed copy).
+    pub fn install_manager() -> Result<PathBuf, String> {
+        let me = std::env::current_exe().map_err(|e| format!("locate this program: {e}"))?;
+        let target = manager_exe();
+        if me == target {
+            return Ok(target);
+        }
+        std::fs::create_dir_all(manager_dir())
+            .map_err(|e| format!("create {}: {e}", manager_dir().display()))?;
+        // A running copy cannot be overwritten.
+        let _ = quiet("taskkill").args(["/f", "/im", &format!("{PRODUCT}.exe")]).output();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::fs::copy(&me, &target).map_err(|e| format!("copy to {}: {e}", target.display()))?;
+        Ok(target)
     }
-    std::fs::create_dir_all(manager_dir())
-        .map_err(|e| format!("create {}: {e}", manager_dir().display()))?;
-    // A running copy cannot be overwritten.
-    let _ = quiet("taskkill").args(["/f", "/im", &format!("{PRODUCT}.exe")]).output();
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    std::fs::copy(&me, &target).map_err(|e| format!("copy to {}: {e}", target.display()))?;
-    Ok(target)
+
+    /// A `.lnk` to `target` named `name` in `folder`.
+    fn shortcut(target: &Path, folder: &str, name: &str, args: &str) -> Result<(), String> {
+        let lnk = format!(r"{folder}\{name}.lnk");
+        let esc = |p: &str| p.replace('\'', "''");
+        let script = format!(
+            "$w = New-Object -ComObject WScript.Shell; \
+             $s = $w.CreateShortcut('{}'); \
+             $s.TargetPath = '{}'; \
+             $s.Arguments = '{}'; \
+             $s.WorkingDirectory = '{}'; \
+             $s.Save()",
+            esc(&lnk),
+            esc(&target.display().to_string()),
+            esc(args),
+            esc(&target.parent().unwrap_or(Path::new("")).display().to_string()),
+        );
+        let ok = quiet("powershell.exe")
+            .args(["-NoProfile", "-Command", &script])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok { Ok(()) } else { Err(format!("Could not create the {name} shortcut")) }
+    }
+
+    /// An internet shortcut (`.url`) that opens SENTIENT in the default browser.
+    fn web_shortcut(folder: &str, name: &str, url: &str) -> Result<(), String> {
+        let path = format!(r"{folder}\{name}.url");
+        std::fs::write(&path, format!("[InternetShortcut]\r\nURL={url}\r\n"))
+            .map_err(|e| format!("write {path}: {e}"))
+    }
+
+    pub fn create_shortcuts(manager: &Path, url: &str, s: &Shortcuts) -> Result<(), String> {
+        if s.start_menu {
+            shortcut(manager, START_MENU, PRODUCT, "--manager")?;
+            web_shortcut(START_MENU, "SENTIENT", url)?;
+        }
+        if s.desktop_manager {
+            shortcut(manager, DESKTOP, PRODUCT, "--manager")?;
+        }
+        if s.desktop_sentient {
+            web_shortcut(DESKTOP, "SENTIENT", url)?;
+        }
+        Ok(())
+    }
+
+    /// The manager's Start menu entry (repair puts it back).
+    pub fn restore_menu_entry(manager: &Path) {
+        let _ = shortcut(manager, START_MENU, PRODUCT, "--manager");
+    }
+
+    pub fn remove_shortcuts() {
+        for folder in [DESKTOP, START_MENU] {
+            let _ = std::fs::remove_file(format!(r"{folder}\{PRODUCT}.lnk"));
+            let _ = std::fs::remove_file(format!(r"{folder}\SENTIENT.url"));
+        }
+    }
+
+    /// Delete the manager's folder once this process has exited (it may be
+    /// running from there).
+    pub fn remove_manager_later() {
+        let dir = manager_dir();
+        let _ = quiet("cmd.exe")
+            .args(["/c", &format!("ping -n 4 127.0.0.1 >nul & rmdir /s /q \"{}\"", dir.display())])
+            .spawn();
+    }
+
+    /// Start with Windows (delayed automatic) or by hand.
+    pub fn set_autostart(services: &[&str], automatic: bool) {
+        let mode = if automatic { "delayed-auto" } else { "demand" };
+        for service in services {
+            let _ = quiet("sc.exe").args(["config", service, "start=", mode]).output();
+        }
+    }
+
+    pub fn write_record(path: &Path, json: &str) -> Result<(), String> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        }
+        std::fs::write(path, json).map_err(|e| format!("write {}: {e}", path.display()))
+    }
+
+    pub fn remove_record(path: &Path) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
-/// A `.lnk` to `target` named `name` in `folder`.
-pub fn shortcut(target: &Path, folder: &str, name: &str, args: &str) -> Result<(), String> {
-    let lnk = format!(r"{folder}\{name}.lnk");
-    let esc = |p: &str| p.replace('\'', "''");
-    let script = format!(
-        "$w = New-Object -ComObject WScript.Shell; \
-         $s = $w.CreateShortcut('{}'); \
-         $s.TargetPath = '{}'; \
-         $s.Arguments = '{}'; \
-         $s.WorkingDirectory = '{}'; \
-         $s.Save()",
-        esc(&lnk),
-        esc(&target.display().to_string()),
-        esc(args),
-        esc(&target.parent().unwrap_or(Path::new("")).display().to_string()),
-    );
-    let ok = quiet("powershell.exe")
-        .args(["-NoProfile", "-Command", &script])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if ok { Ok(()) } else { Err(format!("Could not create the {name} shortcut")) }
-}
+#[cfg(not(windows))]
+mod imp {
+    use super::Shortcuts;
+    use sentient_installer_core::privileged::{run, shell_quote as q};
+    use sentient_installer_core::progress::noop;
+    use std::path::{Path, PathBuf};
 
-/// An internet shortcut (`.url`) that opens SENTIENT in the default browser.
-pub fn web_shortcut(folder: &str, name: &str, url: &str) -> Result<(), String> {
-    let path = format!(r"{folder}\{name}.url");
-    std::fs::write(&path, format!("[InternetShortcut]\r\nURL={url}\r\n"))
-        .map_err(|e| format!("write {path}: {e}"))
-}
+    const DIR: &str = "/opt/sentient-platform-manager";
+    const BIN: &str = "/usr/local/bin/sentient-platform-manager";
+    const APPS: &str = "/usr/share/applications";
+    const ICON: &str = "/usr/share/icons/hicolor/256x256/apps/sentient-platform-manager.png";
+    const ICON_PNG: &[u8] = include_bytes!("../assets/icon-256.png");
 
-pub fn desktop() -> &'static str {
-    DESKTOP
-}
+    pub fn manager_dir() -> PathBuf {
+        PathBuf::from(DIR)
+    }
 
-pub fn start_menu() -> &'static str {
-    START_MENU
-}
+    pub fn manager_exe() -> PathBuf {
+        manager_dir().join("sentient-platform-manager")
+    }
 
-/// `auto` (start with Windows) or `demand` (manual) for a service.
-pub fn set_service_start(service: &str, automatic: bool) {
-    let mode = if automatic { "delayed-auto" } else { "demand" };
-    let _ = quiet("sc.exe").args(["config", service, "start=", mode]).output();
+    /// Install this program, its command and its icon as root.
+    pub fn install_manager() -> Result<PathBuf, String> {
+        let me = std::env::current_exe().map_err(|e| format!("locate this program: {e}"))?;
+        let target = manager_exe();
+        if me == target {
+            return Ok(target);
+        }
+        let icon = std::env::temp_dir().join("sentient-platform-manager.png");
+        std::fs::write(&icon, ICON_PNG).map_err(|e| format!("write icon: {e}"))?;
+        let script = format!(
+            "set -e\n\
+             install -Dm755 {me} {target}\n\
+             ln -sf {target} {BIN}\n\
+             install -Dm644 {icon} {ICON}\n",
+            me = q(&me.display().to_string()),
+            target = q(&target.display().to_string()),
+            icon = q(&icon.display().to_string()),
+        );
+        run(&noop(), &script)?;
+        let _ = std::fs::remove_file(&icon);
+        Ok(target)
+    }
+
+    fn desktop_entry(name: &str, exec: &str, comment: &str) -> String {
+        format!(
+            "[Desktop Entry]\nType=Application\nName={name}\nComment={comment}\nExec={exec}\n\
+             Icon=sentient-platform-manager\nTerminal=false\nCategories=System;Monitor;\n"
+        )
+    }
+
+    pub fn create_shortcuts(manager: &Path, url: &str, s: &Shortcuts) -> Result<(), String> {
+        if !s.start_menu && !s.desktop_sentient {
+            return Ok(());
+        }
+        let mut script = String::from("set -e\n");
+        if s.start_menu {
+            script.push_str(&format!(
+                "cat > {APPS}/sentient-platform-manager.desktop <<'EOF'\n{}EOF\n",
+                desktop_entry(super::PRODUCT, &format!("{} --manager", manager.display()), "Run, update and back up SENTIENT")
+            ));
+        }
+        if s.desktop_sentient || s.start_menu {
+            script.push_str(&format!(
+                "cat > {APPS}/sentient.desktop <<'EOF'\n{}EOF\n",
+                desktop_entry("SENTIENT", &format!("xdg-open {url}"), "Open SENTIENT in the browser")
+            ));
+        }
+        script.push_str("command -v update-desktop-database >/dev/null && update-desktop-database -q || true\n");
+        run(&noop(), &script)
+    }
+
+    pub fn restore_menu_entry(manager: &Path) {
+        let s = Shortcuts {
+            autostart: true,
+            desktop_sentient: false,
+            desktop_manager: false,
+            start_menu: true,
+            kiosk: false,
+        };
+        let _ = create_shortcuts(manager, "http://localhost:8080", &s);
+    }
+
+    pub fn remove_shortcuts() {
+        let _ = run(
+            &noop(),
+            &format!("rm -f {APPS}/sentient-platform-manager.desktop {APPS}/sentient.desktop {ICON} {BIN}"),
+        );
+    }
+
+    pub fn remove_manager_later() {
+        // A running Linux binary can be deleted; its inode lives on until exit.
+        let _ = run(&noop(), &format!("rm -rf {DIR}"));
+    }
+
+    /// systemd units and Docker restart policies already start with the
+    /// machine; nothing to change.
+    pub fn set_autostart(_services: &[&str], _automatic: bool) {}
+
+    pub fn write_record(path: &Path, json: &str) -> Result<(), String> {
+        let tmp = std::env::temp_dir().join("sentient-installation.json");
+        std::fs::write(&tmp, json).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        let result = run(
+            &noop(),
+            &format!("install -Dm644 {} {}", q(&tmp.display().to_string()), q(&path.display().to_string())),
+        );
+        let _ = std::fs::remove_file(&tmp);
+        result
+    }
+
+    pub fn remove_record(path: &Path) {
+        let _ = run(&noop(), &format!("rm -f {}", q(&path.display().to_string())));
+    }
 }

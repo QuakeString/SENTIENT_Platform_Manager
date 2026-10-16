@@ -15,7 +15,7 @@ use sentient_installer_core::checks::Status;
 use sentient_installer_core::stack::Flavor;
 
 use super::{FINISH, INSTALL, Installer};
-use crate::installation::flavor_label;
+use crate::installation::{Engine, flavor_label};
 use crate::jobs::JobState;
 use crate::ui::{self, Tone};
 
@@ -119,8 +119,49 @@ impl Installer {
     fn system_check(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let rows = self.checks.clone();
+        let engine_choice = (!cfg!(windows)).then(|| {
+            let option = |engine: Engine, id: &'static str, title: &'static str, desc: &'static str, recommended: bool| {
+                let selected = self.engine == engine;
+                h_flex()
+                    .id(id)
+                    .flex_1()
+                    .min_w_0()
+                    .gap_3()
+                    .p_3()
+                    .rounded(theme.radius)
+                    .bg(theme.background)
+                    .border_1()
+                    .border_color(if selected { theme.primary } else { theme.input })
+                    .when(selected, |c| c.bg(theme.list_active))
+                    .cursor_pointer()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                                    .when(recommended, |r| r.child(ui::pill(&theme, Tone::Good, "Recommended"))),
+                            )
+                            .child(div().text_sm().text_color(theme.muted_foreground).child(desc)),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_engine(engine, cx)))
+            };
+            v_flex()
+                .gap_2()
+                .child(div().font_weight(FontWeight::MEDIUM).child("How should SENTIENT run?"))
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .child(option(Engine::Docker, "engine-docker", "Docker on this machine", "SENTIENT and its databases as containers. Every database type.", true))
+                        .child(option(Engine::Native, "engine-native", "Natively with systemd", "Services from the distribution's packages. PostgreSQL, or PostgreSQL + ClickHouse.", false)),
+                )
+        });
         v_flex()
             .gap_4()
+            .children(engine_choice)
             .child(lead(&theme, "What SENTIENT needs on this computer. Items marked “Will be installed” are handled by setup."))
             .child(match rows {
                 None => ui::panel(&theme).child(div().text_sm().child("Checking this computer…")),
@@ -169,6 +210,21 @@ impl Installer {
         let theme = cx.theme().clone();
         let program = self.fields.install_dir.clone();
         let data = self.fields.data_dir.clone();
+        if self.engine == Engine::Docker {
+            return v_flex().gap_4().max_w(px(640.)).child(lead(
+                &theme,
+                "With Docker, SENTIENT and its databases keep their data in Docker volumes (st-pg-data, st-data, st-ch-data); there are no folders to choose. Make sure the disk that holds Docker's data has room for telemetry to grow.",
+            ));
+        }
+        if !cfg!(windows) {
+            return v_flex()
+                .gap_4()
+                .max_w(px(640.))
+                .child(field(&theme, "Program folder", &program))
+                .child(div().text_sm().text_color(theme.muted_foreground).child(
+                    "PostgreSQL keeps its data where the distribution puts it (/var/lib/postgresql); SENTIENT's own files go to /var/lib/sentient.",
+                ));
+        }
         v_flex()
             .gap_4()
             .max_w(px(640.))
@@ -197,12 +253,29 @@ impl Installer {
 
     fn database(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
+        let (timescale, clickhouse) = match (cfg!(windows), self.engine) {
+            (true, _) => (
+                "Compressed time-series inside PostgreSQL. Fully native, fully offline.",
+                "Best for large telemetry volumes and long history. ClickHouse runs in Docker inside WSL2.",
+            ),
+            (false, Engine::Docker) => (
+                "Compressed time-series inside PostgreSQL.",
+                "Best for large telemetry volumes and long history. ClickHouse runs as a container.",
+            ),
+            (false, Engine::Native) => (
+                "",
+                "Best for large telemetry volumes and long history. ClickHouse from the vendor's packages.",
+            ),
+        };
         let options: [(Flavor, &'static str, &'static str, bool); 3] = [
             (Flavor::Stock, "Simplest and smallest. For small sites and a few hundred devices.", "All native", false),
-            (Flavor::Timescaledb, "Compressed time-series inside PostgreSQL. Fully native, fully offline.", "All native", false),
-            (Flavor::Clickhouse, "Best for large telemetry volumes and long history. ClickHouse runs in Docker inside WSL2.", "Native + WSL2", true),
+            (Flavor::Timescaledb, timescale, "All native", false),
+            (Flavor::Clickhouse, clickhouse, "Native + WSL2", true),
         ];
-        let cards = options.into_iter().map(|(flavor, desc, runs, recommended)| {
+        let offered = self.flavors();
+        let docker_linux = !cfg!(windows) && self.engine == Engine::Docker;
+        let cards = options.into_iter().filter(|o| offered.contains(&o.0)).map(|(flavor, desc, runs, recommended)| {
+            let runs = if docker_linux { "Docker" } else if cfg!(windows) { runs } else { "Native" };
             let selected = self.flavor == Some(flavor);
             h_flex()
                 .id(flavor.as_str())
@@ -249,10 +322,14 @@ impl Installer {
             .gap_3()
             .child(lead(
                 &theme,
-                "Choose how SENTIENT stores its data. SENTIENT and PostgreSQL always run directly on Windows. The database type can be changed later with Migration in the Platform Manager.",
+                if cfg!(windows) {
+                    "Choose how SENTIENT stores its data. SENTIENT and PostgreSQL always run directly on Windows. The database type can be changed later with Migration in the Platform Manager."
+                } else {
+                    "Choose how SENTIENT stores its data. The database type can be changed later with Migration in the Platform Manager."
+                },
             ))
             .children(cards)
-            .when(self.flavor == Some(Flavor::Clickhouse), |col| {
+            .when(cfg!(windows) && self.flavor == Some(Flavor::Clickhouse), |col| {
                 col.child(
                     div()
                         .p_3()
@@ -468,14 +545,24 @@ impl Installer {
     }
 
     fn shortcuts(&mut self, cx: &mut Context<Self>) -> Div {
-        let options: [(&'static str, &'static str, bool); 5] = [
-            ("autostart", "Start SENTIENT automatically with Windows", self.autostart),
-            ("desktop-sentient", "Desktop shortcut for SENTIENT", self.desktop_sentient),
-            ("desktop-manager", "Desktop shortcut for the Platform Manager", self.desktop_manager),
-            ("start-menu", "Start menu entries", self.start_menu),
-            ("kiosk", "Full-screen (kiosk) shortcut for operator screens", self.kiosk),
-        ];
-        v_flex().gap_3().children(options.into_iter().map(|(id, label, checked)| {
+        let options: Vec<(&'static str, &'static str, bool)> = if cfg!(windows) {
+            vec![
+                ("autostart", "Start SENTIENT automatically with Windows", self.autostart),
+                ("desktop-sentient", "Desktop shortcut for SENTIENT", self.desktop_sentient),
+                ("desktop-manager", "Desktop shortcut for the Platform Manager", self.desktop_manager),
+                ("start-menu", "Start menu entries", self.start_menu),
+                ("kiosk", "Full-screen (kiosk) shortcut for operator screens", self.kiosk),
+            ]
+        } else {
+            vec![("start-menu", "Application menu entries for SENTIENT and the Platform Manager", self.start_menu)]
+        };
+        let note = (!cfg!(windows)).then(|| {
+            let theme = cx.theme().clone();
+            div().text_sm().text_color(theme.muted_foreground).child(
+                "SENTIENT starts with the computer: as a systemd service, or through Docker's restart policy.",
+            )
+        });
+        v_flex().gap_3().children(note).children(options.into_iter().map(|(id, label, checked)| {
             Checkbox::new(id)
                 .label(label)
                 .checked(checked)
@@ -496,9 +583,18 @@ impl Installer {
         let theme = cx.theme().clone();
         let f = &self.fields;
         let v = |s: &Entity<InputState>| self.value(s, cx);
-        let rows: Vec<(&'static str, String, usize)> = vec![
-            ("Program folder", v(&f.install_dir), 2),
-            ("Database folder", v(&f.data_dir), 2),
+        let mut rows: Vec<(&'static str, String, usize)> = Vec::new();
+        if !cfg!(windows) {
+            let runs = if self.engine == Engine::Docker { "Docker on this machine" } else { "Natively with systemd" };
+            rows.push(("Runs as", runs.to_string(), 1));
+        }
+        if self.engine == Engine::Native {
+            rows.push(("Program folder", v(&f.install_dir), 2));
+        }
+        if cfg!(windows) {
+            rows.push(("Database folder", v(&f.data_dir), 2));
+        }
+        rows.extend(vec![
             ("Database", self.flavor.map(flavor_label).unwrap_or("Not chosen").to_string(), 3),
             ("PostgreSQL", format!("{} as {} on port {}", v(&f.pg_db), v(&f.pg_user), v(&f.pg_port)), 4),
             (
@@ -525,10 +621,10 @@ impl Installer {
             ),
             (
                 "Startup",
-                if self.autostart { "Starts with Windows".into() } else { "Started by hand".into() },
+                if !cfg!(windows) || self.autostart { "Starts with the computer".into() } else { "Started by hand".into() },
                 8,
             ),
-        ];
+        ]);
         ui::panel(&theme).gap_0().children(rows.into_iter().map(|(label, value, step)| {
             h_flex()
                 .gap_3()
@@ -616,7 +712,15 @@ impl Installer {
                     .max_w(px(620.))
                     .child(ui::fact(&theme, "Address", url))
                     .child(ui::fact(&theme, "Sign in as", email))
-                    .child(ui::fact(&theme, "Managed by", "SENTIENT Platform Manager (Start menu)")),
+                    .child(ui::fact(
+                        &theme,
+                        "Managed by",
+                        if cfg!(windows) {
+                            "SENTIENT Platform Manager (Start menu)"
+                        } else {
+                            "SENTIENT Platform Manager (application menu, or sentient-platform-manager)"
+                        },
+                    )),
             )
             .child(
                 div()

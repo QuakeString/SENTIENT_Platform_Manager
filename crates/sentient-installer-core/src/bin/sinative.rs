@@ -3,7 +3,7 @@
 //!
 //! Companion to `sicheck`: the same "exercise the core without the GUI" idea,
 //! but for [`native`] rather than the preflight checks. It is a test harness,
-//! not a shipped tool — the wizard calls the same functions through Tauri.
+//! not a shipped tool — the GPUI wizard (app/) calls the same functions.
 //!
 //! Usage:
 //!   sinative stage    <root>   lay out a package tree from an existing build
@@ -25,7 +25,7 @@ use sentient_installer_core::native::{self, ArtifactSource, NativeConfig};
 use sentient_installer_core::progress::Progress;
 use sentient_installer_core::stack::{ChTuning, Flavor, PgTuning, Tuning};
 
-/// Production defaults, matching `NativeOptions::default` in the Tauri layer so
+/// Production defaults, matching what the GPUI wizard installs by default so
 /// the harness exercises exactly the layout the wizard will install.
 fn cfg_default() -> NativeConfig {
     let mut c = cfg_for("C:\\_unused");

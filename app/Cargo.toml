@@ -1,6 +1,6 @@
 # The SENTIENT Platform Manager on GPUI: one program that is the installer
 # (SENTIENT-Setup.exe), the maintenance tool (setup run again) and the
-# management app (Start menu). Its own workspace, like src-tauri, so the
+# management app (Start menu). Its own workspace, so the
 # engines' workspace stays free of UI dependencies.
 [workspace]
 

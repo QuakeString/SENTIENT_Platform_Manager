@@ -3,7 +3,7 @@
 //!
 //! This is the second deployment mode alongside [`crate::distro`]. It exposes
 //! deliberately the *same* surface (`is_ready`, `is_running`, `setup`, `deploy`,
-//! `status`, `control`, `logs`, `update`, `uninstall`, `cleanup`) so the Tauri
+//! `status`, `control`, `logs`, `update`, `uninstall`, `cleanup`) so the app
 //! layer can dispatch on the user's chosen mode without special-casing either
 //! one.
 //!
@@ -689,15 +689,27 @@ pub fn apply_pg_tuning(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), Stri
 /// (`admin@sentient.local`) with the operator's choice. `password_hash` is an
 /// Argon2 PHC string, the format SENTIENT's `PasswordService` verifies.
 pub fn set_admin_account(cfg: &NativeConfig, email: &str, password_hash: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::native_linux::run_sql(cfg, &admin_account_sql(email, password_hash));
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        psql(cfg, &cfg.db_name, &admin_account_sql(email, password_hash)).map(|_| ())
+    }
+}
+
+/// The SQL that moves the default sys-admin to the operator's sign-in. Shared
+/// by every engine (native Windows, native Linux, Docker).
+pub(crate) fn admin_account_sql(email: &str, password_hash: &str) -> String {
     let lit = |v: &str| format!("'{}'", v.replace('\'', "''"));
-    let sql = format!(
+    format!(
         "UPDATE user_credentials SET password = {hash} WHERE user_id = \
            (SELECT id FROM tb_user WHERE authority = 'SYS_ADMIN' AND email = 'admin@sentient.local'); \
          UPDATE tb_user SET email = {email} WHERE authority = 'SYS_ADMIN' AND email = 'admin@sentient.local';",
         hash = lit(password_hash),
         email = lit(email),
-    );
-    psql(cfg, &cfg.db_name, &sql).map(|_| ())
+    )
 }
 
 /// The environment the server needs, in one place.
@@ -915,7 +927,7 @@ fn dir_size_kb(dir: &Path) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// Lifecycle (mirrors distro.rs so the Tauri layer can dispatch uniformly)
+// Lifecycle (mirrors distro.rs so the app can dispatch uniformly)
 // ---------------------------------------------------------------------------
 
 /// One managed Windows service, shaped like `distro::ContainerStatus` so the

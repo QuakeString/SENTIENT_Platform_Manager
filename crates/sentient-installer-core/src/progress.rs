@@ -1,5 +1,5 @@
 //! Progress reporting for provisioning steps — the engine calls a sink; the GUI
-//! forwards it to the webview over a Tauri Channel, the CLI prints it.
+//! streams it into the window (app/src/jobs.rs), the CLI prints it.
 
 use serde::Serialize;
 

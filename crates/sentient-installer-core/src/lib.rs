@@ -18,5 +18,16 @@ pub mod native;
 #[cfg(target_os = "linux")]
 pub mod native_linux;
 pub mod progress;
+/// Running a script as root from a desktop session (pkexec, else `sudo -n`).
+#[cfg(unix)]
+pub mod privileged {
+    use crate::progress::ProgressFn;
+    pub fn run(sink: &ProgressFn, script: &str) -> Result<(), String> {
+        crate::exec::run_privileged(sink, script)
+    }
+    pub fn shell_quote(s: &str) -> String {
+        crate::exec::shq(s)
+    }
+}
 mod sys;
 pub mod wsl;

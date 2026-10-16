@@ -6,7 +6,8 @@
 //! the program files; Uninstall removes SENTIENT and, if asked, its data.
 //! Change database opens Migration, which is plan item C.
 
-use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::path::Path;
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
@@ -17,7 +18,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use sentient_installer_core::native;
+use sentient_installer_core::{distro, native};
 use sentient_installer_core::progress::{Progress, ProgressFn};
 
 use crate::installation::{Engine, InstallationRecord};
@@ -86,7 +87,8 @@ fn step(sink: &ProgressFn, name: &str) {
 }
 
 /// Unpack the package's `sentient-payload.tar` into a staging folder, the
-/// layout `native::update` copies from (bin, ui, data).
+/// layout `native::update` copies from on Windows (bin, ui, data).
+#[cfg(windows)]
 fn stage_package(bundle: &Path, staging: &Path) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(staging);
     std::fs::create_dir_all(staging).map_err(|e| format!("create {}: {e}", staging.display()))?;
@@ -105,18 +107,30 @@ fn stage_package(bundle: &Path, staging: &Path) -> Result<(), String> {
 }
 
 fn run_update(record: InstallationRecord, sink: ProgressFn) -> Result<(), String> {
-    let bundle = native::bundled_payload_dir()
-        .ok_or("This copy of setup has no SENTIENT package next to it (a payload folder).")?;
-    let staging = record.state_dir.join("update-staging");
-    step(&sink, "Unpacking the new SENTIENT");
-    stage_package(&bundle, &staging)?;
-    native::update(sink.clone(), &record.native_config(), &staging)?;
-    let _ = std::fs::remove_dir_all(&staging);
+    let mut version = None;
+    match record.engine {
+        Engine::Docker => distro::update(sink.clone(), &record.stack)?,
+        Engine::Native => {
+            let bundle = native::bundled_payload_dir()
+                .ok_or("This copy of setup has no SENTIENT package next to it (a payload folder).")?;
+            version = std::fs::read_to_string(bundle.join("VERSION")).ok().map(|v| v.trim().to_string());
+            #[cfg(windows)]
+            {
+                let staging = record.state_dir.join("update-staging");
+                step(&sink, "Unpacking the new SENTIENT");
+                stage_package(&bundle, &staging)?;
+                native::update(sink.clone(), &record.native_config(), &staging)?;
+                let _ = std::fs::remove_dir_all(&staging);
+            }
+            #[cfg(not(windows))]
+            native::update(sink.clone(), &record.native_config(), &bundle.join(native::linux_payload_name()))?;
+        }
+    }
     step(&sink, "Updating the Platform Manager");
     self_install::install_manager()?;
     let mut updated = record;
-    if let Ok(v) = std::fs::read_to_string(bundle.join("VERSION")) {
-        updated.sentient_version = v.trim().to_string();
+    if let Some(v) = version {
+        updated.sentient_version = v;
     }
     updated.manager_version = env!("CARGO_PKG_VERSION").into();
     save_record(&updated)?;
@@ -125,37 +139,38 @@ fn run_update(record: InstallationRecord, sink: ProgressFn) -> Result<(), String
 }
 
 fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result<(), String> {
-    let cfg = record.native_config_with_secrets()?;
     step(&sink, "Restoring the Platform Manager");
     let manager = self_install::install_manager()?;
-    // deploy is idempotent: it keeps the database, re-registers the service
-    // if it is missing, and starts SENTIENT.
-    native::deploy(sink.clone(), &cfg)?;
-    let _ = self_install::shortcut(&manager, self_install::start_menu(), self_install::PRODUCT, "--manager");
-    sink(Progress::Done { message: "Repaired: services registered and SENTIENT running.".into() });
+    match record.engine {
+        // Bring the stack up again from its compose file.
+        Engine::Docker => distro::control(sink.clone(), &record.stack, "start")?,
+        Engine::Native if cfg!(windows) => {
+            // deploy is idempotent: it keeps the database, re-registers the
+            // service if it is missing, and starts SENTIENT.
+            native::deploy(sink.clone(), &record.native_config_with_secrets()?)?;
+        }
+        // Linux keeps the unit and its environment in /etc; restart them.
+        Engine::Native => native::control(sink.clone(), &record.native_config(), "restart")?,
+    }
+    self_install::restore_menu_entry(&manager);
+    sink(Progress::Done { message: "Repaired: SENTIENT is running.".into() });
     Ok(())
 }
 
 fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: ProgressFn) -> Result<(), String> {
-    let cfg = record.native_config();
-    if keep_data {
-        native::uninstall(sink.clone(), &cfg)?;
-    } else {
-        native::cleanup(sink.clone(), &cfg)?;
+    match (record.engine, keep_data) {
+        (Engine::Docker, true) => distro::uninstall(sink.clone(), &record.stack)?,
+        (Engine::Docker, false) => distro::cleanup(sink.clone(), &record.stack)?,
+        (Engine::Native, true) => native::uninstall(sink.clone(), &record.native_config())?,
+        (Engine::Native, false) => native::cleanup(sink.clone(), &record.native_config())?,
+    }
+    if !keep_data {
         crate::secrets::forget_all();
     }
     step(&sink, "Removing shortcuts and the Platform Manager");
-    for folder in [self_install::desktop(), self_install::start_menu()] {
-        let _ = std::fs::remove_file(format!(r"{folder}\{}.lnk", self_install::PRODUCT));
-        let _ = std::fs::remove_file(format!(r"{folder}\SENTIENT.url"));
-    }
-    let _ = std::fs::remove_file(crate::installation::record_path());
-    // This program may be running from the folder it removes: hand the last
-    // step to a detached shell that waits for it to exit.
-    let dir = self_install::manager_dir();
-    let _ = std::process::Command::new("cmd.exe")
-        .args(["/c", &format!("ping -n 4 127.0.0.1 >nul & rmdir /s /q \"{}\"", dir.display())])
-        .spawn();
+    self_install::remove_shortcuts();
+    self_install::remove_record(&crate::installation::record_path());
+    self_install::remove_manager_later();
     sink(Progress::Done {
         message: if keep_data {
             "SENTIENT is removed. The database was kept and can be reused by a new install.".into()
@@ -167,9 +182,8 @@ fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: ProgressFn) 
 }
 
 fn save_record(record: &InstallationRecord) -> Result<(), String> {
-    let path: PathBuf = crate::installation::record_path();
     let json = serde_json::to_string_pretty(record).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| format!("write {}: {e}", path.display()))
+    self_install::write_record(&crate::installation::record_path(), &json)
 }
 
 impl Maintenance {
@@ -181,9 +195,6 @@ impl Maintenance {
 
     fn start(&mut self, action: Action, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
-        if record.engine != Engine::Native {
-            return;
-        }
         self.running = Some(action);
         let keep = self.keep_data;
         self.job.update(cx, |job, cx| match action {

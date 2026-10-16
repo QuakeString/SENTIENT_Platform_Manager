@@ -30,19 +30,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-22.04]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
-      - name: Install Linux GTK/WebKit deps
+          workspaces: app
+      - name: Install GPUI build dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
-            libgtk-3-dev libappindicator3-dev
-      - name: Compile the Tauri app
-        working-directory: src-tauri
-        run: cargo build --verbose
+          sudo apt-get install -y gcc g++ clang libfontconfig-dev libwayland-dev \
+            libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libasound2-dev libvulkan1
+      - name: Build and test the GPUI app
+        working-directory: app
+        run: cargo test --verbose

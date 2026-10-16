@@ -813,6 +813,28 @@ pub fn status(cfg: &DeployConfig) -> StackStatus {
     StackStatus { installed, running, containers }
 }
 
+/// Replace the default sys-admin sign-in inside the stack's PostgreSQL.
+pub fn set_admin_account(cfg: &DeployConfig, email: &str, password_hash: &str) -> Result<(), String> {
+    let n = cfg.names();
+    let sql = crate::native::admin_account_sql(email, password_hash);
+    let cmd = format!(
+        "docker exec {} psql -U {} -d {} -v ON_ERROR_STOP=1 -qAt -c {}",
+        n.pg,
+        cfg.db_user,
+        cfg.db_name,
+        shell_quote(&sql)
+    );
+    match run_output(&cmd) {
+        Some((true, _)) => Ok(()),
+        _ => Err("could not set the administrator sign-in in the database container".into()),
+    }
+}
+
+/// Single-quote for bash, which runs every Docker command here.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Start / stop / restart the deployed stack.
 pub fn control(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Result<(), String> {
     let (label, sub) = match action {

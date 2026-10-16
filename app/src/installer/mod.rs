@@ -23,6 +23,7 @@ use sentient_installer_core::native;
 use sentient_installer_core::stack::Flavor;
 
 use crate::catalog::{self, Group};
+use crate::installation::Engine;
 use crate::jobs::{Job, JobState};
 
 const STEPS: [&str; 12] = [
@@ -78,6 +79,8 @@ struct Fields {
 
 pub struct Installer {
     step: usize,
+    /// How SENTIENT runs: always native on Windows; Docker or native on Linux.
+    engine: Engine,
     accepted: bool,
     checks: Option<Vec<CheckRow>>,
     flavor: Option<Flavor>,
@@ -116,8 +119,8 @@ impl Installer {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let d = DeployConfig::default();
         let fields = Fields {
-            install_dir: input(window, cx, r"C:\Program Files\SENTIENT"),
-            data_dir: input(window, cx, r"C:\PostgreSQL\18"),
+            install_dir: input(window, cx, if cfg!(windows) { r"C:\Program Files\SENTIENT" } else { "/opt/sentient" }),
+            data_dir: input(window, cx, if cfg!(windows) { r"C:\PostgreSQL\18" } else { "" }),
             pg_db: input(window, cx, &d.db_name),
             pg_user: input(window, cx, &d.db_user),
             pg_password: secret(window, cx),
@@ -177,6 +180,7 @@ impl Installer {
 
         let mut this = Self {
             step: 0,
+            engine: if cfg!(windows) { Engine::Native } else { Engine::Docker },
             accepted: false,
             checks: None,
             flavor: None,
@@ -216,11 +220,19 @@ impl Installer {
     fn run_checks(&mut self, cx: &mut Context<Self>) {
         self.checks = None;
         let offline = self.bundle.is_some();
+        let engine = self.engine;
         let task = cx.spawn(async move |this, cx| {
             let rows = cx
                 .background_executor()
                 .spawn(async move {
-                    checks::run_native(offline)
+                    let found = if cfg!(windows) {
+                        checks::run_native(offline)
+                    } else if engine == Engine::Docker {
+                        checks::run_linux_docker(offline)
+                    } else {
+                        checks::run_linux_native(offline)
+                    };
+                    found
                         .into_iter()
                         .map(|c| CheckRow { label: c.label.into(), detail: c.detail.into(), status: c.status })
                         .collect::<Vec<_>>()
@@ -255,15 +267,21 @@ impl Installer {
                 }
                 Some(_) => Ok(()),
             },
+            2 if self.engine == Engine::Docker => Ok(()),
             2 => {
-                if self.value(&f.install_dir, cx).is_empty() || self.value(&f.data_dir, cx).is_empty() {
-                    Err("Both folders are required.".into())
+                if self.value(&f.install_dir, cx).is_empty()
+                    || (cfg!(windows) && self.value(&f.data_dir, cx).is_empty())
+                {
+                    Err("The folders are required.".into())
                 } else {
                     Ok(())
                 }
             }
             3 => match self.flavor {
                 None => Err("Choose a database.".into()),
+                Some(flavor) if !self.flavors().contains(&flavor) => {
+                    Err("That database is not available for the chosen way of running SENTIENT.".into())
+                }
                 Some(_) => Ok(()),
             },
             4 => {
@@ -307,6 +325,26 @@ impl Installer {
             }
             _ => Ok(()),
         }
+    }
+
+    /// The databases on offer for this OS and engine.
+    fn flavors(&self) -> Vec<Flavor> {
+        match (cfg!(windows), self.engine) {
+            (true, _) | (false, Engine::Docker) => vec![Flavor::Stock, Flavor::Timescaledb, Flavor::Clickhouse],
+            // Distribution packages carry no TimescaleDB.
+            (false, Engine::Native) => vec![Flavor::Stock, Flavor::Clickhouse],
+        }
+    }
+
+    fn set_engine(&mut self, engine: Engine, cx: &mut Context<Self>) {
+        if self.engine != engine {
+            self.engine = engine;
+            if self.flavor.is_some_and(|f| !self.flavors().contains(&f)) {
+                self.flavor = None;
+            }
+            self.run_checks(cx);
+        }
+        cx.notify();
     }
 
     fn wanted_ports(&self, cx: &App) -> Result<Vec<(u16, String)>, String> {
@@ -360,6 +398,7 @@ impl Installer {
         };
         stack.tuning.instance_id = format!("sentient-{}", native::generate_secret().get(..8).unwrap_or("01"));
         Ok(plan::InstallPlan {
+            engine: self.engine,
             sentient_version: self.sentient_version.to_string(),
             install_dir: PathBuf::from(self.value(&f.install_dir, cx)),
             data_dir: PathBuf::from(self.value(&f.data_dir, cx)),

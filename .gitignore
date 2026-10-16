@@ -1,17 +1,9 @@
 /target
-/src-tauri/target
 **/*.rs.bk
 dist/
 .DS_Store
-/src-tauri/gen/
-/src-tauri/pgtools/bin/*
-!/src-tauri/pgtools/bin/.gitkeep
-
-# The bundled Windows setup: build output and the SPM binary it embeds, which
-# the build copies in from src-tauri/target.
-/installer/src-tauri/target/
-/installer/src-tauri/payload/*
-!/installer/src-tauri/payload/.gitkeep
+# Left behind by the former Tauri app (removed); never re-add.
+/src-tauri/
 
 # GPUI app and spike build output
 /app/target/

@@ -89,7 +89,8 @@ impl Render for StatusPage {
                     &theme,
                     "Runs as",
                     match record.engine {
-                        crate::installation::Engine::Native => "Windows services",
+                        crate::installation::Engine::Native if cfg!(windows) => "Windows services",
+                        crate::installation::Engine::Native => "systemd services",
                         crate::installation::Engine::Docker => "Docker containers",
                     },
                 ))

@@ -1,6 +1,6 @@
 # Root workspace for the SENTIENT Platform Manager. Holds the two reusable engine
-# crates (backup/restore + install/provision). The Tauri shell in src-tauri/ is
-# its own workspace and depends on both by path.
+# crates (backup/restore + install/provision). The GPUI app in app/ is its own
+# workspace and depends on both by path.
 [workspace]
 resolver = "2"
 members = [

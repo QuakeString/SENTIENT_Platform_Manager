@@ -1,5 +1,5 @@
 //! `sentient-backup-core` — the UI-agnostic engine behind the SENTIENT Backup &
-//! Restore application. The Tauri GUI and the `sbr` CLI are both thin shells
+//! Restore application. The GPUI app and the `sbr` CLI are both thin shells
 //! over this crate.
 //!
 //! Phase 0 provides:

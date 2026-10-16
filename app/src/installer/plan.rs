@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use argon2::password_hash::{PasswordHasher, SaltString, rand_core::OsRng};
-use sentient_installer_core::distro::DeployConfig;
+use sentient_installer_core::distro::{self, DeployConfig};
 use sentient_installer_core::native::{self, ArtifactSource, NativeConfig};
 use sentient_installer_core::progress::{Progress, ProgressFn};
 use sentient_installer_core::stack::{EnvVar, Flavor};
@@ -17,17 +17,12 @@ use crate::installation::{Engine, InstallationRecord};
 use crate::secrets::Secret;
 use crate::self_install;
 
-#[derive(Clone)]
-pub struct Shortcuts {
-    pub autostart: bool,
-    pub desktop_sentient: bool,
-    pub desktop_manager: bool,
-    pub start_menu: bool,
-    pub kiosk: bool,
-}
+pub use crate::self_install::Shortcuts;
 
 #[derive(Clone)]
 pub struct InstallPlan {
+    /// Native services, or (Linux only) the Docker stack.
+    pub engine: Engine,
     pub sentient_version: String,
     pub install_dir: PathBuf,
     pub data_dir: PathBuf,
@@ -43,30 +38,41 @@ pub struct InstallPlan {
 }
 
 impl InstallPlan {
-    fn native_config(&self) -> NativeConfig {
-        let st = &self.stack;
-        let mut tuning = st.tuning.clone();
-        let mut pg = st.pg.clone();
-        let mut license_server_url = st.license_server_url.clone();
+    /// The wizard's configuration with the chosen settings folded in:
+    /// PostgreSQL parameters into `pg`, the licence server into its field,
+    /// everything else into `tuning.extra_env`, which every engine writes
+    /// last so it wins over derived values.
+    fn configured_stack(&self) -> DeployConfig {
+        let mut st = self.stack.clone();
         for (name, value) in &self.settings {
             match name.strip_prefix(PG_PREFIX) {
                 Some("max_connections") => {
                     if let Ok(n) = value.parse() {
-                        pg.pg_max_connections = n
+                        st.pg.pg_max_connections = n
                     }
                 }
-                Some("shared_buffers") => pg.pg_shared_buffers = value.clone(),
-                Some("work_mem") => pg.pg_work_mem = value.clone(),
-                Some("effective_cache_size") => pg.pg_effective_cache_size = value.clone(),
+                Some("shared_buffers") => st.pg.pg_shared_buffers = value.clone(),
+                Some("work_mem") => st.pg.pg_work_mem = value.clone(),
+                Some("effective_cache_size") => st.pg.pg_effective_cache_size = value.clone(),
                 Some(_) => {}
-                None if name == "LICENSE_SERVER_URL" => license_server_url = value.clone(),
-                None => tuning.extra_env.push(EnvVar { name: name.clone(), value: value.clone() }),
+                None if name == "LICENSE_SERVER_URL" => st.license_server_url = value.clone(),
+                None => st.tuning.extra_env.push(EnvVar { name: name.clone(), value: value.clone() }),
             }
         }
+        st
+    }
+
+    fn state_dir(&self) -> PathBuf {
+        if cfg!(windows) { self.install_dir.join("state") } else { PathBuf::from("/var/lib/sentient") }
+    }
+
+    fn native_config(&self) -> NativeConfig {
+        let st = self.configured_stack();
+        let (tuning, pg, license_server_url) = (st.tuning.clone(), st.pg.clone(), st.license_server_url.clone());
         NativeConfig {
             install_dir: self.install_dir.clone(),
             pg_dir: self.data_dir.clone(),
-            state_dir: self.install_dir.join("state"),
+            state_dir: self.state_dir(),
             db_name: st.db_name.clone(),
             db_user: st.db_user.clone(),
             db_password: st.db_password.clone(),
@@ -105,10 +111,10 @@ impl InstallPlan {
         InstallationRecord {
             sentient_version: self.sentient_version.clone(),
             manager_version: env!("CARGO_PKG_VERSION").into(),
-            engine: Engine::Native,
+            engine: self.engine,
             install_dir: self.install_dir.clone(),
             pg_dir: self.data_dir.clone(),
-            state_dir: self.install_dir.join("state"),
+            state_dir: self.state_dir(),
             stack,
             installed_at: chrono::Utc::now().to_rfc3339(),
         }
@@ -130,63 +136,62 @@ fn hash_password(password: &str) -> Result<String, String> {
 /// Run the install. Each task reports through `sink`; the first failure stops
 /// the run and is returned.
 pub fn run(plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
-    if plan.stack.flavor == Flavor::Clickhouse {
+    if cfg!(windows) && plan.stack.flavor == Flavor::Clickhouse {
         return Err(
             "PostgreSQL + ClickHouse on Windows (ClickHouse in Docker inside WSL2) is the next phase \
              of this work. Choose PostgreSQL only or PostgreSQL + TimescaleDB for now."
                 .into(),
         );
     }
-    let cfg = plan.native_config();
 
     step(&sink, "Installing the Platform Manager");
     let manager = self_install::install_manager()?;
+    let admin_hash = hash_password(&plan.admin_password)?;
 
-    native::setup(sink.clone(), &cfg)?;
-    native::apply_pg_tuning(&sink, &cfg)?;
-    native::deploy(sink.clone(), &cfg)?;
-
-    step(&sink, "Setting the administrator sign-in");
-    native::set_admin_account(&cfg, &plan.admin_email, &hash_password(&plan.admin_password)?)?;
-
-    step(&sink, "Creating shortcuts");
-    let url = format!("http://localhost:{}", plan.stack.http_port);
-    let s = &plan.shortcuts;
-    if s.start_menu {
-        self_install::shortcut(&manager, self_install::start_menu(), self_install::PRODUCT, "--manager")?;
-        self_install::web_shortcut(self_install::start_menu(), "SENTIENT", &url)?;
-    }
-    if s.desktop_manager {
-        self_install::shortcut(&manager, self_install::desktop(), self_install::PRODUCT, "--manager")?;
-    }
-    if s.desktop_sentient {
-        self_install::web_shortcut(self_install::desktop(), "SENTIENT", &url)?;
-    }
-    if s.kiosk {
-        sentient_installer_core::kiosk::create_shortcut(&sink, plan.stack.http_port, &cfg.state_dir)?;
-    }
-    self_install::set_service_start(native::APP_SERVICE, s.autostart);
-    self_install::set_service_start(native::PG_SERVICE, s.autostart);
-
-    // Backup, restore and repair read these from the credential store; a
-    // failure only means the operator is asked for them later.
-    for (secret, value) in [
-        (Secret::Database, &plan.stack.db_password),
-        (Secret::PostgresAdmin, &plan.pg_superuser_password),
-        (Secret::Jwt, &cfg.jwt_secret),
-    ] {
-        if let Err(e) = crate::secrets::save(secret, value) {
-            sink(Progress::Log { line: format!("note: {e}") });
+    match plan.engine {
+        Engine::Native => {
+            let cfg = plan.native_config();
+            native::setup(sink.clone(), &cfg)?;
+            // Windows applies the PostgreSQL parameters here; on Linux
+            // native::setup already wrote them with the cluster.
+            if cfg!(windows) {
+                native::apply_pg_tuning(&sink, &cfg)?;
+            }
+            native::deploy(sink.clone(), &cfg)?;
+            step(&sink, "Setting the administrator sign-in");
+            native::set_admin_account(&cfg, &plan.admin_email, &admin_hash)?;
+            if plan.shortcuts.kiosk {
+                sentient_installer_core::kiosk::create_shortcut(&sink, plan.stack.http_port, &cfg.state_dir)?;
+            }
+            self_install::set_autostart(&[native::APP_SERVICE, native::PG_SERVICE], plan.shortcuts.autostart);
+            // Backup, restore and repair read these from the credential
+            // store; a failure only means the operator is asked later.
+            for (secret, value) in [
+                (Secret::Database, &plan.stack.db_password),
+                (Secret::PostgresAdmin, &plan.pg_superuser_password),
+                (Secret::Jwt, &cfg.jwt_secret),
+            ] {
+                if let Err(e) = crate::secrets::save(secret, value) {
+                    sink(Progress::Log { line: format!("note: {e}") });
+                }
+            }
+        }
+        Engine::Docker => {
+            let stack = plan.configured_stack();
+            distro::setup(sink.clone(), &plan.install_dir)?;
+            distro::deploy(sink.clone(), &stack)?;
+            step(&sink, "Setting the administrator sign-in");
+            distro::set_admin_account(&stack, &plan.admin_email, &admin_hash)?;
         }
     }
 
+    step(&sink, "Creating shortcuts");
+    let url = format!("http://localhost:{}", plan.stack.http_port);
+    self_install::create_shortcuts(&manager, &url, &plan.shortcuts)?;
+
     step(&sink, "Saving the installation record");
-    let path = crate::installation::record_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    }
     let json = serde_json::to_string_pretty(&plan.record()).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| format!("write {}: {e}", path.display()))?;
+    self_install::write_record(&crate::installation::record_path(), &json)?;
 
     sink(Progress::Done { message: format!("SENTIENT is running at {url}") });
     Ok(())

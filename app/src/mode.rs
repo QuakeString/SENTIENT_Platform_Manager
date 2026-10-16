@@ -58,7 +58,8 @@ pub fn installation_record() -> PathBuf {
     let base = std::env::var_os("ProgramData")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+    #[cfg(windows)]
+    return base.join("SENTIENT").join("installation.json");
     #[cfg(not(windows))]
-    let base = PathBuf::from("/var/lib");
-    base.join("SENTIENT").join("installation.json")
+    PathBuf::from("/var/lib/sentient-platform-manager/installation.json")
 }

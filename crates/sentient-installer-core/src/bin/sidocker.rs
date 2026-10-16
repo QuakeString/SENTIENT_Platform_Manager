@@ -1,6 +1,6 @@
 //! `sidocker` — drive the Docker deployment engine headlessly, the way
 //! `sinative` drives the native one. A test harness, not a shipped tool: the
-//! wizard calls the same functions through Tauri.
+//! wizard (app/) calls the same functions.
 //!
 //! Usage:
 //!   sidocker compose   <config.json>        print the generated compose file

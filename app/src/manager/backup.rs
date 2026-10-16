@@ -102,7 +102,7 @@ impl BackupPage {
         ];
         // pg_dump of a native install is the one beside its server.
         if let Some(r) = &record {
-            if r.engine == Engine::Native {
+            if cfg!(windows) && r.engine == Engine::Native {
                 let bin = r.pg_dir.join("bin");
                 // Safe: set once, before any backup thread starts.
                 std::env::set_var("SBR_PG_DUMP", bin.join("pg_dump.exe"));
