@@ -12,6 +12,7 @@ mod elevate;
 mod installation;
 mod installer;
 mod jobs;
+mod kept;
 mod maintenance;
 mod manager;
 mod migration;

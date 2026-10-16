@@ -125,16 +125,11 @@ fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: ProgressFn) 
     // Windows hybrid: ClickHouse's distro belongs to its own account. Keeping
     // the data keeps both; otherwise the account deletes its distro, then
     // the account and its boot task go.
+    // Whatever the installation uses now: a migration away from ClickHouse
+    // leaves it set up.
     #[cfg(windows)]
-    if record.engine == Engine::Native
-        && record.flavor() == sentient_installer_core::stack::Flavor::Clickhouse
-        && !keep_data
-    {
-        use sentient_installer_core::clickhouse_wsl;
-        if let Some(password) = crate::secrets::get(crate::secrets::Secret::ClickhouseAccount) {
-            let _ = clickhouse_wsl::run_as_account(&sink, &password, &self_install::manager_exe(), "unregister");
-        }
-        clickhouse_wsl::remove_account(&sink);
+    if record.engine == Engine::Native && !keep_data && sentient_installer_core::clickhouse_wsl::is_installed() {
+        crate::kept::remove_clickhouse(&sink)?;
     }
     if !keep_data {
         crate::secrets::forget_all();

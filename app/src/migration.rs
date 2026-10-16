@@ -235,6 +235,8 @@ fn prepare_clickhouse(record: &InstallationRecord, new: &mut NativeConfig, sink:
             let mut stack = record.stack.clone();
             stack.flavor = Flavor::Clickhouse;
             stack.ch_password = new.ch_password.clone();
+            // The record keeps no passwords; deploy validates them all.
+            stack.db_password = new.db_password.clone();
             crate::installer::provision_clickhouse_wsl(&stack, &crate::self_install::manager_exe(), sink)?;
         }
         // Saved before anything depends on it, so a failure later can be retried.

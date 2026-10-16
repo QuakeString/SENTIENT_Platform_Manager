@@ -1,0 +1,191 @@
+// Copyright © 2016-2026 The SENTIENT Authors
+
+//! What earlier migrations and updates left in place, and removing it.
+//!
+//! Nothing is deleted automatically: a migration keeps the old history (a
+//! set-aside `ts_kv_<type>_<stamp>` table, or ClickHouse after leaving it),
+//! an update keeps a copy of the database from before it, and a failed
+//! update keeps the database it left behind. The operator removes them here
+//! once they are sure they no longer need them.
+
+use sentient_backup_core::db::ConnConfig;
+use sentient_backup_core::telemetry_move as mv;
+use sentient_installer_core::progress::{Progress, ProgressFn};
+#[cfg(windows)]
+use sentient_installer_core::stack::Flavor;
+
+use crate::installation::{Engine, InstallationRecord};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeptKind {
+    /// History set aside by a migration.
+    History,
+    /// A database kept by an update (before it, or the failed one).
+    DatabaseCopy,
+    /// ClickHouse in WSL2, set up but no longer used.
+    ClickHouse,
+}
+
+#[derive(Debug, Clone)]
+pub struct Kept {
+    pub kind: KeptKind,
+    pub name: String,
+    pub bytes: Option<i64>,
+    pub detail: String,
+}
+
+fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, String> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map(|rt| rt.block_on(future))
+        .map_err(|e| format!("start the runtime: {e}"))
+}
+
+fn conn(record: &InstallationRecord, dbname: &str) -> Result<ConnConfig, String> {
+    let password = crate::secrets::get(crate::secrets::Secret::Database)
+        .ok_or("The database password is not in the secret store.")?;
+    Ok(ConnConfig {
+        host: "127.0.0.1".into(),
+        port: record.stack.pg_port,
+        dbname: dbname.into(),
+        user: record.stack.db_user.clone(),
+        password,
+    })
+}
+
+/// Everything kept on this installation. Blocking: call from a job or a
+/// background task.
+pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
+    if record.engine != Engine::Native {
+        return Ok(Vec::new());
+    }
+    let db = record.stack.db_name.clone();
+    let cfg = conn(record, &db)?;
+    let mut kept = block_on(async move {
+        let pg = mv::connect(&cfg).await.map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        // Set-aside history: top-level tables only (not partitions), with
+        // their partitions or chunks counted in the size.
+        for row in pg
+            .query(
+                "WITH RECURSIVE tree(root, rel) AS ( \
+                   SELECT c.oid, c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+                   WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') \
+                     AND c.relname ~ '^ts_kv_(stock|timescaledb|clickhouse)_[0-9]{12}$' \
+                     AND NOT EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid) \
+                   UNION ALL SELECT t.root, i.inhrelid FROM tree t JOIN pg_inherits i ON i.inhparent = t.rel) \
+                 SELECT r.relname::text, sum(pg_total_relation_size(t.rel))::bigint \
+                 FROM tree t JOIN pg_class r ON r.oid = t.root GROUP BY r.relname ORDER BY r.relname",
+                &[],
+            )
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            let name: String = row.get(0);
+            let from = name.trim_start_matches("ts_kv_").split('_').next().unwrap_or_default();
+            let from = sentient_installer_core::stack::Flavor::parse(from)
+                .map(crate::installation::flavor_label)
+                .unwrap_or(from)
+                .to_string();
+            out.push(Kept {
+                kind: KeptKind::History,
+                detail: format!("History from before the move away from {from}"),
+                bytes: row.get(1),
+                name,
+            });
+        }
+        let pattern = format!("^{}_(before|failed)_update_[0-9]{{12}}$", regex_escape(&db));
+        for row in pg
+            .query(
+                "SELECT datname::text, pg_database_size(datname) FROM pg_database WHERE datname ~ $1 ORDER BY datname",
+                &[&pattern],
+            )
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            let name: String = row.get(0);
+            let detail = if name.contains("_failed_update_") {
+                "The database a failed update left behind"
+            } else {
+                "Copy of the database from before an update"
+            };
+            out.push(Kept { kind: KeptKind::DatabaseCopy, detail: detail.into(), bytes: row.get(1), name });
+        }
+        Ok::<_, String>(out)
+    })??;
+    #[cfg(windows)]
+    if record.flavor() != Flavor::Clickhouse && sentient_installer_core::clickhouse_wsl::is_installed() {
+        kept.push(Kept {
+            kind: KeptKind::ClickHouse,
+            name: "ClickHouse (WSL2)".into(),
+            bytes: None,
+            detail: "No longer used; holds the history from when this installation used ClickHouse".into(),
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = &mut kept;
+    Ok(kept)
+}
+
+fn regex_escape(s: &str) -> String {
+    s.chars()
+        .flat_map(|c| if c.is_ascii_alphanumeric() || c == '_' { vec![c] } else { vec!['\\', c] })
+        .collect()
+}
+
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// Remove one kept item. Cannot be undone.
+pub fn remove(record: &InstallationRecord, item: &Kept, sink: ProgressFn) -> Result<(), String> {
+    sink(Progress::Step { name: format!("Removing {}", item.name) });
+    match item.kind {
+        KeptKind::History => {
+            let cfg = conn(record, &record.stack.db_name)?;
+            let sql = format!("DROP TABLE {}", quote_ident(&item.name));
+            block_on(async move {
+                let pg = mv::connect(&cfg).await.map_err(|e| e.to_string())?;
+                pg.batch_execute(&sql).await.map_err(|e| e.to_string())
+            })??;
+        }
+        KeptKind::DatabaseCopy => {
+            let cfg = conn(record, "postgres")?;
+            let sql = format!("DROP DATABASE {} WITH (FORCE)", quote_ident(&item.name));
+            block_on(async move {
+                let pg = mv::connect(&cfg).await.map_err(|e| e.to_string())?;
+                pg.batch_execute(&sql).await.map_err(|e| e.to_string())
+            })??;
+        }
+        KeptKind::ClickHouse => remove_clickhouse(&sink)?,
+    }
+    sink(Progress::Done { message: format!("Removed {}.", item.name) });
+    Ok(())
+}
+
+/// ClickHouse in WSL2 under its hidden account: the account deletes its
+/// distro (and with it the data), then the account and its boot task go.
+pub fn remove_clickhouse(sink: &ProgressFn) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use sentient_installer_core::clickhouse_wsl;
+        if let Some(password) = crate::secrets::get(crate::secrets::Secret::ClickhouseAccount) {
+            let _ = clickhouse_wsl::run_as_account(sink, &password, &crate::self_install::manager_exe(), "unregister");
+        }
+        clickhouse_wsl::remove_account(sink);
+        crate::secrets::forget(crate::secrets::Secret::ClickhouseAccount);
+        crate::secrets::forget(crate::secrets::Secret::Clickhouse);
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = sink;
+        Err("ClickHouse in WSL2 exists on Windows only.".into())
+    }
+}
+
+/// "1.2 GB"
+pub fn human(bytes: Option<i64>) -> String {
+    bytes.map(sentient_backup_core::db::human_bytes).unwrap_or_default()
+}

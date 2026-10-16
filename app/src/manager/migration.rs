@@ -3,7 +3,7 @@
 //! Migration: change the database type (crate::migration does the work).
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     progress::Progress,
     radio::RadioGroup,
@@ -14,6 +14,7 @@ use sentient_installer_core::stack::Flavor;
 
 use crate::installation::{InstallationRecord, flavor_label};
 use crate::jobs::{Job, JobState};
+use crate::kept::{self, Kept};
 use crate::migration::{self, MigrationState};
 use crate::ui::{self, Tone};
 
@@ -26,7 +27,10 @@ pub struct MigrationPage {
     target: Option<usize>,
     confirm: bool,
     job: Entity<Job>,
+    /// What earlier changes kept; None while it is being read.
+    kept: Option<Result<Vec<Kept>, String>>,
     _observe: Subscription,
+    _tasks: Vec<Task<()>>,
 }
 
 impl EventEmitter<RecordChanged> for MigrationPage {}
@@ -51,11 +55,54 @@ impl MigrationPage {
                 page.target = None;
                 page.confirm = false;
                 cx.emit(RecordChanged);
+                page.refresh_kept(cx);
             }
             cx.notify();
         });
         let state = record.as_ref().and_then(migration::load_state);
-        Self { record, state, target: None, confirm: false, job, _observe }
+        let mut page = Self { record, state, target: None, confirm: false, job, kept: None, _observe, _tasks: Vec::new() };
+        page.refresh_kept(cx);
+        page
+    }
+
+    fn refresh_kept(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        self.kept = None;
+        let task = cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { kept::list(&record) }).await;
+            this.update(cx, |page, cx| {
+                page.kept = Some(result);
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
+    fn confirm_remove(&mut self, item: Kept, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        let text = format!(
+            "{} {} is deleted. This can't be undone.",
+            item.name,
+            match item.kind {
+                kept::KeptKind::History => "and the history in it",
+                kept::KeptKind::DatabaseCopy => "and everything in that database",
+                kept::KeptKind::ClickHouse => "with its WSL2 distro, its data and the hidden service account",
+            }
+        );
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let this = this.clone();
+            let item = item.clone();
+            dialog.title("Remove for good?").description(text.clone()).confirm().ok_text("Remove").on_ok(move |_, _, cx| {
+                let item = item.clone();
+                this.update(cx, |page, cx| {
+                    let Some(record) = page.record.clone() else { return };
+                    page.job.update(cx, |job, cx| job.start(move |sink| kept::remove(&record, &item, sink), cx));
+                })
+                .ok();
+                true
+            })
+        });
     }
 
     fn targets(&self) -> Vec<Flavor> {
@@ -170,6 +217,50 @@ impl Render for MigrationPage {
                 ),
         };
 
+        let kept_panel = match &self.kept {
+            None => ui::panel(&theme)
+                .child(div().font_weight(FontWeight::MEDIUM).child("Kept after earlier changes"))
+                .child(div().text_sm().text_color(theme.muted_foreground).child("Looking…")),
+            Some(Err(e)) => ui::panel(&theme)
+                .child(div().font_weight(FontWeight::MEDIUM).child("Kept after earlier changes"))
+                .child(div().text_sm().text_color(theme.danger).child(format!("Could not look: {e}"))),
+            Some(Ok(items)) => ui::panel(&theme)
+                .child(div().font_weight(FontWeight::MEDIUM).child("Kept after earlier changes"))
+                .when(items.is_empty(), |p| {
+                    p.child(div().text_sm().text_color(theme.muted_foreground).child("Nothing: no old history and no database copies."))
+                })
+                .when(!items.is_empty(), |p| {
+                    p.child(div().text_sm().text_color(theme.muted_foreground).child(
+                        "Migrations keep the old history and updates keep a copy of the database. Remove them once you are sure you no longer need them.",
+                    ))
+                })
+                .children(items.iter().enumerate().map(|(i, item)| {
+                    let item_for_click = item.clone();
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .text_sm()
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(div().font_weight(FontWeight::MEDIUM).child(item.name.clone()))
+                                .child(div().text_xs().text_color(theme.muted_foreground).child(item.detail.clone())),
+                        )
+                        .child(div().text_color(theme.muted_foreground).child(kept::human(item.bytes)))
+                        .child(
+                            Button::new(SharedString::from(format!("remove-{i}")))
+                                .outline()
+                                .small()
+                                .label("Remove")
+                                .disabled(busy)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.confirm_remove(item_for_click.clone(), window, cx)
+                                })),
+                        )
+                })),
+        };
+
         page.when_some(unfinished, |p, state| {
             p.child(
                 ui::panel(&theme)
@@ -191,6 +282,7 @@ impl Render for MigrationPage {
             )
         })
         .child(main)
+        .child(kept_panel)
         .when(busy || outcome.is_some() || !log.is_empty(), |page| {
             page.child(
                 ui::panel(&theme)

@@ -24,6 +24,7 @@ pub fn run(job: &str) -> i32 {
             // It holds the ClickHouse password: gone as soon as it is read.
             let _ = std::fs::remove_file(&path);
             let cfg: DeployConfig = serde_json::from_str(&text).map_err(|e| format!("config.json: {e}"))?;
+            sentient_installer_core::clickhouse_wsl::write_account_wslconfig()?;
             distro::setup(sink.clone(), &work_dir())?;
             distro::deploy_clickhouse(sink.clone(), &cfg)
         })(),

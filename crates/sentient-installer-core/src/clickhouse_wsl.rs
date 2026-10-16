@@ -235,24 +235,64 @@ pub fn register_keepalive(password: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Remove the boot task and the account. The distro must already be
-/// unregistered (agent `unregister`), since only the account can do that.
+/// Run as the hidden account before its first WSL start: no WSLg. With no
+/// display in a service session its compositor (weston) crashes over and over,
+/// each crash leaving a ~120 MB dump in the account's Temp folder.
 #[cfg(windows)]
-pub fn remove_account(sink: &ProgressFn) {
+pub fn write_account_wslconfig() -> Result<(), String> {
+    let home = std::env::var_os("USERPROFILE").ok_or("USERPROFILE is not set")?;
+    let path = std::path::Path::new(&home).join(".wslconfig");
+    std::fs::write(&path, "[wsl2]\r\nguiApplications=false\r\n").map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// The hidden account exists: ClickHouse is (or was) set up on this machine,
+/// whatever the installation uses now.
+#[cfg(windows)]
+pub fn is_installed() -> bool {
+    powershell(&format!("[bool](Get-LocalUser -Name '{ACCOUNT}' -ErrorAction SilentlyContinue)"), &[])
+        .map(|out| out.trim().eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// One-shot start-up task that removes profiles Windows still had loaded.
+#[cfg(windows)]
+const CLEANUP_TASK: &str = "SENTIENT ClickHouse cleanup";
+
+/// Remove the boot task, the account and its profiles. The distro must
+/// already be unregistered (agent `unregister`), since only the account can
+/// do that. Returns true when everything is gone now; false when Windows
+/// still holds a profile, which a one-shot task then removes at the next
+/// start-up.
+#[cfg(windows)]
+pub fn remove_account(sink: &ProgressFn) -> bool {
     sink(Progress::Step { name: "Removing the ClickHouse service account".into() });
     let _ = sys::output("schtasks.exe", &["/end", "/tn", KEEPALIVE_TASK]);
     let _ = sys::output("schtasks.exe", &["/delete", "/tn", KEEPALIVE_TASK, "/f"]);
-    let _ = powershell(
-        &format!(
-            r#"$u = Get-LocalUser -Name '{ACCOUNT}' -ErrorAction SilentlyContinue
-if ($u) {{
-  Get-CimInstance Win32_UserProfile | Where-Object {{ $_.SID -eq $u.SID.Value }} | Remove-CimInstance -ErrorAction SilentlyContinue
-  Remove-LocalUser -Name '{ACCOUNT}'
+    // Every profile the account ever had (a recreated account gets a new
+    // SID and a new folder), not only the current one.
+    let remove_profiles = format!(
+        r#"$left = 0
+Get-CimInstance Win32_UserProfile | Where-Object {{ (Split-Path $_.LocalPath -Leaf) -like '{ACCOUNT}*' }} | ForEach-Object {{
+  if ($_.Loaded) {{ $left++ }} else {{ $_ | Remove-CimInstance -ErrorAction SilentlyContinue }}
 }}
-Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList' -Name '{ACCOUNT}' -ErrorAction SilentlyContinue
-"#
-        ),
-        &[],
+$left"#
     );
-    let _ = std::fs::remove_dir_all(work_dir());
+    let script = format!(
+        r#"Remove-LocalUser -Name '{ACCOUNT}' -ErrorAction SilentlyContinue
+{remove_profiles}"#
+    );
+    let left: u32 = powershell(&script, &[]).ok().and_then(|o| o.trim().lines().last()?.trim().parse().ok()).unwrap_or(0);
+    if left == 0 {
+        let _ = sys::output("schtasks.exe", &["/delete", "/tn", CLEANUP_TASK, "/f"]);
+        return true;
+    }
+    // Loaded profiles cannot be removed until Windows lets go of them.
+    let cmd_path = work_dir().join("cleanup.ps1");
+    let body = format!("{remove_profiles}\nif ($left -eq 0) {{ schtasks /delete /tn '{CLEANUP_TASK}' /f | Out-Null }}\n");
+    if std::fs::create_dir_all(work_dir()).is_ok() && std::fs::write(&cmd_path, body).is_ok() {
+        let tr = format!("powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{}\"", cmd_path.display());
+        let _ = sys::output("schtasks.exe", &["/create", "/tn", CLEANUP_TASK, "/sc", "onstart", "/ru", "SYSTEM", "/rl", "highest", "/tr", &tr, "/f"]);
+        sink(Progress::Log { line: "Windows still holds the account's profile; it is removed at the next restart.".into() });
+    }
+    false
 }
