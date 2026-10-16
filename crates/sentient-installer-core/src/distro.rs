@@ -644,8 +644,8 @@ pub fn cleanup(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     }
     // Belt-and-suspenders in case the containers exist without the compose file.
     let _ = run_stream(&sink, &format!("docker rm -f {} {} {} 2>/dev/null || true", n.app, n.pg, n.ch));
-    sink(Progress::Step { name: "Reclaiming disk from partial image pulls".into() });
-    let _ = run_stream(&sink, "docker image prune -f 2>/dev/null || true");
+    // No `docker image prune`: it removes every untagged image on the host,
+    // other projects' included, and a partial pull leaves no image behind.
     sink(Progress::Done { message: "Cleanup complete — you can safely retry the install.".into() });
     Ok(())
 }
