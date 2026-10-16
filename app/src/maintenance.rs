@@ -194,7 +194,7 @@ impl Maintenance {
             let (title, text, ok) = match action {
                 Action::Update => (
                     "Update SENTIENT?",
-                    "SENTIENT stops while its program files are replaced, then starts on the new version.",
+                    "SENTIENT stops, its database is copied, and the new version's database changes are tried before they are made. If anything fails, the previous version and its database are put back and started.",
                     "Update",
                 ),
                 Action::Repair => (
@@ -244,7 +244,7 @@ impl Render for Maintenance {
                 .child(div().text_2xl().child(action.title()))
                 .child(div().text_sm().child(job.step().clone()))
                 .when(busy, |p| p.when_some(job.percent(), |p, v| p.child(ProgressBar::new("maint").value(v))))
-                .children(outcome.map(|(tone, text)| ui::pill(&theme, tone, text)))
+                .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
                 .child(
                     ui::panel(&theme)
                         .text_xs()

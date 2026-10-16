@@ -5,6 +5,7 @@
 
 use gpui_kit::component::{Theme, h_flex, v_flex};
 use gpui_kit::*;
+use gpui_kit::prelude::FluentBuilder as _;
 
 /// A content panel: surface colour, hairline border, panel radius.
 pub fn panel(theme: &Theme) -> Div {
@@ -78,4 +79,49 @@ pub fn not_installed(theme: &Theme) -> Div {
                 .text_color(theme.muted_foreground)
                 .child("Run SENTIENT-Setup.exe to install it. The Platform Manager is installed with it."),
         )
+}
+
+/// The result of a job: like a pill in colour, but a block that wraps, one
+/// row per line, for messages longer than a word or two.
+pub fn outcome(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div {
+    let (bg, fg) = match tone {
+        Tone::Good => (theme.success, theme.success_foreground),
+        Tone::Warn => (theme.warning, theme.warning_foreground),
+        Tone::Bad => (theme.danger, theme.danger_foreground),
+        Tone::Neutral => (theme.secondary, theme.secondary_foreground),
+    };
+    let text: SharedString = text.into();
+    let lines: Vec<String> = text.lines().map(String::from).collect();
+    v_flex()
+        .gap_1()
+        .px_3()
+        .py_2()
+        .rounded(theme.radius)
+        .text_sm()
+        .bg(bg)
+        .text_color(fg)
+        .children(lines.into_iter().enumerate().map(|(i, line)| {
+            div().when(i == 0, |d| d.font_weight(FontWeight::MEDIUM)).child(line)
+        }))
+}
+
+/// SENTIENT colours its console output with ANSI escape sequences
+/// (`ESC [ … m`); the app shows plain text.
+pub fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            // Parameters and intermediates, then one final byte in @..~.
+            for c in chars.by_ref() {
+                if ('@'..='~').contains(&c) {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }

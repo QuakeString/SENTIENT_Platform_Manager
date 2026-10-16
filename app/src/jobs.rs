@@ -110,7 +110,7 @@ impl Job {
                 self.step = name.into();
                 self.percent = None;
             }
-            Progress::Log { line } => self.log.push(line.into()),
+            Progress::Log { line } => self.log.push(crate::ui::strip_ansi(&line).into()),
             Progress::Percent { value } => self.percent = Some((value * 100.0).clamp(0.0, 100.0)),
             Progress::Done { message } => self.state = JobState::Done(message.into()),
             Progress::Error { message } => self.state = JobState::Failed(message.into()),

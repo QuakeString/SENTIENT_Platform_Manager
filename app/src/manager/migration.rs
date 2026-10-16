@@ -198,7 +198,7 @@ impl Render for MigrationPage {
                         p.child(div().text_sm().child(step.clone()))
                             .when_some(percent, |p, v| p.child(Progress::new("migration-progress").value(v)))
                     })
-                    .children(outcome.map(|(tone, text)| ui::pill(&theme, tone, text)))
+                    .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
                     .children(log.into_iter().map(|line| div().text_xs().text_color(theme.muted_foreground).child(line))),
             )
         })

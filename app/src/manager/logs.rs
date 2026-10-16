@@ -62,7 +62,7 @@ impl LogsPage {
                 let text = cx.background_executor().spawn(async move { platform.logs(TAIL) }).await;
                 let follow = this
                     .update(cx, |page, cx| {
-                        page.text = strip_ansi(&text).into();
+                        page.text = ui::strip_ansi(&text).into();
                         if page.follow {
                             page.scroll.scroll_to_bottom();
                         }
@@ -163,32 +163,11 @@ impl Render for LogsPage {
     }
 }
 
-/// SENTIENT colours its console log with ANSI escape sequences
-/// (`ESC [ … m`); the viewer shows plain text.
-fn strip_ansi(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next();
-            // Parameters and intermediates, then one final byte in @..~.
-            for c in chars.by_ref() {
-                if ('@'..='~').contains(&c) {
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
     fn strips_colour_codes() {
         let line = "\u{1b}[2m2026-10-16\u{1b}[0m \u{1b}[32m INFO\u{1b}[0m started";
-        assert_eq!(super::strip_ansi(line), "2026-10-16  INFO started");
+        assert_eq!(crate::ui::strip_ansi(line), "2026-10-16  INFO started");
     }
 }

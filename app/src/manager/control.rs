@@ -101,7 +101,7 @@ impl Render for ControlPage {
                                 .on_click(cx.listener(|this, _, window, cx| this.confirm_stop(window, cx))),
                         ),
                 )
-                .children(outcome.map(|(tone, text)| ui::pill(&theme, tone, text)))
+                .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
                 .children(log.into_iter().map(|line| {
                     div().text_sm().text_color(theme.muted_foreground).child(line)
                 })),

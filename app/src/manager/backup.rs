@@ -341,7 +341,7 @@ impl BackupPage {
                     c.child(div().text_sm().child(job.step().clone()))
                         .when_some(job.percent(), |c, p| c.child(ProgressBar::new("job-progress").value(p)))
                 })
-                .children(outcome.map(|(tone, text)| ui::pill(&theme, tone, text)))
+                .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
                 .children(job.log().iter().rev().take(6).rev().map(|l| {
                     div().text_xs().text_color(theme.muted_foreground).child(l.clone())
                 })),
