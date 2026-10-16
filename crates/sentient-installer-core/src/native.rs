@@ -210,6 +210,34 @@ fn extract_zip(zip: &Path, into: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Give the account running setup full control of `dir`.
+///
+/// Started by an elevated administrator, initdb re-launches itself under a
+/// restricted token (PostgreSQL refuses to run with administrator rights).
+/// That token loses the Administrators group, so on a folder setup created
+/// under C:\ it may not change permissions: initdb then stops with "could not
+/// change permissions of directory … Permission denied". Granting the user
+/// itself, not the group, survives the restriction. (Run as SYSTEM, as the
+/// headless harness does, the problem never shows.)
+fn grant_current_user(dir: &Path) -> Result<(), String> {
+    let who = sys::output("whoami.exe", &[])
+        .filter(|(ok, _, _)| *ok)
+        .map(|(_, out, _)| sys::decode(&out).trim().to_string())
+        .filter(|w| !w.is_empty())
+        .ok_or("could not determine the current account (whoami)")?;
+    let grant = format!("{who}:(OI)(CI)F");
+    match sys::output("icacls.exe", &[&dir.to_string_lossy(), "/grant", &grant, "/T", "/Q"]) {
+        Some((true, _, _)) => Ok(()),
+        Some((false, out, err)) => Err(format!(
+            "could not give {who} access to {}: {} {}",
+            dir.display(),
+            sys::decode(&err).trim(),
+            sys::decode(&out).trim()
+        )),
+        None => Err("could not run icacls.exe".into()),
+    }
+}
+
 /// Run `psql` against the local cluster as the superuser.
 fn psql(cfg: &NativeConfig, db: &str, sql: &str) -> Result<String, String> {
     let exe = cfg.pg_bin().join("psql.exe");
@@ -371,8 +399,14 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     // ---- initdb ----
     if !cfg.pg_data().join("PG_VERSION").exists() {
         step(&sink, "Initialising the database cluster");
+        // A data folder without PG_VERSION is a failed earlier attempt;
+        // initdb refuses a non-empty folder, so start clean.
+        if cfg.pg_data().exists() {
+            remove_tree_retrying(&cfg.pg_data());
+        }
         std::fs::create_dir_all(cfg.pg_data())
             .map_err(|e| format!("create data dir: {e}"))?;
+        grant_current_user(&cfg.pg_dir)?;
         // initdb reads the superuser password from a file rather than a prompt
         // or an argv entry (which would be visible in the process list).
         let pwfile = cfg.download_dir().join("pw.txt");
