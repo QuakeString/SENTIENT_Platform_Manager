@@ -658,6 +658,30 @@ pub fn cleanup(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     Ok(())
 }
 
+/// Remove SENTIENT but keep its data: the containers go, the volumes (the
+/// databases and SENTIENT's files) and the compose file stay, so a new
+/// install of the same stack name picks them up again.
+pub fn remove_keeping_data(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        // The data is on the distro's disk: stop it and leave it registered.
+        let _ = cfg;
+        sink(Progress::Step { name: "Stopping the SENTIENT WSL distro (its data is kept)".into() });
+        let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
+    }
+    #[cfg(not(windows))]
+    {
+        let n = cfg.names();
+        sink(Progress::Step { name: "Removing the SENTIENT containers (volumes kept)".into() });
+        if host_file_exists(&cfg.compose_path()) {
+            let _ = run_stream(&sink, &format!("{} 2>/dev/null || true", cfg.compose_cmd("down --remove-orphans")));
+        }
+        let _ = run_stream(&sink, &format!("docker rm -f {} {} {} 2>/dev/null || true", n.app, n.pg, n.ch));
+    }
+    sink(Progress::Done { message: "SENTIENT was removed; its data volumes were kept.".into() });
+    Ok(())
+}
+
 /// Remove SENTIENT entirely.
 ///
 /// Windows: unregister the WSL distro, which deletes containers, volumes,

@@ -143,8 +143,8 @@ pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result
 
 pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: ProgressFn) -> Result<(), String> {
     match (record.engine, keep_data) {
-        (Engine::Docker, true) => distro::uninstall(sink.clone(), &record.stack)?,
-        (Engine::Docker, false) => distro::cleanup(sink.clone(), &record.stack)?,
+        (Engine::Docker, true) => distro::remove_keeping_data(sink.clone(), &record.stack)?,
+        (Engine::Docker, false) => distro::uninstall(sink.clone(), &record.stack)?,
         (Engine::Native, true) => native::uninstall(sink.clone(), &record.native_config())?,
         (Engine::Native, false) => native::cleanup(sink.clone(), &record.native_config())?,
     }
