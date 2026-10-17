@@ -202,7 +202,9 @@ pub fn save_beside(record: &InstallationRecord, backup: &Path, sink: &ProgressFn
                 Err(e) => log(format!("SENTIENT's secrets key was not saved ({e}).")),
             }
         }
-        Ok(None) => log("SENTIENT's secrets key is not in a key file here (set in its environment, or SENTIENT has not started yet); keep a copy of it yourself.".into()),
+        // A SENTIENT older than its secrets store has no key; one with its key
+        // in the environment keeps it there.
+        Ok(None) => log("No secrets key file to save: this SENTIENT has none (a version before its secrets store), or its key is set in its environment (SENTIENT_SECRETS_KEY), which you keep yourself.".into()),
         Err(e) => log(format!("SENTIENT's secrets key was not saved ({e}).")),
     }
 }
