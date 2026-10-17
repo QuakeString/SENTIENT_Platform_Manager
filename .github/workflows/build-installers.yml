@@ -57,6 +57,15 @@ jobs:
           if ((Get-Item $exe).VersionInfo.FileVersion -ne $v) { throw "FileVersion does not match Cargo.toml $v" }
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item $exe "dist\SENTIENT-Setup-manager-$v.exe"
+      # Authenticode, when the repository has a certificate: the secrets
+      # SPM_SIGN_PFX_BASE64 (the .pfx, base64) and SPM_SIGN_PFX_PASSWORD.
+      # Without them the build stays unsigned and says so.
+      - name: Sign
+        shell: pwsh
+        env:
+          SPM_SIGN_PFX_BASE64: ${{ secrets.SPM_SIGN_PFX_BASE64 }}
+          SPM_SIGN_PFX_PASSWORD: ${{ secrets.SPM_SIGN_PFX_PASSWORD }}
+        run: ./scripts/sign-windows.ps1 -Path (Get-ChildItem dist\*.exe).FullName
       - name: Upload
         uses: actions/upload-artifact@v4
         with:

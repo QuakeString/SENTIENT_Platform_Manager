@@ -3,7 +3,10 @@
 # Build the offline SENTIENT Setup package for Windows:
 #
 #   SENTIENT-Setup-<version>\
-#     SENTIENT-Setup.exe           the GPUI installer + Platform Manager (one exe)
+#     SENTIENT-Setup.exe           the GPUI installer + Platform Manager (one exe),
+#                                  signed when a certificate is configured
+#                                  (scripts\sign-windows.ps1)
+#     EULA.txt                     the licence agreement setup shows
 #     payload\
 #       postgresql-18.6-1-windows-x64-binaries.zip
 #       timescaledb-postgresql-18-windows-amd64.zip
@@ -58,6 +61,11 @@ if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
 New-Item -ItemType Directory -Force (Join-Path $dir "payload") | Out-Null
 
 Copy-Item $exe (Join-Path $dir "SENTIENT-Setup.exe")
+# Signed in the package, not in target\: the installed Platform Manager is a
+# copy of this file and keeps the signature.
+& (Join-Path $PSScriptRoot "sign-windows.ps1") -Path (Join-Path $dir "SENTIENT-Setup.exe")
+if (-not $?) { throw "Signing failed." }
+Copy-Item "app\assets\licence.txt" (Join-Path $dir "EULA.txt")
 foreach ($f in $required) {
     Copy-Item (Join-Path $PayloadDir $f) (Join-Path $dir "payload")
 }

@@ -98,11 +98,18 @@ impl Installer {
             .child(
                 ui::panel(&theme)
                     .id("licence")
-                    .h(px(180.))
+                    .h(px(300.))
                     .overflow_y_scroll()
+                    .gap_2()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child(LICENCE),
+                    // One block per paragraph or list item: line breaks
+                    // inside a text run are not kept.
+                    .children(LICENCE.lines().filter(|l| !l.trim().is_empty()).map(|l| {
+                        // Headings are the short all-capitals lines.
+                        let heading = l.len() < 60 && l == l.to_uppercase();
+                        div().when(heading, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.foreground).pt_1()).child(l.to_string())
+                    })),
             )
             .child(
                 Checkbox::new("accept")

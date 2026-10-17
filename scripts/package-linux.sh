@@ -5,6 +5,7 @@
 #
 #   SENTIENT-Setup-<version>-linux-<arch>/
 #     SENTIENT-Setup                     the GPUI installer + Platform Manager
+#     EULA.txt                           the licence agreement setup shows
 #     payload/
 #       sentient-payload-linux-<arch>.tar  SENTIENT server, UI and data
 #       VERSION                            the SENTIENT version, shown by setup
@@ -38,6 +39,12 @@ mkdir -p "$dir/payload"
 install -m755 "$bin" "$dir/SENTIENT-Setup"
 cp "$payload_tar" "$dir/payload/"
 printf '%s\n' "$version" > "$dir/payload/VERSION"
+cp app/assets/licence.txt "$dir/EULA.txt"
 
 tar -C "$out" -czf "$out/$name.tar.gz" "$name"
+# Detached signature when a GPG key is configured (SPM_GPG_KEY: its id).
+if [ -n "${SPM_GPG_KEY:-}" ]; then
+  gpg --batch --yes --local-user "$SPM_GPG_KEY" --armor --detach-sign "$out/$name.tar.gz"
+  gpg --verify "$out/$name.tar.gz.asc" "$out/$name.tar.gz"
+fi
 echo "Built $out/$name.tar.gz"
