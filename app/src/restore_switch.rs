@@ -186,6 +186,12 @@ pub fn run(record: &InstallationRecord, name: &str, sink: ProgressFn) -> Result<
         }
     }
 
+    // The restored data's secrets key, read while SENTIENT still runs.
+    let key = crate::secrets_key::plan_switch(record, &pg, name).unwrap_or_else(|e| {
+        sink(Progress::Log { line: format!("The secrets key was not checked ({e}).") });
+        crate::secrets_key::KeyChange::None
+    });
+
     setup.stop(&sink).inspect_err(|_| setup.restart_as_was(&sink))?;
     let aside = format!("{live}_before_restore_{}", chrono::Local::now().format("%Y%m%d%H%M"));
 
@@ -220,11 +226,31 @@ pub fn run(record: &InstallationRecord, name: &str, sink: ProgressFn) -> Result<
         }
     }
 
+    let mut key_note = String::new();
+    match &key {
+        crate::secrets_key::KeyChange::Install { new, .. } => {
+            step(&sink, "Installing the restored data's secrets key");
+            match crate::secrets_key::install(record, new, &sink) {
+                Ok(()) => {
+                    key_note = " Its secrets key is installed. The previous key stays in the key file so the data from before still opens; SENTIENT reports this as an unfinished key rotation until the key is rotated (Security, Secrets).".into()
+                }
+                Err(e) => key_note = format!(" Its secrets key could not be installed ({e}): stored passwords do not open until it is."),
+            }
+        }
+        crate::secrets_key::KeyChange::Missing => {
+            key_note = " Its stored passwords (mail, SMS, integrations…) need the secrets key file the backup was made with: restore again with that key file, or enter them again.".into();
+        }
+        crate::secrets_key::KeyChange::None => {}
+    }
+
     step(&sink, "Starting SENTIENT on the restored data");
     setup.restart_as_was(&sink);
     if !wait_answering(record.stack.http_port) {
         sink(Progress::Log { line: "SENTIENT did not answer on the restored data; putting the previous data back".into() });
         let _ = setup.stop(&sink);
+        if let crate::secrets_key::KeyChange::Install { previous, .. } = &key {
+            let _ = crate::secrets_key::install(record, previous, &sink);
+        }
         if let Some(ch) = &ch {
             let _ = ch_exchange(ch, name);
         }
@@ -240,7 +266,7 @@ pub fn run(record: &InstallationRecord, name: &str, sink: ProgressFn) -> Result<
 
     let ch_note = if ch.is_some() { format!(", and ClickHouse's in the database {name}") } else { String::new() };
     sink(Progress::Done {
-        message: format!("SENTIENT runs on the restored data. The data from before is kept as {aside}{ch_note}."),
+        message: format!("SENTIENT runs on the restored data. The data from before is kept as {aside}{ch_note}.{key_note}"),
     });
     Ok(aside)
 }

@@ -103,6 +103,67 @@ fn container_secrets(cfg: &DeployConfig) -> Option<StackSecrets> {
     })
 }
 
+/// A file from SENTIENT's container, running or stopped; `None` if it is not
+/// there.
+pub fn read_app_file(cfg: &DeployConfig, path: &str) -> Result<Option<String>, String> {
+    let dir = private_temp_dir()?;
+    let out = capture(&format!(
+        "docker cp {}:{} {} 2>&1",
+        shell_quote(&cfg.names().app),
+        shell_quote(path),
+        shell_quote(&dir.join("f").display().to_string())
+    ));
+    let text = std::fs::read_to_string(dir.join("f")).ok();
+    let _ = std::fs::remove_dir_all(&dir);
+    match (text, out) {
+        (Some(t), _) => Ok(Some(t)),
+        (None, Err(e)) if e.contains("Could not find the file") || e.contains("No such") => Ok(None),
+        (None, Err(e)) => Err(format!("read {path} from SENTIENT's container: {e}")),
+        (None, Ok(_)) => Ok(None),
+    }
+}
+
+/// Write a file into SENTIENT's container (running or stopped), owned by
+/// root and readable by it only.
+pub fn write_app_file(cfg: &DeployConfig, path: &str, text: &str) -> Result<(), String> {
+    let (parent, name) = path.rsplit_once('/').ok_or_else(|| format!("{path} is not an absolute path"))?;
+    let dir = private_temp_dir()?;
+    let file = dir.join(name);
+    let result = (|| {
+        std::fs::write(&file, text).map_err(|e| format!("write {}: {e}", file.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600));
+        }
+        // Through tar, so the file is root's in the container rather than
+        // this user's id.
+        capture(&format!(
+            "tar -C {} --owner=0 --group=0 --numeric-owner -cf - {} | docker cp - {}:{}",
+            shell_quote(&dir.display().to_string()),
+            shell_quote(name),
+            shell_quote(&cfg.names().app),
+            shell_quote(if parent.is_empty() { "/" } else { parent })
+        ))
+        .map(|_| ())
+        .map_err(|e| format!("write {path} into SENTIENT's container: {e}"))
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+/// A temporary folder only this user can read.
+fn private_temp_dir() -> Result<std::path::PathBuf, String> {
+    let dir = std::env::temp_dir().join(format!("spm-{}-{}", std::process::id(), crate::native::generate_secret().get(..8).unwrap_or("x")));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    Ok(dir)
+}
+
 /// `cfg` with the passwords from the running stack, for anything that
 /// rewrites the compose file or signs in to the databases.
 pub fn with_secrets(cfg: &DeployConfig) -> Result<DeployConfig, String> {

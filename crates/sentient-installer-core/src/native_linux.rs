@@ -453,6 +453,30 @@ pub fn read_secrets(_cfg: &NativeConfig) -> Result<EnvSecrets, String> {
     })
 }
 
+/// A root-only file of SENTIENT's (as root, through polkit unless already
+/// root); `None` if it is not there.
+pub fn read_private_file(path: &str) -> Result<Option<String>, String> {
+    let (ok, out, err) = exec::privileged_output(&format!("if [ -f {p} ]; then cat {p}; else echo __missing__ >&2; fi", p = shq(path)))
+        .ok_or("could not run the administrator command")?;
+    match (ok, err.contains("__missing__")) {
+        (_, true) => Ok(None),
+        (true, false) => Ok(Some(out)),
+        (false, false) => Err(format!("read {path}: {}", err.trim())),
+    }
+}
+
+/// Write a file SENTIENT's service reads (owner sentient, mode 0600),
+/// replacing it in one step.
+pub fn write_private_file(sink: &ProgressFn, path: &str, text: &str) -> Result<(), String> {
+    let script = format!(
+        "set -e\numask 077\ncat > {tmp} <<'SENTIENTEOF'\n{text}SENTIENTEOF\nchown {APP_USER}:{APP_USER} {tmp}\nchmod 600 {tmp}\nmv -f {tmp} {p}\n",
+        tmp = shq(&format!("{path}.spm-new")),
+        p = shq(path),
+        text = if text.ends_with('\n') { text.to_string() } else { format!("{text}\n") },
+    );
+    exec::run_privileged(sink, &script)
+}
+
 /// Whether SENTIENT's environment file (where Linux keeps the passwords) is
 /// there.
 pub fn env_file_exists() -> bool {

@@ -22,6 +22,7 @@ mod mode;
 mod restore_switch;
 mod rootjob;
 mod secrets;
+mod secrets_key;
 mod self_install;
 mod settings;
 mod theme;

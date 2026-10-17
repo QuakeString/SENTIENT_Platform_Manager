@@ -286,11 +286,15 @@ impl BackupPage {
         let passphrase = Some(self.passphrase.read(cx).value().to_string()).filter(|p| !p.is_empty());
         let clickhouse = self.ch_conn(None, cx);
         let opts = BackupOptions { output, selection, file_stores, zstd_level: 10, passphrase, clickhouse };
+        let record = self.record.clone();
         self.backup.update(cx, |job, cx| {
             job.start(
                 move |sink| {
                     let summary = block_on(backup::run(&conn, &opts, bridge(sink.clone())))?
                         .map_err(|e| e.to_string())?;
+                    if let Some(record) = &record {
+                        crate::secrets_key::save_beside(record, &summary.output, &sink);
+                    }
                     sink(Progress::Done {
                         message: format!(
                             "Saved {} ({}), checksum {}…",
@@ -366,6 +370,7 @@ impl BackupPage {
                         let ch_password = opts.clickhouse.as_ref().map(|c| c.password.clone()).unwrap_or_default();
                         crate::restore_switch::match_schema(record, &admin, &ch_password, &target, &sink)?;
                     }
+                    crate::secrets_key::after_restore(&admin, &target, &opts.input, None, &sink)?;
                     sink(Progress::Done { message: format!("Restored into the database {target}") });
                     Ok(())
                 },
