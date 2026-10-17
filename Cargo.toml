@@ -1,6 +1,6 @@
 # Root workspace for the SENTIENT Platform Manager. Holds the two reusable engine
-# crates (backup/restore + install/provision). The Tauri shell in src-tauri/ is
-# its own workspace and depends on both by path.
+# crates (backup/restore + install/provision). The GPUI app in app/ is its own
+# workspace and depends on both by path.
 [workspace]
 resolver = "2"
 members = [
@@ -37,4 +37,8 @@ bytes = "1"
 age = "0.10"
 # installer engine
 sysinfo = "0.32"
-ureq = "2"
+ureq = { version = "2", features = ["proxy-from-env"] }
+# Certificates are checked by the operating system (its trust store, its
+# updates, an organisation's own CAs), not a root list built into the binary.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "0.6"

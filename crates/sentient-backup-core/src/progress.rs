@@ -1,5 +1,5 @@
 //! Progress reporting shared by the backup/restore engines. The engine calls a
-//! sink; the CLI prints it, the GUI forwards it to the webview as Tauri events.
+//! sink; the CLI prints it, the GPUI app streams it into the window.
 
 use serde::Serialize;
 

@@ -16,8 +16,23 @@ path = "src/lib.rs"
 name = "sicheck"
 path = "src/bin/sicheck.rs"
 
+# Headless driver for the native deployment engine — the same
+# "exercise the core without the GUI" role sicheck plays for the checks.
+[[bin]]
+name = "sinative"
+path = "src/bin/sinative.rs"
+
+# Headless driver for the Docker deployment engine.
+[[bin]]
+name = "sidocker"
+path = "src/bin/sidocker.rs"
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 sysinfo.workspace = true
 ureq.workspace = true
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+sha2.workspace = true   # verify every downloaded artifact
+chrono.workspace = true  # names of the update and migration snapshots

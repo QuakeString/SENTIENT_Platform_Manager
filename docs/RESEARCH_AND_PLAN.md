@@ -1,3 +1,5 @@
+> **Historical.** This was the plan for the first, Tauri-based Platform Manager. It is superseded by [GPUI_PLATFORM_MANAGER_PLAN.md](GPUI_PLATFORM_MANAGER_PLAN.md); the Tauri app was removed in October 2026.
+
 # SENTIENT Platform Manager — Plan
 
 One desktop app to **install, run, update, and back up** the SENTIENT platform on

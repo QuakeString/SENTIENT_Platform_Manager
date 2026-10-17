@@ -92,6 +92,8 @@ pub struct BackupOptions {
     pub zstd_level: i32,
     /// If set, the whole archive is passphrase-encrypted with age (scrypt).
     pub passphrase: Option<String>,
+    /// ClickHouse holding the telemetry, when the install uses it.
+    pub clickhouse: Option<crate::clickhouse::ChConn>,
 }
 
 impl Default for BackupOptions {
@@ -102,6 +104,7 @@ impl Default for BackupOptions {
             file_stores: Vec::new(),
             zstd_level: 10,
             passphrase: None,
+            clickhouse: None,
         }
     }
 }
@@ -122,12 +125,17 @@ struct StagedMember {
     bytes: u64,
 }
 
-fn exclude_data_args(sel: &Selection) -> Vec<String> {
-    // Telemetry is ALWAYS handled via COPY, never included in the pg_dump.
+fn exclude_data_args(sel: &Selection, ts_kv_partitions: &[String]) -> Vec<String> {
+    // Telemetry is ALWAYS handled via COPY, never included in the pg_dump:
+    // ts_kv, a hypertable's chunks, and on plain PostgreSQL its monthly
+    // partitions (tables of their own, which excluding ts_kv does not reach).
     let mut args = vec![
         "--exclude-table-data=public.ts_kv".into(),
         "--exclude-table-data=_timescaledb_internal.*".into(),
     ];
+    for p in ts_kv_partitions {
+        args.push(format!("--exclude-table-data={p}"));
+    }
     for c in catalog() {
         if c.kind == CategoryKind::Configuration
             || c.kind == CategoryKind::TelemetryHistorical
@@ -145,7 +153,8 @@ fn exclude_data_args(sel: &Selection) -> Vec<String> {
 pub async fn run(cfg: &ConnConfig, opts: &BackupOptions, sink: ProgressFn) -> Result<BackupSummary> {
     let tmode = opts.selection.telemetry_mode();
     let telem_extra = if tmode == TelemetryMode::None { 0 } else { 1 };
-    let total_steps = 3 + telem_extra + opts.file_stores.len() as u32;
+    let ch_extra = u32::from(opts.clickhouse.is_some() && tmode != TelemetryMode::None);
+    let total_steps = 3 + telem_extra + ch_extra + opts.file_stores.len() as u32;
     let mut steps = Steps::new(sink.clone(), total_steps);
 
     steps.step("Connecting and inspecting");
@@ -153,6 +162,8 @@ pub async fn run(cfg: &ConnConfig, opts: &BackupOptions, sink: ProgressFn) -> Re
     let server = db.server_info().await?;
     let tables = db.tables_with_true_sizes().await?;
     let report = build_report(&tables);
+
+    let ts_kv_partitions = db.partitions_of("public.ts_kv").await?;
 
     let tools = PgTools::resolve()?;
     steps.log(tools.dump_version().unwrap_or_else(|_| "pg_dump: unknown version".into()));
@@ -170,7 +181,7 @@ pub async fn run(cfg: &ConnConfig, opts: &BackupOptions, sink: ProgressFn) -> Re
     let opts2 = opts.clone();
     let sink2 = sink.clone();
     let (tmp_dump, dump_sha, dump_bytes) =
-        tokio::task::spawn_blocking(move || dump_compressed(&tools, &cfg2, &opts2, sink2))
+        tokio::task::spawn_blocking(move || dump_compressed(&tools, &cfg2, &opts2, &ts_kv_partitions, sink2))
             .await
             .map_err(|e| Error::msg(format!("dump task panicked: {e}")))??;
 
@@ -212,6 +223,42 @@ pub async fn run(cfg: &ConnConfig, opts: &BackupOptions, sink: ProgressFn) -> Re
             temp,
             sha256: sha,
             bytes,
+        });
+    }
+
+    // ClickHouse telemetry: history by monthly partition, then latest values.
+    let mut ch_section = None;
+    if let (Some(ch), true) = (&opts.clickhouse, tmode != TelemetryMode::None) {
+        steps.step("Exporting ClickHouse telemetry");
+        let since = match tmode {
+            TelemetryMode::LastDays(d) => Some(crate::clickhouse::partition_days_ago(d)),
+            _ => None,
+        };
+        let ch = ch.clone();
+        let base = opts.output.clone();
+        let level = opts.zstd_level;
+        let sink_ch = sink.clone();
+        let (version, exported) = tokio::task::spawn_blocking(move || {
+            crate::clickhouse::export_all(&ch, since.as_deref(), &base, level, &|line| {
+                sink_ch(crate::progress::Progress::Log { line })
+            })
+        })
+        .await
+        .map_err(|e| Error::msg(format!("ClickHouse export panicked: {e}")))??;
+        let mut entries = Vec::new();
+        for e in exported {
+            members.push(StagedMember {
+                archive_path: e.entry.member.clone(),
+                temp: e.temp,
+                sha256: e.sha256,
+                bytes: e.bytes,
+            });
+            entries.push(e.entry);
+        }
+        ch_section = Some(crate::clickhouse::ChSection {
+            database: opts.clickhouse.as_ref().map(|c| c.database.clone()).unwrap_or_default(),
+            version,
+            members: entries,
         });
     }
 
@@ -279,6 +326,7 @@ pub async fn run(cfg: &ConnConfig, opts: &BackupOptions, sink: ProgressFn) -> Re
         } else {
             EncryptionInfo::none()
         },
+        clickhouse: ch_section,
     };
     write_archive(&opts.output, &manifest, &members, opts.passphrase.as_deref())?;
     for m in &members {
@@ -301,6 +349,7 @@ fn dump_compressed(
     tools: &PgTools,
     cfg: &ConnConfig,
     opts: &BackupOptions,
+    ts_kv_partitions: &[String],
     sink: ProgressFn,
 ) -> Result<(PathBuf, String, u64)> {
     let mut args: Vec<String> = vec![
@@ -310,7 +359,7 @@ fn dump_compressed(
         "-d".into(),
         crate::pg_tools::conninfo(cfg),
     ];
-    for a in exclude_data_args(&opts.selection) {
+    for a in exclude_data_args(&opts.selection, ts_kv_partitions) {
         args.push(a);
     }
 

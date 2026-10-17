@@ -172,6 +172,23 @@ impl DbInspector {
     /// All ordinary/partitioned tables in `public`, with total relation size and
     /// live row estimate. Hypertable parents report their parent-only size here;
     /// `hypertable_stats()` provides the real (chunk-inclusive) figures.
+    /// Every partition under a partitioned table, at any depth (plain
+    /// PostgreSQL's `ts_kv_YYYY_MM` under `ts_kv`), schema-qualified.
+    pub async fn partitions_of(&self, table: &str) -> Result<Vec<String>> {
+        let rows = self
+            .client
+            .query(
+                "WITH RECURSIVE tree(rel) AS ( \
+                   SELECT i.inhrelid FROM pg_inherits i WHERE i.inhparent = to_regclass($1) \
+                   UNION ALL SELECT i.inhrelid FROM tree t JOIN pg_inherits i ON i.inhparent = t.rel) \
+                 SELECT n.nspname || '.' || c.relname FROM tree t JOIN pg_class c ON c.oid = t.rel \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r', 'p')",
+                &[&table],
+            )
+            .await?;
+        Ok(rows.iter().map(|r| r.get(0)).collect())
+    }
+
     pub async fn list_public_tables(&self) -> Result<Vec<TableInfo>> {
         let rows = self
             .client

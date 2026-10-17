@@ -1,0 +1,90 @@
+SENTIENT END-USER LICENCE AGREEMENT
+
+Copyright © 2026 INVENIA SYSTEMS and the SENTIENT Authors. All rights reserved.
+
+Please read this End-User Licence Agreement ("Agreement") before installing. By choosing "I accept the licence agreement", or by installing, copying or using the Software, you agree to this Agreement on your own behalf and on behalf of the organisation for which you install it ("you"). If you do not agree, do not install or use the Software.
+
+1. THE SOFTWARE
+
+1.1 "Software" means the SENTIENT IIoT platform (the server, its web interface, its database schema and system data), the SENTIENT Platform Manager and SENTIENT Setup, together with their documentation and any updates, migrations or fixes INVENIA SYSTEMS provides.
+
+1.2 "Licence Agreement" means the separate written agreement, order or licence key issued to you by INVENIA SYSTEMS or an authorised partner, which sets out the term, the number of installations and any other limits of your licence.
+
+1.3 The Software is licensed, not sold. INVENIA SYSTEMS and the SENTIENT Authors keep all right, title and interest in it, including all intellectual property rights.
+
+2. LICENCE
+
+2.1 Subject to this Agreement and to your Licence Agreement, INVENIA SYSTEMS grants you a non-exclusive, non-transferable, revocable licence to install and use the Software for your internal business purposes, for the term and within the scope and limits of your Licence Agreement.
+
+2.2 The SENTIENT Platform Manager may be installed and used, free of charge, to install, operate, update, back up, restore and migrate licensed SENTIENT installations.
+
+2.3 Without a valid Licence Agreement or licence key, the Software may run only in the evaluation or restricted mode it provides, and no other rights are granted.
+
+3. RESTRICTIONS
+
+Except as expressly permitted in writing by INVENIA SYSTEMS, you may not:
+
+a. copy the Software, except for installation as licensed and for reasonable backup copies;
+b. distribute, sell, rent, lease, lend, sublicense or otherwise make the Software available to any third party;
+c. host or operate the Software as a service for the benefit of third parties;
+d. decompile, disassemble, reverse engineer or attempt to derive the source code of the Software, except to the extent applicable law expressly permits it despite this restriction;
+e. modify, adapt, translate or create derivative works of the Software;
+f. remove, obscure or alter any copyright, trademark or other proprietary notice; or
+g. use the Software beyond the term, scope or limits of your Licence Agreement, or bypass, disable or interfere with any licensing, activation or metering mechanism.
+
+4. LICENCE ACTIVATION AND DATA
+
+4.1 To activate and keep your licence valid, SENTIENT contacts the INVENIA SYSTEMS licence server when it is activated and then at regular intervals. It sends: your licence key and licence identifiers; fingerprints of the hardware it runs on (derived from the machine identifier, mainboard, disks, network adapters and processor); the computer's name, operating system, hardware, network adapter and deployment environment (for example whether it runs in a virtual machine or container); the SENTIENT version and a checksum of its program; its uptime and time zone; and counts of the items your licence limits (such as tenants, users, devices, assets and dashboards). INVENIA SYSTEMS uses this information to issue, check and enforce licences and to prevent unlicensed copying. Your telemetry, device data and other content are not sent.
+
+4.2 Apart from licence activation, the Software does not send your data to INVENIA SYSTEMS. Your telemetry, configuration and other data stay in the databases installed on your systems, under your control. Features you set up to use outside services, such as e-mail, SMS or messaging gateways and AI model providers, send the data those features need to the services you choose, under their terms.
+
+4.3 The Platform Manager stores the passwords it needs to manage the installation on the computer itself, protected by the operating system and readable only by administrators.
+
+5. THIRD-PARTY COMPONENTS
+
+5.1 SENTIENT Setup installs, or downloads during installation, third-party software that is licensed to you by its own authors under its own terms, not under this Agreement, and nothing in this Agreement limits your rights under those terms. Depending on the options you choose, these include:
+
+- PostgreSQL — PostgreSQL Licence;
+- TimescaleDB — Apache License 2.0 and, for its community features, the Timescale License;
+- ClickHouse — Apache License 2.0;
+- Docker Engine and Docker Compose — Apache License 2.0;
+- Ubuntu (as the base of the SENTIENT WSL2 environment on Windows) — the licences of its packages;
+- WinSW (the Windows service wrapper) — MIT Licence.
+
+5.2 Parts of the SENTIENT web interface are derived from ThingsBoard Community Edition, and the embedded MQTT broker from the rumqtt project, both under the Apache License 2.0. Other open-source components and their notices are listed in the NOTICE file distributed with the Software.
+
+5.3 Downloading third-party software may require access to the internet and to the providers' servers, whose own terms apply.
+
+6. UPDATES, BACKUPS AND MIGRATIONS
+
+6.1 The Platform Manager can update SENTIENT, back up and restore its data, and change its database type. It takes a backup or a copy of the database before such changes and keeps earlier data until you remove it, but you remain responsible for keeping independent backups of your data and for checking the result of any update, restore or migration.
+
+6.2 Removing data that the Platform Manager has kept, or uninstalling with the option to delete data, permanently deletes it.
+
+7. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING ANY WARRANTY OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, OR THAT IT WILL BE UNINTERRUPTED OR ERROR-FREE, EXCEPT AS EXPRESSLY STATED IN YOUR LICENCE AGREEMENT. THE SOFTWARE IS NOT DESIGNED FOR USE WHERE ITS FAILURE COULD LEAD TO DEATH, PERSONAL INJURY OR SEVERE PHYSICAL OR ENVIRONMENTAL DAMAGE, AND MUST NOT BE THE SOLE MEANS OF CONTROL OR PROTECTION IN SUCH SYSTEMS.
+
+8. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, INVENIA SYSTEMS AND THE SENTIENT AUTHORS SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL OR PUNITIVE DAMAGES, OR FOR ANY LOSS OF PROFITS, REVENUE, PRODUCTION, DATA OR BUSINESS, ARISING OUT OF OR IN CONNECTION WITH THE SOFTWARE, HOWEVER CAUSED. THEIR TOTAL LIABILITY UNDER THIS AGREEMENT SHALL NOT EXCEED THE FEES YOU PAID FOR THE SOFTWARE IN THE TWELVE MONTHS BEFORE THE CLAIM. NOTHING IN THIS AGREEMENT LIMITS LIABILITY THAT CANNOT BE LIMITED BY LAW.
+
+9. TERMINATION
+
+This Agreement ends automatically if you breach it, or when your Licence Agreement expires or ends. You must then stop using the Software and delete all copies, except data you are entitled to keep. Sections 1.3, 3, 5, 7, 8, 10 and 11 survive termination.
+
+10. EXPORT
+
+You will comply with all export control and sanctions laws that apply to the Software and its use.
+
+11. GENERAL
+
+11.1 If your Licence Agreement conflicts with this Agreement, your Licence Agreement prevails.
+
+11.2 This Agreement is governed by the law named in your Licence Agreement or, if none is named, by the law of the place where INVENIA SYSTEMS has its registered office, whose courts have jurisdiction.
+
+11.3 If any provision is held unenforceable, the rest remains in effect. A failure to enforce a provision is not a waiver. You may not assign this Agreement without the prior written consent of INVENIA SYSTEMS.
+
+11.4 This Agreement and your Licence Agreement are the entire agreement between you and INVENIA SYSTEMS about the Software.
+
+Questions about this Agreement or licensing: INVENIA SYSTEMS — info@inveniasystems.com
