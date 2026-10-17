@@ -453,6 +453,35 @@ pub fn read_secrets(_cfg: &NativeConfig) -> Result<EnvSecrets, String> {
     })
 }
 
+/// Apply changed settings: rewrite the environment file and, when
+/// `pg_changed`, PostgreSQL's parameters (restarting the database), then
+/// restart SENTIENT. Waiting for it to answer is the caller's.
+pub fn reconfigure(sink: &ProgressFn, cfg: &NativeConfig, pg_changed: bool) -> Result<(), String> {
+    step(sink, "Writing the SENTIENT configuration");
+    let mut script = format!(
+        "set -e\n\
+         systemctl stop {APP_UNIT}\n\
+         cat > {ENV_FILE} <<'SENTIENTEOF'\n{env}SENTIENTEOF\n\
+         chown root:{APP_USER} {ENV_FILE} && chmod 640 {ENV_FILE}\n",
+        env = env_file_body(cfg)
+    );
+    if pg_changed {
+        let mut alter = String::new();
+        for (k, v) in cfg.pg.settings() {
+            alter.push_str(&format!(" -c {}", shq(&format!("ALTER SYSTEM SET {k} = '{v}';"))));
+        }
+        script.push_str(&format!(
+            "echo '>> Applying the PostgreSQL parameters'\n\
+             runuser -u postgres -- psql -p {port} -v ON_ERROR_STOP=1 -qAt{alter}\n\
+             systemctl restart {PG_UNIT}\n\
+             for i in $(seq 1 120); do runuser -u postgres -- pg_isready -q -p {port} && break; sleep 1; done\n",
+            port = cfg.pg_port
+        ));
+    }
+    script.push_str(&format!("systemctl start {APP_UNIT}\n"));
+    exec::run_privileged(sink, &script)
+}
+
 /// ClickHouse's service is installed although the installation no longer
 /// uses it (a migration away from ClickHouse keeps it, with its history).
 pub fn clickhouse_left_behind(cfg: &NativeConfig) -> bool {

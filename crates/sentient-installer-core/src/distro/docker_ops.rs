@@ -215,6 +215,17 @@ pub fn remove_clickhouse(sink: &ProgressFn, cfg: &DeployConfig) -> Result<(), St
     Ok(())
 }
 
+/// Apply changed settings: rewrite the compose file and let Compose recreate
+/// the containers whose configuration changed (SENTIENT for its environment,
+/// PostgreSQL for its parameters). `cfg` carries the stack's passwords.
+/// Waiting for SENTIENT to answer is the caller's.
+pub fn reconfigure(sink: &ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
+    step(sink, "Writing the SENTIENT configuration");
+    write_stack_files(sink, cfg)?;
+    step(sink, "Recreating what changed");
+    run_stream(sink, &cfg.compose_cmd("up -d"))
+}
+
 // ---------------------------------------------------------------------------
 // Safe update
 // ---------------------------------------------------------------------------

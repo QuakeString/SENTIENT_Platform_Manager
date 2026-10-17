@@ -23,6 +23,7 @@ mod restore_switch;
 mod rootjob;
 mod secrets;
 mod self_install;
+mod settings;
 mod theme;
 mod ui;
 mod updating;

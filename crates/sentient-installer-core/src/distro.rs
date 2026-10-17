@@ -269,7 +269,15 @@ fn app_env(cfg: &DeployConfig) -> Vec<(String, String)> {
     env.push(("REPORT_OUTPUT_DIR".into(), "/var/lib/sentient/reports".into()));
     env.push(("VC_REPOS_PATH".into(), "/var/lib/sentient/vc-repos".into()));
     env.extend(stack::tuning_env(&cfg.tuning));
-    env
+    // Later entries win (an operator's extra variable replaces the value
+    // the engine derived): a key written twice is invalid YAML.
+    env.into_iter().fold(Vec::new(), |mut out: Vec<(String, String)>, (k, v)| {
+        match out.iter_mut().find(|(name, _)| *name == k) {
+            Some(slot) => slot.1 = v,
+            None => out.push((k, v)),
+        }
+        out
+    })
 }
 
 /// The stack as a self-contained compose file. Mirrors the reference flavour
@@ -1163,6 +1171,15 @@ fn _uses(_: &EnvVar) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extra_env_overrides_without_duplicate_keys() {
+        let mut cfg = DeployConfig::default();
+        cfg.tuning.extra_env.push(crate::stack::EnvVar { name: "DB_POOL_PRIMARY_MAX".into(), value: "40".into() });
+        let y = compose(&cfg);
+        assert_eq!(y.matches("DB_POOL_PRIMARY_MAX:").count(), 1);
+        assert!(y.contains("DB_POOL_PRIMARY_MAX: \"40\""));
+    }
 
     #[test]
     fn default_stack_reproduces_reference_names() {

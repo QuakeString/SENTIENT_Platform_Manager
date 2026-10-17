@@ -7,7 +7,8 @@
 mod backup;
 mod control;
 mod logs;
-mod migration;
+pub(crate) mod migration;
+mod settings;
 mod status;
 mod update;
 
@@ -107,6 +108,7 @@ pub struct Manager {
     update: Option<Entity<update::UpdatePage>>,
     backup: Option<Entity<backup::BackupPage>>,
     migration: Option<Entity<migration::MigrationPage>>,
+    settings: Option<Entity<settings::SettingsPage>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -128,6 +130,7 @@ impl Manager {
             update: None,
             backup: None,
             migration: None,
+            settings: None,
             _subscriptions: Vec::new(),
         }
     }
@@ -140,6 +143,8 @@ impl Manager {
         self.logs = None;
         self.update = None;
         self.backup = None;
+        // Migration and Settings reload their own record and keep showing
+        // the result of what just ran.
         cx.notify();
     }
 
@@ -243,6 +248,14 @@ impl Manager {
                     self.migration = Some(page);
                 }
                 self.migration.clone().unwrap().into_any_element()
+            }
+            Page::Settings => {
+                if self.settings.is_none() {
+                    let page = cx.new(|cx| settings::SettingsPage::new(record, window, cx));
+                    self._subscriptions.push(cx.subscribe(&page, |this, _, _: &migration::RecordChanged, cx| this.reload(cx)));
+                    self.settings = Some(page);
+                }
+                self.settings.clone().unwrap().into_any_element()
             }
             page => {
                 let theme = cx.theme().clone();

@@ -26,7 +26,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | migrate <stock|timescaledb|clickhouse> | resume-migration | \
 update [<package folder>] [--accept-breaking] | backup <file> | restore <file> <database> | \
-use-restored <database> | uninstall [--delete-data] | kept | remove-kept <name>";
+use-restored <database> | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
 
 /// A console for the output: release builds on Windows have none of their
 /// own, so use the one the job was started from.
@@ -144,6 +144,13 @@ pub fn run(args: &[String]) -> i32 {
             let keep = !args.iter().any(|a| a == "--delete-data");
             crate::maintenance::run_uninstall(record, keep, sink.clone())
         }
+        "apply-settings" => match args.get(1) {
+            Some(file) => std::fs::read_to_string(file)
+                .map_err(|e| format!("read {file}: {e}"))
+                .and_then(|t| serde_json::from_str::<std::collections::HashMap<String, String>>(&t).map_err(|e| format!("{file}: {e}")))
+                .and_then(|values| crate::settings::apply(record, &values, sink.clone()).map(|_| ())),
+            None => Err(USAGE.into()),
+        },
         "kept" => crate::kept::list(&record).map(|items| {
             if json {
                 for k in items {
