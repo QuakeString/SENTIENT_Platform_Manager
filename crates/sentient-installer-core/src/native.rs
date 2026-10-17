@@ -185,7 +185,7 @@ fn obtain(sink: &ProgressFn, src: &ArtifactSource, name: &str, url: &str, dest: 
                 format!("{}/{}", base_url.trim_end_matches('/'), name)
             };
             log(sink, format!("downloading {url}"));
-            let resp = ureq::get(&url)
+            let resp = crate::net::agent().get(&url)
                 .call()
                 .map_err(|e| format!("download {name}: {e}"))?;
             let mut reader = resp.into_reader();

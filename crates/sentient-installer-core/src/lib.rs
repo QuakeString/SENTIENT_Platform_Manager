@@ -16,6 +16,7 @@ pub mod kiosk;
 /// hash to. Keeps the download host out of the code.
 pub mod manifest;
 pub mod native;
+pub mod net;
 /// Native Linux deployment (distribution PostgreSQL, optional ClickHouse,
 /// SENTIENT as a systemd unit) — what [`native`] delegates to on Linux.
 #[cfg(target_os = "linux")]

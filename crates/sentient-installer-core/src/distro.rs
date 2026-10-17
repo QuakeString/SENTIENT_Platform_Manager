@@ -1128,7 +1128,7 @@ fn pull_images(sink: &ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
 /// Download a URL to a file, reporting percent progress.
 pub(crate) fn download(url: &str, dest: &Path, sink: &ProgressFn) -> Result<(), String> {
     use std::io::{Read, Write};
-    let resp = ureq::get(url).call().map_err(|e| e.to_string())?;
+    let resp = crate::net::agent().get(url).call().map_err(|e| e.to_string())?;
     let total: u64 = resp.header("Content-Length").and_then(|s| s.parse().ok()).unwrap_or(0);
     let mut reader = resp.into_reader();
     let mut file = std::fs::File::create(dest).map_err(|e| e.to_string())?;
