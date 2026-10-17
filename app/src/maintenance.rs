@@ -96,29 +96,55 @@ fn run_update(record: InstallationRecord, sink: ProgressFn) -> Result<(), String
     Ok(())
 }
 
-fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result<(), String> {
-    step(&sink, "Restoring the Platform Manager");
-    let manager = self_install::install_manager()?;
-    match record.engine {
-        // Bring the stack up again from its compose file.
-        Engine::Docker => distro::control(sink.clone(), &record.stack, "start")?,
-        Engine::Native if cfg!(windows) => {
-            // deploy is idempotent: it keeps the database, re-registers the
-            // service if it is missing, and starts SENTIENT.
-            native::deploy(sink.clone(), &record.native_config_with_secrets()?)?;
-        }
-        // Linux keeps the unit and its environment in /etc; restart them.
-        Engine::Native => native::control(sink.clone(), &record.native_config(), "restart")?,
+/// The configuration with its passwords. On Linux they live only in
+/// SENTIENT's environment file; when that is what went missing, the
+/// database users get new ones.
+fn native_config_for_repair(record: &InstallationRecord, sink: &ProgressFn) -> Result<native::NativeConfig, String> {
+    #[cfg(target_os = "linux")]
+    if !sentient_installer_core::native_linux::env_file_exists() {
+        let mut cfg = record.native_config();
+        sentient_installer_core::native_linux::reissue_secrets(sink, &mut cfg)?;
+        return Ok(cfg);
     }
-    self_install::restore_menu_entry(&manager);
-    sink(Progress::Done { message: "Repaired: SENTIENT is running.".into() });
+    let _ = sink;
+    record.native_config_with_secrets()
+}
+
+pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result<(), String> {
+    // SENTIENT first: it is what the repair is for, and on Linux Docker it
+    // needs no administrator, so a dismissed password prompt for the
+    // Platform Manager's files below does not leave it broken.
+    match record.engine {
+        // Write the compose file again from the record (with the stack's
+        // passwords) and bring everything up; without a readable compose
+        // file, just start what is there.
+        Engine::Docker => match distro::docker_ops::with_secrets(&record.stack) {
+            Ok(cfg) => distro::docker_ops::reconfigure(&sink, &cfg)?,
+            Err(_) => distro::control(sink.clone(), &record.stack, "start")?,
+        },
+        // deploy is idempotent: it keeps the database, writes the service
+        // and its configuration again, and starts SENTIENT.
+        Engine::Native => native::deploy(sink.clone(), &native_config_for_repair(&record, &sink)?)?,
+    }
+    step(&sink, "Restoring the Platform Manager");
+    let message = match self_install::install_manager() {
+        Ok(manager) => {
+            self_install::restore_menu_entry(&manager);
+            "Repaired: SENTIENT is running.".to_string()
+        }
+        Err(e) => {
+            sink(Progress::Log { line: format!("The Platform Manager's files were not restored: {e}") });
+            "SENTIENT is running again; the Platform Manager's own files were not restored (see the log). Run Repair again to restore them.".to_string()
+        }
+    };
+    sink(Progress::Done { message });
     Ok(())
 }
 
 pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: ProgressFn) -> Result<(), String> {
     match (record.engine, keep_data) {
-        (Engine::Docker, true) => distro::uninstall(sink.clone(), &record.stack)?,
-        (Engine::Docker, false) => distro::cleanup(sink.clone(), &record.stack)?,
+        (Engine::Docker, true) => distro::remove_keeping_data(sink.clone(), &record.stack)?,
+        (Engine::Docker, false) => distro::uninstall(sink.clone(), &record.stack)?,
         (Engine::Native, true) => native::uninstall(sink.clone(), &record.native_config())?,
         (Engine::Native, false) => native::cleanup(sink.clone(), &record.native_config())?,
     }

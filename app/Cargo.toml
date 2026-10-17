@@ -30,6 +30,9 @@ chrono = "0.4"
 sysinfo = "0.32"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# SENTIENT's secrets key check (AES-256-GCM, as dao/src/secrets.rs seals it).
+aes-gcm = "0.10"
+base64 = "0.22"
 
 # Database password in Windows Credential Manager (see src/secrets.rs).
 [target.'cfg(windows)'.dependencies]

@@ -269,7 +269,15 @@ fn app_env(cfg: &DeployConfig) -> Vec<(String, String)> {
     env.push(("REPORT_OUTPUT_DIR".into(), "/var/lib/sentient/reports".into()));
     env.push(("VC_REPOS_PATH".into(), "/var/lib/sentient/vc-repos".into()));
     env.extend(stack::tuning_env(&cfg.tuning));
-    env
+    // Later entries win (an operator's extra variable replaces the value
+    // the engine derived): a key written twice is invalid YAML.
+    env.into_iter().fold(Vec::new(), |mut out: Vec<(String, String)>, (k, v)| {
+        match out.iter_mut().find(|(name, _)| *name == k) {
+            Some(slot) => slot.1 = v,
+            None => out.push((k, v)),
+        }
+        out
+    })
 }
 
 /// The stack as a self-contained compose file. Mirrors the reference flavour
@@ -647,6 +655,30 @@ pub fn cleanup(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     // No `docker image prune`: it removes every untagged image on the host,
     // other projects' included, and a partial pull leaves no image behind.
     sink(Progress::Done { message: "Cleanup complete — you can safely retry the install.".into() });
+    Ok(())
+}
+
+/// Remove SENTIENT but keep its data: the containers go, the volumes (the
+/// databases and SENTIENT's files) and the compose file stay, so a new
+/// install of the same stack name picks them up again.
+pub fn remove_keeping_data(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        // The data is on the distro's disk: stop it and leave it registered.
+        let _ = cfg;
+        sink(Progress::Step { name: "Stopping the SENTIENT WSL distro (its data is kept)".into() });
+        let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
+    }
+    #[cfg(not(windows))]
+    {
+        let n = cfg.names();
+        sink(Progress::Step { name: "Removing the SENTIENT containers (volumes kept)".into() });
+        if host_file_exists(&cfg.compose_path()) {
+            let _ = run_stream(&sink, &format!("{} 2>/dev/null || true", cfg.compose_cmd("down --remove-orphans")));
+        }
+        let _ = run_stream(&sink, &format!("docker rm -f {} {} {} 2>/dev/null || true", n.app, n.pg, n.ch));
+    }
+    sink(Progress::Done { message: "SENTIENT was removed; its data volumes were kept.".into() });
     Ok(())
 }
 
@@ -1163,6 +1195,15 @@ fn _uses(_: &EnvVar) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extra_env_overrides_without_duplicate_keys() {
+        let mut cfg = DeployConfig::default();
+        cfg.tuning.extra_env.push(crate::stack::EnvVar { name: "DB_POOL_PRIMARY_MAX".into(), value: "40".into() });
+        let y = compose(&cfg);
+        assert_eq!(y.matches("DB_POOL_PRIMARY_MAX:").count(), 1);
+        assert!(y.contains("DB_POOL_PRIMARY_MAX: \"40\""));
+    }
 
     #[test]
     fn default_stack_reproduces_reference_names() {

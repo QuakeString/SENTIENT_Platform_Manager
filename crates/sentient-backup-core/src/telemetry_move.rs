@@ -607,6 +607,25 @@ pub async fn latest_ch_to_pg(pg: &Client, ch: &ChConn, sink: &ProgressFn) -> Res
     Ok(rows)
 }
 
+/// The newest row of each key in `table` (a history copy) → `ts_kv_latest`,
+/// where it is newer than what is there.
+pub async fn latest_from_table(pg: &Client, table: &str, sink: &ProgressFn) -> Result<u64> {
+    let rows = pg
+        .execute(
+            &format!(
+                "INSERT INTO ts_kv_latest ({COLS}) SELECT DISTINCT ON (entity_id, key) {COLS} FROM {table} \
+                 ORDER BY entity_id, key, ts DESC \
+                 ON CONFLICT (entity_id, key) DO UPDATE SET ts = EXCLUDED.ts, bool_v = EXCLUDED.bool_v, \
+                 str_v = EXCLUDED.str_v, long_v = EXCLUDED.long_v, dbl_v = EXCLUDED.dbl_v, json_v = EXCLUDED.json_v \
+                 WHERE ts_kv_latest.ts < EXCLUDED.ts"
+            ),
+            &[],
+        )
+        .await?;
+    log(sink, format!("  latest values updated: {rows}"));
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

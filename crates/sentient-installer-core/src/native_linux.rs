@@ -453,6 +453,89 @@ pub fn read_secrets(_cfg: &NativeConfig) -> Result<EnvSecrets, String> {
     })
 }
 
+/// A root-only file of SENTIENT's (as root, through polkit unless already
+/// root); `None` if it is not there.
+pub fn read_private_file(path: &str) -> Result<Option<String>, String> {
+    let (ok, out, err) = exec::privileged_output(&format!("if [ -f {p} ]; then cat {p}; else echo __missing__ >&2; fi", p = shq(path)))
+        .ok_or("could not run the administrator command")?;
+    match (ok, err.contains("__missing__")) {
+        (_, true) => Ok(None),
+        (true, false) => Ok(Some(out)),
+        (false, false) => Err(format!("read {path}: {}", err.trim())),
+    }
+}
+
+/// Write a file SENTIENT's service reads (owner sentient, mode 0600),
+/// replacing it in one step.
+pub fn write_private_file(sink: &ProgressFn, path: &str, text: &str) -> Result<(), String> {
+    let script = format!(
+        "set -e\numask 077\ncat > {tmp} <<'SENTIENTEOF'\n{text}SENTIENTEOF\nchown {APP_USER}:{APP_USER} {tmp}\nchmod 600 {tmp}\nmv -f {tmp} {p}\n",
+        tmp = shq(&format!("{path}.spm-new")),
+        p = shq(path),
+        text = if text.ends_with('\n') { text.to_string() } else { format!("{text}\n") },
+    );
+    exec::run_privileged(sink, &script)
+}
+
+/// Whether SENTIENT's environment file (where Linux keeps the passwords) is
+/// there.
+pub fn env_file_exists() -> bool {
+    exec::privileged_output(&format!("test -f {ENV_FILE}")).is_some_and(|(ok, _, _)| ok)
+}
+
+/// The passwords are gone with the environment file: give the database
+/// users new ones (as root, through the postgres account and ClickHouse's
+/// default user) and SENTIENT a new sign-in secret, which signs everyone
+/// out. Fills them into `cfg` for [`deploy`] to write.
+pub fn reissue_secrets(sink: &ProgressFn, cfg: &mut NativeConfig) -> Result<(), String> {
+    step(sink, "Setting new database passwords (the configuration file was missing)");
+    cfg.db_password = crate::native::generate_secret();
+    cfg.jwt_secret = crate::native::generate_secret();
+    let mut script = format!(
+        "set -e\nrunuser -u postgres -- psql -p {} -v ON_ERROR_STOP=1 -qAt -c {}\n",
+        cfg.pg_port,
+        shq(&format!("ALTER USER {} WITH PASSWORD '{}';", cfg.db_user, cfg.db_password)),
+    );
+    if cfg.flavor.uses_clickhouse() {
+        cfg.ch_password = crate::native::generate_secret();
+        script.push_str(&format!(
+            "clickhouse-client --port {} -q {}\n",
+            cfg.ch_native_port,
+            shq(&format!("ALTER USER {} IDENTIFIED WITH sha256_password BY '{}'", cfg.ch_user, cfg.ch_password)),
+        ));
+    }
+    exec::run_privileged(sink, &script)
+}
+
+/// Apply changed settings: rewrite the environment file and, when
+/// `pg_changed`, PostgreSQL's parameters (restarting the database), then
+/// restart SENTIENT. Waiting for it to answer is the caller's.
+pub fn reconfigure(sink: &ProgressFn, cfg: &NativeConfig, pg_changed: bool) -> Result<(), String> {
+    step(sink, "Writing the SENTIENT configuration");
+    let mut script = format!(
+        "set -e\n\
+         systemctl stop {APP_UNIT}\n\
+         cat > {ENV_FILE} <<'SENTIENTEOF'\n{env}SENTIENTEOF\n\
+         chown root:{APP_USER} {ENV_FILE} && chmod 640 {ENV_FILE}\n",
+        env = env_file_body(cfg)
+    );
+    if pg_changed {
+        let mut alter = String::new();
+        for (k, v) in cfg.pg.settings() {
+            alter.push_str(&format!(" -c {}", shq(&format!("ALTER SYSTEM SET {k} = '{v}';"))));
+        }
+        script.push_str(&format!(
+            "echo '>> Applying the PostgreSQL parameters'\n\
+             runuser -u postgres -- psql -p {port} -v ON_ERROR_STOP=1 -qAt{alter}\n\
+             systemctl restart {PG_UNIT}\n\
+             for i in $(seq 1 120); do runuser -u postgres -- pg_isready -q -p {port} && break; sleep 1; done\n",
+            port = cfg.pg_port
+        ));
+    }
+    script.push_str(&format!("systemctl start {APP_UNIT}\n"));
+    exec::run_privileged(sink, &script)
+}
+
 /// ClickHouse's service is installed although the installation no longer
 /// uses it (a migration away from ClickHouse keeps it, with its history).
 pub fn clickhouse_left_behind(cfg: &NativeConfig) -> bool {

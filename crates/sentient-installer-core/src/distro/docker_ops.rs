@@ -68,12 +68,100 @@ fn yaml_value(text: &str, key: &str) -> Option<String> {
 }
 
 pub fn read_secrets(cfg: &DeployConfig) -> Result<StackSecrets, String> {
-    let text = capture(&format!("cat {}", shell_quote(&cfg.compose_path())))
-        .map_err(|e| format!("read the stack's compose file: {e}"))?;
+    let text = match capture(&format!("cat {}", shell_quote(&cfg.compose_path()))) {
+        Ok(text) => text,
+        // The compose file is gone (what a repair may be for): the database
+        // containers still carry the passwords they were created with.
+        Err(e) => return container_secrets(cfg).ok_or_else(|| format!("read the stack's compose file: {e}")),
+    };
     Ok(StackSecrets {
         db_password: yaml_value(&text, "POSTGRES_PASSWORD").ok_or("the compose file has no POSTGRES_PASSWORD")?,
         ch_password: yaml_value(&text, "CLICKHOUSE_PASSWORD").unwrap_or_default(),
     })
+}
+
+/// A variable from a container's environment, running or stopped.
+fn container_env(container: &str, key: &str) -> Option<String> {
+    let out = capture(&format!(
+        "docker inspect --format '{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}' {}",
+        shell_quote(container)
+    ))
+    .ok()?;
+    let prefix = format!("{key}=");
+    out.lines().find_map(|l| l.strip_prefix(&prefix)).map(str::to_string)
+}
+
+fn container_secrets(cfg: &DeployConfig) -> Option<StackSecrets> {
+    let names = cfg.names();
+    Some(StackSecrets {
+        db_password: container_env(&names.pg, "POSTGRES_PASSWORD").filter(|p| !p.is_empty())?,
+        ch_password: if cfg.flavor.uses_clickhouse() {
+            container_env(&names.ch, "CLICKHOUSE_PASSWORD").unwrap_or_default()
+        } else {
+            String::new()
+        },
+    })
+}
+
+/// A file from SENTIENT's container, running or stopped; `None` if it is not
+/// there.
+pub fn read_app_file(cfg: &DeployConfig, path: &str) -> Result<Option<String>, String> {
+    let dir = private_temp_dir()?;
+    let out = capture(&format!(
+        "docker cp {}:{} {} 2>&1",
+        shell_quote(&cfg.names().app),
+        shell_quote(path),
+        shell_quote(&dir.join("f").display().to_string())
+    ));
+    let text = std::fs::read_to_string(dir.join("f")).ok();
+    let _ = std::fs::remove_dir_all(&dir);
+    match (text, out) {
+        (Some(t), _) => Ok(Some(t)),
+        (None, Err(e)) if e.contains("Could not find the file") || e.contains("No such") => Ok(None),
+        (None, Err(e)) => Err(format!("read {path} from SENTIENT's container: {e}")),
+        (None, Ok(_)) => Ok(None),
+    }
+}
+
+/// Write a file into SENTIENT's container (running or stopped), owned by
+/// root and readable by it only.
+pub fn write_app_file(cfg: &DeployConfig, path: &str, text: &str) -> Result<(), String> {
+    let (parent, name) = path.rsplit_once('/').ok_or_else(|| format!("{path} is not an absolute path"))?;
+    let dir = private_temp_dir()?;
+    let file = dir.join(name);
+    let result = (|| {
+        std::fs::write(&file, text).map_err(|e| format!("write {}: {e}", file.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600));
+        }
+        // Through tar, so the file is root's in the container rather than
+        // this user's id.
+        capture(&format!(
+            "tar -C {} --owner=0 --group=0 --numeric-owner -cf - {} | docker cp - {}:{}",
+            shell_quote(&dir.display().to_string()),
+            shell_quote(name),
+            shell_quote(&cfg.names().app),
+            shell_quote(if parent.is_empty() { "/" } else { parent })
+        ))
+        .map(|_| ())
+        .map_err(|e| format!("write {path} into SENTIENT's container: {e}"))
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+/// A temporary folder only this user can read.
+fn private_temp_dir() -> Result<std::path::PathBuf, String> {
+    let dir = std::env::temp_dir().join(format!("spm-{}-{}", std::process::id(), crate::native::generate_secret().get(..8).unwrap_or("x")));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    Ok(dir)
 }
 
 /// `cfg` with the passwords from the running stack, for anything that
@@ -213,6 +301,17 @@ pub fn remove_clickhouse(sink: &ProgressFn, cfg: &DeployConfig) -> Result<(), St
     run(sink, &format!("docker rm -f {}", shell_quote(&n.ch)))?;
     let _ = run(sink, &format!("docker volume rm {}", shell_quote(&n.vol_ch)));
     Ok(())
+}
+
+/// Apply changed settings: rewrite the compose file and let Compose recreate
+/// the containers whose configuration changed (SENTIENT for its environment,
+/// PostgreSQL for its parameters). `cfg` carries the stack's passwords.
+/// Waiting for SENTIENT to answer is the caller's.
+pub fn reconfigure(sink: &ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
+    step(sink, "Writing the SENTIENT configuration");
+    write_stack_files(sink, cfg)?;
+    step(sink, "Recreating what changed");
+    run_stream(sink, &cfg.compose_cmd("up -d"))
 }
 
 // ---------------------------------------------------------------------------

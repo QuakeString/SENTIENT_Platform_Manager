@@ -1019,6 +1019,29 @@ pub fn status(cfg: &NativeConfig) -> NativeStatus {
 }
 
 /// start | stop | restart, applied in dependency order.
+/// Apply changed settings: rewrite SENTIENT's service environment and, when
+/// `pg_changed`, PostgreSQL's parameters (which restarts the database), then
+/// start SENTIENT again. Waiting for it to answer is the caller's.
+pub fn reconfigure(sink: &ProgressFn, cfg: &NativeConfig, pg_changed: bool) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::native_linux::reconfigure(sink, cfg, pg_changed);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+    stop_server(sink, cfg)?;
+    if pg_changed {
+        apply_pg_tuning(sink, cfg)?;
+    }
+    step(sink, "Writing the SENTIENT configuration");
+    write_env_file(cfg)?;
+    register_app_service(cfg)?;
+    step(sink, "Starting SENTIENT");
+    let _ = sc(&["start", APP_SERVICE]);
+    Ok(())
+    }
+}
+
 /// Stop the SENTIENT service only, leaving PostgreSQL up, and wait until it
 /// has stopped (database work that must not race the server follows).
 pub fn stop_server(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
