@@ -1,0 +1,5 @@
+# Link the C runtime into Windows executables. A fresh Windows has no
+# Visual C++ runtime (vcruntime140.dll), and SENTIENT Setup must start there
+# before it can install anything (STATUS_DLL_NOT_FOUND otherwise).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

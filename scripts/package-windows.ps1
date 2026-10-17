@@ -11,6 +11,9 @@
 #       postgresql-18.6-1-windows-x64-binaries.zip
 #       timescaledb-postgresql-18-windows-amd64.zip
 #       sentient-payload.tar         the SENTIENT server, UI and data
+#       vc_redist.x64.exe            the Visual C++ runtime PostgreSQL and the
+#                                    SENTIENT server need (a fresh Windows
+#                                    has none); downloaded here if missing
 #       VERSION                      the SENTIENT version, shown by setup
 #
 # and zip it. Setup finds payload\ next to itself and installs without
@@ -39,6 +42,15 @@ foreach ($f in $required) {
         throw "Missing $f in $PayloadDir"
     }
 }
+
+# The Visual C++ runtime goes into every package, so an offline install on a
+# fresh Windows has it.
+$vcRedist = Join-Path $PayloadDir "vc_redist.x64.exe"
+if (-not (Test-Path $vcRedist)) {
+    Write-Host "Downloading the Visual C++ runtime installer"
+    Invoke-WebRequest -UseBasicParsing -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $vcRedist
+}
+$required += "vc_redist.x64.exe"
 
 if (-not $NoBuild) {
     Push-Location app
