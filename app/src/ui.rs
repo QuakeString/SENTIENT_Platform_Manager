@@ -3,9 +3,43 @@
 //! Small presentation pieces shared by the screens: the white panel the
 //! design system puts all content on, page headings, and status pills.
 
-use gpui_kit::component::{Theme, h_flex, v_flex};
+use gpui_kit::component::{
+    Theme, h_flex, v_flex,
+    button::{Button, ButtonVariants as _},
+};
 use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder as _;
+
+/// Where GNOME runs on Wayland it does not draw window frames for
+/// applications (no xdg-decoration), and this program's window came out
+/// square, without shadow or title bar. Through XWayland GNOME draws its own
+/// frame: title bar, rounded corners, shadow. `SPM_WAYLAND=1` keeps Wayland.
+/// The Wayland display is kept for the programs this one starts ([`open_url`]).
+pub fn prefer_native_frame() {
+    #[cfg(target_os = "linux")]
+    {
+        let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+        let gnome = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_uppercase().contains("GNOME"));
+        if gnome && set("WAYLAND_DISPLAY") && set("DISPLAY") && !set("SPM_WAYLAND") {
+            let wayland = std::env::var_os("WAYLAND_DISPLAY").unwrap_or_default();
+            std::env::set_var(ORIGINAL_WAYLAND, wayland);
+            std::env::remove_var("WAYLAND_DISPLAY");
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+const ORIGINAL_WAYLAND: &str = "SPM_ORIGINAL_WAYLAND_DISPLAY";
+
+/// Open `url` in the browser, on the desktop's own display server.
+pub fn open_url(url: &str, cx: &mut App) {
+    #[cfg(target_os = "linux")]
+    if let Some(wayland) = std::env::var_os(ORIGINAL_WAYLAND) {
+        let _ = std::process::Command::new("xdg-open").arg(url).env("WAYLAND_DISPLAY", wayland).spawn();
+        return;
+    }
+    cx.open_url(url);
+}
 
 /// A content panel: surface colour, hairline border, panel radius.
 pub fn panel(theme: &Theme) -> Div {
@@ -73,11 +107,24 @@ pub fn fact(theme: &Theme, label: &'static str, value: impl Into<SharedString>) 
 pub fn not_installed(theme: &Theme) -> Div {
     panel(theme)
         .child(div().font_weight(FontWeight::MEDIUM).child("SENTIENT isn't installed on this computer"))
+        .child(div().text_sm().text_color(theme.muted_foreground).child(
+            "Install it from a SENTIENT package: choose the unpacked package folder (the one with SENTIENT-Setup and payload) and its Setup starts.",
+        ))
         .child(
-            div()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child("Run SENTIENT-Setup.exe to install it. The Platform Manager is installed with it."),
+            h_flex()
+                .gap_2()
+                .child(
+                    Button::new("install-sentient")
+                        .primary()
+                        .label("Install SENTIENT…")
+                        .on_click(|_, window, cx| crate::standalone::install_sentient(window, cx)),
+                )
+                .child(
+                    Button::new("remove-manager")
+                        .outline()
+                        .label("Remove the Platform Manager")
+                        .on_click(|_, window, cx| crate::standalone::remove_manager(window, cx)),
+                ),
         )
 }
 

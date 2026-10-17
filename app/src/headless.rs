@@ -9,6 +9,8 @@
 //!
 //! ```text
 //! --job [--json] install <plan.json>   (unattended install; the wizard's plan)
+//! --job install-manager [--no-shortcuts] (the Platform Manager alone)
+//! --job remove-manager                  (the Platform Manager installed alone)
 //! --job [--json] migrate <stock|timescaledb|clickhouse>
 //! --job resume-migration
 //! --job update [<package folder>] [--accept-breaking]
@@ -24,7 +26,7 @@ use sentient_installer_core::stack::Flavor;
 
 use crate::installation::InstallationRecord;
 
-const USAGE: &str = "usage: --job install <plan.json> | migrate <stock|timescaledb|clickhouse> | resume-migration | \
+const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
 update [<package folder>] [--accept-breaking] | backup <file> | restore <file> <database> [<key file>] | \
 use-restored <database> | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
 
@@ -81,6 +83,33 @@ pub fn run(args: &[String]) -> i32 {
             .and_then(|path| std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}")))
             .and_then(|text| serde_json::from_str::<crate::installer::InstallPlan>(&text).map_err(|e| format!("the plan: {e}")))
             .and_then(|plan| crate::installer::run_install(plan, sink.clone()));
+        return match result {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("✗ {e}");
+                1
+            }
+        };
+    }
+    if job == "install-manager" || job == "remove-manager" {
+        let sink = if json { json_printer() } else { printer() };
+        let result = if job == "remove-manager" {
+            if InstallationRecord::load().is_some() {
+                Err("SENTIENT is installed: uninstall it instead (--job uninstall), which removes the Platform Manager too.".into())
+            } else {
+                crate::maintenance::run_remove_manager(sink)
+            }
+        } else {
+            let shortcuts = !args.iter().any(|a| a == "--no-shortcuts");
+            let s = crate::self_install::Shortcuts {
+                autostart: false,
+                desktop_sentient: false,
+                desktop_manager: shortcuts,
+                start_menu: shortcuts,
+                kiosk: false,
+            };
+            crate::installer::run_manager_only(s, sink)
+        };
         return match result {
             Ok(()) => 0,
             Err(e) => {

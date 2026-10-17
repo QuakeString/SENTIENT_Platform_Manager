@@ -115,6 +115,41 @@ mod imp {
         let _ = shortcut(manager, START_MENU, PRODUCT, "--manager");
     }
 
+    /// Shortcuts of a Platform Manager installed without SENTIENT.
+    pub fn create_manager_shortcuts(manager: &Path, s: &Shortcuts) -> Result<(), String> {
+        if s.start_menu {
+            shortcut(manager, START_MENU, PRODUCT, "--manager")?;
+        }
+        if s.desktop_manager {
+            shortcut(manager, DESKTOP, PRODUCT, "--manager")?;
+        }
+        Ok(())
+    }
+
+    const MANAGER_ARP_KEY: &str = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\SENTIENT Platform Manager";
+
+    /// The Apps & features entry of a Platform Manager installed alone.
+    /// SENTIENT's own entry replaces it once SENTIENT is installed.
+    pub fn register_manager_entry(manager: &Path) {
+        let exe = manager.display().to_string();
+        for (name, kind, data) in [
+            ("DisplayName", "REG_SZ", PRODUCT.to_string()),
+            ("DisplayVersion", "REG_SZ", env!("CARGO_PKG_VERSION").to_string()),
+            ("Publisher", "REG_SZ", "INVENIA SYSTEMS".to_string()),
+            ("DisplayIcon", "REG_SZ", exe.clone()),
+            ("InstallLocation", "REG_SZ", manager_dir().display().to_string()),
+            ("UninstallString", "REG_SZ", format!("\"{exe}\" --uninstall")),
+            ("NoModify", "REG_DWORD", "1".to_string()),
+            ("NoRepair", "REG_DWORD", "1".to_string()),
+        ] {
+            let _ = quiet("reg.exe").args(["add", MANAGER_ARP_KEY, "/v", name, "/t", kind, "/d", &data, "/f"]).output();
+        }
+    }
+
+    pub fn remove_manager_entry() {
+        let _ = quiet("reg.exe").args(["delete", MANAGER_ARP_KEY, "/f"]).output();
+    }
+
     pub fn remove_shortcuts() {
         for folder in [DESKTOP, START_MENU] {
             let _ = std::fs::remove_file(format!(r"{folder}\{PRODUCT}.lnk"));
@@ -239,6 +274,23 @@ mod imp {
         };
         let _ = create_shortcuts(manager, "http://localhost:8080", &s);
     }
+
+    /// The menu entry of a Platform Manager installed without SENTIENT.
+    pub fn create_manager_shortcuts(manager: &Path, s: &Shortcuts) -> Result<(), String> {
+        if !s.start_menu {
+            return Ok(());
+        }
+        run(&noop(), &format!(
+            "set -e\ncat > {APPS}/sentient-platform-manager.desktop <<'EOF'\n{}EOF\n\
+             command -v update-desktop-database >/dev/null && update-desktop-database -q || true\n",
+            desktop_entry(super::PRODUCT, &format!("{} --manager", manager.display()), "Run, update and back up SENTIENT")
+        ))
+    }
+
+    /// Linux has no Apps & features list.
+    pub fn register_manager_entry(_manager: &Path) {}
+
+    pub fn remove_manager_entry() {}
 
     pub fn remove_shortcuts() {
         let _ = run(
