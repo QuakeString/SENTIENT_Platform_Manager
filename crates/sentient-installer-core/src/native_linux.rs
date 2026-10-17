@@ -453,6 +453,36 @@ pub fn read_secrets(_cfg: &NativeConfig) -> Result<EnvSecrets, String> {
     })
 }
 
+/// Whether SENTIENT's environment file (where Linux keeps the passwords) is
+/// there.
+pub fn env_file_exists() -> bool {
+    exec::privileged_output(&format!("test -f {ENV_FILE}")).is_some_and(|(ok, _, _)| ok)
+}
+
+/// The passwords are gone with the environment file: give the database
+/// users new ones (as root, through the postgres account and ClickHouse's
+/// default user) and SENTIENT a new sign-in secret, which signs everyone
+/// out. Fills them into `cfg` for [`deploy`] to write.
+pub fn reissue_secrets(sink: &ProgressFn, cfg: &mut NativeConfig) -> Result<(), String> {
+    step(sink, "Setting new database passwords (the configuration file was missing)");
+    cfg.db_password = crate::native::generate_secret();
+    cfg.jwt_secret = crate::native::generate_secret();
+    let mut script = format!(
+        "set -e\nrunuser -u postgres -- psql -p {} -v ON_ERROR_STOP=1 -qAt -c {}\n",
+        cfg.pg_port,
+        shq(&format!("ALTER USER {} WITH PASSWORD '{}';", cfg.db_user, cfg.db_password)),
+    );
+    if cfg.flavor.uses_clickhouse() {
+        cfg.ch_password = crate::native::generate_secret();
+        script.push_str(&format!(
+            "clickhouse-client --port {} -q {}\n",
+            cfg.ch_native_port,
+            shq(&format!("ALTER USER {} IDENTIFIED WITH sha256_password BY '{}'", cfg.ch_user, cfg.ch_password)),
+        ));
+    }
+    exec::run_privileged(sink, &script)
+}
+
 /// Apply changed settings: rewrite the environment file and, when
 /// `pg_changed`, PostgreSQL's parameters (restarting the database), then
 /// restart SENTIENT. Waiting for it to answer is the caller's.

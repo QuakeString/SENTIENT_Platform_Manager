@@ -26,7 +26,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | migrate <stock|timescaledb|clickhouse> | resume-migration | \
 update [<package folder>] [--accept-breaking] | backup <file> | restore <file> <database> | \
-use-restored <database> | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
+use-restored <database> | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
 
 /// A console for the output: release builds on Windows have none of their
 /// own, so use the one the job was started from.
@@ -140,6 +140,7 @@ pub fn run(args: &[String]) -> i32 {
             Some(name) => crate::restore_switch::run(&record, name, sink.clone()).map(|_| ()),
             None => Err(USAGE.into()),
         },
+        "repair" => crate::maintenance::run_repair(record, sink.clone()),
         "uninstall" => {
             let keep = !args.iter().any(|a| a == "--delete-data");
             crate::maintenance::run_uninstall(record, keep, sink.clone())

@@ -8,6 +8,7 @@ mod backup;
 mod control;
 mod logs;
 pub(crate) mod migration;
+mod repair;
 mod settings;
 mod status;
 mod update;
@@ -22,7 +23,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::installation::InstallationRecord;
-use crate::{theme, ui};
+use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -74,17 +75,6 @@ impl Page {
         }
     }
 
-    /// For the screens not built yet.
-    fn summary(self) -> &'static str {
-        match self {
-            Page::Backup => "Full backups of the database and all telemetry, scheduled or on demand, and restore.",
-            Page::Migration => "Change the database type, verified before switching over.",
-            Page::Settings => "Every option chosen at install time; shows which services restart.",
-            Page::Repair => "Re-register services and restore missing files, or uninstall.",
-            _ => "",
-        }
-    }
-
     fn icon(self) -> Icon {
         match self {
             Page::Status => Icon::new(Lucide::Activity),
@@ -109,6 +99,7 @@ pub struct Manager {
     backup: Option<Entity<backup::BackupPage>>,
     migration: Option<Entity<migration::MigrationPage>>,
     settings: Option<Entity<settings::SettingsPage>>,
+    repair: Option<Entity<repair::RepairPage>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -131,6 +122,7 @@ impl Manager {
             backup: None,
             migration: None,
             settings: None,
+            repair: None,
             _subscriptions: Vec::new(),
         }
     }
@@ -143,6 +135,7 @@ impl Manager {
         self.logs = None;
         self.update = None;
         self.backup = None;
+        self.repair = None;
         // Migration and Settings reload their own record and keep showing
         // the result of what just ran.
         cx.notify();
@@ -257,19 +250,11 @@ impl Manager {
                 }
                 self.settings.clone().unwrap().into_any_element()
             }
-            page => {
-                let theme = cx.theme().clone();
-                ui::page(&theme, page.title(), page.summary())
-                    .child(
-                        ui::panel(&theme).child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.muted_foreground)
-                                .child("This screen is part of a later phase of the GPUI port."),
-                        ),
-                    )
-                    .into_any_element()
-            }
+            Page::Repair => self
+                .repair
+                .get_or_insert_with(|| cx.new(|cx| repair::RepairPage::new(record, cx)))
+                .clone()
+                .into_any_element(),
         }
     }
 }

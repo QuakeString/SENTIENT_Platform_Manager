@@ -68,11 +68,38 @@ fn yaml_value(text: &str, key: &str) -> Option<String> {
 }
 
 pub fn read_secrets(cfg: &DeployConfig) -> Result<StackSecrets, String> {
-    let text = capture(&format!("cat {}", shell_quote(&cfg.compose_path())))
-        .map_err(|e| format!("read the stack's compose file: {e}"))?;
+    let text = match capture(&format!("cat {}", shell_quote(&cfg.compose_path()))) {
+        Ok(text) => text,
+        // The compose file is gone (what a repair may be for): the database
+        // containers still carry the passwords they were created with.
+        Err(e) => return container_secrets(cfg).ok_or_else(|| format!("read the stack's compose file: {e}")),
+    };
     Ok(StackSecrets {
         db_password: yaml_value(&text, "POSTGRES_PASSWORD").ok_or("the compose file has no POSTGRES_PASSWORD")?,
         ch_password: yaml_value(&text, "CLICKHOUSE_PASSWORD").unwrap_or_default(),
+    })
+}
+
+/// A variable from a container's environment, running or stopped.
+fn container_env(container: &str, key: &str) -> Option<String> {
+    let out = capture(&format!(
+        "docker inspect --format '{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}' {}",
+        shell_quote(container)
+    ))
+    .ok()?;
+    let prefix = format!("{key}=");
+    out.lines().find_map(|l| l.strip_prefix(&prefix)).map(str::to_string)
+}
+
+fn container_secrets(cfg: &DeployConfig) -> Option<StackSecrets> {
+    let names = cfg.names();
+    Some(StackSecrets {
+        db_password: container_env(&names.pg, "POSTGRES_PASSWORD").filter(|p| !p.is_empty())?,
+        ch_password: if cfg.flavor.uses_clickhouse() {
+            container_env(&names.ch, "CLICKHOUSE_PASSWORD").unwrap_or_default()
+        } else {
+            String::new()
+        },
     })
 }
 
