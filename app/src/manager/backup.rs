@@ -9,6 +9,10 @@
 //! On a PostgreSQL + ClickHouse install the backup also holds ClickHouse's
 //! telemetry, and a restore puts it in a new ClickHouse database of the same
 //! name as the new PostgreSQL one, so neither touches the live data.
+//!
+//! A backup made on another database type is converted while it is restored
+//! (`restore::TelemetryInto`), and its schema is matched to this SENTIENT's
+//! (`restore_switch::match_schema`).
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -337,13 +341,18 @@ impl BackupPage {
             ],
             passphrase: Some(self.restore_passphrase.read(cx).value().to_string()).filter(|p| !p.is_empty()),
             clickhouse: self.ch_conn(Some(target.clone()), cx),
+            telemetry_into: None,
         };
         let live_ch = self.record.as_ref().map(|r| r.stack.ch_db.clone()).unwrap_or_default();
+        let record = self.record.clone();
         self.restoring = Some(target.clone());
         self.restored = None;
         self.restore.update(cx, |job, cx| {
             job.start(
                 move |sink| {
+                    let mut opts = opts;
+                    // A backup from another database type is converted to this one.
+                    opts.telemetry_into = record.as_ref().map(crate::migration::telemetry_into).transpose()?;
                     block_on(async {
                         sink(Progress::Step { name: format!("Creating the empty database {target}") });
                         db::create_database(&admin, &target).await.map_err(|e| e.to_string())?;
@@ -353,6 +362,10 @@ impl BackupPage {
                         }
                         restore::run(&conn, &opts, bridge(sink.clone())).await.map_err(|e| e.to_string())
                     })??;
+                    if let Some(record) = &record {
+                        let ch_password = opts.clickhouse.as_ref().map(|c| c.password.clone()).unwrap_or_default();
+                        crate::restore_switch::match_schema(record, &admin, &ch_password, &target, &sink)?;
+                    }
                     sink(Progress::Done { message: format!("Restored into the database {target}") });
                     Ok(())
                 },
@@ -538,7 +551,7 @@ impl Render for BackupPage {
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Restore"))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
-                    "Restores into a new, empty database next to the current one (in ClickHouse too, on a ClickHouse install). Every part is checked against its checksum first.",
+                    "Restores into a new, empty database next to the current one (in ClickHouse too, on a ClickHouse install). Every part is checked against its checksum first. A backup from another database type is converted to this one; one from an older SENTIENT is upgraded.",
                 ))
                 .child(
                     h_flex()

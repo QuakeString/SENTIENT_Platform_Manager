@@ -11,6 +11,7 @@
 //! manifest, compression, encryption, file stores) — see `docs/RESEARCH_AND_PLAN.md`.
 
 pub mod backup;
+pub mod ch_native;
 pub mod clickhouse;
 pub mod categories;
 pub mod db;

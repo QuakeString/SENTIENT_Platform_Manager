@@ -218,6 +218,22 @@ fn run_upgrade(cfg: &NativeConfig, bin: &Path, data: &Path, dry_run: bool, accep
     }
 }
 
+/// Bring a restored copy of the database (`db`, and on ClickHouse the
+/// ClickHouse database of the same name) to the installed version's schema,
+/// with the installed version's schema tool. Returns its output.
+pub fn upgrade_restored(cfg: &NativeConfig, db: &str) -> Result<String, String> {
+    let restored = NativeConfig {
+        db_name: db.to_string(),
+        ch_db: if cfg.flavor == Flavor::Clickhouse { db.to_string() } else { cfg.ch_db.clone() },
+        ..cfg.clone()
+    };
+    run_upgrade(&restored, &cfg.install_dir.join("bin"), &cfg.install_dir.join("data"), false, false)
+        .map_err(|out| match breaking_changes(&out) {
+            b if b.is_empty() => last_lines(&out, 8),
+            b => format!("its schema upgrade has breaking changes:\n{}", b.join("\n")),
+        })
+}
+
 /// The `[BREAKING]` lines of a dry run, with what follows each.
 pub(crate) fn breaking_changes(output: &str) -> Vec<String> {
     let lines: Vec<&str> = output.lines().collect();

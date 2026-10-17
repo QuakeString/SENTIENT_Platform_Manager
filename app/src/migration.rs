@@ -28,6 +28,7 @@ use sentient_backup_core::backup::{self, BackupOptions, Selection};
 use sentient_backup_core::clickhouse::ChConn;
 use sentient_backup_core::db::ConnConfig;
 use sentient_backup_core::progress as bk;
+use sentient_backup_core::restore::TelemetryInto;
 use sentient_backup_core::telemetry_move as mv;
 use sentient_installer_core::distro::{self, DeployConfig, docker_ops};
 use sentient_installer_core::native::{self, NativeConfig};
@@ -229,13 +230,34 @@ impl Setup {
     /// SENTIENT's own TimescaleDB setup (data/sql/schema-ts-timescale.sql).
     fn timescale_sql(&self) -> Result<String, String> {
         match self {
-            Setup::Native(c) => {
-                let path = c.install_dir.join("data").join("sql").join("schema-ts-timescale.sql");
-                std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))
-            }
-            Setup::Docker(c) => docker_ops::image_file(c, "/usr/share/sentient/data/sql/schema-ts-timescale.sql"),
+            Setup::Native(c) => native_timescale_sql(c),
+            Setup::Docker(c) => docker_timescale_sql(c),
         }
     }
+}
+
+fn native_timescale_sql(c: &NativeConfig) -> Result<String, String> {
+    let path = c.install_dir.join("data").join("sql").join("schema-ts-timescale.sql");
+    std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))
+}
+
+fn docker_timescale_sql(c: &DeployConfig) -> Result<String, String> {
+    docker_ops::image_file(c, "/usr/share/sentient/data/sql/schema-ts-timescale.sql")
+}
+
+/// How this installation keeps telemetry, for a restore of a backup made on
+/// another database type (the restore converts it).
+pub(crate) fn telemetry_into(record: &InstallationRecord) -> Result<TelemetryInto, String> {
+    Ok(match record.flavor() {
+        Flavor::Clickhouse => TelemetryInto::Clickhouse,
+        Flavor::Stock => TelemetryInto::Partitioned,
+        Flavor::Timescaledb => TelemetryInto::Hypertable {
+            timescale_sql: match record.engine {
+                Engine::Native => native_timescale_sql(&record.native_config())?,
+                Engine::Docker => docker_timescale_sql(&record.stack)?,
+            },
+        },
+    })
 }
 
 fn write_record(record: &InstallationRecord) -> Result<(), String> {

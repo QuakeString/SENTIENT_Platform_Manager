@@ -111,6 +111,57 @@ fn wait_answering(port: u16) -> bool {
     false
 }
 
+async fn schema_version(pg: &ConnConfig) -> Result<i64, String> {
+    let client = mv::connect(pg).await.map_err(|e| e.to_string())?;
+    let row = client
+        .query_opt("SELECT schema_version FROM tb_schema_settings LIMIT 1", &[])
+        .await
+        .map_err(|e| format!("read the schema version of {}: {e}", pg.dbname))?;
+    row.map(|r| r.get(0)).ok_or_else(|| format!("{} has no schema version", pg.dbname))
+}
+
+/// After a restore into `target`: its schema against the running SENTIENT's.
+/// A backup from a newer SENTIENT cannot run here; one from an older SENTIENT
+/// is upgraded (natively with the installed schema tool; on Docker SENTIENT
+/// upgrades it itself when it starts on it). `live` signs in to SENTIENT's
+/// database; `ch_password` is ClickHouse's, on a ClickHouse installation.
+pub(crate) fn match_schema(
+    record: &InstallationRecord,
+    live: &ConnConfig,
+    ch_password: &str,
+    target: &str,
+    sink: &ProgressFn,
+) -> Result<(), String> {
+    let restored = ConnConfig { dbname: target.to_string(), ..live.clone() };
+    let (have, got) = block_on(async { Ok::<_, String>((schema_version(live).await?, schema_version(&restored).await?)) })??;
+    if got > have {
+        return Err(format!(
+            "The backup is from a newer SENTIENT (schema {got}) than this one (schema {have}). Update SENTIENT, then put the restored database {target} into service."
+        ));
+    }
+    if got == have {
+        return Ok(());
+    }
+    match record.engine {
+        crate::installation::Engine::Docker => {
+            sink(Progress::Log { line: format!("The backup is from an older SENTIENT (schema {got}); SENTIENT upgrades it to schema {have} when it starts on it.") });
+            Ok(())
+        }
+        crate::installation::Engine::Native => {
+            step(sink, &format!("Upgrading the restored data from schema {got} to {have}"));
+            let mut cfg = record.native_config();
+            cfg.db_password = live.password.clone();
+            cfg.ch_password = ch_password.to_string();
+            let out = sentient_installer_core::native::safe_update::upgrade_restored(&cfg, target)
+                .map_err(|e| format!("The restored data could not be upgraded to this SENTIENT's schema: {e}"))?;
+            for line in out.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev() {
+                sink(Progress::Log { line: line.to_string() });
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Make SENTIENT use the restored database `name`. Returns the name the data
 /// from before is kept under.
 pub fn run(record: &InstallationRecord, name: &str, sink: ProgressFn) -> Result<String, String> {
