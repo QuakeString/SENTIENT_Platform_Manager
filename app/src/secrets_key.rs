@@ -228,6 +228,8 @@ pub fn after_restore(live: &ConnConfig, target: &str, backup: &Path, key: Option
         return Ok(());
     }
     let path = std::fs::canonicalize(&key_path).unwrap_or(key_path);
+    // Windows canonical paths carry the \\?\ prefix; the plain form reads the same.
+    let path = PathBuf::from(path.display().to_string().trim_start_matches(r"\\?\"));
     let comment = format!("{COMMENT_PREFIX}{}", path.display()).replace('\'', "''");
     block_on(async {
         let client = mv::connect(&ConnConfig { dbname: "postgres".into(), ..live.clone() }).await.map_err(|e| e.to_string())?;
