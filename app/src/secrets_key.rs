@@ -78,7 +78,7 @@ pub fn read(record: &InstallationRecord) -> Result<Option<String>, String> {
     match location(record) {
         Location::Environment => Ok(None),
         Location::Container(path) => docker_ops::read_app_file(&record.stack, &path),
-        Location::Linux(path) => sentient_installer_core::native_linux::read_private_file(&path),
+        Location::Linux(path) => read_linux(&path),
         Location::File(path) => match std::fs::read_to_string(&path) {
             Ok(text) => Ok(Some(text)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -91,13 +91,34 @@ fn write(record: &InstallationRecord, text: &str, sink: &ProgressFn) -> Result<(
     match location(record) {
         Location::Environment => Err("SENTIENT's secrets key is set in its environment (SENTIENT_SECRETS_KEY)".into()),
         Location::Container(path) => docker_ops::write_app_file(&record.stack, &path, text),
-        Location::Linux(path) => sentient_installer_core::native_linux::write_private_file(sink, &path, text),
+        Location::Linux(path) => write_linux(sink, &path, text),
         Location::File(path) => {
             let tmp = path.with_extension("key.spm-new");
             std::fs::write(&tmp, text).map_err(|e| format!("write {}: {e}", tmp.display()))?;
             std::fs::rename(&tmp, &path).map_err(|e| format!("replace {}: {e}", path.display()))
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux(path: &str) -> Result<Option<String>, String> {
+    sentient_installer_core::native_linux::read_private_file(path)
+}
+
+#[cfg(target_os = "linux")]
+fn write_linux(sink: &ProgressFn, path: &str, text: &str) -> Result<(), String> {
+    sentient_installer_core::native_linux::write_private_file(sink, path, text)
+}
+
+// A native install elsewhere is Windows, whose key is a plain file.
+#[cfg(not(target_os = "linux"))]
+fn read_linux(path: &str) -> Result<Option<String>, String> {
+    Err(format!("{path}: not a Linux installation"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_linux(_sink: &ProgressFn, path: &str, _text: &str) -> Result<(), String> {
+    Err(format!("{path}: not a Linux installation"))
 }
 
 fn keys(text: &str) -> Vec<[u8; 32]> {
