@@ -80,7 +80,7 @@ impl Render for StatusPage {
                             Button::new("open")
                                 .primary()
                                 .label("Open SENTIENT")
-                                .on_click(move |_, _, cx| cx.open_url(&url)),
+                                .on_click(move |_, _, cx| ui::open_url(&url, cx)),
                         ),
                 )
                 .child(ui::fact(&theme, "SENTIENT version", record.sentient_version.clone()))

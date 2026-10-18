@@ -46,6 +46,7 @@ fn check_tone(status: Status) -> (Tone, &'static str) {
         Status::Pass => (Tone::Good, "Ready"),
         Status::Setup => (Tone::Warn, "Will be installed"),
         Status::Fail => (Tone::Bad, "Blocker"),
+        Status::Warn => (Tone::Warn, "Attention"),
         Status::Unknown => (Tone::Neutral, "Unknown"),
     }
 }
@@ -76,12 +77,69 @@ impl Installer {
         } else {
             "Online: files are downloaded during install"
         };
+        let choice = |manager_only: bool, id: &'static str, title: &'static str, desc: &'static str| {
+            let selected = self.manager_only == manager_only;
+            h_flex()
+                .id(id)
+                .flex_1()
+                .min_w_0()
+                .gap_3()
+                .p_3()
+                .rounded(theme.radius)
+                .bg(theme.background)
+                .border_1()
+                .border_color(if selected { theme.primary } else { theme.input })
+                .when(selected, |c| c.bg(theme.list_active))
+                .cursor_pointer()
+                .child(
+                    div()
+                        .size_4()
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .border_2()
+                        .border_color(if selected { theme.primary } else { theme.muted_foreground })
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(selected, |r| r.child(div().size_2().rounded_full().bg(theme.primary))),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_1()
+                        .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(desc)),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.manager_only = manager_only;
+                    this.problem = None;
+                    cx.notify();
+                }))
+        };
         v_flex()
             .gap_4()
             .child(lead(
                 &theme,
-                "This installs the SENTIENT platform, its database and the SENTIENT Platform Manager on this computer. You choose the database and every setting on the next pages; nothing changes on the computer until you press Install.",
+                "Nothing changes on the computer until you press Install on the Summary page.",
             ))
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_stretch()
+                    .child(choice(
+                        false,
+                        "install-both",
+                        "SENTIENT and the Platform Manager",
+                        "The platform, its database and the Platform Manager. You choose the database and every setting on the next pages.",
+                    ))
+                    .child(choice(
+                        true,
+                        "install-manager",
+                        "Only the Platform Manager",
+                        "The Platform Manager alone, without SENTIENT and its database. SENTIENT can be installed from it later, from a SENTIENT package.",
+                    )),
+            )
             .child(
                 h_flex()
                     .gap_3()
@@ -394,6 +452,24 @@ impl Installer {
                         ),
                 )
             })
+            .children(self.port_warning(cx))
+    }
+
+    /// The full port message under the fields, when a chosen port is taken.
+    fn port_warning(&self, cx: &App) -> Option<Div> {
+        let theme = cx.theme();
+        self.port_problem(cx).map(|text| {
+            h_flex()
+                .gap_2()
+                .p_3()
+                .max_w(px(640.))
+                .rounded(theme.radius)
+                .bg(theme.warning)
+                .text_color(theme.warning_foreground)
+                .text_sm()
+                .child(Icon::new(IconName::TriangleAlert).small())
+                .child(div().min_w_0().child(text))
+        })
     }
 
     fn ports(&mut self, cx: &mut Context<Self>) -> Div {
@@ -418,6 +494,7 @@ impl Installer {
                     .child(row("CoAP", &f.coap_port))
                     .child(row("CoAP over DTLS", &f.coaps_port)),
             )
+            .children(self.port_warning(cx))
     }
 
     fn administrator(&mut self, cx: &mut Context<Self>) -> Div {
@@ -552,7 +629,16 @@ impl Installer {
     }
 
     fn shortcuts(&mut self, cx: &mut Context<Self>) -> Div {
-        let options: Vec<(&'static str, &'static str, bool)> = if cfg!(windows) {
+        let options: Vec<(&'static str, &'static str, bool)> = if self.manager_only {
+            if cfg!(windows) {
+                vec![
+                    ("desktop-manager", "Desktop shortcut for the Platform Manager", self.desktop_manager),
+                    ("start-menu", "Start menu entry", self.start_menu),
+                ]
+            } else {
+                vec![("start-menu", "Application menu entry for the Platform Manager", self.start_menu)]
+            }
+        } else if cfg!(windows) {
             vec![
                 ("autostart", "Start SENTIENT automatically with Windows", self.autostart),
                 ("desktop-sentient", "Desktop shortcut for SENTIENT", self.desktop_sentient),
@@ -563,7 +649,7 @@ impl Installer {
         } else {
             vec![("start-menu", "Application menu entries for SENTIENT and the Platform Manager", self.start_menu)]
         };
-        let note = (!cfg!(windows)).then(|| {
+        let note = (!cfg!(windows) && !self.manager_only).then(|| {
             let theme = cx.theme().clone();
             div().text_sm().text_color(theme.muted_foreground).child(
                 "SENTIENT starts with the computer: as a systemd service, or through Docker's restart policy.",
@@ -591,57 +677,74 @@ impl Installer {
         let f = &self.fields;
         let v = |s: &Entity<InputState>| self.value(s, cx);
         let mut rows: Vec<(&'static str, String, usize)> = Vec::new();
-        if !cfg!(windows) {
-            let runs = if self.engine == Engine::Docker { "Docker on this machine" } else { "Natively with systemd" };
-            rows.push(("Runs as", runs.to_string(), 1));
-        }
-        if self.engine == Engine::Native {
-            rows.push(("Program folder", v(&f.install_dir), 2));
-        }
-        if cfg!(windows) {
-            rows.push(("Database folder", v(&f.data_dir), 2));
-        }
-        rows.extend(vec![
-            ("Database", self.flavor.map(flavor_label).unwrap_or("Not chosen").to_string(), 3),
-            ("PostgreSQL", format!("{} as {} on port {}", v(&f.pg_db), v(&f.pg_user), v(&f.pg_port)), 4),
-        ]);
-        if self.flavor == Some(Flavor::Clickhouse) {
-            let place = if cfg!(windows) { "Docker in WSL2" } else { "Docker" };
+        if self.manager_only {
+            let mut shortcuts = Vec::new();
+            if cfg!(windows) && self.desktop_manager {
+                shortcuts.push("desktop");
+            }
+            if self.start_menu {
+                shortcuts.push(if cfg!(windows) { "Start menu" } else { "application menu" });
+            }
+            rows.push(("Installs", format!("SENTIENT Platform Manager {}, without SENTIENT", env!("CARGO_PKG_VERSION")), 0));
+            rows.push(("Program folder", crate::self_install::manager_dir().display().to_string(), 0));
             rows.push((
-                "ClickHouse",
-                format!("{} as {} on port {} ({place})", v(&f.ch_db), v(&f.ch_user), v(&f.ch_http_port)),
-                4,
+                "Shortcuts",
+                if shortcuts.is_empty() { "None".into() } else { shortcuts.join(" and ") },
+                super::SHORTCUTS,
             ));
-        }
-        rows.extend(vec![
-            (
-                "Ports",
-                format!(
-                    "Web {} · MQTT {} / {} · CoAP {} / {}",
-                    v(&f.http_port),
-                    v(&f.mqtt_port),
-                    v(&f.mqtts_port),
-                    v(&f.coap_port),
-                    v(&f.coaps_port)
+        } else {
+            if !cfg!(windows) {
+                let runs = if self.engine == Engine::Docker { "Docker on this machine" } else { "Natively with systemd" };
+                rows.push(("Runs as", runs.to_string(), 1));
+            }
+            if self.engine == Engine::Native {
+                rows.push(("Program folder", v(&f.install_dir), 2));
+            }
+            if cfg!(windows) {
+                rows.push(("Database folder", v(&f.data_dir), 2));
+            }
+            rows.extend(vec![
+                ("Database", self.flavor.map(flavor_label).unwrap_or("Not chosen").to_string(), 3),
+                ("PostgreSQL", format!("{} as {} on port {}", v(&f.pg_db), v(&f.pg_user), v(&f.pg_port)), 4),
+            ]);
+            if self.flavor == Some(Flavor::Clickhouse) {
+                let place = if cfg!(windows) { "Docker in WSL2" } else { "Docker" };
+                rows.push((
+                    "ClickHouse",
+                    format!("{} as {} on port {} ({place})", v(&f.ch_db), v(&f.ch_user), v(&f.ch_http_port)),
+                    4,
+                ));
+            }
+            rows.extend(vec![
+                (
+                    "Ports",
+                    format!(
+                        "Web {} · MQTT {} / {} · CoAP {} / {}",
+                        v(&f.http_port),
+                        v(&f.mqtt_port),
+                        v(&f.mqtts_port),
+                        v(&f.coap_port),
+                        v(&f.coaps_port)
+                    ),
+                    5,
                 ),
-                5,
-            ),
-            ("Administrator", v(&f.admin_email), 6),
-            (
-                "Configuration",
-                if self.customize {
-                    format!("Customized ({} settings set)", self.chosen_settings(cx).len())
-                } else {
-                    "Recommended for this computer".into()
-                },
-                7,
-            ),
-            (
-                "Startup",
-                if !cfg!(windows) || self.autostart { "Starts with the computer".into() } else { "Started by hand".into() },
-                8,
-            ),
-        ]);
+                ("Administrator", v(&f.admin_email), 6),
+                (
+                    "Configuration",
+                    if self.customize {
+                        format!("Customized ({} settings set)", self.chosen_settings(cx).len())
+                    } else {
+                        "Recommended for this computer".into()
+                    },
+                    7,
+                ),
+                (
+                    "Startup",
+                    if !cfg!(windows) || self.autostart { "Starts with the computer".into() } else { "Started by hand".into() },
+                    8,
+                ),
+            ]);
+        }
         ui::panel(&theme).gap_0().children(rows.into_iter().map(|(label, value, step)| {
             h_flex()
                 .gap_3()
@@ -727,6 +830,30 @@ impl Installer {
 
     fn finish(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
+        if self.manager_only {
+            return v_flex()
+                .gap_4()
+                .child(
+                    div()
+                        .size_12()
+                        .rounded_full()
+                        .bg(theme.success)
+                        .text_color(theme.success_foreground)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(Icon::new(IconName::Check).large()),
+                )
+                .child(lead(
+                    &theme,
+                    "The Platform Manager is installed. To install SENTIENT later, open it and choose Install SENTIENT, or run SENTIENT Setup from a SENTIENT package again.",
+                ))
+                .child(h_flex().child(Button::new("open-manager").primary().label("Open Platform Manager").on_click(
+                    |_, _, _| {
+                        let _ = std::process::Command::new(crate::self_install::manager_exe()).arg("--manager").spawn();
+                    },
+                )));
+        }
         let url = format!("http://localhost:{}", self.value(&self.fields.http_port, cx));
         let email = self.value(&self.fields.admin_email, cx);
         let open_url = url.clone();
@@ -775,7 +902,7 @@ impl Installer {
                         Button::new("open-sentient")
                             .primary()
                             .label("Open SENTIENT")
-                            .on_click(move |_, _, cx| cx.open_url(&open_url)),
+                            .on_click(move |_, _, cx| ui::open_url(&open_url, cx)),
                     )
                     .child(Button::new("open-manager").outline().label("Open Platform Manager").on_click(
                         |_, _, _| {

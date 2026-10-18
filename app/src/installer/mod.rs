@@ -7,7 +7,7 @@
 mod pages;
 mod plan;
 
-pub(crate) use plan::{InstallPlan, run as run_install};
+pub(crate) use plan::{InstallPlan, run as run_install, run_manager_only};
 
 #[cfg(windows)]
 pub use plan::provision_clickhouse_wsl;
@@ -45,6 +45,7 @@ const STEPS: [&str; 12] = [
     "Install",
     "Finish",
 ];
+const SHORTCUTS: usize = 8;
 const SUMMARY: usize = 9;
 const INSTALL: usize = 10;
 const FINISH: usize = 11;
@@ -87,6 +88,8 @@ pub struct Installer {
     /// How SENTIENT runs: always native on Windows; Docker or native on Linux.
     engine: Engine,
     accepted: bool,
+    /// Install the Platform Manager alone, without SENTIENT.
+    manager_only: bool,
     checks: Option<Vec<CheckRow>>,
     flavor: Option<Flavor>,
     load_demo: bool,
@@ -193,6 +196,7 @@ impl Installer {
             step: 0,
             engine: if cfg!(windows) { Engine::Native } else { Engine::Docker },
             accepted: false,
+            manager_only: false,
             checks: None,
             flavor: None,
             load_demo: false,
@@ -313,21 +317,12 @@ impl Installer {
                         return Err(format!("{name} is required."));
                     }
                 }
-                self.port(&f.pg_port, "PostgreSQL port", cx)?;
-                if self.flavor == Some(Flavor::Clickhouse) {
-                    if self.value(&f.ch_password, cx).is_empty() {
-                        return Err("ClickHouse password is required.".into());
-                    }
-                    self.port(&f.ch_http_port, "ClickHouse HTTP port", cx)?;
-                    self.port(&f.ch_native_port, "ClickHouse native port", cx)?;
+                if self.flavor == Some(Flavor::Clickhouse) && self.value(&f.ch_password, cx).is_empty() {
+                    return Err("ClickHouse password is required.".into());
                 }
-                Ok(())
+                self.ports_in_use(&self.database_ports(cx)?)
             }
-            5 => {
-                let ports = self.wanted_ports(cx)?;
-                let check = checks::ports_free_of(&ports);
-                if check.status == Status::Fail { Err(check.detail) } else { Ok(()) }
-            }
+            5 => self.ports_in_use(&self.network_ports(cx)?),
             6 => {
                 let email = self.value(&f.admin_email, cx);
                 let password = self.value(&f.admin_password, cx);
@@ -365,7 +360,19 @@ impl Installer {
         cx.notify();
     }
 
-    fn wanted_ports(&self, cx: &App) -> Result<Vec<(u16, String)>, String> {
+    /// The database ports, chosen under Database settings.
+    fn database_ports(&self, cx: &App) -> Result<Vec<(u16, String)>, String> {
+        let f = &self.fields;
+        let mut ports = vec![(self.port(&f.pg_port, "PostgreSQL port", cx)?, "PostgreSQL".into())];
+        if self.flavor == Some(Flavor::Clickhouse) {
+            ports.push((self.port(&f.ch_http_port, "ClickHouse HTTP port", cx)?, "ClickHouse HTTP".into()));
+            ports.push((self.port(&f.ch_native_port, "ClickHouse native port", cx)?, "ClickHouse native".into()));
+        }
+        Ok(ports)
+    }
+
+    /// SENTIENT's own ports, chosen under Network ports.
+    fn network_ports(&self, cx: &App) -> Result<Vec<(u16, String)>, String> {
         let f = &self.fields;
         Ok(vec![
             (self.port(&f.http_port, "Web port", cx)?, "HTTP".into()),
@@ -373,8 +380,31 @@ impl Installer {
             (self.port(&f.mqtts_port, "MQTT over TLS port", cx)?, "MQTTS".into()),
             (self.port(&f.coap_port, "CoAP port", cx)?, "CoAP".into()),
             (self.port(&f.coaps_port, "CoAP over DTLS port", cx)?, "CoAPS".into()),
-            (self.port(&f.pg_port, "PostgreSQL port", cx)?, "PostgreSQL".into()),
         ])
+    }
+
+    /// Refuses ports something already listens on. The install only goes
+    /// ahead with ports that are free now.
+    fn ports_in_use(&self, ports: &[(u16, String)]) -> Result<(), String> {
+        let busy = checks::busy_ports(ports);
+        if busy.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("Already in use: {}. Choose another port, or stop what is listening on it.", busy.join(", ")))
+        }
+    }
+
+    /// Why the current page's ports are refused, shown on the page itself.
+    fn port_problem(&self, cx: &App) -> Option<String> {
+        let ports = match self.step {
+            4 => self.database_ports(cx),
+            5 => self.network_ports(cx),
+            _ => return None,
+        };
+        match ports {
+            Ok(ports) => self.ports_in_use(&ports).err(),
+            Err(e) => Some(e),
+        }
     }
 
     /// The settings that will be written: every catalog setting with a value.
@@ -436,7 +466,43 @@ impl Installer {
         })
     }
 
+    /// The pages this install goes through: all of them, or for the Platform
+    /// Manager alone only Welcome, Shortcuts and the last three.
+    fn shown(&self, step: usize) -> bool {
+        !self.manager_only || matches!(step, 0 | SHORTCUTS | SUMMARY | INSTALL | FINISH)
+    }
+
+    fn title(&self, step: usize) -> &'static str {
+        if self.manager_only && step == SHORTCUTS { "Shortcuts" } else { STEPS[step] }
+    }
+
+    fn shown_steps(&self) -> Vec<usize> {
+        (0..STEPS.len()).filter(|s| self.shown(*s)).collect()
+    }
+
+    fn next_shown(&self, from: usize) -> usize {
+        (from + 1..STEPS.len()).find(|s| self.shown(*s)).unwrap_or(FINISH)
+    }
+
+    fn previous_shown(&self, from: usize) -> usize {
+        (0..from).rev().find(|s| self.shown(*s)).unwrap_or(0)
+    }
+
     fn start_install(&mut self, cx: &mut Context<Self>) {
+        if self.manager_only {
+            let shortcuts = plan::Shortcuts {
+                autostart: false,
+                desktop_sentient: false,
+                desktop_manager: self.desktop_manager,
+                start_menu: self.start_menu,
+                kiosk: false,
+            };
+            self.problem = None;
+            self.step = INSTALL;
+            self.install.update(cx, |job, cx| job.start(move |sink| plan::run_manager_only(shortcuts, sink), cx));
+            cx.notify();
+            return;
+        }
         let plan = match self.plan(cx) {
             Ok(plan) => plan,
             Err(e) => {
@@ -464,7 +530,7 @@ impl Installer {
             _ => match self.validate(cx) {
                 Ok(()) => {
                     self.problem = None;
-                    self.step += 1;
+                    self.step = self.next_shown(self.step);
                 }
                 Err(e) => self.problem = Some(e.into()),
             },
@@ -502,7 +568,8 @@ impl Installer {
 
     fn steps_nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let rows = STEPS.iter().enumerate().map(|(i, title)| {
+        let rows = self.shown_steps().into_iter().enumerate().map(|(n, i)| {
+            let title = self.title(i);
             let current = i == self.step;
             let done = i < self.step;
             let mark = div()
@@ -515,13 +582,13 @@ impl Installer {
                 .text_xs()
                 .map(|m| {
                     if current {
-                        m.bg(theme.primary).text_color(theme.primary_foreground).child(format!("{}", i + 1))
+                        m.bg(theme.primary).text_color(theme.primary_foreground).child(format!("{}", n + 1))
                     } else if done {
                         m.bg(theme.success).text_color(theme.success_foreground)
                             .child(Icon::new(IconName::Check).xsmall())
                     } else {
                         m.border_1().border_color(theme.input).text_color(theme.muted_foreground)
-                            .child(format!("{}", i + 1))
+                            .child(format!("{}", n + 1))
                     }
                 });
             h_flex()
@@ -534,7 +601,7 @@ impl Installer {
                 .when(!current && !done, |r| r.text_color(theme.muted_foreground))
                 .when(done && self.step < INSTALL, |r| r.cursor_pointer())
                 .child(mark)
-                .child(*title)
+                .child(title)
                 .on_click(cx.listener(move |this, _, _, cx| this.go(i, cx)))
         });
         v_flex()
@@ -551,7 +618,11 @@ impl Installer {
                     .px_4()
                     .pb_4()
                     .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(theme.primary).child("SENTIENT"))
-                    .child(div().text_xs().text_color(theme.muted_foreground).child("Platform + Platform Manager")),
+                    .child(div().text_xs().text_color(theme.muted_foreground).child(if self.manager_only {
+                        "Platform Manager"
+                    } else {
+                        "Platform + Platform Manager"
+                    })),
             )
             .children(rows)
     }
@@ -559,6 +630,8 @@ impl Installer {
     fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let failed = matches!(self.install.read(cx).state(), JobState::Failed(_));
+        // While the page can't be left, Next is off and says why.
+        let blocked = if self.step < SUMMARY { self.validate(cx).err() } else { None };
         let next_label = match self.step {
             SUMMARY => "Install",
             INSTALL if failed => "Retry",
@@ -575,14 +648,27 @@ impl Installer {
             .bg(theme.background)
             .border_t_1()
             .border_color(theme.border)
-            .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
-                "Step {} of {}",
-                self.step + 1,
-                STEPS.len()
-            )))
-            .children(self.problem.clone().map(|p| {
-                div().ml_4().min_w_0().text_sm().text_color(theme.danger).child(p)
+            .child(div().text_xs().text_color(theme.muted_foreground).child({
+                let shown = self.shown_steps();
+                let at = shown.iter().position(|s| *s == self.step).unwrap_or(0);
+                format!("Step {} of {}", at + 1, shown.len())
             }))
+            .map(|bar| match (self.problem.clone(), blocked.clone()) {
+                (Some(problem), _) => bar.child(div().ml_4().min_w_0().text_sm().text_color(theme.danger).child(problem)),
+                (None, Some(reason)) => bar.child(
+                    h_flex()
+                        .ml_4()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .gap_1p5()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child(Icon::new(IconName::Info).small())
+                        .child(div().min_w_0().truncate().child(reason)),
+                ),
+                (None, None) => bar,
+            })
             .child(div().flex_1())
             .when(self.step < FINISH, |bar| {
                 bar.child(
@@ -597,14 +683,14 @@ impl Installer {
                     Button::new("back")
                         .outline()
                         .label("Back")
-                        .on_click(cx.listener(|this, _, _, cx| this.go(this.step - 1, cx))),
+                        .on_click(cx.listener(|this, _, _, cx| this.go(this.previous_shown(this.step), cx))),
                 )
             })
             .child(
                 Button::new("next")
                     .primary()
                     .label(next_label)
-                    .disabled(self.step == INSTALL && !failed)
+                    .disabled((self.step == INSTALL && !failed) || blocked.is_some())
                     .on_click(cx.listener(|this, _, window, cx| this.next(window, cx))),
             )
     }
@@ -635,7 +721,7 @@ impl Render for Installer {
                             .p_8()
                             .gap_4()
                             .bg(theme.muted)
-                            .child(div().text_2xl().child(STEPS[self.step]))
+                            .child(div().text_2xl().child(self.title(self.step)))
                             .child(page),
                     )
                     .child(footer),

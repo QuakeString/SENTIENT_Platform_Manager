@@ -25,6 +25,7 @@ mod secrets;
 mod secrets_key;
 mod self_install;
 mod settings;
+mod standalone;
 mod theme;
 mod ui;
 mod updating;
@@ -47,6 +48,7 @@ fn main() {
     if !elevate::ensure_admin() {
         return;
     }
+    ui::prefer_native_frame();
     let mode = AppMode::detect();
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx| {
         gpui_kit::init(cx);
@@ -63,6 +65,8 @@ fn main() {
                 title: Some(mode.window_title().into()),
                 ..Default::default()
             }),
+            // Matches the application-menu entry, so the desktop shows its icon.
+            app_id: Some("sentient-platform-manager".into()),
             ..Default::default()
         };
         let opened = match mode {

@@ -162,6 +162,7 @@ pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: P
     }
     step(&sink, "Removing shortcuts and the Platform Manager");
     self_install::remove_shortcuts();
+    self_install::remove_manager_entry();
     self_install::remove_record(&crate::installation::record_path());
     self_install::remove_manager_later();
     sink(Progress::Done {
@@ -171,6 +172,17 @@ pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: P
             "SENTIENT and its data are removed.".into()
         },
     });
+    Ok(())
+}
+
+/// Remove a Platform Manager installed without SENTIENT: shortcuts, its Apps
+/// & features entry and the program itself (once this process exits).
+pub(crate) fn run_remove_manager(sink: ProgressFn) -> Result<(), String> {
+    step(&sink, "Removing the Platform Manager");
+    self_install::remove_shortcuts();
+    self_install::remove_manager_entry();
+    self_install::remove_manager_later();
+    sink(Progress::Done { message: "The Platform Manager is removed.".into() });
     Ok(())
 }
 

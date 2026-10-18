@@ -257,6 +257,19 @@ fn hash_password(password: &str) -> Result<String, String> {
         .map_err(|e| format!("hash the administrator password: {e}"))
 }
 
+/// Install the Platform Manager alone, without SENTIENT: the program, its
+/// shortcuts and (Windows) its Apps & features entry. No installation
+/// record: the manager then offers to install SENTIENT.
+pub fn run_manager_only(shortcuts: Shortcuts, sink: ProgressFn) -> Result<(), String> {
+    step(&sink, "Installing the Platform Manager");
+    let manager = self_install::install_manager()?;
+    step(&sink, "Creating shortcuts");
+    self_install::create_manager_shortcuts(&manager, &shortcuts)?;
+    self_install::register_manager_entry(&manager);
+    sink(Progress::Done { message: "The Platform Manager is installed.".into() });
+    Ok(())
+}
+
 /// Run the install. Each task reports through `sink`; the first failure stops
 /// the run and is returned.
 pub fn run(plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
@@ -314,6 +327,8 @@ pub fn run(plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
     let url = format!("http://localhost:{}", plan.stack.http_port);
     self_install::create_shortcuts(&manager, &url, &plan.shortcuts)?;
 
+    // SENTIENT's Apps & features entry covers the manager installed alone before.
+    self_install::remove_manager_entry();
     step(&sink, "Saving the installation record");
     let json = serde_json::to_string_pretty(&plan.record()).map_err(|e| e.to_string())?;
     self_install::write_record(&crate::installation::record_path(), &json)?;

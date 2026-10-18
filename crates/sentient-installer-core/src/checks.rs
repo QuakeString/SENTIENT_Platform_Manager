@@ -21,6 +21,9 @@ pub enum Status {
     Setup,
     /// A blocker the user must resolve externally (BIOS, Windows version…).
     Fail,
+    /// Needs attention, but does not stop the install: a later choice can
+    /// resolve it (a busy default port, when another one can be chosen).
+    Warn,
     /// Couldn't determine (e.g. running the dev build off-Windows).
     Unknown,
 }
@@ -217,25 +220,25 @@ pub fn run_native(offline: bool) -> Vec<Check> {
     v
 }
 
-/// The ports the native stack binds. Something already listening is a hard
-/// blocker: the installer would otherwise complete and then the service would
-/// crash-loop on bind, which reads as "the install is broken".
+/// The default ports. A busy one is a warning here, not a blocker: the ports
+/// are chosen later (Network ports, Database settings), and the install is
+/// refused there while a chosen port is in use.
 fn ports_free() -> Check {
-    ports_free_of(&[
+    let mut c = ports_free_of(&[
         (8080, "HTTP".into()), (1883, "MQTT".into()), (5683, "CoAP".into()), (5432, "PostgreSQL".into()),
-    ])
+    ]);
+    if c.status == Status::Fail {
+        c.status = Status::Warn;
+        c.label = "Default ports".into();
+    }
+    c
 }
 
 /// Are these TCP ports free to bind? A busy port is a real blocker for the
 /// install, but the operator can pick different ones on the Configure step,
 /// and the Install step re-checks the ones actually chosen.
 pub fn ports_free_of(wanted: &[(u16, String)]) -> Check {
-    use std::net::TcpListener;
-    let busy: Vec<String> = wanted
-        .iter()
-        .filter(|(p, _)| TcpListener::bind(("127.0.0.1", *p)).is_err())
-        .map(|(p, what)| format!("{p} ({what})"))
-        .collect();
+    let busy = busy_ports(wanted);
     let all: Vec<String> = wanted.iter().map(|(p, _)| p.to_string()).collect();
     if busy.is_empty() {
         check("ports", "Required ports", Status::Pass, format!("{} are free.", all.join(", ")))
@@ -245,11 +248,21 @@ pub fn ports_free_of(wanted: &[(u16, String)]) -> Check {
             "Required ports",
             Status::Fail,
             format!(
-                "already in use: {} — stop whatever is listening, or choose different ports on the Network ports page.",
+                "already in use: {} — stop whatever is listening, or choose other ports later in setup (PostgreSQL under Database settings, the rest under Network ports).",
                 busy.join(", ")
             ),
         )
     }
+}
+
+/// The ports of `wanted` something already listens on, as "8080 (HTTP)".
+pub fn busy_ports(wanted: &[(u16, String)]) -> Vec<String> {
+    use std::net::TcpListener;
+    wanted
+        .iter()
+        .filter(|(p, _)| TcpListener::bind(("127.0.0.1", *p)).is_err())
+        .map(|(p, what)| format!("{p} ({what})"))
+        .collect()
 }
 
 /// A PostgreSQL that we did not install is a genuine hazard: the installer would

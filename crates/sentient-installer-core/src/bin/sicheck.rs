@@ -17,6 +17,7 @@ fn main() {
             Status::Pass => "[ ok ]",
             Status::Setup => "[setup]",
             Status::Fail => "[FAIL]",
+            Status::Warn => "[warn]",
             Status::Unknown => "[ ?? ]",
         };
         println!("  {icon}  {:<22} {}", c.label, c.detail);
