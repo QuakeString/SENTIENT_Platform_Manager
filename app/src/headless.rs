@@ -14,6 +14,8 @@
 //! --job [--json] migrate <stock|timescaledb|clickhouse>
 //! --job resume-migration
 //! --job update [<package folder>] [--accept-breaking]
+//! --job rollback                        (back to what the last update replaced)
+//! --job rollback-info
 //! --job kept
 //! --job remove-kept <name>
 //! ```
@@ -24,10 +26,12 @@ use std::sync::Arc;
 use sentient_installer_core::progress::{Progress, ProgressFn};
 use sentient_installer_core::stack::Flavor;
 
+use sentient_installer_core::native::safe_update::RollbackPoint;
+
 use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
-update [<package folder>] [--accept-breaking] | backup <file> | restore <file> <database> [<key file>] | \
+update [<package folder>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
 use-restored <database> | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
 
 /// A console for the output: release builds on Windows have none of their
@@ -50,7 +54,7 @@ fn printer() -> ProgressFn {
     Arc::new(|p| match p {
         Progress::Step { name } => println!("== {name}"),
         // Data lines of a root job (crate::kept::encode) are printed decoded.
-        Progress::Log { line } if line.starts_with("KEPT\t") => {}
+        Progress::Log { line } if line.starts_with("KEPT\t") || line.starts_with("ROLLBACK\t") => {}
         Progress::Log { line } => println!("   {}", crate::ui::strip_ansi(&line)),
         Progress::Percent { .. } => {}
         Progress::Done { message } => println!("✓ {message}"),
@@ -128,6 +132,9 @@ pub fn run(args: &[String]) -> i32 {
     if crate::rootjob::needed(&record) {
         return match crate::rootjob::run(args, &sink) {
             Ok(lines) => {
+                if args.first().is_some_and(|a| a == "rollback-info") {
+                    print_rollback_point(lines.iter().find_map(|l| RollbackPoint::decode(l)).as_ref());
+                }
                 if args.first().is_some_and(|a| a == "kept") {
                     let items: Vec<_> = lines.iter().filter_map(|l| crate::kept::decode(l)).collect();
                     if items.is_empty() {
@@ -157,6 +164,16 @@ pub fn run(args: &[String]) -> i32 {
             let package = args.iter().skip(1).find(|a| !a.starts_with("--")).map(PathBuf::from);
             crate::updating::run(record, package.as_deref(), accept, sink.clone()).map(|_| ())
         }
+        "rollback" => crate::updating::rollback(record, sink.clone()).map(|_| ()),
+        "rollback-info" => crate::updating::rollback_point(&record).map(|point| {
+            if json {
+                if let Some(p) = point {
+                    sink(Progress::Log { line: p.encode() });
+                }
+                return;
+            }
+            print_rollback_point(point.as_ref());
+        }),
         "backup" => match args.get(1) {
             Some(file) => crate::backup_jobs::backup(&record, std::path::Path::new(file), sink.clone()),
             None => Err(USAGE.into()),
@@ -220,5 +237,12 @@ pub fn run(args: &[String]) -> i32 {
             }
             1
         }
+    }
+}
+
+fn print_rollback_point(point: Option<&RollbackPoint>) {
+    match point {
+        Some(p) => println!("Can roll back to {}.", p.describe()),
+        None => println!("Nothing to roll back to."),
     }
 }

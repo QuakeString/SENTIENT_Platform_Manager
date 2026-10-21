@@ -97,7 +97,7 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
                 name,
             });
         }
-        let pattern = format!("^{}_(before_update|failed_update|before_restore)_[0-9]{{12}}$", regex_escape(&db));
+        let pattern = format!("^{}_(before_update|failed_update|before_restore|rolled_back)_[0-9]{{12}}$", regex_escape(&db));
         for row in pg
             .query(
                 "SELECT datname::text, pg_database_size(datname) FROM pg_database WHERE datname ~ $1 ORDER BY datname",
@@ -109,6 +109,8 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
             let name: String = row.get(0);
             let detail = if name.contains("_failed_update_") {
                 "The database a failed update left behind"
+            } else if name.contains("_rolled_back_") {
+                "The database in use before a roll back (what was written after that update)"
             } else if name.contains("_before_restore_") {
                 "The database from before a restore was put into service"
             } else {

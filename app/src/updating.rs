@@ -3,12 +3,14 @@
 //! Updating SENTIENT, shared by Setup's Update and the manager's Update
 //! screen. Every installation goes through a safe update (native::safe_update
 //! for Windows and Linux services, distro::docker_ops for Docker): dry run,
-//! database copy, roll back on failure.
+//! database copy, roll back on failure. What the last update replaced stays
+//! until the next one, and `rollback` goes back to it on request.
 
 use std::path::{Path, PathBuf};
 
 use sentient_installer_core::distro;
 use sentient_installer_core::native;
+use sentient_installer_core::native::safe_update::RollbackPoint;
 use sentient_installer_core::progress::{Progress, ProgressFn};
 
 use crate::installation::{Engine, InstallationRecord};
@@ -61,40 +63,42 @@ pub fn run(
     accept_breaking: bool,
     sink: ProgressFn,
 ) -> Result<InstallationRecord, String> {
-    let mut version = None;
-    let mut message = String::new();
-    match record.engine {
+    let (version, message) = match record.engine {
         Engine::Docker => {
             let cfg = distro::docker_ops::with_secrets(&record.stack)?;
             let report = distro::docker_ops::safe_update(sink.clone(), &cfg, accept_breaking)?;
-            message = format!(
+            let message = format!(
                 " The database from before the update is kept as {}{}, until the next update.",
                 report.snapshot,
                 report.previous_image.map(|t| format!(" and the previous image as {t}")).unwrap_or_default()
             );
+            (distro::docker_ops::image_version(&cfg.image), message)
         }
         Engine::Native => {
             let package = package.ok_or("Choose the folder of the new SENTIENT package first.")?;
-            version = package_version(package);
             let cfg = record.native_config_with_secrets()?;
             let (dir, temporary) = staged(&sink, &record, package)?;
             let result = native::safe_update::safe_update(
                 sink.clone(),
                 &cfg,
                 &dir,
-                &native::safe_update::UpdateOptions { accept_breaking },
+                &native::safe_update::UpdateOptions {
+                    accept_breaking,
+                    current_version: Some(record.sentient_version.clone()).filter(|v| !v.is_empty()),
+                },
             );
             if temporary {
                 let _ = std::fs::remove_dir_all(&dir);
             }
             let report = result?;
-            message = format!(
+            let message = format!(
                 " The database from before the update is kept as {} and the previous program files in {}, until the next update.",
                 report.snapshot,
                 report.previous_files.display()
             );
+            (package_version(package), message)
         }
-    }
+    };
     let mut updated = record;
     if let Some(v) = version {
         updated.sentient_version = v;
@@ -102,5 +106,43 @@ pub fn run(
     let json = serde_json::to_string_pretty(&updated).map_err(|e| e.to_string())?;
     crate::self_install::write_record(&crate::installation::record_path(), &json)?;
     sink(Progress::Done { message: format!("SENTIENT {} is running.{message}", updated.sentient_version) });
+    Ok(updated)
+}
+
+/// What the last update replaced, if it is still there to go back to.
+/// Blocking (Docker asks the containers): call from a job or a background
+/// task. Native Linux reads it without root.
+pub fn rollback_point(record: &InstallationRecord) -> Result<Option<RollbackPoint>, String> {
+    match record.engine {
+        Engine::Docker => Ok(distro::docker_ops::rollback_point(&distro::docker_ops::with_secrets(&record.stack)?)),
+        Engine::Native => Ok(native::safe_update::rollback_point(&record.native_config())),
+    }
+}
+
+/// Go back to the version the last update replaced. Returns the record with
+/// that version, already saved.
+pub fn rollback(record: InstallationRecord, sink: ProgressFn) -> Result<InstallationRecord, String> {
+    let (point, set_aside) = match record.engine {
+        Engine::Docker => {
+            let r = distro::docker_ops::rollback(sink.clone(), &distro::docker_ops::with_secrets(&record.stack)?)?;
+            (r.point, r.set_aside)
+        }
+        Engine::Native => {
+            let r = native::safe_update::rollback(sink.clone(), &record.native_config_with_secrets()?)?;
+            (r.point, r.set_aside)
+        }
+    };
+    let mut updated = record;
+    if let Some(v) = &point.version {
+        updated.sentient_version = v.clone();
+    }
+    let json = serde_json::to_string_pretty(&updated).map_err(|e| e.to_string())?;
+    crate::self_install::write_record(&crate::installation::record_path(), &json)?;
+    sink(Progress::Done {
+        message: format!(
+            "Rolled back: {} is running. The database that was in use is kept as {set_aside} (under Kept on the Migration screen) until you remove it.",
+            point.version.as_deref().map(|v| format!("SENTIENT {v}")).unwrap_or_else(|| "the previous version".into())
+        ),
+    });
     Ok(updated)
 }

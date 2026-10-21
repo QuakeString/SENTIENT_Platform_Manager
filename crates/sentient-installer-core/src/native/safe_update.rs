@@ -1,8 +1,8 @@
 // Copyright © 2016-2026 The SENTIENT Authors
 
-//! Safe update of a native Windows installation: everything needed to go
-//! back is in place before anything changes, and a failure at any point puts
-//! the previous version back and starts it.
+//! Safe update of a native installation (Windows services or systemd):
+//! everything needed to go back is in place before anything changes, and a
+//! failure at any point puts the previous version back and starts it.
 //!
 //! 1. Stop SENTIENT (PostgreSQL stays up).
 //! 2. Dry-run the new version's schema upgrade. Breaking changes stop the
@@ -16,7 +16,9 @@
 //! database copy are put back (the failed database is kept for diagnosis),
 //! and the previous version is started. After success the database copy and
 //! the old files stay until the next update replaces them, so an update that
-//! turns out bad later can still be reversed by hand.
+//! turns out bad later can still be reversed: `rollback` puts both back, and
+//! if the previous version does not come up, the current one is put back
+//! and started again.
 
 use std::path::{Path, PathBuf};
 
@@ -109,6 +111,9 @@ mod platform {
 pub struct UpdateOptions {
     /// The operator read the breaking changes and goes ahead.
     pub accept_breaking: bool,
+    /// The version installed now, remembered with the files kept to go back
+    /// to.
+    pub current_version: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +126,82 @@ pub struct UpdateReport {
 
 fn rollback_dir(cfg: &NativeConfig) -> PathBuf {
     cfg.install_dir.join("previous-version")
+}
+
+/// What `previous-version` holds besides the program files: the version and
+/// the database copy it goes with.
+const MARKER: &str = "ROLLBACK.txt";
+
+/// The version an update replaced, kept to go back to.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RollbackPoint {
+    /// The version, when the update that kept it recorded one.
+    pub version: Option<String>,
+    /// The copy of the database from before the update.
+    pub snapshot: Option<String>,
+    /// When the update ran, "2026-10-21 07:15" (local time).
+    pub taken: Option<String>,
+}
+
+impl RollbackPoint {
+    /// "4.3.0.24, from before the update of 2026-10-21 07:15"
+    pub fn describe(&self) -> String {
+        let version = self.version.clone().unwrap_or_else(|| "The previous version".into());
+        match &self.taken {
+            Some(t) => format!("{version}, from before the update of {t}"),
+            None => format!("{version}, from before the last update"),
+        }
+    }
+
+    /// One line for a root job's output (`ROLLBACK\t<version>\t<snapshot>\t<taken>`).
+    pub fn encode(&self) -> String {
+        let f = |v: &Option<String>| v.clone().unwrap_or_default();
+        format!("ROLLBACK\t{}\t{}\t{}", f(&self.version), f(&self.snapshot), f(&self.taken))
+    }
+
+    pub fn decode(line: &str) -> Option<Self> {
+        let mut f = line.strip_prefix("ROLLBACK\t")?.splitn(3, '\t');
+        let mut next = || f.next().map(str::trim).filter(|v| !v.is_empty()).map(String::from);
+        Some(Self { version: next(), snapshot: next(), taken: next() })
+    }
+}
+
+/// `sentient_before_update_202610210715` → "2026-10-21 07:15".
+pub fn snapshot_time(snapshot: &str) -> Option<String> {
+    let stamp = snapshot.rsplit('_').next()?;
+    let t = chrono::NaiveDateTime::parse_from_str(stamp, "%Y%m%d%H%M").ok()?;
+    Some(t.format("%Y-%m-%d %H:%M").to_string())
+}
+
+/// The version kept by the last update, read from the program files alone
+/// (no database access, so it needs no administrator rights). Whether its
+/// database copy still exists is checked when rolling back.
+pub fn rollback_point(cfg: &NativeConfig) -> Option<RollbackPoint> {
+    rollback_point_in(&cfg.install_dir)
+}
+
+fn rollback_point_in(install_dir: &Path) -> Option<RollbackPoint> {
+    let back = install_dir.join("previous-version");
+    if !back.join("bin").join(server_name()).exists() {
+        return None;
+    }
+    let text = std::fs::read_to_string(back.join(MARKER)).unwrap_or_default();
+    let value = |key: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let snapshot = value("snapshot");
+    let taken = snapshot.as_deref().and_then(snapshot_time).or_else(|| {
+        let modified = std::fs::metadata(&back).ok()?.modified().ok()?;
+        Some(chrono::DateTime::<chrono::Local>::from(modified).format("%Y-%m-%d %H:%M").to_string())
+    });
+    Some(RollbackPoint { version: value("version"), snapshot, taken })
+}
+
+fn server_name() -> &'static str {
+    if cfg!(windows) { "sentient-server.exe" } else { "sentient-server" }
 }
 
 pub(crate) fn quote_ident(name: &str) -> String {
@@ -318,7 +399,7 @@ fn start_and_check(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> 
 
 /// Update to the program files unpacked in `staging` (bin, ui, data).
 pub fn safe_update(sink: ProgressFn, cfg: &NativeConfig, staging: &Path, opts: &UpdateOptions) -> Result<UpdateReport, String> {
-    let server = if cfg!(windows) { "sentient-server.exe" } else { "sentient-server" };
+    let server = server_name();
     if !staging.join("bin").join(server).exists() {
         return Err(format!("{} does not hold a SENTIENT package (bin/{server})", staging.display()));
     }
@@ -397,7 +478,119 @@ pub fn safe_update(sink: ProgressFn, cfg: &NativeConfig, staging: &Path, opts: &
             log(&sink, format!("removed the copy from an earlier update, {old}"));
         }
     }
+    let marker = format!("version={}\nsnapshot={snapshot}\n", opts.current_version.clone().unwrap_or_default());
+    if let Err(e) = std::fs::write(rollback_dir(cfg).join(MARKER), marker) {
+        log(&sink, format!("note: could not note what to roll back to: {e}"));
+    }
     Ok(UpdateReport { snapshot, previous_files: rollback_dir(cfg) })
+}
+
+/// Move the program files in `from` to `to` (each item replaces the one in
+/// `to`). The live files are `cfg.install_dir` itself.
+fn move_items(from: &Path, to: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(to).map_err(|e| format!("create {}: {e}", to.display()))?;
+    for item in ITEMS.iter().copied() {
+        let src = from.join(item);
+        if !src.exists() {
+            continue;
+        }
+        let dst = to.join(item);
+        let _ = std::fs::remove_dir_all(&dst);
+        std::fs::rename(&src, &dst).map_err(|e| format!("move {} to {}: {e}", src.display(), dst.display()))?;
+    }
+    Ok(())
+}
+
+fn database_exists(cfg: &NativeConfig, name: &str) -> bool {
+    psql(cfg, "postgres", &format!("SELECT 1 FROM pg_database WHERE datname = '{}'", name.replace('\'', "''")))
+        .map(|out| out.trim() == "1")
+        .unwrap_or(false)
+}
+
+#[derive(Debug, Clone)]
+pub struct RollbackReport {
+    pub point: RollbackPoint,
+    /// The database that was in use, kept aside (what was written since the
+    /// update is only there).
+    pub set_aside: String,
+}
+
+/// Go back to the version and database the last update replaced. The
+/// database in use is kept aside under `<db>_rolled_back_<time>`. If the
+/// previous version does not come up, everything is put back as it was and
+/// the current version is started again.
+pub fn rollback(sink: ProgressFn, cfg: &NativeConfig) -> Result<RollbackReport, String> {
+    let mut point = rollback_point(cfg).ok_or("No earlier version is kept on this computer: there is nothing to roll back to.")?;
+    let snapshot = match point.snapshot.clone() {
+        Some(s) => s,
+        // An update from before the marker was written: its copy is the
+        // newest one.
+        None => older_snapshots(cfg, "").pop().ok_or("The copy of the database from before the last update is gone, so it cannot be rolled back.")?,
+    };
+    if !database_exists(cfg, &snapshot) {
+        return Err(format!(
+            "The copy of the database from before the last update ({snapshot}) is gone (removed under Kept?), so it cannot be rolled back. Nothing has been changed."
+        ));
+    }
+    point.taken = point.taken.or_else(|| snapshot_time(&snapshot));
+    point.snapshot = Some(snapshot.clone());
+
+    if let Err(e) = stop_server(&sink, cfg) {
+        start_service();
+        return Err(e);
+    }
+    let back = rollback_dir(cfg);
+    let current = cfg.install_dir.join("rolled-back-version");
+    let set_aside = format!("{}_rolled_back_{}", cfg.db_name, chrono::Local::now().format("%Y%m%d%H%M"));
+
+    // Undo whatever was done so far and start the current version again.
+    let undo = |sink: &ProgressFn, why: String, files: bool, db: bool| -> String {
+        sink(Progress::Log { line: format!("Roll back failed: {why}") });
+        step(sink, "Putting the current version back");
+        let _ = stop_server(sink, cfg);
+        let mut notes = Vec::new();
+        if files {
+            match move_items(&cfg.install_dir, &back).and_then(|_| move_items(&current, &cfg.install_dir)) {
+                Ok(()) => {
+                    let _ = std::fs::remove_dir_all(&current);
+                }
+                Err(e) => notes.push(format!("the current program files could not be put back ({e}); they are in {}", current.display())),
+            }
+        }
+        if db {
+            match restore_database(cfg, &set_aside, &snapshot) {
+                Ok(()) => notes.push("the database is back as it was".into()),
+                Err(e) => notes.push(format!("the database could not be put back ({e}); it is {set_aside}")),
+            }
+        }
+        match start_and_check(sink, cfg) {
+            Ok(()) => notes.push("the current version is running again".into()),
+            Err(e) => notes.push(format!("the current version did not start: {e}")),
+        }
+        format!("{why}\n\nNothing was rolled back: {}.", notes.join("; "))
+    };
+
+    step(&sink, "Putting the previous program files back");
+    let _ = std::fs::remove_dir_all(&current);
+    if let Err(e) = move_items(&cfg.install_dir, &current).and_then(|_| move_items(&back, &cfg.install_dir)) {
+        return Err(undo(&sink, e, true, false));
+    }
+    step(&sink, &format!("Putting the database from before the update back ({snapshot})"));
+    if let Err(e) = restore_database(cfg, &snapshot, &set_aside) {
+        // Half done: the database in use may be renamed while the copy is
+        // not yet in its place.
+        let swapped = !database_exists(cfg, &snapshot);
+        if !swapped && !database_exists(cfg, &cfg.db_name) && database_exists(cfg, &set_aside) {
+            let _ = psql(cfg, "postgres", &format!("ALTER DATABASE {} RENAME TO {}", quote_ident(&set_aside), quote_ident(&cfg.db_name)));
+        }
+        return Err(undo(&sink, e, true, swapped));
+    }
+    if let Err(e) = start_and_check(&sink, cfg) {
+        return Err(undo(&sink, e, true, true));
+    }
+    let _ = std::fs::remove_dir_all(&current);
+    let _ = std::fs::remove_dir_all(&back);
+    Ok(RollbackReport { point, set_aside })
 }
 
 #[cfg(test)]
@@ -411,5 +604,39 @@ mod tests {
         assert_eq!(b.len(), 1);
         assert!(b[0].starts_with("[BREAKING] Widget X removed"));
         assert!(b[0].contains("safe"));
+    }
+
+    #[test]
+    fn snapshot_names_give_the_update_time() {
+        assert_eq!(snapshot_time("sentient_before_update_202610210715").as_deref(), Some("2026-10-21 07:15"));
+        assert_eq!(snapshot_time("sentient"), None);
+    }
+
+    #[test]
+    fn rollback_points_survive_a_root_job_line() {
+        let p = RollbackPoint {
+            version: Some("4.3.0.24".into()),
+            snapshot: Some("sentient_before_update_202610210715".into()),
+            taken: Some("2026-10-21 07:15".into()),
+        };
+        assert_eq!(RollbackPoint::decode(&p.encode()), Some(p.clone()));
+        let none = RollbackPoint { version: None, snapshot: None, taken: Some("2026-10-21 07:15".into()) };
+        assert_eq!(RollbackPoint::decode(&none.encode()), Some(none));
+        assert_eq!(p.describe(), "4.3.0.24, from before the update of 2026-10-21 07:15");
+    }
+
+    #[test]
+    fn the_rollback_point_is_read_from_the_kept_files() {
+        let dir = std::env::temp_dir().join(format!("spm-rollback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(rollback_point_in(&dir), None);
+        let bin = dir.join("previous-version").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join(server_name()), "").unwrap();
+        std::fs::write(dir.join("previous-version").join(MARKER), "version=4.3.0.24\nsnapshot=sentient_before_update_202610210715\n").unwrap();
+        let p = rollback_point_in(&dir).unwrap();
+        assert_eq!(p.version.as_deref(), Some("4.3.0.24"));
+        assert_eq!(p.taken.as_deref(), Some("2026-10-21 07:15"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
