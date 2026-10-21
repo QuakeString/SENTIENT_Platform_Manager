@@ -8,13 +8,13 @@
 //! The safe update mirrors the Windows one (native::safe_update): the image
 //! upgrades the schema itself when it starts, so the database is copied
 //! before the new image ever runs, and the previous image is kept under a
-//! `:spm-previous` tag to go back to.
+//! `:spm-previous` tag to go back to (`rollback`).
 
 use super::{
     pull_images, run, run_output, run_stream, shell_args, shell_quote, write_host_file, write_stack_files,
     DeployConfig, is_running,
 };
-use crate::native::safe_update::{breaking_changes, last_lines, quote_ident};
+use crate::native::safe_update::{RollbackPoint, breaking_changes, last_lines, quote_ident, snapshot_time};
 use crate::progress::{Progress, ProgressFn};
 use crate::sys;
 
@@ -438,7 +438,7 @@ pub fn safe_update(sink: ProgressFn, cfg: &DeployConfig, accept_breaking: bool) 
     // Keep what runs now under a tag of its own, to go back to: the image of
     // the SENTIENT container, not the tag, which an offline site may already
     // have pointed at the new image (`docker load`).
-    let previous_tag = format!("{}:spm-previous", repository(&cfg.image));
+    let previous_tag = previous_tag(cfg);
     let previous = capture(&format!("docker inspect -f '{{{{.Image}}}}' {}", cfg.names().app))
         .ok()
         .map(|s| s.trim().to_string())
@@ -529,6 +529,110 @@ pub fn safe_update(sink: ProgressFn, cfg: &DeployConfig, accept_breaking: bool) 
         }
     }
     Ok(UpdateReport { snapshot, previous_image: previous.map(|_| previous_tag) })
+}
+
+fn previous_tag(cfg: &DeployConfig) -> String {
+    format!("{}:spm-previous", repository(&cfg.image))
+}
+
+fn database_exists(cfg: &DeployConfig, name: &str) -> bool {
+    psql(cfg, "postgres", &format!("SELECT 1 FROM pg_database WHERE datname = '{}'", name.replace('\'', "''")))
+        .map(|out| out.trim() == "1")
+        .unwrap_or(false)
+}
+
+/// The version kept by the last update: the `:spm-previous` image and the
+/// newest copy of the database from before an update. `cfg` must carry the
+/// stack's passwords (`with_secrets`).
+pub fn rollback_point(cfg: &DeployConfig) -> Option<RollbackPoint> {
+    let tag = previous_tag(cfg);
+    let previous = image_id(&tag)?;
+    // Nothing to go back to when the stack already runs that image.
+    if image_id(&cfg.image).as_deref() == Some(previous.as_str()) {
+        return None;
+    }
+    let snapshot = older_snapshots(cfg, "").pop()?;
+    Some(RollbackPoint { version: image_version(&tag), taken: snapshot_time(&snapshot), snapshot: Some(snapshot) })
+}
+
+/// The SENTIENT version an image says it holds (its OCI version label).
+pub fn image_version(image: &str) -> Option<String> {
+    capture(&format!(
+        "docker image inspect -f '{{{{index .Config.Labels \"org.opencontainers.image.version\"}}}}' {}",
+        shell_quote(image)
+    ))
+    .ok()
+    .map(|v| v.trim().to_string())
+    .filter(|v| !v.is_empty() && v != "<no value>" && v != "dev")
+}
+
+#[derive(Debug, Clone)]
+pub struct RollbackReport {
+    pub point: RollbackPoint,
+    /// The database that was in use, kept aside.
+    pub set_aside: String,
+}
+
+/// Go back to the image and database the last update replaced. The
+/// database in use is kept aside under `<db>_rolled_back_<time>`. If the
+/// previous version does not come up, the current image and database are put
+/// back and started again. `cfg` must carry the stack's passwords.
+pub fn rollback(sink: ProgressFn, cfg: &DeployConfig) -> Result<RollbackReport, String> {
+    let point = rollback_point(cfg).ok_or("No earlier version is kept on this computer: there is nothing to roll back to.")?;
+    let snapshot = point.snapshot.clone().unwrap_or_default();
+    let previous = previous_tag(cfg);
+    let current_tag = format!("{}:spm-rolled-back", repository(&cfg.image));
+    let current = capture(&format!("docker inspect -f '{{{{.Image}}}}' {}", cfg.names().app))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| image_id(&cfg.image))
+        .ok_or("Could not tell which image SENTIENT runs now. Nothing has been changed.")?;
+    run(&sink, &format!("docker tag {} {}", shell_quote(&current), shell_quote(&current_tag)))?;
+
+    stop_app(&sink, cfg).inspect_err(|_| {
+        let _ = run(&sink, &cfg.compose_cmd("up -d"));
+    })?;
+    let set_aside = format!("{}_rolled_back_{}", cfg.db_name, chrono::Local::now().format("%Y%m%d%H%M"));
+
+    let undo = |sink: &ProgressFn, why: String, db: bool| -> String {
+        log(sink, format!("Roll back failed: {why}"));
+        step(sink, "Putting the current version back");
+        let _ = run(sink, &cfg.compose_cmd("stop sentient"));
+        let mut notes = Vec::new();
+        let _ = run(sink, &format!("docker tag {} {}", shell_quote(&current_tag), shell_quote(&cfg.image)));
+        if db {
+            match restore_database(cfg, &set_aside, &snapshot) {
+                Ok(()) => notes.push("the database is back as it was".to_string()),
+                Err(e) => notes.push(format!("the database could not be put back ({e}); it is {set_aside}")),
+            }
+        }
+        match start_and_check(sink, cfg) {
+            Ok(()) => notes.push("the current version is running again".into()),
+            Err(e) => notes.push(format!("the current version did not start: {e}")),
+        }
+        let _ = run(sink, &format!("docker image rm {}", shell_quote(&current_tag)));
+        format!("{why}\n\nNothing was rolled back: {}.", notes.join("; "))
+    };
+
+    step(&sink, "Putting the previous image back");
+    if let Err(e) = run(&sink, &format!("docker tag {} {}", shell_quote(&previous), shell_quote(&cfg.image))) {
+        return Err(undo(&sink, e, false));
+    }
+    step(&sink, &format!("Putting the database from before the update back ({snapshot})"));
+    if let Err(e) = restore_database(cfg, &snapshot, &set_aside) {
+        let swapped = !database_exists(cfg, &snapshot);
+        if !swapped && !database_exists(cfg, &cfg.db_name) && database_exists(cfg, &set_aside) {
+            let _ = psql(cfg, "postgres", &format!("ALTER DATABASE {} RENAME TO {}", quote_ident(&set_aside), quote_ident(&cfg.db_name)));
+        }
+        return Err(undo(&sink, e, swapped));
+    }
+    if let Err(e) = start_and_check(&sink, cfg) {
+        return Err(undo(&sink, e, true));
+    }
+    // Only the tags go; the images stay while anything else names them.
+    let _ = run(&sink, &format!("docker image rm {} {}", shell_quote(&previous), shell_quote(&current_tag)));
+    Ok(RollbackReport { point, set_aside })
 }
 
 /// Point the image tag the stack runs back at the previous image.
