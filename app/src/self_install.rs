@@ -292,16 +292,32 @@ mod imp {
 
     pub fn remove_manager_entry() {}
 
+    /// The pacman package that owns the program, when it came from one
+    /// (`pacman -U sentient-platform-manager-*.pkg.tar.zst`). Its files are
+    /// pacman's to remove, or the package database goes stale.
+    fn pacman_package() -> Option<String> {
+        let out = std::process::Command::new("pacman").arg("-Qqo").arg(manager_exe()).output().ok()?;
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (out.status.success() && !name.is_empty()).then_some(name)
+    }
+
     pub fn remove_shortcuts() {
-        let _ = run(
-            &noop(),
-            &format!("rm -f {APPS}/sentient-platform-manager.desktop {APPS}/sentient.desktop {ICON} {BIN}"),
-        );
+        // The package ships the menu entry and icon itself.
+        let files = if pacman_package().is_some() {
+            format!("{APPS}/sentient.desktop {BIN}")
+        } else {
+            format!("{APPS}/sentient-platform-manager.desktop {APPS}/sentient.desktop {ICON} {BIN}")
+        };
+        let _ = run(&noop(), &format!("rm -f {files}"));
     }
 
     pub fn remove_manager_later() {
         // A running Linux binary can be deleted; its inode lives on until exit.
-        let _ = run(&noop(), &format!("rm -rf {DIR}"));
+        let script = match pacman_package() {
+            Some(pkg) => format!("pacman -R --noconfirm {}", q(&pkg)),
+            None => format!("rm -rf {DIR}"),
+        };
+        let _ = run(&noop(), &script);
     }
 
     /// systemd units and Docker restart policies already start with the
