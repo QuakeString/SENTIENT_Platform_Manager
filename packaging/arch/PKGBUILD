@@ -1,0 +1,43 @@
+# Maintainer: INVENIA SYSTEMS <support@invenia.in>
+#
+# The Platform Manager (app/) as a pacman package, built from this checkout:
+#   packaging/arch/build.sh   (sets pkgver from app/Cargo.toml, runs makepkg)
+# The program lives where it installs itself (/opt/sentient-platform-manager),
+# so its own "install the Platform Manager" step sees it is already in place.
+pkgname=sentient-platform-manager
+pkgver=0.0.0
+pkgrel=1
+pkgdesc="Install, run, update and back up the SENTIENT platform"
+arch=('x86_64')
+url="https://github.com/QuakeString/SENTIENT_Platform_Manager"
+license=('LicenseRef-SENTIENT-EULA')
+depends=('glibc' 'gcc-libs' 'fontconfig' 'freetype2' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11'
+         'wayland' 'vulkan-icd-loader' 'vulkan-driver' 'alsa-lib' 'polkit' 'hicolor-icon-theme')
+makedepends=('rust' 'clang' 'cmake' 'pkgconf')
+optdepends=('docker: run SENTIENT and PostgreSQL as containers'
+            'docker-compose: the compose stack the manager drives'
+            'postgresql: native installs use the distribution PostgreSQL')
+# makepkg's LTO and debug defaults break or bloat the Rust build.
+options=(!lto !debug)
+
+_repo="$startdir/../.."
+
+build() {
+  cd "$_repo/app"
+  export CARGO_TARGET_DIR="$srcdir/target"
+  export RUSTUP_TOOLCHAIN=stable
+  unset CARGO_ENCODED_RUSTFLAGS LDFLAGS CFLAGS CXXFLAGS
+  cargo build --release --locked
+}
+
+package() {
+  local opt="$pkgdir/opt/sentient-platform-manager"
+  install -Dm755 "$srcdir/target/release/sentient-platform-manager" "$opt/sentient-platform-manager"
+  install -dm755 "$pkgdir/usr/bin"
+  ln -s /opt/sentient-platform-manager/sentient-platform-manager "$pkgdir/usr/bin/sentient-platform-manager"
+  install -Dm644 "$startdir/sentient-platform-manager.desktop" \
+                 "$pkgdir/usr/share/applications/sentient-platform-manager.desktop"
+  install -Dm644 "$_repo/app/assets/icon-256.png" \
+                 "$pkgdir/usr/share/icons/hicolor/256x256/apps/sentient-platform-manager.png"
+  install -Dm644 "$_repo/app/assets/licence.txt" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

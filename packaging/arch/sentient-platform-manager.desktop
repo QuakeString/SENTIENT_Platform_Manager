@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=SENTIENT Platform Manager
+Comment=Install, run, update and back up SENTIENT
+Exec=/opt/sentient-platform-manager/sentient-platform-manager
+Icon=sentient-platform-manager
+Terminal=false
+Categories=System;Monitor;
