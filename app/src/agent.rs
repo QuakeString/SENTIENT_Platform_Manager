@@ -18,7 +18,11 @@ pub fn run(job: &str) -> i32 {
 
     let sink = agent_sink();
     let result = match job {
-        "provision" => (|| {
+        "provision" | "provision-reuse" => (|| {
+            if job == "provision-reuse" {
+                // Read by distro::setup: take back a disk an earlier install left.
+                std::env::set_var(distro::REUSE_KEPT_DISK, "1");
+            }
             let path = work_dir().join("config.json");
             let text = std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
             // It holds the ClickHouse password: gone as soon as it is read.

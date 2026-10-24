@@ -214,14 +214,20 @@ fn install_clickhouse_wsl(plan: &InstallPlan, manager: &std::path::Path, sink: &
             return Err(RESTART_REQUIRED.into());
         }
     }
-    provision_clickhouse_wsl(&plan.configured_stack(), manager, sink)
+    // A reinstall over kept data (the PostgreSQL cluster is there) takes
+    // ClickHouse's kept history back too; a fresh install starts clean.
+    let reuse = plan.data_dir.join("data").join("PG_VERSION").exists();
+    provision_clickhouse_wsl(&plan.configured_stack(), manager, reuse, sink)
 }
 
 /// With WSL2 ready: the hidden account, its distro with Docker and ClickHouse
 /// (`stack`'s ClickHouse settings and password), started at every boot.
 /// Also used by Migration.
 #[cfg(windows)]
-pub fn provision_clickhouse_wsl(stack: &DeployConfig, manager: &std::path::Path, sink: &ProgressFn) -> Result<(), String> {
+/// `reuse_kept`: take back a distro disk an earlier install left (its
+/// ClickHouse history); otherwise such a disk is kept aside and the distro
+/// starts empty.
+pub fn provision_clickhouse_wsl(stack: &DeployConfig, manager: &std::path::Path, reuse_kept: bool, sink: &ProgressFn) -> Result<(), String> {
     use sentient_installer_core::clickhouse_wsl;
     let password = crate::secrets::get(Secret::ClickhouseAccount).unwrap_or_else(clickhouse_wsl::new_password);
     clickhouse_wsl::ensure_account(sink, &password)?;
@@ -233,7 +239,7 @@ pub fn provision_clickhouse_wsl(stack: &DeployConfig, manager: &std::path::Path,
     std::fs::write(&config, serde_json::to_string(&ch).map_err(|e| e.to_string())?)
         .map_err(|e| format!("write {}: {e}", config.display()))?;
     step(sink, "Installing WSL2, Docker and ClickHouse as the service account");
-    clickhouse_wsl::run_as_account(sink, &password, manager, "provision")?;
+    clickhouse_wsl::run_as_account(sink, &password, manager, if reuse_kept { "provision-reuse" } else { "provision" })?;
     step(sink, "Starting ClickHouse at every boot");
     clickhouse_wsl::register_keepalive(&password)?;
     for _ in 0..60 {
