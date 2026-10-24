@@ -131,7 +131,10 @@ fn register_task(name: &str, cmd_file: &Path, at_startup: bool, password: &str) 
 /// Run the Platform Manager (`exe`) in agent mode as the account and stream
 /// its progress. `agent_args` are passed after `--clickhouse-agent`.
 #[cfg(windows)]
-pub fn run_as_account(sink: &ProgressFn, password: &str, exe: &Path, agent_args: &str) -> Result<(), String> {
+/// `limit`: how long the job may run before it is ended and reported as
+/// stuck (None: as long as it reports progress, for provisioning).
+pub fn run_as_account(sink: &ProgressFn, password: &str, exe: &Path, agent_args: &str, limit: Option<std::time::Duration>) -> Result<(), String> {
+    let started = std::time::Instant::now();
     let dir = work_dir();
     let log = dir.join("job.log");
     let done = dir.join("job.done");
@@ -174,6 +177,13 @@ pub fn run_as_account(sink: &ProgressFn, password: &str, exe: &Path, agent_args:
         if crate::cancel::is_cancelled() {
             let _ = sys::output("schtasks.exe", &["/end", "/tn", JOB_TASK]);
             break Err("Cancelled.".into());
+        }
+        if limit.is_some_and(|l| started.elapsed() > l) {
+            let _ = sys::output("schtasks.exe", &["/end", "/tn", JOB_TASK]);
+            break Err(format!(
+                "the ClickHouse job ({agent_args}) did not finish within {} minutes and was stopped",
+                limit.unwrap_or_default().as_secs() / 60
+            ));
         }
         // The task never started, or the agent died without reporting.
         if let Some((true, out, _)) = sys::output("schtasks.exe", &["/query", "/tn", JOB_TASK, "/fo", "csv", "/nh"]) {

@@ -12,6 +12,7 @@ pub mod distro;
 pub(crate) mod exec;
 pub mod stack;
 pub mod kiosk;
+pub mod kept_db;
 /// Native Windows deployment (PostgreSQL + TimescaleDB + the server as a
 /// service) — the no-Docker, no-WSL alternative to [`distro`].
 /// Release manifest: where to fetch the SENTIENT payload and what it must
@@ -24,6 +25,7 @@ pub mod net;
 #[cfg(target_os = "linux")]
 pub mod native_linux;
 pub mod progress;
+pub mod releases;
 /// Running a script as root from a desktop session (pkexec, else `sudo -n`).
 #[cfg(unix)]
 pub mod privileged {

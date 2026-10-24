@@ -91,7 +91,7 @@ fn run_update(record: InstallationRecord, sink: ProgressFn) -> Result<(), String
     let mut updated = crate::updating::run(record, bundle.as_deref(), false, sink.clone())?;
     step(&sink, "Updating the Platform Manager");
     self_install::install_manager()?;
-    updated.manager_version = env!("CARGO_PKG_VERSION").into();
+    updated.manager_version = crate::updates::manager_version().into();
     save_record(&updated)?;
     Ok(())
 }

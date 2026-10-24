@@ -42,6 +42,48 @@ pub(crate) fn output_tracked(program: &str, args: &[&str]) -> Option<(bool, Vec<
     Some((o.status.success(), o.stdout, o.stderr))
 }
 
+/// [`output`] that gives up after `limit`: the child is killed and the
+/// answer is a failure saying so. For steps an uninstall must not hang on.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn output_limited(program: &str, args: &[&str], limit: std::time::Duration) -> Option<(bool, Vec<u8>, Vec<u8>)> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = command(program).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
+    let mut out = child.stdout.take()?;
+    let mut err = child.stderr.take()?;
+    let reader_out = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = out.read_to_end(&mut b);
+        b
+    });
+    let reader_err = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = err.read_to_end(&mut b);
+        b
+    });
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < limit => std::thread::sleep(std::time::Duration::from_millis(200)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let stdout = reader_out.join().unwrap_or_default();
+    let mut stderr = reader_err.join().unwrap_or_default();
+    match status {
+        Some(s) => Some((s.success(), stdout, stderr)),
+        None => {
+            stderr.extend_from_slice(format!("{program} did not finish within {} s and was stopped", limit.as_secs()).as_bytes());
+            Some((false, stdout, stderr))
+        }
+    }
+}
+
 /// [`output_tracked`] with extra environment variables for the child.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn output_tracked_env(

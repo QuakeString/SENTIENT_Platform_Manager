@@ -19,11 +19,14 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
 };
 use gpui_kit::component::Sizable as _;
+use gpui_kit::component::Disableable as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::installation::InstallationRecord;
+use crate::jobs::{Job, JobState};
 use crate::theme;
+use crate::updates::{Offer, UpdateState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -100,11 +103,14 @@ pub struct Manager {
     migration: Option<Entity<migration::MigrationPage>>,
     settings: Option<Entity<settings::SettingsPage>>,
     repair: Option<Entity<repair::RepairPage>>,
+    updates: Entity<UpdateState>,
+    /// Installing a new Platform Manager from the notice.
+    self_update: Entity<Job>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Manager {
-    pub fn new(_window: &mut Window, _cx: &mut Context<Self>) -> Self {
+    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         // `--page migration` (from Setup's Change database).
         let args: Vec<String> = std::env::args().collect();
         let page = args
@@ -112,9 +118,24 @@ impl Manager {
             .find(|w| w[0] == "--page")
             .and_then(|w| Page::ALL.into_iter().find(|p| p.id() == w[1]))
             .unwrap_or(Page::Status);
+        let record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
+        let installed = record.as_ref().map(|r| r.sentient_version.clone());
+        let native = record.as_ref().is_some_and(|r| r.platform().needs_package());
+        let updates = cx.new(|cx| UpdateState::new(installed, native, cx));
+        let self_update = cx.new(|_| Job::new());
+        let subscriptions = vec![
+            cx.observe(&updates, |_, _, cx| cx.notify()),
+            cx.observe(&self_update, |_, job, cx| {
+                // The new program is running and replaces this one.
+                if matches!(job.read(cx).state(), JobState::Done(_)) {
+                    cx.quit();
+                }
+                cx.notify();
+            }),
+        ];
         Self {
             page,
-            record: InstallationRecord::load().inspect(InstallationRecord::use_pg_tools),
+            record,
             status: None,
             control: None,
             logs: None,
@@ -123,8 +144,89 @@ impl Manager {
             migration: None,
             settings: None,
             repair: None,
-            _subscriptions: Vec::new(),
+            updates,
+            self_update,
+            _subscriptions: subscriptions,
         }
+    }
+
+    /// The notices above every screen: a newer SENTIENT or Platform Manager
+    /// on the update channel (crate::updates).
+    fn notices(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = cx.theme().clone();
+        let (sentient, manager) = self.updates.read(cx).notices();
+        let job = self.self_update.read(cx);
+        let installing = job.is_running();
+        let failed = match job.state() {
+            JobState::Failed(m) => Some(m.clone()),
+            _ => None,
+        };
+        let step = job.step_with_time();
+        if sentient.is_none() && manager.is_none() {
+            return None;
+        }
+        let bar = |id: &'static str, text: String| {
+            h_flex()
+                .id(id)
+                .gap_3()
+                .px_4()
+                .py_2()
+                .items_center()
+                .bg(theme.accent)
+                .text_color(theme.accent_foreground)
+                .border_b_1()
+                .border_color(theme.border)
+                .child(Icon::new(IconName::Info).small())
+                .child(div().flex_1().text_sm().child(text))
+        };
+        let mut col = v_flex();
+        if let Some(Offer { version, date, .. }) = sentient {
+            let v = version.clone();
+            col = col.child(
+                bar("notice-sentient", format!("SENTIENT {version} is available{}.", dated(&date)))
+                    .child(Button::new("notice-sentient-go").primary().small().label("Update…").on_click(cx.listener(|this, _, _, cx| {
+                        this.page = Page::Update;
+                        cx.notify();
+                    })))
+                    .child(Button::new("notice-sentient-later").ghost().small().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        let v = v.clone();
+                        this.updates.update(cx, |s, cx| s.dismiss_sentient(v, cx));
+                    }))),
+            );
+        }
+        if let Some(offer) = manager {
+            let v = offer.version.clone();
+            let text = match (&failed, installing) {
+                (_, true) => format!("Platform Manager {}: {step}", offer.version),
+                (Some(e), _) => format!("Platform Manager {} could not be installed: {e}", offer.version),
+                _ => format!("Platform Manager {} is available{} (this is {}).", offer.version, dated(&offer.date), crate::updates::manager_version()),
+            };
+            let page = offer.page.clone();
+            col = col.child(
+                bar("notice-manager", text)
+                    .when(offer.installer.is_some(), |b| {
+                        b.child(
+                            Button::new("notice-manager-go")
+                                .primary()
+                                .small()
+                                .label(if installing { "Installing…" } else { "Install and restart" })
+                                .disabled(installing)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let offer = offer.clone();
+                                    this.self_update.update(cx, |job, cx| {
+                                        job.start(move |sink| crate::updates::install_manager(&offer, &sink).map(|_| ()), cx)
+                                    });
+                                })),
+                        )
+                    })
+                    .child(Button::new("notice-manager-page").ghost().small().label("Release notes").on_click(move |_, _, cx| crate::ui::open_url(&page, cx)))
+                    .child(Button::new("notice-manager-later").ghost().small().label("Not now").disabled(installing).on_click(cx.listener(move |this, _, _, cx| {
+                        let v = v.clone();
+                        this.updates.update(cx, |s, cx| s.dismiss_manager(v, cx));
+                    }))),
+            );
+        }
+        Some(col.into_any_element())
     }
 
     /// The record changed (a migration): every screen starts again from it.
@@ -208,7 +310,7 @@ impl Manager {
                         div()
                             .text_xs()
                             .text_color(theme.muted_foreground)
-                            .child(concat!("v", env!("CARGO_PKG_VERSION"))),
+                            .child(format!("v{}", crate::updates::manager_version())),
                     )
                     .child(
                         Button::new("theme")
@@ -242,11 +344,13 @@ impl Manager {
                 .get_or_insert_with(|| cx.new(|cx| logs::LogsPage::new(record, window, cx)))
                 .clone()
                 .into_any_element(),
-            Page::Update => self
-                .update
-                .get_or_insert_with(|| cx.new(|cx| update::UpdatePage::new(record, cx)))
-                .clone()
-                .into_any_element(),
+            Page::Update => {
+                let updates = self.updates.clone();
+                self.update
+                    .get_or_insert_with(|| cx.new(|cx| update::UpdatePage::new(record, updates, cx)))
+                    .clone()
+                    .into_any_element()
+            }
             Page::Backup => self
                 .backup
                 .get_or_insert_with(|| cx.new(|cx| backup::BackupPage::new(record, window, cx)))
@@ -283,12 +387,18 @@ impl Manager {
 impl Render for Manager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let nav = self.nav(cx);
+        let notices = self.notices(cx);
         let content = self.content(window, cx);
         h_flex()
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(nav)
-            .child(content)
+            .child(v_flex().flex_1().h_full().min_w_0().children(notices).child(h_flex().flex_1().min_h_0().w_full().child(content)))
     }
+}
+
+/// ", released 2026-10-24", or nothing.
+fn dated(date: &str) -> String {
+    if date.is_empty() { String::new() } else { format!(", released {date}") }
 }

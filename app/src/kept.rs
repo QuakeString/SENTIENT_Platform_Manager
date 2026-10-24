@@ -100,7 +100,7 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
                 name,
             });
         }
-        let pattern = format!("^{}_(before_update|failed_update|before_restore|rolled_back)_[0-9]{{12}}$", regex_escape(&db));
+        let pattern = format!("^{}_(before_update|failed_update|before_restore|rolled_back|before_install)_[0-9]{{12}}$", regex_escape(&db));
         for row in pg
             .query(
                 "SELECT datname::text, pg_database_size(datname) FROM pg_database WHERE datname ~ $1 ORDER BY datname",
@@ -116,6 +116,8 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
                 "The database in use before a roll back (what was written after that update)"
             } else if name.contains("_before_restore_") {
                 "The database from before a restore was put into service"
+            } else if name.contains("_before_install_") {
+                "The database an earlier install left, set aside when this install started fresh"
             } else {
                 "Copy of the database from before an update"
             };
@@ -245,7 +247,18 @@ pub fn remove_clickhouse(sink: &ProgressFn) -> Result<(), String> {
     {
         use sentient_installer_core::clickhouse_wsl;
         if let Some(password) = crate::secrets::get(crate::secrets::Secret::ClickhouseAccount) {
-            let _ = clickhouse_wsl::run_as_account(sink, &password, &crate::self_install::manager_exe(), "unregister");
+            sink(Progress::Step { name: "Removing ClickHouse's WSL distribution".into() });
+            // A distribution WSL cannot stop must not hold the uninstall
+            // forever: give up after three minutes and say so.
+            if let Err(e) = clickhouse_wsl::run_as_account(
+                sink,
+                &password,
+                &crate::self_install::manager_exe(),
+                "unregister",
+                Some(std::time::Duration::from_secs(180)),
+            ) {
+                sink(Progress::Log { line: format!("ClickHouse's WSL distribution was not removed: {e}. Its disk stays under C:\\Users\\sentient-clickhouse until it is removed by hand (wsl --unregister sentient, as that account).") });
+            }
         }
         clickhouse_wsl::remove_account(sink);
         crate::secrets::forget(crate::secrets::Secret::ClickhouseAccount);

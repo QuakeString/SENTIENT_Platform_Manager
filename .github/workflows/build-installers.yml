@@ -10,7 +10,15 @@ name: build-installers
 # Also runs (debug) on a PR
 # that edits this file, so a change to the installer build is proven before it
 # merges.
+#
+# Nightly: every night at 02:00 IST, when master has commits the last
+# nightly does not, a release build is published as the release tagged
+# `nightly` (replaced each time; its title is the build's version,
+# 0.8.0-nightly.YYYYMMDD), which the Platform Manager's Nightly update
+# channel offers.
 on:
+  schedule:
+    - cron: "30 20 * * *"
   workflow_dispatch:
     inputs:
       profile:
@@ -27,11 +35,39 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Nightly only: is there anything new since the last nightly? Every other
+  # trigger builds.
+  gate:
+    name: what to build
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          base=$(sed -n 's/^version = "\(.*\)"/\1/p' app/Cargo.toml | head -1)
+          if [ "$GITHUB_EVENT_NAME" != "schedule" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"; echo "version=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          last=$(gh release view nightly --repo "$GITHUB_REPOSITORY" --json targetCommitish -q .targetCommitish 2>/dev/null || true)
+          if [ "$last" = "$GITHUB_SHA" ]; then
+            echo "Nothing new since the last nightly ($last)."; echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=${base}-nightly.$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
   # The GPUI installer + Platform Manager (app/): one exe. The offline package
   # (PostgreSQL, TimescaleDB, SENTIENT payload) is assembled from it by
   # scripts/package-windows.ps1 where the payload files are.
   gpui-windows:
     name: GPUI setup (windows)
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +79,11 @@ jobs:
         working-directory: app
         shell: bash
         run: |
-          if [ "${{ github.event.inputs.profile }}" = "release" ] || [[ "$GITHUB_REF" == refs/tags/v*-rc* ]]; then
+          # The version the program reports and compares updates against:
+          # the tag it is built from (v0.8.0-rc6 -> 0.8.0-rc6).
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then export SPM_VERSION="${GITHUB_REF_NAME#v}"; fi
+          if [ -n "${{ needs.gate.outputs.version }}" ]; then export SPM_VERSION="${{ needs.gate.outputs.version }}"; fi
+          if [ "${{ github.event.inputs.profile }}" = "release" ] || [[ "$GITHUB_REF" == refs/tags/v*-rc* ]] || [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
             cargo build --release; echo "PROFILE=release" >> "$GITHUB_ENV"
           else
             cargo build; echo "PROFILE=debug" >> "$GITHUB_ENV"
@@ -80,6 +120,8 @@ jobs:
   # older distributions too (glibc).
   gpui-linux:
     name: GPUI setup (linux)
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -95,7 +137,11 @@ jobs:
       - name: Build
         working-directory: app
         run: |
-          if [ "${{ github.event.inputs.profile }}" = "release" ] || [[ "$GITHUB_REF" == refs/tags/v*-rc* ]]; then
+          # The version the program reports and compares updates against:
+          # the tag it is built from (v0.8.0-rc6 -> 0.8.0-rc6).
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then export SPM_VERSION="${GITHUB_REF_NAME#v}"; fi
+          if [ -n "${{ needs.gate.outputs.version }}" ]; then export SPM_VERSION="${{ needs.gate.outputs.version }}"; fi
+          if [ "${{ github.event.inputs.profile }}" = "release" ] || [[ "$GITHUB_REF" == refs/tags/v*-rc* ]] || [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
             cargo build --release; echo "PROFILE=release" >> "$GITHUB_ENV"
           else
             cargo build; echo "PROFILE=debug" >> "$GITHUB_ENV"
@@ -119,6 +165,8 @@ jobs:
   # itself so it links against Arch's libraries. Always an optimized build.
   arch-package:
     name: Arch Linux package
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:
@@ -131,7 +179,9 @@ jobs:
         run: |
           useradd -m builder
           chown -R builder "$GITHUB_WORKSPACE"
-          su builder -c "'$GITHUB_WORKSPACE/packaging/arch/build.sh' '$GITHUB_WORKSPACE/dist'"
+          v=""; case "$GITHUB_REF" in refs/tags/v*) v="${GITHUB_REF_NAME#v}";; esac
+          [ -n "${{ needs.gate.outputs.version }}" ] && v="${{ needs.gate.outputs.version }}"
+          su builder -c "SPM_VERSION='$v' '$GITHUB_WORKSPACE/packaging/arch/build.sh' '$GITHUB_WORKSPACE/dist'"
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
@@ -196,3 +246,30 @@ jobs:
             gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" \
               --title "$TAG (debug build)" --generate-notes --prerelease
           fi
+
+  # Nightly: replace the release tagged `nightly` with this build.
+  nightly:
+    name: publish nightly
+    if: github.event_name == 'schedule' && needs.gate.outputs.build == 'true'
+    needs: [gate, gpui-windows, gpui-linux, arch-package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-nightly
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Replace the nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          mapfile -t files < <(find dist -type f)
+          gh release delete nightly --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create nightly "${files[@]}" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --prerelease --latest=false --title "$VERSION" \
+            --notes "Nightly build of master ${GITHUB_SHA:0:7} ($VERSION). For testing: the Platform Manager's Nightly update channel offers it."

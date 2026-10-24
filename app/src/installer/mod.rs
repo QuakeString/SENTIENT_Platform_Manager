@@ -115,6 +115,10 @@ pub struct Installer {
     sentient_version: SharedString,
     /// Why Next is refused on the current page.
     problem: Option<SharedString>,
+    /// A database an earlier install left (where), found on the way to
+    /// Database settings, and whether to keep using it.
+    existing: Option<String>,
+    keep_existing: bool,
     fields: Fields,
     install: Entity<Job>,
     _tasks: Vec<Task<()>>,
@@ -225,6 +229,8 @@ impl Installer {
             online: None,
             sentient_version: sentient_version.into(),
             problem: None,
+            existing: None,
+            keep_existing: true,
             fields,
             install,
             _tasks: Vec::new(),
@@ -370,7 +376,13 @@ impl Installer {
                 if self.flavor == Some(Flavor::Clickhouse) && self.value(&f.ch_password, cx).is_empty() {
                     return Err("ClickHouse password is required.".into());
                 }
-                self.ports_in_use(&self.database_ports(cx)?)
+                let mut ports = self.database_ports(cx)?;
+                // A kept cluster may still be running on its port (an
+                // earlier Platform Manager left it so): it is this one.
+                if self.existing.is_some() && self.engine == Engine::Native {
+                    ports.retain(|(_, what)| what != "PostgreSQL");
+                }
+                self.ports_in_use(&ports)
             }
             5 => self.ports_in_use(&self.network_ports(cx)?),
             6 => {
@@ -512,6 +524,7 @@ impl Installer {
             data_dir: PathBuf::from(self.value(&f.data_dir, cx)),
             stack,
             pg_superuser_password: self.value(&f.pg_admin_password, cx),
+            existing: self.existing.as_ref().map(|_| self.keep_existing),
             admin_email: self.value(&f.admin_email, cx),
             admin_password: self.value(&f.admin_password, cx),
             settings: self.chosen_settings(cx),
@@ -610,11 +623,24 @@ impl Installer {
                 Ok(()) => {
                     self.problem = None;
                     self.step = self.next_shown(self.step);
+                    if self.step == 4 {
+                        self.existing = self.find_existing(cx);
+                    }
                 }
                 Err(e) => self.problem = Some(e.into()),
             },
         }
         cx.notify();
+    }
+
+    /// A database an earlier install left, for the Keep / Start fresh choice.
+    fn find_existing(&self, cx: &App) -> Option<String> {
+        match self.engine {
+            Engine::Native => native::existing_cluster(std::path::Path::new(&self.value(&self.fields.data_dir, cx)))
+                .map(|d| format!("PostgreSQL data from an earlier install is in {}.", d.display())),
+            Engine::Docker => sentient_installer_core::distro::existing_volume(&DeployConfig::default())
+                .map(|v| format!("The Docker volume {v} holds the database of an earlier install.")),
+        }
     }
 
     fn go(&mut self, step: usize, cx: &mut Context<Self>) {

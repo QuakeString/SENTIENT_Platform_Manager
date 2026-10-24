@@ -352,6 +352,21 @@ pub(crate) fn run_sql(cfg: &NativeConfig, sql: &str) -> Result<(), String> {
     exec::run_privileged(&crate::progress::noop(), &script)
 }
 
+/// One SQL statement as the postgres superuser in `db`, its output trimmed.
+pub(crate) fn superuser_sql(cfg: &NativeConfig, db: &str, sql: &str) -> Result<String, String> {
+    let script = format!(
+        "runuser -u postgres -- psql -p {} -d {} -v ON_ERROR_STOP=1 -qAt -c {}",
+        cfg.pg_port,
+        shq(db),
+        shq(sql)
+    );
+    match exec::privileged_output(&script) {
+        Some((true, out, _)) => Ok(out.trim().to_string()),
+        Some((false, _, err)) => Err(err.trim().to_string()),
+        None => Err("could not run psql".into()),
+    }
+}
+
 pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     if !is_ready(cfg) {
         return Err("database prerequisites are not installed — run setup first".into());

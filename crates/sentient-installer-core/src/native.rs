@@ -252,9 +252,68 @@ fn psql(cfg: &NativeConfig, db: &str, sql: &str) -> Result<String, String> {
     let o = c.output().map_err(|e| format!("run psql: {e}"))?;
     let out = sys::decode(&o.stdout);
     if !o.status.success() {
-        return Err(format!("psql: {}", sys::decode(&o.stderr).trim()));
+        let err = sys::decode(&o.stderr).trim().to_string();
+        if err.contains("password authentication failed") {
+            return Err(format!(
+                "psql: {err} — this computer's PostgreSQL was kept from an earlier install: enter that install's PostgreSQL admin password."
+            ));
+        }
+        return Err(format!("psql: {err}"));
     }
     Ok(out.trim().to_string())
+}
+
+/// One SQL statement as the PostgreSQL superuser in `db`, its output
+/// trimmed: for the kept-database checks (crate::kept_db).
+pub fn superuser_sql(cfg: &NativeConfig, db: &str, sql: &str) -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::native_linux::superuser_sql(cfg, db, sql)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        psql(cfg, db, sql)
+    }
+}
+
+/// A PostgreSQL cluster an earlier install left: under `data_dir` on
+/// Windows; the distribution's cluster on Linux (which may hold SENTIENT's
+/// database or not: the install looks inside).
+pub fn existing_cluster(data_dir: &Path) -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = data_dir;
+        for dir in ["/var/lib/postgres/data", "/var/lib/pgsql/data"] {
+            if Path::new(dir).exists() {
+                return Some(PathBuf::from(dir));
+            }
+        }
+        // Debian/Ubuntu: /var/lib/postgresql/<major>/main (not readable by
+        // the user; its parent lists the versions).
+        let base = Path::new("/var/lib/postgresql");
+        std::fs::read_dir(base).ok()?.flatten().find(|e| e.path().join("main").exists() || e.file_name().to_string_lossy().chars().all(|c| c.is_ascii_digit())).map(|e| e.path())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let data = data_dir.join("data");
+        data.join("PG_VERSION").exists().then_some(data)
+    }
+}
+
+/// The kept-database step between setup and deploy: the cluster is up,
+/// nothing of SENTIENT is laid down yet. Keep checks (and converts) the
+/// database for this mode; Start fresh sets it aside.
+pub fn prepare_existing(sink: &ProgressFn, cfg: &NativeConfig, keep: bool) -> Result<(), String> {
+    let sql = |db: &str, q: &str| superuser_sql(cfg, db, q);
+    crate::kept_db::sync_role_password(&sql, &cfg.db_user, &cfg.db_password)?;
+    let Some(existing) = crate::kept_db::inspect(&sql, &cfg.db_name)? else {
+        return Ok(());
+    };
+    if keep {
+        crate::kept_db::prepare_keep(&sql, &existing, cfg.flavor, crate::kept_db::TIMESCALE_SQL, sink)
+    } else {
+        crate::kept_db::set_aside(&sql, &cfg.db_name, sink).map(|_| ())
+    }
 }
 
 fn sc(args: &[&str]) -> Option<(bool, Vec<u8>, Vec<u8>)> {
@@ -467,6 +526,7 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     } else {
         log(&sink, "database cluster already initialised");
     }
+    let port_changed = set_pg_port(cfg)?;
     bail_if_cancelled()?;
 
     // ---- TimescaleDB ----
@@ -532,6 +592,16 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     }
 
     step(&sink, "Starting PostgreSQL");
+    // A kept cluster may already be running, on the port it had before.
+    if port_changed && service_state(PG_SERVICE) != "stopped" {
+        let _ = sc(&["stop", PG_SERVICE]);
+        for _ in 0..60 {
+            if service_state(PG_SERVICE) == "stopped" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+    }
     let _ = sc(&["start", PG_SERVICE]);
     wait_for_postgres(&sink, cfg)?;
 
@@ -667,6 +737,70 @@ mod pg_hba_tests {
         assert!(pg_hba_without_trust("host all all 127.0.0.1/32 scram-sha-256\n# trust\n").is_none());
         // A database or user named "trust" is not a method.
         assert!(pg_hba_without_trust("host trust trust 127.0.0.1/32 md5\n").is_none());
+    }
+}
+
+/// Make the cluster listen on `cfg.pg_port`: initdb leaves the default
+/// (5432), so any other port was never reached. Returns whether the file
+/// changed (a running server only picks it up on a restart).
+fn set_pg_port(cfg: &NativeConfig) -> Result<bool, String> {
+    let conf = cfg.pg_data().join("postgresql.conf");
+    let existing = std::fs::read_to_string(&conf).map_err(|e| format!("read postgresql.conf: {e}"))?;
+    let updated = with_port(&existing, cfg.pg_port);
+    if updated == existing {
+        return Ok(false);
+    }
+    std::fs::write(&conf, updated).map_err(|e| format!("update postgresql.conf: {e}"))?;
+    Ok(true)
+}
+
+/// `conf` with exactly one active `port = <port>` line, the last one.
+fn with_port(conf: &str, port: u16) -> String {
+    let wanted = format!("port = {port}");
+    let active: Vec<&str> = conf
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            t.starts_with("port") && t["port".len()..].trim_start().starts_with('=')
+        })
+        .collect();
+    if active.len() == 1 && active[0].trim() == wanted {
+        return conf.to_string();
+    }
+    let mut out: String = conf
+        .lines()
+        .filter(|l| !active.contains(l))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    out.push_str(&format!("{wanted}\t# set by SENTIENT Platform Manager\n"));
+    out
+}
+
+#[cfg(test)]
+mod port_tests {
+    use super::with_port;
+
+    #[test]
+    fn appends_to_initdb_default() {
+        let conf = "#port = 5432\t\t\t\t# (change requires restart)\nmax_connections = 100\n";
+        let out = with_port(conf, 5433);
+        assert!(out.starts_with("#port = 5432"));
+        assert!(out.ends_with("port = 5433\t# set by SENTIENT Platform Manager\n"));
+    }
+
+    #[test]
+    fn replaces_an_earlier_port_and_is_stable() {
+        let once = with_port("#port = 5432\n", 5433);
+        let twice = with_port(&once, 5434);
+        assert_eq!(twice.matches("\nport = ").count() + usize::from(twice.starts_with("port = ")), 1);
+        assert!(twice.contains("port = 5434"));
+        assert_eq!(with_port(&twice, 5434), twice);
+    }
+
+    #[test]
+    fn ignores_names_that_only_start_with_port() {
+        let out = with_port("portal_thing = 1\n", 5432);
+        assert!(out.contains("portal_thing = 1"));
     }
 }
 
@@ -1280,6 +1414,25 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Stop and remove the SENTIENT service and its program folders; the
+/// database is left to the caller.
+#[cfg(not(target_os = "linux"))]
+fn remove_platform(sink: &ProgressFn, cfg: &NativeConfig) {
+    step(sink, "Stopping and removing the SENTIENT service");
+    remove_uninstall_entry();
+    let _ = sc(&["stop", APP_SERVICE]);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let winsw = cfg.install_dir.join("services").join(format!("{APP_SERVICE}.exe"));
+    if winsw.exists() {
+        let _ = sys::output_limited(&winsw.to_string_lossy(), &["uninstall"], std::time::Duration::from_secs(60));
+    } else if service_exists(APP_SERVICE) {
+        let _ = sc(&["delete", APP_SERVICE]);
+    }
+    for item in ["bin", "ui", "conf", "services", "logs"] {
+        let _ = remove_tree_retrying(&cfg.install_dir.join(item));
+    }
+}
+
 /// Remove the platform but KEEP the database cluster and its data.
 pub fn uninstall(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     #[cfg(target_os = "linux")]
@@ -1288,18 +1441,20 @@ pub fn uninstall(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-    step(&sink, "Stopping and removing the SENTIENT service");
-    remove_uninstall_entry();
-    let _ = sc(&["stop", APP_SERVICE]);
-    std::thread::sleep(std::time::Duration::from_secs(2));
-    let winsw = cfg.install_dir.join("services").join(format!("{APP_SERVICE}.exe"));
-    if winsw.exists() {
-        let _ = sys::output_tracked(&winsw.to_string_lossy(), &["uninstall"]);
-    } else if service_exists(APP_SERVICE) {
-        let _ = sc(&["delete", APP_SERVICE]);
-    }
-    for item in ["bin", "ui", "conf", "services", "logs"] {
-        let _ = remove_tree_retrying(&cfg.install_dir.join(item));
+    remove_platform(&sink, cfg);
+    // The kept cluster stays registered for a new install to reuse, but not
+    // running: left on its port, it made that install refuse the port as
+    // taken. The install starts it again and sets how it starts.
+    if service_exists(PG_SERVICE) {
+        step(&sink, "Stopping PostgreSQL (its data is kept)");
+        let _ = sc(&["stop", PG_SERVICE]);
+        for _ in 0..60 {
+            if service_state(PG_SERVICE) == "stopped" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        let _ = sc(&["config", PG_SERVICE, "start=", "demand"]);
     }
     sink(Progress::Done {
         message: "SENTIENT removed. The database cluster was left in place.".into(),
@@ -1316,7 +1471,7 @@ pub fn cleanup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-    uninstall(sink.clone(), cfg)?;
+    remove_platform(&sink, cfg);
     step(&sink, "Removing PostgreSQL");
     let _ = sc(&["stop", PG_SERVICE]);
     // `sc stop` only asks: the server keeps its files open until it has
@@ -1330,9 +1485,10 @@ pub fn cleanup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     std::thread::sleep(std::time::Duration::from_secs(2));
     let pg_ctl = cfg.pg_bin().join("pg_ctl.exe");
     if pg_ctl.exists() {
-        let _ = sys::output_tracked(
+        let _ = sys::output_limited(
             &pg_ctl.to_string_lossy(),
             &["unregister", "-N", PG_SERVICE],
+            std::time::Duration::from_secs(60),
         );
     } else if service_exists(PG_SERVICE) {
         let _ = sc(&["delete", PG_SERVICE]);

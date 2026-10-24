@@ -95,7 +95,7 @@ fn record_for_docker(cfg: &DeployConfig, version: Option<String>) -> Installatio
     let dir = std::path::PathBuf::from(cfg.stack_dir());
     InstallationRecord {
         sentient_version: version.unwrap_or_else(|| "unknown".into()),
-        manager_version: env!("CARGO_PKG_VERSION").into(),
+        manager_version: crate::updates::manager_version().into(),
         engine: Engine::Docker,
         install_dir: dir.clone(),
         pg_dir: Default::default(),
@@ -164,7 +164,7 @@ fn native_record(cfg: &sentient_installer_core::native::NativeConfig) -> Install
     };
     InstallationRecord {
         sentient_version: "unknown".into(),
-        manager_version: env!("CARGO_PKG_VERSION").into(),
+        manager_version: crate::updates::manager_version().into(),
         engine: Engine::Native,
         install_dir: cfg.install_dir.clone(),
         pg_dir: cfg.pg_dir.clone(),

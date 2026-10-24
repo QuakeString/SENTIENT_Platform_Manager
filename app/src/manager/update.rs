@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, WindowExt as _, h_flex,
+    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     progress::Progress,
@@ -21,9 +21,11 @@ use gpui_kit::prelude::FluentBuilder as _;
 use sentient_installer_core::native::safe_update::RollbackPoint;
 use sentient_installer_core::stack::Flavor;
 
-use crate::installation::InstallationRecord;
+use crate::installation::{Engine, InstallationRecord};
 use crate::jobs::{Job, JobState};
 use crate::ui::{self, Tone};
+use crate::updates::UpdateState;
+use sentient_installer_core::releases::Channel;
 
 pub struct UpdatePage {
     record: Option<InstallationRecord>,
@@ -31,15 +33,19 @@ pub struct UpdatePage {
     accept_breaking: bool,
     /// What the last update replaced: None while it is being looked up.
     rollback: Option<Result<Option<RollbackPoint>, String>>,
-    /// Native: the newest SENTIENT online (None while looking).
-    latest: Option<Result<String, String>>,
+    /// What the update channel offers (shared with the notice bar).
+    updates: Entity<UpdateState>,
     job: Entity<Job>,
+    /// Installing a new Platform Manager.
+    manager_job: Entity<Job>,
     _observe: Subscription,
+    _observe_updates: Subscription,
+    _observe_manager: Subscription,
     _tasks: Vec<Task<()>>,
 }
 
 impl UpdatePage {
-    pub fn new(record: Option<InstallationRecord>, cx: &mut Context<Self>) -> Self {
+    pub fn new(record: Option<InstallationRecord>, updates: Entity<UpdateState>, cx: &mut Context<Self>) -> Self {
         let job = cx.new(|_| Job::new());
         let _observe = cx.observe(&job, |page: &mut Self, job, cx| {
             match job.read(cx).state() {
@@ -52,28 +58,50 @@ impl UpdatePage {
             }
             cx.notify();
         });
-        let mut page = Self { record, package: None, accept_breaking: false, rollback: None, latest: None, job, _observe, _tasks: Vec::new() };
+        let _observe_updates = cx.observe(&updates, |_, _, cx| cx.notify());
+        let manager_job = cx.new(|_| Job::new());
+        let _observe_manager = cx.observe(&manager_job, |_, job, cx| {
+            // The new program is running and replaces this one.
+            if matches!(job.read(cx).state(), JobState::Done(_)) {
+                cx.quit();
+            }
+            cx.notify();
+        });
+        // Opening the screen looks, unless a check already answered.
+        updates.update(cx, |u, cx| {
+            if u.found.is_none() {
+                u.check(cx);
+            }
+        });
+        let mut page = Self {
+            record,
+            package: None,
+            accept_breaking: false,
+            rollback: None,
+            updates,
+            job,
+            manager_job,
+            _observe,
+            _observe_updates,
+            _observe_manager,
+            _tasks: Vec::new(),
+        };
         page.refresh_rollback(cx);
-        page.look_for_latest(cx);
         page
     }
 
-    fn look_for_latest(&mut self, cx: &mut Context<Self>) {
-        if !self.record.as_ref().is_some_and(|r| r.platform().needs_package()) {
-            return;
-        }
-        let task = cx.spawn(async move |this, cx| {
-            let found = cx.background_executor().spawn(async move { crate::online::latest().map(|m| m.version) }).await;
-            this.update(cx, |page, cx| {
-                page.latest = Some(found);
-                cx.notify();
-            })
-            .ok();
+    /// Docker: update to `version` by moving the image to that tag.
+    fn run_docker_to(&mut self, version: String, cx: &mut Context<Self>) {
+        let Some(mut record) = self.record.clone() else { return };
+        record.stack.image = retag(&record.stack.image, &version);
+        let accept = self.accept_breaking;
+        self.job.update(cx, |job, cx| {
+            job.start(move |sink| crate::updating::run(record, None, accept, sink).map(|_| ()), cx)
         });
-        self._tasks.push(task);
     }
 
-    /// Download `version` from the releases repository, then update to it.
+    /// Download the release tagged `tag` from the releases repository, then
+    /// update to it.
     fn run_download(&mut self, version: String, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         let accept = self.accept_breaking;
@@ -178,6 +206,118 @@ impl UpdatePage {
     }
 }
 
+/// `image` at tag `version`: `quakestring/sentient:latest` → `…:4.3.0.50`.
+fn retag(image: &str, version: &str) -> String {
+    let repo = match image.rsplit_once(':') {
+        Some((repo, tag)) if !tag.contains('/') => repo,
+        _ => image,
+    };
+    format!("{repo}:{version}")
+}
+
+impl UpdatePage {
+    /// The channel, Check for updates, the daily check, and the Platform
+    /// Manager's own update.
+    fn updates_panel(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
+        let u = self.updates.read(cx);
+        let channel = u.prefs.channel;
+        let checking = u.checking;
+        let daily = u.prefs.daily;
+        let last = u.last_checked();
+        let manager = u.found.as_ref().map(|f| f.manager.clone());
+        let mjob = self.manager_job.read(cx);
+        let installing = mjob.is_running();
+        let mstep = mjob.step_with_time();
+        let mfailed = match mjob.state() {
+            JobState::Failed(m) => Some(m.clone()),
+            _ => None,
+        };
+        let channels = h_flex().gap_2().children(Channel::ALL.into_iter().map(|c| {
+            let b = Button::new(SharedString::from(format!("channel-{}", c.label())))
+                .small()
+                .label(c.label())
+                .tooltip(c.about())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.updates.update(cx, |u, cx| u.set_channel(c, cx));
+                }));
+            if c == channel { b.primary() } else { b.outline() }
+        }));
+        let manager_line: AnyElement = match manager {
+            None => div().into_any_element(),
+            Some(Err(e)) => div().text_sm().text_color(theme.muted_foreground).child(format!("Platform Manager: {e}")).into_any_element(),
+            Some(Ok(None)) => div()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(format!("Platform Manager {} is up to date.", crate::updates::manager_version()))
+                .into_any_element(),
+            Some(Ok(Some(o))) => {
+                let page = o.page.clone();
+                let has_installer = o.installer.is_some();
+                v_flex()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .items_center()
+                            .when(has_installer, |row| {
+                                let offer = o.clone();
+                                row.child(
+                                    Button::new("manager-install")
+                                        .primary()
+                                        .label(if installing { "Installing…".to_string() } else { format!("Install Platform Manager {} and restart", o.version) })
+                                        .disabled(installing)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            let offer = offer.clone();
+                                            this.manager_job.update(cx, |job, cx| {
+                                                job.start(move |sink| crate::updates::install_manager(&offer, &sink).map(|_| ()), cx)
+                                            });
+                                        })),
+                                )
+                            })
+                            .child(Button::new("manager-notes").outline().label("Release notes").on_click(move |_, _, cx| ui::open_url(&page, cx)))
+                            .child(div().text_sm().text_color(theme.muted_foreground).child(format!(
+                                "this is {}{}",
+                                crate::updates::manager_version(),
+                                if o.date.is_empty() { String::new() } else { format!("; {} released {}", o.version, o.date) }
+                            ))),
+                    )
+                    .when(installing, |c| c.child(div().text_sm().child(mstep.clone())))
+                    .children(mfailed.map(|e| ui::outcome(theme, Tone::Bad, e)))
+                    .when(!o.notes.is_empty(), |c| c.child(div().text_xs().text_color(theme.muted_foreground).child(o.notes.clone())))
+                    .into_any_element()
+            }
+        };
+        ui::panel(theme)
+            .child(div().font_weight(FontWeight::MEDIUM).child("Updates"))
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(div().text_sm().child("Channel"))
+                    .child(channels)
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("check-updates")
+                            .outline()
+                            .label(if checking { "Checking…" } else { "Check for updates" })
+                            .disabled(checking)
+                            .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))),
+                    ),
+            )
+            .child(div().text_xs().text_color(theme.muted_foreground).child(format!("{} Last checked: {last}.", channel.about())))
+            .child(
+                Checkbox::new("daily-check")
+                    .label("Check once a day and show a notice when there is a newer version")
+                    .checked(daily)
+                    .on_change(cx.listener(|this, value: &bool, _, cx| {
+                        let v = *value;
+                        this.updates.update(cx, |u, cx| u.set_daily(v, cx));
+                    })),
+            )
+            .child(manager_line)
+    }
+}
+
 impl Render for UpdatePage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
@@ -185,7 +325,8 @@ impl Render for UpdatePage {
             &theme,
             "Update",
             "Install a newer SENTIENT, with its database changes, and go back automatically if it fails.",
-        );
+        )
+        .child(self.updates_panel(&theme, cx));
         let Some(record) = &self.record else {
             return page.child(ui::not_installed(&theme));
         };
@@ -205,29 +346,57 @@ impl Render for UpdatePage {
         page.child(
             ui::panel(&theme)
                 .child(ui::fact(&theme, "Installed version", record.sentient_version.clone()))
-                .when(native, |panel| {
-                    let latest = self.latest.clone();
-                    let installed = record.sentient_version.clone();
-                    panel.child(match latest {
-                        None => div().text_sm().text_color(theme.muted_foreground).child("Looking for the latest SENTIENT online…").into_any_element(),
-                        Some(Err(e)) => div()
+                .child({
+                    let u = self.updates.read(cx);
+                    let offer = u.sentient().cloned();
+                    let looking = u.checking && u.found.is_none();
+                    let error = u.found.as_ref().and_then(|f| f.sentient.as_ref().err().cloned());
+                    let docker = record.engine == Engine::Docker;
+                    match (offer, looking, error) {
+                        (_, true, _) => div().text_sm().text_color(theme.muted_foreground).child("Looking for a newer SENTIENT online…").into_any_element(),
+                        (None, _, Some(e)) => div()
                             .text_sm()
                             .text_color(theme.muted_foreground)
-                            .child(format!("The download site could not be reached ({e}): choose a package folder instead."))
+                            .child(if native { format!("{e} Choose a package folder instead.") } else { e })
                             .into_any_element(),
-                        Some(Ok(v)) => h_flex()
-                            .gap_3()
-                            .items_center()
-                            .child(
-                                Button::new("download-latest")
-                                    .primary()
-                                    .label(if v == installed { format!("Download {v} again and update") } else { format!("Download and update to {v}") })
-                                    .disabled(busy)
-                                    .on_click(cx.listener(move |this, _, _, cx| this.run_download(v.clone(), cx))),
-                            )
-                            .child(div().text_sm().text_color(theme.muted_foreground).child("from the SENTIENT releases site, checked before use; or choose a package folder below"))
+                        (None, _, None) => div()
+                            .text_sm()
+                            .text_color(theme.muted_foreground)
+                            .child(format!("No newer SENTIENT on the {} channel.", u.prefs.channel.label()))
                             .into_any_element(),
-                    })
+                        (Some(o), _, _) => {
+                            let (tag, version) = (o.tag.clone(), o.version.clone());
+                            v_flex()
+                                .gap_2()
+                                .child(
+                                    h_flex()
+                                        .gap_3()
+                                        .items_center()
+                                        .child(
+                                            Button::new("download-latest")
+                                                .primary()
+                                                .label(format!("Update to {version}"))
+                                                .disabled(busy)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if docker {
+                                                        this.run_docker_to(version.clone(), cx)
+                                                    } else {
+                                                        this.run_download(tag.clone(), cx)
+                                                    }
+                                                })),
+                                        )
+                                        .child(div().text_sm().text_color(theme.muted_foreground).child(if docker {
+                                            format!("pulls quakestring/sentient:{}{}", o.version, if o.date.is_empty() { String::new() } else { format!(", released {}", o.date) })
+                                        } else {
+                                            format!("downloaded from the SENTIENT releases site and checked before use{}", if o.date.is_empty() { String::new() } else { format!("; released {}", o.date) })
+                                        })),
+                                )
+                                .when(!o.notes.is_empty(), |c| {
+                                    c.child(div().text_xs().text_color(theme.muted_foreground).child(o.notes.clone()))
+                                })
+                                .into_any_element()
+                        }
+                    }
                 })
                 .when(native, |panel| {
                     panel.child(

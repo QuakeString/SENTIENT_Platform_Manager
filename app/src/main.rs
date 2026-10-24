@@ -31,6 +31,7 @@ mod settings;
 mod standalone;
 mod theme;
 mod ui;
+mod updates;
 mod updating;
 
 use gpui_kit::component::ThemeMode;
@@ -54,6 +55,10 @@ fn main() {
     }
     if !elevate::ensure_admin() {
         return;
+    }
+    // The downloaded Platform Manager replacing the installed one.
+    if args.get(1).map(String::as_str) == Some("--self-update") {
+        std::process::exit(updates::finish_self_update());
     }
     ui::prefer_native_frame();
     let mode = AppMode::detect();

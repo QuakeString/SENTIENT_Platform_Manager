@@ -46,6 +46,11 @@ pub struct InstallPlan {
     /// repository first (crate::online), and the download is the package.
     #[serde(default)]
     pub download: Option<String>,
+    /// A database an earlier install left: keep it (`Some(true)`, checked
+    /// against this mode) or set it aside and start fresh (`Some(false)`).
+    /// None when there is none.
+    #[serde(default)]
+    pub existing: Option<bool>,
 }
 
 impl InstallPlan {
@@ -121,7 +126,7 @@ impl InstallPlan {
         stack.ch_password.clear();
         InstallationRecord {
             sentient_version: self.sentient_version.clone(),
-            manager_version: env!("CARGO_PKG_VERSION").into(),
+            manager_version: crate::updates::manager_version().into(),
             engine: self.engine,
             install_dir: self.install_dir.clone(),
             pg_dir: self.data_dir.clone(),
@@ -225,7 +230,7 @@ fn install_clickhouse_wsl(plan: &InstallPlan, manager: &std::path::Path, sink: &
     }
     // A reinstall over kept data (the PostgreSQL cluster is there) takes
     // ClickHouse's kept history back too; a fresh install starts clean.
-    let reuse = plan.data_dir.join("data").join("PG_VERSION").exists();
+    let reuse = plan.existing == Some(true);
     provision_clickhouse_wsl(&plan.configured_stack(), manager, reuse, sink)
 }
 
@@ -248,7 +253,7 @@ pub fn provision_clickhouse_wsl(stack: &DeployConfig, manager: &std::path::Path,
     std::fs::write(&config, serde_json::to_string(&ch).map_err(|e| e.to_string())?)
         .map_err(|e| format!("write {}: {e}", config.display()))?;
     step(sink, "Installing WSL2, Docker and ClickHouse as the service account");
-    clickhouse_wsl::run_as_account(sink, &password, manager, if reuse_kept { "provision-reuse" } else { "provision" })?;
+    clickhouse_wsl::run_as_account(sink, &password, manager, if reuse_kept { "provision-reuse" } else { "provision" }, None)?;
     step(sink, "Starting ClickHouse at every boot");
     clickhouse_wsl::register_keepalive(&password)?;
     let mut answering = false;
@@ -346,6 +351,9 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
             if cfg!(windows) {
                 native::apply_pg_tuning(&sink, &cfg)?;
             }
+            if let Some(keep) = plan.existing {
+                native::prepare_existing(&sink, &cfg, keep)?;
+            }
             native::deploy(sink.clone(), &cfg)?;
             step(&sink, "Setting the administrator sign-in");
             native::set_admin_account(&cfg, &plan.admin_email, &admin_hash)?;
@@ -370,7 +378,7 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
         Engine::Docker => {
             let stack = plan.configured_stack();
             distro::setup(sink.clone(), &plan.install_dir)?;
-            distro::deploy(sink.clone(), &stack)?;
+            distro::deploy_with(sink.clone(), &stack, plan.existing)?;
             step(&sink, "Setting the administrator sign-in");
             distro::set_admin_account(&stack, &plan.admin_email, &admin_hash)?;
         }

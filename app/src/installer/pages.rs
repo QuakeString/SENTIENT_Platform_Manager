@@ -159,7 +159,7 @@ impl Installer {
                         .child(div().font_weight(FontWeight::MEDIUM).child(self.sentient_version.clone())))
                     .child(ui::panel(&theme).flex_1().gap_1()
                         .child(div().text_xs().text_color(theme.muted_foreground).child("Platform Manager"))
-                        .child(div().font_weight(FontWeight::MEDIUM).child(env!("CARGO_PKG_VERSION"))))
+                        .child(div().font_weight(FontWeight::MEDIUM).child(crate::updates::manager_version())))
                     .child(ui::panel(&theme).flex_1().min_w_0().gap_1()
                         .child(div().text_xs().text_color(theme.muted_foreground).child("Package"))
                         .child(div().w_full().whitespace_normal().font_weight(FontWeight::MEDIUM).child(package))),
@@ -425,8 +425,49 @@ impl Installer {
             Some(Flavor::Timescaledb) => "PostgreSQL + TimescaleDB",
             _ => "PostgreSQL",
         };
+        let existing = self.existing.clone().map(|where_| {
+            let keep = self.keep_existing;
+            let flavor = self.flavor;
+            ui::panel(&theme)
+                .child(div().font_weight(FontWeight::MEDIUM).child("Earlier database found"))
+                .child(div().text_sm().child(where_))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child({
+                            let b = Button::new("existing-keep").label("Keep using it").on_click(cx.listener(|this, _, _, cx| {
+                                this.keep_existing = true;
+                                cx.notify();
+                            }));
+                            if keep { b.primary() } else { b.outline() }
+                        })
+                        .child({
+                            let b = Button::new("existing-fresh").label("Start fresh").on_click(cx.listener(|this, _, _, cx| {
+                                this.keep_existing = false;
+                                cx.notify();
+                            }));
+                            if keep { b.outline() } else { b.primary() }
+                        }),
+                )
+                .child(div().text_sm().text_color(theme.muted_foreground).child(if keep {
+                    format!(
+                        "Its users, devices, dashboards and settings stay. Before anything is changed, the install checks that its history table fits {}: a plain one is converted for TimescaleDB, and a database that cannot work in this mode stops the install with the reason.",
+                        flavor.map(crate::installation::flavor_label).unwrap_or("the chosen database")
+                    )
+                } else {
+                    "A new, empty database. The earlier one is not deleted: it is renamed (…_before_install_<date>) and listed under Kept on the Migration screen, where it can be removed.".to_string()
+                }))
+                .when(cfg!(windows) && self.engine == Engine::Native, |p| {
+                    p.child(ui::outcome(
+                        &theme,
+                        Tone::Warn,
+                        "The PostgreSQL admin password below must be the earlier install's: the kept PostgreSQL still uses it.",
+                    ))
+                })
+        });
         v_flex()
             .gap_4()
+            .children(existing)
             .child(
                 ui::panel(&theme)
                     .child(div().font_weight(FontWeight::MEDIUM).child(pg_title))
@@ -741,7 +782,7 @@ impl Installer {
             if self.start_menu {
                 shortcuts.push(if cfg!(windows) { "Start menu" } else { "application menu" });
             }
-            rows.push(("Installs", format!("SENTIENT Platform Manager {}, without SENTIENT", env!("CARGO_PKG_VERSION")), 0));
+            rows.push(("Installs", format!("SENTIENT Platform Manager {}, without SENTIENT", crate::updates::manager_version()), 0));
             rows.push(("Program folder", crate::self_install::manager_dir().display().to_string(), 0));
             rows.push((
                 "Shortcuts",

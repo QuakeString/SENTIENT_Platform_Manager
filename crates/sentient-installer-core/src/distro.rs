@@ -645,6 +645,13 @@ pub fn clickhouse_answers(http_port: u16) -> bool {
 
 /// Write the stack, pull images, install the schema, start, wait for HTTP.
 pub fn deploy(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
+    deploy_with(sink, cfg, None)
+}
+
+/// [`deploy`], deciding first what happens to a database an earlier
+/// install left in the volume: `Some(true)` keeps it (checked against this
+/// mode, crate::kept_db), `Some(false)` sets it aside and starts fresh.
+pub fn deploy_with(sink: ProgressFn, cfg: &DeployConfig, keep_existing: Option<bool>) -> Result<(), String> {
     cfg.validate()?;
     if !is_ready() {
         return Err("Docker is not reachable — run the Docker setup step first.".into());
@@ -666,6 +673,11 @@ pub fn deploy(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     // re-run against an installed DB it exits non-zero ("refuses to overwrite
     // an existing schema"); expected, so log and carry on — the readiness
     // probe below is the real gate.
+    if let Some(keep) = keep_existing {
+        prepare_existing(&sink, cfg, keep)?;
+        bail_if_cancelled!();
+    }
+
     let demo = if cfg.load_demo { " -e LOAD_DEMO=true" } else { "" };
     sink(Progress::Step { name: "Installing the SENTIENT database (first run, one-time)".into() });
     if let Err(e) = run_stream(&sink, &cfg.compose_cmd(&format!("run --rm -e INSTALL_SENTIENT=true{demo} sentient"))) {
@@ -696,6 +708,49 @@ pub fn deploy(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
 /// Tear down a partial/cancelled deploy: containers, network, volumes, and
 /// half-pulled images. Leaves Docker (and the WSL distro) in place so a retry
 /// starts clean. Best-effort throughout — the stack may not exist yet.
+/// The PostgreSQL volume an earlier install of this stack left, if any.
+pub fn existing_volume(cfg: &DeployConfig) -> Option<String> {
+    let volume = cfg.names().vol_pg;
+    match run_output(&format!("docker volume inspect {} >/dev/null 2>&1", shell_quote(&volume))) {
+        Some((true, _)) => Some(volume),
+        _ => None,
+    }
+}
+
+/// The kept-database step: only PostgreSQL up, nothing of SENTIENT yet.
+fn prepare_existing(sink: &ProgressFn, cfg: &DeployConfig, keep: bool) -> Result<(), String> {
+    sink(Progress::Step { name: "Checking the database an earlier install left".into() });
+    run_stream(sink, &cfg.compose_cmd("up -d postgres"))?;
+    let sql = |db: &str, q: &str| docker_ops::psql(cfg, db, q);
+    let mut up = false;
+    for _ in 0..60 {
+        if sql("postgres", "SELECT 1").is_ok() {
+            up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    if !up {
+        return Err("PostgreSQL did not start within two minutes.".into());
+    }
+    crate::kept_db::sync_role_password(&sql, &cfg.db_user, &cfg.db_password)?;
+    let Some(existing) = crate::kept_db::inspect(&sql, &cfg.db_name)? else {
+        return Ok(());
+    };
+    if keep {
+        crate::kept_db::prepare_keep(&sql, &existing, cfg.flavor, crate::kept_db::TIMESCALE_SQL, sink)
+    } else {
+        crate::kept_db::set_aside(&sql, &cfg.db_name, sink)?;
+        // The image creates its database only in an empty volume.
+        sql(
+            "postgres",
+            &format!("CREATE DATABASE \"{}\" OWNER \"{}\"", cfg.db_name.replace('"', ""), cfg.db_user.replace('"', "")),
+        )
+        .map(|_| ())
+        .map_err(|e| format!("create the new database: {e}"))
+    }
+}
+
 pub fn cleanup(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     let n = cfg.names();
     sink(Progress::Step { name: "Stopping and removing SENTIENT containers and volumes".into() });

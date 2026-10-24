@@ -141,7 +141,7 @@ mod imp {
         let exe = manager.display().to_string();
         for (name, kind, data) in [
             ("DisplayName", "REG_SZ", PRODUCT.to_string()),
-            ("DisplayVersion", "REG_SZ", env!("CARGO_PKG_VERSION").to_string()),
+            ("DisplayVersion", "REG_SZ", crate::updates::manager_version().to_string()),
             ("Publisher", "REG_SZ", "INVENIA SYSTEMS".to_string()),
             ("DisplayIcon", "REG_SZ", exe.clone()),
             ("InstallLocation", "REG_SZ", manager_dir().display().to_string()),
@@ -304,6 +304,11 @@ mod imp {
     /// The pacman package that owns the program, when it came from one
     /// (`pacman -U sentient-platform-manager-*.pkg.tar.zst`). Its files are
     /// pacman's to remove, or the package database goes stale.
+    /// Installed by a package (pacman): updated by it, not by this program.
+    pub fn installed_by_package_manager() -> bool {
+        pacman_package().is_some()
+    }
+
     fn pacman_package() -> Option<String> {
         let out = std::process::Command::new("pacman").arg("-Qqo").arg(manager_exe()).output().ok()?;
         let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
