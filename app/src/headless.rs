@@ -20,6 +20,8 @@
 //! --job add-existing [<n> | --native] [--pg-admin-password <pw>]
 //!                                       (add the n-th one found, 1 by default, or the native one)
 //! --job open-at-signin <kiosk|window|off> (open SENTIENT when someone signs in)
+//! --job auto-signin <account|off>       (sign in by itself after a restart; on Windows
+//!                                       the password comes from SPM_AUTOSIGNIN_PASSWORD)
 //! --job take-over-compose               (an added Docker instance: use SPM's compose file)
 //! --job kept
 //! --job remove-kept <name>
@@ -37,7 +39,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
 update [<package folder> | --latest] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
+use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
 
 /// A console for the output: release builds on Windows have none of their
 /// own, so use the one the job was started from.
@@ -117,6 +119,7 @@ pub fn run(args: &[String]) -> i32 {
                 start_menu: shortcuts,
                 kiosk: false,
                 open_at_signin: false,
+                auto_signin: String::new(),
             };
             crate::installer::run_manager_only(s, sink)
         };
@@ -249,6 +252,15 @@ pub fn run(args: &[String]) -> i32 {
             Some("window") => crate::self_install::set_open_at_signin(&sink, Some(false)),
             Some("off") => crate::self_install::set_open_at_signin(&sink, None),
             _ => Err(USAGE.into()),
+        },
+        "auto-signin" => match args.get(1).map(String::as_str) {
+            Some("off") => sentient_installer_core::autologin::set(&sink, None),
+            // The password stays off the command line, where other users see it.
+            Some(user) => {
+                let password = std::env::var("SPM_AUTOSIGNIN_PASSWORD").unwrap_or_default();
+                sentient_installer_core::autologin::set(&sink, Some((user, &password)))
+            }
+            None => Err(USAGE.into()),
         },
         "take-over-compose" => crate::adopt::take_over_compose(record, sink.clone()).map(|_| ()),
         "repair" => crate::maintenance::run_repair(record, sink.clone()),

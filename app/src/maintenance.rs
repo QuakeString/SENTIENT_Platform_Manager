@@ -166,6 +166,10 @@ pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: P
     if sentient_installer_core::kiosk::open_at_signin().is_some() {
         let _ = sentient_installer_core::kiosk::set_open_at_signin(&sentient_installer_core::progress::noop(), &self_install::manager_exe(), None);
     }
+    // Automatic sign-in was only there for that screen.
+    if sentient_installer_core::autologin::set_by_manager() {
+        let _ = sentient_installer_core::autologin::set(&sink, None);
+    }
     self_install::remove_manager_entry();
     self_install::remove_record(&crate::installation::record_path());
     self_install::remove_manager_later();

@@ -234,7 +234,7 @@ impl Manager {
             }
             Page::Control => self
                 .control
-                .get_or_insert_with(|| cx.new(|cx| control::ControlPage::new(record, cx)))
+                .get_or_insert_with(|| cx.new(|cx| control::ControlPage::new(record, window, cx)))
                 .clone()
                 .into_any_element(),
             Page::Logs => self

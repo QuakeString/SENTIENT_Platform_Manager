@@ -23,6 +23,10 @@ pub struct Shortcuts {
     /// Open SENTIENT full screen when someone signs in (operator screens).
     #[serde(default)]
     pub open_at_signin: bool,
+    /// The account the computer signs in to by itself after a restart, so
+    /// that screen needs nobody at the keyboard; empty for none.
+    #[serde(default)]
+    pub auto_signin: String,
 }
 
 pub use imp::*;
@@ -275,6 +279,7 @@ mod imp {
             start_menu: true,
             kiosk: false,
             open_at_signin: false,
+            auto_signin: String::new(),
         };
         let _ = create_shortcuts(manager, "http://localhost:8080", &s);
     }

@@ -1,6 +1,8 @@
 //! UI-agnostic engine for the SENTIENT installer.
 //! Phase 0: read-only preflight checks. Phase 1: WSL2 provisioning.
 
+/// Automatic sign-in for operator screens (off unless asked for).
+pub mod autologin;
 pub mod cancel;
 pub mod checks;
 /// ClickHouse for a native Windows install: Docker in WSL2, owned by a

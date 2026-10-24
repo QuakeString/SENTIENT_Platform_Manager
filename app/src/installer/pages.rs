@@ -671,22 +671,61 @@ impl Installer {
                 "SENTIENT starts with the computer: as a systemd service, or through Docker's restart policy.",
             )
         });
-        v_flex().gap_3().children(note).children(options.into_iter().map(|(id, label, checked)| {
-            Checkbox::new(id)
-                .label(label)
-                .checked(checked)
-                .on_change(cx.listener(move |this, value: &bool, _, cx| {
-                    match id {
-                        "autostart" => this.autostart = *value,
-                        "desktop-sentient" => this.desktop_sentient = *value,
-                        "desktop-manager" => this.desktop_manager = *value,
-                        "start-menu" => this.start_menu = *value,
-                        "open-at-signin" => this.open_at_signin = *value,
-                        _ => this.kiosk = *value,
-                    }
-                    cx.notify();
-                }))
-        }))
+        let theme = cx.theme().clone();
+        // Signing in by itself only matters for the screen that opens SENTIENT.
+        let autologin = (!self.manager_only && self.open_at_signin).then(|| {
+            v_flex()
+                .pl_6()
+                .gap_3()
+                .child(
+                    Checkbox::new("autologin")
+                        .label("Also sign in to this computer automatically after a restart")
+                        .checked(self.autologin)
+                        .on_change(cx.listener(|this, value: &bool, _, cx| {
+                            this.autologin = *value;
+                            cx.notify();
+                        })),
+                )
+                .when(self.autologin, |col| {
+                    col.child(
+                        h_flex()
+                            .gap_3()
+                            .child(div().w_64().child(field(&theme, "Operator account", &self.fields.autologin_user)))
+                            .when(cfg!(windows), |row| {
+                                row.child(div().w_64().child(secret_field(
+                                    &theme,
+                                    "Account password",
+                                    &self.fields.autologin_password,
+                                )))
+                            }),
+                    )
+                    .child(ui::outcome(
+                        &theme,
+                        Tone::Warn,
+                        "Anyone at this screen gets this account without typing a password. Use an operator account with only the rights the operator needs.",
+                    ))
+                })
+        });
+        v_flex()
+            .gap_3()
+            .children(note)
+            .children(options.into_iter().map(|(id, label, checked)| {
+                Checkbox::new(id)
+                    .label(label)
+                    .checked(checked)
+                    .on_change(cx.listener(move |this, value: &bool, _, cx| {
+                        match id {
+                            "autostart" => this.autostart = *value,
+                            "desktop-sentient" => this.desktop_sentient = *value,
+                            "desktop-manager" => this.desktop_manager = *value,
+                            "start-menu" => this.start_menu = *value,
+                            "open-at-signin" => this.open_at_signin = *value,
+                            _ => this.kiosk = *value,
+                        }
+                        cx.notify();
+                    }))
+            }))
+            .children(autologin)
     }
 
     fn summary(&mut self, cx: &mut Context<Self>) -> Div {
@@ -761,6 +800,14 @@ impl Installer {
                     8,
                 ),
             ]);
+            if self.open_at_signin {
+                let screen = if self.autologin {
+                    format!("Signs in as {} and opens SENTIENT full screen after a restart", v(&f.autologin_user))
+                } else {
+                    "Opens SENTIENT full screen when someone signs in".into()
+                };
+                rows.push(("Operator screen", screen, 8));
+            }
         }
         ui::panel(&theme).gap_0().children(rows.into_iter().map(|(label, value, step)| {
             h_flex()

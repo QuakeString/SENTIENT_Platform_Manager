@@ -36,6 +36,11 @@ pub struct InstallPlan {
     /// `pg:` names are PostgreSQL server parameters.
     pub settings: Vec<(String, String)>,
     pub shortcuts: Shortcuts,
+    /// The automatic sign-in account's Windows password. Never written to
+    /// disk: a plan resumed after a restart, or run with `--job install`,
+    /// takes it from SPM_AUTOSIGNIN_PASSWORD.
+    #[serde(skip, default)]
+    pub auto_signin_password: String,
     pub bundle: Option<PathBuf>,
     /// No package: this SENTIENT version is downloaded from the releases
     /// repository first (crate::online), and the download is the package.
@@ -379,6 +384,18 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
     }
     if plan.shortcuts.open_at_signin {
         sentient_installer_core::kiosk::set_open_at_signin(&sink, &manager, Some(true))?;
+    }
+    if !plan.shortcuts.auto_signin.is_empty() {
+        let password = if plan.auto_signin_password.is_empty() {
+            std::env::var("SPM_AUTOSIGNIN_PASSWORD").unwrap_or_default()
+        } else {
+            plan.auto_signin_password.clone()
+        };
+        // SENTIENT is installed by now; a refused password should not undo
+        // that, it can be entered again under Control.
+        if let Err(e) = sentient_installer_core::autologin::set(&sink, Some((&plan.shortcuts.auto_signin, &password))) {
+            sink(Progress::Log { line: format!("Automatic sign-in was not turned on: {e} Turn it on under Control.") });
+        }
     }
 
     // SENTIENT's Apps & features entry covers the manager installed alone before.
