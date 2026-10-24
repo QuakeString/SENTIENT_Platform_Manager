@@ -80,6 +80,8 @@ struct Fields {
     admin_email: Entity<InputState>,
     admin_password: Entity<InputState>,
     admin_confirm: Entity<InputState>,
+    autologin_user: Entity<InputState>,
+    autologin_password: Entity<InputState>,
     search: Entity<InputState>,
 }
 
@@ -105,6 +107,8 @@ pub struct Installer {
     start_menu: bool,
     kiosk: bool,
     open_at_signin: bool,
+    /// Sign in to the computer automatically (only with open_at_signin).
+    autologin: bool,
     bundle: Option<PathBuf>,
     sentient_version: SharedString,
     /// Why Next is refused on the current page.
@@ -154,6 +158,8 @@ impl Installer {
             admin_email: input(window, cx, &admin_email),
             admin_password: secret(window, cx),
             admin_confirm: secret(window, cx),
+            autologin_user: input(window, cx, &sentient_installer_core::autologin::this_user()),
+            autologin_password: secret(window, cx),
             search: cx.new(|cx| {
                 InputState::new(window, cx).placeholder("Search by name or variable, e.g. batch or RULE_ENGINE")
             }),
@@ -212,6 +218,7 @@ impl Installer {
             start_menu: true,
             kiosk: false,
             open_at_signin: false,
+            autologin: false,
             bundle,
             sentient_version: sentient_version.into(),
             problem: None,
@@ -352,6 +359,13 @@ impl Installer {
                     Ok(())
                 }
             }
+            SHORTCUTS if !self.manager_only && self.open_at_signin && self.autologin => {
+                if self.value(&f.autologin_user, cx).is_empty() {
+                    Err("Enter the account that signs in automatically.".into())
+                } else {
+                    Ok(())
+                }
+            }
             _ => Ok(()),
         }
     }
@@ -478,7 +492,13 @@ impl Installer {
                 start_menu: self.start_menu,
                 kiosk: self.kiosk,
                 open_at_signin: self.open_at_signin,
+                auto_signin: if self.open_at_signin && self.autologin {
+                    self.value(&f.autologin_user, cx)
+                } else {
+                    String::new()
+                },
             },
+            auto_signin_password: self.fields.autologin_password.read(cx).value().to_string(),
             bundle: self.bundle.clone(),
         })
     }
@@ -514,6 +534,7 @@ impl Installer {
                 start_menu: self.start_menu,
                 kiosk: false,
                 open_at_signin: false,
+                auto_signin: String::new(),
             };
             self.problem = None;
             self.step = INSTALL;

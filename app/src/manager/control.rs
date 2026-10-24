@@ -3,13 +3,17 @@
 //! Control: start, stop and restart the platform. Services are started in
 //! dependency order (database first) and stopped in reverse by the engine.
 //! Also whether SENTIENT opens in the browser when someone signs in
-//! (operator screens; kiosk::set_open_at_signin).
+//! (operator screens; kiosk::set_open_at_signin), and whether the computer
+//! signs in by itself after a restart (autologin).
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, WindowExt as _, h_flex,
+    ActiveTheme, Disableable as _, WindowExt as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
+    input::{Input, InputState},
     radio::RadioGroup,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::installation::InstallationRecord;
@@ -25,6 +29,12 @@ pub struct ControlPage {
     signin: Option<usize>,
     /// What the operator picked.
     signin_choice: usize,
+    /// The account the computer signs in to by itself, as found: None
+    /// while looking, Some(None) when it does not.
+    autologin: Option<Option<String>>,
+    autologin_on: bool,
+    autologin_user: Entity<InputState>,
+    autologin_password: Entity<InputState>,
     signin_job: Entity<Job>,
     _signin_observe: Subscription,
     _tasks: Vec<Task<()>>,
@@ -39,7 +49,7 @@ fn signin_index(mode: Option<bool>) -> usize {
 }
 
 impl ControlPage {
-    pub fn new(record: Option<InstallationRecord>, cx: &mut Context<Self>) -> Self {
+    pub fn new(record: Option<InstallationRecord>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let job = cx.new(|_| Job::new());
         let _observe = cx.observe(&job, |_, _, cx| cx.notify());
         let signin_job = cx.new(|_| Job::new());
@@ -55,6 +65,12 @@ impl ControlPage {
             _observe,
             signin: None,
             signin_choice: 0,
+            autologin: None,
+            autologin_on: false,
+            autologin_user: cx.new(|cx| {
+                InputState::new(window, cx).default_value(sentient_installer_core::autologin::this_user())
+            }),
+            autologin_password: cx.new(|cx| InputState::new(window, cx).masked(true)),
             signin_job,
             _signin_observe,
             _tasks: Vec::new(),
@@ -65,10 +81,21 @@ impl ControlPage {
 
     fn load_signin(&mut self, cx: &mut Context<Self>) {
         let task = cx.spawn(async move |this, cx| {
-            let found = cx.background_executor().spawn(async move { sentient_installer_core::kiosk::open_at_signin() }).await;
-            this.update(cx, |page, cx| {
+            let (found, account) = cx
+                .background_executor()
+                .spawn(async move {
+                    (sentient_installer_core::kiosk::open_at_signin(), sentient_installer_core::autologin::current())
+                })
+                .await;
+            this.update_in(cx, |page, window, cx| {
                 page.signin = Some(signin_index(found));
                 page.signin_choice = signin_index(found);
+                page.autologin_on = account.is_some();
+                if let Some(user) = &account {
+                    page.autologin_user.update(cx, |input, cx| input.set_value(user.clone(), window, cx));
+                }
+                page.autologin_password.update(cx, |input, cx| input.set_value("", window, cx));
+                page.autologin = Some(account);
                 cx.notify();
             })
             .ok();
@@ -76,15 +103,50 @@ impl ControlPage {
         self._tasks.push(task);
     }
 
+    fn autologin_user(&self, cx: &App) -> String {
+        self.autologin_user.read(cx).value().trim().to_string()
+    }
+
+    /// What Apply would change: (opening at sign-in, automatic sign-in).
+    fn pending(&self, cx: &App) -> (bool, bool) {
+        let signin = self.signin.is_some_and(|s| s != self.signin_choice);
+        let autologin = match &self.autologin {
+            None => false,
+            Some(found) => {
+                found.is_some() != self.autologin_on
+                    || (self.autologin_on
+                        && (found.as_deref() != Some(self.autologin_user(cx).as_str())
+                            || !self.autologin_password.read(cx).value().is_empty()))
+            }
+        };
+        (signin, autologin)
+    }
+
     fn apply_signin(&mut self, cx: &mut Context<Self>) {
+        let (signin, autologin) = self.pending(cx);
         let mode = match self.signin_choice {
             1 => Some(true),
             2 => Some(false),
             _ => None,
         };
+        let account = self
+            .autologin_on
+            .then(|| (self.autologin_user(cx), self.autologin_password.read(cx).value().to_string()));
         let launcher = crate::self_install::manager_exe();
         self.signin_job.update(cx, |job, cx| {
-            job.start(move |sink| sentient_installer_core::kiosk::set_open_at_signin(&sink, &launcher, mode), cx)
+            job.start(
+                move |sink| {
+                    if signin {
+                        sentient_installer_core::kiosk::set_open_at_signin(&sink, &launcher, mode)?;
+                    }
+                    if autologin {
+                        let account = account.as_ref().map(|(u, p)| (u.as_str(), p.as_str()));
+                        sentient_installer_core::autologin::set(&sink, account)?;
+                    }
+                    Ok(())
+                },
+                cx,
+            )
         });
     }
 
@@ -176,7 +238,8 @@ impl Render for ControlPage {
                 JobState::Failed(m) => Some((Tone::Bad, m.to_string())),
                 _ => None,
             };
-            let changed = self.signin.is_some_and(|s| s != self.signin_choice);
+            let (signin_changed, autologin_changed) = self.pending(cx);
+            let changed = signin_changed || autologin_changed;
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Operator screen"))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
@@ -193,6 +256,54 @@ impl Render for ControlPage {
                             cx.notify();
                         }))
                         .into_any_element(),
+                })
+                .when(self.autologin.is_some(), |panel| {
+                    panel
+                        .child(
+                            Checkbox::new("autologin")
+                                .label("Sign in to this computer automatically after a restart")
+                                .checked(self.autologin_on)
+                                .disabled(sbusy)
+                                .on_change(cx.listener(|this, value: &bool, _, cx| {
+                                    this.autologin_on = *value;
+                                    cx.notify();
+                                })),
+                        )
+                        .when(self.autologin_on, |panel| {
+                            panel
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .child(
+                                            v_flex()
+                                                .gap_1p5()
+                                                .w_64()
+                                                .child(div().text_xs().text_color(theme.muted_foreground).child("Operator account"))
+                                                .child(Input::new(&self.autologin_user)),
+                                        )
+                                        .when(cfg!(windows), |row| {
+                                            let found = self.autologin.as_ref().is_some_and(|f| f.is_some());
+                                            row.child(
+                                                v_flex()
+                                                    .gap_1p5()
+                                                    .w_64()
+                                                    .child(div().text_xs().text_color(theme.muted_foreground).child(
+                                                        if found { "Password (only to change it)" } else { "Account password" },
+                                                    ))
+                                                    .child(Input::new(&self.autologin_password).mask_toggle()),
+                                            )
+                                        }),
+                                )
+                                .child(ui::outcome(
+                                    &theme,
+                                    Tone::Warn,
+                                    if cfg!(windows) {
+                                        "Anyone at this screen gets this account without typing a password. Use an operator account with only the rights the operator needs. Windows keeps the password in its secret store, readable only by administrators."
+                                    } else {
+                                        "Anyone at this screen gets this account without typing a password. Use an operator account with only the rights the operator needs."
+                                    },
+                                ))
+                        })
                 })
                 .child(
                     h_flex().child(
