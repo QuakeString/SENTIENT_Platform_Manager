@@ -420,7 +420,7 @@ fn prepare_clickhouse_wsl(record: &InstallationRecord, new: &mut NativeConfig, s
         stack.ch_password = new.ch_password.clone();
         // The record keeps no passwords; deploy validates them all.
         stack.db_password = new.db_password.clone();
-        crate::installer::provision_clickhouse_wsl(&stack, &crate::self_install::manager_exe(), sink)?;
+        crate::installer::provision_clickhouse_wsl(&stack, &crate::self_install::manager_exe(), false, sink)?;
     }
     // Saved before anything depends on it, so a failure later can be retried.
     secrets::save(Secret::Clickhouse, &new.ch_password)?;
