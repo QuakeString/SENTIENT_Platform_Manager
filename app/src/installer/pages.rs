@@ -82,10 +82,10 @@ impl Installer {
             )
             .into(),
             (None, Some(Err(_))) if cfg!(windows) => {
-                "No SENTIENT package next to Setup and no connection to the download site: only the Platform Manager can be installed".into()
+                "No SENTIENT package next to Setup and no SENTIENT download for this computer: only the Platform Manager can be installed".into()
             }
             (None, Some(Err(_))) => {
-                "No SENTIENT package next to Setup and no connection to the download site: Docker installs pull the image; a native install needs the package".into()
+                "No SENTIENT package next to Setup and no SENTIENT download for this computer: Docker installs pull the image; a native install needs the package".into()
             }
         };
         let choice = |manager_only: bool, id: &'static str, title: &'static str, desc: &'static str| {

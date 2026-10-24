@@ -10,9 +10,13 @@ use std::path::PathBuf;
 use sentient_installer_core::manifest::{self, Manifest};
 use sentient_installer_core::progress::ProgressFn;
 
-/// The newest release. Blocking: call from a job or a background task.
+/// The newest release, when it has what this computer needs (a release
+/// may carry only some systems' files). Blocking: call from a job or a
+/// background task.
 pub fn latest() -> Result<Manifest, String> {
-    manifest::fetch(manifest::LATEST)
+    let m = manifest::fetch(manifest::LATEST)?;
+    m.wanted()?;
+    Ok(m)
 }
 
 /// Where downloaded releases are kept (one folder per version, reused by a
