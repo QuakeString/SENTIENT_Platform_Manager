@@ -46,6 +46,9 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, String> {
 }
 
 fn conn(record: &InstallationRecord, dbname: &str) -> Result<ConnConfig, String> {
+    if record.stack.pg_port == 0 {
+        return Err(crate::installation::PG_NOT_PUBLISHED.into());
+    }
     let password = match record.engine {
         Engine::Docker => sentient_installer_core::distro::docker_ops::read_secrets(&record.stack)?.db_password,
         Engine::Native => record.native_config_with_secrets()?.db_password,

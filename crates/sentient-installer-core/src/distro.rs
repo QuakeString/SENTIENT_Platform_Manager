@@ -18,6 +18,7 @@ use crate::sys;
 
 pub const DISTRO: &str = "sentient";
 
+pub mod adopt;
 pub mod docker_ops;
 #[cfg_attr(not(windows), allow(dead_code))]
 const ROOTFS_URL: &str =
@@ -85,7 +86,30 @@ pub struct DeployConfig {
     /// keeps the old hypertable, which only that image can read).
     #[serde(default)]
     pub keep_timescale_image: bool,
+    /// A stack SPM did not write (an adopted installation): it keeps running
+    /// from its own compose files, which SPM never rewrites.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external: Option<ExternalCompose>,
+    /// Container and volume names of an adopted stack whose names do not
+    /// follow the stack name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub names: Option<Names>,
 }
+
+/// The compose project an adopted stack was started from, as Docker labels
+/// its containers.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ExternalCompose {
+    pub project: String,
+    pub files: Vec<String>,
+    pub working_dir: String,
+}
+
+/// What operations that rewrite the compose file say about a stack started
+/// from someone else's.
+pub const EXTERNAL_COMPOSE: &str = "This SENTIENT runs from its own compose file, which the Platform Manager does not rewrite. \
+To change settings or the database type, first let the Platform Manager take over the compose file (Repair and uninstall → Take over the compose file).";
 
 impl Default for DeployConfig {
     fn default() -> Self {
@@ -115,18 +139,22 @@ impl Default for DeployConfig {
             tuning: Tuning { instance_id: "sentient-docker-01".into(), ..Tuning::default() },
             load_demo: false,
             keep_timescale_image: false,
+            external: None,
+            names: None,
         }
     }
 }
 
 /// Container and volume names for one stack.
-struct Names {
-    app: String,
-    pg: String,
-    ch: String,
-    vol_pg: String,
-    vol_data: String,
-    vol_ch: String,
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Names {
+    pub app: String,
+    pub pg: String,
+    pub ch: String,
+    pub vol_pg: String,
+    pub vol_data: String,
+    pub vol_ch: String,
 }
 
 impl DeployConfig {
@@ -174,6 +202,9 @@ impl DeployConfig {
     }
 
     fn names(&self) -> Names {
+        if let Some(n) = &self.names {
+            return n.clone();
+        }
         if self.stack_name == "sentient" {
             Names {
                 app: "sentient".into(),
@@ -211,7 +242,25 @@ impl DeployConfig {
         format!("{}/clickhouse-sentient.xml", self.stack_dir())
     }
     fn compose_cmd(&self, sub: &str) -> String {
-        format!("docker compose -f {} {sub}", self.compose_path())
+        match &self.external {
+            Some(ext) => {
+                let files: String = ext.files.iter().map(|f| format!(" -f {}", shell_quote(f))).collect();
+                let dir = if ext.working_dir.is_empty() { String::new() } else { format!(" --project-directory {}", shell_quote(&ext.working_dir)) };
+                format!("docker compose -p {}{dir}{files} {sub}", shell_quote(&ext.project))
+            }
+            None => format!("docker compose -f {} {sub}", self.compose_path()),
+        }
+    }
+
+    /// The SENTIENT container's name.
+    pub fn app_container(&self) -> String {
+        self.names().app
+    }
+
+    /// The stack's compose definition exists (SPM's own file, or the files
+    /// an adopted stack runs from).
+    fn stack_defined(&self) -> bool {
+        self.external.is_some() || host_file_exists(&self.compose_path())
     }
 }
 
@@ -498,6 +547,9 @@ fn host_file_exists(path: &str) -> bool {
 }
 
 fn write_stack_files(sink: &ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
+    if cfg.external.is_some() {
+        return Err(EXTERNAL_COMPOSE.into());
+    }
     write_host_file(sink, &cfg.compose_path(), &compose(cfg))?;
     if cfg.flavor.uses_clickhouse() {
         write_host_file(sink, &cfg.ch_config_path(), &stack::clickhouse_config_xml(&cfg.ch, None, None))?;
@@ -647,7 +699,7 @@ pub fn deploy(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
 pub fn cleanup(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     let n = cfg.names();
     sink(Progress::Step { name: "Stopping and removing SENTIENT containers and volumes".into() });
-    if host_file_exists(&cfg.compose_path()) {
+    if cfg.stack_defined() {
         let _ = run_stream(&sink, &format!("{} 2>/dev/null || true", cfg.compose_cmd("down -v --remove-orphans")));
     }
     // Belt-and-suspenders in case the containers exist without the compose file.
@@ -673,7 +725,7 @@ pub fn remove_keeping_data(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), S
     {
         let n = cfg.names();
         sink(Progress::Step { name: "Removing the SENTIENT containers (volumes kept)".into() });
-        if host_file_exists(&cfg.compose_path()) {
+        if cfg.stack_defined() {
             let _ = run_stream(&sink, &format!("{} 2>/dev/null || true", cfg.compose_cmd("down --remove-orphans")));
         }
         let _ = run_stream(&sink, &format!("docker rm -f {} {} {} 2>/dev/null || true", n.app, n.pg, n.ch));
@@ -706,15 +758,18 @@ pub fn uninstall(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     {
         let n = cfg.names();
         sink(Progress::Step { name: "Removing SENTIENT containers, volumes and images".into() });
-        if host_file_exists(&cfg.compose_path()) {
+        if cfg.stack_defined() {
             let _ = run_stream(&sink, &format!("{} 2>/dev/null || true", cfg.compose_cmd("down -v --remove-orphans --rmi all")));
         }
         let _ = run_stream(&sink, &format!("docker rm -f {} {} {} 2>/dev/null || true", n.app, n.pg, n.ch));
         let _ = run_stream(&sink, &format!("docker volume rm {} {} {} 2>/dev/null || true", n.vol_pg, n.vol_data, n.vol_ch));
-        let dir = cfg.stack_dir();
-        let _ = std::fs::remove_file(cfg.compose_path());
-        let _ = std::fs::remove_file(cfg.ch_config_path());
-        let _ = std::fs::remove_dir(&dir); // only if now empty
+        // An adopted stack's compose files are the operator's: they stay.
+        if cfg.external.is_none() {
+            let dir = cfg.stack_dir();
+            let _ = std::fs::remove_file(cfg.compose_path());
+            let _ = std::fs::remove_file(cfg.ch_config_path());
+            let _ = std::fs::remove_dir(&dir); // only if now empty
+        }
         sink(Progress::Done { message: "SENTIENT was removed. Docker itself was left installed.".into() });
         Ok(())
     }
@@ -886,7 +941,7 @@ pub fn status(cfg: &DeployConfig) -> StackStatus {
     #[cfg(not(windows))]
     let present = exec::have("docker");
 
-    let installed = present && host_file_exists(&cfg.compose_path());
+    let installed = present && cfg.stack_defined();
     let mut containers = Vec::new();
     if present {
         // Only `.Status` — universally supported, unlike `.State` and

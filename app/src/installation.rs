@@ -143,6 +143,10 @@ impl InstallationRecord {
     }
 }
 
+/// An adopted Docker stack whose PostgreSQL has no port on this machine.
+pub const PG_NOT_PUBLISHED: &str = "This installation's PostgreSQL is not published on this machine (its compose file has no ports for it), \
+so the Platform Manager cannot connect to it for this. Publish its port 5432 in the compose file, then adopt it again.";
+
 pub fn record_path() -> PathBuf {
     std::env::var_os("SPM_INSTALLATION_RECORD")
         .map(PathBuf::from)

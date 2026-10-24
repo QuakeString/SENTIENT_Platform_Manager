@@ -68,6 +68,11 @@ fn yaml_value(text: &str, key: &str) -> Option<String> {
 }
 
 pub fn read_secrets(cfg: &DeployConfig) -> Result<StackSecrets, String> {
+    // An adopted stack's compose file may take its passwords from elsewhere
+    // (`${VAR}`, an .env file): the containers carry what is in use.
+    if cfg.external.is_some() {
+        return container_secrets(cfg).ok_or_else(|| "could not read the database password from SENTIENT's containers".to_string());
+    }
     let text = match capture(&format!("cat {}", shell_quote(&cfg.compose_path()))) {
         Ok(text) => text,
         // The compose file is gone (what a repair may be for): the database
@@ -93,10 +98,18 @@ fn container_env(container: &str, key: &str) -> Option<String> {
 
 fn container_secrets(cfg: &DeployConfig) -> Option<StackSecrets> {
     let names = cfg.names();
+    // SENTIENT's own connection string first: the PostgreSQL container's
+    // POSTGRES_PASSWORD is only the password it was first created with.
+    let db_password = container_env(&names.app, "DATABASE_URL")
+        .and_then(|url| crate::distro::adopt::url_password(&url))
+        .or_else(|| container_env(&names.pg, "POSTGRES_PASSWORD"))
+        .filter(|p| !p.is_empty())?;
     Some(StackSecrets {
-        db_password: container_env(&names.pg, "POSTGRES_PASSWORD").filter(|p| !p.is_empty())?,
+        db_password,
         ch_password: if cfg.flavor.uses_clickhouse() {
-            container_env(&names.ch, "CLICKHOUSE_PASSWORD").unwrap_or_default()
+            container_env(&names.app, "CLICKHOUSE_PASSWORD")
+                .or_else(|| container_env(&names.ch, "CLICKHOUSE_PASSWORD"))
+                .unwrap_or_default()
         } else {
             String::new()
         },

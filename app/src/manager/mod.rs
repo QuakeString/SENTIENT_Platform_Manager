@@ -129,7 +129,13 @@ impl Manager {
 
     /// The record changed (a migration): every screen starts again from it.
     fn reload(&mut self, cx: &mut Context<Self>) {
-        self.record = InstallationRecord::load();
+        let was_installed = self.record.is_some();
+        self.record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
+        if !was_installed {
+            // Adopted: every screen was showing "not installed".
+            self.migration = None;
+            self.settings = None;
+        }
         self.status = None;
         self.control = None;
         self.logs = None;
@@ -209,11 +215,14 @@ impl Manager {
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let record = self.record.clone();
         match self.page {
-            Page::Status => self
-                .status
-                .get_or_insert_with(|| cx.new(|cx| status::StatusPage::new(record, cx)))
-                .clone()
-                .into_any_element(),
+            Page::Status => {
+                if self.status.is_none() {
+                    let page = cx.new(|cx| status::StatusPage::new(record, cx));
+                    self._subscriptions.push(cx.subscribe(&page, |this, _, _: &migration::RecordChanged, cx| this.reload(cx)));
+                    self.status = Some(page);
+                }
+                self.status.clone().unwrap().into_any_element()
+            }
             Page::Control => self
                 .control
                 .get_or_insert_with(|| cx.new(|cx| control::ControlPage::new(record, cx)))
