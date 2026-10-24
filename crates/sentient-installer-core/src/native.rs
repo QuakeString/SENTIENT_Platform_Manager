@@ -432,6 +432,9 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
                 &format!("--pwfile={}", pwfile.display()),
                 "-E", "UTF8",
                 "--locale=C",
+                // initdb's default is "trust": any local program could log
+                // in as the superuser without a password.
+                "--auth=scram-sha-256",
             ],
         );
         let _ = std::fs::remove_file(&pwfile);
@@ -546,6 +549,124 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     }
 }
 
+/// Clusters set up before `--auth=scram-sha-256` accept local connections
+/// without a password ("trust"). Switch them to password checks, but only
+/// when nothing would be locked out: the superuser password is known and
+/// every role that logs in has a SCRAM password. If the superuser cannot
+/// sign in afterwards, the old file goes back. Never fails the caller.
+#[cfg(windows)]
+fn require_password_auth(sink: &ProgressFn, cfg: &NativeConfig) {
+    let hba = cfg.pg_data().join("pg_hba.conf");
+    let Ok(text) = std::fs::read_to_string(&hba) else { return };
+    let Some(secured) = pg_hba_without_trust(&text) else { return };
+    if cfg.pg_superuser_password.is_empty() {
+        log(sink, "PostgreSQL accepts local connections without a password; left as is because the superuser password is not known");
+        return;
+    }
+    let unready = psql(
+        cfg,
+        "postgres",
+        "SELECT string_agg(rolname, ', ') FROM pg_authid WHERE rolcanlogin AND (rolpassword IS NULL OR rolpassword NOT LIKE 'SCRAM-SHA-256$%');",
+    );
+    match unready {
+        Ok(names) if names.is_empty() => {}
+        Ok(names) => {
+            log(sink, format!("PostgreSQL accepts local connections without a password; left as is because these logins have no SCRAM password: {names}"));
+            return;
+        }
+        Err(e) => {
+            log(sink, format!("could not check PostgreSQL logins ({e}); password checks left unchanged"));
+            return;
+        }
+    }
+    step(sink, "Requiring passwords for PostgreSQL");
+    let backup = cfg.pg_data().join("pg_hba.conf.before-passwords");
+    if std::fs::write(&backup, &text).is_err() || std::fs::write(&hba, &secured).is_err() {
+        log(sink, "could not rewrite pg_hba.conf; password checks left unchanged");
+        return;
+    }
+    let reload = || {
+        let pg_ctl = cfg.pg_bin().join("pg_ctl.exe");
+        let _ = sys::output(&pg_ctl.to_string_lossy(), &["reload", "-D", &cfg.pg_data().to_string_lossy()]);
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    };
+    reload();
+    if psql(cfg, "postgres", "SELECT 1").is_ok() {
+        log(sink, "PostgreSQL now checks passwords for every connection");
+    } else {
+        let _ = std::fs::write(&hba, &text);
+        reload();
+        log(sink, "the superuser could not sign in with password checks on; pg_hba.conf put back as it was");
+    }
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+fn require_password_auth(_sink: &ProgressFn, _cfg: &NativeConfig) {}
+
+/// `pg_hba.conf` with every `trust` method replaced by `scram-sha-256`, or
+/// `None` when no rule uses `trust`. Comments and layout are kept.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn pg_hba_without_trust(text: &str) -> Option<String> {
+    let mut changed = false;
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let (rule, comment) = line.split_at(line.find('#').unwrap_or(line.len()));
+        let mut field = 0;
+        let mut rest = rule;
+        while let Some(start) = rest.find(|c: char| !c.is_whitespace()) {
+            out.push_str(&rest[..start]);
+            rest = &rest[start..];
+            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            // type, database and user come first; the method follows them
+            // (after the address on host rules).
+            if field >= 3 && &rest[..end] == "trust" {
+                out.push_str("scram-sha-256");
+                changed = true;
+            } else {
+                out.push_str(&rest[..end]);
+            }
+            field += 1;
+            rest = &rest[end..];
+        }
+        out.push_str(rest);
+        out.push_str(comment);
+    }
+    changed.then_some(out)
+}
+
+#[cfg(test)]
+mod pg_hba_tests {
+    use super::pg_hba_without_trust;
+
+    #[test]
+    fn replaces_trust_methods_only() {
+        let text = "# TYPE  DATABASE USER ADDRESS METHOD\n\
+                    # \"trust\" in a comment stays\n\
+                    local   all      all          trust\n\
+                    host    all      all  127.0.0.1/32  trust # loopback\n\
+                    host    all      all  ::1/128       scram-sha-256\n\
+                    host    replication all 127.0.0.1/32 trust\n";
+        let out = pg_hba_without_trust(text).expect("has trust rules");
+        assert_eq!(
+            out,
+            "# TYPE  DATABASE USER ADDRESS METHOD\n\
+             # \"trust\" in a comment stays\n\
+             local   all      all          scram-sha-256\n\
+             host    all      all  127.0.0.1/32  scram-sha-256 # loopback\n\
+             host    all      all  ::1/128       scram-sha-256\n\
+             host    replication all 127.0.0.1/32 scram-sha-256\n"
+        );
+    }
+
+    #[test]
+    fn none_without_trust() {
+        assert!(pg_hba_without_trust("host all all 127.0.0.1/32 scram-sha-256\n# trust\n").is_none());
+        // A database or user named "trust" is not a method.
+        assert!(pg_hba_without_trust("host trust trust 127.0.0.1/32 md5\n").is_none());
+    }
+}
+
 /// Poll until the cluster accepts connections. `pg_ctl register` returns as soon
 /// as the SCM accepts the start request, which is well before the postmaster is
 /// listening.
@@ -603,6 +724,7 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     if cfg.flavor == Flavor::Timescaledb {
         psql(cfg, &cfg.db_name, "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")?;
     }
+    require_password_auth(&sink, cfg);
     bail_if_cancelled()?;
 
     step(&sink, "Writing the configuration");
