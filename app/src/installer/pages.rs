@@ -72,10 +72,21 @@ impl Installer {
 
     fn welcome(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
-        let package = if self.bundle.is_some() {
-            "Offline package: everything is included"
-        } else {
-            "Online: files are downloaded during install"
+        let package: SharedString = match (&self.bundle, &self.online) {
+            (Some(_), _) => "Offline package: everything is included".into(),
+            (None, None) => "Looking for the latest SENTIENT online…".into(),
+            (None, Some(Ok(m))) => format!(
+                "Downloaded during install: SENTIENT {}, {}, checked before use",
+                m.version,
+                crate::online::size_label(m.download_size())
+            )
+            .into(),
+            (None, Some(Err(_))) if cfg!(windows) => {
+                "No SENTIENT package next to Setup and no SENTIENT download for this computer: only the Platform Manager can be installed".into()
+            }
+            (None, Some(Err(_))) => {
+                "No SENTIENT package next to Setup and no SENTIENT download for this computer: Docker installs pull the image; a native install needs the package".into()
+            }
         };
         let choice = |manager_only: bool, id: &'static str, title: &'static str, desc: &'static str| {
             let selected = self.manager_only == manager_only;
@@ -149,9 +160,9 @@ impl Installer {
                     .child(ui::panel(&theme).flex_1().gap_1()
                         .child(div().text_xs().text_color(theme.muted_foreground).child("Platform Manager"))
                         .child(div().font_weight(FontWeight::MEDIUM).child(env!("CARGO_PKG_VERSION"))))
-                    .child(ui::panel(&theme).flex_1().gap_1()
+                    .child(ui::panel(&theme).flex_1().min_w_0().gap_1()
                         .child(div().text_xs().text_color(theme.muted_foreground).child("Package"))
-                        .child(div().font_weight(FontWeight::MEDIUM).child(package))),
+                        .child(div().w_full().whitespace_normal().font_weight(FontWeight::MEDIUM).child(package))),
             )
             .child(
                 ui::panel(&theme)
@@ -821,9 +832,9 @@ impl Installer {
         let theme = cx.theme().clone();
         let job = self.install.read(cx);
         let state = job.state().clone();
-        let step = job.step().clone();
+        let step = job.step_with_time();
         let percent = job.percent();
-        let log: Vec<SharedString> = job.log().iter().rev().take(200).rev().cloned().collect();
+        let log: Vec<SharedString> = job.log().iter().rev().take(16).rev().cloned().collect();
         v_flex()
             .gap_4()
             .child(

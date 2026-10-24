@@ -795,6 +795,10 @@ pub fn setup(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     }
 }
 
+/// Set (to anything) for `setup` to take back a distro disk an earlier
+/// install left in its folder, instead of setting it aside.
+pub const REUSE_KEPT_DISK: &str = "SPM_REUSE_KEPT_DISK";
+
 #[cfg(windows)]
 fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(install_dir).map_err(|e| e.to_string())?;
@@ -806,6 +810,26 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
         sink(Progress::Step { name: "Resetting an unresponsive SENTIENT distro".into() });
         let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
         let _ = sys::output("wsl.exe", &["--unregister", DISTRO]);
+    }
+
+    // The disk of a distro this account no longer has registered (an
+    // earlier install, a recreated service account) blocks a new import in
+    // the same folder ("install location already in use"). A reinstall over
+    // kept data registers it again in place (its history comes back);
+    // otherwise, or if that fails, it is set aside and the distro starts
+    // empty.
+    let leftover = install_dir.join("distro").join("ext4.vhdx");
+    if !distro_present() && leftover.exists() {
+        let reused = std::env::var_os(REUSE_KEPT_DISK).is_some() && {
+            sink(Progress::Step { name: "Taking back the SENTIENT distro kept from the earlier install".into() });
+            wsl_native(&sink, &["--import-in-place", DISTRO, &leftover.to_string_lossy()]).is_ok() && distro_present() && distro_healthy()
+        };
+        if !reused {
+            let _ = sys::output("wsl.exe", &["--unregister", DISTRO]);
+            let aside = leftover.with_extension(format!("vhdx.unused-{}", chrono::Local::now().format("%Y%m%d%H%M")));
+            std::fs::rename(&leftover, &aside).map_err(|e| format!("set {} aside: {e}", leftover.display()))?;
+            sink(Progress::Log { line: format!("The distro an earlier install left was kept as {}", aside.display()) });
+        }
     }
 
     if !distro_present() {

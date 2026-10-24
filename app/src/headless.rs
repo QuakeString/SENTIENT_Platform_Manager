@@ -13,7 +13,7 @@
 //! --job remove-manager                  (the Platform Manager installed alone)
 //! --job [--json] migrate <stock|timescaledb|clickhouse>
 //! --job resume-migration
-//! --job update [<package folder>] [--accept-breaking]
+//! --job update [<package folder> | --latest] [--accept-breaking]
 //! --job rollback                        (back to what the last update replaced)
 //! --job rollback-info
 //! --job find-existing                   (SENTIENT instances the Platform Manager does not manage yet)
@@ -38,7 +38,7 @@ use sentient_installer_core::native::safe_update::RollbackPoint;
 use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
-update [<package folder>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
+update [<package folder> | --latest] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
 use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
 
 /// A console for the output: release builds on Windows have none of their
@@ -206,7 +206,17 @@ pub fn run(args: &[String]) -> i32 {
         "resume-migration" => crate::migration::resume(record, sink.clone()),
         "update" => {
             let accept = args.iter().any(|a| a == "--accept-breaking");
-            let package = args.iter().skip(1).find(|a| !a.starts_with("--")).map(PathBuf::from);
+            let mut package = args.iter().skip(1).find(|a| !a.starts_with("--")).map(PathBuf::from);
+            // --latest: the newest release from the releases repository.
+            if package.is_none() && args.iter().any(|a| a == "--latest") && record.platform().needs_package() {
+                match crate::online::download(None, &sink) {
+                    Ok((_, dir)) => package = Some(dir),
+                    Err(e) => {
+                        eprintln!("✗ {e}");
+                        return 1;
+                    }
+                }
+            }
             crate::updating::run(record, package.as_deref(), accept, sink.clone()).map(|_| ())
         }
         "rollback" => crate::updating::rollback(record, sink.clone()).map(|_| ()),

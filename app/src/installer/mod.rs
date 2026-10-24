@@ -110,6 +110,8 @@ pub struct Installer {
     /// Sign in to the computer automatically (only with open_at_signin).
     autologin: bool,
     bundle: Option<PathBuf>,
+    /// No package: the latest release online (None while looking).
+    online: Option<Result<sentient_installer_core::manifest::Manifest, String>>,
     sentient_version: SharedString,
     /// Why Next is refused on the current page.
     problem: Option<SharedString>,
@@ -220,6 +222,7 @@ impl Installer {
             open_at_signin: false,
             autologin: false,
             bundle,
+            online: None,
             sentient_version: sentient_version.into(),
             problem: None,
             fields,
@@ -234,6 +237,20 @@ impl Installer {
             this.engine = plan.engine;
             this.step = INSTALL;
             this.install.update(cx, |job, cx| job.start(move |sink| plan::run(plan, sink), cx));
+        }
+        if this.bundle.is_none() {
+            let task = cx.spawn(async move |this, cx| {
+                let found = cx.background_executor().spawn(async move { crate::online::latest() }).await;
+                this.update(cx, |page, cx| {
+                    if let Ok(m) = &found {
+                        page.sentient_version = format!("{} (downloaded)", m.version).into();
+                    }
+                    page.online = Some(found);
+                    cx.notify();
+                })
+                .ok();
+            });
+            this._tasks.push(task);
         }
         // Development aid: open the wizard on a given page to inspect it.
         #[cfg(debug_assertions)]
@@ -267,17 +284,6 @@ impl Installer {
                         .into_iter()
                         .map(|c| CheckRow { label: c.label.into(), detail: c.detail.into(), status: c.status })
                         .collect::<Vec<_>>();
-                    // Native installs take SENTIENT's program files from the
-                    // package's payload folder; there is no online source yet,
-                    // so without it the install would fail after downloading
-                    // the database.
-                    if !offline && (cfg!(windows) || engine == Engine::Native) {
-                        rows.push(CheckRow {
-                            label: "SENTIENT program files".into(),
-                            detail: "Not included: this Setup was started without its payload folder. Run Setup from the full SENTIENT package (the folder with SENTIENT-Setup and payload), or install the Platform Manager alone.".into(),
-                            status: Status::Fail,
-                        });
-                    }
                     // Installing over a running SENTIENT would replace its
                     // configuration (and, on Docker, its passwords).
                     for c in crate::adopt::find() {
@@ -316,6 +322,13 @@ impl Installer {
         let f = &self.fields;
         match self.step {
             0 if !self.accepted => Err("Accept the licence agreement to continue.".into()),
+            // SENTIENT itself comes only from a package (there is no download
+            // of it yet): without one a native install would stop half-way.
+            0 if !self.manager_only && self.bundle.is_none() && cfg!(windows) && !self.can_download() => Err(match &self.online {
+                None => "Still looking for the latest SENTIENT online…".to_string(),
+                Some(Err(e)) => format!("There is no SENTIENT package next to Setup and SENTIENT could not be found online ({e}). Connect to the internet, or unzip the SENTIENT package and run SENTIENT-Setup from that folder, or choose “Only the Platform Manager”."),
+                Some(Ok(_)) => String::new(),
+            }),
             1 => match &self.checks {
                 None => Err("The system check is still running.".into()),
                 Some(rows) if rows.iter().any(|r| r.status == Status::Fail) => {
@@ -324,6 +337,9 @@ impl Installer {
                 Some(_) => Ok(()),
             },
             2 if self.engine == Engine::Docker => Ok(()),
+            2 if self.bundle.is_none() && !self.can_download() => Err(
+                "A native install needs SENTIENT's program files: connect to the internet (they are downloaded), or unzip the SENTIENT package and run SENTIENT-Setup from that folder, or choose Docker, which pulls the image.".into(),
+            ),
             2 => {
                 if self.value(&f.install_dir, cx).is_empty()
                     || (cfg!(windows) && self.value(&f.data_dir, cx).is_empty())
@@ -488,7 +504,10 @@ impl Installer {
         stack.tuning.instance_id = format!("sentient-{}", native::generate_secret().get(..8).unwrap_or("01"));
         Ok(plan::InstallPlan {
             engine: self.engine,
-            sentient_version: self.sentient_version.to_string(),
+            sentient_version: match (&self.bundle, &self.online) {
+                (None, Some(Ok(m))) => m.version.clone(),
+                _ => self.sentient_version.to_string(),
+            },
             install_dir: PathBuf::from(self.value(&f.install_dir, cx)),
             data_dir: PathBuf::from(self.value(&f.data_dir, cx)),
             stack,
@@ -511,7 +530,17 @@ impl Installer {
             },
             auto_signin_password: self.fields.autologin_password.read(cx).value().to_string(),
             bundle: self.bundle.clone(),
+            download: if self.bundle.is_none() {
+                self.online.as_ref().and_then(|o| o.as_ref().ok()).map(|m| m.version.clone())
+            } else {
+                None
+            },
         })
+    }
+
+    /// No package, but the latest release was found online.
+    fn can_download(&self) -> bool {
+        matches!(&self.online, Some(Ok(_)))
     }
 
     /// The pages this install goes through: all of them, or for the Platform

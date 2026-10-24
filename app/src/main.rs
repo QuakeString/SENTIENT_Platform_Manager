@@ -20,6 +20,7 @@ mod maintenance;
 mod manager;
 mod migration;
 mod mode;
+mod online;
 mod open_client;
 mod restore_switch;
 mod rootjob;

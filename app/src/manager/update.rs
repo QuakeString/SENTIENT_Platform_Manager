@@ -31,6 +31,8 @@ pub struct UpdatePage {
     accept_breaking: bool,
     /// What the last update replaced: None while it is being looked up.
     rollback: Option<Result<Option<RollbackPoint>, String>>,
+    /// Native: the newest SENTIENT online (None while looking).
+    latest: Option<Result<String, String>>,
     job: Entity<Job>,
     _observe: Subscription,
     _tasks: Vec<Task<()>>,
@@ -50,9 +52,48 @@ impl UpdatePage {
             }
             cx.notify();
         });
-        let mut page = Self { record, package: None, accept_breaking: false, rollback: None, job, _observe, _tasks: Vec::new() };
+        let mut page = Self { record, package: None, accept_breaking: false, rollback: None, latest: None, job, _observe, _tasks: Vec::new() };
         page.refresh_rollback(cx);
+        page.look_for_latest(cx);
         page
+    }
+
+    fn look_for_latest(&mut self, cx: &mut Context<Self>) {
+        if !self.record.as_ref().is_some_and(|r| r.platform().needs_package()) {
+            return;
+        }
+        let task = cx.spawn(async move |this, cx| {
+            let found = cx.background_executor().spawn(async move { crate::online::latest().map(|m| m.version) }).await;
+            this.update(cx, |page, cx| {
+                page.latest = Some(found);
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
+    /// Download `version` from the releases repository, then update to it.
+    fn run_download(&mut self, version: String, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        let accept = self.accept_breaking;
+        self.job.update(cx, |job, cx| {
+            job.start(
+                move |sink| {
+                    let (_, dir) = crate::online::download(Some(&version), &sink)?;
+                    if crate::rootjob::needed(&record) {
+                        let mut args = vec!["update".to_string(), dir.display().to_string()];
+                        if accept {
+                            args.push("--accept-breaking".into());
+                        }
+                        crate::rootjob::run(&args, &sink).map(|_| ())
+                    } else {
+                        crate::updating::run(record, Some(&dir), accept, sink).map(|_| ())
+                    }
+                },
+                cx,
+            )
+        });
     }
 
     fn refresh_rollback(&mut self, cx: &mut Context<Self>) {
@@ -153,7 +194,7 @@ impl Render for UpdatePage {
         let busy = job.is_running();
         let can_run = !busy && (!native || self.package.is_some());
         let percent = job.percent();
-        let step = job.step().clone();
+        let step = job.step_with_time();
         let outcome = match job.state() {
             JobState::Done(m) => Some((Tone::Good, m.clone())),
             JobState::Failed(m) => Some((Tone::Bad, m.clone())),
@@ -164,6 +205,30 @@ impl Render for UpdatePage {
         page.child(
             ui::panel(&theme)
                 .child(ui::fact(&theme, "Installed version", record.sentient_version.clone()))
+                .when(native, |panel| {
+                    let latest = self.latest.clone();
+                    let installed = record.sentient_version.clone();
+                    panel.child(match latest {
+                        None => div().text_sm().text_color(theme.muted_foreground).child("Looking for the latest SENTIENT online…").into_any_element(),
+                        Some(Err(e)) => div()
+                            .text_sm()
+                            .text_color(theme.muted_foreground)
+                            .child(format!("The download site could not be reached ({e}): choose a package folder instead."))
+                            .into_any_element(),
+                        Some(Ok(v)) => h_flex()
+                            .gap_3()
+                            .items_center()
+                            .child(
+                                Button::new("download-latest")
+                                    .primary()
+                                    .label(if v == installed { format!("Download {v} again and update") } else { format!("Download and update to {v}") })
+                                    .disabled(busy)
+                                    .on_click(cx.listener(move |this, _, _, cx| this.run_download(v.clone(), cx))),
+                            )
+                            .child(div().text_sm().text_color(theme.muted_foreground).child("from the SENTIENT releases site, checked before use; or choose a package folder below"))
+                            .into_any_element(),
+                    })
+                })
                 .when(native, |panel| {
                     panel.child(
                         h_flex()
