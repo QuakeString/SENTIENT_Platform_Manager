@@ -347,3 +347,17 @@ mod imp {
         let _ = run(&noop(), &format!("rm -f {}", q(&path.display().to_string())));
     }
 }
+
+/// Open SENTIENT when someone signs in (`Some(kiosk)`), or stop it. On
+/// Windows SENTIENT's services are made to start with Windows as well:
+/// otherwise the screen waits after a reboot for a SENTIENT nobody starts.
+pub fn set_open_at_signin(sink: &sentient_installer_core::progress::ProgressFn, mode: Option<bool>) -> Result<(), String> {
+    sentient_installer_core::kiosk::set_open_at_signin(sink, &manager_exe(), mode)?;
+    #[cfg(windows)]
+    if mode.is_some() {
+        use sentient_installer_core::native::{APP_SERVICE, PG_SERVICE};
+        set_autostart(&[APP_SERVICE, PG_SERVICE], true);
+        sink(sentient_installer_core::progress::Progress::Log { line: "SENTIENT's services start with Windows.".into() });
+    }
+    Ok(())
+}

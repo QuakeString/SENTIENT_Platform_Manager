@@ -82,10 +82,7 @@ impl ControlPage {
             2 => Some(false),
             _ => None,
         };
-        let launcher = crate::self_install::manager_exe();
-        self.signin_job.update(cx, |job, cx| {
-            job.start(move |sink| sentient_installer_core::kiosk::set_open_at_signin(&sink, &launcher, mode), cx)
-        });
+        self.signin_job.update(cx, |job, cx| job.start(move |sink| crate::self_install::set_open_at_signin(&sink, mode), cx));
     }
 
     fn run(&mut self, action: &'static str, cx: &mut Context<Self>) {
