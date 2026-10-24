@@ -17,6 +17,7 @@
 //! install rather than an error.
 
 
+pub mod adopt_windows;
 pub mod safe_update;
 
 use std::path::{Path, PathBuf};

@@ -147,6 +147,15 @@ impl Manager {
         cx.notify();
     }
 
+    /// Like `reload`, but the Repair screen keeps showing what it just did.
+    fn reload_keeping_repair(&mut self, cx: &mut Context<Self>) {
+        let repair = self.repair.take();
+        self.reload(cx);
+        self.migration = None;
+        self.settings = None;
+        self.repair = repair;
+    }
+
     fn nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let items = Page::ALL.into_iter().map(|page| {
@@ -259,11 +268,14 @@ impl Manager {
                 }
                 self.settings.clone().unwrap().into_any_element()
             }
-            Page::Repair => self
-                .repair
-                .get_or_insert_with(|| cx.new(|cx| repair::RepairPage::new(record, cx)))
-                .clone()
-                .into_any_element(),
+            Page::Repair => {
+                if self.repair.is_none() {
+                    let page = cx.new(|cx| repair::RepairPage::new(record, cx));
+                    self._subscriptions.push(cx.subscribe(&page, |this, _, _: &migration::RecordChanged, cx| this.reload_keeping_repair(cx)));
+                    self.repair = Some(page);
+                }
+                self.repair.clone().unwrap().into_any_element()
+            }
         }
     }
 }

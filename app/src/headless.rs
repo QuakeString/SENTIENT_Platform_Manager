@@ -17,7 +17,8 @@
 //! --job rollback                        (back to what the last update replaced)
 //! --job rollback-info
 //! --job find-existing                   (SENTIENT installed without the Platform Manager)
-//! --job adopt [<n> | --native]         (manage the n-th one found, 1 by default, or the systemd one)
+//! --job adopt [<n> | --native] [--pg-admin-password <pw>]
+//!                                       (manage the n-th one found, 1 by default, or the native one)
 //! --job take-over-compose               (an adopted Docker stack: use SPM's compose file)
 //! --job kept
 //! --job remove-kept <name>
@@ -142,11 +143,13 @@ pub fn run(args: &[String]) -> i32 {
             found.iter().find(|c| c.record.engine == crate::installation::Engine::Native).ok_or_else(|| "No SENTIENT service was found on this computer.".to_string())
         } else {
             let n: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(1);
+            let n = if found.len() == 1 { 1 } else { n };
             found.get(n.saturating_sub(1)).ok_or_else(|| {
                 if found.is_empty() { "No SENTIENT was found on this computer.".to_string() } else { format!("Only {} installation(s) were found.", found.len()) }
             })
         };
-        let result = chosen.and_then(|c| crate::adopt::adopt_as_needed(c, sink.clone()));
+        let pg_admin = args.windows(2).find(|w| w[0] == "--pg-admin-password").map(|w| w[1].clone());
+        let result = chosen.and_then(|c| crate::adopt::adopt_as_needed(c, pg_admin, sink.clone()));
         return match result {
             Ok(()) => 0,
             Err(e) => {

@@ -97,6 +97,8 @@ impl StatusPage {
              Nothing is reinstalled, moved or restarted. {}",
             if candidate.record.stack.external.is_some() {
                 "It keeps running from its own compose file."
+            } else if candidate.sets_admin_password {
+                "The Platform Manager does not know the PostgreSQL admin (postgres) password, which updates need: it sets a new one and keeps it in its secret store. Anything else that signs in to PostgreSQL as postgres will need the new password."
             } else {
                 ""
             }
@@ -107,7 +109,7 @@ impl StatusPage {
             dialog.title("Manage this SENTIENT?").description(text.clone()).confirm().ok_text("Manage it").on_ok(move |_, _, cx| {
                 let candidate = candidate.clone();
                 this.update(cx, |page, cx| {
-                    page.adopt_job.update(cx, |job, cx| job.start(move |sink| crate::adopt::adopt_as_needed(&candidate, sink), cx));
+                    page.adopt_job.update(cx, |job, cx| job.start(move |sink| crate::adopt::adopt_as_needed(&candidate, None, sink), cx));
                 })
                 .ok();
                 true
@@ -219,7 +221,10 @@ impl Render for StatusPage {
                         st.http_port, st.mqtt_port, st.mqtts_port, st.coap_port, st.coaps_port, st.pg_port
                     ),
                 ))
-                .child(ui::fact(&theme, "Installed in", record.install_dir.display().to_string())),
+                .child(match &st.external {
+                    Some(ext) => ui::fact(&theme, "Runs from", format!("its own compose file ({})", ext.files.join(", "))),
+                    None => ui::fact(&theme, "Installed in", record.install_dir.display().to_string()),
+                }),
         )
         .child(
             ui::panel(&theme)
