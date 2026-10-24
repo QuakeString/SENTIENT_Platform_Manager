@@ -5,6 +5,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod adopt;
 mod agent;
 mod assets;
 mod backup_jobs;

@@ -111,6 +111,22 @@ impl InstallationRecord {
         Ok(cfg)
     }
 
+    /// A native configuration with nothing known but where it is installed
+    /// (an installation found before its settings could be read).
+    pub fn placeholder_native(install_dir: &std::path::Path) -> NativeConfig {
+        let record = InstallationRecord {
+            sentient_version: String::new(),
+            manager_version: String::new(),
+            engine: Engine::Native,
+            install_dir: install_dir.to_path_buf(),
+            pg_dir: PathBuf::new(),
+            state_dir: PathBuf::from("/var/lib/sentient"),
+            stack: DeployConfig::default(),
+            installed_at: String::new(),
+        };
+        record.native_config()
+    }
+
     pub fn native_config(&self) -> NativeConfig {
         let st = &self.stack;
         NativeConfig {
@@ -142,6 +158,10 @@ impl InstallationRecord {
         }
     }
 }
+
+/// An adopted Docker stack whose PostgreSQL has no port on this machine.
+pub const PG_NOT_PUBLISHED: &str = "This installation's PostgreSQL is not published on this machine (its compose file has no ports for it), \
+so the Platform Manager cannot connect to it for this. Publish its port 5432 in the compose file, then add the instance again.";
 
 pub fn record_path() -> PathBuf {
     std::env::var_os("SPM_INSTALLATION_RECORD")

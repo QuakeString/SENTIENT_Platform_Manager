@@ -254,10 +254,24 @@ impl Installer {
                     } else {
                         checks::run_linux_native(offline)
                     };
-                    found
+                    let mut rows = found
                         .into_iter()
                         .map(|c| CheckRow { label: c.label.into(), detail: c.detail.into(), status: c.status })
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<_>>();
+                    // Installing over a running SENTIENT would replace its
+                    // configuration (and, on Docker, its passwords).
+                    for c in crate::adopt::find() {
+                        rows.push(CheckRow {
+                            label: "SENTIENT already installed".into(),
+                            detail: format!(
+                                "SENTIENT {} runs here as {}, from {}. Installing again would overwrite it: open the Platform Manager and use “Add existing instance” on its Status screen instead.",
+                                c.record.sentient_version, c.kind, c.location
+                            )
+                            .into(),
+                            status: Status::Fail,
+                        });
+                    }
+                    rows
                 })
                 .await;
             this.update(cx, |page, cx| {

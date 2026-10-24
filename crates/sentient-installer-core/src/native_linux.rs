@@ -453,6 +453,165 @@ pub fn read_secrets(_cfg: &NativeConfig) -> Result<EnvSecrets, String> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// An installation the Platform Manager did not record (adopt)
+// ---------------------------------------------------------------------------
+
+/// Where `sentient.service` runs SENTIENT from, read from its unit file
+/// (readable without root). None when there is no such unit.
+pub fn installed_dir() -> Option<PathBuf> {
+    let unit = std::fs::read_to_string(UNIT_FILE).ok()?;
+    let exe = unit.lines().find_map(|l| l.trim().strip_prefix("ExecStart="))?.split_whitespace().next()?.to_string();
+    let exe = PathBuf::from(exe.trim_start_matches(['-', '@', '+', '!']));
+    Some(exe.parent()?.parent()?.to_path_buf())
+}
+
+/// Whether the SENTIENT unit is running.
+pub fn installed_running() -> bool {
+    sys::output("systemctl", &["is-active", "--quiet", APP_UNIT]).map(|(ok, _, _)| ok).unwrap_or(false)
+}
+
+/// A SENTIENT systemd installation read back from its unit and environment.
+#[derive(Debug, Clone)]
+pub struct FoundNative {
+    /// Its configuration, passwords included.
+    pub cfg: NativeConfig,
+    pub running: bool,
+    pub notes: Vec<String>,
+    /// Why it cannot be managed, when it cannot.
+    pub problem: Option<String>,
+}
+
+/// Variables the engine writes itself (`service_env`, `storage_env`).
+const ENGINE_ENV: &[&str] = &[
+    "DATABASE_URL", "UI_DIR", "REPORT_OUTPUT_DIR", "VC_REPOS_PATH", "JWT_SECRET", "SERVER__HOST", "SERVER__PORT",
+    "LICENSE_SERVER_URL", "CLICKHOUSE_URL", "CLICKHOUSE_DATABASE", "CLICKHOUSE_USER", "CLICKHOUSE_PASSWORD",
+    "TS_TYPE", "TS_LATEST_TYPE", "TS_LATEST_CACHE", "TS_LATEST_CACHE_TTL_SECS", "SENTIENT_TIMESCALE_ENABLED",
+];
+
+/// Read the installation `sentient.service` runs (as root: its environment
+/// file holds the passwords). None when there is no such unit.
+pub fn read_installed() -> Option<Result<FoundNative, String>> {
+    let install_dir = installed_dir()?;
+    Some((|| {
+        let text = read_private_file(ENV_FILE)?.ok_or_else(|| format!("{ENV_FILE} is missing"))?;
+        let env: Vec<(String, String)> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .filter_map(|l| l.split_once('=').map(|(k, _)| k.trim().to_string()))
+            .filter_map(|k| env_value(&text, &k).map(|v| (k, v)))
+            .collect();
+        let get = |k: &str| env.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        let mut notes = Vec::new();
+        let mut problem = None;
+        let db = get("DATABASE_URL").and_then(crate::distro::adopt::parse_db_url).ok_or("SENTIENT's DATABASE_URL could not be read")?;
+        if !matches!(db.host.as_str(), "127.0.0.1" | "localhost" | "::1") {
+            problem = Some(format!("SENTIENT's database is on {}; the Platform Manager manages a PostgreSQL on this computer only.", db.host));
+        }
+        let ch_url = get("CLICKHOUSE_URL").filter(|u| !u.is_empty());
+        let flavor = if ch_url.is_some() { stack::Flavor::Clickhouse } else { stack::Flavor::Stock };
+        let (ch_http_port, ch_native_port) = match ch_url {
+            Some(url) => {
+                let http = url.rsplit(':').next().and_then(|p| p.trim_end_matches('/').parse().ok()).unwrap_or(8123);
+                let tcp = std::fs::read_to_string("/etc/clickhouse-server/config.d/sentient.xml")
+                    .ok()
+                    .and_then(|x| x.split("<tcp_port>").nth(1)?.split('<').next()?.trim().parse().ok())
+                    .unwrap_or(9000);
+                (http, tcp)
+            }
+            None => (8123, 9000),
+        };
+        let own: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let state_dir = get("REPORT_OUTPUT_DIR")
+            .and_then(|p| Path::new(p).parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| PathBuf::from("/var/lib/sentient"));
+        let mut cfg = NativeConfig {
+            install_dir: install_dir.clone(),
+            pg_dir: PathBuf::new(),
+            state_dir,
+            db_name: db.database.clone(),
+            db_user: db.user.clone(),
+            db_password: db.password.clone(),
+            pg_superuser_password: String::new(),
+            http_port: get("SERVER__PORT").and_then(|p| p.parse().ok()).unwrap_or(8080),
+            mqtt_port: 1883,
+            coap_port: 5683,
+            pg_port: db.port,
+            load_demo: false,
+            source: ArtifactSource::Remote { base_url: String::new() },
+            license_server_url: get("LICENSE_SERVER_URL").unwrap_or("https://license.invenia.in").to_string(),
+            extra_env: Vec::new(),
+            jwt_secret: get("JWT_SECRET").unwrap_or_default().to_string(),
+            flavor,
+            tuning: stack::Tuning::from_env(own, ENGINE_ENV),
+            pg: stack::PgTuning::default(),
+            ch: stack::ChTuning::default(),
+            ch_db: get("CLICKHOUSE_DATABASE").unwrap_or("sentient").to_string(),
+            ch_user: get("CLICKHOUSE_USER").unwrap_or("sentient").to_string(),
+            ch_password: get("CLICKHOUSE_PASSWORD").unwrap_or_default().to_string(),
+            ch_http_port,
+            ch_native_port,
+        };
+        // PostgreSQL's settings as the server has them.
+        let show = |name: &str| {
+            exec::privileged_output(&format!("runuser -u postgres -- psql -p {} -qAt -c {}", cfg.pg_port, shq(&format!("SHOW {name}"))))
+                .filter(|(ok, _, _)| *ok)
+                .map(|(_, out, _)| out.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        if let Some(v) = show("max_connections").and_then(|v| v.parse().ok()) {
+            cfg.pg.pg_max_connections = v;
+        }
+        for (name, slot) in [
+            ("shared_buffers", &mut cfg.pg.pg_shared_buffers),
+            ("work_mem", &mut cfg.pg.pg_work_mem),
+            ("effective_cache_size", &mut cfg.pg.pg_effective_cache_size),
+        ] {
+            if let Some(v) = show(name) {
+                *slot = v;
+            }
+        }
+        if !install_dir.join("bin").join("sentient-install").exists() {
+            notes.push(format!("{} has no bin/sentient-install, which updates need.", install_dir.display()));
+        }
+        Ok(FoundNative { cfg, running: installed_running(), notes, problem })
+    })())
+}
+
+/// Check the Platform Manager can do its work on a found installation.
+pub fn verify_installed(found: &FoundNative) -> Result<(), String> {
+    if let Some(p) = &found.problem {
+        return Err(p.clone());
+    }
+    let cfg = &found.cfg;
+    let (ok, out, err) = exec::privileged_output(&format!(
+        "runuser -u postgres -- psql -p {} -d {} -qAt -c 'SELECT 1'",
+        cfg.pg_port,
+        shq(&cfg.db_name)
+    ))
+    .ok_or("could not run psql as the postgres user")?;
+    if !ok || out.trim() != "1" {
+        return Err(format!("Could not run SQL in the database {}: {}", cfg.db_name, err.trim()));
+    }
+    if cfg.flavor.uses_clickhouse() {
+        let ok = exec::privileged_output(&format!(
+            "clickhouse-client --port {} --user {} --password {} --query 'SELECT 1'",
+            cfg.ch_native_port,
+            shq(&cfg.ch_user),
+            shq(&cfg.ch_password)
+        ))
+        .is_some_and(|(ok, out, _)| ok && out.trim() == "1");
+        if !ok {
+            return Err(format!("Could not query ClickHouse on port {} as {}.", cfg.ch_native_port, cfg.ch_user));
+        }
+    }
+    if found.running && !crate::native::is_running(cfg.http_port) {
+        return Err(format!("SENTIENT is running but does not answer on port {}.", cfg.http_port));
+    }
+    Ok(())
+}
+
 /// A root-only file of SENTIENT's (as root, through polkit unless already
 /// root); `None` if it is not there.
 pub fn read_private_file(path: &str) -> Result<Option<String>, String> {

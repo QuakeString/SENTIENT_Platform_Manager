@@ -142,6 +142,7 @@ impl Setup {
     pub(crate) fn current(record: &InstallationRecord) -> Result<Setup, String> {
         match record.engine {
             Engine::Native => Ok(Setup::Native(Box::new(record.native_config_with_secrets()?))),
+            Engine::Docker if record.stack.pg_port == 0 => Err(crate::installation::PG_NOT_PUBLISHED.into()),
             Engine::Docker => Ok(Setup::Docker(docker_ops::with_secrets(&record.stack)?)),
         }
     }

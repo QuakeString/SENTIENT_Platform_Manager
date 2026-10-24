@@ -283,6 +283,66 @@ pub fn tuning_env(t: &Tuning) -> Vec<(String, String)> {
     v
 }
 
+impl Tuning {
+    /// Read one variable back into its field (the reverse of `tuning_env`),
+    /// for an installation SPM did not write. False when the name is not a
+    /// tuning variable or the value does not parse.
+    pub fn apply_env(&mut self, key: &str, value: &str) -> bool {
+        fn set<T: std::str::FromStr>(field: &mut T, value: &str) -> bool {
+            value.trim().parse().map(|v| *field = v).is_ok()
+        }
+        match key {
+            "SENTIENT_INSTANCE_ID" => { self.instance_id = value.into(); true }
+            "SENTIENT_SERVICE_ID" => { self.service_id = value.into(); true }
+            "DB_POOL_PRIMARY_MIN" => set(&mut self.db_pool_primary_min, value),
+            "DB_POOL_PRIMARY_MAX" => set(&mut self.db_pool_primary_max, value),
+            "DATABASE_POOL_MIN" => set(&mut self.database_pool_min, value),
+            "DATABASE_POOL_MAX" => set(&mut self.database_pool_max, value),
+            "SQL_TS_BATCH_SIZE" => set(&mut self.sql_ts_batch_size, value),
+            "SQL_TS_BATCH_THREADS" => set(&mut self.sql_ts_batch_threads, value),
+            "SQL_TS_BATCH_MAX_DELAY_MS" => set(&mut self.sql_ts_batch_max_delay_ms, value),
+            "SQL_TS_LATEST_BATCH_SIZE" => set(&mut self.sql_ts_latest_batch_size, value),
+            "SQL_TS_LATEST_BATCH_THREADS" => set(&mut self.sql_ts_latest_batch_threads, value),
+            "SQL_TS_LATEST_BATCH_MAX_DELAY_MS" => set(&mut self.sql_ts_latest_batch_max_delay_ms, value),
+            "SQL_ATTRIBUTES_BATCH_SIZE" => set(&mut self.sql_attributes_batch_size, value),
+            "SQL_ATTRIBUTES_BATCH_THREADS" => set(&mut self.sql_attributes_batch_threads, value),
+            "SQL_ATTRIBUTES_BATCH_MAX_DELAY_MS" => set(&mut self.sql_attributes_batch_max_delay_ms, value),
+            "CACHE_SPECS_DEVICES_MAX_SIZE" => set(&mut self.cache_devices_max_size, value),
+            "CACHE_SPECS_DEVICES_TTL" => set(&mut self.cache_devices_ttl, value),
+            "CACHE_SPECS_DEVICES_NULL_TTL" => set(&mut self.cache_devices_null_ttl, value),
+            "CACHE_SPECS_DEVICE_PROFILES_MAX_SIZE" => set(&mut self.cache_device_profiles_max_size, value),
+            "CACHE_SPECS_DEVICE_PROFILES_TTL" => set(&mut self.cache_device_profiles_ttl, value),
+            "CACHE_SPECS_ASSET_PROFILES_MAX_SIZE" => set(&mut self.cache_asset_profiles_max_size, value),
+            "CACHE_SPECS_ASSET_PROFILES_TTL" => set(&mut self.cache_asset_profiles_ttl, value),
+            "AUDIT_LOG_TTL_DAYS" => set(&mut self.audit_log_ttl_days, value),
+            "NOTIFICATIONS_TTL_DAYS" => set(&mut self.notifications_ttl_days, value),
+            "SENTIENT__EVENT_CLEANUP__ENABLED" => set(&mut self.event_cleanup_enabled, value),
+            "SENTIENT__EVENT_CLEANUP__CLEANUP_INTERVAL_SECS" => set(&mut self.event_cleanup_interval_secs, value),
+            "SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS" => set(&mut self.events_ttl_secs, value),
+            "SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS" => set(&mut self.debug_events_ttl_secs, value),
+            "TS_LATEST_CACHE_MAX_ENTRIES" => set(&mut self.ts_latest_cache_max_entries, value),
+            "RUST_LOG" => { self.rust_log = value.into(); true }
+            "RUST_BACKTRACE" => true,
+            "ANALYTICS_ENABLED" => set(&mut self.analytics_enabled, value),
+            _ => false,
+        }
+    }
+
+    /// Tuning from a SENTIENT environment someone else wrote: known variables
+    /// into their fields, every other one kept verbatim in `extra_env`
+    /// (variables in `skip` are the engine's own and left out).
+    pub fn from_env<'a>(env: impl IntoIterator<Item = (&'a str, &'a str)>, skip: &[&str]) -> Self {
+        let mut t = Tuning::default();
+        for (k, v) in env {
+            if skip.contains(&k) || t.apply_env(k, v) {
+                continue;
+            }
+            t.extra_env.push(EnvVar { name: k.into(), value: v.into() });
+        }
+        t
+    }
+}
+
 /// The `config.d` drop-in the reference compose inlines for ClickHouse, with
 /// optional port overrides for a native install (a container remaps ports
 /// from the outside instead). Same content in both engines on purpose.
@@ -391,5 +451,19 @@ mod tests {
         assert!(env.iter().any(|(k, v)| k == "TS_TYPE" && v == "clickhouse"));
         let stock = storage_env(Flavor::Stock, None, &Tuning::default());
         assert!(stock.iter().any(|(k, v)| k == "SENTIENT_TIMESCALE_ENABLED" && v == "false"));
+    }
+
+    #[test]
+    fn tuning_reads_back_from_its_environment() {
+        let mut t = Tuning::default();
+        t.sql_ts_batch_size = 1234;
+        t.rust_log = "debug".into();
+        t.event_cleanup_enabled = false;
+        let env = tuning_env(&t);
+        let back = Tuning::from_env(env.iter().map(|(k, v)| (k.as_str(), v.as_str())).chain([("MY_FLAG", "1"), ("DATABASE_URL", "x")]), &["DATABASE_URL"]);
+        assert_eq!(back.sql_ts_batch_size, 1234);
+        assert_eq!(back.rust_log, "debug");
+        assert!(!back.event_cleanup_enabled);
+        assert_eq!(back.extra_env, vec![EnvVar { name: "MY_FLAG".into(), value: "1".into() }]);
     }
 }

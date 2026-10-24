@@ -13,7 +13,7 @@ use sentient_installer_core::progress::{Progress, ProgressFn};
 
 use crate::installation::{Engine, InstallationRecord};
 
-fn is_root() -> bool {
+pub fn is_root() -> bool {
     Command::new("id")
         .arg("-u")
         .output()

@@ -129,7 +129,13 @@ impl Manager {
 
     /// The record changed (a migration): every screen starts again from it.
     fn reload(&mut self, cx: &mut Context<Self>) {
-        self.record = InstallationRecord::load();
+        let was_installed = self.record.is_some();
+        self.record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
+        if !was_installed {
+            // Adopted: every screen was showing "not installed".
+            self.migration = None;
+            self.settings = None;
+        }
         self.status = None;
         self.control = None;
         self.logs = None;
@@ -139,6 +145,15 @@ impl Manager {
         // Migration and Settings reload their own record and keep showing
         // the result of what just ran.
         cx.notify();
+    }
+
+    /// Like `reload`, but the Repair screen keeps showing what it just did.
+    fn reload_keeping_repair(&mut self, cx: &mut Context<Self>) {
+        let repair = self.repair.take();
+        self.reload(cx);
+        self.migration = None;
+        self.settings = None;
+        self.repair = repair;
     }
 
     fn nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -209,11 +224,14 @@ impl Manager {
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let record = self.record.clone();
         match self.page {
-            Page::Status => self
-                .status
-                .get_or_insert_with(|| cx.new(|cx| status::StatusPage::new(record, cx)))
-                .clone()
-                .into_any_element(),
+            Page::Status => {
+                if self.status.is_none() {
+                    let page = cx.new(|cx| status::StatusPage::new(record, cx));
+                    self._subscriptions.push(cx.subscribe(&page, |this, _, _: &migration::RecordChanged, cx| this.reload(cx)));
+                    self.status = Some(page);
+                }
+                self.status.clone().unwrap().into_any_element()
+            }
             Page::Control => self
                 .control
                 .get_or_insert_with(|| cx.new(|cx| control::ControlPage::new(record, cx)))
@@ -250,11 +268,14 @@ impl Manager {
                 }
                 self.settings.clone().unwrap().into_any_element()
             }
-            Page::Repair => self
-                .repair
-                .get_or_insert_with(|| cx.new(|cx| repair::RepairPage::new(record, cx)))
-                .clone()
-                .into_any_element(),
+            Page::Repair => {
+                if self.repair.is_none() {
+                    let page = cx.new(|cx| repair::RepairPage::new(record, cx));
+                    self._subscriptions.push(cx.subscribe(&page, |this, _, _: &migration::RecordChanged, cx| this.reload_keeping_repair(cx)));
+                    self.repair = Some(page);
+                }
+                self.repair.clone().unwrap().into_any_element()
+            }
         }
     }
 }

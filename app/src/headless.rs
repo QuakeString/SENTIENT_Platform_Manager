@@ -16,6 +16,10 @@
 //! --job update [<package folder>] [--accept-breaking]
 //! --job rollback                        (back to what the last update replaced)
 //! --job rollback-info
+//! --job find-existing                   (SENTIENT instances the Platform Manager does not manage yet)
+//! --job add-existing [<n> | --native] [--pg-admin-password <pw>]
+//!                                       (add the n-th one found, 1 by default, or the native one)
+//! --job take-over-compose               (an added Docker instance: use SPM's compose file)
 //! --job kept
 //! --job remove-kept <name>
 //! ```
@@ -32,7 +36,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
 update [<package folder>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
+use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
 
 /// A console for the output: release builds on Windows have none of their
 /// own, so use the one the job was started from.
@@ -54,7 +58,7 @@ fn printer() -> ProgressFn {
     Arc::new(|p| match p {
         Progress::Step { name } => println!("== {name}"),
         // Data lines of a root job (crate::kept::encode) are printed decoded.
-        Progress::Log { line } if line.starts_with("KEPT\t") || line.starts_with("ROLLBACK\t") => {}
+        Progress::Log { line } if line.starts_with("KEPT\t") || line.starts_with("ROLLBACK\t") || line.starts_with("FOUND\t") => {}
         Progress::Log { line } => println!("   {}", crate::ui::strip_ansi(&line)),
         Progress::Percent { .. } => {}
         Progress::Done { message } => println!("✓ {message}"),
@@ -118,6 +122,42 @@ pub fn run(args: &[String]) -> i32 {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("✗ {e}");
+                1
+            }
+        };
+    }
+    if job == "find-existing" || job == "add-existing" {
+        let sink = if json { json_printer() } else { printer() };
+        let found = crate::adopt::find();
+        if job == "find-existing" {
+            if json {
+                for c in &found {
+                    sink(Progress::Log { line: crate::adopt::encode(c) });
+                }
+            } else {
+                print_candidates(&found);
+            }
+            return 0;
+        }
+        let chosen = if args.iter().any(|a| a == "--native") {
+            found.iter().find(|c| c.record.engine == crate::installation::Engine::Native).ok_or_else(|| "No SENTIENT service was found on this computer.".to_string())
+        } else {
+            let n: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(1);
+            let n = if found.len() == 1 { 1 } else { n };
+            found.get(n.saturating_sub(1)).ok_or_else(|| {
+                if found.is_empty() { "No existing SENTIENT instance was found on this computer.".to_string() } else { format!("Only {} instance(s) were found.", found.len()) }
+            })
+        };
+        let pg_admin = args.windows(2).find(|w| w[0] == "--pg-admin-password").map(|w| w[1].clone());
+        let result = chosen.and_then(|c| crate::adopt::adopt_as_needed(c, pg_admin, sink.clone()));
+        return match result {
+            Ok(()) => 0,
+            Err(e) => {
+                if json {
+                    sink(Progress::Error { message: e });
+                } else {
+                    eprintln!("✗ {e}");
+                }
                 1
             }
         };
@@ -192,6 +232,7 @@ pub fn run(args: &[String]) -> i32 {
             Some(name) => crate::restore_switch::run(&record, name, sink.clone()).map(|_| ()),
             None => Err(USAGE.into()),
         },
+        "take-over-compose" => crate::adopt::take_over_compose(record, sink.clone()).map(|_| ()),
         "repair" => crate::maintenance::run_repair(record, sink.clone()),
         "uninstall" => {
             let keep = !args.iter().any(|a| a == "--delete-data");
@@ -244,5 +285,25 @@ fn print_rollback_point(point: Option<&RollbackPoint>) {
     match point {
         Some(p) => println!("Can roll back to {}.", p.describe()),
         None => println!("Nothing to roll back to."),
+    }
+}
+
+fn print_candidates(found: &[crate::adopt::Candidate]) {
+    if found.is_empty() {
+        println!("No existing SENTIENT instance was found on this computer.");
+    }
+    for (i, c) in found.iter().enumerate() {
+        println!("{}. SENTIENT {}", i + 1, c.record.sentient_version);
+        for (label, value) in c.facts() {
+            println!("   {label}: {value}");
+        }
+        match &c.problem {
+            Some(p) => println!("   Cannot be added: {p}"),
+            None if c.record.engine == crate::installation::Engine::Native => println!("   Can be added: --job add-existing --native"),
+            None => println!("   Can be added: --job add-existing {}", i + 1),
+        }
+        for n in &c.notes {
+            println!("   Note: {n}");
+        }
     }
 }
