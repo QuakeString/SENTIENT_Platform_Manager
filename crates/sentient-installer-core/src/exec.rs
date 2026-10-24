@@ -109,6 +109,12 @@ pub(crate) fn privileged_args(script: &str) -> (String, Vec<String>) {
 #[cfg(unix)]
 pub(crate) fn run_privileged(sink: &ProgressFn, script: &str) -> Result<(), String> {
     let (prog, args) = privileged_args(script);
+    // The password dialog can open behind the window that asked for it, and
+    // the job then waits with nothing to show. Say so, once per run.
+    static HINTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if prog == "pkexec" && !HINTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        sink(Progress::Log { line: "Waiting for the administrator password: if nothing moves, look for the password dialog (it may be behind this window).".into() });
+    }
     let argrefs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     stream(sink, &prog, &argrefs).map_err(|e| {
         // pkexec itself exits 126 when the dialog is dismissed and 127 when

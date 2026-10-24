@@ -153,7 +153,7 @@ impl Render for UpdatePage {
         let busy = job.is_running();
         let can_run = !busy && (!native || self.package.is_some());
         let percent = job.percent();
-        let step = job.step().clone();
+        let step = job.step_with_time();
         let outcome = match job.state() {
             JobState::Done(m) => Some((Tone::Good, m.clone())),
             JobState::Failed(m) => Some((Tone::Bad, m.clone())),

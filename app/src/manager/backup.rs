@@ -421,7 +421,7 @@ impl BackupPage {
             v_flex()
                 .gap_2()
                 .when(job.is_running(), |c| {
-                    c.child(div().text_sm().child(job.step().clone()))
+                    c.child(div().text_sm().child(job.step_with_time()))
                         .when_some(job.percent(), |c, p| c.child(ProgressBar::new("job-progress").value(p)))
                 })
                 .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))

@@ -279,7 +279,7 @@ impl Render for Maintenance {
             let log: Vec<SharedString> = job.log().iter().rev().take(12).rev().cloned().collect();
             return page
                 .child(div().text_2xl().child(action.title()))
-                .child(div().text_sm().child(job.step().clone()))
+                .child(div().text_sm().child(job.step_with_time()))
                 .when(busy, |p| p.when_some(job.percent(), |p, v| p.child(ProgressBar::new("maint").value(v))))
                 .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
                 .child(

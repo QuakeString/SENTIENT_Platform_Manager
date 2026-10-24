@@ -774,9 +774,9 @@ impl Installer {
         let theme = cx.theme().clone();
         let job = self.install.read(cx);
         let state = job.state().clone();
-        let step = job.step().clone();
+        let step = job.step_with_time();
         let percent = job.percent();
-        let log: Vec<SharedString> = job.log().iter().rev().take(200).rev().cloned().collect();
+        let log: Vec<SharedString> = job.log().iter().rev().take(16).rev().cloned().collect();
         v_flex()
             .gap_4()
             .child(

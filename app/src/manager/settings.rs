@@ -151,7 +151,7 @@ impl Render for SettingsPage {
         let _ = window;
         let job = self.job.read(cx);
         let busy = job.is_running();
-        let step = job.step().clone();
+        let step = job.step_with_time();
         let percent = job.percent();
         let outcome = match job.state() {
             JobState::Done(m) => Some((Tone::Good, m.clone())),
