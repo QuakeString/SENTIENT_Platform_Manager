@@ -267,6 +267,17 @@ impl Installer {
                         .into_iter()
                         .map(|c| CheckRow { label: c.label.into(), detail: c.detail.into(), status: c.status })
                         .collect::<Vec<_>>();
+                    // Native installs take SENTIENT's program files from the
+                    // package's payload folder; there is no online source yet,
+                    // so without it the install would fail after downloading
+                    // the database.
+                    if !offline && (cfg!(windows) || engine == Engine::Native) {
+                        rows.push(CheckRow {
+                            label: "SENTIENT program files".into(),
+                            detail: "Not included: this Setup was started without its payload folder. Run Setup from the full SENTIENT package (the folder with SENTIENT-Setup and payload), or install the Platform Manager alone.".into(),
+                            status: Status::Fail,
+                        });
+                    }
                     // Installing over a running SENTIENT would replace its
                     // configuration (and, on Docker, its passwords).
                     for c in crate::adopt::find() {
