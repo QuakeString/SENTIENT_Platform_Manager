@@ -76,7 +76,7 @@ impl Installer {
             (Some(_), _) => "Offline package: everything is included".into(),
             (None, None) => "Looking for the latest SENTIENT online…".into(),
             (None, Some(Ok(m))) => format!(
-                "Online: SENTIENT {} is downloaded during install ({}, checked before use)",
+                "Downloaded during install: SENTIENT {}, {}, checked before use",
                 m.version,
                 crate::online::size_label(m.download_size())
             )
@@ -160,9 +160,9 @@ impl Installer {
                     .child(ui::panel(&theme).flex_1().gap_1()
                         .child(div().text_xs().text_color(theme.muted_foreground).child("Platform Manager"))
                         .child(div().font_weight(FontWeight::MEDIUM).child(env!("CARGO_PKG_VERSION"))))
-                    .child(ui::panel(&theme).flex_1().gap_1()
+                    .child(ui::panel(&theme).flex_1().min_w_0().gap_1()
                         .child(div().text_xs().text_color(theme.muted_foreground).child("Package"))
-                        .child(div().font_weight(FontWeight::MEDIUM).child(package))),
+                        .child(div().w_full().whitespace_normal().font_weight(FontWeight::MEDIUM).child(package))),
             )
             .child(
                 ui::panel(&theme)
