@@ -414,7 +414,7 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         // A data folder without PG_VERSION is a failed earlier attempt;
         // initdb refuses a non-empty folder, so start clean.
         if cfg.pg_data().exists() {
-            remove_tree_retrying(&cfg.pg_data());
+            let _ = remove_tree_retrying(&cfg.pg_data());
         }
         std::fs::create_dir_all(cfg.pg_data())
             .map_err(|e| format!("create data dir: {e}"))?;
@@ -1300,7 +1300,7 @@ pub fn uninstall(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         let _ = sc(&["delete", APP_SERVICE]);
     }
     for item in ["bin", "ui", "conf", "services", "logs"] {
-        remove_tree_retrying(&cfg.install_dir.join(item));
+        let _ = remove_tree_retrying(&cfg.install_dir.join(item));
     }
     sink(Progress::Done {
         message: "SENTIENT removed. The database cluster was left in place.".into(),
@@ -1320,6 +1320,14 @@ pub fn cleanup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     uninstall(sink.clone(), cfg)?;
     step(&sink, "Removing PostgreSQL");
     let _ = sc(&["stop", PG_SERVICE]);
+    // `sc stop` only asks: the server keeps its files open until it has
+    // shut down, and deleting them before that leaves the cluster behind.
+    for _ in 0..60 {
+        if matches!(service_state(PG_SERVICE).as_str(), "stopped" | "absent") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
     std::thread::sleep(std::time::Duration::from_secs(2));
     let pg_ctl = cfg.pg_bin().join("pg_ctl.exe");
     if pg_ctl.exists() {
@@ -1332,8 +1340,16 @@ pub fn cleanup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     }
     // Windows can still hold handles for a moment after a service stops, so a
     // single remove_dir_all can leave the tree half-deleted. Retry briefly.
-    for dir in [&cfg.pg_dir, &cfg.install_dir, &cfg.state_dir] {
-        remove_tree_retrying(dir);
+    let left: Vec<String> = [&cfg.pg_dir, &cfg.install_dir, &cfg.state_dir]
+        .into_iter()
+        .filter(|dir| !remove_tree_retrying(dir))
+        .map(|dir| dir.display().to_string())
+        .collect();
+    if !left.is_empty() {
+        return Err(format!(
+            "Could not delete {} (still in use). Restart Windows and delete it by hand: a new install would otherwise reuse the old database.",
+            left.join(" and ")
+        ));
     }
     sink(Progress::Done { message: "Everything removed.".into() });
     Ok(())
@@ -1344,16 +1360,18 @@ pub fn cleanup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
 /// short while after a service stops. Without the retry the first pass deletes
 /// most of the tree and leaves the root behind, which then reads as "the
 /// uninstall did not work".
-fn remove_tree_retrying(dir: &Path) {
-    for attempt in 0..5 {
+/// Returns whether the tree is gone.
+fn remove_tree_retrying(dir: &Path) -> bool {
+    for attempt in 0..10 {
         if !dir.exists() {
-            return;
+            return true;
         }
         if std::fs::remove_dir_all(dir).is_ok() {
-            return;
+            return true;
         }
-        std::thread::sleep(std::time::Duration::from_millis(400 * (attempt + 1)));
+        std::thread::sleep(std::time::Duration::from_millis(500 * (attempt + 1)));
     }
+    !dir.exists()
 }
 
 /// What an offline bundle has to contain for [`setup`] and [`deploy`] to run

@@ -95,6 +95,10 @@ pub fn restore(record: &InstallationRecord, input: &Path, target: &str, key: Opt
         db::create_database(&live, target).await.map_err(|e| e.to_string())?;
         if let Some(ch) = &ch_target {
             sink(Progress::Step { name: format!("Creating the ClickHouse database {target}") });
+            #[cfg(target_os = "linux")]
+            if let Setup::Native(c) = &setup {
+                sentient_installer_core::native_linux::grant_clickhouse(c)?;
+            }
             clickhouse::clone_schema(ch, &live_ch).map_err(|e| e.to_string())?;
         }
         restore::run(&conn, &opts, bridge(sink.clone())).await.map_err(|e| e.to_string())
