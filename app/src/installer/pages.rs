@@ -74,8 +74,10 @@ impl Installer {
         let theme = cx.theme().clone();
         let package = if self.bundle.is_some() {
             "Offline package: everything is included"
+        } else if cfg!(windows) {
+            "No SENTIENT package next to Setup: only the Platform Manager can be installed"
         } else {
-            "Online: files are downloaded during install"
+            "No SENTIENT package next to Setup: Docker installs pull the image; a native install needs the package"
         };
         let choice = |manager_only: bool, id: &'static str, title: &'static str, desc: &'static str| {
             let selected = self.manager_only == manager_only;

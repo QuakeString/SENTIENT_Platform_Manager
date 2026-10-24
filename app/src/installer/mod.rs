@@ -298,6 +298,11 @@ impl Installer {
         let f = &self.fields;
         match self.step {
             0 if !self.accepted => Err("Accept the licence agreement to continue.".into()),
+            // SENTIENT itself comes only from a package (there is no download
+            // of it yet): without one a native install would stop half-way.
+            0 if !self.manager_only && self.bundle.is_none() && cfg!(windows) => Err(
+                "This Setup has no SENTIENT package next to it. Unzip the SENTIENT package and run SENTIENT-Setup from that folder, or choose “Only the Platform Manager”.".into(),
+            ),
             1 => match &self.checks {
                 None => Err("The system check is still running.".into()),
                 Some(rows) if rows.iter().any(|r| r.status == Status::Fail) => {
@@ -306,6 +311,9 @@ impl Installer {
                 Some(_) => Ok(()),
             },
             2 if self.engine == Engine::Docker => Ok(()),
+            2 if self.bundle.is_none() => Err(
+                "A native install needs the SENTIENT package: unzip it and run SENTIENT-Setup from that folder, or choose Docker, which pulls the image.".into(),
+            ),
             2 => {
                 if self.value(&f.install_dir, cx).is_empty()
                     || (cfg!(windows) && self.value(&f.data_dir, cx).is_empty())
