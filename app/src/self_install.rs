@@ -20,6 +20,9 @@ pub struct Shortcuts {
     pub desktop_manager: bool,
     pub start_menu: bool,
     pub kiosk: bool,
+    /// Open SENTIENT full screen when someone signs in (operator screens).
+    #[serde(default)]
+    pub open_at_signin: bool,
 }
 
 pub use imp::*;
@@ -271,6 +274,7 @@ mod imp {
             desktop_manager: false,
             start_menu: true,
             kiosk: false,
+            open_at_signin: false,
         };
         let _ = create_shortcuts(manager, "http://localhost:8080", &s);
     }

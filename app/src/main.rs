@@ -20,6 +20,7 @@ mod maintenance;
 mod manager;
 mod migration;
 mod mode;
+mod open_client;
 mod restore_switch;
 mod rootjob;
 mod secrets;
@@ -42,6 +43,10 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--clickhouse-agent") {
         std::process::exit(agent::run(args.get(2).map(String::as_str).unwrap_or("")));
+    }
+    // The operator screen's sign-in entry: no window, no elevation.
+    if args.get(1).map(String::as_str) == Some("--open-sentient") {
+        std::process::exit(open_client::run(&args[2..]));
     }
     if args.get(1).map(String::as_str) == Some("--job") {
         std::process::exit(headless::run(&args[2..]));

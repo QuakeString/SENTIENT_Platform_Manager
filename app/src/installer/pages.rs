@@ -645,9 +645,14 @@ impl Installer {
                 ("desktop-manager", "Desktop shortcut for the Platform Manager", self.desktop_manager),
                 ("start-menu", "Start menu entries", self.start_menu),
                 ("kiosk", "Full-screen (kiosk) shortcut for operator screens", self.kiosk),
+                ("open-at-signin", "Open SENTIENT full screen when the computer starts (operator screens)", self.open_at_signin),
             ]
         } else {
-            vec![("start-menu", "Application menu entries for SENTIENT and the Platform Manager", self.start_menu)]
+            vec![
+                ("start-menu", "Application menu entries for SENTIENT and the Platform Manager", self.start_menu),
+                ("kiosk", "Full-screen (kiosk) launcher for operator screens", self.kiosk),
+                ("open-at-signin", "Open SENTIENT full screen when the computer starts (operator screens)", self.open_at_signin),
+            ]
         };
         let note = (!cfg!(windows) && !self.manager_only).then(|| {
             let theme = cx.theme().clone();
@@ -665,6 +670,7 @@ impl Installer {
                         "desktop-sentient" => this.desktop_sentient = *value,
                         "desktop-manager" => this.desktop_manager = *value,
                         "start-menu" => this.start_menu = *value,
+                        "open-at-signin" => this.open_at_signin = *value,
                         _ => this.kiosk = *value,
                     }
                     cx.notify();

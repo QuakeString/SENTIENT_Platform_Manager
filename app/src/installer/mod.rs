@@ -104,6 +104,7 @@ pub struct Installer {
     desktop_manager: bool,
     start_menu: bool,
     kiosk: bool,
+    open_at_signin: bool,
     bundle: Option<PathBuf>,
     sentient_version: SharedString,
     /// Why Next is refused on the current page.
@@ -210,6 +211,7 @@ impl Installer {
             desktop_manager: true,
             start_menu: true,
             kiosk: false,
+            open_at_signin: false,
             bundle,
             sentient_version: sentient_version.into(),
             problem: None,
@@ -475,6 +477,7 @@ impl Installer {
                 desktop_manager: self.desktop_manager,
                 start_menu: self.start_menu,
                 kiosk: self.kiosk,
+                open_at_signin: self.open_at_signin,
             },
             bundle: self.bundle.clone(),
         })
@@ -510,6 +513,7 @@ impl Installer {
                 desktop_manager: self.desktop_manager,
                 start_menu: self.start_menu,
                 kiosk: false,
+                open_at_signin: false,
             };
             self.problem = None;
             self.step = INSTALL;
