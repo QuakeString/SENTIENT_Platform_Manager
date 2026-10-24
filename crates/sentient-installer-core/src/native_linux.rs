@@ -311,9 +311,31 @@ fn ch_provision_sql(cfg: &NativeConfig) -> String {
     format!(
         "CREATE USER IF NOT EXISTS {u} IDENTIFIED WITH sha256_password BY '{p}'; \
          CREATE DATABASE IF NOT EXISTS {d}; \
-         GRANT ALL ON {d}.* TO {u}; \
-         GRANT SELECT ON system.parts TO {u};",
-        u = cfg.ch_user, p = cfg.ch_password, d = cfg.ch_db
+         {grant}",
+        u = cfg.ch_user, p = cfg.ch_password, d = cfg.ch_db, grant = ch_grant_sql(cfg)
+    )
+}
+
+/// SENTIENT's user owns this ClickHouse, as it does in the Docker stack:
+/// a restore creates a database beside the live one, putting it into
+/// service exchanges tables between the two, and removing kept data drops
+/// databases.
+fn ch_grant_sql(cfg: &NativeConfig) -> String {
+    // Not `ALL`: ClickHouse's own admin may grant only what it holds with
+    // grant option, which is not every privilege.
+    format!(
+        "GRANT SELECT, INSERT, ALTER, CREATE DATABASE, CREATE TABLE, CREATE VIEW, DROP DATABASE, DROP TABLE, DROP VIEW, \
+         TRUNCATE, OPTIMIZE, SHOW ON *.* TO {};",
+        cfg.ch_user
+    )
+}
+
+/// Give SENTIENT's ClickHouse user its rights (installs from before the
+/// grant covered more than its own database). Idempotent.
+pub fn grant_clickhouse(cfg: &NativeConfig) -> Result<(), String> {
+    exec::run_privileged(
+        &crate::progress::noop(),
+        &format!("clickhouse-client --port {} -q {}\n", cfg.ch_native_port, shq(&ch_grant_sql(cfg))),
     )
 }
 
@@ -689,6 +711,13 @@ pub fn reconfigure(sink: &ProgressFn, cfg: &NativeConfig, pg_changed: bool) -> R
              systemctl restart {PG_UNIT}\n\
              for i in $(seq 1 120); do runuser -u postgres -- pg_isready -q -p {port} && break; sleep 1; done\n",
             port = cfg.pg_port
+        ));
+    }
+    if cfg.flavor.uses_clickhouse() {
+        script.push_str(&format!(
+            "clickhouse-client --port {} -q {} || echo '>> note: could not grant ClickHouse rights'\n",
+            cfg.ch_native_port,
+            shq(&ch_grant_sql(cfg))
         ));
     }
     script.push_str(&format!("systemctl start {APP_UNIT}\n"));
