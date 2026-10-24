@@ -175,7 +175,11 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
                 for name in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
                     kept.push(Kept {
                         kind: KeptKind::ClickhouseDatabase,
-                        detail: "ClickHouse data: a restore, or the history from before a restore was put into service".into(),
+                        detail: if name.contains("_before_install_") {
+                            "ClickHouse history from an earlier install, set aside when this one started fresh".into()
+                        } else {
+                            "ClickHouse data: a restore, or the history from before a restore was put into service".into()
+                        },
                         bytes: sizes.get(name).copied(),
                         name: name.to_string(),
                     });
