@@ -6,6 +6,10 @@
 //! moving from a stop-gap host to real infrastructure is a URL change, not a
 //! code change.
 //!
+//! Releases live at github.com/QuakeString/sentient-releases: each one is
+//! tagged with the SENTIENT version and carries `manifest.json` beside the
+//! files it lists, so `LATEST` always names the newest.
+//!
 //! Every artifact carries a SHA-256, and that is load-bearing rather than
 //! belt-and-braces. Consumer file hosts fail in ways that look like success:
 //! Google Drive returns an HTML share page for a `/file/d/…/view` link, a
@@ -37,6 +41,14 @@ pub struct Artifact {
     /// For "targz": where its contents go, relative to the install directory.
     #[serde(default)]
     pub into: String,
+}
+
+/// The newest release's manifest.
+pub const LATEST: &str = "https://github.com/QuakeString/sentient-releases/releases/latest/download/manifest.json";
+
+/// One release's manifest.
+pub fn release_url(version: &str) -> String {
+    format!("https://github.com/QuakeString/sentient-releases/releases/download/{version}/manifest.json")
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -166,4 +178,44 @@ pub fn download(sink: &ProgressFn, art: &Artifact, dir: &Path) -> Result<PathBuf
         ));
     }
     Ok(dest)
+}
+
+impl Manifest {
+    /// The files a native install on this computer needs: what an offline
+    /// package holds (crate::native::required_bundle_files), plus the Visual
+    /// C++ runtime on Windows when the release carries it.
+    pub fn wanted(&self) -> Result<Vec<&Artifact>, String> {
+        let required = crate::native::required_bundle_files();
+        let mut out = Vec::new();
+        for name in &required {
+            match self.artifacts.iter().find(|a| &a.file == name) {
+                Some(a) => out.push(a),
+                None => return Err(format!("SENTIENT {} has no {name} for this computer.", self.version)),
+            }
+        }
+        if cfg!(windows) {
+            out.extend(self.artifacts.iter().filter(|a| a.file == crate::native::VC_REDIST_EXE));
+        }
+        Ok(out)
+    }
+
+    /// Bytes `wanted` downloads.
+    pub fn download_size(&self) -> u64 {
+        self.wanted().map(|w| w.iter().map(|a| a.size).sum()).unwrap_or(0)
+    }
+
+    /// Download what this computer needs into `dir`, each file checked
+    /// against its SHA-256, and write its VERSION: `dir` is then an offline
+    /// package like the one SENTIENT Setup ships in.
+    pub fn download_package(&self, sink: &ProgressFn, dir: &Path) -> Result<PathBuf, String> {
+        let wanted = self.wanted()?;
+        for (i, art) in wanted.iter().enumerate() {
+            sink(Progress::Step {
+                name: format!("Downloading SENTIENT {} ({} of {}: {}, {} MB)", self.version, i + 1, wanted.len(), art.file, art.size >> 20),
+            });
+            download(sink, art, dir)?;
+        }
+        std::fs::write(dir.join("VERSION"), format!("{}\n", self.version)).map_err(|e| format!("write VERSION: {e}"))?;
+        Ok(dir.to_path_buf())
+    }
 }

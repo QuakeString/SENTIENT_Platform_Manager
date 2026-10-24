@@ -72,12 +72,21 @@ impl Installer {
 
     fn welcome(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
-        let package = if self.bundle.is_some() {
-            "Offline package: everything is included"
-        } else if cfg!(windows) {
-            "No SENTIENT package next to Setup: only the Platform Manager can be installed"
-        } else {
-            "No SENTIENT package next to Setup: Docker installs pull the image; a native install needs the package"
+        let package: SharedString = match (&self.bundle, &self.online) {
+            (Some(_), _) => "Offline package: everything is included".into(),
+            (None, None) => "Looking for the latest SENTIENT online…".into(),
+            (None, Some(Ok(m))) => format!(
+                "Online: SENTIENT {} is downloaded during install ({}, checked before use)",
+                m.version,
+                crate::online::size_label(m.download_size())
+            )
+            .into(),
+            (None, Some(Err(_))) if cfg!(windows) => {
+                "No SENTIENT package next to Setup and no connection to the download site: only the Platform Manager can be installed".into()
+            }
+            (None, Some(Err(_))) => {
+                "No SENTIENT package next to Setup and no connection to the download site: Docker installs pull the image; a native install needs the package".into()
+            }
         };
         let choice = |manager_only: bool, id: &'static str, title: &'static str, desc: &'static str| {
             let selected = self.manager_only == manager_only;

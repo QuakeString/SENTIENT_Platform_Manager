@@ -37,6 +37,10 @@ pub struct InstallPlan {
     pub settings: Vec<(String, String)>,
     pub shortcuts: Shortcuts,
     pub bundle: Option<PathBuf>,
+    /// No package: this SENTIENT version is downloaded from the releases
+    /// repository first (crate::online), and the download is the package.
+    #[serde(default)]
+    pub download: Option<String>,
 }
 
 impl InstallPlan {
@@ -272,7 +276,13 @@ pub fn run_manager_only(shortcuts: Shortcuts, sink: ProgressFn) -> Result<(), St
 
 /// Run the install. Each task reports through `sink`; the first failure stops
 /// the run and is returned.
-pub fn run(plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
+pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
+    if plan.bundle.is_none() && plan.engine == Engine::Native {
+        if let Some(version) = plan.download.clone() {
+            let (_, dir) = crate::online::download(Some(&version), &sink)?;
+            plan.bundle = Some(dir);
+        }
+    }
     step(&sink, "Installing the Platform Manager");
     let manager = self_install::install_manager()?;
     // ClickHouse first: SENTIENT's schema installer creates its tables there.
