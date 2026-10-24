@@ -11,7 +11,7 @@
 //! - Native Linux: `sentient.service` and its environment file
 //!   (native_linux::read_installed). The file is root-only, so without root
 //!   only the unit is shown and the adopt itself runs as root
-//!   (crate::rootjob, `--job adopt --native`).
+//!   (crate::rootjob, `--job add-existing --native`).
 //! - Windows: the SentientServer and PostgreSQL services
 //!   (native::adopt_windows). Its passwords go to the secret store; the
 //!   PostgreSQL admin password is the stored one, the operator's, or — when
@@ -283,17 +283,17 @@ pub fn find() -> Vec<Candidate> {
 /// Platform Manager can reach its databases, and write the record.
 pub fn adopt(wanted: &Candidate, pg_admin: Option<String>, sink: ProgressFn) -> Result<InstallationRecord, String> {
     if crate::installation::InstallationRecord::load().is_some() {
-        return Err("The Platform Manager already manages an installation on this computer.".into());
+        return Err("The Platform Manager already manages a SENTIENT instance on this computer.".into());
     }
     let candidate = if wanted.record.engine == Engine::Native {
         adopt_native(pg_admin, &sink)?
     } else {
-        sink(Progress::Step { name: "Looking at the installation again".into() });
+        sink(Progress::Step { name: "Looking at the instance again".into() });
         let key = wanted.key();
         let (candidate, found) = docker_candidates()
             .into_iter()
             .find(|(c, _)| c.key() == key)
-            .ok_or("That installation is no longer there.")?;
+            .ok_or("That instance is no longer there.")?;
         if let Some(p) = &candidate.problem {
             return Err(p.clone());
         }
@@ -308,7 +308,7 @@ pub fn adopt(wanted: &Candidate, pg_admin: Option<String>, sink: ProgressFn) -> 
         crate::self_install::restore_menu_entry(&manager);
     }
     sink(Progress::Done {
-        message: format!("The Platform Manager now manages SENTIENT {} ({}).", candidate.record.sentient_version, candidate.kind),
+        message: format!("Added: the Platform Manager now manages SENTIENT {} ({}).", candidate.record.sentient_version, candidate.kind),
     });
     Ok(candidate.record)
 }
@@ -357,7 +357,7 @@ fn adopt_native(pg_admin: Option<String>, sink: &ProgressFn) -> Result<Candidate
         let _ = pg_admin;
         sink(Progress::Step { name: "Reading the SENTIENT service's settings".into() });
         let (candidate, found) = native_candidate().ok_or("There is no SENTIENT service on this computer any more.")?;
-        let found = found.ok_or_else(|| candidate.problem.clone().unwrap_or_else(|| "Its settings are root-only: adopt it as administrator.".into()))?;
+        let found = found.ok_or_else(|| candidate.problem.clone().unwrap_or_else(|| "Its settings are root-only: add it as administrator.".into()))?;
         sink(Progress::Step { name: "Checking the Platform Manager can reach its databases".into() });
         sentient_installer_core::native_linux::verify_installed(&found)?;
         Ok(candidate)
@@ -394,7 +394,7 @@ pub fn encode(c: &Candidate) -> String {
 /// Adopt `c`, as administrator when its details are root-only.
 pub fn adopt_as_needed(c: &Candidate, pg_admin: Option<String>, sink: ProgressFn) -> Result<(), String> {
     if c.needs_admin {
-        let args = vec!["adopt".to_string(), "--native".to_string()];
+        let args = vec!["add-existing".to_string(), "--native".to_string()];
         return crate::rootjob::run(&args, &sink).map(|_| ());
     }
     adopt(c, pg_admin, sink).map(|_| ())

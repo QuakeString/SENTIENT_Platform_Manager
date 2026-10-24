@@ -93,7 +93,7 @@ impl StatusPage {
     fn confirm_adopt(&mut self, candidate: Candidate, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
         let text = format!(
-            "The Platform Manager checks it can reach this SENTIENT's databases, then manages it from now on: status, start and stop, logs, updates, backups and the rest. \
+            "The Platform Manager checks it can reach this instance's databases, then manages it from now on: status, start and stop, logs, updates, backups and the rest. \
              Nothing is reinstalled, moved or restarted. {}",
             if candidate.record.stack.external.is_some() {
                 "It keeps running from its own compose file."
@@ -106,7 +106,7 @@ impl StatusPage {
         window.open_alert_dialog(cx, move |dialog, _, _| {
             let this = this.clone();
             let candidate = candidate.clone();
-            dialog.title("Manage this SENTIENT?").description(text.clone()).confirm().ok_text("Manage it").on_ok(move |_, _, cx| {
+            dialog.title("Add this existing instance?").description(text.clone()).confirm().ok_text("Add instance").on_ok(move |_, _, cx| {
                 let candidate = candidate.clone();
                 this.update(cx, |page, cx| {
                     page.adopt_job.update(cx, |job, cx| job.start(move |sink| crate::adopt::adopt_as_needed(&candidate, None, sink), cx));
@@ -125,18 +125,18 @@ impl StatusPage {
             _ => None,
         };
         let step = job.step().clone();
-        let mut panel = ui::panel(theme).child(div().font_weight(FontWeight::MEDIUM).child("SENTIENT already running on this computer"));
+        let mut panel = ui::panel(theme).child(div().font_weight(FontWeight::MEDIUM).child("Add existing instance"));
         let Some(found) = &self.found else {
-            return panel.child(div().text_sm().text_color(theme.muted_foreground).child("Looking for a SENTIENT installed some other way…"));
+            return panel.child(div().text_sm().text_color(theme.muted_foreground).child("Looking for SENTIENT instances on this computer…"));
         };
         if found.is_empty() {
             return panel.child(div().text_sm().text_color(theme.muted_foreground).child(
-                "None found. A SENTIENT installed some other way (our compose files, an older installer) shows here so the Platform Manager can manage it.",
+                "No existing SENTIENT instance was found on this computer. One started some other way (our compose files, an older installer) shows here, so the Platform Manager can manage it.",
             ));
         }
         panel = panel
             .child(div().text_sm().text_color(theme.muted_foreground).child(
-                "Installed some other way. The Platform Manager can manage one of them as it is, without reinstalling anything.",
+                "SENTIENT instances already on this computer. Add one and the Platform Manager manages it as it is, without reinstalling anything.",
             ))
             .when(busy, |p| p.child(div().text_sm().child(step)))
             .children(failed.map(|m| ui::outcome(theme, Tone::Bad, m)));
@@ -151,12 +151,12 @@ impl StatusPage {
                     .rounded(theme.radius)
                     .children(c.facts().into_iter().map(|(label, value)| ui::fact(theme, label, value)))
                     .children(c.notes.iter().map(|n| div().text_xs().text_color(theme.muted_foreground).child(n.clone())))
-                    .children(c.problem.clone().map(|p| ui::outcome(theme, Tone::Warn, format!("Cannot be managed: {p}"))))
+                    .children(c.problem.clone().map(|p| ui::outcome(theme, Tone::Warn, format!("Cannot be added: {p}"))))
                     .child(
                         h_flex().mt_2().child(
                             Button::new(("adopt", i))
                                 .primary()
-                                .label("Manage this SENTIENT…")
+                                .label("Add this instance…")
                                 .disabled(busy || c.problem.is_some())
                                 .on_click(cx.listener(move |this, _, window, cx| this.confirm_adopt(candidate.clone(), window, cx))),
                         ),

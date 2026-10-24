@@ -16,10 +16,10 @@
 //! --job update [<package folder>] [--accept-breaking]
 //! --job rollback                        (back to what the last update replaced)
 //! --job rollback-info
-//! --job find-existing                   (SENTIENT installed without the Platform Manager)
-//! --job adopt [<n> | --native] [--pg-admin-password <pw>]
-//!                                       (manage the n-th one found, 1 by default, or the native one)
-//! --job take-over-compose               (an adopted Docker stack: use SPM's compose file)
+//! --job find-existing                   (SENTIENT instances the Platform Manager does not manage yet)
+//! --job add-existing [<n> | --native] [--pg-admin-password <pw>]
+//!                                       (add the n-th one found, 1 by default, or the native one)
+//! --job take-over-compose               (an added Docker instance: use SPM's compose file)
 //! --job kept
 //! --job remove-kept <name>
 //! ```
@@ -36,7 +36,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
 update [<package folder>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | find-existing | adopt [<n> | --native] | take-over-compose | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
+use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
 
 /// A console for the output: release builds on Windows have none of their
 /// own, so use the one the job was started from.
@@ -126,7 +126,7 @@ pub fn run(args: &[String]) -> i32 {
             }
         };
     }
-    if job == "find-existing" || job == "adopt" {
+    if job == "find-existing" || job == "add-existing" {
         let sink = if json { json_printer() } else { printer() };
         let found = crate::adopt::find();
         if job == "find-existing" {
@@ -145,7 +145,7 @@ pub fn run(args: &[String]) -> i32 {
             let n: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(1);
             let n = if found.len() == 1 { 1 } else { n };
             found.get(n.saturating_sub(1)).ok_or_else(|| {
-                if found.is_empty() { "No SENTIENT was found on this computer.".to_string() } else { format!("Only {} installation(s) were found.", found.len()) }
+                if found.is_empty() { "No existing SENTIENT instance was found on this computer.".to_string() } else { format!("Only {} instance(s) were found.", found.len()) }
             })
         };
         let pg_admin = args.windows(2).find(|w| w[0] == "--pg-admin-password").map(|w| w[1].clone());
@@ -290,7 +290,7 @@ fn print_rollback_point(point: Option<&RollbackPoint>) {
 
 fn print_candidates(found: &[crate::adopt::Candidate]) {
     if found.is_empty() {
-        println!("No SENTIENT was found on this computer.");
+        println!("No existing SENTIENT instance was found on this computer.");
     }
     for (i, c) in found.iter().enumerate() {
         println!("{}. SENTIENT {}", i + 1, c.record.sentient_version);
@@ -298,9 +298,9 @@ fn print_candidates(found: &[crate::adopt::Candidate]) {
             println!("   {label}: {value}");
         }
         match &c.problem {
-            Some(p) => println!("   Cannot be managed: {p}"),
-            None if c.record.engine == crate::installation::Engine::Native => println!("   Can be managed: --job adopt --native"),
-            None => println!("   Can be managed: --job adopt {}", i + 1),
+            Some(p) => println!("   Cannot be added: {p}"),
+            None if c.record.engine == crate::installation::Engine::Native => println!("   Can be added: --job add-existing --native"),
+            None => println!("   Can be added: --job add-existing {}", i + 1),
         }
         for n in &c.notes {
             println!("   Note: {n}");

@@ -467,7 +467,7 @@ pub fn take_over(sink: ProgressFn, cfg: &DeployConfig) -> Result<DeployConfig, S
         return Ok(old);
     }
     if old.pg_port == 0 || (old.flavor.uses_clickhouse() && old.ch_http_port == 0) {
-        return Err("Its PostgreSQL or ClickHouse is not published on this machine. Publish their ports in its compose file, then adopt it again before taking it over.".into());
+        return Err("Its PostgreSQL or ClickHouse is not published on this machine. Publish their ports in its compose file, then add the instance again before taking it over.".into());
     }
     let mut own = cfg.clone();
     own.external = None;

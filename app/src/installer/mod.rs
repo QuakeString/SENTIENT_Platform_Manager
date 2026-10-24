@@ -264,7 +264,7 @@ impl Installer {
                         rows.push(CheckRow {
                             label: "SENTIENT already installed".into(),
                             detail: format!(
-                                "SENTIENT {} runs here as {}, from {}. Installing again would overwrite it: open the Platform Manager and manage it from its Status screen instead.",
+                                "SENTIENT {} runs here as {}, from {}. Installing again would overwrite it: open the Platform Manager and use “Add existing instance” on its Status screen instead.",
                                 c.record.sentient_version, c.kind, c.location
                             )
                             .into(),
