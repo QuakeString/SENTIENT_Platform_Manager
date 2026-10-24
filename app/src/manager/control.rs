@@ -132,12 +132,11 @@ impl ControlPage {
         let account = self
             .autologin_on
             .then(|| (self.autologin_user(cx), self.autologin_password.read(cx).value().to_string()));
-        let launcher = crate::self_install::manager_exe();
         self.signin_job.update(cx, |job, cx| {
             job.start(
                 move |sink| {
                     if signin {
-                        sentient_installer_core::kiosk::set_open_at_signin(&sink, &launcher, mode)?;
+                        crate::self_install::set_open_at_signin(&sink, mode)?;
                     }
                     if autologin {
                         let account = account.as_ref().map(|(u, p)| (u.as_str(), p.as_str()));

@@ -248,9 +248,9 @@ pub fn run(args: &[String]) -> i32 {
             None => Err(USAGE.into()),
         },
         "open-at-signin" => match args.get(1).map(String::as_str) {
-            Some("kiosk") => sentient_installer_core::kiosk::set_open_at_signin(&sink, &crate::self_install::manager_exe(), Some(true)),
-            Some("window") => sentient_installer_core::kiosk::set_open_at_signin(&sink, &crate::self_install::manager_exe(), Some(false)),
-            Some("off") => sentient_installer_core::kiosk::set_open_at_signin(&sink, &crate::self_install::manager_exe(), None),
+            Some("kiosk") => crate::self_install::set_open_at_signin(&sink, Some(true)),
+            Some("window") => crate::self_install::set_open_at_signin(&sink, Some(false)),
+            Some("off") => crate::self_install::set_open_at_signin(&sink, None),
             _ => Err(USAGE.into()),
         },
         "auto-signin" => match args.get(1).map(String::as_str) {
