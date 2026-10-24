@@ -242,13 +242,47 @@ pub fn provision_clickhouse_wsl(stack: &DeployConfig, manager: &std::path::Path,
     clickhouse_wsl::run_as_account(sink, &password, manager, if reuse_kept { "provision-reuse" } else { "provision" })?;
     step(sink, "Starting ClickHouse at every boot");
     clickhouse_wsl::register_keepalive(&password)?;
+    let mut answering = false;
     for _ in 0..60 {
         if distro::clickhouse_answers(ch.ch_http_port) {
-            return Ok(());
+            answering = true;
+            break;
         }
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
-    Err(format!("ClickHouse is installed but does not answer on 127.0.0.1:{}", ch.ch_http_port))
+    if !answering {
+        return Err(format!("ClickHouse is installed but does not answer on 127.0.0.1:{}", ch.ch_http_port));
+    }
+    if !reuse_kept {
+        set_aside_clickhouse_history(&ch, sink)?;
+    }
+    Ok(())
+}
+
+/// A ClickHouse that already holds SENTIENT's database (an earlier install
+/// whose distro is still there) would give a new, empty PostgreSQL history
+/// that belongs to devices it does not have. Rename it aside, where Kept
+/// lists it for removal, and let the new install start empty.
+#[cfg(windows)]
+fn set_aside_clickhouse_history(ch: &DeployConfig, sink: &ProgressFn) -> Result<(), String> {
+    let conn = sentient_backup_core::clickhouse::ChConn {
+        url: format!("http://127.0.0.1:{}", ch.ch_http_port),
+        database: "default".into(),
+        user: ch.ch_user.clone(),
+        password: ch.ch_password.clone(),
+    };
+    let exists = conn
+        .text(&format!("SELECT count() FROM system.tables WHERE database = '{}'", ch.ch_db.replace('\'', "")))
+        .map(|t| t.trim() != "0")
+        .unwrap_or(false);
+    if !exists {
+        return Ok(());
+    }
+    let aside = format!("{}_before_install_{}", ch.ch_db, chrono::Local::now().format("%Y%m%d%H%M"));
+    conn.text(&format!("RENAME DATABASE {} TO {}", ch.ch_db, aside))
+        .map_err(|e| format!("set the earlier ClickHouse history aside: {e}"))?;
+    sink(Progress::Log { line: format!("ClickHouse already held SENTIENT history from an earlier install; it is kept as {aside} (listed under Kept)") });
+    Ok(())
 }
 
 fn step(sink: &ProgressFn, name: &str) {
