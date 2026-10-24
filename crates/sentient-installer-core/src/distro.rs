@@ -808,6 +808,24 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
         let _ = sys::output("wsl.exe", &["--unregister", DISTRO]);
     }
 
+    // The disk of a distro this account no longer has registered (an
+    // earlier install, a recreated service account) blocks a new import in
+    // the same folder ("install location already in use"). Register it
+    // again in place, which keeps its data; if that fails, set it aside.
+    let leftover = install_dir.join("distro").join("ext4.vhdx");
+    if !distro_present() && leftover.exists() {
+        sink(Progress::Step { name: "Reusing the SENTIENT distro left from an earlier install".into() });
+        let reused = wsl_native(&sink, &["--import-in-place", DISTRO, &leftover.to_string_lossy()]).is_ok()
+            && distro_present()
+            && distro_healthy();
+        if !reused {
+            let _ = sys::output("wsl.exe", &["--unregister", DISTRO]);
+            let aside = leftover.with_extension(format!("vhdx.unused-{}", chrono::Local::now().format("%Y%m%d%H%M")));
+            std::fs::rename(&leftover, &aside).map_err(|e| format!("set {} aside: {e}", leftover.display()))?;
+            sink(Progress::Log { line: format!("The earlier distro could not be reused; it was kept as {}", aside.display()) });
+        }
+    }
+
     if !distro_present() {
         let rootfs = install_dir.join("ubuntu.rootfs.tar.gz");
         sink(Progress::Step { name: "Downloading Ubuntu base image (~350 MB)".into() });
