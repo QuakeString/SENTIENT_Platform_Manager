@@ -6,7 +6,7 @@
 //! moving from a stop-gap host to real infrastructure is a URL change, not a
 //! code change.
 //!
-//! Releases live at github.com/QuakeString/sentient-releases: each one is
+//! Releases live at github.com/QuakeString/sentient-release: each one is
 //! tagged with the SENTIENT version and carries `manifest.json` beside the
 //! files it lists, so `LATEST` always names the newest.
 //!
@@ -44,11 +44,11 @@ pub struct Artifact {
 }
 
 /// The newest release's manifest.
-pub const LATEST: &str = "https://github.com/QuakeString/sentient-releases/releases/latest/download/manifest.json";
+pub const LATEST: &str = "https://github.com/QuakeString/sentient-release/releases/latest/download/manifest.json";
 
 /// One release's manifest.
 pub fn release_url(version: &str) -> String {
-    format!("https://github.com/QuakeString/sentient-releases/releases/download/{version}/manifest.json")
+    format!("https://github.com/QuakeString/sentient-release/releases/download/{version}/manifest.json")
 }
 
 #[derive(Debug, Clone, Deserialize)]

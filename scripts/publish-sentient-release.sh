@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publish a SENTIENT release to github.com/QuakeString/sentient-releases, where
+# Publish a SENTIENT release to github.com/QuakeString/sentient-release, where
 # SENTIENT Setup and the Platform Manager download it from.
 #
 #   scripts/publish-sentient-release.sh <version> <folder> [--notes "<text>"]
@@ -20,7 +20,7 @@ version=${1:?version, e.g. 4.3.0.49}
 dir=${2:?folder with the release files}
 notes=""
 [ "${3:-}" = "--notes" ] && notes=${4:-}
-repo=QuakeString/sentient-releases
+repo=QuakeString/sentient-release
 api=https://api.github.com/repos/$repo
 token=${GITHUB_TOKEN:-$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')}
 [ -n "$token" ] || { echo "no GitHub token (set GITHUB_TOKEN)" >&2; exit 2; }

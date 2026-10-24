@@ -1,6 +1,6 @@
 // Copyright © 2016-2026 The SENTIENT Authors
 
-//! SENTIENT from github.com/QuakeString/sentient-releases instead of an
+//! SENTIENT from github.com/QuakeString/sentient-release instead of an
 //! offline package: the latest release's manifest, and downloading what this
 //! computer needs into a folder that then works as a package
 //! (manifest::Manifest::download_package).
