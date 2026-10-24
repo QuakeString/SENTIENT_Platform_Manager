@@ -26,6 +26,29 @@ impl Browser {
             Browser::Firefox => "Firefox",
         }
     }
+    /// Arguments that open SENTIENT on `port`, full screen (`kiosk`) or in
+    /// an ordinary window. Restore-session prompts are kept off: after a
+    /// power cut the operator screen should simply show SENTIENT.
+    pub fn launch_args(self, port: u16, kiosk: bool) -> Vec<String> {
+        let url = format!("http://localhost:{port}");
+        let mut a: Vec<String> = match self {
+            Browser::Chrome => [
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--noerrdialogs",
+                "--disable-session-crashed-bubble",
+                "--hide-crash-restore-bubble",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+            Browser::Firefox => Vec::new(),
+        };
+        a.push(if kiosk { "--kiosk".into() } else { "--new-window".into() });
+        a.push(url);
+        a
+    }
+
     /// Kiosk command-line arguments (the URL is appended by the caller).
     fn kiosk_args(self, port: u16) -> String {
         match self {
@@ -308,4 +331,100 @@ pub fn remove_shortcuts(sink: &ProgressFn, work_dir: &Path) {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Opening SENTIENT when someone signs in (operator screens)
+// ---------------------------------------------------------------------------
+
+/// The sign-in entry for every user: the all-users Startup folder on
+/// Windows, the XDG autostart folder on Linux. It starts `launcher
+/// --open-sentient [--kiosk]`, which waits for SENTIENT before opening the
+/// browser (at boot the services are usually still starting).
+#[cfg(not(windows))]
+const XDG_AUTOSTART: &str = "/etc/xdg/autostart/sentient-open.desktop";
+#[cfg(windows)]
+const STARTUP_LNK: &str = "SENTIENT (operator screen).lnk";
+
+#[cfg(windows)]
+fn startup_lnk() -> Option<PathBuf> {
+    let base = std::env::var_os("ProgramData")?;
+    Some(PathBuf::from(base).join(r"Microsoft\Windows\Start Menu\Programs\StartUp").join(STARTUP_LNK))
+}
+
+/// Whether SENTIENT opens when someone signs in: `Some(true)` full screen,
+/// `Some(false)` in a window, `None` not at all.
+pub fn open_at_signin() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        let lnk = startup_lnk().filter(|p| p.exists())?;
+        let script = format!("(New-Object -ComObject WScript.Shell).CreateShortcut({}).Arguments", ps_quote(&lnk.to_string_lossy()));
+        let args = sys::output("powershell", &["-NoProfile", "-NonInteractive", "-Command", &script])
+            .map(|(_, o, _)| sys::decode(&o))
+            .unwrap_or_default();
+        Some(args.contains("--kiosk"))
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::read_to_string(XDG_AUTOSTART).ok().map(|t| t.contains("--kiosk"))
+    }
+}
+
+/// Make SENTIENT open when someone signs in (`Some(kiosk)`), or stop it
+/// (`None`). `launcher` is the installed Platform Manager. Needs
+/// administrator rights (a folder shared by every user).
+pub fn set_open_at_signin(sink: &ProgressFn, launcher: &Path, mode: Option<bool>) -> Result<(), String> {
+    let args = match mode {
+        Some(true) => "--open-sentient --kiosk",
+        Some(false) => "--open-sentient",
+        None => "",
+    };
+    #[cfg(windows)]
+    {
+        let lnk = startup_lnk().ok_or("The all-users Startup folder could not be found.")?;
+        if mode.is_none() {
+            let _ = std::fs::remove_file(&lnk);
+            sink(Progress::Done { message: "SENTIENT no longer opens when someone signs in.".into() });
+            return Ok(());
+        }
+        let script = format!(
+            "$ErrorActionPreference = 'Stop'\n\
+             $s = (New-Object -ComObject WScript.Shell).CreateShortcut({lnk})\n\
+             $s.TargetPath = {exe}\n$s.Arguments = {args}\n$s.WorkingDirectory = {dir}\n\
+             $s.Description = 'Open SENTIENT when someone signs in'\n$s.Save()\n",
+            lnk = ps_quote(&lnk.to_string_lossy()),
+            exe = ps_quote(&launcher.to_string_lossy()),
+            args = ps_quote(args),
+            dir = ps_quote(&launcher.parent().unwrap_or(Path::new("C:\\")).to_string_lossy()),
+        );
+        match sys::output("powershell", &["-NoProfile", "-NonInteractive", "-Command", &script]) {
+            Some((true, _, _)) => {}
+            Some((false, _, e)) => return Err(format!("Could not create the sign-in shortcut: {}", sys::decode(&e).trim())),
+            None => return Err("Could not run PowerShell to create the sign-in shortcut.".into()),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let script = match mode {
+            None => format!("rm -f {XDG_AUTOSTART}\n"),
+            Some(_) => format!(
+                "mkdir -p /etc/xdg/autostart\ncat > {XDG_AUTOSTART} <<'SENTIENTEOF'\n[Desktop Entry]\nType=Application\nName=SENTIENT\n\
+                 Comment=Open SENTIENT when someone signs in\nExec={} {args}\nIcon=sentient-platform-manager\nTerminal=false\n\
+                 X-GNOME-Autostart-enabled=true\nSENTIENTEOF\nchmod 644 {XDG_AUTOSTART}\n",
+                launcher.display()
+            ),
+        };
+        crate::exec::run_privileged(sink, &script)?;
+        if mode.is_none() {
+            sink(Progress::Done { message: "SENTIENT no longer opens when someone signs in.".into() });
+            return Ok(());
+        }
+    }
+    sink(Progress::Done {
+        message: format!(
+            "SENTIENT opens {} when someone signs in, as soon as it answers.",
+            if mode == Some(true) { "full screen" } else { "in a browser window" }
+        ),
+    });
+    Ok(())
 }

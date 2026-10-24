@@ -2,10 +2,13 @@
 
 //! Control: start, stop and restart the platform. Services are started in
 //! dependency order (database first) and stopped in reverse by the engine.
+//! Also whether SENTIENT opens in the browser when someone signs in
+//! (operator screens; kiosk::set_open_at_signin).
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, WindowExt as _, h_flex,
     button::{Button, ButtonVariants as _},
+    radio::RadioGroup,
 };
 use gpui_kit::*;
 
@@ -17,13 +20,72 @@ pub struct ControlPage {
     record: Option<InstallationRecord>,
     job: Entity<Job>,
     _observe: Subscription,
+    /// Opening at sign-in, as found: 0 off, 1 full screen, 2 window; None
+    /// while looking.
+    signin: Option<usize>,
+    /// What the operator picked.
+    signin_choice: usize,
+    signin_job: Entity<Job>,
+    _signin_observe: Subscription,
+    _tasks: Vec<Task<()>>,
+}
+
+fn signin_index(mode: Option<bool>) -> usize {
+    match mode {
+        None => 0,
+        Some(true) => 1,
+        Some(false) => 2,
+    }
 }
 
 impl ControlPage {
     pub fn new(record: Option<InstallationRecord>, cx: &mut Context<Self>) -> Self {
         let job = cx.new(|_| Job::new());
         let _observe = cx.observe(&job, |_, _, cx| cx.notify());
-        Self { record, job, _observe }
+        let signin_job = cx.new(|_| Job::new());
+        let _signin_observe = cx.observe(&signin_job, |page: &mut Self, job, cx| {
+            if matches!(job.read(cx).state(), JobState::Done(_) | JobState::Failed(_)) {
+                page.load_signin(cx);
+            }
+            cx.notify();
+        });
+        let mut page = Self {
+            record,
+            job,
+            _observe,
+            signin: None,
+            signin_choice: 0,
+            signin_job,
+            _signin_observe,
+            _tasks: Vec::new(),
+        };
+        page.load_signin(cx);
+        page
+    }
+
+    fn load_signin(&mut self, cx: &mut Context<Self>) {
+        let task = cx.spawn(async move |this, cx| {
+            let found = cx.background_executor().spawn(async move { sentient_installer_core::kiosk::open_at_signin() }).await;
+            this.update(cx, |page, cx| {
+                page.signin = Some(signin_index(found));
+                page.signin_choice = signin_index(found);
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
+    fn apply_signin(&mut self, cx: &mut Context<Self>) {
+        let mode = match self.signin_choice {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        };
+        let launcher = crate::self_install::manager_exe();
+        self.signin_job.update(cx, |job, cx| {
+            job.start(move |sink| sentient_installer_core::kiosk::set_open_at_signin(&sink, &launcher, mode), cx)
+        });
     }
 
     fn run(&mut self, action: &'static str, cx: &mut Context<Self>) {
@@ -106,5 +168,42 @@ impl Render for ControlPage {
                     div().text_sm().text_color(theme.muted_foreground).child(line)
                 })),
         )
+        .child({
+            let sjob = self.signin_job.read(cx);
+            let sbusy = sjob.is_running();
+            let soutcome = match sjob.state() {
+                JobState::Done(m) => Some((Tone::Good, m.to_string())),
+                JobState::Failed(m) => Some((Tone::Bad, m.to_string())),
+                _ => None,
+            };
+            let changed = self.signin.is_some_and(|s| s != self.signin_choice);
+            ui::panel(&theme)
+                .child(div().font_weight(FontWeight::MEDIUM).child("Operator screen"))
+                .child(div().text_sm().text_color(theme.muted_foreground).child(
+                    "Open SENTIENT in the browser when someone signs in to this computer, for example a control-room screen after a power cut. It waits until SENTIENT answers, then opens it.",
+                ))
+                .child(match self.signin {
+                    None => div().text_sm().child("Checking…").into_any_element(),
+                    Some(_) => RadioGroup::horizontal("open-at-signin")
+                        .children(["Off", "Full screen (kiosk)", "Browser window"])
+                        .selected_index(Some(self.signin_choice))
+                        .disabled(sbusy)
+                        .on_change(cx.listener(|this, value: &usize, _, cx| {
+                            this.signin_choice = *value;
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                })
+                .child(
+                    h_flex().child(
+                        Button::new("apply-signin")
+                            .outline()
+                            .label("Apply")
+                            .disabled(sbusy || !changed)
+                            .on_click(cx.listener(|this, _, _, cx| this.apply_signin(cx))),
+                    ),
+                )
+                .children(soutcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
+        })
     }
 }

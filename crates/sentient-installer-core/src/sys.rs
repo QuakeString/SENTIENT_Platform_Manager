@@ -75,3 +75,56 @@ pub(crate) fn decode(bytes: &[u8]) -> String {
         String::from_utf8_lossy(bytes).into_owned()
     }
 }
+
+/// Like `output_tracked_env`, but every output line also goes to `sink` as
+/// it comes (rate-limited like `exec::stream`), so a long step shows what it
+/// is doing instead of nothing until it ends.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn output_streamed_env(
+    sink: &crate::progress::ProgressFn,
+    program: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Option<(bool, Vec<u8>, Vec<u8>)> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::{Arc, Mutex};
+    let mut child = command(program)
+        .args(args)
+        .envs(env.iter().copied())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    crate::cancel::register_pid(child.id());
+    // Each reader copies what it reads into a buffer and on to the sink.
+    let tee = |mut r: Box<dyn Read + Send>, sink: crate::progress::ProgressFn| {
+        let kept = Arc::new(Mutex::new(Vec::new()));
+        let k = kept.clone();
+        let handle = std::thread::spawn(move || {
+            struct Tee<R> {
+                inner: R,
+                kept: Arc<Mutex<Vec<u8>>>,
+            }
+            impl<R: Read> Read for Tee<R> {
+                fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                    let n = self.inner.read(buf)?;
+                    if let Ok(mut k) = self.kept.lock() {
+                        k.extend_from_slice(&buf[..n]);
+                    }
+                    Ok(n)
+                }
+            }
+            crate::exec::throttle_lines(Tee { inner: &mut r, kept: k }, &sink);
+        });
+        (handle, kept)
+    };
+    let (t1, out) = tee(Box::new(child.stdout.take()?), sink.clone());
+    let (t2, err) = tee(Box::new(child.stderr.take()?), sink.clone());
+    let status = child.wait();
+    let _ = t1.join();
+    let _ = t2.join();
+    crate::cancel::clear_pid();
+    let take = |m: Arc<Mutex<Vec<u8>>>| m.lock().map(|v| v.clone()).unwrap_or_default();
+    Some((status.ok()?.success(), take(out), take(err)))
+}

@@ -124,7 +124,7 @@ impl StatusPage {
             JobState::Failed(m) => Some(m.clone()),
             _ => None,
         };
-        let step = job.step().clone();
+        let step = job.step_with_time();
         let mut panel = ui::panel(theme).child(div().font_weight(FontWeight::MEDIUM).child("Add existing instance"));
         let Some(found) = &self.found else {
             return panel.child(div().text_sm().text_color(theme.muted_foreground).child("Looking for SENTIENT instances on this computer…"));

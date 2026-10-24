@@ -122,7 +122,7 @@ impl Render for RepairPage {
         }
         let job = self.job.read(cx);
         let busy = job.is_running();
-        let step = job.step().clone();
+        let step = job.step_with_time();
         let percent = job.percent();
         let uninstalled = self.running == Some(Action::Uninstall) && matches!(job.state(), JobState::Done(_));
         let outcome = match job.state() {

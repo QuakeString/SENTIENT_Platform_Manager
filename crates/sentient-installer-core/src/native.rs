@@ -425,7 +425,8 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         std::fs::write(&pwfile, &cfg.pg_superuser_password)
             .map_err(|e| format!("write pwfile: {e}"))?;
         let initdb = cfg.pg_bin().join("initdb.exe");
-        let res = sys::output_tracked(
+        let res = sys::output_streamed_env(
+            &sink,
             &initdb.to_string_lossy(),
             &[
                 "-D", &cfg.pg_data().to_string_lossy(),
@@ -437,6 +438,7 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
                 // in as the superuser without a password.
                 "--auth=scram-sha-256",
             ],
+            &[],
         );
         let _ = std::fs::remove_file(&pwfile);
         match res {
@@ -765,12 +767,9 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
             ("CLICKHOUSE_PASSWORD", ch.password.as_str()),
         ]);
     }
-    match sys::output_tracked_env(&installer.to_string_lossy(), &argrefs, &env) {
-        Some((true, out, _)) => {
-            for line in sys::decode(&out).lines().rev().take(3).collect::<Vec<_>>().iter().rev() {
-                log(&sink, (*line).to_string());
-            }
-        }
+    // Streamed: the schema install takes minutes and is otherwise silent.
+    match sys::output_streamed_env(&sink, &installer.to_string_lossy(), &argrefs, &env) {
+        Some((true, _, _)) => {}
         Some((false, _, err)) => {
             // A re-run against an installed database exits non-zero; that is
             // expected on repair/upgrade paths, so log rather than hard-fail and

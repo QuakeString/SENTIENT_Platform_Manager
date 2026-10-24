@@ -72,10 +72,21 @@ impl Installer {
 
     fn welcome(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
-        let package = if self.bundle.is_some() {
-            "Offline package: everything is included"
-        } else {
-            "Online: files are downloaded during install"
+        let package: SharedString = match (&self.bundle, &self.online) {
+            (Some(_), _) => "Offline package: everything is included".into(),
+            (None, None) => "Looking for the latest SENTIENT online…".into(),
+            (None, Some(Ok(m))) => format!(
+                "Downloaded during install: SENTIENT {}, {}, checked before use",
+                m.version,
+                crate::online::size_label(m.download_size())
+            )
+            .into(),
+            (None, Some(Err(_))) if cfg!(windows) => {
+                "No SENTIENT package next to Setup and no SENTIENT download for this computer: only the Platform Manager can be installed".into()
+            }
+            (None, Some(Err(_))) => {
+                "No SENTIENT package next to Setup and no SENTIENT download for this computer: Docker installs pull the image; a native install needs the package".into()
+            }
         };
         let choice = |manager_only: bool, id: &'static str, title: &'static str, desc: &'static str| {
             let selected = self.manager_only == manager_only;
@@ -149,9 +160,9 @@ impl Installer {
                     .child(ui::panel(&theme).flex_1().gap_1()
                         .child(div().text_xs().text_color(theme.muted_foreground).child("Platform Manager"))
                         .child(div().font_weight(FontWeight::MEDIUM).child(env!("CARGO_PKG_VERSION"))))
-                    .child(ui::panel(&theme).flex_1().gap_1()
+                    .child(ui::panel(&theme).flex_1().min_w_0().gap_1()
                         .child(div().text_xs().text_color(theme.muted_foreground).child("Package"))
-                        .child(div().font_weight(FontWeight::MEDIUM).child(package))),
+                        .child(div().w_full().whitespace_normal().font_weight(FontWeight::MEDIUM).child(package))),
             )
             .child(
                 ui::panel(&theme)
@@ -645,9 +656,14 @@ impl Installer {
                 ("desktop-manager", "Desktop shortcut for the Platform Manager", self.desktop_manager),
                 ("start-menu", "Start menu entries", self.start_menu),
                 ("kiosk", "Full-screen (kiosk) shortcut for operator screens", self.kiosk),
+                ("open-at-signin", "Open SENTIENT full screen when the computer starts (operator screens)", self.open_at_signin),
             ]
         } else {
-            vec![("start-menu", "Application menu entries for SENTIENT and the Platform Manager", self.start_menu)]
+            vec![
+                ("start-menu", "Application menu entries for SENTIENT and the Platform Manager", self.start_menu),
+                ("kiosk", "Full-screen (kiosk) launcher for operator screens", self.kiosk),
+                ("open-at-signin", "Open SENTIENT full screen when the computer starts (operator screens)", self.open_at_signin),
+            ]
         };
         let note = (!cfg!(windows) && !self.manager_only).then(|| {
             let theme = cx.theme().clone();
@@ -665,6 +681,7 @@ impl Installer {
                         "desktop-sentient" => this.desktop_sentient = *value,
                         "desktop-manager" => this.desktop_manager = *value,
                         "start-menu" => this.start_menu = *value,
+                        "open-at-signin" => this.open_at_signin = *value,
                         _ => this.kiosk = *value,
                     }
                     cx.notify();
@@ -768,9 +785,9 @@ impl Installer {
         let theme = cx.theme().clone();
         let job = self.install.read(cx);
         let state = job.state().clone();
-        let step = job.step().clone();
+        let step = job.step_with_time();
         let percent = job.percent();
-        let log: Vec<SharedString> = job.log().iter().rev().take(200).rev().cloned().collect();
+        let log: Vec<SharedString> = job.log().iter().rev().take(16).rev().cloned().collect();
         v_flex()
             .gap_4()
             .child(

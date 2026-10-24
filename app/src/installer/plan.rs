@@ -37,6 +37,10 @@ pub struct InstallPlan {
     pub settings: Vec<(String, String)>,
     pub shortcuts: Shortcuts,
     pub bundle: Option<PathBuf>,
+    /// No package: this SENTIENT version is downloaded from the releases
+    /// repository first (crate::online), and the download is the package.
+    #[serde(default)]
+    pub download: Option<String>,
 }
 
 impl InstallPlan {
@@ -312,7 +316,13 @@ pub fn run_manager_only(shortcuts: Shortcuts, sink: ProgressFn) -> Result<(), St
 
 /// Run the install. Each task reports through `sink`; the first failure stops
 /// the run and is returned.
-pub fn run(plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
+pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
+    if plan.bundle.is_none() && plan.engine == Engine::Native {
+        if let Some(version) = plan.download.clone() {
+            let (_, dir) = crate::online::download(Some(&version), &sink)?;
+            plan.bundle = Some(dir);
+        }
+    }
     step(&sink, "Installing the Platform Manager");
     let manager = self_install::install_manager()?;
     // ClickHouse first: SENTIENT's schema installer creates its tables there.
@@ -334,9 +344,6 @@ pub fn run(plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
             native::deploy(sink.clone(), &cfg)?;
             step(&sink, "Setting the administrator sign-in");
             native::set_admin_account(&cfg, &plan.admin_email, &admin_hash)?;
-            if plan.shortcuts.kiosk {
-                sentient_installer_core::kiosk::create_shortcut(&sink, plan.stack.http_port, &cfg.state_dir)?;
-            }
             self_install::set_autostart(&[native::APP_SERVICE, native::PG_SERVICE], plan.shortcuts.autostart);
             // Backup, restore and repair read these from the credential
             // store; a failure only means the operator is asked later.
@@ -366,6 +373,12 @@ pub fn run(plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
     step(&sink, "Creating shortcuts");
     let url = format!("http://localhost:{}", plan.stack.http_port);
     self_install::create_shortcuts(&manager, &url, &plan.shortcuts)?;
+    if plan.shortcuts.kiosk {
+        sentient_installer_core::kiosk::create_shortcut(&sink, plan.stack.http_port, &plan.state_dir())?;
+    }
+    if plan.shortcuts.open_at_signin {
+        sentient_installer_core::kiosk::set_open_at_signin(&sink, &manager, Some(true))?;
+    }
 
     // SENTIENT's Apps & features entry covers the manager installed alone before.
     self_install::remove_manager_entry();

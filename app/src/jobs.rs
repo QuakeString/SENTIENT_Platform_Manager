@@ -28,7 +28,11 @@ pub struct Job {
     log: Vec<SharedString>,
     /// The latest completion message a step reported.
     last_done: Option<SharedString>,
+    /// When the current step began.
+    step_started: Option<std::time::Instant>,
     _task: Option<Task<()>>,
+    /// Re-renders once a second while running, so the step's time moves.
+    _ticker: Option<Task<()>>,
 }
 
 impl Job {
@@ -39,7 +43,9 @@ impl Job {
             percent: None,
             log: Vec::new(),
             last_done: None,
+            step_started: None,
             _task: None,
+            _ticker: None,
         }
     }
 
@@ -58,6 +64,19 @@ impl Job {
 
     pub fn log(&self) -> &[SharedString] {
         &self.log
+    }
+
+    /// How long the current step has been running.
+    pub fn step_elapsed(&self) -> Option<std::time::Duration> {
+        self.step_started.filter(|_| self.is_running()).map(|t| t.elapsed())
+    }
+
+    /// "Installing the SENTIENT schema · 1:24" while running.
+    pub fn step_with_time(&self) -> SharedString {
+        match self.step_elapsed() {
+            Some(d) if !self.step.is_empty() => format!("{} · {}:{:02}", self.step, d.as_secs() / 60, d.as_secs() % 60).into(),
+            _ => self.step.clone(),
+        }
     }
 
     pub fn is_running(&self) -> bool {
@@ -80,7 +99,22 @@ impl Job {
         self.percent = None;
         self.log.clear();
         self.last_done = None;
+        self.step_started = Some(std::time::Instant::now());
         cx.notify();
+        self._ticker = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+                let running = this
+                    .update(cx, |job, cx| {
+                        cx.notify();
+                        job.is_running()
+                    })
+                    .unwrap_or(false);
+                if !running {
+                    break;
+                }
+            }
+        }));
 
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<Progress>();
         let sink: ProgressFn = std::sync::Arc::new(move |p| {
@@ -113,6 +147,7 @@ impl Job {
             Progress::Step { name } => {
                 self.step = name.into();
                 self.percent = None;
+                self.step_started = Some(std::time::Instant::now());
             }
             Progress::Log { line } => self.log.push(crate::ui::strip_ansi(&line).into()),
             Progress::Percent { value } => self.percent = Some((value * 100.0).clamp(0.0, 100.0)),

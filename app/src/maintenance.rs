@@ -162,6 +162,10 @@ pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: P
     }
     step(&sink, "Removing shortcuts and the Platform Manager");
     self_install::remove_shortcuts();
+    // The operator screen's sign-in entry would start a manager that is gone.
+    if sentient_installer_core::kiosk::open_at_signin().is_some() {
+        let _ = sentient_installer_core::kiosk::set_open_at_signin(&sentient_installer_core::progress::noop(), &self_install::manager_exe(), None);
+    }
     self_install::remove_manager_entry();
     self_install::remove_record(&crate::installation::record_path());
     self_install::remove_manager_later();
@@ -275,7 +279,7 @@ impl Render for Maintenance {
             let log: Vec<SharedString> = job.log().iter().rev().take(12).rev().cloned().collect();
             return page
                 .child(div().text_2xl().child(action.title()))
-                .child(div().text_sm().child(job.step().clone()))
+                .child(div().text_sm().child(job.step_with_time()))
                 .when(busy, |p| p.when_some(job.percent(), |p, v| p.child(ProgressBar::new("maint").value(v))))
                 .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
                 .child(

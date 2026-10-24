@@ -13,12 +13,13 @@
 //! --job remove-manager                  (the Platform Manager installed alone)
 //! --job [--json] migrate <stock|timescaledb|clickhouse>
 //! --job resume-migration
-//! --job update [<package folder>] [--accept-breaking]
+//! --job update [<package folder> | --latest] [--accept-breaking]
 //! --job rollback                        (back to what the last update replaced)
 //! --job rollback-info
 //! --job find-existing                   (SENTIENT instances the Platform Manager does not manage yet)
 //! --job add-existing [<n> | --native] [--pg-admin-password <pw>]
 //!                                       (add the n-th one found, 1 by default, or the native one)
+//! --job open-at-signin <kiosk|window|off> (open SENTIENT when someone signs in)
 //! --job take-over-compose               (an added Docker instance: use SPM's compose file)
 //! --job kept
 //! --job remove-kept <name>
@@ -35,8 +36,8 @@ use sentient_installer_core::native::safe_update::RollbackPoint;
 use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
-update [<package folder>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
+update [<package folder> | --latest] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
+use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
 
 /// A console for the output: release builds on Windows have none of their
 /// own, so use the one the job was started from.
@@ -115,6 +116,7 @@ pub fn run(args: &[String]) -> i32 {
                 desktop_manager: shortcuts,
                 start_menu: shortcuts,
                 kiosk: false,
+                open_at_signin: false,
             };
             crate::installer::run_manager_only(s, sink)
         };
@@ -201,7 +203,17 @@ pub fn run(args: &[String]) -> i32 {
         "resume-migration" => crate::migration::resume(record, sink.clone()),
         "update" => {
             let accept = args.iter().any(|a| a == "--accept-breaking");
-            let package = args.iter().skip(1).find(|a| !a.starts_with("--")).map(PathBuf::from);
+            let mut package = args.iter().skip(1).find(|a| !a.starts_with("--")).map(PathBuf::from);
+            // --latest: the newest release from the releases repository.
+            if package.is_none() && args.iter().any(|a| a == "--latest") && record.platform().needs_package() {
+                match crate::online::download(None, &sink) {
+                    Ok((_, dir)) => package = Some(dir),
+                    Err(e) => {
+                        eprintln!("✗ {e}");
+                        return 1;
+                    }
+                }
+            }
             crate::updating::run(record, package.as_deref(), accept, sink.clone()).map(|_| ())
         }
         "rollback" => crate::updating::rollback(record, sink.clone()).map(|_| ()),
@@ -231,6 +243,12 @@ pub fn run(args: &[String]) -> i32 {
         "use-restored" => match args.get(1) {
             Some(name) => crate::restore_switch::run(&record, name, sink.clone()).map(|_| ()),
             None => Err(USAGE.into()),
+        },
+        "open-at-signin" => match args.get(1).map(String::as_str) {
+            Some("kiosk") => sentient_installer_core::kiosk::set_open_at_signin(&sink, &crate::self_install::manager_exe(), Some(true)),
+            Some("window") => sentient_installer_core::kiosk::set_open_at_signin(&sink, &crate::self_install::manager_exe(), Some(false)),
+            Some("off") => sentient_installer_core::kiosk::set_open_at_signin(&sink, &crate::self_install::manager_exe(), None),
+            _ => Err(USAGE.into()),
         },
         "take-over-compose" => crate::adopt::take_over_compose(record, sink.clone()).map(|_| ()),
         "repair" => crate::maintenance::run_repair(record, sink.clone()),
