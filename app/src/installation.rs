@@ -111,6 +111,22 @@ impl InstallationRecord {
         Ok(cfg)
     }
 
+    /// A native configuration with nothing known but where it is installed
+    /// (an installation found before its settings could be read).
+    pub fn placeholder_native(install_dir: &std::path::Path) -> NativeConfig {
+        let record = InstallationRecord {
+            sentient_version: String::new(),
+            manager_version: String::new(),
+            engine: Engine::Native,
+            install_dir: install_dir.to_path_buf(),
+            pg_dir: PathBuf::new(),
+            state_dir: PathBuf::from("/var/lib/sentient"),
+            stack: DeployConfig::default(),
+            installed_at: String::new(),
+        };
+        record.native_config()
+    }
+
     pub fn native_config(&self) -> NativeConfig {
         let st = &self.stack;
         NativeConfig {

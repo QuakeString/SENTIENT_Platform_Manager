@@ -17,7 +17,7 @@
 //! --job rollback                        (back to what the last update replaced)
 //! --job rollback-info
 //! --job find-existing                   (SENTIENT installed without the Platform Manager)
-//! --job adopt [<n>]                     (manage the n-th one found; 1 by default)
+//! --job adopt [<n> | --native]         (manage the n-th one found, 1 by default, or the systemd one)
 //! --job take-over-compose               (an adopted Docker stack: use SPM's compose file)
 //! --job kept
 //! --job remove-kept <name>
@@ -35,7 +35,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
 update [<package folder>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | find-existing | adopt [<n>] | take-over-compose | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
+use-restored <database> | find-existing | adopt [<n> | --native] | take-over-compose | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
 
 /// A console for the output: release builds on Windows have none of their
 /// own, so use the one the job was started from.
@@ -138,11 +138,15 @@ pub fn run(args: &[String]) -> i32 {
             }
             return 0;
         }
-        let n: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(1);
-        let result = found
-            .get(n.saturating_sub(1))
-            .ok_or_else(|| if found.is_empty() { "No SENTIENT was found on this computer.".to_string() } else { format!("Only {} installation(s) were found.", found.len()) })
-            .and_then(|c| crate::adopt::adopt(c, sink.clone()).map(|_| ()));
+        let chosen = if args.iter().any(|a| a == "--native") {
+            found.iter().find(|c| c.record.engine == crate::installation::Engine::Native).ok_or_else(|| "No SENTIENT service was found on this computer.".to_string())
+        } else {
+            let n: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(1);
+            found.get(n.saturating_sub(1)).ok_or_else(|| {
+                if found.is_empty() { "No SENTIENT was found on this computer.".to_string() } else { format!("Only {} installation(s) were found.", found.len()) }
+            })
+        };
+        let result = chosen.and_then(|c| crate::adopt::adopt_as_needed(c, sink.clone()));
         return match result {
             Ok(()) => 0,
             Err(e) => {
@@ -292,6 +296,7 @@ fn print_candidates(found: &[crate::adopt::Candidate]) {
         }
         match &c.problem {
             Some(p) => println!("   Cannot be managed: {p}"),
+            None if c.record.engine == crate::installation::Engine::Native => println!("   Can be managed: --job adopt --native"),
             None => println!("   Can be managed: --job adopt {}", i + 1),
         }
         for n in &c.notes {

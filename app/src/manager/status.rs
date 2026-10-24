@@ -107,7 +107,7 @@ impl StatusPage {
             dialog.title("Manage this SENTIENT?").description(text.clone()).confirm().ok_text("Manage it").on_ok(move |_, _, cx| {
                 let candidate = candidate.clone();
                 this.update(cx, |page, cx| {
-                    page.adopt_job.update(cx, |job, cx| job.start(move |sink| crate::adopt::adopt(&candidate, sink).map(|_| ()), cx));
+                    page.adopt_job.update(cx, |job, cx| job.start(move |sink| crate::adopt::adopt_as_needed(&candidate, sink), cx));
                 })
                 .ok();
                 true
