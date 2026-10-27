@@ -6,6 +6,7 @@
 
 mod backup;
 mod control;
+mod gateway;
 mod logs;
 pub(crate) mod migration;
 mod repair;
@@ -34,6 +35,7 @@ enum Page {
     Control,
     Logs,
     Update,
+    Gateway,
     Backup,
     Migration,
     Settings,
@@ -41,11 +43,12 @@ enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 8] = [
+    const ALL: [Page; 9] = [
         Page::Status,
         Page::Control,
         Page::Logs,
         Page::Update,
+        Page::Gateway,
         Page::Backup,
         Page::Migration,
         Page::Settings,
@@ -58,6 +61,7 @@ impl Page {
             Page::Control => "control",
             Page::Logs => "logs",
             Page::Update => "update",
+            Page::Gateway => "gateway",
             Page::Backup => "backup",
             Page::Migration => "migration",
             Page::Settings => "settings",
@@ -71,6 +75,7 @@ impl Page {
             Page::Control => "Control",
             Page::Logs => "Logs",
             Page::Update => "Update",
+            Page::Gateway => "Gateway",
             Page::Backup => "Backup and restore",
             Page::Migration => "Migration",
             Page::Settings => "Settings",
@@ -84,6 +89,7 @@ impl Page {
             Page::Control => Icon::new(Lucide::Power),
             Page::Logs => Icon::new(IconName::SquareTerminal),
             Page::Update => Icon::new(IconName::RefreshCw),
+            Page::Gateway => Icon::new(Lucide::Network),
             Page::Backup => Icon::new(Lucide::Archive),
             Page::Migration => Icon::new(Lucide::ArrowLeftRight),
             Page::Settings => Icon::new(IconName::Settings),
@@ -99,6 +105,7 @@ pub struct Manager {
     control: Option<Entity<control::ControlPage>>,
     logs: Option<Entity<logs::LogsPage>>,
     update: Option<Entity<update::UpdatePage>>,
+    gateway: Option<Entity<gateway::GatewayPage>>,
     backup: Option<Entity<backup::BackupPage>>,
     migration: Option<Entity<migration::MigrationPage>>,
     settings: Option<Entity<settings::SettingsPage>>,
@@ -140,6 +147,7 @@ impl Manager {
             control: None,
             logs: None,
             update: None,
+            gateway: None,
             backup: None,
             migration: None,
             settings: None,
@@ -155,6 +163,7 @@ impl Manager {
     fn notices(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let theme = cx.theme().clone();
         let (sentient, manager) = self.updates.read(cx).notices();
+        let gw = self.updates.read(cx).gateway_notice();
         let job = self.self_update.read(cx);
         let installing = job.is_running();
         let failed = match job.state() {
@@ -162,7 +171,7 @@ impl Manager {
             _ => None,
         };
         let step = job.step_with_time();
-        if sentient.is_none() && manager.is_none() {
+        if sentient.is_none() && manager.is_none() && gw.is_none() {
             return None;
         }
         let bar = |id: &'static str, text: String| {
@@ -191,6 +200,20 @@ impl Manager {
                     .child(Button::new("notice-sentient-later").ghost().small().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                         let v = v.clone();
                         this.updates.update(cx, |s, cx| s.dismiss_sentient(v, cx));
+                    }))),
+            );
+        }
+        if let Some(o) = gw {
+            let v = o.version.clone();
+            col = col.child(
+                bar("notice-gateway", format!("Sentient Gateway {} is available{}.", o.version, dated(&o.date)))
+                    .child(Button::new("notice-gateway-go").primary().small().label("Update…").on_click(cx.listener(|this, _, _, cx| {
+                        this.page = Page::Gateway;
+                        cx.notify();
+                    })))
+                    .child(Button::new("notice-gateway-later").ghost().small().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        let v = v.clone();
+                        this.updates.update(cx, |s, cx| s.dismiss_gateway(v, cx));
                     }))),
             );
         }
@@ -328,8 +351,13 @@ impl Manager {
         match self.page {
             Page::Status => {
                 if self.status.is_none() {
-                    let page = cx.new(|cx| status::StatusPage::new(record, cx));
+                    let updates = self.updates.clone();
+                    let page = cx.new(|cx| status::StatusPage::new(record, updates, cx));
                     self._subscriptions.push(cx.subscribe(&page, |this, _, _: &migration::RecordChanged, cx| this.reload(cx)));
+                    self._subscriptions.push(cx.subscribe(&page, |this, _, _: &status::OpenGateway, cx| {
+                        this.page = Page::Gateway;
+                        cx.notify();
+                    }));
                     self.status = Some(page);
                 }
                 self.status.clone().unwrap().into_any_element()
@@ -348,6 +376,13 @@ impl Manager {
                 let updates = self.updates.clone();
                 self.update
                     .get_or_insert_with(|| cx.new(|cx| update::UpdatePage::new(record, updates, cx)))
+                    .clone()
+                    .into_any_element()
+            }
+            Page::Gateway => {
+                let updates = self.updates.clone();
+                self.gateway
+                    .get_or_insert_with(|| cx.new(|cx| gateway::GatewayPage::new(record, updates, window, cx)))
                     .clone()
                     .into_any_element()
             }

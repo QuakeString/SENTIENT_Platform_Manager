@@ -92,6 +92,11 @@ pub fn fetch(url: &str) -> Result<Manifest, String> {
         .map_err(|e| format!("The release manifest is not valid JSON: {e}"))
 }
 
+/// Lower-case hex SHA-256 of a file.
+pub fn sha256_file(path: &Path) -> Result<String, String> {
+    hash_file(path)
+}
+
 fn hash_file(path: &Path) -> Result<String, String> {
     let mut f = std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
     let mut hasher = Sha256::new();

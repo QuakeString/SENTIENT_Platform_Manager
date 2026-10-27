@@ -20,6 +20,7 @@ pub const DISTRO: &str = "sentient";
 
 pub mod adopt;
 pub mod docker_ops;
+pub mod gateway_docker;
 #[cfg_attr(not(windows), allow(dead_code))]
 const ROOTFS_URL: &str =
     "https://cloud-images.ubuntu.com/wsl/releases/24.04/current/ubuntu-noble-wsl-amd64-24.04lts.rootfs.tar.gz";

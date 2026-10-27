@@ -39,7 +39,8 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
 update [<package folder> | --latest] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name>";
+use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name> | \
+gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
 
 /// A console for the output: release builds on Windows have none of their
 /// own, so use the one the job was started from.
@@ -94,6 +95,56 @@ pub fn run(args: &[String]) -> i32 {
             .and_then(|path| std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}")))
             .and_then(|text| serde_json::from_str::<crate::installer::InstallPlan>(&text).map_err(|e| format!("the plan: {e}")))
             .and_then(|plan| crate::installer::run_install(plan, sink.clone()));
+        return match result {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("✗ {e}");
+                1
+            }
+        };
+    }
+    // The gateway on this computer (crate::manager::gateway's actions):
+    // gateway-status | gateway-install <host> <port> (token in
+    // SPM_GATEWAY_TOKEN, page password in SPM_GATEWAY_PAGE_PASSWORD) |
+    // gateway-update | gateway-control <start|stop|restart>. Installs and
+    // updates to the newest gateway release on the update channel.
+    if job.starts_with("gateway-") {
+        use sentient_installer_core::gateway;
+        let sink = if json { json_printer() } else { printer() };
+        let channel = crate::updates::Prefs::load().channel;
+        let newest = || gateway::newest(channel).and_then(|o| o.ok_or_else(|| "No gateway release on this channel.".to_string()));
+        let result = match job {
+            "gateway-status" => {
+                let s = gateway::status();
+                println!(
+                    "installed={} version={} running={} host={} port={}",
+                    s.installed,
+                    s.version.unwrap_or_default(),
+                    s.running,
+                    s.host.unwrap_or_default(),
+                    s.port.map(|p| p.to_string()).unwrap_or_default()
+                );
+                Ok(())
+            }
+            "gateway-install" => match (args.get(1), args.get(2).and_then(|p| p.parse().ok())) {
+                (Some(host), Some(port)) => newest().and_then(|offer| {
+                    let settings = gateway::Settings {
+                        host: host.clone(),
+                        port,
+                        token: std::env::var("SPM_GATEWAY_TOKEN").unwrap_or_default(),
+                        ui_password: std::env::var("SPM_GATEWAY_PAGE_PASSWORD").unwrap_or_default(),
+                    };
+                    gateway::install(&sink, &offer, &settings)
+                }),
+                _ => Err(USAGE.into()),
+            },
+            "gateway-update" => newest().and_then(|offer| gateway::update(&sink, &offer)),
+            "gateway-control" => match args.get(1) {
+                Some(action) => gateway::control(&sink, action),
+                None => Err(USAGE.into()),
+            },
+            _ => Err(USAGE.into()),
+        };
         return match result {
             Ok(()) => 0,
             Err(e) => {

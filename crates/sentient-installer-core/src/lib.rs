@@ -11,6 +11,7 @@ pub mod clickhouse_wsl;
 pub mod distro;
 pub(crate) mod exec;
 pub mod stack;
+pub mod gateway;
 pub mod kiosk;
 pub mod kept_db;
 /// Native Windows deployment (PostgreSQL + TimescaleDB + the server as a

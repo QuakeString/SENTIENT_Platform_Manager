@@ -29,6 +29,9 @@ pub struct StatusPage {
     /// looking.
     found: Option<Vec<Candidate>>,
     adopt_job: Entity<Job>,
+    /// The gateway on this computer (None while looking).
+    gateway: Option<sentient_installer_core::gateway::Status>,
+    updates: Entity<crate::updates::UpdateState>,
     _poll: Option<Task<()>>,
     _tasks: Vec<Task<()>>,
     _observe: Subscription,
@@ -36,8 +39,12 @@ pub struct StatusPage {
 
 impl EventEmitter<RecordChanged> for StatusPage {}
 
+/// The gateway card's button: show the Gateway screen.
+pub struct OpenGateway;
+impl EventEmitter<OpenGateway> for StatusPage {}
+
 impl StatusPage {
-    pub fn new(record: Option<InstallationRecord>, cx: &mut Context<Self>) -> Self {
+    pub fn new(record: Option<InstallationRecord>, updates: Entity<crate::updates::UpdateState>, cx: &mut Context<Self>) -> Self {
         let poll = record.as_ref().map(|record| {
             let platform = record.platform();
             cx.spawn(async move |this, cx| {
@@ -70,7 +77,24 @@ impl StatusPage {
             }
             cx.notify();
         });
-        let mut page = Self { record, snapshot: None, found: None, adopt_job, _poll: poll, _tasks: Vec::new(), _observe };
+        let gateway_poll = cx.spawn(async move |this, cx| loop {
+            let status = cx.background_executor().spawn(async { sentient_installer_core::gateway::status() }).await;
+            if this.update(cx, |p, cx| { p.gateway = Some(status); cx.notify(); }).is_err() {
+                break;
+            }
+            cx.background_executor().timer(REFRESH).await;
+        });
+        let mut page = Self {
+            record,
+            snapshot: None,
+            found: None,
+            adopt_job,
+            gateway: None,
+            updates,
+            _poll: poll,
+            _tasks: vec![gateway_poll],
+            _observe,
+        };
         if page.record.is_none() {
             page.look_for_existing(cx);
         }
@@ -173,7 +197,8 @@ impl Render for StatusPage {
         let page = ui::page(&theme, "Status", "Services, version, database type and ports.");
         let Some(record) = &self.record else {
             let existing = self.existing(&theme, cx);
-            return page.child(ui::not_installed(&theme)).child(existing);
+            let gw = self.gateway_card(&theme, cx);
+            return page.child(ui::not_installed(&theme)).child(existing).child(gw);
         };
 
         let (overall, tone) = match &self.snapshot {
@@ -242,5 +267,45 @@ impl Render for StatusPage {
                         .child(div().text_color(theme.muted_foreground).child(svc.detail))
                 })),
         )
+        .child(self.gateway_card(&theme, cx))
+    }
+}
+
+impl StatusPage {
+    /// The gateway on this computer, in one line, with the way to the
+    /// Gateway screen (install, update, control).
+    fn gateway_card(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
+        let newer = self.updates.read(cx).gateway_notice();
+        let (tone, pill, line): (Tone, &str, String) = match &self.gateway {
+            None => (Tone::Neutral, "Checking…", String::new()),
+            Some(g) if !g.installed => (Tone::Neutral, "Not installed", "No Sentient Gateway on this computer.".into()),
+            Some(g) => (
+                if g.running { Tone::Good } else { Tone::Bad },
+                if g.running { "Running" } else { "Stopped" },
+                format!(
+                    "Sentient Gateway {}{}{}",
+                    g.version.clone().unwrap_or_default(),
+                    g.host.as_ref().map(|h| format!(" · sends to {h}{}", g.port.map(|p| format!(":{p}")).unwrap_or_default())).unwrap_or_default(),
+                    newer.as_ref().map(|o| format!(" · {} available", o.version)).unwrap_or_default()
+                ),
+            ),
+        };
+        let installed = self.gateway.as_ref().is_some_and(|g| g.installed);
+        ui::panel(theme)
+            .child(div().font_weight(FontWeight::MEDIUM).child("Gateway"))
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .text_sm()
+                    .child(ui::pill(theme, tone, pill))
+                    .child(div().flex_1().text_color(theme.muted_foreground).child(line))
+                    .child(
+                        Button::new("open-gateway")
+                            .outline()
+                            .label(if installed { "Manage" } else { "Install…" })
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(OpenGateway))),
+                    ),
+            )
     }
 }

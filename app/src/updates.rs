@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use sentient_installer_core::manifest;
 use sentient_installer_core::progress::{Progress, ProgressFn};
+use sentient_installer_core::gateway;
 use sentient_installer_core::releases::{self, Channel, Release};
 
 /// How often the daily check runs, and how often the manager looks whether
@@ -42,6 +43,8 @@ pub struct Prefs {
     pub dismissed_sentient: Option<String>,
     #[serde(default)]
     pub dismissed_manager: Option<String>,
+    #[serde(default)]
+    pub dismissed_gateway: Option<String>,
     /// Unix seconds of the last check that reached the release site.
     #[serde(default)]
     pub last_check: u64,
@@ -53,7 +56,7 @@ fn yes() -> bool {
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { channel: Channel::Stable, daily: true, dismissed_sentient: None, dismissed_manager: None, last_check: 0 }
+        Prefs { channel: Channel::Stable, daily: true, dismissed_sentient: None, dismissed_manager: None, dismissed_gateway: None, last_check: 0 }
     }
 }
 
@@ -125,6 +128,10 @@ impl Offer {
 pub struct Found {
     pub sentient: Result<Option<Offer>, String>,
     pub manager: Result<Option<Offer>, String>,
+    /// The newest gateway release on the channel (crate's Gateway screen
+    /// installs or updates to it), and the gateway installed here.
+    pub gateway: Result<Option<gateway::Offer>, String>,
+    pub gateway_installed: Option<String>,
     pub at: u64,
 }
 
@@ -136,7 +143,14 @@ pub fn check(channel: Channel, installed: Option<String>, native: bool) -> Found
         None => Ok(None),
         Some(installed) => sentient_offer(channel, &installed, native),
     };
-    Found { sentient, manager: manager_offer(channel), at: now() }
+    let here = gateway::status();
+    Found {
+        sentient,
+        manager: manager_offer(channel),
+        gateway: gateway::newest(channel),
+        gateway_installed: here.installed.then(|| here.version.unwrap_or_default()),
+        at: now(),
+    }
 }
 
 fn sentient_offer(channel: Channel, installed: &str, native: bool) -> Result<Option<Offer>, String> {
@@ -290,7 +304,7 @@ impl UpdateState {
             let found = cx.background_executor().spawn(async move { check(channel, installed, native) }).await;
             this.update(cx, |s, cx| {
                 s.checking = false;
-                if found.sentient.is_ok() || found.manager.is_ok() {
+                if found.sentient.is_ok() || found.manager.is_ok() || found.gateway.is_ok() {
                     s.prefs.last_check = found.at;
                     s.prefs.save();
                 }
@@ -331,6 +345,21 @@ impl UpdateState {
         let s = self.sentient().filter(|o| self.prefs.dismissed_sentient.as_deref() != Some(&o.version)).cloned();
         let m = self.manager().filter(|o| self.prefs.dismissed_manager.as_deref() != Some(&o.version)).cloned();
         (s, m)
+    }
+
+    /// A newer gateway than the one installed here, not dismissed.
+    pub fn gateway_notice(&self) -> Option<gateway::Offer> {
+        let f = self.found.as_ref()?;
+        let installed = f.gateway_installed.as_deref()?;
+        let offer = f.gateway.as_ref().ok()?.as_ref()?;
+        (releases::is_newer(&offer.version, installed, false) && self.prefs.dismissed_gateway.as_deref() != Some(&offer.version))
+            .then(|| offer.clone())
+    }
+
+    pub fn dismiss_gateway(&mut self, version: String, cx: &mut Context<Self>) {
+        self.prefs.dismissed_gateway = Some(version);
+        self.prefs.save();
+        cx.notify();
     }
 
     pub fn dismiss_sentient(&mut self, version: String, cx: &mut Context<Self>) {
