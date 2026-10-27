@@ -17,7 +17,8 @@
 use crate::progress::{Progress, ProgressFn};
 use crate::releases::{self, Release};
 
-pub const UI_URL: &str = "http://127.0.0.1:8642/";
+/// The local page's port when the gateway's settings name none.
+pub const UI_PORT: u16 = 8642;
 pub const IMAGE: &str = "quakestring/sentient-gateway-rs";
 pub const CONTAINER: &str = "sentient-gateway";
 #[cfg(windows)]
@@ -31,8 +32,63 @@ pub struct Status {
     /// The platform host and MQTT port it reports to.
     pub host: Option<String>,
     pub port: Option<u16>,
-    /// The local web page is served (off in a container unless asked for).
-    pub page: bool,
+    /// The local web page's address, from the gateway's own settings
+    /// (`localUi` in its file, `ST_GW_UI`/`ST_GW_UI_LISTEN`): None when the
+    /// page is off (it is by default in a container).
+    pub page_url: Option<String>,
+    /// A Docker container: its name. `managed`: the Platform Manager
+    /// started it (and can update it); a gateway from someone's compose
+    /// file is shown and controlled, and updated through its compose file.
+    pub container: Option<String>,
+    pub managed: bool,
+}
+
+/// The local page's address as the gateway resolves it
+/// (gateway_core::config::LocalUi::resolve): on by default except in a
+/// container, `127.0.0.1:8642` (`0.0.0.0:8642` in a container), plain HTTP
+/// on loopback and HTTPS on any other address.
+pub fn page_url(gateway_file: Option<&str>, env: &dyn Fn(&str) -> Option<String>, in_container: bool) -> Option<String> {
+    let mut enabled = !in_container;
+    let mut listen = if in_container { format!("0.0.0.0:{UI_PORT}") } else { format!("127.0.0.1:{UI_PORT}") };
+    if let Some(ui) = gateway_file
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok())
+        .and_then(|v| v.get("localUi").cloned())
+    {
+        if let Some(b) = ui.get("enabled").and_then(|b| b.as_bool()) {
+            enabled = b;
+        }
+        if let Some(l) = ui.get("listen").and_then(|l| l.as_str()).map(str::trim).filter(|l| !l.is_empty()) {
+            listen = l.to_string();
+        }
+    }
+    if let Some(v) = env("ST_GW_UI") {
+        match v.trim().to_ascii_lowercase().as_str() {
+            "on" | "true" | "1" | "yes" => enabled = true,
+            "off" | "false" | "0" | "no" => enabled = false,
+            _ => {}
+        }
+    }
+    if let Some(l) = env("ST_GW_UI_LISTEN").map(|l| l.trim().to_string()).filter(|l| !l.is_empty()) {
+        listen = l;
+    }
+    if !enabled {
+        return None;
+    }
+    let (host, port) = match listen.rsplit_once(':') {
+        Some((h, p)) => (h.trim_start_matches('[').trim_end_matches(']').to_string(), p.parse().unwrap_or(UI_PORT)),
+        None => (listen.clone(), UI_PORT),
+    };
+    let loopback = host == "localhost" || host.starts_with("127.") || host == "::1";
+    // This computer reaches a wildcard listener on loopback, over HTTPS all the same.
+    let reach = if host == "0.0.0.0" || host == "::" || host.is_empty() { "127.0.0.1".to_string() } else { host.clone() };
+    let reach = if reach.contains(':') { format!("[{reach}]") } else { reach };
+    Some(format!("{}://{reach}:{port}/", if loopback { "http" } else { "https" }))
+}
+
+/// A gateway image: the Rust gateway, or the Python one it replaces.
+pub fn is_gateway_image(image: &str) -> bool {
+    let repo = image.rsplit_once(':').map(|(r, t)| if t.contains('/') { image } else { r }).unwrap_or(image);
+    repo.ends_with("sentient-gateway-rs") || repo.ends_with("sentient-gateway") || repo.ends_with("tb-gateway")
 }
 
 /// What to install with.
@@ -85,7 +141,9 @@ pub fn newest(channel: releases::Channel) -> Result<Option<Offer>, String> {
 pub fn status() -> Status {
     #[cfg(windows)]
     {
-        windows::status()
+        // The service first; else a gateway container in Docker Desktop.
+        let s = windows::status();
+        if s.installed { s } else { crate::distro::gateway_docker::status() }
     }
     #[cfg(not(windows))]
     {
@@ -109,7 +167,11 @@ pub fn install(sink: &ProgressFn, offer: &Offer, settings: &Settings) -> Result<
 pub fn update(sink: &ProgressFn, offer: &Offer) -> Result<(), String> {
     #[cfg(windows)]
     {
-        windows::install(sink, offer, None)
+        if windows::status().installed {
+            windows::install(sink, offer, None)
+        } else {
+            crate::distro::gateway_docker::update(sink, &offer.version)
+        }
     }
     #[cfg(not(windows))]
     {
@@ -121,7 +183,11 @@ pub fn update(sink: &ProgressFn, offer: &Offer) -> Result<(), String> {
 pub fn control(sink: &ProgressFn, action: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
-        windows::control(sink, action)
+        if windows::status().installed {
+            windows::control(sink, action)
+        } else {
+            crate::distro::gateway_docker::control(sink, action)
+        }
     }
     #[cfg(not(windows))]
     {
@@ -175,11 +241,26 @@ mod windows {
         let running = matches!(&query, Some((true, out, _)) if crate::sys::decode(out).contains("RUNNING"));
         let version = crate::sys::output(&exe().to_string_lossy(), &["--version"])
             .and_then(|(_, out, _)| parse_version(&crate::sys::decode(&out)));
-        let (host, port) = std::fs::read_to_string(config_file()).map(|t| host_of(&t)).unwrap_or((None, None));
-        let page = std::fs::read_to_string(config_file())
-            .map(|t| !t.replace(' ', "").contains("\"localUi\":{\"enabled\":false"))
-            .unwrap_or(true);
-        Status { installed, version, running, host, port, page }
+        let file = std::fs::read_to_string(config_file()).ok();
+        let (host, port) = file.as_deref().map(host_of).unwrap_or((None, None));
+        // The service's own environment (ST_GW_UI, ST_GW_UI_LISTEN) wins
+        // over the file, as it does in the gateway.
+        let env = service_environment();
+        let page_url = page_url(file.as_deref(), &|k| env.iter().find_map(|l| l.strip_prefix(&format!("{k}=")).map(str::to_string)), false);
+        Status { installed, version, running, host, port, page_url, container: None, managed: true }
+    }
+
+    /// The service's Environment (REG_MULTI_SZ), one `NAME=value` per entry.
+    fn service_environment() -> Vec<String> {
+        let key = format!(r"HKLM\SYSTEM\CurrentControlSet\Services\{SERVICE}");
+        match crate::sys::output("reg.exe", &["query", &key, "/v", "Environment"]) {
+            Some((true, out, _)) => crate::sys::decode(&out)
+                .lines()
+                .find_map(|l| l.split("REG_MULTI_SZ").nth(1))
+                .map(|v| v.trim().split("\\0").map(str::to_string).filter(|e| !e.is_empty()).collect())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
     }
 
     /// Download the installer, check it, run it silently. `settings` for a
@@ -316,6 +397,32 @@ mod tests {
     fn version_line() {
         assert_eq!(parse_version("sentient-gateway 4.13.0\n").as_deref(), Some("4.13.0"));
         assert_eq!(parse_version("something else"), None);
+    }
+
+    #[test]
+    fn page_address_from_the_settings() {
+        let none = |_: &str| None;
+        assert_eq!(page_url(None, &none, false).as_deref(), Some("http://127.0.0.1:8642/"));
+        assert_eq!(page_url(None, &none, true), None);
+        let https = r#"{"localUi":{"enabled":true,"listen":"0.0.0.0:9443"}}"#;
+        assert_eq!(page_url(Some(https), &none, false).as_deref(), Some("https://127.0.0.1:9443/"));
+        let lan = r#"{"localUi":{"listen":"192.168.1.20:8642"}}"#;
+        assert_eq!(page_url(Some(lan), &none, false).as_deref(), Some("https://192.168.1.20:8642/"));
+        let off = r#"{"localUi":{"enabled":false}}"#;
+        assert_eq!(page_url(Some(off), &none, false), None);
+        let on = |k: &str| (k == "ST_GW_UI").then(|| "on".to_string());
+        assert_eq!(page_url(None, &on, true).as_deref(), Some("https://127.0.0.1:8642/"));
+        let port = |k: &str| (k == "ST_GW_UI_LISTEN").then(|| "127.0.0.1:9000".to_string());
+        assert_eq!(page_url(None, &port, false).as_deref(), Some("http://127.0.0.1:9000/"));
+    }
+
+    #[test]
+    fn gateway_images() {
+        assert!(is_gateway_image("quakestring/sentient-gateway-rs:4.13.0"));
+        assert!(is_gateway_image("quakestring/sentient-gateway:3.7.10"));
+        assert!(is_gateway_image("thingsboard/tb-gateway"));
+        assert!(!is_gateway_image("quakestring/sentient:4.3.0.53"));
+        assert!(!is_gateway_image("postgres:18"));
     }
 
     #[test]

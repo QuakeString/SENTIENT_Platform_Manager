@@ -171,8 +171,8 @@ impl Render for GatewayPage {
                         .items_center()
                         .child(ui::pill(&theme, tone, pill))
                         .child(div().flex_1())
-                        .when(status.page, |r| {
-                            r.child(Button::new("gw-page").outline().label("Open local page").on_click(|_, _, cx| ui::open_url(gateway::UI_URL, cx)))
+                        .when_some(status.page_url.clone(), |r, url| {
+                            r.child(Button::new("gw-page").outline().label("Open local page").on_click(move |_, _, cx| ui::open_url(&url, cx)))
                         }),
                 )
                 .child(ui::fact(&theme, "Version", status.version.clone().unwrap_or_else(|| "unknown".into())))
@@ -185,7 +185,20 @@ impl Render for GatewayPage {
                         _ => "nowhere yet: not commissioned (set the platform on its local page)".into(),
                     },
                 ))
-                .child(ui::fact(&theme, "Runs as", if cfg!(windows) { "Windows service SentientGateway" } else { "Docker container sentient-gateway" }))
+                .child(ui::fact(
+                    &theme,
+                    "Runs as",
+                    match (&status.container, status.managed) {
+                        (None, _) => "Windows service SentientGateway".to_string(),
+                        (Some(c), true) => format!("Docker container {c}"),
+                        (Some(c), false) => format!("Docker container {c} (from its own compose file)"),
+                    },
+                ))
+                .child(ui::fact(
+                    &theme,
+                    "Local page",
+                    status.page_url.clone().unwrap_or_else(|| "off (in a container it is on with ST_GW_UI=on)".into()),
+                ))
                 .child(
                     h_flex()
                         .gap_2()
@@ -206,13 +219,17 @@ impl Render for GatewayPage {
                                         Button::new("gw-update")
                                             .primary()
                                             .label(format!("Update to {}", o.version))
-                                            .disabled(busy || (cfg!(windows) && o.installer.is_none()))
+                                            .disabled(busy || !status.managed || (status.container.is_none() && o.installer.is_none()))
                                             .on_click(cx.listener(move |p, _, _, cx| p.update_to(o2.clone(), cx))),
                                     )
-                                    .child(div().text_sm().text_color(theme.muted_foreground).child(format!(
-                                        "released {}; the configuration and the local page's password are kept",
-                                        o.date
-                                    ))),
+                                    .child(div().text_sm().text_color(theme.muted_foreground).child(if status.managed {
+                                        format!("released {}; the configuration and the local page's password are kept", o.date)
+                                    } else {
+                                        format!(
+                                            "released {}; this container comes from a compose file: set its image to quakestring/sentient-gateway-rs:{} there and run docker compose up -d",
+                                            o.date, o.version
+                                        )
+                                    })),
                             )
                             .when(!o.notes.is_empty(), |c| c.child(div().text_xs().text_color(theme.muted_foreground).child(o.notes.clone())))
                             .into_any_element()

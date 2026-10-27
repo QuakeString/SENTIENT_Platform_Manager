@@ -117,12 +117,15 @@ pub fn run(args: &[String]) -> i32 {
             "gateway-status" => {
                 let s = gateway::status();
                 println!(
-                    "installed={} version={} running={} host={} port={}",
+                    "installed={} version={} running={} host={} port={} page={} container={} managed={}",
                     s.installed,
                     s.version.unwrap_or_default(),
                     s.running,
                     s.host.unwrap_or_default(),
-                    s.port.map(|p| p.to_string()).unwrap_or_default()
+                    s.port.map(|p| p.to_string()).unwrap_or_default(),
+                    s.page_url.unwrap_or_else(|| "off".into()),
+                    s.container.unwrap_or_default(),
+                    s.managed
                 );
                 Ok(())
             }
