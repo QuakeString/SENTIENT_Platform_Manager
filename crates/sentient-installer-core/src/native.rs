@@ -390,33 +390,89 @@ pub fn http_answers(http_port: u16) -> bool {
 pub const VC_REDIST_EXE: &str = "vc_redist.x64.exe";
 const VC_REDIST_URL: &str = "https://aka.ms/vs/17/release/vc_redist.x64.exe";
 
-/// Install the Visual C++ 2015–2022 x64 runtime if it is missing.
+/// Install or upgrade the Visual C++ 2015–2022 x64 runtime when it is
+/// missing or older than the toolset PostgreSQL was built with
+/// ([`crate::vcrt::MIN_VC_RUNTIME`]).
 ///
-/// Checks for vcruntime140_1.dll specifically: vcruntime140.dll alone is
-/// not enough for binaries built with VS2019 or later, and a box can easily
-/// have one without the other. Optional in the bundle — when it is absent
-/// and the runtime is missing, the online path downloads it.
-fn ensure_vc_runtime(sink: &ProgressFn, source: &ArtifactSource, dl: &Path) -> Result<(), String> {
+/// Presence alone is not enough: an older msvcp140.dll (left by some other
+/// program's redistributable) makes PostgreSQL 18's ICU crash with
+/// 0xC0000005 during initdb's post-bootstrap step. `force` runs the
+/// redistributable even when the files look right (a repair after such a
+/// crash). Optional in the bundle — when it is absent and the runtime needs
+/// work, the online path downloads it.
+fn ensure_vc_runtime(sink: &ProgressFn, source: &ArtifactSource, dl: &Path, force: bool) -> Result<(), String> {
     let system32 = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-    let dll = Path::new(&system32).join("System32").join("vcruntime140_1.dll");
-    if dll.exists() {
+    let system32 = Path::new(&system32).join("System32");
+    let problem = crate::vcrt::runtime_problem(&system32);
+    if problem.is_none() && !force {
         return Ok(());
+    }
+    match &problem {
+        Some(why) => log(sink, format!("Visual C++ runtime needs updating: {why}")),
+        None => log(sink, "repairing the Visual C++ runtime"),
     }
     step(sink, "Installing the Visual C++ runtime (PostgreSQL needs it)");
     let exe = obtain(sink, source, VC_REDIST_EXE, VC_REDIST_URL, dl)?;
-    let res = sys::output_tracked(&exe.to_string_lossy(), &["/install", "/quiet", "/norestart"]);
+    // /install upgrades an older runtime in place; on the same version it is
+    // a no-op, so a forced run uses /repair to rewrite the files.
+    let mode = if force && problem.is_none() { "/repair" } else { "/install" };
+    let res = sys::output_tracked(&exe.to_string_lossy(), &[mode, "/quiet", "/norestart"]);
     // 3010 = installed, reboot pending; the runtime is usable immediately.
+    // 1638 = this or a newer version is already installed.
     let ok = matches!(res, Some((true, _, _)))
-        || matches!(&res, Some((false, out, _)) if sys::decode(out).contains("3010"));
-    if !ok || !dll.exists() {
+        || matches!(&res, Some((false, out, _)) if { let o = sys::decode(out); o.contains("3010") || o.contains("1638") });
+    if let Some(still) = crate::vcrt::runtime_problem(&system32) {
         return Err(format!(
-            "The Visual C++ runtime could not be installed ({} is still missing). Install \
-             \"Microsoft Visual C++ 2015-2022 Redistributable (x64)\" from Microsoft and run \
-             setup again.",
-            dll.display()
+            "The Visual C++ runtime could not be updated ({still}). Install the latest \
+             \"Microsoft Visual C++ 2015-2022 Redistributable (x64)\" from \
+             {VC_REDIST_URL} and run setup again.{}",
+            if ok { "" } else { " (The redistributable installer reported an error.)" }
         ));
     }
     Ok(())
+}
+
+/// Run initdb once. The error text is initdb's own output.
+fn run_initdb(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
+    // A data folder without PG_VERSION is a failed earlier attempt;
+    // initdb refuses a non-empty folder, so start clean.
+    if cfg.pg_data().exists() {
+        let _ = remove_tree_retrying(&cfg.pg_data());
+    }
+    std::fs::create_dir_all(cfg.pg_data())
+        .map_err(|e| format!("create data dir: {e}"))?;
+    grant_current_user(&cfg.pg_dir)?;
+    // initdb reads the superuser password from a file rather than a prompt
+    // or an argv entry (which would be visible in the process list).
+    let pwfile = cfg.download_dir().join("pw.txt");
+    std::fs::write(&pwfile, &cfg.pg_superuser_password)
+        .map_err(|e| format!("write pwfile: {e}"))?;
+    let initdb = cfg.pg_bin().join("initdb.exe");
+    let res = sys::output_streamed_env(
+        sink,
+        &initdb.to_string_lossy(),
+        &[
+            "-D", &cfg.pg_data().to_string_lossy(),
+            "-U", "postgres",
+            &format!("--pwfile={}", pwfile.display()),
+            "-E", "UTF8",
+            "--locale=C",
+            // initdb's default is "trust": any local program could log
+            // in as the superuser without a password.
+            "--auth=scram-sha-256",
+        ],
+        &[],
+    );
+    let _ = std::fs::remove_file(&pwfile);
+    match res {
+        Some((true, _, _)) => Ok(()),
+        Some((false, out, err)) => Err(format!(
+            "initdb failed: {} {}",
+            sys::decode(&err).trim(),
+            sys::decode(&out).trim()
+        )),
+        None => Err("could not run initdb".into()),
+    }
 }
 
 /// **Uses the binaries ZIP, never the EDB graphical installer.** The GUI
@@ -439,7 +495,7 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     // never shows the problem). Without it postgres.exe dies at load with
     // STATUS_DLL_NOT_FOUND before printing anything, and initdb reports
     // an empty error. Found on a clean Windows 10 box during testing.
-    ensure_vc_runtime(&sink, &cfg.source, &dl)?;
+    ensure_vc_runtime(&sink, &cfg.source, &dl, false)?;
     bail_if_cancelled()?;
 
     // ---- PostgreSQL ----
@@ -470,46 +526,22 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     // ---- initdb ----
     if !cfg.pg_data().join("PG_VERSION").exists() {
         step(&sink, "Initialising the database cluster");
-        // A data folder without PG_VERSION is a failed earlier attempt;
-        // initdb refuses a non-empty folder, so start clean.
-        if cfg.pg_data().exists() {
-            let _ = remove_tree_retrying(&cfg.pg_data());
-        }
-        std::fs::create_dir_all(cfg.pg_data())
-            .map_err(|e| format!("create data dir: {e}"))?;
-        grant_current_user(&cfg.pg_dir)?;
-        // initdb reads the superuser password from a file rather than a prompt
-        // or an argv entry (which would be visible in the process list).
-        let pwfile = cfg.download_dir().join("pw.txt");
-        std::fs::write(&pwfile, &cfg.pg_superuser_password)
-            .map_err(|e| format!("write pwfile: {e}"))?;
-        let initdb = cfg.pg_bin().join("initdb.exe");
-        let res = sys::output_streamed_env(
-            &sink,
-            &initdb.to_string_lossy(),
-            &[
-                "-D", &cfg.pg_data().to_string_lossy(),
-                "-U", "postgres",
-                &format!("--pwfile={}", pwfile.display()),
-                "-E", "UTF8",
-                "--locale=C",
-                // initdb's default is "trust": any local program could log
-                // in as the superuser without a password.
-                "--auth=scram-sha-256",
-            ],
-            &[],
-        );
-        let _ = std::fs::remove_file(&pwfile);
-        match res {
-            Some((true, _, _)) => {}
-            Some((false, out, err)) => {
-                return Err(format!(
-                    "initdb failed: {} {}",
-                    sys::decode(&err).trim(),
-                    sys::decode(&out).trim()
-                ))
+        let mut res = run_initdb(&sink, cfg);
+        // A crash code that points at the Visual C++ runtime: repair it and
+        // try once more before giving up, so the user does not have to.
+        if let Err(e) = &res {
+            if crate::vcrt::is_runtime_crash(e) {
+                log(&sink, "initdb crashed; repairing the Visual C++ runtime and trying again");
+                ensure_vc_runtime(&sink, &cfg.source, &dl, true)?;
+                bail_if_cancelled()?;
+                res = run_initdb(&sink, cfg);
             }
-            None => return Err("could not run initdb".into()),
+        }
+        if let Err(e) = res {
+            return Err(match crate::vcrt::crash_hint(&e) {
+                Some(hint) => format!("{hint}\n\n{e}"),
+                None => e,
+            });
         }
         // A zero exit is not proof: on Windows initdb re-launches itself
         // under a restricted token, and if that child never starts the
