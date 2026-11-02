@@ -27,6 +27,7 @@ pub mod net;
 pub mod native_linux;
 pub mod progress;
 pub mod releases;
+pub mod vcrt;
 /// Running a script as root from a desktop session (pkexec, else `sudo -n`).
 #[cfg(unix)]
 pub mod privileged {
