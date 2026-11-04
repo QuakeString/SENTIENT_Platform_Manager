@@ -100,6 +100,18 @@ impl Release {
         self.body.clone().unwrap_or_default().trim().to_string()
     }
 
+    /// The notes' one-line summary, as plain text, for beside an update.
+    ///
+    /// Release bodies are made from each repository's CHANGELOG.md
+    /// (`scripts/release-notes.py`): a summary paragraph, then `###`
+    /// sections of entries and the downloads. This is that first paragraph;
+    /// an older body that is one paragraph is all of it. A body that starts
+    /// with a heading or a list gives its first entry. The full notes are on
+    /// the release page.
+    pub fn summary(&self) -> String {
+        summary_of(&self.notes())
+    }
+
     /// The published date, `2026-10-24`.
     pub fn date(&self) -> String {
         self.published_at.clone().unwrap_or_default().chars().take(10).collect()
@@ -192,6 +204,44 @@ fn split(v: &str) -> (Vec<u64>, Option<&str>) {
     (numbers.split('.').map(|p| p.parse().unwrap_or(0)).collect(), pre)
 }
 
+fn summary_of(body: &str) -> String {
+    let paragraphs: Vec<&str> = body.split("\n\n").map(str::trim).filter(|p| !p.is_empty()).collect();
+    let text = paragraphs
+        .iter()
+        .find(|p| !p.starts_with('#') && !p.starts_with("- ") && !p.starts_with("* "))
+        .map(|p| p.to_string())
+        .or_else(|| {
+            body.lines()
+                .map(str::trim)
+                .find_map(|l| l.strip_prefix("- ").or_else(|| l.strip_prefix("* ")))
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    plain(&text.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// Markdown emphasis, code and links as plain text.
+fn plain(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('[') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        match after.find("](").and_then(|j| after[j + 2..].find(')').map(|k| (j, j + 2 + k))) {
+            Some((j, end)) => {
+                out.push_str(&after[..j]);
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('[');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out.replace("**", "").replace('`', "")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +257,19 @@ mod tests {
             published_at: None,
             assets: vec![],
         }
+    }
+
+    #[test]
+    fn summary_is_the_first_paragraph_as_plain_text() {
+        let mut r = rel("4.3.0.58", false);
+        r.body = Some("Faster **dashboards** and [docs](https://x/y).\n\nBuilt from master `abc`.\n\n### Added\n- A thing.\n".into());
+        assert_eq!(r.summary(), "Faster dashboards and docs.");
+        r.body = Some("SENTIENT 4.3.0.57 (master e299c114): one\nparagraph.".into());
+        assert_eq!(r.summary(), "SENTIENT 4.3.0.57 (master e299c114): one paragraph.");
+        r.body = Some("### Added\n- Modbus: `modbus_detectOrder` reads [a value](u).\n".into());
+        assert_eq!(r.summary(), "Modbus: modbus_detectOrder reads a value.");
+        r.body = None;
+        assert_eq!(r.summary(), "");
     }
 
     #[test]

@@ -134,7 +134,7 @@ pub fn newest(channel: releases::Channel) -> Result<Option<Offer>, String> {
         let v = version_of(r);
         let installer = r.assets.iter().find(|a| a.name == format!("SentientGatewaySetup-{v}.exe")).cloned();
         let checksum = r.assets.iter().find(|a| a.name == format!("SentientGatewaySetup-{v}.exe.sha256")).cloned();
-        Offer { version: v, date: r.date(), notes: r.notes(), page: r.html_url.clone(), installer, checksum }
+        Offer { version: v, date: r.date(), notes: r.summary(), page: r.html_url.clone(), installer, checksum }
     }))
 }
 

@@ -204,6 +204,13 @@ jobs:
       group: release-${{ github.ref_name }}
       cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            CHANGELOG.md
+            scripts/release-notes.py
+          sparse-checkout-cone-mode: false
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -221,6 +228,12 @@ jobs:
         run: |
           mapfile -t files < <(find dist -type f)
           printf 'Attaching %s\n' "${files[@]}"
+          # The notes: this version's CHANGELOG.md section, else GitHub's list.
+          notes=(--generate-notes)
+          if python3 scripts/release-notes.py check CHANGELOG.md "${TAG#v}"; then
+            python3 scripts/release-notes.py body CHANGELOG.md "${TAG#v}" --product spm > "$RUNNER_TEMP/notes.md"
+            notes=(--notes-file "$RUNNER_TEMP/notes.md")
+          fi
           exists=false
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exists=true
           # A release candidate (v*-rc*) is built release and stays a pre-release.
@@ -229,7 +242,7 @@ jobs:
               gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
             else
               gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" \
-                --title "$TAG (release candidate)" --generate-notes --prerelease
+                --title "$TAG (release candidate)" "${notes[@]}" --prerelease
             fi
           elif [ "$PROFILE" = "release" ]; then
             if $exists; then
@@ -238,13 +251,13 @@ jobs:
                 --title "$TAG" --prerelease=false --latest
             else
               gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" \
-                --title "$TAG" --generate-notes --latest
+                --title "$TAG" "${notes[@]}" --latest
             fi
           elif $exists; then
             echo "Release $TAG already exists; not replacing its files with a debug build."
           else
             gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" \
-              --title "$TAG (debug build)" --generate-notes --prerelease
+              --title "$TAG (debug build)" "${notes[@]}" --prerelease
           fi
 
   # Nightly: replace the release tagged `nightly` with this build.

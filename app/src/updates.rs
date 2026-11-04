@@ -119,7 +119,7 @@ pub struct Offer {
 
 impl Offer {
     fn from(r: &Release, version: String) -> Offer {
-        Offer { version, tag: r.tag_name.clone(), date: r.date(), notes: r.notes(), page: r.html_url.clone(), installer: None }
+        Offer { version, tag: r.tag_name.clone(), date: r.date(), notes: r.summary(), page: r.html_url.clone(), installer: None }
     }
 }
 

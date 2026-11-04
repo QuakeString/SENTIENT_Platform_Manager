@@ -2,7 +2,12 @@
 # Publish a SENTIENT release to github.com/QuakeString/sentient-release, where
 # SENTIENT Setup and the Platform Manager download it from.
 #
+#   scripts/publish-sentient-release.sh <version> <folder> --changelog <SENTIENT/CHANGELOG.md> [--docker-image <image>]
 #   scripts/publish-sentient-release.sh <version> <folder> [--notes "<text>"] [--docker-image <image>]
+#     --changelog: the release notes are that version's section of SENTIENT's
+#     CHANGELOG.md, without PR links (scripts/release-notes.py); the section
+#     must exist, with a summary, or nothing is published. The summary is the
+#     manifest's "notes". --notes "<text>" is the old one-paragraph form.
 #   scripts/publish-sentient-release.sh <version> <folder> --add [--docker-image <image>]
 #     (add files for another system to a published release: only files it
 #      does not have yet, never replacing one; its manifest is extended)
@@ -25,17 +30,28 @@ set -euo pipefail
 version=${1:?version, e.g. 4.3.0.49}
 dir=${2:?folder with the release files}
 notes=""
+changelog=""
 add=false
 docker_image=""
 shift 2
 while [ $# -gt 0 ]; do
   case "$1" in
     --notes) notes=${2:-}; shift 2 ;;
+    --changelog) changelog=${2:?--changelog needs the CHANGELOG.md path}; shift 2 ;;
     --add) add=true; shift ;;
     --docker-image) docker_image=${2:?--docker-image needs an image}; shift 2 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
+here=$(cd "$(dirname "$0")" && pwd)
+body_notes=""
+if [ -n "$changelog" ]; then
+  python3 "$here/release-notes.py" check "$changelog" "$version" || exit 1
+  notes=$(python3 "$here/release-notes.py" extract "$changelog" "$version" --public --summary)
+  body_notes=$(python3 "$here/release-notes.py" extract "$changelog" "$version" --public)
+elif [ -z "$notes" ] && ! $add; then
+  echo "warning: no --changelog: the release gets no proper notes" >&2
+fi
 repo=QuakeString/sentient-release
 api=https://api.github.com/repos/$repo
 token=${GITHUB_TOKEN:-$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')}
@@ -162,7 +178,21 @@ PY
 rm -f "$dir/binaries.jsonl"
 echo "manifest:"; cat "$dir/manifest.json"
 
-body=$(python3 -c 'import json,sys; print(json.dumps({"tag_name": sys.argv[1], "target_commitish": "main", "name": "SENTIENT " + sys.argv[1], "body": sys.argv[2] or "SENTIENT " + sys.argv[1], "make_latest": "true"}))' "$version" "$notes")
+# The release page: the changelog section, then what to download.
+if [ -n "$body_notes" ]; then
+  downloads="### Downloads"$'\n'
+  for f in "${files[@]}"; do
+    case "$f" in
+      sentient-payload.tar) downloads+="- Windows x64: \`$f\`, with PostgreSQL 18.6, TimescaleDB and the VC++ runtime"$'\n' ;;
+      sentient-payload-linux-x86_64.tar) downloads+="- Linux x86_64: \`$f\`"$'\n' ;;
+      sentient-payload-linux-aarch64.tar) downloads+="- Linux arm64: \`$f\`"$'\n' ;;
+    esac
+  done
+  [ -n "$docker_image" ] && downloads+="- Docker: \`$docker_image\`"$'\n'
+  downloads+="- \`manifest.json\` lists every file with its SHA-256. Install and update with the SENTIENT Platform Manager."
+  body_notes+=$'\n\n'"$downloads"
+fi
+body=$(python3 -c 'import json,sys; print(json.dumps({"tag_name": sys.argv[1], "target_commitish": "main", "name": "SENTIENT " + sys.argv[1], "body": sys.argv[3] or sys.argv[2] or "SENTIENT " + sys.argv[1], "make_latest": "true"}))' "$version" "$notes" "$body_notes")
 release=$(curl -fsS "${auth[@]}" -X POST "$api/releases" -d "$body")
 upload=$(printf '%s' "$release" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_url"].split("{")[0])')
 for f in "${files[@]}" manifest.json; do
