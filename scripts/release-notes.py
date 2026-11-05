@@ -15,6 +15,17 @@
       mobile app) or the Platform Manager's own repository. SENTIENT
       releases get theirs from publish-sentient-release.sh --changelog.
 
+  release-notes.py update <CHANGELOG.md> <version> --product sentient|gateway|mobile|spm
+                         [--tag <tag>] [--docker-image <image>] [--backup <dir>] [--dry-run]
+      Replace the notes of a published release with this file's section and
+      a downloads list made from the release's actual files: to give an older
+      release proper notes, or fix them after publishing. The release is on
+      QuakeString/sentient-release (tag <version>, gateway-<version>,
+      SENTIENT-mobile-app-<version>) or, for spm, on SENTIENT_Platform_Manager
+      (tag v<version>); --tag overrides. The old notes are saved in --backup
+      (default ./release-notes-backup). Needs GITHUB_TOKEN or a github.com
+      login saved in git.
+
   release-notes.py check <CHANGELOG.md> <version>
       Exit 1, saying why, when <version> has no section, no summary
       paragraph or no entries. Run it before publishing a release.
@@ -131,6 +142,81 @@ def cmd_body(args):
     print(unwrap(make_public(body)) + "\n\n" + DOWNLOADS[product].format(v=version))
 
 
+def github_token():
+    import os
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        try:
+            out = subprocess.run(["git", "credential", "fill"], input="protocol=https\nhost=github.com\n\n",
+                                 capture_output=True, text=True, check=True).stdout
+            token = next((l[9:] for l in out.splitlines() if l.startswith("password=")), "")
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    if not token:
+        sys.exit("no GitHub token (set GITHUB_TOKEN or save a github.com login in git)")
+    return token
+
+
+def github(method, url, token, data=None):
+    import json
+    import urllib.request
+    req = urllib.request.Request(url, method=method, data=None if data is None else json.dumps(data).encode(),
+                                 headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                                          "Content-Type": "application/json"})
+    with urllib.request.urlopen(req) as r:
+        return json.load(r)
+
+
+def downloads_from(product, version, assets, docker_image):
+    names = [a["name"] for a in assets]
+    lines = ["### Downloads"]
+    if product == "sentient":
+        if "sentient-payload.tar" in names:
+            lines.append("- Windows x64: `sentient-payload.tar`, with PostgreSQL 18.6, TimescaleDB and the VC++ runtime")
+        for n, label in (("sentient-payload-linux-x86_64.tar", "Linux x86_64"), ("sentient-payload-linux-aarch64.tar", "Linux arm64")):
+            if n in names:
+                lines.append(f"- {label}: `{n}`")
+        if docker_image:
+            lines.append(f"- Docker: `{docker_image}`")
+        lines.append("- `manifest.json` lists every file with its SHA-256. Install and update with the SENTIENT Platform Manager.")
+        return "\n".join(lines)
+    if product == "gateway":
+        full = DOWNLOADS["gateway"].format(v=version).splitlines()
+        keep = [l for l in full[1:] if not l.startswith("- Linux") or any(n.endswith(".deb") for n in names)]
+        return "\n".join([full[0]] + keep)
+    return DOWNLOADS[product].format(v=version)
+
+
+def cmd_update(args):
+    import json
+    import os
+    def opt(name, default=None):
+        return args[args.index(name) + 1] if name in args else default
+    path, version = args[0], args[1]
+    product = opt("--product")
+    if product not in ("sentient", "gateway", "mobile", "spm"):
+        sys.exit("update needs --product sentient|gateway|mobile|spm")
+    repo = "QuakeString/SENTIENT_Platform_Manager" if product == "spm" else "QuakeString/sentient-release"
+    tag = opt("--tag") or {"sentient": version, "gateway": f"gateway-{version}",
+                           "mobile": f"SENTIENT-mobile-app-{version}", "spm": f"v{version}"}[product]
+    body = section(open(path, encoding="utf-8").read(), version)
+    if body is None:
+        sys.exit(f"{path}: no section for {version}")
+    token = github_token()
+    api = f"https://api.github.com/repos/{repo}"
+    release = github("GET", f"{api}/releases/tags/{tag}", token)
+    notes = unwrap(make_public(body)) + "\n\n" + downloads_from(product, version, release.get("assets", []), opt("--docker-image"))
+    if "--dry-run" in args:
+        print(notes)
+        return
+    backup = opt("--backup", "release-notes-backup")
+    os.makedirs(backup, exist_ok=True)
+    with open(os.path.join(backup, f"{repo.split('/')[1]}_{tag}.md"), "w", encoding="utf-8") as f:
+        f.write(release.get("body") or "")
+    github("PATCH", f"{api}/releases/{release['id']}", token, {"body": notes})
+    print(f"{repo} {tag}: notes updated (old notes in {backup})")
+
+
 def cmd_check(args):
     path, version = args[0], args[1]
     body = section(open(path, encoding="utf-8").read(), version)
@@ -204,9 +290,9 @@ def cmd_draft(args):
 
 
 def main():
-    if len(sys.argv) < 3 or sys.argv[1] not in ("extract", "body", "check", "draft"):
+    if len(sys.argv) < 3 or sys.argv[1] not in ("extract", "body", "update", "check", "draft"):
         sys.exit(__doc__)
-    {"extract": cmd_extract, "body": cmd_body, "check": cmd_check, "draft": cmd_draft}[sys.argv[1]](sys.argv[2:])
+    {"extract": cmd_extract, "body": cmd_body, "update": cmd_update, "check": cmd_check, "draft": cmd_draft}[sys.argv[1]](sys.argv[2:])
 
 
 if __name__ == "__main__":
