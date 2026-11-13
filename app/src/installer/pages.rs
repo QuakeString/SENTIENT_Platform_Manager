@@ -999,7 +999,8 @@ impl Installer {
         }
         let url = format!("http://localhost:{}", self.value(&self.fields.http_port, cx));
         let email = self.value(&self.fields.admin_email, cx);
-        let open_url = url.clone();
+        let port = self.fields.http_port.read(cx).value().trim().parse::<u16>().unwrap_or(8080);
+        let kiosk = self.kiosk;
         v_flex()
             .gap_4()
             .child(
@@ -1045,7 +1046,7 @@ impl Installer {
                         Button::new("open-sentient")
                             .primary()
                             .label("Open SENTIENT")
-                            .on_click(move |_, _, cx| ui::open_url(&open_url, cx)),
+                            .on_click(move |_, _, cx| ui::open_sentient(port, kiosk, cx)),
                     )
                     .child(Button::new("open-manager").outline().label("Open Platform Manager").on_click(
                         |_, _, _| {

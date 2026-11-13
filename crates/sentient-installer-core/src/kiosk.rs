@@ -296,6 +296,38 @@ foreach ($dir in $targets) {{
     }
 }
 
+/// The command the kiosk shortcut runs: the detected browser, full screen on
+/// SENTIENT at `port`. None when no supported browser is installed.
+pub fn kiosk_command(port: u16) -> Option<(PathBuf, Vec<String>)> {
+    let (browser, exe) = detect()?;
+    Some((exe, kiosk_argv(browser, port)))
+}
+
+/// The kiosk shortcut's arguments, as a list.
+fn kiosk_argv(browser: Browser, port: u16) -> Vec<String> {
+    browser.kiosk_args(port).split_whitespace().map(str::to_string).collect()
+}
+
+/// Whether the kiosk shortcut `create_shortcut` makes is on this computer:
+/// tells an install from before the kiosk choice was recorded.
+pub fn shortcut_exists() -> bool {
+    #[cfg(windows)]
+    {
+        let mut paths = Vec::new();
+        if let Some(p) = std::env::var_os("USERPROFILE") {
+            paths.push(PathBuf::from(p).join("Desktop").join("SENTIENT.lnk"));
+        }
+        if let Some(p) = std::env::var_os("APPDATA") {
+            paths.push(PathBuf::from(p).join(r"Microsoft\Windows\Start Menu\Programs").join("SENTIENT.lnk"));
+        }
+        paths.iter().any(|p| p.exists())
+    }
+    #[cfg(not(windows))]
+    {
+        desktop_entry_paths().iter().any(|p| p.exists())
+    }
+}
+
 /// Delete the Desktop + Start Menu SENTIENT shortcuts (used by uninstall).
 pub fn remove_shortcuts(sink: &ProgressFn, work_dir: &Path) {
     #[cfg(windows)]
@@ -427,4 +459,18 @@ pub fn set_open_at_signin(sink: &ProgressFn, launcher: &Path, mode: Option<bool>
         ),
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opening_sentient_as_kiosk_uses_the_shortcuts_arguments() {
+        assert_eq!(
+            kiosk_argv(Browser::Chrome, 8080),
+            ["--kiosk", "--no-first-run", "--no-default-browser-check", "http://localhost:8080"]
+        );
+        assert_eq!(kiosk_argv(Browser::Firefox, 9090), ["--kiosk", "http://localhost:9090"]);
+    }
 }
