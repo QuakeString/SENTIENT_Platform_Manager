@@ -112,6 +112,11 @@ pub struct Installer {
     bundle: Option<PathBuf>,
     /// No package: the latest release online (None while looking).
     online: Option<Result<sentient_installer_core::manifest::Manifest, String>>,
+    /// No package: the published versions to choose from (None while
+    /// looking; an error leaves the latest release alone, as before).
+    versions: Option<Result<Vec<crate::online::Version>, String>>,
+    /// The version picked from `versions` (None: the newest).
+    chosen_version: Option<String>,
     sentient_version: SharedString,
     /// Why Next is refused on the current page.
     problem: Option<SharedString>,
@@ -227,6 +232,8 @@ impl Installer {
             autologin: false,
             bundle,
             online: None,
+            versions: None,
+            chosen_version: None,
             sentient_version: sentient_version.into(),
             problem: None,
             existing: None,
@@ -252,6 +259,16 @@ impl Installer {
                         page.sentient_version = format!("{} (downloaded)", m.version).into();
                     }
                     page.online = Some(found);
+                    cx.notify();
+                })
+                .ok();
+            });
+            this._tasks.push(task);
+            let native = this.engine == Engine::Native;
+            let task = cx.spawn(async move |this, cx| {
+                let found = cx.background_executor().spawn(async move { crate::online::versions(native) }).await;
+                this.update(cx, |page, cx| {
+                    page.versions = Some(found);
                     cx.notify();
                 })
                 .ok();
@@ -513,6 +530,12 @@ impl Installer {
             load_demo: self.load_demo,
             ..DeployConfig::default()
         };
+        // Docker pulls the picked version's image instead of :latest.
+        if self.engine == Engine::Docker && self.bundle.is_none() {
+            if let Some(v) = &self.chosen_version {
+                stack.image = format!("quakestring/sentient:{v}");
+            }
+        }
         stack.tuning.instance_id = format!("sentient-{}", native::generate_secret().get(..8).unwrap_or("01"));
         Ok(plan::InstallPlan {
             engine: self.engine,
@@ -549,6 +572,38 @@ impl Installer {
                 None
             },
         })
+    }
+
+    /// Pick `version` from the list: its manifest replaces the latest one, so
+    /// the download, its size and the summary follow the choice.
+    fn choose_version(&mut self, version: String, cx: &mut Context<Self>) {
+        if self.chosen_version.as_deref() == Some(version.as_str()) {
+            return;
+        }
+        self.chosen_version = Some(version.clone());
+        self.online = None;
+        self.sentient_version = format!("{version} (downloaded)").into();
+        cx.notify();
+        let native = self.engine == Engine::Native;
+        let task = cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    let m = sentient_installer_core::manifest::fetch(&sentient_installer_core::manifest::release_url(&version))?;
+                    // A Docker install pulls the image; only a native one needs this computer's files.
+                    if native {
+                        m.wanted()?;
+                    }
+                    Ok(m)
+                })
+                .await;
+            this.update(cx, |page, cx| {
+                page.online = Some(found);
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
     }
 
     /// No package, but the latest release was found online.

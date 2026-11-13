@@ -13,7 +13,7 @@
 //! --job remove-manager                  (the Platform Manager installed alone)
 //! --job [--json] migrate <stock|timescaledb|clickhouse>
 //! --job resume-migration
-//! --job update [<package folder> | --latest] [--accept-breaking]
+//! --job update [<package folder> | --latest | --version <release>] [--accept-breaking]
 //! --job rollback                        (back to what the last update replaced)
 //! --job rollback-info
 //! --job find-existing                   (SENTIENT instances the Platform Manager does not manage yet)
@@ -38,7 +38,7 @@ use sentient_installer_core::native::safe_update::RollbackPoint;
 use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
-update [<package folder> | --latest] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
+update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
 use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name> | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
 
@@ -260,7 +260,40 @@ pub fn run(args: &[String]) -> i32 {
         "resume-migration" => crate::migration::resume(record, sink.clone()),
         "update" => {
             let accept = args.iter().any(|a| a == "--accept-breaking");
-            let mut package = args.iter().skip(1).find(|a| !a.starts_with("--")).map(PathBuf::from);
+            // --version <v>: that published release (a package downloaded and
+            // checked, or that image tag). Older than installed goes through
+            // the same dry run, which refuses a database it cannot run on.
+            let version = args.windows(2).find(|w| w[0] == "--version").map(|w| w[1].clone());
+            if args.iter().any(|a| a == "--version") && version.as_deref().is_none_or(|v| v.starts_with("--")) {
+                eprintln!("✗ --version needs a release number, e.g. --version 4.4.0.1");
+                return 1;
+            }
+            let mut record = record;
+            let mut package = args
+                .iter()
+                .skip(1)
+                .enumerate()
+                .find(|(i, a)| !a.starts_with("--") && args.get(*i).is_none_or(|prev| prev != "--version"))
+                .map(|(_, a)| PathBuf::from(a));
+            if let Some(v) = &version {
+                if let Some(installed) = Some(record.sentient_version.as_str()).filter(|s| !s.is_empty()) {
+                    if sentient_installer_core::releases::movement(v, installed) == sentient_installer_core::releases::Move::Same {
+                        eprintln!("✗ SENTIENT {v} is already installed.");
+                        return 1;
+                    }
+                }
+                if record.platform().needs_package() {
+                    match crate::online::download(Some(v), &sink) {
+                        Ok((_, dir)) => package = Some(dir),
+                        Err(e) => {
+                            eprintln!("✗ {e}");
+                            return 1;
+                        }
+                    }
+                } else {
+                    record.stack.image = crate::manager::update::retag(&record.stack.image, v);
+                }
+            }
             // --latest: the newest release from the releases repository.
             if package.is_none() && args.iter().any(|a| a == "--latest") && record.platform().needs_package() {
                 match crate::online::download(None, &sink) {

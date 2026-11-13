@@ -158,6 +158,50 @@ pub fn is_sentient(r: &Release) -> bool {
     !r.tag_name.starts_with("gateway-")
 }
 
+/// A plain release number such as `4.4.0.1`: digits in at least three
+/// dot-separated parts. Not `nightly`, `gateway-4.16.1`,
+/// `SENTIENT-mobile-app-1.2.0` or `4.4.0.1-rc1`.
+pub fn is_numbered(tag: &str) -> bool {
+    let parts: Vec<&str> = tag.split('.').collect();
+    parts.len() >= 3 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The SENTIENT versions an operator can pick from, newest first: published
+/// full releases with a plain number. Pre-releases, nightlies, drafts and the
+/// other products sharing the repository are left out.
+pub fn numbered(releases: &[Release]) -> Vec<&Release> {
+    let mut out: Vec<&Release> =
+        releases.iter().filter(|r| !r.draft && !r.prerelease && is_numbered(&r.tag_name)).collect();
+    out.sort_by(|a, b| compare(&b.tag_name, &a.tag_name));
+    out
+}
+
+/// Where a chosen version is from the installed one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Move {
+    Newer,
+    Same,
+    /// Going back. Allowed only when that version runs on the database as
+    /// it is now: its own schema check (the update's dry run) refuses a
+    /// database a newer version already changed, before anything changes.
+    Older,
+}
+
+pub fn movement(target: &str, installed: &str) -> Move {
+    match compare(target, installed) {
+        Ordering::Greater => Move::Newer,
+        Ordering::Equal => Move::Same,
+        Ordering::Less => Move::Older,
+    }
+}
+
+impl Release {
+    /// Whether the release carries a file of this name.
+    pub fn has_asset(&self, name: &str) -> bool {
+        self.assets.iter().any(|a| a.name == name)
+    }
+}
+
 /// Whether `candidate` is newer than `installed`. A nightly is newer when it
 /// differs at all: its version names the build, not an order.
 pub fn is_newer(candidate: &str, installed: &str, nightly: bool) -> bool {
@@ -300,6 +344,45 @@ mod tests {
         let nightly = on_channel(&all, Channel::Nightly, is_sentient);
         assert_eq!(nightly.len(), 1);
         assert!(nightly[0].is_nightly());
+    }
+
+    #[test]
+    fn only_plain_numbered_full_releases_are_offered_newest_first() {
+        let mut draft = rel("4.4.0.2", false);
+        draft.draft = true;
+        let all = vec![
+            rel("4.3.0.58", false),
+            rel("gateway-4.16.1", false),
+            rel("SENTIENT-mobile-app-1.2.0", false),
+            rel("nightly", true),
+            rel("4.4.0.1", false),
+            rel("4.4.0.2-rc1", true),
+            rel("4.3.0.100", false),
+            rel("4.3.0.9", false),
+            draft,
+        ];
+        let tags: Vec<&str> = numbered(&all).iter().map(|r| r.tag_name.as_str()).collect();
+        assert_eq!(tags, ["4.4.0.1", "4.3.0.100", "4.3.0.58", "4.3.0.9"]);
+    }
+
+    #[test]
+    fn numbered_tags() {
+        assert!(is_numbered("4.4.0.1"));
+        assert!(is_numbered("4.3.0"));
+        assert!(!is_numbered("4.3"));
+        assert!(!is_numbered("v4.4.0.1"));
+        assert!(!is_numbered("4.4.0.1-rc1"));
+        assert!(!is_numbered("gateway-4.16.1"));
+        assert!(!is_numbered("4..0.1"));
+        assert!(!is_numbered("nightly"));
+    }
+
+    #[test]
+    fn choosing_older_is_a_move_back() {
+        assert_eq!(movement("4.4.0.1", "4.3.0.58"), Move::Newer);
+        assert_eq!(movement("4.4.0.1", "4.4.0.1"), Move::Same);
+        assert_eq!(movement("4.3.0.58", "4.4.0.1"), Move::Older);
+        assert_eq!(movement("4.3.0.9", "4.3.0.10"), Move::Older);
     }
 
     #[test]

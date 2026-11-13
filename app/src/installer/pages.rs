@@ -7,6 +7,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     input::{Input, InputState},
+    menu::{DropdownMenu as _, PopupMenuItem},
     progress::Progress,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -68,6 +69,40 @@ impl Installer {
             FINISH => self.finish(window, cx).into_any_element(),
             _ => div().into_any_element(),
         }
+    }
+
+    /// With no package next to Setup: the published versions to install,
+    /// the newest picked. None when the list could not be read (the latest
+    /// release alone, as before) or a package is next to Setup.
+    fn version_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        if self.bundle.is_some() || self.manager_only {
+            return None;
+        }
+        let list = match &self.versions {
+            Some(Ok(list)) if !list.is_empty() => list.clone(),
+            _ => return None,
+        };
+        let chosen = self.chosen_version.clone().unwrap_or_else(|| list[0].version.clone());
+        let this = cx.entity().downgrade();
+        Some(
+            Button::new("sentient-version")
+                .outline()
+                .small()
+                .label(format!("{chosen} ▾"))
+                .dropdown_menu(move |menu, _, _| {
+                    let mut menu = menu.max_h(px(320.)).scrollable(true);
+                    for v in &list {
+                        let this = this.clone();
+                        let pick = v.version.clone();
+                        let label = if v.version == list[0].version { format!("{} (newest)", v.label()) } else { v.label() };
+                        menu = menu.item(PopupMenuItem::new(label).checked(v.version == chosen).on_click(move |_, _, cx| {
+                            let pick = pick.clone();
+                            this.update(cx, |page, cx| page.choose_version(pick, cx)).ok();
+                        }));
+                    }
+                    menu
+                }),
+        )
     }
 
     fn welcome(&mut self, cx: &mut Context<Self>) -> Div {
@@ -156,7 +191,10 @@ impl Installer {
                     .gap_3()
                     .child(ui::panel(&theme).flex_1().gap_1()
                         .child(div().text_xs().text_color(theme.muted_foreground).child("SENTIENT"))
-                        .child(div().font_weight(FontWeight::MEDIUM).child(self.sentient_version.clone())))
+                        .child(match self.version_menu(cx) {
+                            Some(menu) => h_flex().child(menu).into_any_element(),
+                            None => div().font_weight(FontWeight::MEDIUM).child(self.sentient_version.clone()).into_any_element(),
+                        }))
                     .child(ui::panel(&theme).flex_1().gap_1()
                         .child(div().text_xs().text_color(theme.muted_foreground).child("Platform Manager"))
                         .child(div().font_weight(FontWeight::MEDIUM).child(crate::updates::manager_version())))
