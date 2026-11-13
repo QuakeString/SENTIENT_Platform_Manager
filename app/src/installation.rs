@@ -41,10 +41,11 @@ pub struct InstallationRecord {
     pub stack: DeployConfig,
     /// RFC 3339.
     pub installed_at: String,
-    /// The kiosk shortcut was chosen at install: "Open SENTIENT" opens the
-    /// same full-screen window. False in records from before it was kept.
+    /// Whether the kiosk shortcut was chosen at install: "Open SENTIENT"
+    /// opens the same full-screen window, else the normal browser. None in
+    /// records from before the choice was kept.
     #[serde(default)]
-    pub kiosk: bool,
+    pub kiosk: Option<bool>,
 }
 
 impl InstallationRecord {
@@ -79,10 +80,11 @@ impl InstallationRecord {
         self.stack.flavor
     }
 
-    /// Whether "Open SENTIENT" opens it full screen: chosen at install, or
-    /// the kiosk shortcut is there (an install from before it was recorded).
+    /// Whether "Open SENTIENT" opens it full screen: as chosen at install;
+    /// for an install from before the choice was recorded, whether its kiosk
+    /// shortcut is there. Not chosen: the normal browser.
     pub fn opens_as_kiosk(&self) -> bool {
-        self.kiosk || sentient_installer_core::kiosk::shortcut_exists()
+        self.kiosk.unwrap_or_else(sentient_installer_core::kiosk::shortcut_exists)
     }
 
     pub fn url(&self) -> String {
@@ -133,7 +135,7 @@ impl InstallationRecord {
             state_dir: PathBuf::from("/var/lib/sentient"),
             stack: DeployConfig::default(),
             installed_at: String::new(),
-            kiosk: false,
+            kiosk: None,
         };
         record.native_config()
     }
@@ -290,10 +292,14 @@ mod tests {
     fn records_from_before_the_kiosk_choice_still_load() {
         let old = r#"{"sentient_version":"4.3.0.58","manager_version":"0.8.0","engine":"native","install_dir":"C:/SENTIENT","pg_dir":"C:/SENTIENT/pg","state_dir":"C:/ProgramData/SENTIENT","stack":{},"installed_at":"2026-11-09T10:00:00Z"}"#;
         let r: InstallationRecord = serde_json::from_str(old).unwrap();
-        assert!(!r.kiosk);
-        let mut r2 = r.clone();
-        r2.kiosk = true;
-        let back: InstallationRecord = serde_json::from_str(&serde_json::to_string(&r2).unwrap()).unwrap();
-        assert!(back.kiosk);
+        assert_eq!(r.kiosk, None);
+        for chosen in [true, false] {
+            let mut r2 = r.clone();
+            r2.kiosk = Some(chosen);
+            let back: InstallationRecord = serde_json::from_str(&serde_json::to_string(&r2).unwrap()).unwrap();
+            assert_eq!(back.kiosk, Some(chosen));
+            // A recorded choice wins over whatever shortcut is on the computer.
+            assert_eq!(back.opens_as_kiosk(), chosen);
+        }
     }
 }

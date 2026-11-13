@@ -102,7 +102,7 @@ fn record_for_docker(cfg: &DeployConfig, version: Option<String>) -> Installatio
         state_dir: dir,
         stack,
         installed_at: chrono::Utc::now().to_rfc3339(),
-        kiosk: false,
+        kiosk: None,
     }
 }
 
@@ -172,7 +172,7 @@ fn native_record(cfg: &sentient_installer_core::native::NativeConfig) -> Install
         state_dir: cfg.state_dir.clone(),
         stack,
         installed_at: chrono::Utc::now().to_rfc3339(),
-        kiosk: false,
+        kiosk: None,
     }
 }
 

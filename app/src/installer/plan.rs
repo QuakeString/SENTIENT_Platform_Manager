@@ -133,7 +133,7 @@ impl InstallPlan {
             state_dir: self.state_dir(),
             stack,
             installed_at: chrono::Utc::now().to_rfc3339(),
-            kiosk: self.shortcuts.kiosk,
+            kiosk: Some(self.shortcuts.kiosk),
         }
     }
 }
