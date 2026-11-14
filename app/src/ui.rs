@@ -41,14 +41,14 @@ pub fn open_url(url: &str, cx: &mut App) {
     cx.open_url(url);
 }
 
-/// Open SENTIENT on `port`: full screen with the kiosk shortcut's command
-/// when the install chose it (`kiosk`), else in the default browser. Falls
-/// back to the default browser when no kiosk browser is found.
+/// Open SENTIENT on `port`: full screen like the kiosk shortcut when the
+/// install chose it (`kiosk`: the same `--open-sentient --kiosk` command,
+/// starting page included), else in the default browser.
 pub fn open_sentient(port: u16, kiosk: bool, cx: &mut App) {
     if kiosk {
-        if let Some((exe, args)) = sentient_installer_core::kiosk::kiosk_command(port) {
-            let mut command = std::process::Command::new(exe);
-            command.args(args);
+        if let Ok(me) = std::env::current_exe() {
+            let mut command = std::process::Command::new(me);
+            command.args(sentient_installer_core::kiosk::KIOSK_LAUNCH_ARGS.split(' '));
             #[cfg(target_os = "linux")]
             if let Some(wayland) = std::env::var_os(ORIGINAL_WAYLAND) {
                 command.env("WAYLAND_DISPLAY", wayland);

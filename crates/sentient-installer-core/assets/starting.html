@@ -1,0 +1,96 @@
+<!doctype html>
+<!-- Copyright © 2016-2026 The SENTIENT Authors -->
+<!-- Shown in the browser while SENTIENT starts (after a reboot its services
+     start a little after sign-in). It asks SENTIENT every few seconds and
+     opens it as soon as it answers, so a kiosk window never sits on the
+     browser's error page. Port: ?port=8080. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SENTIENT is starting</title>
+<style>
+  :root {
+    --bg: #eeeeee; --panel: #ffffff; --fg: rgba(0,0,0,.87); --muted: rgba(0,0,0,.54);
+    --border: rgba(0,0,0,.12); --primary: #187074; --track: rgba(24,112,116,.18);
+    --warn-bg: #fef3c7; --warn-fg: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #21282a; --panel: #2d363b; --fg: rgba(255,255,255,.87); --muted: rgba(255,255,255,.6);
+      --border: rgba(255,255,255,.12); --primary: #26a69a; --track: rgba(38,166,154,.22);
+      --warn-bg: rgba(251,191,36,.14); --warn-fg: #fcd34d;
+    }
+  }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 14px/1.5 "Segoe UI", Roboto, "Noto Sans", Ubuntu, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .panel {
+    width: min(480px, calc(100vw - 32px)); box-sizing: border-box;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 28px 28px 24px;
+  }
+  .brand { color: var(--primary); font-size: 22px; font-weight: 500; letter-spacing: .02em; }
+  .row { display: flex; align-items: center; gap: 12px; margin-top: 20px; }
+  .spinner {
+    width: 20px; height: 20px; flex: none; border-radius: 50%;
+    border: 3px solid var(--track); border-top-color: var(--primary);
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .title { font-size: 16px; font-weight: 500; }
+  .muted { color: var(--muted); margin-top: 6px; }
+  .warn {
+    display: none; margin-top: 20px; padding: 12px 14px; border-radius: 6px;
+    background: var(--warn-bg); color: var(--warn-fg);
+  }
+  .warn.show { display: block; }
+  .warn b { display: block; margin-bottom: 6px; }
+  .warn ul { margin: 0; padding-left: 18px; }
+  .warn li { margin: 2px 0; }
+</style>
+</head>
+<body>
+<div class="panel">
+  <div class="brand">SENTIENT</div>
+  <div class="row"><div class="spinner"></div><div class="title">SENTIENT is starting…</div></div>
+  <div class="muted" id="sub">It opens here by itself as soon as it is ready. After a restart this takes a minute or two.</div>
+  <div class="warn" id="warn">
+    <b>SENTIENT has not answered for <span id="mins">3</span> minutes.</b>
+    <ul>
+      <li>Open the SENTIENT Platform Manager: Status shows whether SENTIENT and its database are running, and Control starts them.</li>
+      <li>The Platform Manager's Logs show why SENTIENT stopped, if it did.</li>
+      <li>Check that no other program uses port <span id="port">8080</span>.</li>
+    </ul>
+    This page keeps trying and opens SENTIENT once it answers.
+  </div>
+</div>
+<script>
+  var query = new URLSearchParams(location.search);
+  var port = parseInt(query.get("port"), 10) || 8080;
+  var target = "http://localhost:" + port + "/";
+  var started = Date.now();
+  // ?warn=<seconds> only for checking the page itself.
+  var WARN_AFTER = (parseInt(query.get("warn"), 10) || 180) * 1000;
+  document.getElementById("port").textContent = port;
+
+  function tick() {
+    var waited = Date.now() - started;
+    if (waited >= WARN_AFTER) {
+      document.getElementById("mins").textContent = Math.max(1, Math.floor(waited / 60000));
+      document.getElementById("warn").className = "warn show";
+    }
+    // An opaque answer is enough: anything at all means SENTIENT's server is up.
+    var ctl = window.AbortController ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 4000);
+    fetch(target + "login?probe=" + Date.now(), { mode: "no-cors", cache: "no-store", signal: ctl ? ctl.signal : undefined })
+      .then(function () { clearTimeout(timer); location.replace(target); })
+      .catch(function () { clearTimeout(timer); setTimeout(tick, 3000); });
+  }
+  tick();
+</script>
+</body>
+</html>

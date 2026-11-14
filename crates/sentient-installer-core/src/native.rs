@@ -1154,7 +1154,6 @@ fn register_app_service(cfg: &NativeConfig) -> Result<(), String> {
   <onfailure action="restart" delay="30 sec"/>
   <resetfailure>1 hour</resetfailure>
   <startmode>Automatic</startmode>
-  <delayedAutoStart>true</delayedAutoStart>
   <stoptimeout>20 sec</stoptimeout>
   <depend>{PG_SERVICE}</depend>
 </service>

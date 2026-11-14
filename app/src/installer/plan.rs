@@ -389,7 +389,7 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
     let url = format!("http://localhost:{}", plan.stack.http_port);
     self_install::create_shortcuts(&manager, &url, &plan.shortcuts)?;
     if plan.shortcuts.kiosk {
-        sentient_installer_core::kiosk::create_shortcut(&sink, plan.stack.http_port, &plan.state_dir())?;
+        sentient_installer_core::kiosk::create_shortcut(&sink, &manager, &plan.state_dir())?;
     }
     if plan.shortcuts.open_at_signin {
         sentient_installer_core::kiosk::set_open_at_signin(&sink, &manager, Some(true))?;

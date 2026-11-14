@@ -179,11 +179,29 @@ mod imp {
         let _ = quiet("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).spawn();
     }
 
-    /// Start with Windows (delayed automatic) or by hand.
+    /// Start with Windows or by hand. Automatic, not delayed: a delayed
+    /// service starts about two minutes after sign-in, and an operator screen
+    /// waits that long for SENTIENT. PostgreSQL still comes first, as
+    /// SENTIENT's service depends on it.
     pub fn set_autostart(services: &[&str], automatic: bool) {
-        let mode = if automatic { "delayed-auto" } else { "demand" };
+        let mode = if automatic { "auto" } else { "demand" };
         for service in services {
             let _ = quiet("sc.exe").args(["config", service, "start=", mode]).output();
+        }
+    }
+
+    /// Services an earlier Platform Manager set to start delayed, moved to
+    /// a plain automatic start (set_autostart). Manual ones stay manual.
+    pub fn undelay_autostart(services: &[&str]) {
+        for service in services {
+            let delayed = quiet("sc.exe")
+                .args(["qc", service])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).contains("(DELAYED)"))
+                .unwrap_or(false);
+            if delayed {
+                let _ = quiet("sc.exe").args(["config", service, "start=", "auto"]).output();
+            }
         }
     }
 
@@ -338,6 +356,9 @@ mod imp {
     /// machine; nothing to change.
     pub fn set_autostart(_services: &[&str], _automatic: bool) {}
 
+    #[allow(dead_code)]
+    pub fn undelay_autostart(_services: &[&str]) {}
+
     pub fn write_record(path: &Path, json: &str) -> Result<(), String> {
         // No password prompt when this user may write it anyway.
         if path.parent().is_some_and(|d| d.is_dir()) && std::fs::write(path, json).is_ok() {
@@ -355,6 +376,26 @@ mod imp {
 
     pub fn remove_record(path: &Path) {
         let _ = run(&noop(), &format!("rm -f {}", q(&path.display().to_string())));
+    }
+}
+
+/// Bring an install made by an earlier Platform Manager up to date with
+/// how this one sets up operator screens: SENTIENT's services start with
+/// Windows without the two-minute delay, and an existing kiosk shortcut runs
+/// the starting page (`--open-sentient --kiosk`) instead of the browser
+/// straight on SENTIENT. Run after the manager updates itself and on repair.
+pub fn refresh_operator_screen(sink: &sentient_installer_core::progress::ProgressFn) {
+    #[cfg(windows)]
+    {
+        use sentient_installer_core::native::{APP_SERVICE, PG_SERVICE};
+        undelay_autostart(&[PG_SERVICE, APP_SERVICE]);
+    }
+    if sentient_installer_core::kiosk::shortcut_exists() {
+        if let Some(record) = crate::installation::InstallationRecord::load() {
+            if let Err(e) = sentient_installer_core::kiosk::create_shortcut(sink, &manager_exe(), &record.state_dir) {
+                sink(sentient_installer_core::progress::Progress::Log { line: format!("The kiosk shortcut was not renewed: {e}") });
+            }
+        }
     }
 }
 

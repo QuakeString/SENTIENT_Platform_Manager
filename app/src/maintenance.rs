@@ -91,6 +91,7 @@ fn run_update(record: InstallationRecord, sink: ProgressFn) -> Result<(), String
     let mut updated = crate::updating::run(record, bundle.as_deref(), false, sink.clone())?;
     step(&sink, "Updating the Platform Manager");
     self_install::install_manager()?;
+    self_install::refresh_operator_screen(&sink);
     updated.manager_version = crate::updates::manager_version().into();
     save_record(&updated)?;
     Ok(())
@@ -130,6 +131,7 @@ pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result
     let message = match self_install::install_manager() {
         Ok(manager) => {
             self_install::restore_menu_entry(&manager);
+            self_install::refresh_operator_screen(&sink);
             "Repaired: SENTIENT is running.".to_string()
         }
         Err(e) => {

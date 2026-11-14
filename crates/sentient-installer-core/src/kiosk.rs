@@ -26,38 +26,82 @@ impl Browser {
             Browser::Firefox => "Firefox",
         }
     }
-    /// Arguments that open SENTIENT on `port`, full screen (`kiosk`) or in
-    /// an ordinary window. Restore-session prompts are kept off: after a
-    /// power cut the operator screen should simply show SENTIENT.
-    pub fn launch_args(self, port: u16, kiosk: bool) -> Vec<String> {
-        let url = format!("http://localhost:{port}");
-        let mut a: Vec<String> = match self {
-            Browser::Chrome => [
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--noerrdialogs",
-                "--disable-session-crashed-bubble",
-                "--hide-crash-restore-bubble",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-            Browser::Firefox => Vec::new(),
-        };
-        a.push(if kiosk { "--kiosk".into() } else { "--new-window".into() });
-        a.push(url);
+    /// Arguments that open `url`, full screen (`kiosk`) or in an ordinary
+    /// window. Restore-session prompts are kept off: after a power cut the
+    /// operator screen should simply show SENTIENT.
+    ///
+    /// A kiosk gets a browser profile of its own (`profile`): a browser that
+    /// is already running with the user's profile would otherwise take the
+    /// address into one of its existing windows instead of opening a full
+    /// screen one.
+    pub fn open_args(self, url: &str, kiosk: bool, profile: Option<&Path>) -> Vec<String> {
+        let mut a: Vec<String> = Vec::new();
+        match self {
+            Browser::Chrome => {
+                if kiosk {
+                    a.push("--kiosk".into());
+                    if let Some(dir) = profile {
+                        a.push(format!("--user-data-dir={}", dir.display()));
+                    }
+                } else {
+                    a.push("--new-window".into());
+                }
+                a.extend(
+                    [
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                        "--noerrdialogs",
+                        "--disable-session-crashed-bubble",
+                        "--hide-crash-restore-bubble",
+                    ]
+                    .iter()
+                    .map(|s| s.to_string()),
+                );
+            }
+            Browser::Firefox => {
+                if kiosk {
+                    a.push("--kiosk".into());
+                    if let Some(dir) = profile {
+                        a.extend(["--new-instance".into(), "--profile".into(), dir.display().to_string()]);
+                    }
+                } else {
+                    a.push("--new-window".into());
+                }
+            }
+        }
+        a.push(url.into());
         a
     }
+}
 
-    /// Kiosk command-line arguments (the URL is appended by the caller).
-    fn kiosk_args(self, port: u16) -> String {
-        match self {
-            Browser::Chrome => format!(
-                "--kiosk --no-first-run --no-default-browser-check http://localhost:{port}"
-            ),
-            Browser::Firefox => format!("--kiosk http://localhost:{port}"),
+/// The page shown while SENTIENT starts: it waits for SENTIENT and then
+/// opens it (assets/starting.html).
+pub const STARTING_PAGE: &str = include_str!("../assets/starting.html");
+
+/// Write the starting page into `dir` and give its address for SENTIENT on
+/// `port`: `file:///C:/Users/op/AppData/Local/SENTIENT/starting.html?port=8080`.
+pub fn starting_page(dir: &Path, port: u16) -> Result<String, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let page = dir.join("starting.html");
+    std::fs::write(&page, STARTING_PAGE).map_err(|e| format!("write {}: {e}", page.display()))?;
+    Ok(format!("{}?port={port}", file_url(&page)))
+}
+
+/// `C:\Users\a b\x.html` → `file:///C:/Users/a%20b/x.html`; `/home/a/x.html`
+/// → `file:///home/a/x.html`.
+fn file_url(path: &Path) -> String {
+    let s = path.to_string_lossy().replace('\\', "/");
+    let mut out = String::from("file://");
+    if !s.starts_with('/') {
+        out.push('/');
+    }
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' | b':' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
         }
     }
+    out
 }
 
 /// Google's silent-install enterprise MSI.
@@ -205,13 +249,16 @@ fn ps_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-/// Ensure a browser, then create Desktop + Start Menu kiosk shortcuts pointing at
-/// `http://localhost:<port>`, using the embedded SENTIENT icon.
-pub fn create_shortcut(sink: &ProgressFn, port: u16, work_dir: &Path) -> Result<(), String> {
+/// Ensure a browser, then create Desktop + Start Menu kiosk shortcuts, with
+/// the embedded SENTIENT icon. They run `launcher --open-sentient --kiosk`
+/// (the Platform Manager), which opens the browser full screen on the
+/// starting page: SENTIENT appears as soon as it answers, never an error page.
+pub fn create_shortcut(sink: &ProgressFn, launcher: &Path, work_dir: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let (browser, exe) = ensure_browser(sink, work_dir)?;
-        let args = browser.kiosk_args(port);
+        let (browser, _) = ensure_browser(sink, work_dir)?;
+        let exe = launcher.to_path_buf();
+        let args = KIOSK_LAUNCH_ARGS.to_string();
 
         // Drop the icon next to the app data so the shortcut always has it.
         std::fs::create_dir_all(work_dir).ok();
@@ -272,14 +319,14 @@ foreach ($dir in $targets) {{
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = work_dir;
-        let (browser, exe) = detect().ok_or_else(|| {
+        let (browser, _) = detect().ok_or_else(|| {
             "No supported browser found (Chromium, Chrome, Brave, Edge or Firefox). Install one and add the kiosk shortcut again.".to_string()
         })?;
         sink(Progress::Step { name: "Creating the SENTIENT desktop launcher".into() });
         let entry = format!(
             "[Desktop Entry]\nType=Application\nName=SENTIENT\nComment=Launch SENTIENT (kiosk mode)\n\
              Exec={} {}\nIcon=sentient-platform-manager\nTerminal=false\nCategories=Network;\nStartupNotify=true\n",
-            exe.display(), browser.kiosk_args(port)
+            launcher.display(), KIOSK_LAUNCH_ARGS
         );
         for path in desktop_entry_paths() {
             if let Some(dir) = path.parent() {
@@ -296,17 +343,9 @@ foreach ($dir in $targets) {{
     }
 }
 
-/// The command the kiosk shortcut runs: the detected browser, full screen on
-/// SENTIENT at `port`. None when no supported browser is installed.
-pub fn kiosk_command(port: u16) -> Option<(PathBuf, Vec<String>)> {
-    let (browser, exe) = detect()?;
-    Some((exe, kiosk_argv(browser, port)))
-}
-
-/// The kiosk shortcut's arguments, as a list.
-fn kiosk_argv(browser: Browser, port: u16) -> Vec<String> {
-    browser.kiosk_args(port).split_whitespace().map(str::to_string).collect()
-}
+/// What the kiosk shortcut and the sign-in entry pass to the Platform
+/// Manager (`--open-sentient`, see the app's open_client).
+pub const KIOSK_LAUNCH_ARGS: &str = "--open-sentient --kiosk";
 
 /// Whether the kiosk shortcut `create_shortcut` makes is on this computer:
 /// tells an install from before the kiosk choice was recorded.
@@ -466,11 +505,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opening_sentient_as_kiosk_uses_the_shortcuts_arguments() {
+    fn a_kiosk_gets_its_own_full_screen_browser_instance() {
+        let profile = Path::new("/home/op/.local/share/sentient/kiosk-browser");
+        let chrome = Browser::Chrome.open_args("file:///x/starting.html?port=8080", true, Some(profile));
+        assert_eq!(chrome[0], "--kiosk");
+        assert!(chrome.contains(&"--user-data-dir=/home/op/.local/share/sentient/kiosk-browser".to_string()));
+        assert_eq!(chrome.last().unwrap(), "file:///x/starting.html?port=8080");
+        let firefox = Browser::Firefox.open_args("u", true, Some(profile));
+        assert_eq!(firefox, ["--kiosk", "--new-instance", "--profile", "/home/op/.local/share/sentient/kiosk-browser", "u"]);
+        // A browser window (not kiosk) uses the operator's own profile.
+        let window = Browser::Chrome.open_args("u", false, Some(profile));
+        assert_eq!(window[0], "--new-window");
+        assert!(!window.iter().any(|a| a.starts_with("--user-data-dir")));
+    }
+
+    #[test]
+    fn the_starting_page_is_a_file_url_with_the_port() {
+        assert_eq!(file_url(Path::new("/home/op/a b/starting.html")), "file:///home/op/a%20b/starting.html");
         assert_eq!(
-            kiosk_argv(Browser::Chrome, 8080),
-            ["--kiosk", "--no-first-run", "--no-default-browser-check", "http://localhost:8080"]
+            file_url(Path::new(r"C:\Users\op\AppData\Local\SENTIENT\starting.html")),
+            "file:///C:/Users/op/AppData/Local/SENTIENT/starting.html"
         );
-        assert_eq!(kiosk_argv(Browser::Firefox, 9090), ["--kiosk", "http://localhost:9090"]);
+        let dir = std::env::temp_dir().join(format!("spm-starting-{}", std::process::id()));
+        let url = starting_page(&dir, 9090).unwrap();
+        assert!(url.ends_with("/starting.html?port=9090"));
+        assert!(std::fs::read_to_string(dir.join("starting.html")).unwrap().contains("SENTIENT is starting"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
