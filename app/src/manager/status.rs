@@ -205,6 +205,7 @@ impl Render for StatusPage {
             None => ("Checking…", Tone::Neutral),
             Some(s) if s.serving => ("SENTIENT is running", Tone::Good),
             Some(s) if s.services.iter().any(|svc| svc.running) => ("Starting or partly stopped", Tone::Warn),
+            Some(s) if s.services.iter().any(|svc| svc.starting) => ("SENTIENT is starting with Windows", Tone::Warn),
             Some(_) => ("SENTIENT is stopped", Tone::Bad),
         };
         let services = self.snapshot.as_ref().map(|s| s.services.clone()).unwrap_or_default();
@@ -263,8 +264,8 @@ impl Render for StatusPage {
                         .text_sm()
                         .child(ui::pill(
                             &theme,
-                            if svc.running { Tone::Good } else { Tone::Bad },
-                            if svc.running { "Running" } else { "Stopped" },
+                            if svc.running { Tone::Good } else if svc.starting { Tone::Warn } else { Tone::Bad },
+                            if svc.running { "Running" } else if svc.starting { "Starting" } else { "Stopped" },
                         ))
                         .child(div().w_48().child(svc.name))
                         .child(div().text_color(theme.muted_foreground).child(svc.detail))

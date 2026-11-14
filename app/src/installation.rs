@@ -195,6 +195,9 @@ pub fn flavor_label(flavor: Flavor) -> &'static str {
 pub struct Service {
     pub name: String,
     pub running: bool,
+    /// Not running yet but on its way (a service that starts with Windows,
+    /// just after a restart).
+    pub starting: bool,
     pub detail: String,
 }
 
@@ -224,6 +227,7 @@ impl Platform {
                     .into_iter()
                     .map(|s| Service {
                         running: s.state == "running",
+                        starting: s.state == "start_pending",
                         name: s.name,
                         detail: s.status,
                     })
@@ -235,6 +239,7 @@ impl Platform {
                     services.push(Service {
                         name: "ClickHouse (WSL2)".into(),
                         running: up,
+                        starting: false,
                         detail: if up {
                             format!("Answering on 127.0.0.1:{}", cfg.ch_http_port)
                         } else {
@@ -254,6 +259,7 @@ impl Platform {
                         .into_iter()
                         .map(|c| Service {
                             running: c.state == "running",
+                            starting: false,
                             name: c.name,
                             detail: c.status,
                         })

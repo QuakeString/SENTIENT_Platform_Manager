@@ -324,6 +324,25 @@ fn service_exists(name: &str) -> bool {
     sc(&["query", name]).map(|(ok, _, _)| ok).unwrap_or(false)
 }
 
+/// Windows started less than five minutes ago.
+#[cfg(windows)]
+fn just_booted() -> bool {
+    // SAFETY: no arguments; reads the system's uptime.
+    let up_ms = unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() };
+    up_ms < 5 * 60 * 1000
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
+fn just_booted() -> bool {
+    false
+}
+
+/// The service is set to start with Windows (delayed or not).
+#[cfg(not(target_os = "linux"))]
+fn starts_with_windows(name: &str) -> bool {
+    matches!(sc(&["qc", name]), Some((true, out, _)) if sys::decode(&out).contains("AUTO_START"))
+}
+
 fn service_state(name: &str) -> String {
     match sc(&["query", name]) {
         Some((true, out, _)) => {
@@ -1284,11 +1303,17 @@ pub fn status(cfg: &NativeConfig) -> NativeStatus {
     let services = [PG_SERVICE, APP_SERVICE]
         .iter()
         .map(|n| {
-            let state = service_state(n);
+            let mut state = service_state(n);
+            // Just after a restart a service that starts with Windows has not
+            // been started yet: say so, rather than "Stopped".
+            if state == "stopped" && just_booted() && starts_with_windows(n) {
+                state = "start_pending".into();
+            }
             ServiceStatus {
                 name: (*n).to_string(),
                 status: match state.as_str() {
                     "running" => "Running".into(),
+                    "start_pending" => "Starting".into(),
                     "stopped" => "Stopped".into(),
                     "absent" => "Not installed".into(),
                     other => other.to_string(),
