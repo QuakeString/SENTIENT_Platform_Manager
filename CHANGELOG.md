@@ -15,7 +15,16 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.8.0-rc11] - 2026-11-14
+
+ClickHouse on Windows survives restarts, an earlier install is removed with one button, TimescaleDB only when chosen, and Status shows the databases.
+
 ### Added
+- Status has a Database section: PostgreSQL's version, size, free disk (with
+  a low-disk warning), connections, largest tables and the last backup; on
+  PostgreSQL + ClickHouse installs also ClickHouse's version, disk use and
+  stored telemetry history
+  ([#14](https://github.com/QuakeString/SENTIENT_Platform_Manager/pull/14)).
 - Setup finds what an earlier SENTIENT install left on Windows (its services,
   PostgreSQL and its data, ClickHouse in WSL2 with its hidden account and disk,
   an old Docker install's WSL distribution) and removes all of it with one
@@ -231,7 +240,9 @@ The Platform Manager rebuilt on GPUI: one Setup program that installs SENTIENT w
 v0.2.0 to v0.6.6 (July 2026) were the Tauri Platform Manager. They were
 tagged without release notes and their installers are no longer available.
 
-[Unreleased]: https://github.com/QuakeString/SENTIENT_Platform_Manager/compare/v0.8.0-rc9...master
+[Unreleased]: https://github.com/QuakeString/SENTIENT_Platform_Manager/compare/v0.8.0-rc11...master
+[0.8.0-rc11]: https://github.com/QuakeString/SENTIENT_Platform_Manager/compare/v0.8.0-rc10...v0.8.0-rc11
+[0.8.0-rc10]: https://github.com/QuakeString/SENTIENT_Platform_Manager/compare/v0.8.0-rc9...v0.8.0-rc10
 [0.8.0-rc9]: https://github.com/QuakeString/SENTIENT_Platform_Manager/compare/v0.8.0-rc8...v0.8.0-rc9
 [0.8.0-rc8]: https://github.com/QuakeString/SENTIENT_Platform_Manager/compare/v0.8.0-rc6...v0.8.0-rc8
 [0.8.0-rc6]: https://github.com/QuakeString/SENTIENT_Platform_Manager/compare/v0.8.0-rc5...v0.8.0-rc6
