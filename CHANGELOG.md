@@ -12,7 +12,24 @@ the release.
 
 ## [Unreleased]
 
+## [0.8.0-rc10] - 2026-11-14
+
+Choose which SENTIENT version to install or update to, operator screens that show SENTIENT right after a restart, a start delay you set, coloured logs, and a cleaner uninstall.
+
 ### Added
+- Setup and the Update screen list the published SENTIENT versions to install
+  or update to, newest first; going back to an older version is allowed when it
+  runs on the database as it is, checked before anything changes
+  ([#13](https://github.com/QuakeString/SENTIENT_Platform_Manager/pull/13)).
+- Start delay: how long SENTIENT waits after Windows starts, 10 seconds by
+  default (0 starts it with Windows), set in Setup and changed later under
+  Control → Start with Windows
+  ([#13](https://github.com/QuakeString/SENTIENT_Platform_Manager/pull/13)).
+- Operator screens open at once on a "SENTIENT is starting…" page that shows
+  SENTIENT as soon as it answers, and says what to check if it does not
+  ([#13](https://github.com/QuakeString/SENTIENT_Platform_Manager/pull/13)).
+- Logs are coloured by level: errors red, warnings amber, debug and timestamps
+  muted ([#13](https://github.com/QuakeString/SENTIENT_Platform_Manager/pull/13)).
 - `scripts/release-notes.py`: release notes made from a repository's
   CHANGELOG.md (`extract`, `body`, `check`, and `draft` from git history).
 - `scripts/publish-sentient-release.sh --changelog <SENTIENT/CHANGELOG.md>`
@@ -25,6 +42,21 @@ the release.
 ### Changed
 - Update notices show the release's one-line summary instead of its whole
   notes; the full notes stay on the release page.
+- SENTIENT's services start with Windows without Windows' two-minute delayed
+  start; installs from earlier versions move to the 10 second start delay on
+  update or repair
+  ([#13](https://github.com/QuakeString/SENTIENT_Platform_Manager/pull/13)).
+- Status shows a service that is about to start with Windows as Starting, not
+  Stopped ([#13](https://github.com/QuakeString/SENTIENT_Platform_Manager/pull/13)).
+
+### Fixed
+- Open SENTIENT opens the full-screen (kiosk) window when the install chose
+  the kiosk shortcut, and the normal browser otherwise; a kiosk always gets its
+  own full-screen window
+  ([#13](https://github.com/QuakeString/SENTIENT_Platform_Manager/pull/13)).
+- Uninstall removes the kiosk shortcuts (shared and per account), the start
+  delay task and the kiosk's browser data
+  ([#13](https://github.com/QuakeString/SENTIENT_Platform_Manager/pull/13)).
 
 ## [0.8.0-rc9] - 2026-11-02
 
