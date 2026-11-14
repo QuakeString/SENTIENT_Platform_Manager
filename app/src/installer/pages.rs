@@ -465,26 +465,36 @@ impl Installer {
         };
         let existing = self.existing.clone().map(|where_| {
             let keep = self.keep_existing;
+            let delete = !keep && self.delete_existing;
             let flavor = self.flavor;
+            let native = self.engine == Engine::Native;
+            let kept_passwords = self.kept_passwords;
+            let choice = |id: &'static str, label: &'static str, selected: bool| {
+                let b = Button::new(id).label(label);
+                if selected { b.primary() } else { b.outline() }
+            };
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Earlier database found"))
                 .child(div().text_sm().child(where_))
                 .child(
                     h_flex()
                         .gap_2()
-                        .child({
-                            let b = Button::new("existing-keep").label("Keep using it").on_click(cx.listener(|this, _, _, cx| {
-                                this.keep_existing = true;
-                                cx.notify();
-                            }));
-                            if keep { b.primary() } else { b.outline() }
-                        })
-                        .child({
-                            let b = Button::new("existing-fresh").label("Start fresh").on_click(cx.listener(|this, _, _, cx| {
+                        .child(choice("existing-keep", "Keep using it", keep).on_click(cx.listener(|this, _, _, cx| {
+                            this.keep_existing = true;
+                            this.delete_existing = false;
+                            cx.notify();
+                        })))
+                        .child(choice("existing-fresh", "Start fresh", !keep && !delete).on_click(cx.listener(|this, _, _, cx| {
+                            this.keep_existing = false;
+                            this.delete_existing = false;
+                            cx.notify();
+                        })))
+                        .when(native, |row| {
+                            row.child(choice("existing-delete", "Delete it", delete).on_click(cx.listener(|this, _, _, cx| {
                                 this.keep_existing = false;
+                                this.delete_existing = true;
                                 cx.notify();
-                            }));
-                            if keep { b.outline() } else { b.primary() }
+                            })))
                         }),
                 )
                 .child(div().text_sm().text_color(theme.muted_foreground).child(if keep {
@@ -492,15 +502,21 @@ impl Installer {
                         "Its users, devices, dashboards and settings stay. Before anything is changed, the install checks that its history table fits {}: a plain one is converted for TimescaleDB, and a database that cannot work in this mode stops the install with the reason.",
                         flavor.map(crate::installation::flavor_label).unwrap_or("the chosen database")
                     )
+                } else if delete {
+                    "A new, empty database. The earlier SENTIENT database (and its ClickHouse history) is deleted when the install starts. This cannot be undone.".to_string()
                 } else {
                     "A new, empty database. The earlier one is not deleted: it is renamed (…_before_install_<date>) and listed under Kept on the Migration screen, where it can be removed.".to_string()
                 }))
-                .when(cfg!(windows) && self.engine == Engine::Native, |p| {
-                    p.child(ui::outcome(
-                        &theme,
-                        Tone::Warn,
-                        "The PostgreSQL admin password below must be the earlier install's: the kept PostgreSQL still uses it.",
-                    ))
+                .when(cfg!(windows) && native, |p| {
+                    p.child(if kept_passwords {
+                        ui::outcome(&theme, Tone::Good, "The earlier install's passwords were found and filled in below.")
+                    } else {
+                        ui::outcome(
+                            &theme,
+                            Tone::Warn,
+                            "The PostgreSQL admin password below must be the earlier install's: the kept PostgreSQL still uses it.",
+                        )
+                    })
                 })
         });
         v_flex()
@@ -997,7 +1013,7 @@ impl Installer {
                 )
                 .child(lead(
                     &theme,
-                    "The Platform Manager is installed. To install SENTIENT later, open it and choose Install SENTIENT, or run SENTIENT Setup from a SENTIENT package again.",
+                    "The Platform Manager is installed. To install SENTIENT later, open it and choose Download and install SENTIENT (or Install from local files).",
                 ))
                 .child(h_flex().child(Button::new("open-manager").primary().label("Open Platform Manager").on_click(
                     |_, _, _| {

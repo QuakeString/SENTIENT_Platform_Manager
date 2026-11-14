@@ -51,6 +51,10 @@ pub struct InstallPlan {
     /// None when there is none.
     #[serde(default)]
     pub existing: Option<bool>,
+    /// Start fresh by deleting that database (and the ClickHouse history)
+    /// instead of setting it aside.
+    #[serde(default)]
+    pub delete_existing: bool,
 }
 
 impl InstallPlan {
@@ -232,7 +236,7 @@ fn install_clickhouse_wsl(plan: &InstallPlan, manager: &std::path::Path, sink: &
     // A reinstall over kept data (the PostgreSQL cluster is there) takes
     // ClickHouse's kept history back too; a fresh install starts clean.
     let reuse = plan.existing == Some(true);
-    provision_clickhouse_wsl(&plan.configured_stack(), manager, reuse, sink)
+    provision_clickhouse_wsl_with(&plan.configured_stack(), manager, reuse, plan.delete_existing, sink)
 }
 
 /// With WSL2 ready: the hidden account, its distro with Docker and ClickHouse
@@ -243,6 +247,13 @@ fn install_clickhouse_wsl(plan: &InstallPlan, manager: &std::path::Path, sink: &
 /// ClickHouse history); otherwise such a disk is kept aside and the distro
 /// starts empty.
 pub fn provision_clickhouse_wsl(stack: &DeployConfig, manager: &std::path::Path, reuse_kept: bool, sink: &ProgressFn) -> Result<(), String> {
+    provision_clickhouse_wsl_with(stack, manager, reuse_kept, false, sink)
+}
+
+/// [`provision_clickhouse_wsl`]; `delete_old`: an earlier install's
+/// ClickHouse history is deleted instead of set aside.
+#[cfg(windows)]
+fn provision_clickhouse_wsl_with(stack: &DeployConfig, manager: &std::path::Path, reuse_kept: bool, delete_old: bool, sink: &ProgressFn) -> Result<(), String> {
     use sentient_installer_core::clickhouse_wsl;
     let password = crate::secrets::get(Secret::ClickhouseAccount).unwrap_or_else(clickhouse_wsl::new_password);
     clickhouse_wsl::ensure_account(sink, &password)?;
@@ -257,6 +268,10 @@ pub fn provision_clickhouse_wsl(stack: &DeployConfig, manager: &std::path::Path,
     clickhouse_wsl::run_as_account(sink, &password, manager, if reuse_kept { "provision-reuse" } else { "provision" }, None)?;
     step(sink, "Starting ClickHouse at every boot");
     clickhouse_wsl::register_keepalive(&password)?;
+    step(sink, "Stopping ClickHouse cleanly when Windows shuts down");
+    if let Err(e) = clickhouse_wsl::install_guard(manager, ch.ch_http_port) {
+        sink(Progress::Log { line: format!("note: the ClickHouse shutdown service was not set up: {e}") });
+    }
     let mut answering = false;
     for _ in 0..60 {
         if distro::clickhouse_answers(ch.ch_http_port) {
@@ -269,7 +284,7 @@ pub fn provision_clickhouse_wsl(stack: &DeployConfig, manager: &std::path::Path,
         return Err(format!("ClickHouse is installed but does not answer on 127.0.0.1:{}", ch.ch_http_port));
     }
     if !reuse_kept {
-        set_aside_clickhouse_history(&ch, sink)?;
+        set_aside_clickhouse_history(&ch, delete_old, sink)?;
     }
     Ok(())
 }
@@ -279,7 +294,7 @@ pub fn provision_clickhouse_wsl(stack: &DeployConfig, manager: &std::path::Path,
 /// that belongs to devices it does not have. Rename it aside, where Kept
 /// lists it for removal, and let the new install start empty.
 #[cfg(windows)]
-fn set_aside_clickhouse_history(ch: &DeployConfig, sink: &ProgressFn) -> Result<(), String> {
+fn set_aside_clickhouse_history(ch: &DeployConfig, delete: bool, sink: &ProgressFn) -> Result<(), String> {
     let conn = sentient_backup_core::clickhouse::ChConn {
         url: format!("http://127.0.0.1:{}", ch.ch_http_port),
         database: "default".into(),
@@ -291,6 +306,12 @@ fn set_aside_clickhouse_history(ch: &DeployConfig, sink: &ProgressFn) -> Result<
         .map(|t| t.trim() != "0")
         .unwrap_or(false);
     if !exists {
+        return Ok(());
+    }
+    if delete {
+        conn.text(&format!("DROP DATABASE {} SYNC", ch.ch_db))
+            .map_err(|e| format!("delete the earlier ClickHouse history: {e}"))?;
+        sink(Progress::Log { line: "The earlier install's ClickHouse history was deleted.".into() });
         return Ok(());
     }
     let aside = format!("{}_before_install_{}", ch.ch_db, chrono::Local::now().format("%Y%m%d%H%M"));
@@ -353,7 +374,7 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
                 native::apply_pg_tuning(&sink, &cfg)?;
             }
             if let Some(keep) = plan.existing {
-                native::prepare_existing(&sink, &cfg, keep)?;
+                native::prepare_existing(&sink, &cfg, keep, plan.delete_existing)?;
             }
             native::deploy(sink.clone(), &cfg)?;
             step(&sink, "Setting the administrator sign-in");

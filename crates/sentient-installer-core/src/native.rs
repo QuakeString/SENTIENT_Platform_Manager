@@ -302,8 +302,9 @@ pub fn existing_cluster(data_dir: &Path) -> Option<PathBuf> {
 
 /// The kept-database step between setup and deploy: the cluster is up,
 /// nothing of SENTIENT is laid down yet. Keep checks (and converts) the
-/// database for this mode; Start fresh sets it aside.
-pub fn prepare_existing(sink: &ProgressFn, cfg: &NativeConfig, keep: bool) -> Result<(), String> {
+/// database for this mode; Start fresh sets it aside, or with `delete`
+/// drops it.
+pub fn prepare_existing(sink: &ProgressFn, cfg: &NativeConfig, keep: bool, delete: bool) -> Result<(), String> {
     let sql = |db: &str, q: &str| superuser_sql(cfg, db, q);
     crate::kept_db::sync_role_password(&sql, &cfg.db_user, &cfg.db_password)?;
     let Some(existing) = crate::kept_db::inspect(&sql, &cfg.db_name)? else {
@@ -311,6 +312,8 @@ pub fn prepare_existing(sink: &ProgressFn, cfg: &NativeConfig, keep: bool) -> Re
     };
     if keep {
         crate::kept_db::prepare_keep(&sql, &existing, cfg.flavor, crate::kept_db::TIMESCALE_SQL, sink)
+    } else if delete {
+        crate::kept_db::drop_database(&sql, &cfg.db_name, sink)
     } else {
         crate::kept_db::set_aside(&sql, &cfg.db_name, sink).map(|_| ())
     }

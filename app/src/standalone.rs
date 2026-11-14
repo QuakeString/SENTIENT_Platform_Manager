@@ -1,7 +1,7 @@
 // Copyright © 2016-2026 The SENTIENT Authors
 
-//! The Platform Manager installed without SENTIENT: install SENTIENT from a
-//! package, or remove the Platform Manager again.
+//! The Platform Manager installed without SENTIENT: install SENTIENT
+//! (downloaded, or from a package), or remove the Platform Manager again.
 
 use std::path::{Path, PathBuf};
 
@@ -14,8 +14,21 @@ fn setup_in(dir: &Path) -> Option<PathBuf> {
     Some(dir.join(name)).filter(|p| p.is_file())
 }
 
-/// Ask for an unpacked SENTIENT package and start its Setup.
+/// Open the install wizard of this program: with no package next to it, it
+/// downloads the SENTIENT version the operator picks from the releases
+/// repository. The manager closes so the wizard owns the program files.
 pub fn install_sentient(window: &mut Window, cx: &mut App) {
+    let started = std::env::current_exe()
+        .map_err(|e| e.to_string())
+        .and_then(|me| std::process::Command::new(me).arg("--install").spawn().map_err(|e| e.to_string()));
+    match started {
+        Ok(_) => cx.quit(),
+        Err(e) => window.push_notification(format!("Could not open SENTIENT Setup: {e}"), cx),
+    }
+}
+
+/// Ask for an unpacked SENTIENT package and start its Setup (no internet).
+pub fn install_sentient_from_package(window: &mut Window, cx: &mut App) {
     let handle = window.window_handle();
     let rx = cx.prompt_for_paths(PathPromptOptions {
         files: false,
