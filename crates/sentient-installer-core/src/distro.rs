@@ -1141,6 +1141,11 @@ fn distro_healthy() -> bool {
 }
 
 #[cfg(windows)]
+/// The SENTIENT distribution is registered for the current Windows user.
+pub fn is_registered() -> bool {
+    cfg!(windows) && distro_present()
+}
+
 fn distro_present() -> bool {
     sys::output("wsl.exe", &["-l", "-q"])
         .map(|(_, out, _)| sys::decode(&out).lines().any(|l| l.trim().eq_ignore_ascii_case(DISTRO)))

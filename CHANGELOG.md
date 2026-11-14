@@ -15,6 +15,14 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Added
+- Setup finds what an earlier SENTIENT install left on Windows (its services,
+  PostgreSQL and its data, ClickHouse in WSL2 with its hidden account and disk,
+  an old Docker install's WSL distribution) and removes all of it with one
+  button, "Remove the earlier install", on the System check page. It also
+  stops ClickHouse's WSL machine, which kept port 8123 even after its account
+  was removed.
+
 ### Fixed
 - Windows, PostgreSQL + ClickHouse: ClickHouse is stopped cleanly before
   Windows shuts down (a new "SENTIENT ClickHouse" service), writes its data
