@@ -174,6 +174,7 @@ pub fn run(args: &[String]) -> i32 {
                 kiosk: false,
                 open_at_signin: false,
                 auto_signin: String::new(),
+                start_delay: 0,
             };
             crate::installer::run_manager_only(s, sink)
         };

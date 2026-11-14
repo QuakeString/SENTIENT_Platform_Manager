@@ -359,7 +359,7 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
             step(&sink, "Setting the administrator sign-in");
             native::set_admin_account(&cfg, &plan.admin_email, &admin_hash)?;
             // An operator screen needs SENTIENT running after every boot.
-            self_install::set_autostart(&[native::APP_SERVICE, native::PG_SERVICE], plan.shortcuts.autostart || plan.shortcuts.open_at_signin);
+            self_install::set_autostart(plan.shortcuts.autostart || plan.shortcuts.open_at_signin, plan.shortcuts.start_delay)?;
             // Backup, restore and repair read these from the credential
             // store; a failure only means the operator is asked later.
             for (secret, value) in [

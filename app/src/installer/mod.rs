@@ -82,6 +82,8 @@ struct Fields {
     admin_confirm: Entity<InputState>,
     autologin_user: Entity<InputState>,
     autologin_password: Entity<InputState>,
+    /// Seconds SENTIENT waits after Windows starts (with autostart).
+    start_delay: Entity<InputState>,
     search: Entity<InputState>,
 }
 
@@ -130,6 +132,14 @@ pub struct Installer {
     _subscriptions: Vec<Subscription>,
 }
 
+/// A start delay as typed: whole seconds, 0 to 3600.
+pub(crate) fn parse_start_delay(text: &str) -> Result<u32, String> {
+    match text.trim().parse::<u32>() {
+        Ok(n) if n <= 3600 => Ok(n),
+        _ => Err("Start delay: enter whole seconds from 0 to 3600 (0 starts SENTIENT as soon as Windows starts).".into()),
+    }
+}
+
 fn input(window: &mut Window, cx: &mut Context<Installer>, value: &str) -> Entity<InputState> {
     let value = value.to_string();
     cx.new(|cx| InputState::new(window, cx).default_value(value))
@@ -171,6 +181,7 @@ impl Installer {
             admin_confirm: secret(window, cx),
             autologin_user: input(window, cx, &sentient_installer_core::autologin::this_user()),
             autologin_password: secret(window, cx),
+            start_delay: input(window, cx, &sentient_installer_core::native::DEFAULT_START_DELAY_SECS.to_string()),
             search: cx.new(|cx| {
                 InputState::new(window, cx).placeholder("Search by name or variable, e.g. batch or RULE_ENGINE")
             }),
@@ -415,6 +426,14 @@ impl Installer {
                     Ok(())
                 }
             }
+            SHORTCUTS
+                if !self.manager_only
+                    && cfg!(windows)
+                    && (self.autostart || self.open_at_signin)
+                    && parse_start_delay(&self.value(&f.start_delay, cx)).is_err() =>
+            {
+                parse_start_delay(&self.value(&f.start_delay, cx)).map(|_| ())
+            }
             SHORTCUTS if !self.manager_only && self.open_at_signin && self.autologin => {
                 if self.value(&f.autologin_user, cx).is_empty() {
                     Err("Enter the account that signs in automatically.".into())
@@ -563,6 +582,7 @@ impl Installer {
                 } else {
                     String::new()
                 },
+                start_delay: parse_start_delay(&self.value(&f.start_delay, cx))?,
             },
             auto_signin_password: self.fields.autologin_password.read(cx).value().to_string(),
             bundle: self.bundle.clone(),
@@ -643,6 +663,7 @@ impl Installer {
                 kiosk: false,
                 open_at_signin: false,
                 auto_signin: String::new(),
+                start_delay: 0,
             };
             self.problem = None;
             self.step = INSTALL;
@@ -886,5 +907,21 @@ impl Render for Installer {
                     )
                     .child(footer),
             )
+    }
+}
+
+#[cfg(test)]
+mod start_delay_tests {
+    use super::parse_start_delay;
+
+    #[test]
+    fn start_delay_is_whole_seconds_up_to_an_hour() {
+        assert_eq!(parse_start_delay("10"), Ok(10));
+        assert_eq!(parse_start_delay(" 0 "), Ok(0));
+        assert_eq!(parse_start_delay("3600"), Ok(3600));
+        assert!(parse_start_delay("3601").is_err());
+        assert!(parse_start_delay("-1").is_err());
+        assert!(parse_start_delay("1.5").is_err());
+        assert!(parse_start_delay("").is_err());
     }
 }

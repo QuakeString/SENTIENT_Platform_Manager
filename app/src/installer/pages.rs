@@ -751,6 +751,9 @@ impl Installer {
             )
         });
         let theme = cx.theme().clone();
+        // How long SENTIENT waits after Windows starts (crate::ui::start_delay_row).
+        let mut start_delay = (cfg!(windows) && !self.manager_only && (self.autostart || self.open_at_signin))
+            .then(|| div().pl_6().child(ui::start_delay_row(&theme, &self.fields.start_delay)));
         // Signing in by itself only matters for the screen that opens SENTIENT.
         let autologin = (!self.manager_only && self.open_at_signin).then(|| {
             v_flex()
@@ -788,8 +791,9 @@ impl Installer {
         v_flex()
             .gap_3()
             .children(note)
-            .children(options.into_iter().map(|(id, label, checked)| {
-                Checkbox::new(id)
+            .children(options.into_iter().flat_map(|(id, label, checked)| {
+                let delay_here = id == "autostart";
+                let checkbox = Checkbox::new(id)
                     .label(label)
                     .checked(checked)
                     .on_change(cx.listener(move |this, value: &bool, _, cx| {
@@ -803,6 +807,10 @@ impl Installer {
                         }
                         cx.notify();
                     }))
+                    .into_any_element();
+                // The delay sits under "Start SENTIENT automatically with Windows".
+                let delay = if delay_here { start_delay.take().map(IntoElement::into_any_element) } else { None };
+                std::iter::once(checkbox).chain(delay)
             }))
             .children(autologin)
     }
