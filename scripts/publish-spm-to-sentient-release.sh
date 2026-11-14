@@ -5,7 +5,10 @@
 # github.com/QuakeString/sentient-release as well, beside SENTIENT, the
 # gateway and the mobile app, and point its README's Downloads table at it.
 #
-#   scripts/publish-spm-to-sentient-release.sh <version>      e.g. 0.8.0-rc10
+#   scripts/publish-spm-to-sentient-release.sh <version> [--replace]   e.g. 0.8.0-rc10
+#
+# --replace deletes an spm-v<version> release (and its tag) already there
+# first: only to correct a broken publish of the same build.
 #
 # The installers are taken from this repository's release v<version> (built
 # by .github/workflows/build-installers.yml), so run it once that release is
@@ -17,7 +20,8 @@
 # must stay SENTIENT's. A release candidate is also a pre-release.
 # Needs GITHUB_TOKEN (repo scope), or a github.com credential in git.
 set -euo pipefail
-version=${1:?usage: $0 <version>}
+version=${1:?usage: $0 <version> [--replace]}
+replace=false; [ "${2:-}" = "--replace" ] && replace=true
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
 src=QuakeString/SENTIENT_Platform_Manager
@@ -28,8 +32,14 @@ token=${GITHUB_TOKEN:-$(printf 'protocol=https\nhost=github.com\n\n' | git crede
 auth=(-H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json")
 
 python3 "$here/release-notes.py" check "$root/CHANGELOG.md" "$version"
-if curl -fs "${auth[@]}" "https://api.github.com/repos/$dst/releases/tags/$tag" >/dev/null; then
-  echo "$tag is already published on $dst; releases are immutable." >&2; exit 1
+if old=$(curl -fs "${auth[@]}" "https://api.github.com/repos/$dst/releases/tags/$tag"); then
+  if ! $replace; then
+    echo "$tag is already published on $dst; releases are immutable (--replace corrects a broken publish)." >&2; exit 1
+  fi
+  id=$(printf '%s' "$old" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+  curl -fsS "${auth[@]}" -X DELETE "https://api.github.com/repos/$dst/releases/$id"
+  curl -fsS "${auth[@]}" -X DELETE "https://api.github.com/repos/$dst/git/refs/tags/$tag" || true
+  echo "removed the earlier $tag"
 fi
 
 work=$(mktemp -d)
@@ -38,14 +48,24 @@ curl -fsS "${auth[@]}" "https://api.github.com/repos/$src/releases/tags/v$versio
 python3 - "$work/src.json" > "$work/assets.tsv" <<'PY'
 import json, sys
 for a in json.load(open(sys.argv[1]))["assets"]:
-    print(f'{a["name"]}\t{a["url"]}')
+    print(f'{a["name"]}\t{a["browser_download_url"]}')
 PY
 [ -s "$work/assets.tsv" ] || { echo "v$version on $src has no files yet" >&2; exit 1; }
 mkdir "$work/files"
 while IFS=$'\t' read -r name url; do
   echo "downloading $name"
-  curl -fsSL "${auth[@]}" -H "Accept: application/octet-stream" -o "$work/files/$name" "$url"
+  # The public download address: the API asset address would need its own
+  # Accept header, and with auth's JSON one it returns the asset's metadata.
+  curl -fsSL -o "$work/files/$name" "$url"
 done < "$work/assets.tsv"
+# Each file must be what the source release says it is.
+python3 - "$work/src.json" "$work/files" <<'PY'
+import json, os, sys
+for a in json.load(open(sys.argv[1]))["assets"]:
+    got = os.path.getsize(os.path.join(sys.argv[2], a["name"]))
+    if got != a["size"]:
+        sys.exit(f'{a["name"]}: downloaded {got} bytes, the release says {a["size"]}')
+PY
 
 notes=$(python3 "$here/release-notes.py" extract "$root/CHANGELOG.md" "$version" --public)
 table=$'| File | Size | SHA-256 |\n|---|---|---|\n'
