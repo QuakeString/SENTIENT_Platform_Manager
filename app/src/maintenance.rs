@@ -25,6 +25,8 @@ use crate::ui::{self, Tone};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Action {
+    /// Put this Platform Manager in place of the installed one.
+    UpdateManager,
     Update,
     Repair,
     ChangeDatabase,
@@ -32,10 +34,11 @@ enum Action {
 }
 
 impl Action {
-    const ALL: [Action; 4] = [Action::Update, Action::Repair, Action::ChangeDatabase, Action::Uninstall];
+    const ALL: [Action; 5] = [Action::UpdateManager, Action::Update, Action::Repair, Action::ChangeDatabase, Action::Uninstall];
 
     fn id(self) -> &'static str {
         match self {
+            Action::UpdateManager => "update-manager",
             Action::Update => "update",
             Action::Repair => "repair",
             Action::ChangeDatabase => "change-database",
@@ -45,7 +48,8 @@ impl Action {
 
     fn title(self) -> &'static str {
         match self {
-            Action::Update => "Update",
+            Action::UpdateManager => "Update the Platform Manager",
+            Action::Update => "Update SENTIENT",
             Action::Repair => "Repair",
             Action::ChangeDatabase => "Change database",
             Action::Uninstall => "Uninstall",
@@ -54,6 +58,7 @@ impl Action {
 
     fn describe(self) -> &'static str {
         match self {
+            Action::UpdateManager => "Install this Platform Manager over the one on this computer. SENTIENT, its database and settings are not changed.",
             Action::Update => "Install the SENTIENT version in this package. The database is copied first and everything is put back if the update fails.",
             Action::Repair => "Re-register the services and restore missing program files. Data and settings are kept.",
             Action::ChangeDatabase => "Move to another database type, history included. Opens the Platform Manager's Migration screen.",
@@ -63,6 +68,7 @@ impl Action {
 
     fn icon(self) -> Icon {
         match self {
+            Action::UpdateManager => Icon::new(IconName::ArrowUp),
             Action::Update => Icon::new(IconName::RefreshCw),
             Action::Repair => Icon::new(Lucide::Wrench),
             Action::ChangeDatabase => Icon::new(Lucide::ArrowLeftRight),
@@ -81,6 +87,32 @@ pub struct Maintenance {
 
 fn step(sink: &ProgressFn, name: &str) {
     sink(Progress::Step { name: name.into() });
+}
+
+/// Only the Platform Manager: this program in place of the installed one,
+/// its Apps & features entry, and what this version sets up for operator
+/// screens. SENTIENT is left as it is.
+fn run_update_manager(mut record: InstallationRecord, sink: ProgressFn) -> Result<(), String> {
+    step(&sink, "Updating the Platform Manager");
+    let manager = self_install::install_manager()?;
+    self_install::register_manager_entry(&manager);
+    self_install::refresh_operator_screen(&sink);
+    record.manager_version = crate::updates::manager_version().into();
+    save_record(&record)?;
+    sink(Progress::Done {
+        message: format!(
+            "The Platform Manager is now {}. SENTIENT {} was not changed. Run Repair once to bring the installation up to date with this version.",
+            crate::updates::manager_version(),
+            record.sentient_version
+        ),
+    });
+    Ok(())
+}
+
+/// Whether "Update SENTIENT" has something to install: a SENTIENT package
+/// next to this Setup, or a Docker install (which pulls the image).
+fn can_update_sentient(record: &InstallationRecord) -> bool {
+    record.engine == Engine::Docker || native::bundled_payload_dir().is_some()
 }
 
 fn run_update(record: InstallationRecord, sink: ProgressFn) -> Result<(), String> {
@@ -254,6 +286,7 @@ impl Maintenance {
         self.running = Some(action);
         let keep = self.keep_data;
         self.job.update(cx, |job, cx| match action {
+            Action::UpdateManager => job.start(move |sink| run_update_manager(record, sink), cx),
             Action::Update => job.start(move |sink| run_update(record, sink), cx),
             Action::Repair => job.start(move |sink| run_repair(record, sink), cx),
             Action::Uninstall => job.start(move |sink| run_uninstall(record, keep, sink), cx),
@@ -276,6 +309,11 @@ impl Maintenance {
         window.open_alert_dialog(cx, move |dialog, _, _| {
             let this = this.clone();
             let (title, text, ok) = match action {
+                Action::UpdateManager => (
+                    "Update the Platform Manager?",
+                    "This Platform Manager replaces the one on this computer. SENTIENT keeps running; its database and settings are not changed.",
+                    "Update",
+                ),
                 Action::Update => (
                     "Update SENTIENT?",
                     "SENTIENT stops, its database is copied, and the new version's database changes are tried before they are made. If anything fails, the previous version and its database are put back and started.",
@@ -316,6 +354,8 @@ impl Render for Maintenance {
         let job = self.job.read(cx);
         let busy = job.is_running();
         let header = format!("SENTIENT {} is installed on this computer", record.sentient_version);
+        let installed_manager = if record.manager_version.is_empty() { "an earlier version".to_string() } else { record.manager_version.clone() };
+        let this_manager = crate::updates::manager_version();
 
         if let Some(action) = self.running {
             let outcome = match job.state() {
@@ -343,8 +383,17 @@ impl Render for Maintenance {
                 });
         }
 
+        let sentient_package = can_update_sentient(record);
         let cards = Action::ALL.into_iter().map(|action| {
-            let available = true;
+            let available = action != Action::Update || sentient_package;
+            let describe: SharedString = match action {
+                Action::UpdateManager => format!(
+                    "Installed: Platform Manager {installed_manager}. This Setup: {this_manager}. SENTIENT, its database and settings are not changed."
+                )
+                .into(),
+                Action::Update if !sentient_package => "No SENTIENT package next to this Setup. To change the SENTIENT version, use the Platform Manager's Update screen.".into(),
+                _ => action.describe().into(),
+            };
             h_flex()
                 .id(action.id())
                 .gap_4()
@@ -359,11 +408,12 @@ impl Render for Maintenance {
                 .child(
                     v_flex()
                         .flex_1()
+                        .min_w_0()
                         .gap_1()
                         .child(div().font_weight(FontWeight::MEDIUM).child(action.title()))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(action.describe())),
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(describe)),
                 )
-                .on_click(cx.listener(move |this, _, window, cx| this.confirm(action, window, cx)))
+                .when(available, |c| c.on_click(cx.listener(move |this, _, window, cx| this.confirm(action, window, cx))))
         });
         page.child(div().text_2xl().child(header))
             .child(div().text_color(theme.muted_foreground).child("Choose what to do with the existing installation."))
