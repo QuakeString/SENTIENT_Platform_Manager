@@ -153,9 +153,12 @@ pub fn on_channel<'a>(releases: &'a [Release], channel: Channel, belongs: impl F
     out
 }
 
-/// SENTIENT's releases in its repository: not the gateway's.
+/// SENTIENT's releases in its repository: a version tag (`4.4.0.1`,
+/// `4.4.0.2-rc1`) or the nightly; not the gateway's (`gateway-…`), the
+/// mobile app's (`SENTIENT-mobile-app-…`) or the Platform Manager's
+/// (`spm-v…`), which share it.
 pub fn is_sentient(r: &Release) -> bool {
-    !r.tag_name.starts_with("gateway-")
+    r.is_nightly() || r.tag_name.starts_with(|c: char| c.is_ascii_digit())
 }
 
 /// A plain release number such as `4.4.0.1`: digits in at least three
@@ -332,6 +335,9 @@ mod tests {
     fn channels_pick_their_releases() {
         let all = vec![
             rel("gateway-4.12.3", false),
+            rel("spm-v0.8.0-rc10", true),
+            rel("spm-v0.9.0", false),
+            rel("SENTIENT-mobile-app-2.0.1-17", true),
             rel("4.3.0.49", false),
             rel("4.3.0.51", true),
             rel("4.3.0.50", false),
