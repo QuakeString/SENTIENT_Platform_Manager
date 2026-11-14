@@ -8,7 +8,10 @@ Each release section starts with a one-line summary: it heads the release
 notes and is what the Platform Manager shows beside an update. The notes are
 made from this file with `scripts/release-notes.py` (see its help). Releases
 are tagged `v<version>`; a `v*` tag push builds the installers and publishes
-the release.
+the release. Once it is complete, `scripts/publish-spm-to-sentient-release.sh
+<version>` publishes the same installers on the public download repository
+(QuakeString/sentient-release, tag `spm-v<version>`, never its "Latest") and
+refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
