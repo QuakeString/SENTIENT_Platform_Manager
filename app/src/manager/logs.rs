@@ -12,8 +12,10 @@ use gpui_kit::component::{
     input::{Input, InputEvent, InputState},
 };
 use gpui_kit::*;
+use gpui_kit::prelude::FluentBuilder as _;
 
 use crate::installation::InstallationRecord;
+use crate::log_level::Level;
 use crate::ui;
 
 const TAIL: u32 = 500;
@@ -158,9 +160,39 @@ impl Render for LogsPage {
                 .gap_0()
                 .font_family(theme.mono_font_family.clone())
                 .text_xs()
-                .children(lines.into_iter().map(|line| div().child(line))),
+                // The page holds the last TAIL lines at most, and only the
+                // start of each is read for its level, so every line can be
+                // coloured without a virtual list (which would also stop long
+                // lines from wrapping). Export saves the plain text.
+                .children(lines.into_iter().map(|line| coloured_line(&theme, line))),
         )
     }
+}
+
+/// One log line: the timestamp muted, the rest by its level (ERROR red, WARN
+/// amber, DEBUG and TRACE muted, others as normal text).
+fn coloured_line(theme: &gpui_kit::component::Theme, line: SharedString) -> Div {
+    let (level, ts) = crate::log_level::classify(&line);
+    // Highlight colours are blended over the text colour: a see-through
+    // muted would vanish into it, so mix it with the panel first.
+    let muted = theme.background.blend(theme.muted_foreground);
+    let colour = match level {
+        Level::Error => Some(theme.danger),
+        Level::Warn => Some(theme.warning_foreground),
+        Level::Debug => Some(muted),
+        Level::Info | Level::Plain => None,
+    };
+    let mut highlights = Vec::new();
+    if ts > 0 {
+        highlights.push((0..ts, HighlightStyle { color: Some(muted), ..Default::default() }));
+    }
+    if let Some(colour) = colour {
+        if ts < line.len() {
+            highlights.push((ts..line.len(), HighlightStyle { color: Some(colour), ..Default::default() }));
+        }
+    }
+    let text = StyledText::new(line).with_highlights(highlights);
+    div().when(level == Level::Error, |d| d.font_weight(FontWeight::MEDIUM)).child(text)
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@ mod headless;
 mod installation;
 mod installer;
 mod jobs;
+mod log_level;
 mod kept;
 mod maintenance;
 mod manager;
