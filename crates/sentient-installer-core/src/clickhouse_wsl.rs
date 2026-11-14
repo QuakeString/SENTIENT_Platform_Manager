@@ -285,6 +285,23 @@ touch "$D/stop.done"
     )
 }
 
+/// Run as root in the distro of an install made before the crash-safe
+/// settings (see stack::clickhouse_config_xml): add them to its ClickHouse
+/// configuration if missing and restart ClickHouse, which then also starts
+/// again when an unclean stop had left it refusing a table.
+pub fn harden_config_script(config_path: &str, container: &str) -> String {
+    format!(
+        r#"F='{config_path}'
+systemctl start docker >/dev/null 2>&1
+if ! grep -q max_suspicious_broken_parts "$F"; then
+  sed -i 's#^<clickhouse>#<clickhouse>\n    <merge_tree>\n        <max_suspicious_broken_parts>100000</max_suspicious_broken_parts>\n        <fsync_after_insert>1</fsync_after_insert>\n        <fsync_part_directory>1</fsync_part_directory>\n        <min_compressed_bytes_to_fsync_after_merge>1</min_compressed_bytes_to_fsync_after_merge>\n    </merge_tree>#' "$F"
+  docker restart -t 60 '{container}'
+fi
+grep -q max_suspicious_broken_parts "$F"
+"#
+    )
+}
+
 /// `C:\ProgramData\SENTIENT\clickhouse` as WSL sees it:
 /// `/mnt/c/ProgramData/SENTIENT/clickhouse`.
 pub fn wsl_path(path: &std::path::Path) -> String {
@@ -614,6 +631,14 @@ mod tests {
     fn windows_paths_become_wsl_paths() {
         assert_eq!(wsl_path(std::path::Path::new(r"C:\ProgramData\SENTIENT\clickhouse")), "/mnt/c/ProgramData/SENTIENT/clickhouse");
         assert_eq!(wsl_path(std::path::Path::new(r"D:\x y\keepalive.sh")), "/mnt/d/x y/keepalive.sh");
+    }
+
+    #[test]
+    fn hardening_adds_the_settings_once() {
+        let s = harden_config_script("/opt/sentient/clickhouse-sentient.xml", "sentient-clickhouse");
+        assert!(s.contains("if ! grep -q max_suspicious_broken_parts"));
+        assert!(s.contains(r"<clickhouse>\n    <merge_tree>"));
+        assert!(s.contains("docker restart -t 60 'sentient-clickhouse'"));
     }
 
     #[test]
