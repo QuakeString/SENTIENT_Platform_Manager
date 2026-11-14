@@ -17,7 +17,11 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
 pub const SENTIENT_REPO: &str = "QuakeString/sentient-release";
-pub const MANAGER_REPO: &str = "QuakeString/SENTIENT_Platform_Manager";
+/// The Platform Manager's own releases are published beside SENTIENT's, as
+/// `spm-v<version>` ([`is_manager`]): its source repository is private, so
+/// a manager asking it for releases was told there are none.
+pub const MANAGER_REPO: &str = SENTIENT_REPO;
+pub const MANAGER_TAG_PREFIX: &str = "spm-v";
 /// The tag a nightly build is published under (one release, replaced).
 pub const NIGHTLY_TAG: &str = "nightly";
 
@@ -159,6 +163,16 @@ pub fn on_channel<'a>(releases: &'a [Release], channel: Channel, belongs: impl F
 /// (`spm-v…`), which share it.
 pub fn is_sentient(r: &Release) -> bool {
     r.is_nightly() || r.tag_name.starts_with(|c: char| c.is_ascii_digit())
+}
+
+/// The Platform Manager's releases in the shared repository: `spm-v0.8.0-rc11`.
+pub fn is_manager(r: &Release) -> bool {
+    r.tag_name.starts_with(MANAGER_TAG_PREFIX)
+}
+
+/// `spm-v0.8.0-rc11` → `0.8.0-rc11`.
+pub fn manager_version_of(r: &Release) -> String {
+    r.tag_name.trim_start_matches(MANAGER_TAG_PREFIX).to_string()
 }
 
 /// A plain release number such as `4.4.0.1`: digits in at least three

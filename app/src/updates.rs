@@ -186,20 +186,25 @@ fn sentient_offer(channel: Channel, installed: &str, native: bool) -> Result<Opt
 
 fn manager_offer(channel: Channel) -> Result<Option<Offer>, String> {
     let all = releases::fetch(releases::MANAGER_REPO)?;
-    let candidates = releases::on_channel(&all, channel, |_| true);
-    let Some(r) = candidates.first() else {
-        return match channel {
-            Channel::Nightly => Err("No nightly Platform Manager build is published yet.".into()),
-            _ => Ok(None),
-        };
-    };
-    let version = r.version();
-    if !releases::is_newer(&version, manager_version(), r.is_nightly()) {
-        return Ok(None);
+    Ok(newest_manager(&all, channel, manager_version()))
+}
+
+/// The newest Platform Manager release on `channel` that is newer than
+/// `installed`. No nightly manager is published: that channel gets the
+/// release candidates.
+fn newest_manager(all: &[Release], channel: Channel, installed: &str) -> Option<Offer> {
+    let channel = if channel == Channel::Nightly { Channel::Candidate } else { channel };
+    let mut candidates = releases::on_channel(all, channel, releases::is_manager);
+    // on_channel sorts by the tag; rc10 against rc9 needs the version.
+    candidates.sort_by(|a, b| releases::compare(&releases::manager_version_of(b), &releases::manager_version_of(a)));
+    let r = candidates.first()?;
+    let version = releases::manager_version_of(r);
+    if !releases::is_newer(&version, installed, false) {
+        return None;
     }
     let mut offer = Offer::from(r, version);
     offer.installer = r.assets.iter().find(|a| installer_for_this_system(&a.name)).cloned();
-    Ok(Some(offer))
+    Some(offer)
 }
 
 fn installer_for_this_system(name: &str) -> bool {
@@ -387,5 +392,61 @@ impl UpdateState {
         chrono::DateTime::from_timestamp(self.prefs.last_check as i64, 0)
             .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod manager_offer_tests {
+    // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
+    use super::{newest_manager, releases, Channel, Release};
+
+    fn rel(tag: &str, pre: bool) -> Release {
+        Release {
+            tag_name: tag.into(),
+            name: None,
+            body: Some("Summary.\n\n### Fixed\n- x".into()),
+            html_url: String::new(),
+            prerelease: pre,
+            draft: false,
+            published_at: Some("2026-11-14T10:00:00Z".into()),
+            assets: vec![releases::Asset {
+                name: if cfg!(windows) { "SENTIENT-Setup-manager-0.8.0.exe".into() } else { "SENTIENT-Setup-manager-0.8.0-linux-x86_64".into() },
+                browser_download_url: String::new(),
+                size: 1,
+            }],
+        }
+    }
+
+    fn shared_repository() -> Vec<Release> {
+        vec![
+            rel("4.4.0.2", false),
+            rel("spm-v0.8.0-rc9", true),
+            rel("spm-v0.8.0-rc11", true),
+            rel("gateway-4.16.2", false),
+            rel("spm-v0.8.0-rc10", true),
+            rel("nightly", true),
+        ]
+    }
+
+    #[test]
+    fn the_newest_manager_release_is_found_among_the_other_products() {
+        let offer = newest_manager(&shared_repository(), Channel::Candidate, "0.8.0-rc10").expect("rc11 is newer");
+        assert_eq!(offer.version, "0.8.0-rc11");
+        assert_eq!(offer.tag, "spm-v0.8.0-rc11");
+        assert!(offer.installer.is_some() || !cfg!(any(windows, target_arch = "x86_64")));
+    }
+
+    #[test]
+    fn nothing_is_offered_when_up_to_date() {
+        assert!(newest_manager(&shared_repository(), Channel::Candidate, "0.8.0-rc11").is_none());
+    }
+
+    #[test]
+    fn stable_skips_release_candidates_and_nightly_gets_them() {
+        assert!(newest_manager(&shared_repository(), Channel::Stable, "0.8.0-rc9").is_none());
+        let mut all = shared_repository();
+        all.push(rel("spm-v0.8.0", false));
+        assert_eq!(newest_manager(&all, Channel::Stable, "0.8.0-rc11").map(|o| o.version).as_deref(), Some("0.8.0"));
+        assert_eq!(newest_manager(&shared_repository(), Channel::Nightly, "0.8.0-rc9").map(|o| o.version).as_deref(), Some("0.8.0-rc11"));
     }
 }

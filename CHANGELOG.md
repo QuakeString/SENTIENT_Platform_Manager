@@ -15,6 +15,13 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Fixed
+- "Check for updates" finds new Platform Manager versions. It asked the
+  Platform Manager's private repository, which answers nobody, so the
+  manager never offered its own update; it now reads the public
+  sentient-release page (the `spm-v…` releases). Release candidates show
+  on the "Release candidate" channel.
+
 ## [0.8.0-rc11] - 2026-11-14
 
 ClickHouse on Windows survives restarts, an earlier install is removed with one button, TimescaleDB only when chosen, and Status shows the databases.
