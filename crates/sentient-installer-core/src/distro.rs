@@ -202,7 +202,7 @@ impl DeployConfig {
         Ok(())
     }
 
-    fn names(&self) -> Names {
+    pub fn names(&self) -> Names {
         if let Some(n) = &self.names {
             return n.clone();
         }

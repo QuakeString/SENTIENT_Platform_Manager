@@ -10,6 +10,7 @@ mod agent;
 mod assets;
 mod backup_jobs;
 mod catalog;
+mod dbstatus;
 mod elevate;
 mod headless;
 mod installation;

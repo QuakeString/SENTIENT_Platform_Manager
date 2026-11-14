@@ -21,6 +21,8 @@ use crate::manager::migration::RecordChanged;
 use crate::ui::{self, Tone};
 
 const REFRESH: Duration = Duration::from_secs(5);
+/// How often the database details are read again by themselves.
+const DB_REFRESH: Duration = Duration::from_secs(5 * 60);
 
 pub struct StatusPage {
     record: Option<InstallationRecord>,
@@ -32,6 +34,11 @@ pub struct StatusPage {
     /// The gateway on this computer (None while looking).
     gateway: Option<sentient_installer_core::gateway::Status>,
     updates: Entity<crate::updates::UpdateState>,
+    /// The databases' details (crate::dbstatus): None until first read.
+    db: Option<crate::dbstatus::DbStatus>,
+    db_reading: bool,
+    db_read_at: Option<String>,
+    last_backup: Option<crate::dbstatus::LastBackup>,
     _poll: Option<Task<()>>,
     _tasks: Vec<Task<()>>,
     _observe: Subscription,
@@ -91,6 +98,10 @@ impl StatusPage {
             adopt_job,
             gateway: None,
             updates,
+            db: None,
+            db_reading: false,
+            db_read_at: None,
+            last_backup: crate::dbstatus::last_backup(),
             _poll: poll,
             _tasks: vec![gateway_poll],
             _observe,
@@ -98,7 +109,129 @@ impl StatusPage {
         if page.record.is_none() {
             page.look_for_existing(cx);
         }
+        // The databases are read now and every few minutes, not every few
+        // seconds: their sizes change slowly. Where reading asks for the
+        // administrator password (native Linux) only when asked.
+        if page.record.as_ref().is_some_and(|r| !crate::dbstatus::needs_admin(r)) {
+            let db_poll = cx.spawn(async move |this, cx| loop {
+                if this.update(cx, |p, cx| p.read_db(cx)).is_err() {
+                    break;
+                }
+                cx.background_executor().timer(DB_REFRESH).await;
+            });
+            page._tasks.push(db_poll);
+        }
         page
+    }
+
+    /// Read the databases' details in the background.
+    fn read_db(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        if self.db_reading {
+            return;
+        }
+        self.db_reading = true;
+        cx.notify();
+        let task = cx.spawn(async move |this, cx| {
+            let status = cx.background_executor().spawn(async move { crate::dbstatus::read(&record) }).await;
+            this.update(cx, |page, cx| {
+                page.db = Some(status);
+                page.db_reading = false;
+                page.db_read_at = Some(chrono::Local::now().format("%H:%M").to_string());
+                page.last_backup = crate::dbstatus::last_backup();
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
+    /// The Database panel: PostgreSQL, and ClickHouse on hybrid installs.
+    fn db_panel(&self, theme: &gpui_kit::component::Theme, record: &InstallationRecord, cx: &mut Context<Self>) -> Div {
+        use crate::dbstatus::{CRITICAL_DISK, LOW_DISK, bytes_label, count_label, day_label, table_label};
+        let header = h_flex()
+            .gap_3()
+            .items_center()
+            .child(div().font_weight(FontWeight::MEDIUM).child("Database"))
+            .child(div().flex_1())
+            .children(self.db_read_at.clone().map(|t| {
+                div().text_xs().text_color(theme.muted_foreground).child(format!("read at {t}"))
+            }))
+            .child(
+                Button::new("db-read")
+                    .outline()
+                    .label(if self.db_reading { "Reading…" } else if self.db.is_none() { "Read" } else { "Refresh" })
+                    .disabled(self.db_reading)
+                    .on_click(cx.listener(|this, _, _, cx| this.read_db(cx))),
+            );
+        let mut panel = ui::panel(theme).child(header);
+        let free_row = |label: &'static str, free: Option<u64>| -> Option<Div> {
+            let free = free?;
+            let tone = if free < CRITICAL_DISK { Some(Tone::Bad) } else if free < LOW_DISK { Some(Tone::Warn) } else { None };
+            Some(match tone {
+                None => ui::fact(theme, label, bytes_label(free)),
+                Some(tone) => h_flex()
+                    .gap_4()
+                    .text_sm()
+                    .child(div().w_56().flex_shrink_0().text_color(theme.muted_foreground).child(label))
+                    .child(ui::pill(theme, tone, format!("{} free: low disk space", bytes_label(free)))),
+            })
+        };
+        let Some(db) = &self.db else {
+            return panel.child(div().text_sm().text_color(theme.muted_foreground).child(if self.db_reading {
+                "Reading the database's size and state…"
+            } else if crate::dbstatus::needs_admin(record) {
+                "Read shows the database's size and state. It asks for the administrator password, as the database password is kept where only an administrator can read it."
+            } else {
+                "Not read yet."
+            }));
+        };
+        panel = panel.child(div().pt_1().text_xs().font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child("POSTGRESQL"));
+        match (&db.pg, &db.pg_error) {
+            (Some(pg), _) => {
+                panel = panel
+                    .child(ui::fact(theme, "Version", match &pg.timescaledb {
+                        Some(ts) => format!("PostgreSQL {}, TimescaleDB {ts}", pg.version),
+                        None => format!("PostgreSQL {}", pg.version),
+                    }))
+                    .child(ui::fact(theme, "Database size", bytes_label(pg.db_bytes)))
+                    .children(free_row("Free disk", pg.free_bytes))
+                    .child(ui::fact(theme, "Connections", format!("{} open of {} allowed", pg.connections, pg.max_connections)))
+                    .child(ui::fact(theme, "Largest tables", pg.tables.iter().map(|t| match table_label(&t.name) {
+                        Some(what) => format!("{} ({what}) {}", t.name, bytes_label(t.bytes)),
+                        None => format!("{} {}", t.name, bytes_label(t.bytes)),
+                    }).collect::<Vec<_>>().join(" · ")));
+            }
+            (None, Some(e)) => panel = panel.child(ui::outcome(theme, Tone::Warn, format!("Could not read PostgreSQL: {e}"))),
+            (None, None) => {}
+        }
+        panel = panel.child(ui::fact(theme, "Last backup", match &self.last_backup {
+            Some(b) => format!(
+                "{}{}, {}",
+                crate::dbstatus::ago_label(&b.at, chrono::Local::now()),
+                b.bytes.map(|n| format!(", {}", bytes_label(n))).unwrap_or_default(),
+                b.file
+            ),
+            None => "None made from the Platform Manager".to_string(),
+        }));
+        if db.hybrid {
+            panel = panel.child(div().pt_2().text_xs().font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child("CLICKHOUSE"));
+            match (&db.ch, &db.ch_error) {
+                (Some(ch), _) => {
+                    panel = panel
+                        .child(ui::fact(theme, "Version", format!("ClickHouse {}", ch.version)))
+                        .child(ui::fact(theme, "Disk used", bytes_label(ch.disk_bytes)))
+                        .children(free_row("Free disk", ch.free_bytes))
+                        .child(ui::fact(theme, "Telemetry history", match (ch.first_ms, ch.last_ms) {
+                            (Some(a), Some(b)) => format!("{} rows, {} to {}", count_label(ch.rows), day_label(a), day_label(b)),
+                            _ => format!("{} rows", count_label(ch.rows)),
+                        }));
+                }
+                (None, Some(e)) => panel = panel.child(ui::outcome(theme, Tone::Warn, format!("Could not read ClickHouse: {e}"))),
+                (None, None) => {}
+            }
+        }
+        panel
     }
 
     fn look_for_existing(&mut self, cx: &mut Context<Self>) {
@@ -271,6 +404,7 @@ impl Render for StatusPage {
                         .child(div().text_color(theme.muted_foreground).child(svc.detail))
                 })),
         )
+        .child(self.db_panel(&theme, record, cx))
         .child(self.gateway_card(&theme, cx))
     }
 }

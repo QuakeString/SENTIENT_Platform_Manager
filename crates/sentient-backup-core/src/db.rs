@@ -92,6 +92,13 @@ impl DbInspector {
         Ok(Self { client })
     }
 
+    /// A query whose single row and column is text (e.g. built with
+    /// `json_build_object(…)::text`); None when it returns no row or NULL.
+    pub async fn text(&self, sql: &str) -> Result<Option<String>> {
+        let rows = self.client.query(sql, &[]).await?;
+        Ok(rows.first().and_then(|r| r.get::<_, Option<String>>(0)))
+    }
+
     /// Run one or more statements, ignoring results (for pre/post-restore SQL).
     pub async fn batch(&self, sql: &str) -> Result<()> {
         self.client.batch_execute(sql).await?;
