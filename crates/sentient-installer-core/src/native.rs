@@ -371,6 +371,12 @@ pub fn set_start(automatic: bool, delay_secs: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// Remove the start-delay task (used by uninstall).
+#[cfg(windows)]
+pub fn remove_start_task() {
+    let _ = sys::output("schtasks.exe", &["/Delete", "/TN", DELAYED_START_TASK, "/F"]);
+}
+
 /// How SENTIENT starts now: (with Windows, delay in seconds). Windows' own
 /// delayed start, from earlier Platform Managers, counts as with Windows
 /// and no delay of ours.

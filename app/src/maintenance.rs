@@ -164,6 +164,13 @@ pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: P
     }
     step(&sink, "Removing shortcuts and the Platform Manager");
     self_install::remove_shortcuts();
+    // The kiosk shortcuts (shared and, from earlier managers, per account),
+    // and what opening SENTIENT left in each account.
+    sentient_installer_core::kiosk::remove_shortcuts(&sink, &record.state_dir);
+    sentient_installer_core::kiosk::remove_user_data(&sink);
+    // The task that starts SENTIENT a set time after Windows.
+    #[cfg(windows)]
+    sentient_installer_core::native::remove_start_task();
     // The operator screen's sign-in entry would start a manager that is gone.
     if sentient_installer_core::kiosk::open_at_signin().is_some() {
         let _ = sentient_installer_core::kiosk::set_open_at_signin(&sentient_installer_core::progress::noop(), &self_install::manager_exe(), None);

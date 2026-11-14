@@ -271,7 +271,7 @@ pub fn create_shortcut(sink: &ProgressFn, launcher: &Path, work_dir: &Path) -> R
         let script = format!(
             r#"$ErrorActionPreference = 'Stop'
 $ws = New-Object -ComObject WScript.Shell
-$targets = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))
+$targets = @([Environment]::GetFolderPath('CommonDesktopDirectory'), [Environment]::GetFolderPath('CommonPrograms'))
 foreach ($dir in $targets) {{
   if (-not (Test-Path $dir)) {{ continue }}
   $lnk = Join-Path $dir 'SENTIENT.lnk'
@@ -353,6 +353,12 @@ pub fn shortcut_exists() -> bool {
     #[cfg(windows)]
     {
         let mut paths = Vec::new();
+        if let Some(p) = std::env::var_os("PUBLIC") {
+            paths.push(PathBuf::from(p).join("Desktop").join("SENTIENT.lnk"));
+        }
+        if let Some(p) = std::env::var_os("ProgramData") {
+            paths.push(PathBuf::from(p).join(r"Microsoft\Windows\Start Menu\Programs").join("SENTIENT.lnk"));
+        }
         if let Some(p) = std::env::var_os("USERPROFILE") {
             paths.push(PathBuf::from(p).join("Desktop").join("SENTIENT.lnk"));
         }
@@ -367,13 +373,65 @@ pub fn shortcut_exists() -> bool {
     }
 }
 
+/// Remove what opening SENTIENT left in each account (used by uninstall):
+/// the starting page and the kiosk's own browser profile (the app's
+/// open_client writes them under the account's local app data).
+pub fn remove_user_data(sink: &ProgressFn) {
+    #[cfg(windows)]
+    {
+        let script = r#"foreach ($u in Get-ChildItem -Directory -Path (Split-Path $env:PUBLIC) -ErrorAction SilentlyContinue) {
+  $d = Join-Path $u.FullName 'AppData\Local\SENTIENT'
+  if (-not (Test-Path -LiteralPath $d)) { continue }
+  foreach ($item in @('kiosk-browser', 'starting.html')) {
+    $p = Join-Path $d $item
+    if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue; Write-Output ("removed: " + $p) }
+  }
+  if (-not (Get-ChildItem -LiteralPath $d -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue }
+}"#;
+        if let Some((_, o, _)) = sys::output("powershell", &["-NoProfile", "-NonInteractive", "-Command", script]) {
+            for line in sys::decode(&o).lines().map(str::trim).filter(|l| !l.is_empty()) {
+                sink(Progress::Log { line: line.into() });
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let data_home = std::env::var("XDG_DATA_HOME").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| format!("{home}/.local/share"));
+        let dir = PathBuf::from(data_home).join("sentient-platform-manager");
+        for item in ["kiosk-browser", "starting.html"] {
+            let p = dir.join(item);
+            let removed = if p.is_dir() { std::fs::remove_dir_all(&p).is_ok() } else { std::fs::remove_file(&p).is_ok() };
+            if removed {
+                sink(Progress::Log { line: format!("removed: {}", p.display()) });
+            }
+        }
+        let _ = std::fs::remove_dir(&dir);
+    }
+}
+
 /// Delete the Desktop + Start Menu SENTIENT shortcuts (used by uninstall).
 pub fn remove_shortcuts(sink: &ProgressFn, work_dir: &Path) {
     #[cfg(windows)]
     {
-        let script = r#"foreach ($dir in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
+        // The shared folders (where they are made now), and every account's
+        // own Desktop and Start menu: earlier managers put them there, for the
+        // account Setup ran as (an administrator's, when elevated from
+        // another). Only a shortcut this manager made is removed: SENTIENT.lnk
+        // with its kiosk description.
+        let script = r#"$ws = New-Object -ComObject WScript.Shell
+$dirs = @([Environment]::GetFolderPath('CommonDesktopDirectory'), [Environment]::GetFolderPath('CommonPrograms'))
+foreach ($u in Get-ChildItem -Directory -Path (Split-Path $env:PUBLIC) -ErrorAction SilentlyContinue) {
+  $dirs += (Join-Path $u.FullName 'Desktop')
+  $dirs += (Join-Path $u.FullName 'OneDrive\Desktop')
+  $dirs += (Join-Path $u.FullName 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs')
+}
+foreach ($dir in $dirs) {
   $lnk = Join-Path $dir 'SENTIENT.lnk'
-  if (Test-Path $lnk) { Remove-Item $lnk -Force -ErrorAction SilentlyContinue; Write-Output ("removed: " + $lnk) }
+  if (-not (Test-Path -LiteralPath $lnk)) { continue }
+  if ($ws.CreateShortcut($lnk).Description -ne 'Launch SENTIENT (kiosk mode)') { continue }
+  Remove-Item -LiteralPath $lnk -Force -ErrorAction SilentlyContinue
+  Write-Output ("removed: " + $lnk)
 }"#;
         std::fs::create_dir_all(work_dir).ok();
         let ps1 = work_dir.join("rm_kiosk_shortcut.ps1");
@@ -517,6 +575,28 @@ mod tests {
         let window = Browser::Chrome.open_args("u", false, Some(profile));
         assert_eq!(window[0], "--new-window");
         assert!(!window.iter().any(|a| a.starts_with("--user-data-dir")));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn uninstall_removes_the_starting_page_and_kiosk_profile() {
+        let base = std::env::temp_dir().join(format!("spm-userdata-{}", std::process::id()));
+        let dir = base.join("sentient-platform-manager");
+        std::fs::create_dir_all(dir.join("kiosk-browser").join("Default")).unwrap();
+        std::fs::write(dir.join("starting.html"), "x").unwrap();
+        std::env::set_var("XDG_DATA_HOME", &base);
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = lines.clone();
+        let sink: ProgressFn = std::sync::Arc::new(move |p| {
+            if let Progress::Log { line } = p {
+                seen.lock().unwrap().push(line);
+            }
+        });
+        remove_user_data(&sink);
+        std::env::remove_var("XDG_DATA_HOME");
+        assert!(!dir.exists());
+        assert_eq!(lines.lock().unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
