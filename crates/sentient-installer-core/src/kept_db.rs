@@ -166,6 +166,14 @@ pub fn set_aside(sql: &Sql, db: &str, sink: &ProgressFn) -> Result<String, Strin
     Ok(aside)
 }
 
+/// Start fresh, deleting: drop `db` so the install creates a new one.
+/// Cannot be undone.
+pub fn drop_database(sql: &Sql, db: &str, sink: &ProgressFn) -> Result<(), String> {
+    sql("postgres", &format!("DROP DATABASE {} WITH (FORCE)", ident(db))).map_err(|e| format!("delete the earlier database: {e}"))?;
+    sink(Progress::Log { line: format!("The earlier database {db} was deleted; this install starts a new one.") });
+    Ok(())
+}
+
 /// Keep: make `existing` fit `flavor`, or refuse before changing anything.
 /// `timescale_sql` is the schema installer's own conversion script.
 pub fn prepare_keep(sql: &Sql, existing: &Existing, flavor: Flavor, timescale_sql: &str, sink: &ProgressFn) -> Result<(), String> {

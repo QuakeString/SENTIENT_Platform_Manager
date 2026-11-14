@@ -145,7 +145,7 @@ pub fn not_installed(theme: &Theme) -> Div {
     panel(theme)
         .child(div().font_weight(FontWeight::MEDIUM).child("SENTIENT isn't installed on this computer"))
         .child(div().text_sm().text_color(theme.muted_foreground).child(
-            "Install it from a SENTIENT package: choose the unpacked package folder (the one with SENTIENT-Setup and payload) and its Setup starts.",
+            "Download and install SENTIENT: Setup downloads the version you choose from GitHub. Without internet, install from local files: the unpacked SENTIENT package folder (with SENTIENT-Setup and payload).",
         ))
         .child(
             h_flex()
@@ -153,8 +153,14 @@ pub fn not_installed(theme: &Theme) -> Div {
                 .child(
                     Button::new("install-sentient")
                         .primary()
-                        .label("Install SENTIENT…")
+                        .label("Download and install SENTIENT")
                         .on_click(|_, window, cx| crate::standalone::install_sentient(window, cx)),
+                )
+                .child(
+                    Button::new("install-sentient-package")
+                        .outline()
+                        .label("Install from local files…")
+                        .on_click(|_, window, cx| crate::standalone::install_sentient_from_package(window, cx)),
                 )
                 .child(
                     Button::new("remove-manager")

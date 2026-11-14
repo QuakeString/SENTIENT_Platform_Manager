@@ -130,6 +130,19 @@ pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result
     step(&sink, "Restoring the Platform Manager");
     let message = match self_install::install_manager() {
         Ok(manager) => {
+            // Installs from before the clean ClickHouse stop get it here.
+            #[cfg(windows)]
+            if record.engine == Engine::Native && record.flavor() == sentient_installer_core::stack::Flavor::Clickhouse {
+                if let Some(password) = crate::secrets::get(crate::secrets::Secret::ClickhouseAccount) {
+                    use sentient_installer_core::clickhouse_wsl;
+                    step(&sink, "Stopping ClickHouse cleanly when Windows shuts down");
+                    if let Err(e) = clickhouse_wsl::register_keepalive(&password)
+                        .and_then(|()| clickhouse_wsl::install_guard(&manager, record.stack.ch_http_port))
+                    {
+                        sink(Progress::Log { line: format!("note: the ClickHouse shutdown service was not set up: {e}") });
+                    }
+                }
+            }
             self_install::restore_menu_entry(&manager);
             self_install::refresh_operator_screen(&sink);
             "Repaired: SENTIENT is running.".to_string()
@@ -156,8 +169,14 @@ pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: P
     // Whatever the installation uses now: a migration away from ClickHouse
     // leaves it set up.
     #[cfg(windows)]
-    if record.engine == Engine::Native && !keep_data && sentient_installer_core::clickhouse_wsl::is_installed() {
-        crate::kept::remove_clickhouse(&sink)?;
+    if record.engine == Engine::Native && sentient_installer_core::clickhouse_wsl::is_installed() {
+        if keep_data {
+            // Stopped cleanly and not started at boot: left running, it
+            // held its ports and a new install refused them.
+            sentient_installer_core::clickhouse_wsl::park(&sink, record.stack.ch_http_port);
+        } else {
+            crate::kept::remove_clickhouse(&sink)?;
+        }
     }
     if !keep_data {
         crate::secrets::forget_all();

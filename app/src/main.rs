@@ -48,6 +48,12 @@ fn main() {
     if args.get(1).map(String::as_str) == Some("--clickhouse-agent") {
         std::process::exit(agent::run(args.get(2).map(String::as_str).unwrap_or("")));
     }
+    // The ClickHouse shutdown guard, started by Windows as a service.
+    #[cfg(windows)]
+    if args.get(1).map(String::as_str) == Some("--clickhouse-guard") {
+        let port = args.get(2).and_then(|p| p.parse().ok()).unwrap_or(8123);
+        std::process::exit(sentient_installer_core::clickhouse_wsl::run_guard(port));
+    }
     // The operator screen's sign-in entry: no window, no elevation.
     if args.get(1).map(String::as_str) == Some("--open-sentient") {
         std::process::exit(open_client::run(&args[2..]));

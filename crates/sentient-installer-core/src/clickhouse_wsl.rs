@@ -226,23 +226,296 @@ pub fn agent_finish(result: &Result<(), String>) {
     let _ = std::fs::write(work_dir().join("job.done"), text);
 }
 
-/// Start ClickHouse at every boot (and now): Docker in the distro brings the
-/// container back through its restart policy; `sleep infinity` holds the
-/// session so WSL does not shut the distro down when idle.
+/// Start ClickHouse at every boot (and now), and stop it cleanly when asked.
+///
+/// The task holds the account's WSL session open (WSL shuts an idle distro
+/// down) by waiting for `stop.request` in the work directory. When that file
+/// appears (written by the shutdown guard service, see [`run_guard`], or by an
+/// uninstall that keeps the data), ClickHouse is stopped with time to finish
+/// its writes, the distro's page cache is flushed, and `stop.done` answers.
+///
+/// Without this, a Windows restart cut the WSL machine off with ClickHouse
+/// still running: the newest parts of its tables were left empty, and after
+/// more than 100 of them ClickHouse refused to start
+/// (TOO_MANY_UNEXPECTED_DATA_PARTS).
+///
+/// The container runs `restart: unless-stopped`, so after a clean stop Docker
+/// would not start it again at boot: the script starts it itself.
 #[cfg(windows)]
 pub fn register_keepalive(password: &str) -> Result<(), String> {
-    let cmd = work_dir().join("keepalive.cmd");
+    let dir = work_dir();
+    let script = dir.join("keepalive.sh");
+    std::fs::write(&script, keepalive_script(&wsl_path(&dir))).map_err(|e| format!("write {}: {e}", script.display()))?;
+    let cmd = dir.join("keepalive.cmd");
     std::fs::write(
         &cmd,
         format!(
-            "@echo off\r\nwsl.exe -d {} -u root -- sh -c \"systemctl start docker >/dev/null 2>&1; exec sleep infinity\"\r\n",
-            crate::distro::DISTRO
+            "@echo off\r\nwsl.exe -d {} -u root -- sh \"{}\"\r\n",
+            crate::distro::DISTRO,
+            wsl_path(&script)
         ),
     )
     .map_err(|e| format!("write {}: {e}", cmd.display()))?;
     register_task(KEEPALIVE_TASK, &cmd, true, password)?;
     let _ = sys::output("schtasks.exe", &["/run", "/tn", KEEPALIVE_TASK]);
     Ok(())
+}
+
+/// The keep-alive script, run as root in the distro. `dir` is the work
+/// directory as the distro sees it (`/mnt/c/...`).
+pub fn keepalive_script(dir: &str) -> String {
+    format!(
+        r#"#!/bin/sh
+# SENTIENT ClickHouse keep-alive, written by the SENTIENT Platform Manager.
+D='{dir}'
+CH='label=com.docker.compose.service=clickhouse'
+rm -f "$D/stop.request" "$D/stop.done"
+systemctl start docker >/dev/null 2>&1
+i=0
+while [ $i -lt 90 ] && ! docker info >/dev/null 2>&1; do i=$((i + 1)); sleep 1; done
+ids=$(docker ps -aq --filter "$CH")
+[ -n "$ids" ] && docker start $ids >/dev/null 2>&1
+while [ ! -e "$D/stop.request" ]; do sleep 2; done
+ids=$(docker ps -q --filter "$CH")
+[ -n "$ids" ] && docker stop -t 120 $ids >/dev/null 2>&1
+sync
+rm -f "$D/stop.request"
+touch "$D/stop.done"
+"#
+    )
+}
+
+/// `C:\ProgramData\SENTIENT\clickhouse` as WSL sees it:
+/// `/mnt/c/ProgramData/SENTIENT/clickhouse`.
+pub fn wsl_path(path: &std::path::Path) -> String {
+    let s = path.to_string_lossy().replace('\\', "/");
+    match s.as_bytes() {
+        [d, b':', rest @ ..] if d.is_ascii_alphabetic() => {
+            format!("/mnt/{}{}", (*d as char).to_ascii_lowercase(), String::from_utf8_lossy(rest))
+        }
+        _ => s,
+    }
+}
+
+/// Ask the keep-alive task to stop ClickHouse cleanly and wait for it, up to
+/// `limit`. `tick` is called about every second while waiting (the guard
+/// service reports progress to Windows with it). Returns whether ClickHouse
+/// confirmed the stop; true also when it was not running at all.
+#[cfg(windows)]
+pub fn stop_clickhouse(http_port: u16, limit: std::time::Duration, mut tick: impl FnMut(u32)) -> bool {
+    if !crate::distro::clickhouse_answers(http_port) {
+        return true;
+    }
+    let dir = work_dir();
+    let done = dir.join("stop.done");
+    let _ = std::fs::remove_file(&done);
+    if std::fs::write(dir.join("stop.request"), b"stop").is_err() {
+        return false;
+    }
+    let started = std::time::Instant::now();
+    let mut n = 0;
+    while started.elapsed() < limit {
+        if done.exists() {
+            let _ = std::fs::remove_file(&done);
+            return true;
+        }
+        n += 1;
+        tick(n);
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    false
+}
+
+/// The Windows service that stops ClickHouse before Windows shuts down.
+pub const GUARD_SERVICE: &str = "SentientClickHouse";
+
+/// How long Windows lets the guard work at shutdown before it moves on.
+#[cfg(windows)]
+const GUARD_PRESHUTDOWN_MS: u32 = 180_000;
+/// How long the guard waits for ClickHouse (below the time Windows gives).
+#[cfg(windows)]
+const GUARD_STOP_LIMIT: std::time::Duration = std::time::Duration::from_secs(150);
+
+/// Register (or update) and start the shutdown guard: a LocalSystem service
+/// running `manager --clickhouse-guard <http_port>`. It does nothing until
+/// Windows announces a shutdown (pre-shutdown, before other services and
+/// WSL are stopped); then it stops ClickHouse cleanly through the keep-alive
+/// task. Idempotent.
+#[cfg(windows)]
+pub fn install_guard(manager: &Path, http_port: u16) -> Result<(), String> {
+    let bin = format!("\"{}\" --clickhouse-guard {http_port}", manager.display());
+    let exists = sys::output("sc.exe", &["query", GUARD_SERVICE]).is_some_and(|(ok, _, _)| ok);
+    let args: Vec<&str> = if exists {
+        vec!["config", GUARD_SERVICE, "binPath=", &bin, "start=", "auto"]
+    } else {
+        vec!["create", GUARD_SERVICE, "binPath=", &bin, "start=", "auto", "DisplayName=", "SENTIENT ClickHouse"]
+    };
+    match sys::output("sc.exe", &args) {
+        Some((true, _, _)) => {}
+        Some((false, out, err)) => {
+            return Err(format!("register the {GUARD_SERVICE} service: {} {}", sys::decode(&out).trim(), sys::decode(&err).trim()))
+        }
+        None => return Err("could not run sc.exe".into()),
+    }
+    let _ = sys::output(
+        "sc.exe",
+        &["description", GUARD_SERVICE, "Stops ClickHouse (SENTIENT's history database in WSL2) cleanly before Windows shuts down."],
+    );
+    guard_service::set_preshutdown_timeout(GUARD_PRESHUTDOWN_MS)?;
+    let _ = sys::output("sc.exe", &["start", GUARD_SERVICE]);
+    Ok(())
+}
+
+/// Stop ClickHouse cleanly (stopping the guard does that) and remove the
+/// guard service. Safe when it is not installed.
+#[cfg(windows)]
+pub fn remove_guard(sink: &ProgressFn) {
+    if !sys::output("sc.exe", &["query", GUARD_SERVICE]).is_some_and(|(ok, _, _)| ok) {
+        return;
+    }
+    sink(Progress::Step { name: "Removing the ClickHouse shutdown service".into() });
+    let _ = sys::output("sc.exe", &["stop", GUARD_SERVICE]);
+    let started = std::time::Instant::now();
+    while started.elapsed() < GUARD_STOP_LIMIT + std::time::Duration::from_secs(10) {
+        match sys::output("sc.exe", &["query", GUARD_SERVICE]) {
+            Some((true, out, _)) if !sys::decode(&out).contains("STOPPED") => std::thread::sleep(std::time::Duration::from_secs(1)),
+            _ => break,
+        }
+    }
+    let _ = sys::output("sc.exe", &["delete", GUARD_SERVICE]);
+}
+
+/// Uninstall keeping the data: stop ClickHouse cleanly, and keep it from
+/// starting at boot (it held ports 8123 and 9000 after SENTIENT was gone,
+/// so a new install found them taken). The distro, its data and the account
+/// stay for a new install, which registers the boot task again.
+#[cfg(windows)]
+pub fn park(sink: &ProgressFn, http_port: u16) {
+    sink(Progress::Step { name: "Stopping ClickHouse (its data is kept)".into() });
+    remove_guard(sink);
+    if !stop_clickhouse(http_port, GUARD_STOP_LIMIT, |_| {}) {
+        sink(Progress::Log { line: "ClickHouse did not confirm a clean stop in time.".into() });
+    }
+    let _ = sys::output("schtasks.exe", &["/end", "/tn", KEEPALIVE_TASK]);
+    let _ = sys::output("schtasks.exe", &["/change", "/tn", KEEPALIVE_TASK, "/disable"]);
+}
+
+/// The guard's side: `--clickhouse-guard <http_port>`, started by the
+/// service control manager.
+#[cfg(windows)]
+pub fn run_guard(http_port: u16) -> i32 {
+    guard_service::run(http_port)
+}
+
+#[cfg(windows)]
+mod guard_service {
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
+
+    use windows_sys::Win32::Foundation::{ERROR_CALL_NOT_IMPLEMENTED, NO_ERROR};
+    use windows_sys::Win32::System::Services::*;
+    use windows_sys::core::PWSTR;
+
+    use super::{GUARD_SERVICE, GUARD_STOP_LIMIT, KEEPALIVE_TASK};
+
+    static PORT: AtomicU16 = AtomicU16::new(8123);
+    static HANDLE: AtomicUsize = AtomicUsize::new(0);
+    static STOP: AtomicBool = AtomicBool::new(false);
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    pub fn run(port: u16) -> i32 {
+        PORT.store(port, Ordering::SeqCst);
+        let mut name = wide(GUARD_SERVICE);
+        let table = [
+            SERVICE_TABLE_ENTRYW { lpServiceName: name.as_mut_ptr(), lpServiceProc: Some(service_main) },
+            SERVICE_TABLE_ENTRYW { lpServiceName: std::ptr::null_mut(), lpServiceProc: None },
+        ];
+        // Returns when the service has stopped.
+        if unsafe { StartServiceCtrlDispatcherW(table.as_ptr()) } == 0 {
+            eprintln!("--clickhouse-guard runs as the {GUARD_SERVICE} Windows service only");
+            return 1;
+        }
+        0
+    }
+
+    fn report(state: SERVICE_STATUS_CURRENT_STATE, checkpoint: u32, wait_hint: u32) {
+        let handle = HANDLE.load(Ordering::SeqCst);
+        if handle == 0 {
+            return;
+        }
+        let status = SERVICE_STATUS {
+            dwServiceType: SERVICE_WIN32_OWN_PROCESS,
+            dwCurrentState: state,
+            dwControlsAccepted: if state == SERVICE_RUNNING { SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_PRESHUTDOWN } else { 0 },
+            dwWin32ExitCode: NO_ERROR,
+            dwServiceSpecificExitCode: 0,
+            dwCheckPoint: checkpoint,
+            dwWaitHint: wait_hint,
+        };
+        unsafe {
+            SetServiceStatus(handle as SERVICE_STATUS_HANDLE, &status);
+        }
+    }
+
+    unsafe extern "system" fn handler(control: u32, _event: u32, _data: *mut c_void, _ctx: *mut c_void) -> u32 {
+        match control {
+            SERVICE_CONTROL_STOP | SERVICE_CONTROL_PRESHUTDOWN => {
+                STOP.store(true, Ordering::SeqCst);
+                report(SERVICE_STOP_PENDING, 1, 10_000);
+                NO_ERROR
+            }
+            SERVICE_CONTROL_INTERROGATE => NO_ERROR,
+            _ => ERROR_CALL_NOT_IMPLEMENTED,
+        }
+    }
+
+    unsafe extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
+        let name = wide(GUARD_SERVICE);
+        let handle = unsafe { RegisterServiceCtrlHandlerExW(name.as_ptr(), Some(handler), std::ptr::null_mut()) };
+        if handle.is_null() {
+            return;
+        }
+        HANDLE.store(handle as usize, Ordering::SeqCst);
+        report(SERVICE_RUNNING, 0, 0);
+        // Started by hand after a stop: bring ClickHouse back. At boot the
+        // task's own start trigger has usually run it already, and a second
+        // run of a running task is ignored.
+        let _ = crate::sys::output("schtasks.exe", &["/run", "/tn", KEEPALIVE_TASK]);
+        while !STOP.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        let port = PORT.load(Ordering::SeqCst);
+        super::stop_clickhouse(port, GUARD_STOP_LIMIT, |n| report(SERVICE_STOP_PENDING, n + 1, 10_000));
+        report(SERVICE_STOPPED, 0, 0);
+    }
+
+    /// Windows' default pre-shutdown wait is not documented as stable; ask
+    /// for enough time to stop ClickHouse.
+    pub fn set_preshutdown_timeout(ms: u32) -> Result<(), String> {
+        let name = wide(GUARD_SERVICE);
+        unsafe {
+            let scm = OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT);
+            if scm.is_null() {
+                return Err("open the service control manager".into());
+            }
+            let svc = OpenServiceW(scm, name.as_ptr(), SERVICE_CHANGE_CONFIG);
+            if svc.is_null() {
+                CloseServiceHandle(scm);
+                return Err(format!("open the {GUARD_SERVICE} service"));
+            }
+            let mut info = SERVICE_PRESHUTDOWN_INFO { dwPreshutdownTimeout: ms };
+            let ok = ChangeServiceConfig2W(svc, SERVICE_CONFIG_PRESHUTDOWN_INFO, &mut info as *mut _ as *const c_void);
+            CloseServiceHandle(svc);
+            CloseServiceHandle(scm);
+            if ok == 0 {
+                return Err(format!("set the {GUARD_SERVICE} shutdown time"));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Run as the hidden account before its first WSL start: no WSLg. With no
@@ -275,6 +548,7 @@ const CLEANUP_TASK: &str = "SENTIENT ClickHouse cleanup";
 /// start-up.
 #[cfg(windows)]
 pub fn remove_account(sink: &ProgressFn) -> bool {
+    remove_guard(sink);
     sink(Progress::Step { name: "Removing the ClickHouse service account".into() });
     let _ = sys::output("schtasks.exe", &["/end", "/tn", KEEPALIVE_TASK]);
     let _ = sys::output("schtasks.exe", &["/delete", "/tn", KEEPALIVE_TASK, "/f"]);
@@ -305,4 +579,28 @@ $left"#
         sink(Progress::Log { line: "Windows still holds the account's profile; it is removed at the next restart.".into() });
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_paths_become_wsl_paths() {
+        assert_eq!(wsl_path(std::path::Path::new(r"C:\ProgramData\SENTIENT\clickhouse")), "/mnt/c/ProgramData/SENTIENT/clickhouse");
+        assert_eq!(wsl_path(std::path::Path::new(r"D:\x y\keepalive.sh")), "/mnt/d/x y/keepalive.sh");
+    }
+
+    #[test]
+    fn keepalive_waits_for_the_stop_request_and_answers_after_a_clean_stop() {
+        let s = keepalive_script("/mnt/c/ProgramData/SENTIENT/clickhouse");
+        assert!(!s.contains('\r'), "the distro's sh needs LF line ends");
+        let wait = s.find(r#"while [ ! -e "$D/stop.request" ]"#).unwrap();
+        let stop = s.find("docker stop -t 120").unwrap();
+        let sync = s.find("\nsync\n").unwrap();
+        let done = s.find(r#"touch "$D/stop.done""#).unwrap();
+        assert!(s.find("docker start").unwrap() < wait && wait < stop && stop < sync && sync < done);
+        // A stop request left from the last shutdown must not stop it at once.
+        assert!(s.find(r#"rm -f "$D/stop.request" "$D/stop.done""#).unwrap() < wait);
+    }
 }

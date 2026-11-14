@@ -126,6 +126,10 @@ pub struct Installer {
     /// Database settings, and whether to keep using it.
     existing: Option<String>,
     keep_existing: bool,
+    /// Start fresh by deleting the earlier database instead of keeping a copy.
+    delete_existing: bool,
+    /// The earlier install's passwords were found and filled in.
+    kept_passwords: bool,
     fields: Fields,
     install: Entity<Job>,
     _tasks: Vec<Task<()>>,
@@ -249,6 +253,8 @@ impl Installer {
             problem: None,
             existing: None,
             keep_existing: true,
+            delete_existing: false,
+            kept_passwords: false,
             fields,
             install,
             _tasks: Vec::new(),
@@ -409,6 +415,12 @@ impl Installer {
                 // earlier Platform Manager left it so): it is this one.
                 if self.existing.is_some() && self.engine == Engine::Native {
                     ports.retain(|(_, what)| what != "PostgreSQL");
+                    // So may its ClickHouse (an earlier Platform Manager left
+                    // it running); this install takes it over.
+                    #[cfg(windows)]
+                    if sentient_installer_core::clickhouse_wsl::is_installed() {
+                        ports.retain(|(_, what)| !what.starts_with("ClickHouse"));
+                    }
                 }
                 self.ports_in_use(&ports)
             }
@@ -567,6 +579,7 @@ impl Installer {
             stack,
             pg_superuser_password: self.value(&f.pg_admin_password, cx),
             existing: self.existing.as_ref().map(|_| self.keep_existing),
+            delete_existing: self.existing.is_some() && !self.keep_existing && self.delete_existing,
             admin_email: self.value(&f.admin_email, cx),
             admin_password: self.value(&f.admin_password, cx),
             settings: self.chosen_settings(cx),
@@ -685,6 +698,26 @@ impl Installer {
         cx.notify();
     }
 
+    /// An uninstall that kept the database keeps its passwords in the secret
+    /// store too: fill them in, since the kept PostgreSQL (and ClickHouse)
+    /// still use them.
+    fn prefill_kept_passwords(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::secrets::{self, Secret};
+        let f = &self.fields;
+        let mut found = false;
+        for (field, secret) in [
+            (f.pg_admin_password.clone(), Secret::PostgresAdmin),
+            (f.pg_password.clone(), Secret::Database),
+            (f.ch_password.clone(), Secret::Clickhouse),
+        ] {
+            if let Some(value) = secrets::get(secret).filter(|v| !v.is_empty()) {
+                field.update(cx, |state, cx| state.set_value(value, window, cx));
+                found |= matches!(secret, Secret::PostgresAdmin);
+            }
+        }
+        self.kept_passwords = found;
+    }
+
     fn next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.step {
             FINISH => window.remove_window(),
@@ -701,6 +734,9 @@ impl Installer {
                     self.step = self.next_shown(self.step);
                     if self.step == 4 {
                         self.existing = self.find_existing(cx);
+                        if self.existing.is_some() && self.engine == Engine::Native {
+                            self.prefill_kept_passwords(window, cx);
+                        }
                     }
                 }
                 Err(e) => self.problem = Some(e.into()),

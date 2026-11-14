@@ -15,6 +15,23 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Fixed
+- Windows, PostgreSQL + ClickHouse: ClickHouse is stopped cleanly before
+  Windows shuts down (a new "SENTIENT ClickHouse" service), writes its data
+  through to disk, and starts even after an unclean stop left many empty
+  parts. Before, a restart could leave SENTIENT unable to start
+  ("Suspiciously many broken parts", TOO_MANY_UNEXPECTED_DATA_PARTS).
+  Repair adds the clean stop to existing installs.
+- Uninstalling but keeping the database also stops ClickHouse and keeps it
+  from starting at boot; it held ports 8123 and 9000, so a new install
+  refused them.
+- A new install over a kept database fills in that install's passwords and
+  takes over its ClickHouse ports, and offers "Delete it" beside
+  "Keep using it" and "Start fresh".
+- The Platform Manager installed on its own offers "Download and install
+  SENTIENT" (Setup downloads the version you pick) besides "Install from
+  local files"; before, it only accepted a downloaded package folder.
+
 ## [0.8.0-rc10] - 2026-11-14
 
 Choose which SENTIENT version to install or update to, operator screens that show SENTIENT right after a restart, a start delay you set, coloured logs, and a cleaner uninstall.

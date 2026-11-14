@@ -355,9 +355,27 @@ pub fn clickhouse_config_xml(ch: &ChTuning, http_port: Option<u16>, tcp_port: Op
             tcp_port.map(|p| format!("<tcp_port>{p}</tcp_port>\n")).unwrap_or_default(),
         ),
     };
+    // On Windows ClickHouse runs in the WSL2 machine, which Windows can cut
+    // off (a restart that does not wait, a power cut): parts that were only
+    // in the page cache are left empty. Writing them through costs little at
+    // SENTIENT's insert rates.
+    let fsync = if cfg!(windows) {
+        "\n        <fsync_after_insert>1</fsync_after_insert>\n        <fsync_part_directory>1</fsync_part_directory>\n        <min_compressed_bytes_to_fsync_after_merge>1</min_compressed_bytes_to_fsync_after_merge>"
+    } else {
+        ""
+    };
     format!(
         r#"<?xml version="1.0"?>
 <clickhouse>
+    <!-- After an unclean stop ClickHouse refuses a table with more than 100
+         broken parts (TOO_MANY_UNEXPECTED_DATA_PARTS) and SENTIENT cannot
+         start. Broken parts are moved to the table's detached folder, not
+         deleted; the size limit (1 GB by default) still guards against real
+         damage. -->
+    <merge_tree>
+        <max_suspicious_broken_parts>100000</max_suspicious_broken_parts>{fsync}
+    </merge_tree>
+
     <!-- Recomputing several hundred async metrics every second walks every
          table, part and disk: 8-12% of a core while fully idle. -->
     <asynchronous_metrics_update_period_s>60</asynchronous_metrics_update_period_s>
@@ -385,6 +403,7 @@ pub fn clickhouse_config_xml(ch: &ChTuning, http_port: Option<u16>, tcp_port: Op
 "#,
         mark = ch.ch_mark_cache_bytes,
         uncompressed = ch.ch_uncompressed_cache_bytes,
+        fsync = fsync,
     )
 }
 
@@ -441,6 +460,13 @@ mod tests {
         let t: Tuning = serde_json::from_str(r#"{"rust_log":"warn"}"#).unwrap();
         assert_eq!(t.rust_log, "warn");
         assert_eq!(t.db_pool_primary_max, 48);
+    }
+
+    #[test]
+    fn clickhouse_survives_an_unclean_stop() {
+        let xml = clickhouse_config_xml(&ChTuning::default(), None, None);
+        assert!(xml.contains("<max_suspicious_broken_parts>100000</max_suspicious_broken_parts>"));
+        assert!(xml.contains("</merge_tree>"));
     }
 
     #[test]
