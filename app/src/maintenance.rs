@@ -112,6 +112,34 @@ fn native_config_for_repair(record: &InstallationRecord, sink: &ProgressFn) -> R
 }
 
 pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result<(), String> {
+    // ClickHouse first: a ClickHouse that refuses a table after an unclean
+    // stop keeps SENTIENT from starting, so the repair below would fail.
+    // Installs from before the clean ClickHouse stop get it here.
+    #[cfg(windows)]
+    if record.engine == Engine::Native && record.flavor() == sentient_installer_core::stack::Flavor::Clickhouse {
+        if let Some(password) = crate::secrets::get(crate::secrets::Secret::ClickhouseAccount) {
+            use sentient_installer_core::clickhouse_wsl;
+            // This version of the program does the work as the account, so
+            // it is put in place first (repair restores it anyway).
+            let _ = self_install::install_manager();
+            step(&sink, "Making ClickHouse safe against unclean stops");
+            if let Err(e) = clickhouse_wsl::run_as_account(&sink, &password, &self_install::manager_exe(), "harden", Some(std::time::Duration::from_secs(240))) {
+                sink(Progress::Log { line: format!("note: {e}") });
+            }
+            step(&sink, "Stopping ClickHouse cleanly when Windows shuts down");
+            match clickhouse_wsl::register_keepalive(&password)
+                .and_then(|()| clickhouse_wsl::install_guard(&self_install::manager_exe(), record.stack.ch_http_port))
+            {
+                // The running keep-alive is the old one, which does not
+                // answer a stop request: start the new one now.
+                Ok(()) => {
+                    let _ = std::process::Command::new("schtasks.exe").args(["/end", "/tn", clickhouse_wsl::KEEPALIVE_TASK]).output();
+                    let _ = std::process::Command::new("schtasks.exe").args(["/run", "/tn", clickhouse_wsl::KEEPALIVE_TASK]).output();
+                }
+                Err(e) => sink(Progress::Log { line: format!("note: the ClickHouse shutdown service was not set up: {e}") }),
+            }
+        }
+    }
     // SENTIENT first: it is what the repair is for, and on Linux Docker it
     // needs no administrator, so a dismissed password prompt for the
     // Platform Manager's files below does not leave it broken.
@@ -130,19 +158,6 @@ pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result
     step(&sink, "Restoring the Platform Manager");
     let message = match self_install::install_manager() {
         Ok(manager) => {
-            // Installs from before the clean ClickHouse stop get it here.
-            #[cfg(windows)]
-            if record.engine == Engine::Native && record.flavor() == sentient_installer_core::stack::Flavor::Clickhouse {
-                if let Some(password) = crate::secrets::get(crate::secrets::Secret::ClickhouseAccount) {
-                    use sentient_installer_core::clickhouse_wsl;
-                    step(&sink, "Stopping ClickHouse cleanly when Windows shuts down");
-                    if let Err(e) = clickhouse_wsl::register_keepalive(&password)
-                        .and_then(|()| clickhouse_wsl::install_guard(&manager, record.stack.ch_http_port))
-                    {
-                        sink(Progress::Log { line: format!("note: the ClickHouse shutdown service was not set up: {e}") });
-                    }
-                }
-            }
             self_install::restore_menu_entry(&manager);
             self_install::refresh_operator_screen(&sink);
             "Repaired: SENTIENT is running.".to_string()

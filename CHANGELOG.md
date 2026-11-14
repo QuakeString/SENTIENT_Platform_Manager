@@ -36,7 +36,9 @@ refreshes that repository's Downloads table.
   through to disk, and starts even after an unclean stop left many empty
   parts. Before, a restart could leave SENTIENT unable to start
   ("Suspiciously many broken parts", TOO_MANY_UNEXPECTED_DATA_PARTS).
-  Repair adds the clean stop to existing installs.
+  Repair brings existing installs up to date: it adds the settings to their
+  ClickHouse (which also gets a ClickHouse that already refuses to start
+  going again, keeping all data), the clean stop and the new keep-alive.
 - Uninstalling but keeping the database also stops ClickHouse and keeps it
   from starting at boot; it held ports 8123 and 9000, so a new install
   refused them.

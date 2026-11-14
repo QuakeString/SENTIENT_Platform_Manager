@@ -10,6 +10,8 @@
 //! - `provision`: import the WSL distro, install Docker, start ClickHouse
 //!   from `config.json` (a DeployConfig) in the work directory.
 //! - `unregister`: delete the distro and with it ClickHouse's data.
+//! - `harden`: add the crash-safe ClickHouse settings to an install made
+//!   before them, and restart ClickHouse.
 
 #[cfg(windows)]
 pub fn run(job: &str) -> i32 {
@@ -38,6 +40,25 @@ pub fn run(job: &str) -> i32 {
                 Ok(o) if o.status.success() => Ok(()),
                 Ok(o) => Err(String::from_utf8_lossy(&o.stderr).into_owned()),
                 Err(e) => Err(e.to_string()),
+            }
+        }
+        "harden" => {
+            let cfg = DeployConfig::default();
+            let script = sentient_installer_core::clickhouse_wsl::harden_config_script(&cfg.ch_config_path(), &cfg.names().ch);
+            // A file, not `sh -c`: the script's quotes would not survive
+            // Windows' command-line quoting.
+            let file = work_dir().join("harden.sh");
+            let ran = std::fs::write(&file, script).map_err(|e| e.to_string()).and_then(|()| {
+                std::process::Command::new("wsl.exe")
+                    .args(["-d", distro::DISTRO, "-u", "root", "--", "sh", &sentient_installer_core::clickhouse_wsl::wsl_path(&file)])
+                    .output()
+                    .map_err(|e| e.to_string())
+            });
+            let _ = std::fs::remove_file(&file);
+            match ran {
+                Ok(o) if o.status.success() => Ok(()),
+                Ok(o) => Err(format!("the ClickHouse settings were not changed: {}", String::from_utf8_lossy(&o.stderr).trim())),
+                Err(e) => Err(e),
             }
         }
         other => Err(format!("unknown agent job {other}")),

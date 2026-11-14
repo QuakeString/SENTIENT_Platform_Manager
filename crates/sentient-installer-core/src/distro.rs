@@ -239,7 +239,7 @@ impl DeployConfig {
     fn compose_path(&self) -> String {
         format!("{}/docker-compose.yml", self.stack_dir())
     }
-    fn ch_config_path(&self) -> String {
+    pub fn ch_config_path(&self) -> String {
         format!("{}/clickhouse-sentient.xml", self.stack_dir())
     }
     fn compose_cmd(&self, sub: &str) -> String {
