@@ -1087,7 +1087,16 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     write_env_file(cfg)?;
     bail_if_cancelled()?;
 
-    step(&sink, "Installing the SENTIENT schema (one-time)");
+    // Repair and reinstalls over a kept database run the same installer: it
+    // creates what is missing and leaves what is there.
+    let installed = psql(cfg, &cfg.db_name, "SELECT to_regclass('public.tb_user') IS NOT NULL;")
+        .map(|v| v.trim() == "t")
+        .unwrap_or(false);
+    step(&sink, if installed {
+        "Checking the SENTIENT database (nothing is changed when it is already installed)"
+    } else {
+        "Installing the SENTIENT schema (one-time)"
+    });
     let installer = cfg.app_bin().join("sentient-install.exe");
     if !installer.exists() {
         return Err(format!("{} is missing from the package", installer.display()));

@@ -16,6 +16,16 @@ refreshes that repository's Downloads table.
 ## [Unreleased]
 
 ### Fixed
+- Setup run again on a computer with SENTIENT installed starts with
+  "Update the Platform Manager" (installed and new versions shown; SENTIENT,
+  its database and settings are not changed). The other choice is now
+  "Update SENTIENT" and is greyed out, with where to update SENTIENT instead,
+  when there is no SENTIENT package next to Setup; before, "Update" was the
+  only update and stopped with "no SENTIENT package" for the downloaded
+  Setup.
+- Repair and installs over a kept database say "Checking the SENTIENT
+  database (nothing is changed when it is already installed)" instead of
+  "Installing the SENTIENT schema (one-time)".
 - "Check for updates" finds new Platform Manager versions. It asked the
   Platform Manager's private repository, which answers nobody, so the
   manager never offered its own update; it now reads the public

@@ -414,7 +414,11 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         "echo '>> Writing the configuration'\n\
          cat > {ENV_FILE} <<'SENTIENTEOF'\n{env}SENTIENTEOF\n\
          chown root:{APP_USER} {ENV_FILE} && chmod 640 {ENV_FILE}\n\
-         echo '>> Installing the SENTIENT schema (one-time)'\n\
+         if runuser -u postgres -- psql -p {pgport} -d {db} -tAc \"SELECT to_regclass('public.tb_user') IS NOT NULL\" 2>/dev/null | grep -q t; then\n\
+           echo '>> Checking the SENTIENT database (nothing is changed when it is already installed)'\n\
+         else\n\
+           echo '>> Installing the SENTIENT schema (one-time)'\n\
+         fi\n\
          set -a; . {ENV_FILE}; set +a\n\
          if ! {inst}/bin/sentient-install --database-url {url} --data-dir {inst}/data{demo} 2>&1 | tail -n 3; then\n\
            echo '>> note: the schema installer returned an error. If the database was already installed this is expected — continuing.'\n\
@@ -426,6 +430,7 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
          systemctl enable {APP_UNIT} >/dev/null 2>&1\n\
          systemctl restart {APP_UNIT}\n",
         env = env_file_body(cfg), unit = unit_body(cfg), inst = shq(&install_dir), url = shq(&db_url),
+        pgport = cfg.pg_port, db = shq(&cfg.db_name),
         stock_fix = if cfg.flavor == stack::Flavor::Stock {
             format!(
                 "runuser -u postgres -- psql -p {} -d {} -v ON_ERROR_STOP=1 -qAt -c {}\n",
