@@ -60,6 +60,11 @@ impl Default for Prefs {
     }
 }
 
+/// Where the manager keeps its own small files (this one, the last backup).
+pub fn prefs_dir() -> PathBuf {
+    prefs_path().parent().map(|p| p.to_path_buf()).unwrap_or_default()
+}
+
 fn prefs_path() -> PathBuf {
     #[cfg(windows)]
     {
