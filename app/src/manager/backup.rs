@@ -295,6 +295,8 @@ impl BackupPage {
                     if let Some(record) = &record {
                         crate::secrets_key::save_beside(record, &summary.output, &sink);
                     }
+                    // For the Status screen's "Last backup".
+                    crate::dbstatus::record_backup(&summary.output);
                     sink(Progress::Done {
                         message: format!(
                             "Saved {} ({}), checksum {}…",
