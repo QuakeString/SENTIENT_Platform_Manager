@@ -18,6 +18,7 @@ mod installer;
 mod jobs;
 mod log_level;
 mod kept;
+mod leftovers;
 mod maintenance;
 mod manager;
 mod migration;

@@ -132,6 +132,10 @@ pub struct Installer {
     kept_passwords: bool,
     fields: Fields,
     install: Entity<Job>,
+    /// What an earlier install left (crate::leftovers), found with the checks.
+    leftovers: Vec<String>,
+    /// Removing those leftovers.
+    cleanup: Entity<Job>,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -212,6 +216,7 @@ impl Installer {
             }
         });
         let install = cx.new(|_| Job::new());
+        let cleanup = cx.new(|_| Job::new());
         let install_sub = cx.observe(&install, |this, job, cx| {
             if this.step == INSTALL && matches!(job.read(cx).state(), JobState::Done(_)) {
                 this.step = FINISH;
@@ -252,6 +257,8 @@ impl Installer {
             sentient_version: sentient_version.into(),
             problem: None,
             existing: None,
+            leftovers: Vec::new(),
+            cleanup,
             keep_existing: true,
             delete_existing: false,
             kept_passwords: false,
@@ -309,6 +316,16 @@ impl Installer {
         self.checks = None;
         let offline = self.bundle.is_some();
         let engine = self.engine;
+        let pg_dir = std::path::PathBuf::from(self.value(&self.fields.data_dir, cx));
+        let task = cx.spawn(async move |this, cx| {
+            let found = cx.background_executor().spawn(async move { crate::leftovers::find(&pg_dir) }).await;
+            this.update(cx, |page, cx| {
+                page.leftovers = found;
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
         let task = cx.spawn(async move |this, cx| {
             let rows = cx
                 .background_executor()
@@ -343,6 +360,28 @@ impl Installer {
             this.update(cx, |page, cx| {
                 page.checks = Some(rows);
                 cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
+    /// Remove what an earlier install left, then look again.
+    fn remove_leftovers(&mut self, cx: &mut Context<Self>) {
+        let pg_dir = std::path::PathBuf::from(self.value(&self.fields.data_dir, cx));
+        self.cleanup.update(cx, |job, cx| job.start(move |sink| crate::leftovers::remove(pg_dir, sink), cx));
+        let job = self.cleanup.clone();
+        let task = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+                let running = job.read_with(cx, |job, _| job.is_running());
+                if !running {
+                    break;
+                }
+            }
+            this.update(cx, |page, cx| {
+                page.existing = None;
+                page.run_checks(cx);
             })
             .ok();
         });
@@ -762,6 +801,22 @@ impl Installer {
             self.problem = None;
             cx.notify();
         }
+    }
+
+    fn confirm_remove_leftovers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let this = this.clone();
+            dialog
+                .title("Remove the earlier install?")
+                .description("Its services, PostgreSQL, ClickHouse and every database in them are deleted from this computer. This can't be undone.")
+                .confirm()
+                .ok_text("Remove everything")
+                .on_ok(move |_, _, cx| {
+                    this.update(cx, |page, cx| page.remove_leftovers(cx)).ok();
+                    true
+                })
+        });
     }
 
     fn confirm_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {

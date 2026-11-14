@@ -1672,6 +1672,95 @@ pub fn cleanup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     }
 }
 
+/// What an earlier SENTIENT install left of its own services and PostgreSQL
+/// cluster (no installation record any more), for Setup's "Remove the
+/// earlier install". Descriptions, empty when there is nothing.
+#[cfg(windows)]
+pub fn leftovers(default_pg_dir: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    if service_exists(APP_SERVICE) {
+        found.push(format!("The SENTIENT service ({APP_SERVICE})"));
+    }
+    let pg = leftover_pg_dir().unwrap_or_else(|| default_pg_dir.to_path_buf());
+    if service_exists(PG_SERVICE) {
+        found.push(format!("The PostgreSQL service ({PG_SERVICE}, port in use while it runs)"));
+    }
+    if pg.join("data").join("PG_VERSION").exists() {
+        found.push(format!("PostgreSQL data in {}", pg.display()));
+    }
+    found
+}
+
+/// The PostgreSQL folder the leftover service runs from (`-D <pg>\data`).
+#[cfg(windows)]
+fn leftover_pg_dir() -> Option<PathBuf> {
+    let (ok, out, _) = sc(&["qc", PG_SERVICE])?;
+    if !ok {
+        return None;
+    }
+    pg_dir_from_qc(&sys::decode(&out))
+}
+
+/// The folder above `-D <data>` in `sc qc` output.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn pg_dir_from_qc(text: &str) -> Option<PathBuf> {
+    let line = text.lines().find(|l| l.contains("BINARY_PATH_NAME"))?;
+    let after = line.split(" -D ").nth(1)?.trim();
+    let data = if let Some(rest) = after.strip_prefix('"') { rest.split('"').next()? } else { after.split_whitespace().next()? };
+    let data = data.replace('\\', "/");
+    Path::new(&data).parent().map(|p| PathBuf::from(p.to_string_lossy().replace('/', "\\")))
+}
+
+#[cfg(test)]
+mod leftover_tests {
+    #[test]
+    fn the_cluster_folder_comes_from_the_service_command_line() {
+        let qc = "SERVICE_NAME: sentient-postgresql\r\n        BINARY_PATH_NAME   : \"C:\\PostgreSQL\\18\\bin\\pg_ctl.exe\" runservice -N \"sentient-postgresql\" -D \"C:\\PostgreSQL\\18\\data\" -w\r\n";
+        assert_eq!(super::pg_dir_from_qc(qc).unwrap().to_string_lossy(), r"C:\PostgreSQL\18");
+        assert!(super::pg_dir_from_qc("BINARY_PATH_NAME : x.exe").is_none());
+    }
+}
+
+/// Remove what [`leftovers`] found: both services, then the PostgreSQL
+/// folder (the whole folder only when it is the bundled one, with its
+/// `bin\pg_ctl.exe`; otherwise its `data` alone). Destructive.
+#[cfg(windows)]
+pub fn remove_leftovers(sink: &ProgressFn, default_pg_dir: &Path) -> Result<(), String> {
+    let pg = leftover_pg_dir().unwrap_or_else(|| default_pg_dir.to_path_buf());
+    if service_exists(APP_SERVICE) {
+        step(sink, "Removing the earlier SENTIENT service");
+        let _ = sc(&["stop", APP_SERVICE]);
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        let _ = sc(&["delete", APP_SERVICE]);
+    }
+    if service_exists(PG_SERVICE) {
+        step(sink, "Removing the earlier PostgreSQL service");
+        let _ = sc(&["stop", PG_SERVICE]);
+        for _ in 0..60 {
+            if matches!(service_state(PG_SERVICE).as_str(), "stopped" | "absent") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let pg_ctl = pg.join("bin").join("pg_ctl.exe");
+        if pg_ctl.exists() {
+            let _ = sys::output_limited(&pg_ctl.to_string_lossy(), &["unregister", "-N", PG_SERVICE], std::time::Duration::from_secs(60));
+        }
+        if service_exists(PG_SERVICE) {
+            let _ = sc(&["delete", PG_SERVICE]);
+        }
+    }
+    let target = if pg.join("bin").join("pg_ctl.exe").exists() { pg.clone() } else { pg.join("data") };
+    if target.exists() {
+        step(sink, &format!("Deleting {}", target.display()));
+        if !remove_tree_retrying(&target) {
+            return Err(format!("Could not delete {} (still in use). Restart Windows and press Remove again.", target.display()));
+        }
+    }
+    Ok(())
+}
+
 /// Delete a directory tree, tolerating the handles Windows may still hold for a
 /// short while after a service stops. Without the retry the first pass deletes
 /// most of the tree and leaves the root behind, which then reads as "the

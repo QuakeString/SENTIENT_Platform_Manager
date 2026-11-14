@@ -3,7 +3,7 @@
 //! The body of each wizard page.
 
 use gpui_kit::component::{
-    ActiveTheme, Icon, IconName, Sizable as _, Theme, h_flex, v_flex,
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, Theme, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     input::{Input, InputState},
@@ -273,9 +273,45 @@ impl Installer {
                         .child(option(Engine::Native, "engine-native", "Natively with systemd", "Services from the distribution's packages. PostgreSQL, or PostgreSQL + ClickHouse.", false)),
                 )
         });
+        let cleanup = self.cleanup.read(cx);
+        let (cleaning, cleanup_state, cleanup_step) = (cleanup.is_running(), cleanup.state().clone(), cleanup.step_with_time());
+        let leftovers = (!self.leftovers.is_empty() || cleaning || !matches!(cleanup_state, JobState::Idle)).then(|| {
+            let items = self.leftovers.clone();
+            ui::panel(&theme)
+                .child(div().font_weight(FontWeight::MEDIUM).child("An earlier SENTIENT install is still on this computer"))
+                .children(items.into_iter().map(|i| div().text_sm().child(format!("• {i}"))))
+                .when(!self.leftovers.is_empty(), |p| {
+                    p.child(div().text_sm().text_color(theme.muted_foreground).child(
+                        "Keep it to use its database again (offered under Database settings), or remove it so this install starts clean and its ports are free.",
+                    ))
+                })
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .when(!self.leftovers.is_empty(), |r| {
+                            r.child(
+                                Button::new("remove-leftovers")
+                                    .danger()
+                                    .label("Remove the earlier install")
+                                    .disabled(cleaning)
+                                    .on_click(cx.listener(|this, _, window, cx| this.confirm_remove_leftovers(window, cx))),
+                            )
+                        })
+                        .when(cleaning, |r| r.child(div().text_sm().child(cleanup_step.clone()))),
+                )
+                .when_some(
+                    match &cleanup_state {
+                        JobState::Done(m) => Some(ui::outcome(&theme, Tone::Good, m.clone())),
+                        JobState::Failed(m) => Some(ui::outcome(&theme, Tone::Bad, m.clone())),
+                        _ => None,
+                    },
+                    |p, o| p.child(o),
+                )
+        });
         v_flex()
             .gap_4()
             .children(engine_choice)
+            .children(leftovers)
             .child(lead(&theme, "What SENTIENT needs on this computer. Items marked “Will be installed” are handled by setup."))
             .child(match rows {
                 None => ui::panel(&theme).child(div().text_sm().child("Checking this computer…")),

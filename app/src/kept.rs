@@ -253,7 +253,10 @@ pub fn remove_clickhouse(sink: &ProgressFn) -> Result<(), String> {
             if let Err(e) = clickhouse_wsl::run_as_account(
                 sink,
                 &password,
-                &crate::self_install::manager_exe(),
+                &Some(crate::self_install::manager_exe())
+                    .filter(|p| p.exists())
+                    .or_else(|| std::env::current_exe().ok())
+                    .unwrap_or_else(crate::self_install::manager_exe),
                 "unregister",
                 Some(std::time::Duration::from_secs(180)),
             ) {

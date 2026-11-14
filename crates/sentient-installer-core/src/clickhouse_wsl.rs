@@ -400,6 +400,31 @@ pub fn park(sink: &ProgressFn, http_port: u16) {
     let _ = sys::output("schtasks.exe", &["/change", "/tn", KEEPALIVE_TASK, "/disable"]);
 }
 
+/// End the hidden account's WSL machine. Removing the account does not stop
+/// it: it kept ClickHouse's ports (8123, 9000) until Windows restarted. Its
+/// processes go first; if the ports are still held, the WSL service is
+/// restarted (which also stops this computer's other WSL distributions).
+#[cfg(windows)]
+pub fn stop_account_wsl(sink: &ProgressFn, ports: &[u16]) {
+    sink(Progress::Step { name: "Stopping ClickHouse's WSL machine".into() });
+    let ports = ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
+    let script = format!(
+        r#"Get-Process -Name wsl, wslhost, wslrelay -IncludeUserName -ErrorAction SilentlyContinue |
+  Where-Object {{ $_.UserName -like '*\{ACCOUNT}' }} | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep 2
+$held = Get-NetTCPConnection -State Listen -LocalPort {ports} -ErrorAction SilentlyContinue |
+  Where-Object {{ (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName -match '^(wsl|wslrelay|wslhost|wslservice|vmmem)' }}
+if ($held) {{
+  foreach ($s in 'WslService', 'LxssManager') {{ Restart-Service $s -Force -ErrorAction SilentlyContinue }}
+  Start-Sleep 3
+}}
+[bool](Get-NetTCPConnection -State Listen -LocalPort {ports} -ErrorAction SilentlyContinue)"#
+    );
+    if powershell(&script, &[]).map(|o| o.trim().ends_with("True")).unwrap_or(false) {
+        sink(Progress::Log { line: format!("Port {ports} is still in use by another program.") });
+    }
+}
+
 /// The guard's side: `--clickhouse-guard <http_port>`, started by the
 /// service control manager.
 #[cfg(windows)]
