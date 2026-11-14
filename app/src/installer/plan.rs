@@ -133,6 +133,7 @@ impl InstallPlan {
             state_dir: self.state_dir(),
             stack,
             installed_at: chrono::Utc::now().to_rfc3339(),
+            kiosk: Some(self.shortcuts.kiosk),
         }
     }
 }
@@ -358,7 +359,7 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
             step(&sink, "Setting the administrator sign-in");
             native::set_admin_account(&cfg, &plan.admin_email, &admin_hash)?;
             // An operator screen needs SENTIENT running after every boot.
-            self_install::set_autostart(&[native::APP_SERVICE, native::PG_SERVICE], plan.shortcuts.autostart || plan.shortcuts.open_at_signin);
+            self_install::set_autostart(plan.shortcuts.autostart || plan.shortcuts.open_at_signin, plan.shortcuts.start_delay)?;
             // Backup, restore and repair read these from the credential
             // store; a failure only means the operator is asked later.
             for (secret, value) in [
@@ -388,7 +389,7 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
     let url = format!("http://localhost:{}", plan.stack.http_port);
     self_install::create_shortcuts(&manager, &url, &plan.shortcuts)?;
     if plan.shortcuts.kiosk {
-        sentient_installer_core::kiosk::create_shortcut(&sink, plan.stack.http_port, &plan.state_dir())?;
+        sentient_installer_core::kiosk::create_shortcut(&sink, &manager, &plan.state_dir())?;
     }
     if plan.shortcuts.open_at_signin {
         sentient_installer_core::kiosk::set_open_at_signin(&sink, &manager, Some(true))?;

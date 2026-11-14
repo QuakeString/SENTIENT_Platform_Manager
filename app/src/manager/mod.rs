@@ -12,7 +12,7 @@ pub(crate) mod migration;
 mod repair;
 mod settings;
 mod status;
-mod update;
+pub(crate) mod update;
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{

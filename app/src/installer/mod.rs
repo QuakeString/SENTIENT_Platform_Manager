@@ -82,6 +82,8 @@ struct Fields {
     admin_confirm: Entity<InputState>,
     autologin_user: Entity<InputState>,
     autologin_password: Entity<InputState>,
+    /// Seconds SENTIENT waits after Windows starts (with autostart).
+    start_delay: Entity<InputState>,
     search: Entity<InputState>,
 }
 
@@ -112,6 +114,11 @@ pub struct Installer {
     bundle: Option<PathBuf>,
     /// No package: the latest release online (None while looking).
     online: Option<Result<sentient_installer_core::manifest::Manifest, String>>,
+    /// No package: the published versions to choose from (None while
+    /// looking; an error leaves the latest release alone, as before).
+    versions: Option<Result<Vec<crate::online::Version>, String>>,
+    /// The version picked from `versions` (None: the newest).
+    chosen_version: Option<String>,
     sentient_version: SharedString,
     /// Why Next is refused on the current page.
     problem: Option<SharedString>,
@@ -123,6 +130,14 @@ pub struct Installer {
     install: Entity<Job>,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// A start delay as typed: whole seconds, 0 to 3600.
+pub(crate) fn parse_start_delay(text: &str) -> Result<u32, String> {
+    match text.trim().parse::<u32>() {
+        Ok(n) if n <= 3600 => Ok(n),
+        _ => Err("Start delay: enter whole seconds from 0 to 3600 (0 starts SENTIENT as soon as Windows starts).".into()),
+    }
 }
 
 fn input(window: &mut Window, cx: &mut Context<Installer>, value: &str) -> Entity<InputState> {
@@ -166,6 +181,7 @@ impl Installer {
             admin_confirm: secret(window, cx),
             autologin_user: input(window, cx, &sentient_installer_core::autologin::this_user()),
             autologin_password: secret(window, cx),
+            start_delay: input(window, cx, &sentient_installer_core::native::DEFAULT_START_DELAY_SECS.to_string()),
             search: cx.new(|cx| {
                 InputState::new(window, cx).placeholder("Search by name or variable, e.g. batch or RULE_ENGINE")
             }),
@@ -227,6 +243,8 @@ impl Installer {
             autologin: false,
             bundle,
             online: None,
+            versions: None,
+            chosen_version: None,
             sentient_version: sentient_version.into(),
             problem: None,
             existing: None,
@@ -252,6 +270,16 @@ impl Installer {
                         page.sentient_version = format!("{} (downloaded)", m.version).into();
                     }
                     page.online = Some(found);
+                    cx.notify();
+                })
+                .ok();
+            });
+            this._tasks.push(task);
+            let native = this.engine == Engine::Native;
+            let task = cx.spawn(async move |this, cx| {
+                let found = cx.background_executor().spawn(async move { crate::online::versions(native) }).await;
+                this.update(cx, |page, cx| {
+                    page.versions = Some(found);
                     cx.notify();
                 })
                 .ok();
@@ -398,6 +426,14 @@ impl Installer {
                     Ok(())
                 }
             }
+            SHORTCUTS
+                if !self.manager_only
+                    && cfg!(windows)
+                    && (self.autostart || self.open_at_signin)
+                    && parse_start_delay(&self.value(&f.start_delay, cx)).is_err() =>
+            {
+                parse_start_delay(&self.value(&f.start_delay, cx)).map(|_| ())
+            }
             SHORTCUTS if !self.manager_only && self.open_at_signin && self.autologin => {
                 if self.value(&f.autologin_user, cx).is_empty() {
                     Err("Enter the account that signs in automatically.".into())
@@ -513,6 +549,12 @@ impl Installer {
             load_demo: self.load_demo,
             ..DeployConfig::default()
         };
+        // Docker pulls the picked version's image instead of :latest.
+        if self.engine == Engine::Docker && self.bundle.is_none() {
+            if let Some(v) = &self.chosen_version {
+                stack.image = format!("quakestring/sentient:{v}");
+            }
+        }
         stack.tuning.instance_id = format!("sentient-{}", native::generate_secret().get(..8).unwrap_or("01"));
         Ok(plan::InstallPlan {
             engine: self.engine,
@@ -540,6 +582,7 @@ impl Installer {
                 } else {
                     String::new()
                 },
+                start_delay: parse_start_delay(&self.value(&f.start_delay, cx))?,
             },
             auto_signin_password: self.fields.autologin_password.read(cx).value().to_string(),
             bundle: self.bundle.clone(),
@@ -549,6 +592,38 @@ impl Installer {
                 None
             },
         })
+    }
+
+    /// Pick `version` from the list: its manifest replaces the latest one, so
+    /// the download, its size and the summary follow the choice.
+    fn choose_version(&mut self, version: String, cx: &mut Context<Self>) {
+        if self.chosen_version.as_deref() == Some(version.as_str()) {
+            return;
+        }
+        self.chosen_version = Some(version.clone());
+        self.online = None;
+        self.sentient_version = format!("{version} (downloaded)").into();
+        cx.notify();
+        let native = self.engine == Engine::Native;
+        let task = cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    let m = sentient_installer_core::manifest::fetch(&sentient_installer_core::manifest::release_url(&version))?;
+                    // A Docker install pulls the image; only a native one needs this computer's files.
+                    if native {
+                        m.wanted()?;
+                    }
+                    Ok(m)
+                })
+                .await;
+            this.update(cx, |page, cx| {
+                page.online = Some(found);
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
     }
 
     /// No package, but the latest release was found online.
@@ -588,6 +663,7 @@ impl Installer {
                 kiosk: false,
                 open_at_signin: false,
                 auto_signin: String::new(),
+                start_delay: 0,
             };
             self.problem = None;
             self.step = INSTALL;
@@ -831,5 +907,21 @@ impl Render for Installer {
                     )
                     .child(footer),
             )
+    }
+}
+
+#[cfg(test)]
+mod start_delay_tests {
+    use super::parse_start_delay;
+
+    #[test]
+    fn start_delay_is_whole_seconds_up_to_an_hour() {
+        assert_eq!(parse_start_delay("10"), Ok(10));
+        assert_eq!(parse_start_delay(" 0 "), Ok(0));
+        assert_eq!(parse_start_delay("3600"), Ok(3600));
+        assert!(parse_start_delay("3601").is_err());
+        assert!(parse_start_delay("-1").is_err());
+        assert!(parse_start_delay("1.5").is_err());
+        assert!(parse_start_delay("").is_err());
     }
 }

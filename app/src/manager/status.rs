@@ -205,9 +205,9 @@ impl Render for StatusPage {
             None => ("Checking…", Tone::Neutral),
             Some(s) if s.serving => ("SENTIENT is running", Tone::Good),
             Some(s) if s.services.iter().any(|svc| svc.running) => ("Starting or partly stopped", Tone::Warn),
+            Some(s) if s.services.iter().any(|svc| svc.starting) => ("SENTIENT is starting with Windows", Tone::Warn),
             Some(_) => ("SENTIENT is stopped", Tone::Bad),
         };
-        let url = record.url();
         let services = self.snapshot.as_ref().map(|s| s.services.clone()).unwrap_or_default();
         let st = &record.stack;
 
@@ -223,7 +223,11 @@ impl Render for StatusPage {
                             Button::new("open")
                                 .primary()
                                 .label("Open SENTIENT")
-                                .on_click(move |_, _, cx| ui::open_url(&url, cx)),
+                                .on_click({
+                                    let record = record.clone();
+                                    // Asked on click: whether the kiosk shortcut is there reads the disk.
+                                    move |_, _, cx| ui::open_sentient(record.stack.http_port, record.opens_as_kiosk(), cx)
+                                }),
                         ),
                 )
                 .child(ui::fact(&theme, "SENTIENT version", record.sentient_version.clone()))
@@ -260,8 +264,8 @@ impl Render for StatusPage {
                         .text_sm()
                         .child(ui::pill(
                             &theme,
-                            if svc.running { Tone::Good } else { Tone::Bad },
-                            if svc.running { "Running" } else { "Stopped" },
+                            if svc.running { Tone::Good } else if svc.starting { Tone::Warn } else { Tone::Bad },
+                            if svc.running { "Running" } else if svc.starting { "Starting" } else { "Stopped" },
                         ))
                         .child(div().w_48().child(svc.name))
                         .child(div().text_color(theme.muted_foreground).child(svc.detail))

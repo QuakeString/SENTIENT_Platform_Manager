@@ -41,6 +41,43 @@ pub fn open_url(url: &str, cx: &mut App) {
     cx.open_url(url);
 }
 
+/// Open SENTIENT on `port`: full screen like the kiosk shortcut when the
+/// install chose it (`kiosk`: the same `--open-sentient --kiosk` command,
+/// starting page included), else in the default browser.
+pub fn open_sentient(port: u16, kiosk: bool, cx: &mut App) {
+    if kiosk {
+        if let Ok(me) = std::env::current_exe() {
+            let mut command = std::process::Command::new(me);
+            command.args(sentient_installer_core::kiosk::KIOSK_LAUNCH_ARGS.split(' '));
+            #[cfg(target_os = "linux")]
+            if let Some(wayland) = std::env::var_os(ORIGINAL_WAYLAND) {
+                command.env("WAYLAND_DISPLAY", wayland);
+            }
+            if command.spawn().is_ok() {
+                return;
+            }
+        }
+    }
+    open_url(&format!("http://localhost:{port}"), cx);
+}
+
+/// What the start delay does, for its (i).
+pub const START_DELAY_HELP: &str = "Seconds SENTIENT waits after Windows starts before it starts itself, its database first. \
+0 starts it together with Windows. A few seconds let other programs and the network settle first; an operator screen shows \
+\"SENTIENT is starting\" meanwhile. Change it later under Control.";
+
+/// "Start delay [ 15 ] seconds (i)": the installer's and Control's field.
+pub fn start_delay_row(theme: &Theme, state: &Entity<gpui_kit::component::input::InputState>) -> Div {
+    use gpui_kit::component::{Sizable as _, button::{Button, ButtonVariants as _}, input::Input, IconName};
+    gpui_kit::component::h_flex()
+        .gap_2()
+        .items_center()
+        .child(div().text_sm().child("Start delay"))
+        .child(div().w_20().child(Input::new(state).small()))
+        .child(div().text_sm().text_color(theme.muted_foreground).child("seconds"))
+        .child(Button::new("start-delay-help").ghost().xsmall().icon(IconName::Info).tooltip(START_DELAY_HELP))
+}
+
 /// A content panel: surface colour, hairline border, panel radius.
 pub fn panel(theme: &Theme) -> Div {
     v_flex()

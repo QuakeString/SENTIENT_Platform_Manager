@@ -37,6 +37,13 @@ pub struct ControlPage {
     autologin_password: Entity<InputState>,
     signin_job: Entity<Job>,
     _signin_observe: Subscription,
+    /// Starting with Windows, as found: (with Windows, delay seconds); None
+    /// while looking, or where there is nothing to choose (Linux).
+    start: Option<(bool, u32)>,
+    start_on: bool,
+    start_delay: Entity<InputState>,
+    start_job: Entity<Job>,
+    _start_observe: Subscription,
     _tasks: Vec<Task<()>>,
 }
 
@@ -59,6 +66,13 @@ impl ControlPage {
             }
             cx.notify();
         });
+        let start_job = cx.new(|_| Job::new());
+        let _start_observe = cx.observe(&start_job, |page: &mut Self, job, cx| {
+            if matches!(job.read(cx).state(), JobState::Done(_) | JobState::Failed(_)) {
+                page.load_start(cx);
+            }
+            cx.notify();
+        });
         let mut page = Self {
             record,
             job,
@@ -73,10 +87,61 @@ impl ControlPage {
             autologin_password: cx.new(|cx| InputState::new(window, cx).masked(true)),
             signin_job,
             _signin_observe,
+            start: None,
+            start_on: true,
+            start_delay: cx.new(|cx| InputState::new(window, cx)),
+            start_job,
+            _start_observe,
             _tasks: Vec::new(),
         };
         page.load_signin(cx);
+        page.load_start(cx);
         page
+    }
+
+    fn load_start(&mut self, cx: &mut Context<Self>) {
+        let task = cx.spawn(async move |this, cx| {
+            let found = cx.background_executor().spawn(async move { crate::self_install::autostart() }).await;
+            this.update_in(cx, |page, window, cx| {
+                if let Some((on, delay)) = found {
+                    page.start_on = on;
+                    page.start_delay.update(cx, |input, cx| input.set_value(delay.to_string(), window, cx));
+                }
+                page.start = found;
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
+    /// The start choice differs from what is set.
+    fn start_changed(&self, cx: &App) -> bool {
+        let Some((on, delay)) = self.start else { return false };
+        let typed = self.start_delay.read(cx).value().trim().to_string();
+        on != self.start_on || (self.start_on && typed != delay.to_string())
+    }
+
+    fn apply_start(&mut self, cx: &mut Context<Self>) {
+        let on = self.start_on;
+        let typed = self.start_delay.read(cx).value().to_string();
+        self.start_job.update(cx, |job, cx| {
+            job.start(
+                move |sink| {
+                    let delay = if on { crate::installer::parse_start_delay(&typed)? } else { 0 };
+                    crate::self_install::set_autostart(on, delay)?;
+                    sink(sentient_installer_core::progress::Progress::Done {
+                        message: match (on, delay) {
+                            (false, _) => "SENTIENT no longer starts with Windows: start it here.".to_string(),
+                            (true, 0) => "SENTIENT starts together with Windows.".to_string(),
+                            (true, d) => format!("SENTIENT starts {d} seconds after Windows."),
+                        },
+                    });
+                    Ok(())
+                },
+                cx,
+            )
+        });
     }
 
     fn load_signin(&mut self, cx: &mut Context<Self>) {
@@ -242,7 +307,7 @@ impl Render for ControlPage {
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Operator screen"))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
-                    "Open SENTIENT in the browser when someone signs in to this computer, for example a control-room screen after a power cut. It waits until SENTIENT answers, then opens it.",
+                    "Open SENTIENT in the browser when someone signs in to this computer, for example a control-room screen after a power cut. It opens at once and shows SENTIENT as soon as it answers.",
                 ))
                 .child(match self.signin {
                     None => div().text_sm().child("Checking…").into_any_element(),
@@ -314,6 +379,41 @@ impl Render for ControlPage {
                     ),
                 )
                 .children(soutcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
+        })
+        .when(self.start.is_some(), |page| {
+            let job = self.start_job.read(cx);
+            let busy = job.is_running();
+            let outcome = match job.state() {
+                JobState::Done(m) => Some((Tone::Good, m.to_string())),
+                JobState::Failed(m) => Some((Tone::Bad, m.to_string())),
+                _ => None,
+            };
+            let changed = self.start_changed(cx);
+            page.child(
+                ui::panel(&theme)
+                    .child(div().font_weight(FontWeight::MEDIUM).child("Start with Windows"))
+                    .child(
+                        Checkbox::new("start-with-windows")
+                            .label("Start SENTIENT automatically with Windows")
+                            .checked(self.start_on)
+                            .disabled(busy)
+                            .on_change(cx.listener(|this, value: &bool, _, cx| {
+                                this.start_on = *value;
+                                cx.notify();
+                            })),
+                    )
+                    .when(self.start_on, |panel| panel.child(div().pl_6().child(ui::start_delay_row(&theme, &self.start_delay))))
+                    .child(
+                        h_flex().child(
+                            Button::new("apply-start")
+                                .outline()
+                                .label("Apply")
+                                .disabled(busy || !changed)
+                                .on_click(cx.listener(|this, _, _, cx| this.apply_start(cx))),
+                        ),
+                    )
+                    .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text))),
+            )
         })
     }
 }

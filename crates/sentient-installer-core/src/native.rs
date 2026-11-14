@@ -324,6 +324,127 @@ fn service_exists(name: &str) -> bool {
     sc(&["query", name]).map(|(ok, _, _)| ok).unwrap_or(false)
 }
 
+/// Seconds SENTIENT waits after Windows starts, unless the operator chose
+/// otherwise.
+pub const DEFAULT_START_DELAY_SECS: u32 = 10;
+
+/// The scheduled task that starts SENTIENT a set time after Windows starts.
+pub const DELAYED_START_TASK: &str = "SENTIENT delayed start";
+
+/// How SENTIENT starts: with Windows, after `delay_secs` seconds (0: at once,
+/// as plain automatic services), or by hand.
+///
+/// A delay is a scheduled task (at startup, with that delay, as SYSTEM) that
+/// starts SENTIENT's service, with both services set to start on demand.
+/// Windows' own "delayed start" is not used: its delay is about two minutes
+/// and changing it (AutoStartDelay) would change it for every delayed
+/// service on the computer. PostgreSQL still starts first: SENTIENT's
+/// service depends on it, so starting SENTIENT starts PostgreSQL.
+#[cfg(windows)]
+pub fn set_start(automatic: bool, delay_secs: u32) -> Result<(), String> {
+    let services = [PG_SERVICE, APP_SERVICE];
+    let mode = if automatic && delay_secs == 0 { "auto" } else { "demand" };
+    for s in services {
+        match sc(&["config", s, "start=", mode]) {
+            Some((true, _, _)) => {}
+            Some((false, out, err)) => {
+                return Err(format!("set how {s} starts: {}{}", sys::decode(&out).trim(), sys::decode(&err).trim()))
+            }
+            None => return Err("Could not run sc.exe.".into()),
+        }
+    }
+    let _ = sys::output("schtasks.exe", &["/Delete", "/TN", DELAYED_START_TASK, "/F"]);
+    if automatic && delay_secs > 0 {
+        let delay = schtasks_delay(delay_secs);
+        let command = format!("sc.exe start {APP_SERVICE}");
+        match sys::output(
+            "schtasks.exe",
+            &["/Create", "/TN", DELAYED_START_TASK, "/SC", "ONSTART", "/DELAY", &delay, "/RU", "SYSTEM", "/RL", "HIGHEST", "/TR", &command, "/F"],
+        ) {
+            Some((true, _, _)) => {}
+            Some((false, out, err)) => {
+                return Err(format!("create the start task: {}{}", sys::decode(&out).trim(), sys::decode(&err).trim()))
+            }
+            None => return Err("Could not run schtasks.exe.".into()),
+        }
+    }
+    Ok(())
+}
+
+/// Remove the start-delay task (used by uninstall).
+#[cfg(windows)]
+pub fn remove_start_task() {
+    let _ = sys::output("schtasks.exe", &["/Delete", "/TN", DELAYED_START_TASK, "/F"]);
+}
+
+/// How SENTIENT starts now: (with Windows, delay in seconds). Windows' own
+/// delayed start, from earlier Platform Managers, counts as with Windows
+/// and no delay of ours.
+#[cfg(windows)]
+pub fn start_setting() -> (bool, u32) {
+    if let Some((true, out, _)) = sys::output("schtasks.exe", &["/Query", "/TN", DELAYED_START_TASK, "/XML"]) {
+        return (true, task_delay_secs(&sys::decode(&out)).unwrap_or(DEFAULT_START_DELAY_SECS));
+    }
+    (starts_with_windows(APP_SERVICE), 0)
+}
+
+/// `/DELAY` takes mmmm:ss.
+pub fn schtasks_delay(secs: u32) -> String {
+    format!("{:04}:{:02}", secs / 60, secs % 60)
+}
+
+/// The `<Delay>PT1M15S</Delay>` of a task's XML, in seconds.
+pub fn task_delay_secs(xml: &str) -> Option<u32> {
+    let start = xml.find("<Delay>")? + "<Delay>".len();
+    let end = start + xml[start..].find("</Delay>")?;
+    let d = xml[start..end].trim().strip_prefix("PT")?;
+    let (mut total, mut num) = (0u32, String::new());
+    for c in d.chars() {
+        if c.is_ascii_digit() {
+            num.push(c);
+            continue;
+        }
+        let n: u32 = num.parse().ok()?;
+        num.clear();
+        total += match c {
+            'H' => n * 3600,
+            'M' => n * 60,
+            'S' => n,
+            _ => return None,
+        };
+    }
+    num.is_empty().then_some(total)
+}
+
+/// Windows started less than five minutes ago.
+#[cfg(windows)]
+fn just_booted() -> bool {
+    // SAFETY: no arguments; reads the system's uptime.
+    let up_ms = unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() };
+    up_ms < 5 * 60 * 1000 + start_delay_grace_ms()
+}
+
+/// A start delay longer than usual stretches the "just after a restart" window.
+#[cfg(windows)]
+fn start_delay_grace_ms() -> u64 {
+    match sys::output("schtasks.exe", &["/Query", "/TN", DELAYED_START_TASK, "/XML"]) {
+        Some((true, out, _)) => task_delay_secs(&sys::decode(&out)).unwrap_or(0) as u64 * 1000,
+        _ => 0,
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
+fn just_booted() -> bool {
+    false
+}
+
+/// The service is set to start with Windows (delayed or not).
+#[cfg(not(target_os = "linux"))]
+fn starts_with_windows(name: &str) -> bool {
+    matches!(sc(&["qc", name]), Some((true, out, _)) if sys::decode(&out).contains("AUTO_START"))
+        || matches!(sys::output("schtasks.exe", &["/Query", "/TN", DELAYED_START_TASK]), Some((true, _, _)))
+}
+
 fn service_state(name: &str) -> String {
     match sc(&["query", name]) {
         Some((true, out, _)) => {
@@ -1154,7 +1275,6 @@ fn register_app_service(cfg: &NativeConfig) -> Result<(), String> {
   <onfailure action="restart" delay="30 sec"/>
   <resetfailure>1 hour</resetfailure>
   <startmode>Automatic</startmode>
-  <delayedAutoStart>true</delayedAutoStart>
   <stoptimeout>20 sec</stoptimeout>
   <depend>{PG_SERVICE}</depend>
 </service>
@@ -1285,11 +1405,17 @@ pub fn status(cfg: &NativeConfig) -> NativeStatus {
     let services = [PG_SERVICE, APP_SERVICE]
         .iter()
         .map(|n| {
-            let state = service_state(n);
+            let mut state = service_state(n);
+            // Just after a restart a service that starts with Windows has not
+            // been started yet: say so, rather than "Stopped".
+            if state == "stopped" && just_booted() && starts_with_windows(n) {
+                state = "start_pending".into();
+            }
             ServiceStatus {
                 name: (*n).to_string(),
                 status: match state.as_str() {
                     "running" => "Running".into(),
+                    "start_pending" => "Starting".into(),
                     "stopped" => "Stopped".into(),
                     "absent" => "Not installed".into(),
                     other => other.to_string(),
@@ -1692,4 +1818,22 @@ pub fn supported() -> bool {
 #[allow(dead_code)]
 fn _assert_offline_helper_used(s: &ArtifactSource) -> bool {
     s.is_offline()
+}
+
+#[cfg(test)]
+mod start_delay_tests {
+    use super::*;
+
+    #[test]
+    fn delays_go_to_schtasks_and_back() {
+        assert_eq!(schtasks_delay(15), "0000:15");
+        assert_eq!(schtasks_delay(75), "0001:15");
+        assert_eq!(schtasks_delay(3600), "0060:00");
+        let xml = |d: &str| format!("<Triggers><BootTrigger><Enabled>true</Enabled><Delay>{d}</Delay></BootTrigger></Triggers>");
+        assert_eq!(task_delay_secs(&xml("PT15S")), Some(15));
+        assert_eq!(task_delay_secs(&xml("PT1M15S")), Some(75));
+        assert_eq!(task_delay_secs(&xml("PT1H")), Some(3600));
+        assert_eq!(task_delay_secs("<Triggers/>"), None);
+        assert_eq!(task_delay_secs(&xml("P1D")), None);
+    }
 }

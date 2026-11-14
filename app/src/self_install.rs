@@ -27,6 +27,14 @@ pub struct Shortcuts {
     /// that screen needs nobody at the keyboard; empty for none.
     #[serde(default)]
     pub auto_signin: String,
+    /// Seconds SENTIENT waits after Windows starts (with `autostart`); 0 is
+    /// at once.
+    #[serde(default = "default_start_delay")]
+    pub start_delay: u32,
+}
+
+fn default_start_delay() -> u32 {
+    sentient_installer_core::native::DEFAULT_START_DELAY_SECS
 }
 
 pub use imp::*;
@@ -179,11 +187,29 @@ mod imp {
         let _ = quiet("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).spawn();
     }
 
-    /// Start with Windows (delayed automatic) or by hand.
-    pub fn set_autostart(services: &[&str], automatic: bool) {
-        let mode = if automatic { "delayed-auto" } else { "demand" };
-        for service in services {
-            let _ = quiet("sc.exe").args(["config", service, "start=", mode]).output();
+    /// Start with Windows after `delay` seconds, or by hand
+    /// (native::set_start).
+    pub fn set_autostart(automatic: bool, delay: u32) -> Result<(), String> {
+        sentient_installer_core::native::set_start(automatic, delay)
+    }
+
+    /// Whether SENTIENT starts with Windows, and after how many seconds.
+    pub fn autostart() -> Option<(bool, u32)> {
+        Some(sentient_installer_core::native::start_setting())
+    }
+
+    /// An install from an earlier Platform Manager starts with Windows'
+    /// own delayed start (about two minutes): move it to the default delay.
+    /// Manual ones stay manual.
+    pub fn undelay_autostart() {
+        use sentient_installer_core::native::APP_SERVICE;
+        let delayed = quiet("sc.exe")
+            .args(["qc", APP_SERVICE])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("(DELAYED)"))
+            .unwrap_or(false);
+        if delayed {
+            let _ = set_autostart(true, sentient_installer_core::native::DEFAULT_START_DELAY_SECS);
         }
     }
 
@@ -280,6 +306,7 @@ mod imp {
             kiosk: false,
             open_at_signin: false,
             auto_signin: String::new(),
+            start_delay: 0,
         };
         let _ = create_shortcuts(manager, "http://localhost:8080", &s);
     }
@@ -336,7 +363,18 @@ mod imp {
 
     /// systemd units and Docker restart policies already start with the
     /// machine; nothing to change.
-    pub fn set_autostart(_services: &[&str], _automatic: bool) {}
+    /// Linux: SENTIENT's systemd units always start with the computer.
+    pub fn set_autostart(_automatic: bool, _delay: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Linux has no start delay to choose.
+    pub fn autostart() -> Option<(bool, u32)> {
+        None
+    }
+
+    #[allow(dead_code)]
+    pub fn undelay_autostart() {}
 
     pub fn write_record(path: &Path, json: &str) -> Result<(), String> {
         // No password prompt when this user may write it anyway.
@@ -358,15 +396,33 @@ mod imp {
     }
 }
 
+/// Bring an install made by an earlier Platform Manager up to date with
+/// how this one sets up operator screens: SENTIENT's services start with
+/// Windows without the two-minute delay, and an existing kiosk shortcut runs
+/// the starting page (`--open-sentient --kiosk`) instead of the browser
+/// straight on SENTIENT. Run after the manager updates itself and on repair.
+pub fn refresh_operator_screen(sink: &sentient_installer_core::progress::ProgressFn) {
+    #[cfg(windows)]
+    {
+        undelay_autostart();
+    }
+    if sentient_installer_core::kiosk::shortcut_exists() {
+        if let Some(record) = crate::installation::InstallationRecord::load() {
+            if let Err(e) = sentient_installer_core::kiosk::create_shortcut(sink, &manager_exe(), &record.state_dir) {
+                sink(sentient_installer_core::progress::Progress::Log { line: format!("The kiosk shortcut was not renewed: {e}") });
+            }
+        }
+    }
+}
+
 /// Open SENTIENT when someone signs in (`Some(kiosk)`), or stop it. On
 /// Windows SENTIENT's services are made to start with Windows as well:
 /// otherwise the screen waits after a reboot for a SENTIENT nobody starts.
 pub fn set_open_at_signin(sink: &sentient_installer_core::progress::ProgressFn, mode: Option<bool>) -> Result<(), String> {
     sentient_installer_core::kiosk::set_open_at_signin(sink, &manager_exe(), mode)?;
     #[cfg(windows)]
-    if mode.is_some() {
-        use sentient_installer_core::native::{APP_SERVICE, PG_SERVICE};
-        set_autostart(&[APP_SERVICE, PG_SERVICE], true);
+    if mode.is_some() && !autostart().is_some_and(|(on, _)| on) {
+        set_autostart(true, sentient_installer_core::native::DEFAULT_START_DELAY_SECS)?;
         sink(sentient_installer_core::progress::Progress::Log { line: "SENTIENT's services start with Windows.".into() });
     }
     Ok(())

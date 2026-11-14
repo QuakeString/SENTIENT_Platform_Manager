@@ -41,6 +41,11 @@ pub struct InstallationRecord {
     pub stack: DeployConfig,
     /// RFC 3339.
     pub installed_at: String,
+    /// Whether the kiosk shortcut was chosen at install: "Open SENTIENT"
+    /// opens the same full-screen window, else the normal browser. None in
+    /// records from before the choice was kept.
+    #[serde(default)]
+    pub kiosk: Option<bool>,
 }
 
 impl InstallationRecord {
@@ -73,6 +78,13 @@ impl InstallationRecord {
 
     pub fn flavor(&self) -> Flavor {
         self.stack.flavor
+    }
+
+    /// Whether "Open SENTIENT" opens it full screen: as chosen at install;
+    /// for an install from before the choice was recorded, whether its kiosk
+    /// shortcut is there. Not chosen: the normal browser.
+    pub fn opens_as_kiosk(&self) -> bool {
+        self.kiosk.unwrap_or_else(sentient_installer_core::kiosk::shortcut_exists)
     }
 
     pub fn url(&self) -> String {
@@ -123,6 +135,7 @@ impl InstallationRecord {
             state_dir: PathBuf::from("/var/lib/sentient"),
             stack: DeployConfig::default(),
             installed_at: String::new(),
+            kiosk: None,
         };
         record.native_config()
     }
@@ -182,6 +195,9 @@ pub fn flavor_label(flavor: Flavor) -> &'static str {
 pub struct Service {
     pub name: String,
     pub running: bool,
+    /// Not running yet but on its way (a service that starts with Windows,
+    /// just after a restart).
+    pub starting: bool,
     pub detail: String,
 }
 
@@ -211,6 +227,7 @@ impl Platform {
                     .into_iter()
                     .map(|s| Service {
                         running: s.state == "running",
+                        starting: s.state == "start_pending",
                         name: s.name,
                         detail: s.status,
                     })
@@ -222,6 +239,7 @@ impl Platform {
                     services.push(Service {
                         name: "ClickHouse (WSL2)".into(),
                         running: up,
+                        starting: false,
                         detail: if up {
                             format!("Answering on 127.0.0.1:{}", cfg.ch_http_port)
                         } else {
@@ -241,6 +259,7 @@ impl Platform {
                         .into_iter()
                         .map(|c| Service {
                             running: c.state == "running",
+                            starting: false,
                             name: c.name,
                             detail: c.status,
                         })
@@ -268,5 +287,25 @@ impl Platform {
     /// Native installs update from a package folder; Docker pulls the image.
     pub fn needs_package(&self) -> bool {
         matches!(self, Platform::Native(_))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn records_from_before_the_kiosk_choice_still_load() {
+        let old = r#"{"sentient_version":"4.3.0.58","manager_version":"0.8.0","engine":"native","install_dir":"C:/SENTIENT","pg_dir":"C:/SENTIENT/pg","state_dir":"C:/ProgramData/SENTIENT","stack":{},"installed_at":"2026-11-09T10:00:00Z"}"#;
+        let r: InstallationRecord = serde_json::from_str(old).unwrap();
+        assert_eq!(r.kiosk, None);
+        for chosen in [true, false] {
+            let mut r2 = r.clone();
+            r2.kiosk = Some(chosen);
+            let back: InstallationRecord = serde_json::from_str(&serde_json::to_string(&r2).unwrap()).unwrap();
+            assert_eq!(back.kiosk, Some(chosen));
+            // A recorded choice wins over whatever shortcut is on the computer.
+            assert_eq!(back.opens_as_kiosk(), chosen);
+        }
     }
 }

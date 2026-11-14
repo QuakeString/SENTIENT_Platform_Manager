@@ -26,38 +26,82 @@ impl Browser {
             Browser::Firefox => "Firefox",
         }
     }
-    /// Arguments that open SENTIENT on `port`, full screen (`kiosk`) or in
-    /// an ordinary window. Restore-session prompts are kept off: after a
-    /// power cut the operator screen should simply show SENTIENT.
-    pub fn launch_args(self, port: u16, kiosk: bool) -> Vec<String> {
-        let url = format!("http://localhost:{port}");
-        let mut a: Vec<String> = match self {
-            Browser::Chrome => [
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--noerrdialogs",
-                "--disable-session-crashed-bubble",
-                "--hide-crash-restore-bubble",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-            Browser::Firefox => Vec::new(),
-        };
-        a.push(if kiosk { "--kiosk".into() } else { "--new-window".into() });
-        a.push(url);
+    /// Arguments that open `url`, full screen (`kiosk`) or in an ordinary
+    /// window. Restore-session prompts are kept off: after a power cut the
+    /// operator screen should simply show SENTIENT.
+    ///
+    /// A kiosk gets a browser profile of its own (`profile`): a browser that
+    /// is already running with the user's profile would otherwise take the
+    /// address into one of its existing windows instead of opening a full
+    /// screen one.
+    pub fn open_args(self, url: &str, kiosk: bool, profile: Option<&Path>) -> Vec<String> {
+        let mut a: Vec<String> = Vec::new();
+        match self {
+            Browser::Chrome => {
+                if kiosk {
+                    a.push("--kiosk".into());
+                    if let Some(dir) = profile {
+                        a.push(format!("--user-data-dir={}", dir.display()));
+                    }
+                } else {
+                    a.push("--new-window".into());
+                }
+                a.extend(
+                    [
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                        "--noerrdialogs",
+                        "--disable-session-crashed-bubble",
+                        "--hide-crash-restore-bubble",
+                    ]
+                    .iter()
+                    .map(|s| s.to_string()),
+                );
+            }
+            Browser::Firefox => {
+                if kiosk {
+                    a.push("--kiosk".into());
+                    if let Some(dir) = profile {
+                        a.extend(["--new-instance".into(), "--profile".into(), dir.display().to_string()]);
+                    }
+                } else {
+                    a.push("--new-window".into());
+                }
+            }
+        }
+        a.push(url.into());
         a
     }
+}
 
-    /// Kiosk command-line arguments (the URL is appended by the caller).
-    fn kiosk_args(self, port: u16) -> String {
-        match self {
-            Browser::Chrome => format!(
-                "--kiosk --no-first-run --no-default-browser-check http://localhost:{port}"
-            ),
-            Browser::Firefox => format!("--kiosk http://localhost:{port}"),
+/// The page shown while SENTIENT starts: it waits for SENTIENT and then
+/// opens it (assets/starting.html).
+pub const STARTING_PAGE: &str = include_str!("../assets/starting.html");
+
+/// Write the starting page into `dir` and give its address for SENTIENT on
+/// `port`: `file:///C:/Users/op/AppData/Local/SENTIENT/starting.html?port=8080`.
+pub fn starting_page(dir: &Path, port: u16) -> Result<String, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let page = dir.join("starting.html");
+    std::fs::write(&page, STARTING_PAGE).map_err(|e| format!("write {}: {e}", page.display()))?;
+    Ok(format!("{}?port={port}", file_url(&page)))
+}
+
+/// `C:\Users\a b\x.html` → `file:///C:/Users/a%20b/x.html`; `/home/a/x.html`
+/// → `file:///home/a/x.html`.
+fn file_url(path: &Path) -> String {
+    let s = path.to_string_lossy().replace('\\', "/");
+    let mut out = String::from("file://");
+    if !s.starts_with('/') {
+        out.push('/');
+    }
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' | b':' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
         }
     }
+    out
 }
 
 /// Google's silent-install enterprise MSI.
@@ -205,13 +249,16 @@ fn ps_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-/// Ensure a browser, then create Desktop + Start Menu kiosk shortcuts pointing at
-/// `http://localhost:<port>`, using the embedded SENTIENT icon.
-pub fn create_shortcut(sink: &ProgressFn, port: u16, work_dir: &Path) -> Result<(), String> {
+/// Ensure a browser, then create Desktop + Start Menu kiosk shortcuts, with
+/// the embedded SENTIENT icon. They run `launcher --open-sentient --kiosk`
+/// (the Platform Manager), which opens the browser full screen on the
+/// starting page: SENTIENT appears as soon as it answers, never an error page.
+pub fn create_shortcut(sink: &ProgressFn, launcher: &Path, work_dir: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let (browser, exe) = ensure_browser(sink, work_dir)?;
-        let args = browser.kiosk_args(port);
+        let (browser, _) = ensure_browser(sink, work_dir)?;
+        let exe = launcher.to_path_buf();
+        let args = KIOSK_LAUNCH_ARGS.to_string();
 
         // Drop the icon next to the app data so the shortcut always has it.
         std::fs::create_dir_all(work_dir).ok();
@@ -224,7 +271,7 @@ pub fn create_shortcut(sink: &ProgressFn, port: u16, work_dir: &Path) -> Result<
         let script = format!(
             r#"$ErrorActionPreference = 'Stop'
 $ws = New-Object -ComObject WScript.Shell
-$targets = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))
+$targets = @([Environment]::GetFolderPath('CommonDesktopDirectory'), [Environment]::GetFolderPath('CommonPrograms'))
 foreach ($dir in $targets) {{
   if (-not (Test-Path $dir)) {{ continue }}
   $lnk = Join-Path $dir 'SENTIENT.lnk'
@@ -272,14 +319,14 @@ foreach ($dir in $targets) {{
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = work_dir;
-        let (browser, exe) = detect().ok_or_else(|| {
+        let (browser, _) = detect().ok_or_else(|| {
             "No supported browser found (Chromium, Chrome, Brave, Edge or Firefox). Install one and add the kiosk shortcut again.".to_string()
         })?;
         sink(Progress::Step { name: "Creating the SENTIENT desktop launcher".into() });
         let entry = format!(
             "[Desktop Entry]\nType=Application\nName=SENTIENT\nComment=Launch SENTIENT (kiosk mode)\n\
              Exec={} {}\nIcon=sentient-platform-manager\nTerminal=false\nCategories=Network;\nStartupNotify=true\n",
-            exe.display(), browser.kiosk_args(port)
+            launcher.display(), KIOSK_LAUNCH_ARGS
         );
         for path in desktop_entry_paths() {
             if let Some(dir) = path.parent() {
@@ -296,13 +343,95 @@ foreach ($dir in $targets) {{
     }
 }
 
+/// What the kiosk shortcut and the sign-in entry pass to the Platform
+/// Manager (`--open-sentient`, see the app's open_client).
+pub const KIOSK_LAUNCH_ARGS: &str = "--open-sentient --kiosk";
+
+/// Whether the kiosk shortcut `create_shortcut` makes is on this computer:
+/// tells an install from before the kiosk choice was recorded.
+pub fn shortcut_exists() -> bool {
+    #[cfg(windows)]
+    {
+        let mut paths = Vec::new();
+        if let Some(p) = std::env::var_os("PUBLIC") {
+            paths.push(PathBuf::from(p).join("Desktop").join("SENTIENT.lnk"));
+        }
+        if let Some(p) = std::env::var_os("ProgramData") {
+            paths.push(PathBuf::from(p).join(r"Microsoft\Windows\Start Menu\Programs").join("SENTIENT.lnk"));
+        }
+        if let Some(p) = std::env::var_os("USERPROFILE") {
+            paths.push(PathBuf::from(p).join("Desktop").join("SENTIENT.lnk"));
+        }
+        if let Some(p) = std::env::var_os("APPDATA") {
+            paths.push(PathBuf::from(p).join(r"Microsoft\Windows\Start Menu\Programs").join("SENTIENT.lnk"));
+        }
+        paths.iter().any(|p| p.exists())
+    }
+    #[cfg(not(windows))]
+    {
+        desktop_entry_paths().iter().any(|p| p.exists())
+    }
+}
+
+/// Remove what opening SENTIENT left in each account (used by uninstall):
+/// the starting page and the kiosk's own browser profile (the app's
+/// open_client writes them under the account's local app data).
+pub fn remove_user_data(sink: &ProgressFn) {
+    #[cfg(windows)]
+    {
+        let script = r#"foreach ($u in Get-ChildItem -Directory -Path (Split-Path $env:PUBLIC) -ErrorAction SilentlyContinue) {
+  $d = Join-Path $u.FullName 'AppData\Local\SENTIENT'
+  if (-not (Test-Path -LiteralPath $d)) { continue }
+  foreach ($item in @('kiosk-browser', 'starting.html')) {
+    $p = Join-Path $d $item
+    if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue; Write-Output ("removed: " + $p) }
+  }
+  if (-not (Get-ChildItem -LiteralPath $d -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue }
+}"#;
+        if let Some((_, o, _)) = sys::output("powershell", &["-NoProfile", "-NonInteractive", "-Command", script]) {
+            for line in sys::decode(&o).lines().map(str::trim).filter(|l| !l.is_empty()) {
+                sink(Progress::Log { line: line.into() });
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let data_home = std::env::var("XDG_DATA_HOME").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| format!("{home}/.local/share"));
+        let dir = PathBuf::from(data_home).join("sentient-platform-manager");
+        for item in ["kiosk-browser", "starting.html"] {
+            let p = dir.join(item);
+            let removed = if p.is_dir() { std::fs::remove_dir_all(&p).is_ok() } else { std::fs::remove_file(&p).is_ok() };
+            if removed {
+                sink(Progress::Log { line: format!("removed: {}", p.display()) });
+            }
+        }
+        let _ = std::fs::remove_dir(&dir);
+    }
+}
+
 /// Delete the Desktop + Start Menu SENTIENT shortcuts (used by uninstall).
 pub fn remove_shortcuts(sink: &ProgressFn, work_dir: &Path) {
     #[cfg(windows)]
     {
-        let script = r#"foreach ($dir in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
+        // The shared folders (where they are made now), and every account's
+        // own Desktop and Start menu: earlier managers put them there, for the
+        // account Setup ran as (an administrator's, when elevated from
+        // another). Only a shortcut this manager made is removed: SENTIENT.lnk
+        // with its kiosk description.
+        let script = r#"$ws = New-Object -ComObject WScript.Shell
+$dirs = @([Environment]::GetFolderPath('CommonDesktopDirectory'), [Environment]::GetFolderPath('CommonPrograms'))
+foreach ($u in Get-ChildItem -Directory -Path (Split-Path $env:PUBLIC) -ErrorAction SilentlyContinue) {
+  $dirs += (Join-Path $u.FullName 'Desktop')
+  $dirs += (Join-Path $u.FullName 'OneDrive\Desktop')
+  $dirs += (Join-Path $u.FullName 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs')
+}
+foreach ($dir in $dirs) {
   $lnk = Join-Path $dir 'SENTIENT.lnk'
-  if (Test-Path $lnk) { Remove-Item $lnk -Force -ErrorAction SilentlyContinue; Write-Output ("removed: " + $lnk) }
+  if (-not (Test-Path -LiteralPath $lnk)) { continue }
+  if ($ws.CreateShortcut($lnk).Description -ne 'Launch SENTIENT (kiosk mode)') { continue }
+  Remove-Item -LiteralPath $lnk -Force -ErrorAction SilentlyContinue
+  Write-Output ("removed: " + $lnk)
 }"#;
         std::fs::create_dir_all(work_dir).ok();
         let ps1 = work_dir.join("rm_kiosk_shortcut.ps1");
@@ -427,4 +556,60 @@ pub fn set_open_at_signin(sink: &ProgressFn, launcher: &Path, mode: Option<bool>
         ),
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_kiosk_gets_its_own_full_screen_browser_instance() {
+        let profile = Path::new("/home/op/.local/share/sentient/kiosk-browser");
+        let chrome = Browser::Chrome.open_args("file:///x/starting.html?port=8080", true, Some(profile));
+        assert_eq!(chrome[0], "--kiosk");
+        assert!(chrome.contains(&"--user-data-dir=/home/op/.local/share/sentient/kiosk-browser".to_string()));
+        assert_eq!(chrome.last().unwrap(), "file:///x/starting.html?port=8080");
+        let firefox = Browser::Firefox.open_args("u", true, Some(profile));
+        assert_eq!(firefox, ["--kiosk", "--new-instance", "--profile", "/home/op/.local/share/sentient/kiosk-browser", "u"]);
+        // A browser window (not kiosk) uses the operator's own profile.
+        let window = Browser::Chrome.open_args("u", false, Some(profile));
+        assert_eq!(window[0], "--new-window");
+        assert!(!window.iter().any(|a| a.starts_with("--user-data-dir")));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn uninstall_removes_the_starting_page_and_kiosk_profile() {
+        let base = std::env::temp_dir().join(format!("spm-userdata-{}", std::process::id()));
+        let dir = base.join("sentient-platform-manager");
+        std::fs::create_dir_all(dir.join("kiosk-browser").join("Default")).unwrap();
+        std::fs::write(dir.join("starting.html"), "x").unwrap();
+        std::env::set_var("XDG_DATA_HOME", &base);
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = lines.clone();
+        let sink: ProgressFn = std::sync::Arc::new(move |p| {
+            if let Progress::Log { line } = p {
+                seen.lock().unwrap().push(line);
+            }
+        });
+        remove_user_data(&sink);
+        std::env::remove_var("XDG_DATA_HOME");
+        assert!(!dir.exists());
+        assert_eq!(lines.lock().unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_starting_page_is_a_file_url_with_the_port() {
+        assert_eq!(file_url(Path::new("/home/op/a b/starting.html")), "file:///home/op/a%20b/starting.html");
+        assert_eq!(
+            file_url(Path::new(r"C:\Users\op\AppData\Local\SENTIENT\starting.html")),
+            "file:///C:/Users/op/AppData/Local/SENTIENT/starting.html"
+        );
+        let dir = std::env::temp_dir().join(format!("spm-starting-{}", std::process::id()));
+        let url = starting_page(&dir, 9090).unwrap();
+        assert!(url.ends_with("/starting.html?port=9090"));
+        assert!(std::fs::read_to_string(dir.join("starting.html")).unwrap().contains("SENTIENT is starting"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

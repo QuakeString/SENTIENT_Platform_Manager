@@ -7,6 +7,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     input::{Input, InputState},
+    menu::{DropdownMenu as _, PopupMenuItem},
     progress::Progress,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -68,6 +69,40 @@ impl Installer {
             FINISH => self.finish(window, cx).into_any_element(),
             _ => div().into_any_element(),
         }
+    }
+
+    /// With no package next to Setup: the published versions to install,
+    /// the newest picked. None when the list could not be read (the latest
+    /// release alone, as before) or a package is next to Setup.
+    fn version_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        if self.bundle.is_some() || self.manager_only {
+            return None;
+        }
+        let list = match &self.versions {
+            Some(Ok(list)) if !list.is_empty() => list.clone(),
+            _ => return None,
+        };
+        let chosen = self.chosen_version.clone().unwrap_or_else(|| list[0].version.clone());
+        let this = cx.entity().downgrade();
+        Some(
+            Button::new("sentient-version")
+                .outline()
+                .small()
+                .label(format!("{chosen} ▾"))
+                .dropdown_menu(move |menu, _, _| {
+                    let mut menu = menu.max_h(px(320.)).scrollable(true);
+                    for v in &list {
+                        let this = this.clone();
+                        let pick = v.version.clone();
+                        let label = if v.version == list[0].version { format!("{} (newest)", v.label()) } else { v.label() };
+                        menu = menu.item(PopupMenuItem::new(label).checked(v.version == chosen).on_click(move |_, _, cx| {
+                            let pick = pick.clone();
+                            this.update(cx, |page, cx| page.choose_version(pick, cx)).ok();
+                        }));
+                    }
+                    menu
+                }),
+        )
     }
 
     fn welcome(&mut self, cx: &mut Context<Self>) -> Div {
@@ -156,7 +191,10 @@ impl Installer {
                     .gap_3()
                     .child(ui::panel(&theme).flex_1().gap_1()
                         .child(div().text_xs().text_color(theme.muted_foreground).child("SENTIENT"))
-                        .child(div().font_weight(FontWeight::MEDIUM).child(self.sentient_version.clone())))
+                        .child(match self.version_menu(cx) {
+                            Some(menu) => h_flex().child(menu).into_any_element(),
+                            None => div().font_weight(FontWeight::MEDIUM).child(self.sentient_version.clone()).into_any_element(),
+                        }))
                     .child(ui::panel(&theme).flex_1().gap_1()
                         .child(div().text_xs().text_color(theme.muted_foreground).child("Platform Manager"))
                         .child(div().font_weight(FontWeight::MEDIUM).child(crate::updates::manager_version())))
@@ -713,6 +751,9 @@ impl Installer {
             )
         });
         let theme = cx.theme().clone();
+        // How long SENTIENT waits after Windows starts (crate::ui::start_delay_row).
+        let mut start_delay = (cfg!(windows) && !self.manager_only && (self.autostart || self.open_at_signin))
+            .then(|| div().pl_6().child(ui::start_delay_row(&theme, &self.fields.start_delay)));
         // Signing in by itself only matters for the screen that opens SENTIENT.
         let autologin = (!self.manager_only && self.open_at_signin).then(|| {
             v_flex()
@@ -750,8 +791,9 @@ impl Installer {
         v_flex()
             .gap_3()
             .children(note)
-            .children(options.into_iter().map(|(id, label, checked)| {
-                Checkbox::new(id)
+            .children(options.into_iter().flat_map(|(id, label, checked)| {
+                let delay_here = id == "autostart";
+                let checkbox = Checkbox::new(id)
                     .label(label)
                     .checked(checked)
                     .on_change(cx.listener(move |this, value: &bool, _, cx| {
@@ -765,6 +807,10 @@ impl Installer {
                         }
                         cx.notify();
                     }))
+                    .into_any_element();
+                // The delay sits under "Start SENTIENT automatically with Windows".
+                let delay = if delay_here { start_delay.take().map(IntoElement::into_any_element) } else { None };
+                std::iter::once(checkbox).chain(delay)
             }))
             .children(autologin)
     }
@@ -961,7 +1007,8 @@ impl Installer {
         }
         let url = format!("http://localhost:{}", self.value(&self.fields.http_port, cx));
         let email = self.value(&self.fields.admin_email, cx);
-        let open_url = url.clone();
+        let port = self.fields.http_port.read(cx).value().trim().parse::<u16>().unwrap_or(8080);
+        let kiosk = self.kiosk;
         v_flex()
             .gap_4()
             .child(
@@ -1007,7 +1054,7 @@ impl Installer {
                         Button::new("open-sentient")
                             .primary()
                             .label("Open SENTIENT")
-                            .on_click(move |_, _, cx| ui::open_url(&open_url, cx)),
+                            .on_click(move |_, _, cx| ui::open_sentient(port, kiosk, cx)),
                     )
                     .child(Button::new("open-manager").outline().label("Open Platform Manager").on_click(
                         |_, _, _| {

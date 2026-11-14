@@ -258,6 +258,7 @@ pub fn finish_self_update() -> i32 {
         Ok(path) => {
             #[cfg(windows)]
             crate::self_install::register_manager_entry(&path);
+            crate::self_install::refresh_operator_screen(&sentient_installer_core::progress::noop());
             let _ = std::process::Command::new(&path).spawn();
             0
         }

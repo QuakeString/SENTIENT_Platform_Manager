@@ -13,6 +13,7 @@ use gpui_kit::component::{
     ActiveTheme, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
+    menu::{DropdownMenu as _, PopupMenuItem},
     progress::Progress,
 };
 use gpui_kit::*;
@@ -22,6 +23,8 @@ use sentient_installer_core::native::safe_update::RollbackPoint;
 use sentient_installer_core::stack::Flavor;
 
 use crate::installation::{Engine, InstallationRecord};
+use crate::online::Version;
+use sentient_installer_core::releases::{self, Move};
 use crate::jobs::{Job, JobState};
 use crate::ui::{self, Tone};
 use crate::updates::UpdateState;
@@ -35,6 +38,11 @@ pub struct UpdatePage {
     rollback: Option<Result<Option<RollbackPoint>, String>>,
     /// What the update channel offers (shared with the notice bar).
     updates: Entity<UpdateState>,
+    /// The published versions to choose from (None while looking). When the
+    /// list cannot be read the page offers the channel's newest alone.
+    versions: Option<Result<Vec<Version>, String>>,
+    /// The version picked in the list; None is the newest.
+    chosen: Option<String>,
     job: Entity<Job>,
     /// Installing a new Platform Manager.
     manager_job: Entity<Job>,
@@ -79,6 +87,8 @@ impl UpdatePage {
             accept_breaking: false,
             rollback: None,
             updates,
+            versions: None,
+            chosen: None,
             job,
             manager_job,
             _observe,
@@ -87,7 +97,64 @@ impl UpdatePage {
             _tasks: Vec::new(),
         };
         page.refresh_rollback(cx);
+        page.refresh_versions(cx);
         page
+    }
+
+    fn refresh_versions(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        let native = record.platform().needs_package();
+        let task = cx.spawn(async move |this, cx| {
+            let found = cx.background_executor().spawn(async move { crate::online::versions(native) }).await;
+            this.update(cx, |page, cx| {
+                page.versions = Some(found);
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
+    /// The picked version, or the newest listed.
+    fn chosen_version(&self) -> Option<Version> {
+        let list = self.versions.as_ref()?.as_ref().ok()?;
+        match &self.chosen {
+            Some(v) => list.iter().find(|x| &x.version == v).cloned(),
+            None => list.first().cloned(),
+        }
+    }
+
+    /// Install `version` (a release number, also its tag): pull its image or
+    /// download its package.
+    fn install_version(&mut self, version: String, cx: &mut Context<Self>) {
+        let docker = self.record.as_ref().is_some_and(|r| r.engine == Engine::Docker);
+        if docker { self.run_docker_to(version, cx) } else { self.run_download(version, cx) }
+    }
+
+    fn confirm_older(&mut self, version: String, window: &mut Window, cx: &mut Context<Self>) {
+        let installed = self.record.as_ref().map(|r| r.sentient_version.clone()).unwrap_or_default();
+        let this = cx.entity().downgrade();
+        let text = format!(
+            "SENTIENT {version} is older than {installed}, the version installed here. It is installed like an update: \
+             the database is copied first, then {version} checks the database before anything changes. \
+             If a newer version already changed the database ({installed} has database changes {version} does not know), \
+             that check refuses and nothing is changed: {installed} keeps running. Going back is possible only between \
+             versions with the same database."
+        );
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let this = this.clone();
+            let version = version.clone();
+            dialog
+                .title(format!("Install the older SENTIENT {version}?"))
+                .description(text.clone())
+                .confirm()
+                .ok_text("Install older version")
+                .on_ok(move |_, _, cx| {
+                    let version = version.clone();
+                    this.update(cx, |page, cx| page.install_version(version, cx)).ok();
+                    true
+                })
+        });
     }
 
     /// Docker: update to `version` by moving the image to that tag.
@@ -207,7 +274,7 @@ impl UpdatePage {
 }
 
 /// `image` at tag `version`: `quakestring/sentient:latest` → `…:4.3.0.50`.
-fn retag(image: &str, version: &str) -> String {
+pub(crate) fn retag(image: &str, version: &str) -> String {
     let repo = match image.rsplit_once(':') {
         Some((repo, tag)) if !tag.contains('/') => repo,
         _ => image,
@@ -216,6 +283,87 @@ fn retag(image: &str, version: &str) -> String {
 }
 
 impl UpdatePage {
+    /// Whether the version list was read and has entries; otherwise the
+    /// page offers the channel's newest alone, as before.
+    fn has_list(&self) -> bool {
+        matches!(&self.versions, Some(Ok(list)) if !list.is_empty())
+    }
+
+    /// The version list: a dropdown of the published versions (newest
+    /// picked), and the button that installs the picked one: an update,
+    /// nothing for the installed one, or going back behind a confirm.
+    fn picker(&self, theme: &gpui_kit::component::Theme, installed: &str, docker: bool, busy: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.has_list() {
+            return None;
+        }
+        let Some(Ok(list)) = &self.versions else { return None };
+        let chosen = self.chosen_version()?;
+        let movement = releases::movement(&chosen.version, installed);
+        let items: Vec<(Version, bool)> = list.iter().map(|v| (v.clone(), v.version == chosen.version)).collect();
+        let installed_owned = installed.to_string();
+        let menu = Button::new("version-pick")
+            .outline()
+            .label(format!("{} ▾", chosen.version))
+            .disabled(busy)
+            .dropdown_menu({
+                let this = cx.entity().downgrade();
+                move |menu, _, _| {
+                    let mut menu = menu.max_h(px(320.)).scrollable(true);
+                    for (v, checked) in &items {
+                        let mark = match releases::movement(&v.version, &installed_owned) {
+                            Move::Same => " (installed)",
+                            _ => "",
+                        };
+                        let this = this.clone();
+                        let pick = v.version.clone();
+                        menu = menu.item(PopupMenuItem::new(format!("{}{mark}", v.label())).checked(*checked).on_click(move |_, _, cx| {
+                            let pick = pick.clone();
+                            this.update(cx, |page, cx| {
+                                page.chosen = Some(pick);
+                                cx.notify();
+                            })
+                            .ok();
+                        }));
+                    }
+                    menu
+                }
+            });
+        let version = chosen.version.clone();
+        let action = match movement {
+            Move::Newer => Button::new("install-version")
+                .primary()
+                .label(format!("Update to {version}"))
+                .disabled(busy)
+                .on_click(cx.listener(move |this, _, _, cx| this.install_version(version.clone(), cx))),
+            Move::Same => Button::new("install-version").outline().label(format!("{version} is installed")).disabled(true),
+            Move::Older => Button::new("install-version")
+                .outline()
+                .label(format!("Go back to {version}…"))
+                .disabled(busy)
+                .on_click(cx.listener(move |this, _, window, cx| this.confirm_older(version.clone(), window, cx))),
+        };
+        let about = match movement {
+            Move::Older => "older than the installed version: possible only while both use the same database, checked before anything changes".to_string(),
+            _ if docker => format!("pulls quakestring/sentient:{}{}", chosen.version, if chosen.date.is_empty() { String::new() } else { format!(", released {}", chosen.date) }),
+            _ => format!("downloaded from the SENTIENT releases site and checked before use{}", if chosen.date.is_empty() { String::new() } else { format!("; released {}", chosen.date) }),
+        };
+        Some(
+            v_flex()
+                .gap_2()
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .child(div().text_sm().child("Version"))
+                        .child(menu)
+                        .child(action)
+                        .child(div().min_w_0().text_sm().text_color(theme.muted_foreground).child(about)),
+                )
+                .when(!chosen.summary.is_empty(), |c| c.child(div().text_xs().text_color(theme.muted_foreground).child(chosen.summary.clone())))
+                .into_any_element(),
+        )
+    }
+
     /// The channel, Check for updates, the daily check, and the Platform
     /// Manager's own update.
     fn updates_panel(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
@@ -346,7 +494,8 @@ impl Render for UpdatePage {
         page.child(
             ui::panel(&theme)
                 .child(ui::fact(&theme, "Installed version", record.sentient_version.clone()))
-                .child({
+                .when_some(self.picker(&theme, &record.sentient_version, record.engine == Engine::Docker, busy, cx), |panel, picker| panel.child(picker))
+                .when(!self.has_list(), |panel| panel.child({
                     let u = self.updates.read(cx);
                     let offer = u.sentient().cloned();
                     let looking = u.checking && u.found.is_none();
@@ -397,7 +546,7 @@ impl Render for UpdatePage {
                                 .into_any_element()
                         }
                     }
-                })
+                }))
                 .when(native, |panel| {
                     panel.child(
                         h_flex()

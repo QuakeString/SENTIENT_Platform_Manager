@@ -15,6 +15,7 @@ mod headless;
 mod installation;
 mod installer;
 mod jobs;
+mod log_level;
 mod kept;
 mod maintenance;
 mod manager;
@@ -65,6 +66,11 @@ fn main() {
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx| {
         gpui_kit::init(cx);
         theme::init(ThemeMode::Light, cx);
+        // Development aid: open in the dark theme (screenshots of both).
+        #[cfg(debug_assertions)]
+        if std::env::var("SPM_THEME").is_ok_and(|t| t == "dark") {
+            theme::toggle(cx);
+        }
 
         let size = match mode {
             AppMode::Install => size(px(980.), px(680.)),
