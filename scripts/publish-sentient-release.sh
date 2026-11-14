@@ -100,14 +100,22 @@ for name, (platform, member) in payloads.items():
 PY
 )
 if [ -n "$docker_image" ]; then
-  # A stopped throwaway container just to copy the binary out; removed at once.
-  arch=$(docker image inspect --format '{{.Architecture}}' "$docker_image")
-  cid=$(docker create "$docker_image")
-  tmp=$(mktemp)
-  docker cp "$cid:/usr/share/sentient/bin/sentient-server" "$tmp" >/dev/null && docker rm "$cid" >/dev/null || { docker rm "$cid" >/dev/null; rm -f "$tmp"; exit 1; }
-  case "$arch" in amd64) arch=x86_64 ;; arm64) arch=aarch64 ;; esac
-  binaries+=$'\n'$(python3 -c 'import hashlib,json,sys; print(json.dumps({"platform": "docker-linux-" + sys.argv[2], "sha256": hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()}))' "$tmp" "$arch")
-  rm -f "$tmp"
+  # Every architecture the image is published for (a multi-arch tag lists
+  # several; a local-only image has just its own). For each: a stopped
+  # throwaway container of that platform, just to copy the binary out.
+  arches=$(docker buildx imagetools inspect --raw "$docker_image" 2>/dev/null | python3 -c 'import json,sys
+m = json.load(sys.stdin)
+print(" ".join(sorted({x["platform"]["architecture"] for x in m.get("manifests", []) if x.get("platform", {}).get("os") == "linux"})))' 2>/dev/null || true)
+  [ -n "$arches" ] || arches=$(docker image inspect --format '{{.Architecture}}' "$docker_image")
+  for arch in $arches; do
+    docker pull -q --platform "linux/$arch" "$docker_image" >/dev/null 2>&1 || true
+    cid=$(docker create --platform "linux/$arch" "$docker_image")
+    tmp=$(mktemp)
+    docker cp "$cid:/usr/share/sentient/bin/sentient-server" "$tmp" >/dev/null && docker rm "$cid" >/dev/null || { docker rm "$cid" >/dev/null; rm -f "$tmp"; exit 1; }
+    case "$arch" in amd64) name=x86_64 ;; arm64) name=aarch64 ;; *) name=$arch ;; esac
+    binaries+=$'\n'$(python3 -c 'import hashlib,json,sys; print(json.dumps({"platform": "docker-linux-" + sys.argv[2], "sha256": hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()}))' "$tmp" "$name")
+    rm -f "$tmp"
+  done
 fi
 printf '%s\n' "$binaries" | sed '/^$/d' > "$dir/binaries.jsonl"
 
