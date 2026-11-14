@@ -225,6 +225,15 @@ impl Setup {
                 docker_ops::recreate_postgres(sink, new)?;
             }
         }
+        // Windows: an install made for plain PostgreSQL or ClickHouse has no
+        // TimescaleDB in PostgreSQL. The setup step adds it, preloads it and
+        // restarts PostgreSQL; with everything else in place it does no more.
+        #[cfg(windows)]
+        if let Setup::Native(new) = self {
+            if new.flavor == Flavor::Timescaledb {
+                native::setup(sink.clone(), new)?;
+            }
+        }
         Ok(())
     }
 

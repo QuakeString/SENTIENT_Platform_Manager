@@ -24,6 +24,13 @@ refreshes that repository's Downloads table.
   was removed.
 
 ### Fixed
+- Windows: choosing PostgreSQL or PostgreSQL + ClickHouse no longer puts
+  TimescaleDB into PostgreSQL. Before, every Windows install downloaded it,
+  preloaded it and enabled it in the `postgres` database, whatever the
+  choice; SENTIENT's own database was never affected. Now only the
+  TimescaleDB choice installs it, and a later migration to TimescaleDB adds
+  it at that point. An existing install that already preloads it is left
+  as it is.
 - Windows, PostgreSQL + ClickHouse: ClickHouse is stopped cleanly before
   Windows shuts down (a new "SENTIENT ClickHouse" service), writes its data
   through to disk, and starts even after an unclean stop left many empty

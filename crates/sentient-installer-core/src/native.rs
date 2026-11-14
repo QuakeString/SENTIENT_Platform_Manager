@@ -103,8 +103,8 @@ pub struct NativeConfig {
     pub extra_env: Vec<(String, String)>,
     /// Secret for signing JWTs. Generated per install — never defaulted.
     pub jwt_secret: String,
-    /// Where telemetry lives. Windows installs TimescaleDB (the only tier the
-    /// bundled PostgreSQL ships); Linux offers stock and ClickHouse too.
+    /// Where telemetry lives. TimescaleDB goes into PostgreSQL only when it
+    /// is the choice here.
     pub flavor: Flavor,
     /// The same knobs the Docker engine writes into the compose file.
     pub tuning: Tuning,
@@ -468,7 +468,7 @@ fn service_state(name: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// True when the prerequisites are provisioned: PostgreSQL present, its service
-/// registered, and TimescaleDB's extension files in place.
+/// registered, and, for the TimescaleDB choice, its extension files in place.
 pub fn is_ready(cfg: &NativeConfig) -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -477,7 +477,8 @@ pub fn is_ready(cfg: &NativeConfig) -> bool {
     #[cfg(not(target_os = "linux"))]
     {
     cfg.pg_bin().join("psql.exe").exists()
-        && cfg.pg_dir.join("share").join("extension").join("timescaledb.control").exists()
+        && (!cfg.flavor.uses_timescaledb()
+            || cfg.pg_dir.join("share").join("extension").join("timescaledb.control").exists())
         && service_exists(PG_SERVICE)
     }
 }
@@ -504,7 +505,7 @@ pub fn http_answers(http_port: u16) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 1 — prerequisites (PostgreSQL + TimescaleDB)
+// Phase 1 — prerequisites (PostgreSQL, and TimescaleDB when chosen)
 // ---------------------------------------------------------------------------
 
 /// Install and start PostgreSQL with TimescaleDB.
@@ -686,8 +687,16 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     bail_if_cancelled()?;
 
     // ---- TimescaleDB ----
+    // Only for the TimescaleDB choice, or for a kept cluster that already
+    // preloads it (PostgreSQL would not start without the library). Plain
+    // PostgreSQL and PostgreSQL + ClickHouse never download or load it.
+    let conf_path = cfg.pg_data().join("postgresql.conf");
+    let timescale = wants_timescaledb(cfg.flavor, &std::fs::read_to_string(&conf_path).unwrap_or_default());
+    let mut preload_added = false;
     let ext_dir = cfg.pg_dir.join("share").join("extension");
-    if !ext_dir.join("timescaledb.control").exists() {
+    if !timescale {
+        log(&sink, format!("TimescaleDB not needed for {}", cfg.flavor.label()));
+    } else if !ext_dir.join("timescaledb.control").exists() {
         step(&sink, &format!("Installing TimescaleDB {TSDB_VERSION}"));
         let zip = obtain(&sink, &cfg.source, TSDB_ZIP, TSDB_URL, &dl)?;
         let tmp = dl.join("tsdb-extract");
@@ -719,17 +728,19 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         }
         let _ = std::fs::remove_dir_all(&tmp);
 
-        // TimescaleDB must be preloaded; without this line CREATE EXTENSION
-        // fails and ts_kv silently never becomes a hypertable.
-        let conf = cfg.pg_data().join("postgresql.conf");
-        let existing = std::fs::read_to_string(&conf).unwrap_or_default();
-        if !existing.contains("shared_preload_libraries = 'timescaledb'") {
-            let addition = "\n# added by SENTIENT Platform Manager\nshared_preload_libraries = 'timescaledb'\n";
-            std::fs::write(&conf, format!("{existing}{addition}"))
-                .map_err(|e| format!("update postgresql.conf: {e}"))?;
-        }
     } else {
         log(&sink, "TimescaleDB already present");
+    }
+    if timescale {
+        // TimescaleDB must be preloaded; without this line CREATE EXTENSION
+        // fails and ts_kv silently never becomes a hypertable.
+        let existing = std::fs::read_to_string(&conf_path).unwrap_or_default();
+        if !preloads_timescaledb(&existing) {
+            let addition = "\n# added by SENTIENT Platform Manager\nshared_preload_libraries = 'timescaledb'\n";
+            std::fs::write(&conf_path, format!("{existing}{addition}"))
+                .map_err(|e| format!("update postgresql.conf: {e}"))?;
+            preload_added = true;
+        }
     }
     bail_if_cancelled()?;
 
@@ -748,8 +759,9 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     }
 
     step(&sink, "Starting PostgreSQL");
-    // A kept cluster may already be running, on the port it had before.
-    if port_changed && service_state(PG_SERVICE) != "stopped" {
+    // A kept cluster may already be running, on the port it had before; a
+    // migration to TimescaleDB finds it running without the preload.
+    if (port_changed || preload_added) && service_state(PG_SERVICE) != "stopped" {
         let _ = sc(&["stop", PG_SERVICE]);
         for _ in 0..60 {
             if service_state(PG_SERVICE) == "stopped" {
@@ -761,17 +773,19 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     let _ = sc(&["start", PG_SERVICE]);
     wait_for_postgres(&sink, cfg)?;
 
-    step(&sink, "Enabling the TimescaleDB extension");
-    psql(cfg, "postgres", "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")?;
-    let ver = psql(
-        cfg,
-        "postgres",
-        "SELECT extversion FROM pg_extension WHERE extname='timescaledb';",
-    )?;
-    if ver.is_empty() {
-        return Err("TimescaleDB did not load — check shared_preload_libraries and the PostgreSQL version pin (>= 18.6)".into());
+    if timescale {
+        step(&sink, "Enabling the TimescaleDB extension");
+        psql(cfg, "postgres", "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")?;
+        let ver = psql(
+            cfg,
+            "postgres",
+            "SELECT extversion FROM pg_extension WHERE extname='timescaledb';",
+        )?;
+        if ver.is_empty() {
+            return Err("TimescaleDB did not load — check shared_preload_libraries and the PostgreSQL version pin (>= 18.6)".into());
+        }
+        log(&sink, format!("TimescaleDB {ver} active"));
     }
-    log(&sink, format!("TimescaleDB {ver} active"));
 
     sink(Progress::Done { message: "Database prerequisites ready".into() });
     Ok(())
@@ -910,6 +924,24 @@ fn set_pg_port(cfg: &NativeConfig) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Does this install put TimescaleDB into PostgreSQL? Only the TimescaleDB
+/// choice does, plus a kept cluster whose postgresql.conf already preloads
+/// it: that PostgreSQL does not start without the library, and its old
+/// hypertable stays readable.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn wants_timescaledb(flavor: Flavor, postgresql_conf: &str) -> bool {
+    flavor.uses_timescaledb() || preloads_timescaledb(postgresql_conf)
+}
+
+/// An active `shared_preload_libraries` line that names timescaledb.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn preloads_timescaledb(postgresql_conf: &str) -> bool {
+    postgresql_conf.lines().any(|l| {
+        let active = l.split('#').next().unwrap_or("").trim_start();
+        active.starts_with("shared_preload_libraries") && active.contains("timescaledb")
+    })
+}
+
 /// `conf` with exactly one active `port = <port>` line, the last one.
 fn with_port(conf: &str, port: u16) -> String {
     let wanted = format!("port = {port}");
@@ -930,6 +962,37 @@ fn with_port(conf: &str, port: u16) -> String {
         .collect();
     out.push_str(&format!("{wanted}\t# set by SENTIENT Platform Manager\n"));
     out
+}
+
+#[cfg(test)]
+mod timescale_choice_tests {
+    use super::{preloads_timescaledb, wants_timescaledb};
+    use crate::stack::Flavor;
+
+    const FRESH: &str = "#shared_preload_libraries = ''\t# (change requires restart)\nmax_connections = 100\n";
+    const PRELOADED: &str = "max_connections = 100\n# added by SENTIENT Platform Manager\nshared_preload_libraries = 'timescaledb'\n";
+
+    #[test]
+    fn only_the_timescaledb_choice_installs_it_on_a_fresh_cluster() {
+        assert!(wants_timescaledb(Flavor::Timescaledb, FRESH));
+        assert!(!wants_timescaledb(Flavor::Stock, FRESH));
+        assert!(!wants_timescaledb(Flavor::Clickhouse, FRESH));
+        assert!(!wants_timescaledb(Flavor::Clickhouse, ""));
+    }
+
+    #[test]
+    fn a_kept_cluster_that_preloads_it_keeps_it() {
+        assert!(wants_timescaledb(Flavor::Clickhouse, PRELOADED));
+        assert!(wants_timescaledb(Flavor::Stock, PRELOADED));
+    }
+
+    #[test]
+    fn a_commented_preload_line_does_not_count() {
+        assert!(!preloads_timescaledb(FRESH));
+        assert!(!preloads_timescaledb("#shared_preload_libraries = 'timescaledb'\n"));
+        assert!(preloads_timescaledb(PRELOADED));
+        assert!(preloads_timescaledb("  shared_preload_libraries = 'pg_stat_statements,timescaledb' # x\n"));
+    }
 }
 
 #[cfg(test)]
