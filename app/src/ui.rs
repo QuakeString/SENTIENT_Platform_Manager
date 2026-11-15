@@ -398,3 +398,9 @@ pub fn seg_item(theme: &Theme, id: impl Into<ElementId>, label: impl Into<Shared
         .when(!on, |d| d.text_color(theme.foreground).hover(|d| d.bg(theme.list_hover)))
         .child(label.into())
 }
+
+/// A row of sibling boxes or cards: all stretch to the tallest, tops
+/// aligned, wrapping on narrow windows. Use it for every row of boxes.
+pub fn box_row() -> Div {
+    gpui_kit::component::h_flex().flex_wrap().gap_3().items_stretch()
+}

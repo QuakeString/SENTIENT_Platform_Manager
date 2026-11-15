@@ -94,6 +94,10 @@ pub struct Installer {
     accepted: bool,
     /// Install the Platform Manager alone, without SENTIENT.
     manager_only: bool,
+    /// Started from the installed Platform Manager to add SENTIENT
+    /// (`--add-sentient`): no choice of what to install, and nothing about
+    /// installing the Platform Manager itself.
+    pub(crate) adding_sentient: bool,
     checks: Option<Vec<CheckRow>>,
     flavor: Option<Flavor>,
     load_demo: bool,
@@ -242,6 +246,7 @@ impl Installer {
             engine: if cfg!(windows) { Engine::Native } else { Engine::Docker },
             accepted: false,
             manager_only: false,
+            adding_sentient: std::env::args().any(|a| a == "--add-sentient"),
             checks: None,
             flavor: None,
             load_demo: false,
@@ -981,6 +986,8 @@ impl Installer {
                     .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(theme.primary).child("SENTIENT"))
                     .child(div().text_xs().text_color(theme.muted_foreground).child(if self.manager_only {
                         "Platform Manager"
+                    } else if self.adding_sentient {
+                        "Platform"
                     } else {
                         "Platform + Platform Manager"
                     })),

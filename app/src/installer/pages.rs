@@ -169,7 +169,7 @@ impl Installer {
                 &theme,
                 "Nothing changes on the computer until you press Install on the Summary page.",
             ))
-            .child(
+            .when(!self.adding_sentient, |c| c.child(
                 h_flex()
                     .gap_3()
                     .items_stretch()
@@ -185,10 +185,9 @@ impl Installer {
                         "Only the Platform Manager",
                         "The Platform Manager alone, without SENTIENT and its database. SENTIENT can be installed from it later, from a SENTIENT package.",
                     )),
-            )
+            ))
             .child(
-                h_flex()
-                    .gap_3()
+                ui::box_row()
                     .child(ui::panel(&theme).flex_1().gap_1()
                         .child(div().text_xs().text_color(theme.muted_foreground).child("SENTIENT"))
                         .child(match self.version_menu(cx) {
@@ -197,10 +196,14 @@ impl Installer {
                         }))
                     .child(ui::panel(&theme).flex_1().gap_1()
                         .child(div().text_xs().text_color(theme.muted_foreground).child("Platform Manager"))
-                        .child(div().font_weight(FontWeight::MEDIUM).child(crate::updates::manager_version())))
-                    .child(ui::panel(&theme).flex_1().min_w_0().gap_1()
+                        .child(div().font_weight(FontWeight::MEDIUM).child(if self.adding_sentient {
+                            format!("{}, installed", crate::updates::manager_version())
+                        } else {
+                            crate::updates::manager_version().to_string()
+                        })))
+                    .child(ui::panel(&theme).flex_1().min_w(px(300.)).gap_1()
                         .child(div().text_xs().text_color(theme.muted_foreground).child("Package"))
-                        .child(div().w_full().whitespace_normal().font_weight(FontWeight::MEDIUM).child(package))),
+                        .child(div().w_full().whitespace_normal().text_sm().child(package))),
             )
             .child(
                 ui::panel(&theme)
@@ -811,17 +814,22 @@ impl Installer {
                 vec![("start-menu", "Application menu entry for the Platform Manager", self.start_menu)]
             }
         } else if cfg!(windows) {
-            vec![
+            let mut v = vec![
                 ("autostart", "Start SENTIENT automatically with Windows", self.autostart),
                 ("desktop-sentient", "Desktop shortcut for SENTIENT", self.desktop_sentient),
                 ("desktop-manager", "Desktop shortcut for the Platform Manager", self.desktop_manager),
                 ("start-menu", "Start menu entries", self.start_menu),
                 ("kiosk", "Full-screen (kiosk) shortcut for operator screens", self.kiosk),
                 ("open-at-signin", "Open SENTIENT full screen when the computer starts (operator screens)", self.open_at_signin),
-            ]
+            ];
+            // Already installed: its shortcuts are there.
+            if self.adding_sentient {
+                v.retain(|(id, _, _)| *id != "desktop-manager");
+            }
+            v
         } else {
             vec![
-                ("start-menu", "Application menu entries for SENTIENT and the Platform Manager", self.start_menu),
+                ("start-menu", if self.adding_sentient { "Application menu entry for SENTIENT" } else { "Application menu entries for SENTIENT and the Platform Manager" }, self.start_menu),
                 ("kiosk", "Full-screen (kiosk) launcher for operator screens", self.kiosk),
                 ("open-at-signin", "Open SENTIENT full screen when the computer starts (operator screens)", self.open_at_signin),
             ]
@@ -918,6 +926,9 @@ impl Installer {
                 super::SHORTCUTS,
             ));
         } else {
+            if self.adding_sentient {
+                rows.push(("Installs", format!("SENTIENT {} (the Platform Manager {} is already installed)", self.sentient_version, crate::updates::manager_version()), 0));
+            }
             if !cfg!(windows) {
                 let runs = if self.engine == Engine::Docker { "Docker on this machine" } else { "Natively with systemd" };
                 rows.push(("Runs as", runs.to_string(), 1));

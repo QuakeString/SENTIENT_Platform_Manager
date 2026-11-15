@@ -20,7 +20,7 @@ fn setup_in(dir: &Path) -> Option<PathBuf> {
 pub fn install_sentient(window: &mut Window, cx: &mut App) {
     let started = std::env::current_exe()
         .map_err(|e| e.to_string())
-        .and_then(|me| std::process::Command::new(me).arg("--install").spawn().map_err(|e| e.to_string()));
+        .and_then(|me| std::process::Command::new(me).args(["--install", "--add-sentient"]).spawn().map_err(|e| e.to_string()));
     match started {
         Ok(_) => cx.quit(),
         Err(e) => window.push_notification(format!("Could not open SENTIENT Setup: {e}"), cx),
@@ -40,7 +40,7 @@ pub fn install_sentient_from_package(window: &mut Window, cx: &mut App) {
         let Ok(Ok(Some(paths))) = rx.await else { return };
         let Some(dir) = paths.into_iter().next() else { return };
         let message = match setup_in(&dir) {
-            Some(setup) => match std::process::Command::new(&setup).arg("--install").current_dir(&dir).spawn() {
+            Some(setup) => match std::process::Command::new(&setup).args(["--install", "--add-sentient"]).current_dir(&dir).spawn() {
                 Ok(_) => return,
                 Err(e) => format!("Could not start {}: {e}", setup.display()),
             },
