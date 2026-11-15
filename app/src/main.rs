@@ -39,6 +39,8 @@ mod leftovers;
 mod maintenance;
 #[cfg(feature = "gui")]
 mod manager;
+#[cfg(feature = "gui")]
+mod modal;
 mod maintenance_ops;
 mod migration;
 mod mode;

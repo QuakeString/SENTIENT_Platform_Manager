@@ -138,6 +138,8 @@ pub struct Manager {
     remote_monitor: Option<Monitor>,
     /// The pages of the open remote instance.
     remote_pages: Option<Entity<remote_pages::RemotePages>>,
+    /// Takes the keyboard while a dialog is open (Escape closes it).
+    modal_focus: FocusHandle,
     /// The open instance's processor, memory and disk (top bar).
     monitor: Option<Monitor>,
     updates: Entity<UpdateState>,
@@ -185,6 +187,7 @@ impl Manager {
             open_remote: None,
             remote_monitor: None,
             remote_pages: None,
+            modal_focus: cx.focus_handle(),
             monitor: None,
             updates,
             updated_from,
@@ -914,8 +917,21 @@ impl Render for Manager {
         let nav = self.nav(width < RAIL_BELOW, cx);
         let notices = self.notices(cx);
         let content = self.content(window, cx);
+        let rail = width < RAIL_BELOW;
+        let layer = crate::modal::layer(window, cx, if rail { 64. } else { 224. }, 42.);
+        if layer.is_some() && window.focused(cx).is_none() {
+            window.focus(&self.modal_focus, cx);
+        }
         v_flex()
             .size_full()
+            .relative()
+            .track_focus(&self.modal_focus)
+            // Escape closes the open dialog, from anywhere in the window.
+            .on_key_down(|e: &KeyDownEvent, window, cx| {
+                if e.keystroke.key == "escape" && cx.try_global::<crate::modal::ModalSlot>().is_some_and(|s| s.0.is_some()) {
+                    crate::modal::dismiss(window, cx);
+                }
+            })
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(top)
@@ -927,6 +943,7 @@ impl Render for Manager {
                     .child(nav)
                     .child(v_flex().flex_1().h_full().min_w_0().children(notices).child(h_flex().flex_1().min_h_0().w_full().child(content))),
             )
+            .children(layer)
     }
 }
 

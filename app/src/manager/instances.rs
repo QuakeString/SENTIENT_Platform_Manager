@@ -12,9 +12,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     input::{Input, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
-    radio::RadioGroup,
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
-    WindowExt as _,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -647,9 +645,6 @@ impl InstancesPage {
         let f = self.form.as_ref()?;
         let theme = cx.theme().clone();
         let help = |id: &'static str, text: &'static str| Button::new(id).ghost().xsmall().icon(IconName::Info).tooltip(text);
-        let field = |label: &'static str, control: AnyElement| {
-            h_flex().gap_3().items_center().child(div().w(px(170.)).flex_shrink_0().text_sm().child(label)).child(div().flex_1().min_w_0().child(control))
-        };
         let busy = matches!(f.stage, Stage::Checking | Stage::Connecting);
         let swatches = h_flex().gap_2().items_center().children(remote::PALETTE.iter().map(|c| {
             let selected = f.color.eq_ignore_ascii_case(c);
@@ -884,53 +879,59 @@ impl InstancesPage {
 
     /// The add/edit form and a job's progress show as dialogs over the
     /// page, opened and closed with their state.
-    fn sync_dialogs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn sync_dialogs(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let page = cx.entity();
         if self.form.is_some() && !self.form_dialog && !self.job_dialog {
             self.form_dialog = true;
             let title = if self.form.as_ref().is_some_and(|f| f.editing.is_some()) { "Edit instance" } else { "Add a remote instance" };
             let slot = cx.new(|cx| Slot::new(page.clone(), SlotKind::Form, cx));
             let p2 = page.clone();
-            let top = dialog_top(window, 640.);
-            window.open_dialog(cx, move |d, window, _| {
-                let p3 = p2.clone();
-                let w = (window.viewport_size().width - px(48.)).min(px(620.));
-                d.title(title).w(w).margin_top(top).overlay(true).child(slot.clone()).on_close(move |_, _, cx| {
-                    p3.update(cx, |p, cx| {
-                        p.form = None;
-                        p.form_dialog = false;
-                        cx.notify();
-                    });
-                })
-            });
+            crate::modal::open(
+                crate::modal::Modal {
+                    title: title.into(),
+                    body: slot.into(),
+                    width: 620.,
+                    on_close: Some(std::rc::Rc::new(move |_, cx| {
+                        p2.update(cx, |p, cx| {
+                            p.form = None;
+                            p.form_dialog = false;
+                            cx.notify();
+                        });
+                    })),
+                },
+                cx,
+            );
         } else if self.form.is_none() && self.form_dialog {
             self.form_dialog = false;
-            window.close_dialog(cx);
+            crate::modal::close(cx);
         }
         if let Some((_, label)) = self.job_for.clone() {
             if !self.job_dialog && !self.form_dialog {
                 self.job_dialog = true;
                 let slot = cx.new(|cx| Slot::new(page.clone(), SlotKind::Job, cx));
                 let p2 = page.clone();
-                let top = dialog_top(window, 320.);
-                window.open_dialog(cx, move |d, window, _| {
-                    let p3 = p2.clone();
-                    let w = (window.viewport_size().width - px(48.)).min(px(560.));
-                    d.title(label.clone()).w(w).margin_top(top).overlay(true).child(slot.clone()).on_close(move |_, _, cx| {
-                        p3.update(cx, |p, cx| {
-                            p.job_dialog = false;
-                            if !p.job.read(cx).is_running() {
-                                p.job_for = None;
-                                p.job.update(cx, |j, cx| j.reset(cx));
-                            }
-                            cx.notify();
-                        });
-                    })
-                });
+                crate::modal::open(
+                    crate::modal::Modal {
+                        title: label,
+                        body: slot.into(),
+                        width: 560.,
+                        on_close: Some(std::rc::Rc::new(move |_, cx| {
+                            p2.update(cx, |p, cx| {
+                                p.job_dialog = false;
+                                if !p.job.read(cx).is_running() {
+                                    p.job_for = None;
+                                    p.job.update(cx, |j, cx| j.reset(cx));
+                                }
+                                cx.notify();
+                            });
+                        })),
+                    },
+                    cx,
+                );
             }
         } else if self.job_dialog {
             self.job_dialog = false;
-            window.close_dialog(cx);
+            crate::modal::close(cx);
         }
     }
 
@@ -1281,9 +1282,8 @@ impl Render for Slot {
             SlotKind::Form => p.form_panel(cx),
             SlotKind::Job => p.job_panel(cx),
         });
-        // Scrolls inside when the window is short.
-        let max_h = (window.viewport_size().height - px(200.)).max(px(220.));
-        div().id("slot").max_h(max_h).overflow_y_scroll().border_t_1().border_color(cx.theme().border).pt_3().children(body)
+        let _ = window;
+        div().id("slot").children(body)
     }
 }
 
@@ -1294,10 +1294,3 @@ fn hex_of(c: Hsla) -> String {
     format!("#{:02x}{:02x}{:02x}", b(r.r), b(r.g), b(r.b))
 }
 
-/// The dialog's top margin that centres one of about `height` px in the
-/// page area (below the top bar), or near the top when the window is short.
-fn dialog_top(window: &Window, height: f32) -> Pixels {
-    let h = window.viewport_size().height;
-    let page_top = px(42.);
-    ((h - page_top - px(height)) / 2. + page_top).max(px(24.))
-}
