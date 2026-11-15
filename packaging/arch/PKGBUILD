@@ -25,7 +25,9 @@ _repo="$startdir/../.."
 
 build() {
   cd "$_repo/app"
-  export CARGO_TARGET_DIR="$srcdir/target"
+  # A kept target folder (packaging/arch/build-cached.sh) makes a rebuild
+  # after a small change take minutes; a release build leaves it unset.
+  export CARGO_TARGET_DIR="${SPM_CARGO_TARGET_DIR:-$srcdir/target}"
   export RUSTUP_TOOLCHAIN=stable
   unset CARGO_ENCODED_RUSTFLAGS LDFLAGS CFLAGS CXXFLAGS
   # The server agent first: the same job code without the window, static
