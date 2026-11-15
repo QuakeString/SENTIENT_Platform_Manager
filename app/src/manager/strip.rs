@@ -12,6 +12,7 @@
 //! fails; a job that succeeds shows its last message in the strip for a few
 //! seconds, then the strip goes.
 
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::{ActiveTheme, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex};
@@ -21,8 +22,8 @@ use gpui_kit::*;
 use crate::jobs::{Job, JobState};
 use crate::ui::{self, Tone};
 
-/// How long a finished job's message stays in the strip.
-const SHOW_DONE: Duration = Duration::from_secs(5);
+/// How long "Done" stays in the strip.
+const SHOW_DONE: Duration = Duration::from_secs(4);
 
 /// The chip's smallest form: spinner and time, kept free in the top bar
 /// whether or not a job runs.
@@ -32,7 +33,18 @@ const WITH_NAME: f32 = 300.;
 /// Details shows from this much.
 const WITH_DETAILS: f32 = 190.;
 
+/// A job that failed: kept for the bell until its details are opened.
+pub struct Failure {
+    pub label: SharedString,
+    /// The error and every output line, as the details dialog shows them.
+    pub text: String,
+    pub retry: Option<Rc<dyn Fn(&mut App)>>,
+    pub seen: bool,
+}
+
 pub struct Strip {
+    /// Failed jobs for the bell, newest first.
+    pub failures: Vec<Failure>,
     /// The top bar is light (dark text): the chip's inset is fainter.
     pub light_bar: std::cell::Cell<bool>,
     /// The window's width: below 900 the chip shows only its spinner, time
@@ -55,7 +67,7 @@ impl Global for StripSlot {}
 
 /// The strip for this window (the manager makes it once).
 pub fn install(cx: &mut App) -> Entity<Strip> {
-    let strip = cx.new(|_| Strip { light_bar: std::cell::Cell::new(false), window_w: std::cell::Cell::new(1100.), slot_w: std::cell::Cell::new(400.), job: None, label: None, finished_at: None, opened_for_failure: false, _observe: None, _hide: None });
+    let strip = cx.new(|_| Strip { failures: Vec::new(), light_bar: std::cell::Cell::new(false), window_w: std::cell::Cell::new(1100.), slot_w: std::cell::Cell::new(400.), job: None, label: None, finished_at: None, opened_for_failure: false, _observe: None, _hide: None });
     cx.set_global(StripSlot(strip.clone()));
     strip
 }
@@ -82,16 +94,30 @@ impl Strip {
         let state = job.read(cx).state().clone();
         match state {
             JobState::Running => {}
-            JobState::Failed(_) if !self.opened_for_failure => {
+            JobState::Failed(m) if !self.opened_for_failure => {
+                // The chip goes; the details open once, and the failure stays
+                // in the bell (red count) until its entry is opened.
                 self.opened_for_failure = true;
                 self.finished_at = Some(Instant::now());
-                let label = self.label.clone();
-                cx.defer(move |cx| open_details(job, label, cx));
+                let j = job.read(cx);
+                let mut text = m.to_string();
+                let lines: Vec<String> = j.steps().iter().map(|s| format!("▸ {s}")).chain(j.log().iter().map(|l| l.to_string())).collect();
+                if !lines.is_empty() && !text.contains(crate::remote::DETAILS) {
+                    text = format!("{text}{}{}", crate::remote::DETAILS, lines.join("\n"));
+                }
+                let label = self.label.clone().unwrap_or_else(|| "A job".into());
+                self.failures.insert(0, Failure { label: label.clone(), text, retry: j.retry(), seen: false });
+                self.failures.truncate(20);
+                self.job = None;
+                self._observe = None;
+                let lbl = Some(label);
+                cx.defer(move |cx| open_details(job, lbl, cx));
             }
             JobState::Done(_) if self.finished_at.is_none() => {
                 self.finished_at = Some(Instant::now());
                 self._hide = Some(cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(SHOW_DONE).await;
+                    // ("Done" for a few seconds, then the chip goes.)
                     this.update(cx, |s, cx| {
                         if s.job.as_ref().is_some_and(|j| matches!(j.read(cx).state(), JobState::Done(_))) {
                             s.job = None;
@@ -119,6 +145,20 @@ fn open_details(job: Entity<Job>, label: Option<SharedString>, cx: &mut App) {
 }
 
 impl Strip {
+    /// Failures whose details were not opened since (the bell's red count).
+    pub fn unseen(&self) -> usize {
+        self.failures.iter().filter(|f| !f.seen).count()
+    }
+
+    /// Open a failure's details (from the bell) and count it as seen.
+    pub fn open_failure(&mut self, i: usize, cx: &mut Context<Self>) {
+        let Some(f) = self.failures.get_mut(i) else { return };
+        f.seen = true;
+        let (title, text, retry) = (format!("{} failed", f.label), f.text.clone(), f.retry.clone());
+        cx.defer(move |cx| crate::ui::show_error_with(title, text, retry, cx));
+        cx.notify();
+    }
+
     /// A job is shown in the top bar.
     pub fn active(&self) -> bool {
         self.job.is_some()
@@ -178,7 +218,7 @@ impl Render for Strip {
                 };
                 (Tone::Neutral, name, true)
             }
-            JobState::Done(m) => (Tone::Good, m.to_string(), false),
+            JobState::Done(_) => (Tone::Good, "Done".to_string(), false),
             JobState::Failed(m) => (Tone::Bad, crate::remote::split_failure(m).0, false),
             JobState::Idle => return div().into_any_element(),
         };

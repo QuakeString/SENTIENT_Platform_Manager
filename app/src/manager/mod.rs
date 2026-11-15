@@ -453,7 +453,11 @@ impl Manager {
                 }))
         });
         let items = self.attention(cx);
-        let count = items.len();
+        // Failed jobs come first, until their details are opened (red count).
+        let failures: Vec<(usize, String, bool)> = self.strip.read(cx).failures.iter().enumerate().map(|(i, f)| (i, format!("{} failed", f.label), f.seen)).collect();
+        let unseen = failures.iter().filter(|(_, _, seen)| !seen).count();
+        let count = items.len() + unseen;
+        let strip_e = self.strip.clone();
         let bell = crate::ui::button("bell")
             .ghost()
             .icon(Icon::new(IconName::Bell).text_color(fg))
@@ -463,7 +467,16 @@ impl Manager {
                 let this = cx.entity().downgrade();
                 move |menu, _, _| {
                     let mut menu = menu;
-                    if items.is_empty() {
+                    for (i, text, seen) in &failures {
+                        let (strip, i) = (strip_e.clone(), *i);
+                        menu = menu.item(PopupMenuItem::new(text.clone()).icon(if *seen { Lucide::CircleX } else { Lucide::CircleAlert }).on_click(move |_, _, cx| {
+                            strip.update(cx, |s, cx| s.open_failure(i, cx));
+                        }));
+                    }
+                    if !failures.is_empty() && !items.is_empty() {
+                        menu = menu.separator();
+                    }
+                    if items.is_empty() && failures.is_empty() {
                         menu = menu.item(PopupMenuItem::new("Nothing needs attention").disabled(true));
                     }
                     for (text, page) in &items {
@@ -606,8 +619,9 @@ impl Manager {
                             .h(px(15.))
                             .px(px(3.))
                             .rounded_full()
-                            .bg(rgb(0xf59e0b))
-                            .text_color(rgb(0x1c1917))
+                            // Red while a failed job is unread, else amber.
+                            .bg(if unseen > 0 { rgb(0xdc2626) } else { rgb(0xf59e0b) })
+                            .text_color(if unseen > 0 { rgb(0xffffff) } else { rgb(0x1c1917) })
                             .text_size(px(10.))
                             .font_weight(FontWeight::BOLD)
                             .flex()
