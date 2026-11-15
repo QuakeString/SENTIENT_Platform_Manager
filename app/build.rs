@@ -7,6 +7,7 @@
 
 fn main() {
     embed_agents();
+    build_commit();
     println!("cargo:rerun-if-changed=assets/icon.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -39,4 +40,21 @@ fn embed_agents() {
         }
     }
     std::fs::write(out, code).unwrap();
+}
+
+/// The commit this build is from (SPM_BUILD_COMMIT): shown beside the
+/// version so two builds of one version are never confused. SPM_COMMIT
+/// overrides it (package builds from an exported tree have no .git).
+fn build_commit() {
+    println!("cargo:rerun-if-env-changed=SPM_COMMIT");
+    println!("cargo:rerun-if-changed=../.git/HEAD");
+    let commit = std::env::var("SPM_COMMIT").ok().filter(|c| !c.is_empty()).or_else(|| {
+        std::process::Command::new("git")
+            .args(["rev-parse", "--short=7", "HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    });
+    println!("cargo:rustc-env=SPM_BUILD_COMMIT={}", commit.unwrap_or_else(|| "unknown".into()));
 }

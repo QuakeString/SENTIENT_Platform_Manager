@@ -145,6 +145,7 @@ impl RemotePages {
             p.settings_tab = names.iter().position(|n| n.eq_ignore_ascii_case(&t)).unwrap_or(0);
         }
         p.reload(cx);
+        p.refresh_agent(cx);
         p.start_log_follow(cx);
         p
     }
@@ -158,6 +159,31 @@ impl RemotePages {
     }
 
     /// Read what the page shows (in the background).
+    /// A server set up by an earlier Platform Manager keeps its older agent
+    /// until a job runs, and the pages need the new one's jobs (per-service
+    /// control, log sources): bring it up to date when the server is opened,
+    /// then read again. Only on a server that is set up already.
+    fn refresh_agent(&mut self, cx: &mut Context<Self>) {
+        #[cfg(debug_assertions)]
+        if std::env::var_os("SPM_DEBUG_REMOTE_STATUS").is_some() {
+            return;
+        }
+        let inst = self.inst.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let done = cx
+                .background_executor()
+                .spawn(async move {
+                    remote::ready(&inst)?;
+                    remote::deploy(&inst, &sentient_installer_core::progress::noop())
+                })
+                .await;
+            if done.is_ok() {
+                this.update(cx, |p, cx| p.reload(cx)).ok();
+            }
+        });
+        self._tasks.push(task);
+    }
+
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         let inst = self.inst.clone();
         self.fetch(cx, move || remote::ready(&inst), |p, r| p.ready = r);
@@ -410,7 +436,7 @@ impl RemotePages {
                                 .gap_3()
                                 .items_center()
                                 .child(ui::fact(&theme, "Server agent", s.manager_version.clone()).flex_1())
-                                .when(s.manager_version != here, |r| r.child(ui::pill(&theme, Tone::Neutral, if older { "Updated on the next job" } else { "Newer than this Platform Manager" })))
+                                .when(s.manager_version != here, |r| r.child(ui::pill(&theme, Tone::Neutral, if older { "Updated when the server is opened" } else { "Newer than this Platform Manager" })))
                         }),
                 );
             }

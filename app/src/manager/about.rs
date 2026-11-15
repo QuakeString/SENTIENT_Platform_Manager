@@ -123,7 +123,7 @@ impl Render for AboutPage {
                         .flex_1()
                         .min_w(px(200.))
                         .child(div().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child("SENTIENT Platform Manager"))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Version {version} · checked {last}"))),
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Version {version} (build {}) · checked {last}", crate::updates::build_commit()))),
                 )
                 .child(
                     h_flex()
