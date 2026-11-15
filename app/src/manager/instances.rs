@@ -44,6 +44,8 @@ struct Form {
     user: Entity<InputState>,
     key_file: Entity<InputState>,
     secret: Entity<InputState>,
+    /// sudo's password, for a key sign-in that is not root.
+    sudo_secret: Entity<InputState>,
     custom_color: Entity<InputState>,
     auth: Auth,
     color: String,
@@ -180,6 +182,11 @@ impl InstancesPage {
                     .masked(true)
                     .placeholder(if editing.is_some() { "Leave empty to keep the saved one" } else { "Key passphrase or password (if any)" })
             }),
+            sudo_secret: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .masked(true)
+                    .placeholder(if editing.is_some() { "Leave empty to keep the saved one" } else { "Only when sudo asks for one" })
+            }),
             custom_color: input(cx, window, color.clone(), "#6b4fa0"),
             auth: e.as_ref().map(|i| i.auth).unwrap_or_default(),
             color,
@@ -269,6 +276,7 @@ impl InstancesPage {
             Err(e) => return self.set_error(e, cx),
         };
         let secret = self.form.as_ref().map(|f| f.secret.read(cx).value().to_string()).unwrap_or_default();
+        let sudo_secret = self.form.as_ref().filter(|f| f.auth == Auth::Key).map(|f| f.sudo_secret.read(cx).value().to_string()).unwrap_or_default();
         if let Some(f) = &mut self.form {
             f.stage = Stage::Connecting;
             f.error = None;
@@ -291,6 +299,9 @@ impl InstancesPage {
                         inst.detected = Some(d);
                         if !secret.is_empty() {
                             remote::set_secret(&inst.id, &secret);
+                        }
+                        if !sudo_secret.is_empty() {
+                            remote::set_secret(&remote::sudo_key(&inst.id), &sudo_secret);
                         }
                         Ok(inst)
                     }
@@ -659,6 +670,17 @@ impl InstancesPage {
                     .child(help("help-secret", "Kept in this computer's secret store (Windows: sealed to this computer; Linux: the desktop keyring, else until the Platform Manager closes). It is never written to the instance list."))
                     .into_any_element(),
             ))
+            .when(f.auth == Auth::Key, |p| {
+                p.child(field(
+                    "sudo password",
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().flex_1().child(Input::new(&f.sudo_secret).mask_toggle()))
+                        .child(help("help-sudo", "The password sudo asks for on the server, when the user is not root and sudo is not set up without one. Kept in the secret store like the passphrase."))
+                        .into_any_element(),
+                ))
+            })
             .child(field(
                 "Colour",
                 h_flex()

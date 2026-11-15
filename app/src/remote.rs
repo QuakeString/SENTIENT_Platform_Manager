@@ -185,6 +185,11 @@ pub fn secret(id: &str) -> Option<String> {
 }
 
 pub fn forget_secret(id: &str) {
+    forget_one(&sudo_key(id));
+    forget_one(id);
+}
+
+fn forget_one(id: &str) {
     SESSION.lock().map(|mut g| g.get_or_insert_with(HashMap::new).remove(id)).ok();
     #[cfg(windows)]
     crate::secrets::forget_named(&format!("instance-{id}"));
@@ -377,8 +382,25 @@ const REMOTE_JOBS: &str = "/var/lib/sentient-platform-manager/jobs";
 
 /// `sudo` that reads its password from standard input when the instance
 /// signs in with one (else the account needs passwordless sudo, or root).
-fn sudo(inst: &Instance) -> &'static str {
-    if inst.user == "root" { "" } else if inst.auth == Auth::Password { "sudo -S -p '' " } else { "sudo -n " }
+fn sudo(inst: &Instance, password: bool) -> &'static str {
+    if inst.user == "root" { "" } else if password { "sudo -S -p '' " } else { "sudo -n " }
+}
+
+/// The password `sudo` asks for: the sign-in password, or, for a key
+/// sign-in, the administrator password kept for the instance (if any).
+fn sudo_password(inst: &Instance) -> Option<String> {
+    if inst.user == "root" {
+        return None;
+    }
+    match inst.auth {
+        Auth::Password => secret(&inst.id),
+        Auth::Key => secret(&sudo_key(&inst.id)),
+    }
+}
+
+/// Where an instance's sudo password is kept.
+pub fn sudo_key(id: &str) -> String {
+    format!("{id}-sudo")
 }
 
 /// Put this Platform Manager's build for the server's system on the
@@ -436,10 +458,12 @@ fn sftp_put(inst: &Instance, local: &Path, remote: &str) -> Result<(), String> {
     }
 }
 
-fn sudo_run(inst: &Instance, cmd: &str, password: Option<&str>) -> Result<String, String> {
-    let full = format!("{}sh -c '{}'", sudo(inst), cmd.replace('\'', "'\\''"));
+fn sudo_run(inst: &Instance, cmd: &str, _login: Option<&str>) -> Result<String, String> {
+    let pw = sudo_password(inst);
+    let password = pw.as_deref();
+    let full = format!("{}sh -c '{}'", sudo(inst, password.is_some()), cmd.replace('\'', "'\\''"));
     let mut c = ssh(inst, &full, None);
-    if inst.auth == Auth::Password && inst.user != "root" {
+    if password.is_some() {
         c.stdin(Stdio::piped());
     }
     c.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -454,7 +478,11 @@ fn sudo_run(inst: &Instance, cmd: &str, password: Option<&str>) -> Result<String
     }
     let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
     if err.contains("a password is required") || err.contains("sudo:") {
-        return Err(format!("{} needs administrator rights on the server: sign in as root, or allow it sudo without a password for the Platform Manager.", inst.user));
+        return Err(if password.is_some() {
+            format!("sudo refused the administrator password for {} on the server. Enter it again with Edit.", inst.user)
+        } else {
+            format!("{} needs administrator rights on the server: enter its sudo password with Edit, sign in as root, or allow it sudo without a password.", inst.user)
+        });
     }
     Err(explain(&err).unwrap_or(err))
 }
