@@ -573,6 +573,44 @@ pub fn dbstatus(inst: &Instance) -> Result<crate::dbstatus::DbStatus, String> {
     read_json(inst, "dbstatus-json")
 }
 
+/// The server's settings by catalog name (crate::settings::current there).
+pub fn settings(inst: &Instance) -> Result<HashMap<String, String>, String> {
+    #[cfg(debug_assertions)]
+    if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_SETTINGS") {
+        return serde_json::from_str(&t.to_string_lossy()).map_err(|e| e.to_string());
+    }
+    read_json(inst, "settings-json")
+}
+
+/// Write `text` to `path` on the server (readable by the owner only).
+pub fn put_text(inst: &Instance, path: &str, text: &str) -> Result<(), String> {
+    let mut c = ssh(inst, &format!("umask 077 && cat > '{}'", path.replace('\'', "")), None);
+    c.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+    let mut child = c.spawn().map_err(|e| format!("start ssh: {e}"))?;
+    if let Some(mut s) = child.stdin.take() {
+        use std::io::Write as _;
+        s.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if out.status.success() { Ok(()) } else { Err(explain(&String::from_utf8_lossy(&out.stderr)).unwrap_or_else(|| String::from_utf8_lossy(&out.stderr).trim().to_string())) }
+}
+
+/// The gateway on the server (`gateway-status` there): key → value.
+pub fn gateway(inst: &Instance) -> Result<HashMap<String, String>, String> {
+    #[cfg(debug_assertions)]
+    if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_GATEWAY") {
+        return Ok(t.to_string_lossy().split(' ').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect());
+    }
+    let out = sudo_run(inst, &format!("{REMOTE_SPM} --job gateway-status"), None)?;
+    let line = out.lines().rev().find(|l| l.starts_with("installed=")).ok_or("The server's Platform Manager gave no gateway state.")?;
+    Ok(line.split(' ').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect())
+}
+
+/// The account's home folder on the server.
+pub fn home(inst: &Instance) -> Result<String, String> {
+    Ok(run(inst, "printf %s \"$HOME\"", None)?.trim().to_string())
+}
+
 pub fn backups(inst: &Instance) -> Result<RemoteBackups, String> {
     read_json(inst, "backups-json")
 }

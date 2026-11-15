@@ -26,6 +26,10 @@ pub enum Kind {
     Logs,
     Update,
     Backup,
+    Settings,
+    Migration,
+    Repair,
+    Gateway,
 }
 
 /// What a page has read, or why it could not.
@@ -51,6 +55,12 @@ pub struct RemotePages {
     services: Read<Vec<RemoteService>>,
     db: Read<DbStatus>,
     backups: Read<RemoteBackups>,
+    settings: Read<std::collections::HashMap<String, String>>,
+    /// One input per catalog setting, made once the values are read.
+    inputs: Vec<(String, Entity<InputState>)>,
+    gateway: Read<std::collections::HashMap<String, String>>,
+    /// Migration's chosen target: stock, timescaledb or clickhouse.
+    target: usize,
     logs: Read<String>,
     /// The newest SENTIENT on the update channel (None: none newer).
     offer: Read<Option<crate::updates::Offer>>,
@@ -87,6 +97,10 @@ impl RemotePages {
             services: Read::Loading,
             db: Read::Loading,
             backups: Read::Loading,
+            settings: Read::Loading,
+            inputs: Vec::new(),
+            gateway: Read::Loading,
+            target: 2,
             logs: Read::Loading,
             offer: Read::Loading,
             filter,
@@ -139,6 +153,12 @@ impl RemotePages {
                 );
             }
             Kind::Backup => self.fetch(cx, move || remote::backups(&inst), |p, r| p.backups = r),
+            Kind::Settings => {
+                self.inputs.clear();
+                self.fetch(cx, move || remote::settings(&inst), |p, r| p.settings = r);
+            }
+            Kind::Migration | Kind::Repair => self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r),
+            Kind::Gateway => self.fetch(cx, move || remote::gateway(&inst), |p, r| p.gateway = r),
         }
     }
 
@@ -485,10 +505,204 @@ impl RemotePages {
         }
         p
     }
+
+    // -- Settings, Migration, Repair, Gateway --------------------------------
+
+    fn settings_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+        let values = match &self.settings {
+            Read::Loading => return Self::loading(&theme, "the settings"),
+            Read::Failed(e) => return Self::failed(&theme, e),
+            Read::Got(v) => v.clone(),
+        };
+        let groups = crate::catalog::groups();
+        if self.inputs.is_empty() {
+            for g in &groups {
+                for st in &g.settings {
+                    let v = values.get(&st.env).cloned().unwrap_or_default();
+                    let ph = if st.default.is_empty() { "not set".to_string() } else { format!("default {}", st.default) };
+                    let input = cx.new(|cx| InputState::new(window, cx).default_value(v).placeholder(ph));
+                    self._subscriptions.push(cx.subscribe(&input, |_, _, e: &InputEvent, cx| {
+                        if matches!(e, InputEvent::Change) {
+                            cx.notify();
+                        }
+                    }));
+                    self.inputs.push((st.env.clone(), input));
+                }
+            }
+        }
+        let busy = self.job.read(cx).is_running();
+        let value_of = |env: &str, cx: &App| self.inputs.iter().find(|(e, _)| e == env).map(|(_, i)| i.read(cx).value().trim().to_string()).unwrap_or_default();
+        let changed: Vec<String> = self.inputs.iter().filter(|(e, i)| values.get(e).cloned().unwrap_or_default() != i.read(cx).value().trim()).map(|(e, _)| e.clone()).collect();
+        let mut col = v_flex().gap_4();
+        if !changed.is_empty() {
+            let mut all = values.clone();
+            for (e, _) in &self.inputs {
+                let v = value_of(e, cx);
+                if v.is_empty() {
+                    all.remove(e);
+                } else {
+                    all.insert(e.clone(), v);
+                }
+            }
+            let n = changed.len();
+            col = col.child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .p_3()
+                    .rounded(theme.radius)
+                    .border_1()
+                    .border_color(theme.primary)
+                    .bg(theme.accent)
+                    .child(div().flex_1().text_sm().child(format!("{n} change{} to apply on {}. SENTIENT restarts when a setting needs it.", if n == 1 { "" } else { "s" }, self.inst.name)))
+                    .child(Button::new("r-set-undo").ghost().small().label("Undo").on_click(cx.listener(|this, _, _, cx| {
+                        this.inputs.clear();
+                        cx.notify();
+                    })))
+                    .child(Button::new("r-set-apply").primary().small().label("Apply").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.apply_settings(all.clone(), cx)))),
+            );
+        }
+        for g in groups {
+            let mut panel = ui::panel(&theme).gap_1().child(div().font_weight(FontWeight::MEDIUM).child(g.name.clone()));
+            for st in g.settings {
+                let Some((_, input)) = self.inputs.iter().find(|(e, _)| *e == st.env) else { continue };
+                let is_changed = changed.contains(&st.env);
+                panel = panel.child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .py_1()
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .child(
+                            h_flex()
+                                .w(px(260.))
+                                .flex_shrink_0()
+                                .gap_1()
+                                .items_center()
+                                .child(div().text_sm().when(is_changed, |d| d.text_color(theme.primary).font_weight(FontWeight::MEDIUM)).child(st.label.clone()))
+                                .child(Button::new(SharedString::from(format!("r-help-{}", st.env))).ghost().xsmall().icon(IconName::Info).tooltip(st.help.clone())),
+                        )
+                        .child(div().flex_1().min_w_0().child(Input::new(input).small())),
+                );
+            }
+            col = col.child(panel);
+        }
+        col
+    }
+
+    fn apply_settings(&mut self, values: std::collections::HashMap<String, String>, cx: &mut Context<Self>) {
+        if self.job.read(cx).is_running() {
+            return;
+        }
+        let inst = self.inst.clone();
+        self.job_label = Some(format!("Applying settings on {}", inst.name).into());
+        self.job.update(cx, |job, cx| {
+            job.start(
+                move |sink| {
+                    remote::deploy(&inst, &sink)?;
+                    let file = format!("{}/.spm-settings.json", remote::home(&inst)?);
+                    remote::put_text(&inst, &file, &serde_json::to_string(&values).map_err(|e| e.to_string())?)?;
+                    sink(sentient_installer_core::progress::Progress::Step { name: "Applying the settings".into() });
+                    let id = remote::start_job(&inst, &["apply-settings", &file])?;
+                    let r = remote::follow(&inst, &id, &sink);
+                    let _ = remote::run(&inst, &format!("rm -f '{file}'"), None);
+                    r
+                },
+                cx,
+            )
+        });
+        self.inputs.clear();
+        cx.notify();
+    }
+
+    fn migration_page(&self, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+        let busy = self.job.read(cx).is_running();
+        let current = self.status.got().map(|s| s.database.clone()).unwrap_or_default();
+        const TARGETS: [(&str, &str); 3] = [("stock", "PostgreSQL"), ("timescaledb", "PostgreSQL + TimescaleDB"), ("clickhouse", "PostgreSQL + ClickHouse")];
+        let (flavor, label) = TARGETS[self.target.min(2)];
+        let same = current == label;
+        ui::panel(&theme)
+            .child(ui::fact(&theme, "Database now", if current.is_empty() { "reading…".to_string() } else { current.clone() }))
+            .child(
+                h_flex().gap_3().items_center().child(div().text_sm().child("Move to")).child(
+                    gpui_kit::component::radio::RadioGroup::horizontal("r-target")
+                        .children(TARGETS.map(|t| t.1))
+                        .selected_index(Some(self.target))
+                        .on_change(cx.listener(|this, v: &usize, _, cx| {
+                            this.target = *v;
+                            cx.notify();
+                        })),
+                ),
+            )
+            .child(div().text_sm().text_color(theme.muted_foreground).child(
+                "The data is copied into the new type beside the old one, SENTIENT switches over, and the old database is kept until you remove it. SENTIENT stops while it switches.",
+            ))
+            .child(
+                h_flex().child(
+                    Button::new("r-migrate")
+                        .primary()
+                        .label(if same { "This is the database type already".to_string() } else { format!("Move to {label}") })
+                        .disabled(busy || same || current.is_empty())
+                        .on_click(cx.listener(move |this, _, _, cx| this.run_job("Moving the database", vec!["migrate".into(), flavor.into()], cx))),
+                ),
+            )
+    }
+
+    fn repair_page(&self, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+        let busy = self.job.read(cx).is_running();
+        let installed = self.status.got().is_some_and(|s| s.installed);
+        ui::panel(&theme)
+            .child(div().text_sm().child("Repair puts SENTIENT's services, files and settings on this server back as the Platform Manager installed them. The database and its data are kept."))
+            .child(h_flex().child(Button::new("r-repair").primary().label("Repair").icon(Icon::new(Lucide::Wrench)).disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job("Repairing", vec!["repair".into()], cx)))))
+            .child(div().text_xs().text_color(theme.muted_foreground).child("Uninstalling SENTIENT is done on the server itself, not from another computer."))
+    }
+
+    fn gateway_page(&self, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+        let busy = self.job.read(cx).is_running();
+        let g = match &self.gateway {
+            Read::Loading => return Self::loading(&theme, "the gateway"),
+            Read::Failed(e) => return Self::failed(&theme, e),
+            Read::Got(g) => g.clone(),
+        };
+        let get = |k: &str| g.get(k).cloned().unwrap_or_default();
+        let installed = get("installed") == "true";
+        let running = get("running") == "true";
+        let mut p = ui::panel(&theme).child(
+            h_flex()
+                .gap_3()
+                .items_center()
+                .child(ui::product_logo(ui::Product::Gateway, 24.))
+                .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
+                .child(if !installed { ui::pill(&theme, Tone::Neutral, "Not installed") } else if running { ui::pill(&theme, Tone::Good, "Running") } else { ui::pill(&theme, Tone::Bad, "Stopped") }),
+        );
+        if !installed {
+            return p.child(div().text_sm().text_color(theme.muted_foreground).child("No gateway on this server. Install it from the Platform Manager on the server itself; its access token stays there."));
+        }
+        p = p
+            .child(ui::fact(&theme, "Version", get("version")))
+            .child(ui::fact(&theme, "Connects to", format!("{}:{}", get("host"), get("port"))))
+            .child(ui::fact(&theme, "Its page", get("page")));
+        let act = |id: &'static str, label: &'static str, action: &'static str| {
+            Button::new(id).outline().small().label(label).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.run_job("Gateway", vec!["gateway-control".into(), action.into()], cx)))
+        };
+        p.child(
+            h_flex()
+                .gap_2()
+                .child(act("r-gw-start", "Start", "start"))
+                .child(act("r-gw-stop", "Stop", "stop"))
+                .child(act("r-gw-restart", "Restart", "restart"))
+                .child(Button::new("r-gw-update").primary().small().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx)))),
+        )
+    }
 }
 
 impl Render for RemotePages {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let (title, summary) = match self.kind {
             Kind::Status => ("Status", "SENTIENT on this server: its state, services and database."),
@@ -496,6 +710,10 @@ impl Render for RemotePages {
             Kind::Logs => ("Logs", "The most recent lines of the SENTIENT log on this server."),
             Kind::Update => ("Update", "A newer SENTIENT for this server, from the update channel."),
             Kind::Backup => ("Backup and restore", "The backups on this server."),
+            Kind::Settings => ("Platform settings", "SENTIENT's settings on this server."),
+            Kind::Migration => ("Migration", "Move this server's SENTIENT to another database type."),
+            Kind::Repair => ("Repair", "Put SENTIENT's services and files on this server back in order."),
+            Kind::Gateway => ("Gateway", "The Sentient Gateway on this server."),
         };
         let body = match self.kind {
             Kind::Status => self.status_page(cx),
@@ -503,6 +721,10 @@ impl Render for RemotePages {
             Kind::Logs => self.logs_page(cx),
             Kind::Update => self.update_page(cx),
             Kind::Backup => self.backup_page(cx),
+            Kind::Settings => self.settings_page(window, cx),
+            Kind::Migration => self.migration_page(cx),
+            Kind::Repair => self.repair_page(cx),
+            Kind::Gateway => self.gateway_page(cx),
         };
         let job = self.job_panel(cx);
         ui::page(&theme, title, summary)

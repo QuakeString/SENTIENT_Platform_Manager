@@ -39,7 +39,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | services-json | dbstatus-json | backups-json | logs [<lines>] | kept | remove-kept <name> | \
+use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
 
 /// A console for the output: release builds on Windows have none of their
@@ -229,7 +229,7 @@ pub fn run(args: &[String]) -> i32 {
     }
     // The pages of a remote instance read this computer through these
     // (crate::remote): services, database, backups. One JSON line each.
-    if job == "services-json" || job == "dbstatus-json" || job == "backups-json" {
+    if job == "services-json" || job == "dbstatus-json" || job == "backups-json" || job == "settings-json" {
         let Some(record) = InstallationRecord::load() else {
             println!("null");
             return 0;
@@ -245,6 +245,7 @@ pub fn run(args: &[String]) -> i32 {
                 serde_json::to_string(&list)
             }
             "dbstatus-json" => serde_json::to_string(&crate::dbstatus::read(&record)),
+            "settings-json" => serde_json::to_string(&crate::settings::current(&record)),
             _ => {
                 let prefs = crate::backups::BackupPrefs::load();
                 serde_json::to_string(&crate::remote::RemoteBackups { folder: prefs.folder.clone(), daily_at: prefs.daily_at.clone(), keep: prefs.keep, list: crate::backups::list(&prefs.folder) })

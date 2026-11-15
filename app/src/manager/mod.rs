@@ -748,6 +748,10 @@ impl Manager {
                 Page::Logs => Some(remote_pages::Kind::Logs),
                 Page::Update => Some(remote_pages::Kind::Update),
                 Page::Backup => Some(remote_pages::Kind::Backup),
+                Page::Settings => Some(remote_pages::Kind::Settings),
+                Page::Migration => Some(remote_pages::Kind::Migration),
+                Page::Repair => Some(remote_pages::Kind::Repair),
+                Page::Gateway => Some(remote_pages::Kind::Gateway),
                 _ => None,
             };
             if let Some(kind) = kind {
