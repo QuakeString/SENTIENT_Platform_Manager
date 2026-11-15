@@ -1058,7 +1058,7 @@ impl Render for RemotePages {
         let (title, summary) = match self.kind {
             Kind::Status => ("Status", "SENTIENT on this server: its state, services and database."),
             Kind::Control => ("Control", "Start, stop or restart SENTIENT on this server."),
-            Kind::Logs => ("Logs", "The most recent lines of the SENTIENT log on this server."),
+            Kind::Logs => ("Logs", "SENTIENT's log and its database's on this server, newest at the bottom."),
             Kind::Update => ("Update", "A newer SENTIENT for this server, from the update channel."),
             Kind::Backup => ("Backup and restore", "The backups on this server."),
             Kind::Settings => ("Platform settings", "SENTIENT's settings on this server."),
