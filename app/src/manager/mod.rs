@@ -261,6 +261,16 @@ impl Manager {
                     cx,
                 );
             }
+            if std::env::var_os("SPM_DEBUG_PARTS_DIALOG").is_some() {
+                let part = |t: &str, m: &str, n: &str, b: u64| crate::dbstatus::DetachedPart { table: t.into(), partition: m.into(), name: n.into(), reason: "broken-on-start".into(), bytes: b };
+                let list = vec![
+                    part("ts_kv", "202611", "202611_1_8_1", 48_000_000),
+                    part("ts_kv", "202611", "202611_9_9_0", 2_100_000),
+                    part("ts_kv", "202610", "202610_33_40_2", 61_000_000),
+                    part("ts_kv_dictionary", "tuple()", "all_3_3_0", 12_000),
+                ];
+                status::BrokenParts::open(std::sync::Arc::new(move || Ok(list.clone())), std::sync::Arc::new(|_, _| Ok("ok a\nfailed b: Code: 232. Part b is broken".into())), cx);
+            }
             if std::env::var_os("SPM_DEBUG_LOG_DIALOG").is_some() {
                 let view = cx.new(|cx| logs::LogView::file(crate::jobs::activity_log(), _window, cx));
                 crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., on_close: None }, cx);

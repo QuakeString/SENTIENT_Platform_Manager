@@ -411,7 +411,7 @@ impl RemotePages {
                         .child(ui::skeleton_block(theme, "st-logo", px(30.).into(), 30.))
                         .child(ui::skeleton_block(theme, "st-pill", px(150.).into(), 24.))
                         .child(div().flex_1())
-                        .child(ui::skeleton_block(theme, "st-open", px(124.).into(), 32.)),
+                        .child(ui::skeleton_block(theme, "st-open", px(124.).into(), 30.)),
                 )
                 .child(ui::fact_loading(theme, "SENTIENT version", 120.))
                 .child(ui::fact_loading(theme, "Database", 170.))

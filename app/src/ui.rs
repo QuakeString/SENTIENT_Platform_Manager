@@ -989,7 +989,8 @@ pub fn skeleton_block(theme: &Theme, key: impl Into<SharedString>, w: Length, h:
 
 /// A text-line placeholder (one line of 14 px text: 12 px high in a 20 px row).
 pub fn skeleton_line(theme: &Theme, key: impl Into<SharedString>, w: f32) -> Div {
-    div().h(px(20.)).flex().items_center().child(skeleton_block(theme, key, px(w).into(), 12.))
+    // A 14 px line's own height (its line-height), so a loaded row is as tall.
+    div().h(rems(0.875 * 1.4)).flex().items_center().child(skeleton_block(theme, key, px(w).into(), 12.))
 }
 
 /// A fact row whose value is still loading: the label as it will be, the
@@ -1022,7 +1023,7 @@ pub fn skeleton_service_rows(theme: &Theme, key: &'static str, n: usize) -> Vec<
             gpui_kit::component::h_flex()
                 .gap_4()
                 .items_center()
-                .child(gpui_kit::component::h_flex().w(px(168.)).flex_shrink_0().child(skeleton_block(theme, format!("{key}-p{i}"), px(86.).into(), 22.)))
+                .child(gpui_kit::component::h_flex().w(px(168.)).flex_shrink_0().child(skeleton_block(theme, format!("{key}-p{i}"), px(86.).into(), 25.)))
                 .child(skeleton_line(theme, format!("{key}-n{i}"), [260., 300., 240.][i % 3]))
         })
         .collect()
