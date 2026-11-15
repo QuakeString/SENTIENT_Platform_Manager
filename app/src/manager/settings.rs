@@ -513,6 +513,32 @@ impl SettingsPage {
 
 /// A row: label (and its help), then the control.
 pub(crate) fn row(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, help: Option<String>, changed: bool, control: impl IntoElement) -> Div {
+    // The mockup's setting row: the label on the left (primary when
+    // changed), the control right-aligned in a fixed column.
+    let label: SharedString = label.into();
+    h_flex()
+        .gap_4()
+        .items_center()
+        .py_2()
+        .border_t_1()
+        .border_color(theme.border)
+        .child(
+            h_flex()
+                .flex_1()
+                .min_w(px(160.))
+                .gap_1()
+                .items_center()
+                .child(div().text_sm().when(changed, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.primary)).child(label.clone()))
+                .when_some(help, |r, h| {
+                    r.child(crate::ui::button(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))
+                }),
+        )
+        .child(h_flex().flex_shrink_0().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
+}
+
+/// A row of the All variables table: label column, then value and built-in
+/// columns (crate::manager::settings::table_header).
+pub(crate) fn table_row(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, help: Option<String>, changed: bool, control: impl IntoElement) -> Div {
     let label: SharedString = label.into();
     h_flex()
         .gap_3()
@@ -1005,7 +1031,7 @@ impl SettingsPage {
                 let key = s.env.clone();
                 let label: SharedString = if self.show_names { s.env.clone().into() } else { s.short_label().into() };
                 let field = self.field(s, cx);
-                table = table.child(row(
+                table = table.child(table_row(
                     theme,
                     label,
                     self.help(&s.env),
@@ -1155,7 +1181,10 @@ impl Render for SettingsPage {
             Tab::Advanced => self.advanced(&theme, cx),
         };
 
-        page.child(tabs)
+        let active = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0);
+        let _ = page;
+        layout(&theme, tabs, active, v_flex()
+            .gap(px(14.))
             .children(applybar)
             .children(problems.into_iter().map(|p| div().text_sm().text_color(theme.danger).child(p)))
             .when(busy || outcome.is_some(), |page| {
@@ -1166,7 +1195,7 @@ impl Render for SettingsPage {
                         .children(log.into_iter().map(|line| div().text_size(px(13.)).text_color(theme.muted_foreground).child(line))),
                 )
             })
-            .children(body)
+            .children(body))
     }
 }
 
@@ -1193,7 +1222,16 @@ mod tests {
 }
 
 /// The tab titles of Platform settings, in order.
-pub(crate) const TAB_TITLES: [&str; 5] = ["Platform", "Database", "Network and certificates", "Data retention", "Advanced"];
+pub(crate) const TAB_TITLES: [&str; 5] = ["General", "Database", "Network and certificates", "History and cleanup", "All variables"];
+
+/// What each category holds, under its title.
+pub(crate) const TAB_ABOUT: [&str; 5] = [
+    "How SENTIENT runs, its administrator account and the licence.",
+    "PostgreSQL's memory and connections, and the telemetry history store.",
+    "SENTIENT's ports, certificates and which sites may call it.",
+    "How long data is kept and the nightly cleanup.",
+    "Every setting SENTIENT reads, with its built-in value.",
+];
 
 /// The catalog settings each of the first four tabs shows on a remote
 /// server (this computer's tabs add what only it can do).
@@ -1204,23 +1242,59 @@ pub(crate) const TAB_KEYS: [&[&str]; 4] = [
     &["AUDIT_LOG_TTL_DAYS", "NOTIFICATIONS_TTL_DAYS", "SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS", "SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS", "AUDIT_LOG_CLEANUP_ENABLED", "SENTIENT__EVENT_CLEANUP__ENABLED"],
 ];
 
-/// The tab bar of Platform settings. Shared with a remote server's.
+/// The categories of Platform settings, as a list on the left (the
+/// mockup's H2). Shared with a remote server's.
 pub(crate) fn tab_bar(theme: &gpui_kit::component::Theme, id: &str, active: usize, pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
-    h_flex().gap_1().border_b_1().border_color(theme.border).children(TAB_TITLES.iter().enumerate().map(|(i, title)| {
-        let on = i == active;
-        let pick = pick.clone();
-        div()
-            .id(SharedString::from(format!("{id}tab-{i}")))
-            .px_4()
-            .py_2()
-            .text_sm()
-            .cursor_pointer()
-            .border_b_2()
-            .border_color(if on { theme.primary } else { theme.transparent })
-            .text_color(if on { theme.primary } else { theme.muted_foreground })
-            .child(*title)
-            .on_click(move |_, _, cx| pick(i, cx))
-    }))
+    v_flex()
+        .w(px(190.))
+        .flex_shrink_0()
+        .gap_0p5()
+        .children(TAB_TITLES.iter().enumerate().map(|(i, title)| {
+            let on = i == active;
+            let pick = pick.clone();
+            div()
+                .id(SharedString::from(format!("{id}tab-{i}")))
+                .px(px(11.))
+                .py(px(7.))
+                .rounded(px(7.))
+                .text_sm()
+                .cursor_pointer()
+                .text_color(theme.muted_foreground)
+                .when(on, |d| d.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground).font_weight(FontWeight::MEDIUM))
+                .when(!on, |d| d.hover(|d| d.bg(theme.list_hover).text_color(theme.foreground)))
+                .child(*title)
+                .on_click(move |_, _, cx| pick(i, cx))
+        }))
+}
+
+/// Platform settings laid out as the mockup's H2: the category list, then
+/// the open category's title, its line and its panels.
+pub(crate) fn layout(theme: &gpui_kit::component::Theme, nav: Div, active: usize, body: impl IntoElement) -> Stateful<Div> {
+    h_flex()
+        .id("settings-page")
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .items_start()
+        .bg(theme.muted)
+        .child(v_flex().h_full().p_3().border_r_1().border_color(theme.border).child(nav))
+        .child(
+            v_flex()
+                .id("settings-body")
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .overflow_y_scroll()
+                .p_4()
+                .gap(px(14.))
+                .child(
+                    v_flex()
+                        .gap_0p5()
+                        .child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(TAB_TITLES[active.min(4)]))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(TAB_ABOUT[active.min(4)])),
+                )
+                .child(body),
+        )
 }
 
 /// The Advanced table's header row. Shared with a remote server's.

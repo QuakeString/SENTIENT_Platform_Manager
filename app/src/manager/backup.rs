@@ -869,19 +869,21 @@ pub(crate) fn brow_pub(theme: &gpui_kit::component::Theme, label: &'static str, 
 /// A row: label, then its control.
 fn brow(theme: &gpui_kit::component::Theme, label: &'static str, help: Option<&'static str>, control: impl IntoElement) -> Div {
     h_flex()
-        .gap_3()
+        .gap_4()
         .items_center()
-        .py_1p5()
+        .py_2()
         .border_t_1()
         .border_color(theme.border)
+        // The mockup's row: label and its line on the left, the control
+        // right-aligned.
         .child(
             v_flex()
-                .w(px(220.))
-                .flex_shrink_0()
+                .flex_1()
+                .min_w(px(180.))
                 .child(div().text_sm().child(label))
                 .when_some(help, |c, h| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(h))),
         )
-        .child(h_flex().flex_1().min_w_0().gap_2().items_center().child(control))
+        .child(h_flex().flex_shrink_0().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
 }
 
 impl BackupPage {

@@ -760,13 +760,14 @@ impl RemotePages {
         // memory, administrator accounts) are left out.
         use crate::manager::settings as local;
         let this = cx.entity().downgrade();
-        col = col.child(local::tab_bar(&theme, "r-", self.settings_tab, std::rc::Rc::new(move |i, cx| {
+        let nav = local::tab_bar(&theme, "r-", self.settings_tab, std::rc::Rc::new(move |i, cx| {
             this.update(cx, |p, cx| {
                 p.settings_tab = i;
                 cx.notify();
             })
             .ok();
-        })));
+        }));
+        let active = self.settings_tab;
         let all: Vec<crate::catalog::Setting> = groups.iter().flat_map(|g| g.settings.iter().cloned()).collect();
         let field_of = |st: &crate::catalog::Setting, cx: &mut Context<Self>| -> AnyElement {
             let Some((_, input)) = self.inputs.iter().find(|(e, _)| *e == st.env) else { return div().into_any_element() };
@@ -814,7 +815,7 @@ impl RemotePages {
             let mut table = ui::panel(&theme).gap_0().child(local::table_header(&theme));
             for st in &all {
                 let field = field_of(st, cx);
-                table = table.child(local::row(
+                table = table.child(local::table_row(
                     &theme,
                     st.short_label(),
                     help(st),
@@ -824,7 +825,24 @@ impl RemotePages {
             }
             col = col.child(table);
         }
-        col
+        // The same category list and heading as this computer's.
+        h_flex()
+            .gap_4()
+            .items_start()
+            .child(nav)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(px(14.))
+                    .child(
+                        v_flex()
+                            .gap_0p5()
+                            .child(div().text_size(px(17.)).font_weight(FontWeight::MEDIUM).child(local::TAB_TITLES[active.min(4)]))
+                            .child(div().text_sm().text_color(theme.muted_foreground).child(local::TAB_ABOUT[active.min(4)])),
+                    )
+                    .child(col),
+            )
     }
 
     /// "Check" beside a file setting: does the server have that file?

@@ -1209,12 +1209,14 @@ fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<Remote
         h_flex()
             .gap_3()
             .text_sm()
-            .child(div().w(px(96.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
-            // A value that needs attention is a pill, as in the mockup.
+            .items_start()
+            .child(div().w(px(84.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
+            // A value that needs attention is a pill, as in the mockup; long
+            // values wrap inside the card.
             .child(if warn {
                 h_flex().flex_1().min_w_0().child(ui::pill(theme, Tone::Warn, value))
             } else {
-                h_flex().flex_1().min_w_0().child(div().text_ellipsis().child(value))
+                h_flex().flex_1().min_w_0().child(div().flex_1().min_w_0().child(value))
             })
     };
     let mut col = v_flex().gap_1();
@@ -1304,7 +1306,7 @@ fn grid_card(
                             v_flex()
                                 .flex_1()
                                 .min_w_0()
-                                .child(div().font_weight(FontWeight::MEDIUM).text_ellipsis().child(name))
+                                .child(div().font_weight(FontWeight::MEDIUM).child(name))
                                 .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(sub)),
                         )
                         .child(ui::pill(theme, tone, state)),
