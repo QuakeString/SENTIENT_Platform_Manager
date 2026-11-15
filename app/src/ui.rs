@@ -694,6 +694,12 @@ pub fn slot_width(widest: &str, size: f32) -> Pixels {
 /// A value that updates live in a fixed slot sized for its widest text,
 /// right-aligned with tabular figures: nothing beside it moves when it
 /// changes (the top bar's monitors, the strip's time, Statistics figures).
+/// The same, its text at the slot's left: the value follows its label or bar
+/// with no gap, the slot's spare room trails it.
+pub fn live_value_left(widest: &str, size: f32, value: impl Into<SharedString>) -> Div {
+    div().w(slot_width(widest, size)).flex_shrink_0().text_size(px(size)).whitespace_nowrap().font_features(tabular()).child(value.into())
+}
+
 pub fn live_value(widest: &str, size: f32, value: impl Into<SharedString>) -> Div {
     div()
         .w(slot_width(widest, size))

@@ -24,6 +24,14 @@ use crate::ui::{self, Tone};
 /// How long a finished job's message stays in the strip.
 const SHOW_DONE: Duration = Duration::from_secs(5);
 
+/// The chip's smallest form: spinner and time, kept free in the top bar
+/// whether or not a job runs.
+pub const CHIP_MIN: f32 = 104.;
+/// The name shows only when this much is free beside the monitors.
+const WITH_NAME: f32 = 300.;
+/// Details shows from this much.
+const WITH_DETAILS: f32 = 190.;
+
 pub struct Strip {
     /// The top bar is light (dark text): the chip's inset is fainter.
     pub light_bar: std::cell::Cell<bool>,
@@ -177,9 +185,9 @@ impl Render for Strip {
         let label = self.label.clone();
         // What fits the slot: name + time + Details, then time + Details,
         // then the time alone; the chip never reaches the monitors.
-        let slot = (self.slot_w.get() - 16.).max(0.);
-        let compact = running && slot < 260.;
-        let tiny = running && slot < 160.;
+        let slot = (self.slot_w.get() - 16.).max(CHIP_MIN - 16.);
+        let compact = running && slot < WITH_NAME;
+        let tiny = running && slot < WITH_DETAILS;
         let mark = match tone {
             Tone::Good => gpui_kit::component::Icon::new(IconName::CircleCheck).small().into_any_element(),
             Tone::Bad => gpui_kit::component::Icon::new(IconName::CircleX).small().text_color(rgb(0xfca5a5)).into_any_element(),
@@ -191,7 +199,8 @@ impl Render for Strip {
         h_flex()
             .id("progress-strip")
             .min_w_0()
-            .max_w(px(slot.min(560.)))
+            .max_w(px(self.slot_w.get().max(CHIP_MIN).min(560.)))
+            .when(running, |c| c.min_w(px(CHIP_MIN - 8.)))
             .overflow_hidden()
             .relative()
             .child(crate::ui::layout_probe("chip"))
@@ -211,7 +220,7 @@ impl Render for Strip {
             .when(running, |r| {
                 let secs = job.step_elapsed().map(|d| d.as_secs()).unwrap_or(0);
                 let t = if secs >= 3600 { format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60) } else { format!("{}:{:02}", secs / 60, secs % 60) };
-                r.child(crate::ui::live_value("00:00:00", 13., t).opacity(0.85))
+                r.child(div().relative().child(crate::ui::live_value_left("00:00:00", 13., t).opacity(0.85)).child(crate::ui::layout_probe("chip-time")))
             })
             .when(!tiny, |r| r.child(
                 div()

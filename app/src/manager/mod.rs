@@ -343,15 +343,13 @@ impl Manager {
         self.strip.read(cx).window_w.set(width);
         // The mockup's top bar: above 900 px the product name and the
         // monitors' bars show; below, only the switcher and the values.
-        // Bars only on a wide window: the room under 1300 px goes to the values
-        // and the progress chip (always the same, so nothing moves when a job
-        // starts).
-        let wide = width > 1300.;
+        let wide = width > 900.;
         let warn_fill: Hsla = rgb(0xf59e0b).into();
         let warn_text: Hsla = rgb(0xfcd34d).into();
-        let meter = |id: &'static str, label: &'static str, widest: &'static str, value: String, fraction: f32, high: bool| {
+        let meter = |id: &'static str, label: &'static str, widest: &str, value: String, fraction: f32, high: bool| {
             h_flex()
                 .id(id)
+                .relative()
                 .gap(px(6.))
                 .items_center()
                 .text_size(px(12.5))
@@ -368,12 +366,15 @@ impl Manager {
                 })
                 // A fixed slot for the widest value: the bars and the bell
                 // never move when a value changes.
-                .child(ui::live_value(widest, 12.5, value).text_color(if high { warn_text } else { fg }))
+                .child(ui::live_value_left(widest, 12.5, value).text_color(if high { warn_text } else { fg }))
+                .child(crate::ui::layout_probe(id))
         };
         // What fits: a rough width per piece (about 7 px a character at
         // 12.5-14 px), kept in this order: CPU, memory, disk.
-        let text_w = |s: &str| s.chars().count() as f32 * 7.2;
-        let mut room = width - 20. - (20. + 12.) - (text_w(&instance) + 60. + 12.) - if remote.is_some() { 64. } else { 0. } - 40. - 12.;
+        let text_w = |s: &str| s.chars().count() as f32 * 6.9;
+        // The progress chip's smallest form (spinner and time) always has its
+        // room, job or not: the monitors are laid out the same either way.
+        let mut room = width - 20. - (20. + 12.) - (text_w(&instance) + 60. + 12.) - if remote.is_some() { 64. } else { 0. } - 40. - 12. - strip::CHIP_MIN;
 
         let mut fits = |need: f32| {
             let ok = room >= need;
@@ -383,19 +384,33 @@ impl Manager {
             ok
         };
         let shown = if remote.is_some() { self.remote_monitor } else { self.monitor };
+        // Each value's slot is sized for its widest text on THIS machine
+        // (used memory never passes the total, free disk never the disk),
+        // every digit an 8 (tabular figures share one width).
+        let eights = |s: String| s.chars().map(|c| if c.is_ascii_digit() { '8' } else { c }).collect::<String>();
+        let gbf = |b: u64| b as f64 / (1u64 << 30) as f64;
+        let mem_widest = shown.map(|m| eights(format!("{:.1} / {:.0} GB", gbf(m.mem_total), gbf(m.mem_total)))).unwrap_or_default();
+        // On a disk of a terabyte or more, less than a terabyte free reads in GB.
+        let disk_widest = shown
+            .map(|m| {
+                let total = eights(format!("{} free", crate::dbstatus::bytes_label(m.disk_total)));
+                if m.disk_total >= 1 << 40 && total.len() < "8888.8 GB free".len() { "8888.8 GB free".to_string() } else { total }
+            })
+            .unwrap_or_default();
         let (show_cpu, show_mem, show_disk) = match shown {
             Some(_) => {
                 let bar = if wide { 48. } else { 0. };
-                let cpu = fits(16. + 16. + 80. + bar);
-                let mem = cpu && fits(16. + 160. + bar);
-                let disk = mem && fits(16. + 140. + bar);
+                let slot = |w: &str| f32::from(ui::slot_width(w, 12.5));
+                let cpu = fits(16. + 6. + 26. + slot("100%") + bar);
+                let mem = cpu && fits(16. + 6. + 52. + slot(&mem_widest) + bar);
+                let disk = mem && fits(16. + 6. + 30. + slot(&disk_widest) + bar);
                 (cpu, mem, disk)
             }
             None => (false, false, false),
         };
         // What the monitors leave between the switcher and themselves: the
         // progress chip's slot.
-        self.strip.read(cx).slot_w.set(room.max(0.));
+        self.strip.read(cx).slot_w.set(room.max(0.) + strip::CHIP_MIN);
         let monitor = shown.map(|m| {
             let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
             h_flex()
@@ -412,7 +427,7 @@ impl Manager {
                 .when(show_mem, |r| r.child(meter(
                     "m-mem",
                     "Memory",
-                    "99.9 / 999 GB",
+                    &mem_widest,
                     format!("{:.1} / {:.0} GB", gb(m.mem_used), gb(m.mem_total)),
                     if m.mem_total > 0 { m.mem_used as f32 / m.mem_total as f32 } else { 0.0 },
                     m.mem_high(),
@@ -420,7 +435,7 @@ impl Manager {
                 .when(show_disk, |r| r.child(meter(
                     "m-disk",
                     "Disk",
-                    "9999.9 GB free",
+                    &disk_widest,
                     format!("{} free", crate::dbstatus::bytes_label(m.disk_free)),
                     if m.disk_total > 0 { 1.0 - m.disk_free as f32 / m.disk_total as f32 } else { 0.0 },
                     m.disk_low(),
