@@ -11,7 +11,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, LoadImageW, 
 
 /// Give the window the Platform Manager's icon (resource 2).
 pub fn use_manager_icon(window: &gpui_kit::Window) {
-    let Ok(handle) = window.window_handle() else { return };
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
     let RawWindowHandle::Win32(w) = handle.as_raw() else { return };
     let hwnd = w.hwnd.get() as windows_sys::Win32::Foundation::HWND;
     unsafe {
