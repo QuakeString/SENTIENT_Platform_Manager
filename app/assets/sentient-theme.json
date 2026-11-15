@@ -73,7 +73,7 @@
         "foreground": "#ffffffde",
         "border": "#ffffff1f",
         "input.border": "#ffffff3d",
-        "ring": "#4db6ac",
+        "ring": "#26a69a",
         "caret": "#4db6ac",
         "selection.background": "#26a69a40",
         "primary.background": "#26a69a",

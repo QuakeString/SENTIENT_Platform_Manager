@@ -14,6 +14,7 @@ pub(crate) mod migration;
 mod remote_pages;
 mod repair;
 mod settings;
+pub(crate) mod setting_field;
 mod status;
 pub(crate) mod update;
 

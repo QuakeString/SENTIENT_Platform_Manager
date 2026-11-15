@@ -112,6 +112,9 @@ fn preset_values(p: Preset, groups: &[Group], ram_mb: u64) -> HashMap<&'static s
 /// built-in one.
 type Choices = &'static [(&'static str, &'static str)];
 
+/// The Value column of Advanced: every field starts and ends at the same place.
+const VALUE_W: f32 = 340.;
+
 const LOG_LEVELS: Choices = &[("Errors only", "error"), ("Normal", "info"), ("Detailed", "debug")];
 const ON_OFF: Choices = &[("On", "true"), ("Off", "false")];
 const KEEP_DAYS: Choices = &[("Forever", "0"), ("30 days", "30"), ("90 days", "90"), ("1 year", "365")];
@@ -428,7 +431,8 @@ impl SettingsPage {
         cx.notify();
     }
 
-    fn choose_file(&mut self, key: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+    fn choose_file(&mut self, key: impl Into<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let key: String = key.into();
         let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use this file".into()) });
         let handle = window.window_handle();
         cx.spawn(async move |this, cx| {
@@ -437,7 +441,7 @@ impl SettingsPage {
             let text = path.display().to_string();
             let _ = handle.update(cx, |_, window, cx| {
                 let _ = this.update(cx, |page, cx| {
-                    page.set(key, &text, window, cx);
+                    page.set(&key, &text, window, cx);
                     cx.notify();
                 });
             });
@@ -576,9 +580,33 @@ impl SettingsPage {
         div().w(px(width)).child(Input::new(&self.inputs[key]))
     }
 
-    fn catalog_row(&self, theme: &gpui_kit::component::Theme, key: &'static str, width: f32, cx: &App) -> Div {
-        let label = self.find(key).map(|s| s.label.clone()).unwrap_or_else(|| key.to_string());
-        row(theme, label, self.help(key), self.is_changed(key, cx), self.input(key, width))
+    fn catalog_row(&self, theme: &gpui_kit::component::Theme, key: &'static str, width: f32, cx: &mut Context<Self>) -> Div {
+        let Some(setting) = self.find(key).cloned() else {
+            return row(theme, key, None, false, self.input(key, width));
+        };
+        let changed = self.is_changed(key, cx);
+        row(theme, setting.short_label(), self.help(key), changed, self.field(&setting, cx))
+    }
+
+    /// A catalog setting's field, by its kind (crate::manager::setting_field).
+    fn field(&self, setting: &crate::catalog::Setting, cx: &mut Context<Self>) -> AnyElement {
+        use crate::manager::setting_field::{self, FileButton};
+        let Some(input) = self.inputs.get(&setting.env) else { return div().into_any_element() };
+        let this = cx.entity().downgrade();
+        let key = setting.env.clone();
+        let set: setting_field::SetFn = std::rc::Rc::new(move |v, window, cx| {
+            this.update(cx, |page, cx| {
+                page.set(&key, v, window, cx);
+                cx.notify();
+            })
+            .ok();
+        });
+        let this = cx.entity().downgrade();
+        let key = setting.env.clone();
+        let choose: setting_field::ActFn = std::rc::Rc::new(move |window, cx| {
+            this.update(cx, |page, cx| page.choose_file(key.clone(), window, cx)).ok();
+        });
+        setting_field::field(setting, input, set, FileButton::Choose(choose), cx)
     }
 
     // ---- tabs --------------------------------------------------------------
@@ -963,7 +991,7 @@ impl SettingsPage {
                 .text_size(px(13.))
                 .text_color(theme.muted_foreground)
                 .child(div().w(px(250.)).child("Setting"))
-                .child(div().w(px(200.)).child("Value"))
+                .child(div().w(px(VALUE_W)).child("Value"))
                 .child(div().flex_1().child("Built-in")),
         );
         let mut rows = 0;
@@ -979,7 +1007,8 @@ impl SettingsPage {
                 }
                 rows += 1;
                 let key = s.env.clone();
-                let label: SharedString = if self.show_names { s.env.clone().into() } else { s.label.clone().into() };
+                let label: SharedString = if self.show_names { s.env.clone().into() } else { s.short_label().into() };
+                let field = self.field(s, cx);
                 table = table.child(row(
                     theme,
                     label,
@@ -988,8 +1017,14 @@ impl SettingsPage {
                     h_flex()
                         .gap_3()
                         .items_center()
-                        .child(self.input(&s.env, 200.))
-                        .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(if s.default.is_empty() { "SENTIENT's own".to_string() } else { s.default.clone() }))
+                        .child(h_flex().w(px(VALUE_W)).flex_shrink_0().child(field))
+                        .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(match (s.kind(), s.default.as_str()) {
+                            (_, "") => "SENTIENT's own".to_string(),
+                            (crate::catalog::ValueKind::Switch, "true") => "On".to_string(),
+                            (crate::catalog::ValueKind::Switch, "false") => "Off".to_string(),
+                            (crate::catalog::ValueKind::Number(Some(u)), d) => format!("{d} {u}"),
+                            (_, d) => d.to_string(),
+                        }))
                         .when(set, |r| {
                             r.child(Button::new(SharedString::from(format!("reset-{}", s.env))).ghost().label("Reset").on_click(cx.listener(move |this, _, window, cx| {
                                 this.set(&key, "", window, cx);

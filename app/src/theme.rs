@@ -27,6 +27,7 @@ pub fn init(mode: ThemeMode, cx: &mut App) {
     });
     Theme::change(mode, None, cx);
     use_desktop_font(cx);
+    thin_focus(cx);
 }
 
 /// Linux: draw the UI in the desktop's own font (KDE's general font, GNOME's
@@ -153,4 +154,11 @@ pub fn apply(choice: Choice, window: Option<&mut gpui_kit::Window>, cx: &mut App
         Choice::Dark => Theme::change(ThemeMode::Dark, None, cx),
         Choice::System => Theme::sync_system_appearance(window, cx),
     }
+    thin_focus(cx);
+}
+
+/// A focused field or button: its border turns the primary colour, 1px, with
+/// no ring outside it.
+fn thin_focus(cx: &mut App) {
+    Theme::global_mut(cx).focus_ring = false;
 }

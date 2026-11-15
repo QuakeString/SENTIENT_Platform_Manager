@@ -761,6 +761,16 @@ pub fn logs(inst: &Instance, lines: u32) -> Result<String, String> {
 }
 
 /// The server runs Windows.
+/// Is there a file at `path` on the server (a certificate or key for
+/// Platform settings)? Looks only; nothing is read.
+pub fn file_exists(inst: &Instance, path: &str) -> Result<bool, String> {
+    if is_windows(inst) {
+        return Ok(win::ps(inst, &format!("Test-Path -PathType Leaf '{}'", path.replace('\'', "''")))?.trim() == "True");
+    }
+    let quoted = format!("'{}'", path.replace('\'', "'\\''"));
+    Ok(run(inst, &format!("test -f {quoted} && echo yes || echo no"), None)?.trim() == "yes")
+}
+
 pub fn is_windows(inst: &Instance) -> bool {
     inst.os == Os::Windows || inst.detected.as_ref().is_some_and(|d| d.os == Os::Windows)
 }

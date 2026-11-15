@@ -1,0 +1,70 @@
+// Copyright © 2016-2026 The SENTIENT Authors
+//
+//! One setting's field, from its kind in the catalog: a switch for on/off, a
+//! file path with its button, a short number field with its unit, or text.
+//! Shared by Platform settings on this computer and on a remote server.
+
+use std::rc::Rc;
+
+use gpui_kit::component::{
+    ActiveTheme, h_flex,
+    button::{Button, ButtonVariants as _},
+    input::{Input, InputState},
+};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+
+use crate::catalog::{Setting, ValueKind};
+use crate::ui;
+
+pub type SetFn = Rc<dyn Fn(&str, &mut Window, &mut App)>;
+pub type ActFn = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// What the file button does: choose a file here, or check a path on the server.
+pub enum FileButton {
+    Choose(ActFn),
+    Check(ActFn),
+}
+
+pub fn field(setting: &Setting, input: &Entity<InputState>, set: SetFn, file: FileButton, cx: &App) -> AnyElement {
+    let theme = cx.theme().clone();
+    let env = setting.env.clone();
+    match setting.kind() {
+        ValueKind::Switch => {
+            let now = input.read(cx).value().trim().to_string();
+            let builtin = setting.default.clone();
+            let effective = if now.is_empty() { builtin.clone() } else { now };
+            let item = |label: &'static str, value: &'static str| {
+                let set = set.clone();
+                let builtin = builtin.clone();
+                let marked = if builtin == value { format!("{label} (default)") } else { label.to_string() };
+                ui::seg_item(&theme, SharedString::from(format!("{env}-{value}")), marked, effective == value).on_click(move |_, window, cx| {
+                    // The built-in value is written as "not set".
+                    set(if builtin == value { "" } else { value }, window, cx);
+                })
+            };
+            ui::seg_track(&theme).child(item("On", "true")).child(item("Off", "false")).into_any_element()
+        }
+        ValueKind::Number(unit) => h_flex()
+            .gap_2()
+            .items_center()
+            .child(div().w(px(130.)).child(Input::new(input)))
+            .when_some(unit, |r, u| r.child(div().text_sm().text_color(theme.muted_foreground).child(u)))
+            .into_any_element(),
+        ValueKind::File => {
+            let (label, act) = match file {
+                FileButton::Choose(f) => ("Choose…", f),
+                FileButton::Check(f) => ("Check", f),
+            };
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_2()
+                .items_center()
+                .child(div().flex_1().min_w(px(160.)).max_w(px(420.)).child(Input::new(input)))
+                .child(Button::new(SharedString::from(format!("file-{env}"))).outline().label(label).on_click(move |_, window, cx| act(window, cx)))
+                .into_any_element()
+        }
+        ValueKind::Text => div().flex_1().min_w(px(180.)).max_w(px(420.)).child(Input::new(input)).into_any_element(),
+    }
+}

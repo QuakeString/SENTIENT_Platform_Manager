@@ -69,6 +69,8 @@ pub struct RemotePages {
     offer: Read<Option<crate::updates::Offer>>,
     /// The versions "Other version" lists.
     versions: Read<Vec<crate::online::Version>>,
+    /// Platform settings: what "Check" found for a file path on the server.
+    file_checks: std::collections::HashMap<String, Read<bool>>,
     /// A version picked under "Other version", waiting for its confirmation.
     pick: Option<String>,
     /// This Platform Manager's update channel (shared with the local Update).
@@ -117,6 +119,7 @@ impl RemotePages {
             offer: Read::Loading,
             versions: Read::Loading,
             pick: None,
+            file_checks: Default::default(),
             updates,
             filter,
             follow: true,
@@ -744,15 +747,56 @@ impl RemotePages {
                                 .flex_shrink_0()
                                 .gap_1()
                                 .items_center()
-                                .child(div().text_sm().when(is_changed, |d| d.text_color(theme.primary).font_weight(FontWeight::MEDIUM)).child(st.label.clone()))
+                                .child(div().text_sm().when(is_changed, |d| d.text_color(theme.primary).font_weight(FontWeight::MEDIUM)).child(st.short_label()))
                                 .child(Button::new(SharedString::from(format!("r-help-{}", st.env))).ghost().xsmall().icon(IconName::Info).tooltip(st.help.clone())),
                         )
-                        .child(div().flex_1().min_w_0().child(Input::new(input))),
+                        .child({
+                            let this = cx.entity().downgrade();
+                            let inp = input.clone();
+                            let set: crate::manager::setting_field::SetFn = std::rc::Rc::new(move |v, window, cx| {
+                                inp.update(cx, |s, cx| s.set_value(v.to_string(), window, cx));
+                                this.update(cx, |_, cx| cx.notify()).ok();
+                            });
+                            let this = cx.entity().downgrade();
+                            let (env, inp) = (st.env.clone(), input.clone());
+                            let check: crate::manager::setting_field::ActFn = std::rc::Rc::new(move |_, cx| {
+                                let path = inp.read(cx).value().trim().to_string();
+                                let env = env.clone();
+                                this.update(cx, |p, cx| p.check_file(env, path, cx)).ok();
+                            });
+                            h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_2()
+                                .items_center()
+                                .child(crate::manager::setting_field::field(&st, input, set, crate::manager::setting_field::FileButton::Check(check), cx))
+                                .children(self.file_checks.get(&st.env).map(|r| match r {
+                                    Read::Loading => ui::pill(&theme, Tone::Neutral, "Checking…"),
+                                    Read::Got(true) => ui::pill(&theme, Tone::Good, "Found on the server"),
+                                    Read::Got(false) => ui::pill(&theme, Tone::Bad, "Not on the server"),
+                                    Read::Failed(_) => ui::pill(&theme, Tone::Warn, "Could not check"),
+                                }))
+                        }),
                 );
             }
             col = col.child(panel);
         }
         col
+    }
+
+    /// "Check" beside a file setting: does the server have that file?
+    fn check_file(&mut self, env: String, path: String, cx: &mut Context<Self>) {
+        if path.is_empty() {
+            self.file_checks.remove(&env);
+            cx.notify();
+            return;
+        }
+        self.file_checks.insert(env.clone(), Read::Loading);
+        let inst = self.inst.clone();
+        self.fetch(cx, move || remote::file_exists(&inst, &path), move |p, r| {
+            p.file_checks.insert(env, r);
+        });
+        cx.notify();
     }
 
     fn apply_settings(&mut self, values: std::collections::HashMap<String, String>, cx: &mut Context<Self>) {
