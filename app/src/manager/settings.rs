@@ -618,7 +618,7 @@ impl SettingsPage {
 
     fn platform(&self, theme: &gpui_kit::component::Theme, record: &InstallationRecord, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let start = crate::self_install::autostart()
-            .map(|(on, delay)| if on { format!("With Windows, after {delay} s") } else { "By hand".into() })
+            .map(|(on, delay)| if on { format!("With Windows, after {delay} s") } else { "Manual".into() })
             .unwrap_or_else(|| "With the system".into());
         vec![
             self.admin_section(theme, cx).into_any_element(),

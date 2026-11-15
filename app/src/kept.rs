@@ -260,7 +260,7 @@ pub fn remove_clickhouse(sink: &ProgressFn) -> Result<(), String> {
                 "unregister",
                 Some(std::time::Duration::from_secs(180)),
             ) {
-                sink(Progress::Log { line: format!("ClickHouse's WSL distribution was not removed: {e}. Its disk stays under C:\\Users\\sentient-clickhouse until it is removed by hand (wsl --unregister sentient, as that account).") });
+                sink(Progress::Log { line: format!("ClickHouse's WSL distribution was not removed: {e}. Its disk stays under C:\\Users\\sentient-clickhouse until it is removed manually (wsl --unregister sentient, as that account).") });
             }
         }
         clickhouse_wsl::remove_account(sink);

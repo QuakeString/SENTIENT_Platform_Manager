@@ -692,7 +692,8 @@ impl RemotePages {
             list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder."));
         }
         for (i, e) in b.list.iter().enumerate() {
-            list = list.child(crate::manager::backup::entry_row(&theme, i, e));
+            // The server cannot run the integrity check yet: no pill to act on.
+            list = list.child(crate::manager::backup::entry_row_with(&theme, i, e, false));
         }
         v_flex().gap_4().child(now).child(auto).child(list)
     }

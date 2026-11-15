@@ -1266,10 +1266,17 @@ impl Render for BackupPage {
 /// One backup in a list: name, when and how it was made, size and its check.
 /// The caller adds its buttons. Shared with a remote server's Backup.
 pub(crate) fn entry_row(theme: &gpui_kit::component::Theme, i: usize, e: &crate::backups::Entry) -> Div {
-    let (tone, text) = match &e.check {
-        Some(c) if c.ok => (Tone::Good, format!("Checked {}", c.at.get(..10).unwrap_or(""))),
-        Some(_) => (Tone::Bad, "Damaged".to_string()),
-        None => (Tone::Neutral, "Not checked".to_string()),
+    entry_row_with(theme, i, e, true)
+}
+
+/// `verified`: show the integrity pill (only where the check can be run).
+pub(crate) fn entry_row_with(theme: &gpui_kit::component::Theme, i: usize, e: &crate::backups::Entry, verified: bool) -> Div {
+    // Verified: every part of the file was read back and matched its
+    // SHA-256 (after it was written, or by Check).
+    let (tone, text, tip) = match &e.check {
+        Some(c) if c.ok => (Tone::Good, format!("Verified {}", c.at.get(..10).unwrap_or("")), "Every part of the file was read back on this date and matched its SHA-256 checksum."),
+        Some(_) => (Tone::Bad, "Damaged".to_string(), "A part of the file does not match its SHA-256 checksum. Do not rely on this backup."),
+        None => (Tone::Neutral, "Not verified".to_string(), "Integrity check not run yet. Check reads every part of the file and compares it with its SHA-256 checksum."),
     };
     h_flex()
         .gap_3()
@@ -1285,10 +1292,17 @@ pub(crate) fn entry_row(theme: &gpui_kit::component::Theme, i: usize, e: &crate:
                 .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!(
                     "{} · {}{}",
                     e.made,
-                    if e.automatic { "automatic" } else { "by hand" },
+                    if e.automatic { "Automatic" } else { "Manual" },
                     if e.parts > 1 { format!(" · {} parts", e.parts) } else { String::new() }
                 ))),
         )
         .child(div().w(px(80.)).flex_shrink_0().text_sm().text_right().child(crate::dbstatus::bytes_label(e.bytes)))
-        .child(h_flex().w(px(150.)).flex_shrink_0().child(ui::pill(theme, tone, text)))
+        .when(verified, |r| r.child(
+            h_flex()
+                .id(SharedString::from(format!("verified-{}", e.name)))
+                .w(px(150.))
+                .flex_shrink_0()
+                .child(ui::pill(theme, tone, text))
+                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)),
+        ))
 }

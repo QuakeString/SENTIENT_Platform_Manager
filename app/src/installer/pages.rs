@@ -989,7 +989,7 @@ impl Installer {
                 ),
                 (
                     "Startup",
-                    if !cfg!(windows) || self.autostart { "Starts with the computer".into() } else { "Started by hand".into() },
+                    if !cfg!(windows) || self.autostart { "Starts with the computer".into() } else { "Started manually".into() },
                     8,
                 ),
             ]);
