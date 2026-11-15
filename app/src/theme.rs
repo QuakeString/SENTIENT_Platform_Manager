@@ -152,9 +152,122 @@ pub fn apply(choice: Choice, window: Option<&mut gpui_kit::Window>, cx: &mut App
     match choice {
         Choice::Light => Theme::change(ThemeMode::Light, None, cx),
         Choice::Dark => Theme::change(ThemeMode::Dark, None, cx),
-        Choice::System => Theme::sync_system_appearance(window, cx),
+        Choice::System => match system_dark() {
+            Some(dark) => Theme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, None, cx),
+            None => Theme::sync_system_appearance(window, cx),
+        },
     }
     thin_focus(cx);
+}
+
+/// "Follow system": look at the desktop's scheme every few seconds and
+/// switch while the window is open. Call once at start.
+pub fn follow_system(cx: &mut App) {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    cx.spawn(async move |cx| loop {
+        cx.background_executor().timer(std::time::Duration::from_secs(3)).await;
+        let saved = Choice::saved();
+        if saved != Choice::System {
+            continue;
+        }
+        let Some(dark) = cx.background_executor().spawn(async { system_dark() }).await else { continue };
+        let _ = cx.update(|cx| {
+            if is_dark(cx) != dark {
+                Theme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, None, cx);
+                thin_focus(cx);
+                cx.refresh_windows();
+            }
+        });
+    })
+    .detach();
+}
+
+/// Is the desktop dark? Linux: on KDE Plasma its own colours (the window
+/// background in kdeglobals), then the desktop portal's color-scheme, then
+/// GNOME's setting. None: not known here (GPUI decides).
+pub fn system_dark() -> Option<bool> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_uppercase();
+    if desktop.split(':').any(|d| d == "KDE") {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
+        let config = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).unwrap_or_else(|| home.join(".config"));
+        if let Some(dark) = std::fs::read_to_string(config.join("kdeglobals")).ok().and_then(|t| kde_dark(&t)) {
+            return Some(dark);
+        }
+    }
+    let portal = std::process::Command::new("busctl")
+        .args(["--user", "--timeout=2", "call", "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Settings", "ReadOne", "ss", "org.freedesktop.appearance", "color-scheme"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| portal_dark(&String::from_utf8_lossy(&o.stdout)));
+    if portal.is_some() {
+        return portal;
+    }
+    std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            let v = String::from_utf8_lossy(&o.stdout).to_string();
+            if v.contains("prefer-dark") { Some(true) } else if v.contains("prefer-light") || v.contains("default") { Some(false) } else { None }
+        })
+}
+
+/// kdeglobals: dark when [Colors:Window] BackgroundNormal is dark (works for
+/// any colour scheme, custom ones too).
+fn kde_dark(text: &str) -> Option<bool> {
+    let mut in_window = false;
+    for line in text.lines() {
+        let l = line.trim();
+        if l.starts_with('[') {
+            in_window = l == "[Colors:Window]";
+            continue;
+        }
+        if in_window {
+            if let Some(v) = l.strip_prefix("BackgroundNormal=") {
+                let rgb: Vec<f32> = v.split(',').filter_map(|c| c.trim().parse().ok()).collect();
+                if rgb.len() >= 3 {
+                    let lum = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255.0;
+                    return Some(lum < 0.5);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The portal's color-scheme answer, `v u 1`: 1 dark, 2 light, 0 no preference.
+fn portal_dark(out: &str) -> Option<bool> {
+    match out.split_whitespace().last()? {
+        "1" => Some(true),
+        "2" => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod scheme_tests {
+    use super::*;
+
+    #[test]
+    fn reads_plasma_and_the_portal() {
+        let breeze_light = "[General]\nColorScheme=BreezeLight\n\n[Colors:Window]\nBackgroundAlternate=227,229,231\nBackgroundNormal=239,240,241\n";
+        let breeze_dark = "[Colors:View]\nBackgroundNormal=20,22,24\n[Colors:Window]\nBackgroundNormal=32,35,38\n";
+        let custom_dark = "[General]\nColorScheme=MyNight\n[Colors:Window]\nBackgroundNormal=46,30,60\nForegroundNormal=230,230,230\n";
+        assert_eq!(kde_dark(breeze_light), Some(false));
+        assert_eq!(kde_dark(breeze_dark), Some(true));
+        assert_eq!(kde_dark(custom_dark), Some(true));
+        assert_eq!(kde_dark("[General]\nColorScheme=X\n"), None);
+        assert_eq!(portal_dark("v u 1"), Some(true));
+        assert_eq!(portal_dark("v u 2"), Some(false));
+        assert_eq!(portal_dark("v u 0"), None);
+    }
 }
 
 /// A focused field or button: its border turns the primary colour, 1px, with

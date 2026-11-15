@@ -131,7 +131,11 @@ fn gui_main(args: Vec<String>) {
         match forced.as_deref() {
             Some("dark") => theme::apply(theme::Choice::Dark, None, cx),
             Some("light") => theme::apply(theme::Choice::Light, None, cx),
-            _ => theme::apply(theme::Choice::saved(), None, cx),
+            _ => {
+                theme::apply(theme::Choice::saved(), None, cx);
+                // "Follow system" switches while the window is open.
+                theme::follow_system(cx);
+            }
         }
 
         let size = match mode {
