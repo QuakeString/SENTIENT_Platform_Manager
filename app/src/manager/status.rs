@@ -230,7 +230,7 @@ impl StatusPage {
             } else if crate::dbstatus::needs_admin(record) {
                 "Read shows the database's size and state. It asks for the administrator password, as the database password is kept where only an administrator can read it."
             } else {
-                "Not read yet."
+                "Not read."
             }));
         };
         let this = cx.entity().downgrade();
@@ -310,7 +310,7 @@ impl StatusPage {
         };
         if found.is_empty() {
             return panel.child(div().text_sm().text_color(theme.muted_foreground).child(
-                "No existing SENTIENT instance was found on this computer. One started some other way (our compose files, an older installer) shows here, so the Platform Manager can manage it.",
+                "No existing SENTIENT instance was found on this computer. One started some other way (SENTIENT compose files, an older installer) is listed in this panel, so the Platform Manager can manage it.",
             ));
         }
         panel = panel

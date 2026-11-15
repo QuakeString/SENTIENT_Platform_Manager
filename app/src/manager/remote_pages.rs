@@ -353,9 +353,9 @@ impl RemotePages {
         let busy = self.job.read(cx).is_running();
         let det = self.inst.detected.clone().unwrap_or_default();
         ui::panel(&theme)
-            .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Sentient, 30.)).child(ui::pill(&theme, Tone::Neutral, "Not added yet")))
+            .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Sentient, 30.)).child(ui::pill(&theme, Tone::Neutral, "Not added")))
             .child(div().text_sm().text_color(theme.muted_foreground).child(if det.install.is_empty() {
-                "The Platform Manager is set up on this server but does not look after a SENTIENT there yet. If SENTIENT already runs there (in Docker, or installed some other way), Add existing finds it. Nothing on it is changed.".to_string()
+                "The server agent is set up; no SENTIENT on this server is added to the Platform Manager. Add existing finds a SENTIENT that runs on the server (in Docker, or installed some other way). Nothing on it is changed.".to_string()
             } else {
                 format!("SENTIENT was found on this server ({}). Add existing lets the Platform Manager look after it. Nothing on it is changed.", det.install)
             }))
@@ -405,7 +405,15 @@ impl RemotePages {
                         .child(ui::fact(&theme, "Database", s.database.clone()))
                         .child(ui::fact(&theme, "Runs as", if det.install.is_empty() { "Not known".to_string() } else { det.install.clone() }))
                         .child(ui::fact(&theme, "Server", format!("{} · {} {}", self.inst.address(), det.os_name, det.arch)))
-                        .child(ui::fact(&theme, "Platform Manager there", s.manager_version.clone())),
+                        .child({
+                            let here = crate::updates::manager_version();
+                            let older = sentient_installer_core::releases::is_newer(here, &s.manager_version, false);
+                            h_flex()
+                                .gap_3()
+                                .items_center()
+                                .child(ui::fact(&theme, "Server agent", s.manager_version.clone()).flex_1())
+                                .when(s.manager_version != here, |r| r.child(ui::pill(&theme, Tone::Neutral, if older { "Updated on the next job" } else { "Newer than this Platform Manager" })))
+                        }),
                 );
             }
         }
@@ -416,7 +424,7 @@ impl RemotePages {
             Read::Loading => db.child(div().text_sm().text_color(theme.muted_foreground).child("Reading the database's size and state…")),
             Read::Failed(e) => db.child(ui::outcome(&theme, Tone::Warn, format!("The database's size and state could not be read.\n{e}"))),
             Read::Got(d) => {
-                let last = self.status.got().and_then(|s| s.last_backup.clone()).unwrap_or_else(|| "none yet".into());
+                let last = self.status.got().and_then(|s| s.last_backup.clone()).unwrap_or_else(|| "None".into());
                 let this = cx.entity().downgrade();
                 let back_up: std::rc::Rc<dyn Fn(&mut App)> = std::rc::Rc::new(move |cx| {
                     this.update(cx, |p, cx| p.run_job("Backing up", vec!["backup-now".into()], cx)).ok();
@@ -681,7 +689,7 @@ impl RemotePages {
                 ))),
         );
         if b.list.is_empty() {
-            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder yet."));
+            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder."));
         }
         for (i, e) in b.list.iter().enumerate() {
             list = list.child(crate::manager::backup::entry_row(&theme, i, e));
@@ -952,7 +960,7 @@ impl RemotePages {
                 .child(if !installed { ui::pill(&theme, Tone::Neutral, "Not installed") } else if running { ui::pill(&theme, Tone::Good, "Running") } else { ui::pill(&theme, Tone::Bad, "Stopped") }),
         );
         if !installed {
-            return p.child(div().text_sm().text_color(theme.muted_foreground).child("No gateway on this server. Install it from the Platform Manager on the server itself; its access token stays there."));
+            return p.child(div().text_sm().text_color(theme.muted_foreground).child("No gateway on this server. Install it with the Platform Manager on the server itself, so its access token stays on the server."));
         }
         p = p
             .child(ui::fact(&theme, "Version", get("version")))
@@ -978,9 +986,9 @@ impl RemotePages {
         let busy = self.job.read(cx).is_running();
         let not_set_up = e == remote::NOT_SET_UP;
         ui::panel(&theme)
-            .child(div().font_weight(FontWeight::MEDIUM).child(if not_set_up { "Not set up yet" } else { "The server does not answer" }))
+            .child(div().font_weight(FontWeight::MEDIUM).child(if not_set_up { "Server agent not set up" } else { "The server does not answer" }))
             .child(div().text_sm().text_color(theme.muted_foreground).child(if not_set_up {
-                "The Platform Manager works on a server through its own copy there. Set up copies the matching build over SSH and checks it; nothing else on the server changes.".to_string()
+                "The Platform Manager works on a server through its server agent. Set up copies the matching agent over SSH and checks it; nothing else on the server changes.".to_string()
             } else {
                 e.clone()
             }))

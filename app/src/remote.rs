@@ -278,7 +278,7 @@ pub fn run(inst: &Instance, remote: &str, once: Option<&str>) -> Result<String, 
 }
 
 /// The passphrase or password was kept only until the Platform Manager closed.
-pub const FORGOTTEN: &str = "The passphrase or password is not kept on this computer (no keyring here). Enter it again with Edit.";
+pub const FORGOTTEN: &str = "The passphrase or password is not kept on this computer (no keyring). Enter it again with Edit.";
 
 /// ssh's messages in plain words.
 fn explain(err: &str) -> Option<String> {
@@ -412,7 +412,7 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
         return win::deploy(inst, sink);
     }
     if det.arch != "x86_64" {
-        return Err(failed(&format!("There is no Platform Manager agent for Linux on {} processors yet.", det.arch), ""));
+        return Err(failed(&format!("No server agent for Linux on {} processors.", det.arch), ""));
     }
     let me = agent_file(false, sink)?;
     let want = sentient_installer_core::manifest::sha256_file(&me)?;
@@ -519,9 +519,9 @@ pub fn ready(inst: &Instance) -> Result<(), String> {
 
 /// What [`status`] says before the Platform Manager is on the server.
 /// The Platform Manager there has no SENTIENT added yet: nothing to report.
-pub const NOT_ADDED: &str = "No SENTIENT is added on this server yet.";
+pub const NOT_ADDED: &str = "No SENTIENT is added on this server.";
 
-pub const NOT_SET_UP: &str = "The Platform Manager is not on this server yet. Set it up to see the server's state and work on it.";
+pub const NOT_SET_UP: &str = "The server agent is not set up on this server. Set up installs it, to read the server's state and work on it.";
 
 /// The server's state, from its own Platform Manager (`--job status-json`).
 pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {

@@ -649,7 +649,7 @@ impl SettingsPage {
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading the accounts…" } else { "Not read yet. Reading asks for the administrator password." }))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading the accounts…" } else { "Not read. Reading asks for the administrator password." }))
                         .when(!self.reading_admin, |r| r.child(Button::new("read-admins").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
                 );
             }
@@ -917,7 +917,7 @@ impl SettingsPage {
                 false,
                 h_flex()
                     .gap_2()
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading…" } else { "Not read yet." }))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading…" } else { "Not read." }))
                     .when(!self.reading_admin, |r| r.child(Button::new("read-retention").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
             )),
             Some(Err(e)) => v_flex().child(row(theme, "Telemetry history and alarms", Some(help.into()), false, div().text_sm().text_color(theme.muted_foreground).child(e.clone()))),
@@ -1067,7 +1067,7 @@ impl SettingsPage {
                 .items_center()
                 .child(div().flex_1().child(Input::new(&self.search).cleanable(true)))
                 .child(filter("filter-all", format!("All {total}"), !self.changed_only, false))
-                .child(filter("filter-set", format!("Set here {set_here}"), self.changed_only, true))
+                .child(filter("filter-set", format!("Set {set_here}"), self.changed_only, true))
                 .child(
                     Button::new("show-names")
                         .ghost()
@@ -1087,7 +1087,7 @@ impl SettingsPage {
 impl Render for SettingsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let page = ui::page(&theme, "Platform settings", "How SENTIENT runs here. Change a value and apply it; only what changed restarts.");
+        let page = ui::page(&theme, "Platform settings", "How SENTIENT runs on this computer. Change a value and apply it; only what changed restarts.");
         let Some(record) = self.record.clone() else {
             return page.child(ui::not_installed(&theme));
         };

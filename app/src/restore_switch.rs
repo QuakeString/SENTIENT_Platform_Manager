@@ -141,7 +141,7 @@ pub(crate) fn match_schema(
     let (have, got) = block_on(async { Ok::<_, String>((schema_version(live).await?, schema_version(&restored).await?)) })??;
     if got > have {
         return Err(format!(
-            "The backup is from a newer SENTIENT (schema {got}) than this one (schema {have}). Update SENTIENT, then put the restored database {target} into service."
+            "The backup is from a newer SENTIENT (schema {got}) than the installed one (schema {have}). Update SENTIENT, then put the restored database {target} into service."
         ));
     }
     if got == have {

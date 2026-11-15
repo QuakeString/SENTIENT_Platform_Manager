@@ -178,7 +178,7 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
                     kept.push(Kept {
                         kind: KeptKind::ClickhouseDatabase,
                         detail: if name.contains("_before_install_") {
-                            "ClickHouse history from an earlier install, set aside when this one started fresh".into()
+                            "ClickHouse history from an earlier install, set aside when the current install started fresh".into()
                         } else {
                             "ClickHouse data: a restore, or the history from before a restore was put into service".into()
                         },

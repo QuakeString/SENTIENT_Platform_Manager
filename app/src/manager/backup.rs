@@ -904,7 +904,7 @@ impl BackupPage {
                     None => String::new(),
                 }
             ),
-            None => "No backup in the backup folder yet.".to_string(),
+            None => "No backup in the backup folder.".to_string(),
         };
         let next = match crate::backups::next_run(&self.prefs) {
             Some(n) => format!(" Next: {n}."),
@@ -1085,7 +1085,7 @@ impl BackupPage {
                 .child(Button::new("add-backup").outline().label("Add a backup file…").on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx)))),
         );
         if self.list.is_empty() {
-            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder yet."));
+            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder."));
         }
         for (i, e) in self.list.iter().enumerate() {
             let damaged = e.check.as_ref().is_some_and(|c| !c.ok);

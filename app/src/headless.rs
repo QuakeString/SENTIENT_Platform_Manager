@@ -194,7 +194,7 @@ pub fn run(args: &[String]) -> i32 {
         let sink = if json { json_printer() } else { printer() };
         let found = crate::adopt::find();
         let message = match found.as_slice() {
-            [] => "No SENTIENT was found on this server yet.".to_string(),
+            [] => "No SENTIENT found on this server.".to_string(),
             [c] if c.problem.is_none() && !c.sets_admin_password => match crate::adopt::adopt_as_needed(c, None, sink.clone()) {
                 Ok(()) => format!(
                     "SENTIENT {}{} was found and added. Nothing on it was changed.",
@@ -579,7 +579,8 @@ fn shown_version(record: &InstallationRecord) -> String {
 
 /// This computer's state for the Platform Manager on another computer.
 pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote::RemoteStatus {
-    let manager_version = env!("CARGO_PKG_VERSION").to_string();
+    // The full version, as the window shows it (0.8.0-rc12).
+    let manager_version = crate::updates::manager_version().to_string();
     let Some(record) = record else { return crate::remote::RemoteStatus { manager_version, ..Default::default() } };
     let snap = record.platform().snapshot();
     // Without administrator rights the database's size needs a password

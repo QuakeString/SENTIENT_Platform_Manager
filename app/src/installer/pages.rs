@@ -495,7 +495,7 @@ impl Installer {
                         .bg(theme.info)
                         .text_color(theme.info_foreground)
                         .text_sm()
-                        .child("ClickHouse runs in Docker inside WSL2 under its own hidden service account, so it starts at boot with nobody signed in. If WSL2 is not enabled yet, Windows restarts once and setup continues by itself."),
+                        .child("ClickHouse runs in Docker inside WSL2 under its own hidden service account, so it starts at boot with nobody signed in. If WSL2 is not enabled, Windows restarts once and setup continues by itself."),
                 )
             })
     }
@@ -1013,7 +1013,7 @@ impl Installer {
                 .text_sm()
                 .child(div().w_40().flex_shrink_0().text_color(theme.muted_foreground).child(label))
                 .child(if empty {
-                    div().flex_1().min_w_0().text_color(theme.muted_foreground).child("Not entered yet")
+                    div().flex_1().min_w_0().text_color(theme.muted_foreground).child("Not entered")
                 } else {
                     div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child(value)
                 })

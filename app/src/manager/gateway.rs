@@ -184,7 +184,7 @@ impl Render for GatewayPage {
                     match (&status.host, status.port) {
                         (Some(h), Some(p)) => format!("{h}:{p}"),
                         (Some(h), None) => h.clone(),
-                        _ => "nowhere yet: not commissioned (set the platform on its local page)".into(),
+                        _ => "Not commissioned (set the platform on its local page)".into(),
                     },
                 ))
                 .child(ui::fact(
@@ -228,7 +228,7 @@ impl Render for GatewayPage {
                                         format!("released {}; the configuration and the local page's password are kept", o.date)
                                     } else {
                                         format!(
-                                            "released {}; this container comes from a compose file: set its image to quakestring/sentient-gateway-rs:{} there and run docker compose up -d",
+                                            "released {}; this container comes from a compose file: set its image to quakestring/sentient-gateway-rs:{} in that file and run docker compose up -d",
                                             o.date, o.version
                                         )
                                     })),
@@ -252,7 +252,7 @@ impl Render for GatewayPage {
             ui::panel(&theme)
                 .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Gateway, 28.)).child(div().font_weight(FontWeight::MEDIUM).child("No gateway on this computer")))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
-                    "Install one here to read devices next to this computer. In SENTIENT, add a gateway device and copy its access token (Manage credentials).",
+                    "The gateway reads devices next to this computer. In SENTIENT, add a gateway device and copy its access token (Manage credentials).",
                 ))
                 .child(
                     h_flex()

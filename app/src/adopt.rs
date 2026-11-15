@@ -125,7 +125,7 @@ fn docker_candidates() -> Vec<(Candidate, distro::adopt::FoundStack)> {
             if found.cfg.external.is_some() {
                 notes.push(match &found.take_over {
                     Ok(()) => "It keeps running from its own compose file. Changing settings or the database type needs the Platform Manager to take the compose file over first (Repair and uninstall).".into(),
-                    Err(why) => format!("It keeps running from its own compose file. Settings and the database type cannot be changed from here: {why}"),
+                    Err(why) => format!("It keeps running from its own compose file. Settings and the database type cannot be changed by the Platform Manager: {why}"),
                 });
             }
             let c = Candidate {
@@ -297,7 +297,7 @@ pub fn adopt(wanted: &Candidate, pg_admin: Option<String>, sink: ProgressFn) -> 
         let (candidate, found) = docker_candidates()
             .into_iter()
             .find(|(c, _)| c.key() == key)
-            .ok_or("That instance is no longer there.")?;
+            .ok_or("That instance is no longer found.")?;
         if let Some(p) = &candidate.problem {
             return Err(p.clone());
         }
@@ -369,7 +369,7 @@ fn adopt_native(pg_admin: Option<String>, sink: &ProgressFn) -> Result<Candidate
     #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (pg_admin, sink);
-        Err("A native installation on this system is not supported yet.".into())
+        Err("A native installation is not supported on this system.".into())
     }
 }
 

@@ -884,7 +884,7 @@ impl Render for UpdatePage {
             let about: SharedString = match &self.rollback {
                 None => "Looking for the version the last update replaced…".into(),
                 Some(Err(e)) => format!("Could not tell whether there is a version to go back to: {e}").into(),
-                Some(Ok(None)) => "Nothing to roll back to: no update has been made here since the last roll back, or the last update did not keep the previous version.".into(),
+                Some(Ok(None)) => "Nothing to roll back to: no update since the last roll back, or the last update did not keep the previous version.".into(),
                 Some(Ok(Some(p))) => format!("Goes back to {}.", p.describe()).into(),
             };
             ui::panel(&theme)

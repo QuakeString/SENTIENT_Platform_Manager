@@ -385,7 +385,7 @@ impl Installer {
                         rows.push(CheckRow {
                             label: "SENTIENT already installed".into(),
                             detail: format!(
-                                "SENTIENT {} runs here as {}, from {}. Installing again would overwrite it: open the Platform Manager and use “Add existing instance” on its Status screen instead.",
+                                "SENTIENT {} runs on this computer as {}, from {}. Installing again would overwrite it: open the Platform Manager and use “Add existing instance” on its Status screen instead.",
                                 c.record.sentient_version, c.kind, c.location
                             )
                             .into(),
@@ -921,7 +921,7 @@ impl Installer {
                 .description(if installing {
                     "The install stops after the current task. Anything already installed stays on this computer; run setup again to finish or remove it."
                 } else {
-                    "Nothing has been installed yet."
+                    "Nothing has been installed."
                 })
                 .confirm()
                 .ok_text("Cancel setup")

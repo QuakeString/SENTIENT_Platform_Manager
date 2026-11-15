@@ -786,7 +786,7 @@ impl InstancesPage {
                     .into_any_element(),
             ))
             .child(note(found))
-            .child(row("User", "help-user", Some("An account on the server that may use sudo, or root. The Platform Manager runs its work there as an administrator."), Input::new(&f.user).into_any_element()))
+            .child(row("User", "help-user", Some("An account on the server that may use sudo, or root. The Platform Manager runs its work on the server as an administrator."), Input::new(&f.user).into_any_element()))
             .child(row(
                 "Sign in with",
                 "",
@@ -1227,19 +1227,19 @@ fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<Remote
                     s.disk_free.map(|d| format!("{} free", crate::dbstatus::bytes_label(d))).unwrap_or_else(|| "Not known".into()),
                     s.disk_free.is_some_and(|d| d < crate::dbstatus::LOW_DISK),
                 ))
-                .child(row("Last backup", s.last_backup.clone().unwrap_or_else(|| "none yet".into()), s.last_backup.is_none()))
+                .child(row("Last backup", s.last_backup.clone().unwrap_or_else(|| "None".into()), s.last_backup.is_none()))
                 .when_some(s.uptime_secs, |c, u| c.child(row("Up for", uptime_label(u), false)));
         }
         Some(Ok(s)) => {
             col = col
-                .child(row("Connection", "works".into(), false))
-                .child(row("Found", "no SENTIENT here".into(), false))
+                .child(row("Connection", "OK".into(), false))
+                .child(row("SENTIENT", "Not found".into(), false))
                 .when_some(s.disk_free, |c, d| c.child(row("Disk", format!("{} free", crate::dbstatus::bytes_label(d)), false)));
         }
         Some(Err(e)) => col = col.child(div().text_sm().text_color(if e == remote::NOT_SET_UP || e == remote::FORGOTTEN { theme.foreground } else { theme.danger }).child(e.clone())),
         None => {
             col = col.child(div().text_sm().text_color(theme.muted_foreground).child(match det {
-                Some(d) if !d.arch.is_empty() => format!("{} · {}", d.arch, if d.install.is_empty() { "install not found yet".to_string() } else { d.install.clone() }),
+                Some(d) if !d.arch.is_empty() => format!("{} · {}", d.arch, if d.install.is_empty() { "install not found".to_string() } else { d.install.clone() }),
                 _ => "Reading its state…".to_string(),
             }))
         }

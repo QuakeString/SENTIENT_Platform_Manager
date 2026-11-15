@@ -131,7 +131,7 @@ impl ControlPage {
                     crate::self_install::set_autostart(on, delay)?;
                     sink(sentient_installer_core::progress::Progress::Done {
                         message: match (on, delay) {
-                            (false, _) => "SENTIENT no longer starts with Windows: start it here.".to_string(),
+                            (false, _) => "SENTIENT no longer starts with Windows: start it with Start.".to_string(),
                             (true, 0) => "SENTIENT starts together with Windows.".to_string(),
                             (true, d) => format!("SENTIENT starts {d} seconds after Windows."),
                         },

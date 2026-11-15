@@ -326,9 +326,9 @@ impl EarlierPage {
                 Icon::new(Lucide::Database),
                 "Install fresh, keep the old database",
                 if keep_ok {
-                    "Installs SENTIENT new and connects it to the database that is already here.".into()
+                    "Installs SENTIENT new and connects it to the existing database.".into()
                 } else {
-                    "Not possible: there is no database to keep.".into()
+                    "Not possible: no database to keep.".into()
                 },
                 keep_ok,
             )
