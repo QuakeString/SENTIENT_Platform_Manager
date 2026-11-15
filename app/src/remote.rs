@@ -1179,6 +1179,14 @@ mod tests {
         assert!(m.mem_total > 0);
         // Deploying again finds it up to date.
         deploy(&inst, &sink).unwrap();
+        // Opening a server with an older agent on it (crate::manager::
+        // remote_pages::refresh_agent: ready, then deploy) replaces it.
+        sudo_run(&inst, &format!("sh -c 'printf old-agent > {REMOTE_SPM}'"), None).unwrap();
+        assert!(ready(&inst).is_ok());
+        deploy(&inst, &sink).unwrap();
+        let there = run(&inst, &format!("sha256sum {REMOTE_SPM} | cut -d' ' -f1"), None).unwrap();
+        let here = sentient_installer_core::manifest::sha256_file(&agent_file(false, &sink).unwrap()).unwrap();
+        assert_eq!(there.trim(), here, "the older agent was replaced");
         // A detached job, followed to its end.
         let id = start_job(&inst, &["find-existing"]).unwrap();
         follow(&inst, &id, &sink).unwrap();
