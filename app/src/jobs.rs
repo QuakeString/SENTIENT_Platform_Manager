@@ -26,6 +26,8 @@ pub struct Job {
     step: SharedString,
     percent: Option<f32>,
     log: Vec<SharedString>,
+    /// Every step's name, in the order they started.
+    steps: Vec<SharedString>,
     /// The latest completion message a step reported.
     last_done: Option<SharedString>,
     /// When the current step began.
@@ -42,6 +44,7 @@ impl Job {
             step: SharedString::default(),
             percent: None,
             log: Vec::new(),
+            steps: Vec::new(),
             last_done: None,
             step_started: None,
             _task: None,
@@ -55,6 +58,22 @@ impl Job {
 
     pub fn step(&self) -> &SharedString {
         &self.step
+    }
+
+    /// Back to idle (a failure the operator closed). Ignored while running.
+    pub fn reset(&mut self, cx: &mut Context<Self>) {
+        if self.is_running() {
+            return;
+        }
+        self.state = JobState::Idle;
+        self.steps.clear();
+        self.log.clear();
+        cx.notify();
+    }
+
+    /// The steps started so far, oldest first.
+    pub fn steps(&self) -> &[SharedString] {
+        &self.steps
     }
 
     /// Fraction of the current step, 0–100, when the engine reports one.
@@ -98,6 +117,7 @@ impl Job {
         self.step = SharedString::default();
         self.percent = None;
         self.log.clear();
+        self.steps.clear();
         self.last_done = None;
         self.step_started = Some(std::time::Instant::now());
         cx.notify();
@@ -145,6 +165,8 @@ impl Job {
     fn apply(&mut self, progress: Progress) {
         match progress {
             Progress::Step { name } => {
+                activity(&name);
+                self.steps.push(name.clone().into());
                 self.step = name.into();
                 self.percent = None;
                 self.step_started = Some(std::time::Instant::now());
@@ -160,9 +182,33 @@ impl Job {
     }
 
     fn finish(&mut self, result: Result<(), String>) {
+        match &result {
+            Ok(()) => activity(&format!("Done: {}", self.last_done.as_deref().unwrap_or("finished"))),
+            Err(e) => activity(&format!("Failed: {e}")),
+        }
         self.state = match result {
             Err(message) => JobState::Failed(message.into()),
             Ok(()) => JobState::Done(self.last_done.take().unwrap_or_else(|| "Finished".into())),
         };
+    }
+}
+
+/// The Platform Manager's own log: what it did, with times
+/// (`activity.log` beside its preferences, kept under about 1 MB).
+pub fn activity_log() -> std::path::PathBuf {
+    crate::updates::prefs_dir().join("activity.log")
+}
+
+fn activity(line: &str) {
+    use std::io::Write as _;
+    let path = activity_log();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 1 << 20) {
+        let _ = std::fs::rename(&path, path.with_extension("log.1"));
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{} {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), line.lines().next().unwrap_or(""));
     }
 }

@@ -27,6 +27,14 @@ const TICK: Duration = Duration::from_secs(15 * 60);
 /// This program's version: the release tag CI builds it from
 /// (`SPM_VERSION`, e.g. `0.8.0-rc6`), else the crate's.
 pub fn manager_version() -> &'static str {
+    // Development aid: act as another version (screens that compare them).
+    #[cfg(debug_assertions)]
+    {
+        static DEBUG: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        if let Some(v) = DEBUG.get_or_init(|| std::env::var("SPM_DEBUG_VERSION").ok().filter(|v| !v.is_empty())) {
+            return v.as_str();
+        }
+    }
     option_env!("SPM_VERSION").filter(|v| !v.is_empty()).unwrap_or(env!("CARGO_PKG_VERSION"))
 }
 
@@ -48,6 +56,9 @@ pub struct Prefs {
     /// Unix seconds of the last check that reached the release site.
     #[serde(default)]
     pub last_check: u64,
+    /// "light", "dark" or "system" (the default).
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 fn yes() -> bool {
@@ -56,7 +67,7 @@ fn yes() -> bool {
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { channel: Channel::Stable, daily: true, dismissed_sentient: None, dismissed_manager: None, dismissed_gateway: None, last_check: 0 }
+        Prefs { channel: Channel::Stable, daily: true, dismissed_sentient: None, dismissed_manager: None, dismissed_gateway: None, last_check: 0, theme: None }
     }
 }
 
@@ -120,12 +131,38 @@ pub struct Offer {
     pub page: String,
     /// The Platform Manager's installer for this computer.
     pub installer: Option<releases::Asset>,
+    /// The installer's published SHA-256 (lower-case hex).
+    pub sha256: Option<String>,
+    /// The notes of every version from the installed one (left out) to this
+    /// one, newest first: what updating brings ("What's new").
+    pub between: Vec<crate::notes::Notes>,
 }
 
 impl Offer {
     fn from(r: &Release, version: String) -> Offer {
-        Offer { version, tag: r.tag_name.clone(), date: r.date(), notes: r.summary(), page: r.html_url.clone(), installer: None }
+        Offer {
+            version,
+            tag: r.tag_name.clone(),
+            date: r.date(),
+            notes: r.summary(),
+            page: r.html_url.clone(),
+            installer: None,
+            sha256: None,
+            between: Vec::new(),
+        }
     }
+}
+
+/// The published SHA-256 of `asset`: GitHub's digest, else the checksum
+/// table of the release notes (`| \`name\` | size | \`hex\` |`).
+fn published_sha256(r: &Release, asset: &releases::Asset) -> Option<String> {
+    if let Some(d) = asset.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")) {
+        return Some(d.to_lowercase());
+    }
+    let body = r.notes();
+    body.lines().find(|l| l.contains(&format!("`{}`", asset.name))).and_then(|l| {
+        l.split('`').map(str::trim).find(|p| p.len() == 64 && p.bytes().all(|b| b.is_ascii_hexdigit())).map(str::to_lowercase)
+    })
 }
 
 /// One check's answer for each product: `Ok(None)` is "up to date".
@@ -133,6 +170,10 @@ impl Offer {
 pub struct Found {
     pub sentient: Result<Option<Offer>, String>,
     pub manager: Result<Option<Offer>, String>,
+    /// On Stable: a newer release candidate that the channel leaves out, so
+    /// the screen can say one exists.
+    pub sentient_candidate: Option<String>,
+    pub manager_candidate: Option<String>,
     /// The newest gateway release on the channel (crate's Gateway screen
     /// installs or updates to it), and the gateway installed here.
     pub gateway: Result<Option<gateway::Offer>, String>,
@@ -144,23 +185,47 @@ pub struct Found {
 /// `installed` is SENTIENT's version here (None when it is not installed);
 /// `native` says whether this computer needs a package for its system.
 pub fn check(channel: Channel, installed: Option<String>, native: bool) -> Found {
-    let sentient = match installed {
-        None => Ok(None),
-        Some(installed) => sentient_offer(channel, &installed, native),
+    // One list serves both products: they share the repository.
+    let all = releases::fetch(releases::SENTIENT_REPO);
+    let (sentient, sentient_candidate) = match (&installed, &all) {
+        (None, _) => (Ok(None), None),
+        (Some(_), Err(e)) => (Err(e.clone()), None),
+        (Some(v), Ok(all)) => {
+            let offer = sentient_offer(all, channel, v, native);
+            let candidate = (channel == Channel::Stable)
+                .then(|| sentient_offer(all, Channel::Candidate, v, native).ok().flatten())
+                .flatten()
+                .filter(|c| offer.as_ref().ok().and_then(|o| o.as_ref()).is_none_or(|o| releases::compare(&c.version, &o.version).is_gt()))
+                .map(|c| c.version);
+            (offer, candidate)
+        }
+    };
+    let (manager, manager_candidate) = match &all {
+        Err(e) => (Err(e.clone()), None),
+        Ok(all) => {
+            let offer = newest_manager(all, channel, manager_version());
+            let candidate = (channel == Channel::Stable)
+                .then(|| newest_manager(all, Channel::Candidate, manager_version()))
+                .flatten()
+                .filter(|c| offer.as_ref().is_none_or(|o| releases::compare(&c.version, &o.version).is_gt()))
+                .map(|c| c.version);
+            (Ok(offer), candidate)
+        }
     };
     let here = gateway::status();
     Found {
         sentient,
-        manager: manager_offer(channel),
+        manager,
+        sentient_candidate,
+        manager_candidate,
         gateway: gateway::newest(channel),
         gateway_installed: here.installed.then(|| here.version.unwrap_or_default()),
         at: now(),
     }
 }
 
-fn sentient_offer(channel: Channel, installed: &str, native: bool) -> Result<Option<Offer>, String> {
-    let all = releases::fetch(releases::SENTIENT_REPO)?;
-    let candidates = releases::on_channel(&all, channel, releases::is_sentient);
+fn sentient_offer(all: &[Release], channel: Channel, installed: &str, native: bool) -> Result<Option<Offer>, String> {
+    let candidates = releases::on_channel(all, channel, releases::is_sentient);
     if candidates.is_empty() {
         return match channel {
             Channel::Nightly => Err("No nightly SENTIENT build is published yet.".into()),
@@ -179,14 +244,18 @@ fn sentient_offer(channel: Channel, installed: &str, native: bool) -> Result<Opt
         } else {
             r.version()
         };
-        return Ok(releases::is_newer(&version, installed, r.is_nightly()).then(|| Offer::from(r, version)));
+        if !releases::is_newer(&version, installed, r.is_nightly()) {
+            return Ok(None);
+        }
+        let mut offer = Offer::from(r, version.clone());
+        offer.between = if r.is_nightly() {
+            vec![crate::notes::Notes::from_release(r, &version)]
+        } else {
+            crate::notes::between(all, installed, &version, |x| releases::is_sentient(x) && (channel != Channel::Stable || !x.prerelease), Release::version)
+        };
+        return Ok(Some(offer));
     }
     Ok(None)
-}
-
-fn manager_offer(channel: Channel) -> Result<Option<Offer>, String> {
-    let all = releases::fetch(releases::MANAGER_REPO)?;
-    Ok(newest_manager(&all, channel, manager_version()))
 }
 
 /// The newest Platform Manager release on `channel` that is newer than
@@ -202,8 +271,10 @@ fn newest_manager(all: &[Release], channel: Channel, installed: &str) -> Option<
     if !releases::is_newer(&version, installed, false) {
         return None;
     }
-    let mut offer = Offer::from(r, version);
+    let mut offer = Offer::from(r, version.clone());
     offer.installer = r.assets.iter().find(|a| installer_for_this_system(&a.name)).cloned();
+    offer.sha256 = offer.installer.as_ref().and_then(|a| published_sha256(r, a));
+    offer.between = crate::notes::between(all, installed, &version, |x| releases::is_manager(x) && (channel != Channel::Stable || !x.prerelease), releases::manager_version_of);
     Some(offer)
 }
 
@@ -218,19 +289,34 @@ fn installer_for_this_system(name: &str) -> bool {
     }
 }
 
+/// The steps "Update and restart" shows.
+pub const SELF_UPDATE_STEPS: [&str; 4] =
+    ["Checking the download address", "Downloading", "Checking the file", "Replacing the program and reopening"];
+
+fn mb(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+}
+
 /// Download the Platform Manager `offer` and hand over to it: it replaces
 /// this program and starts the manager again (`--self-update`). Returns
-/// once the new program runs; the caller then quits.
+/// once the new program runs; the caller then quits. The file is checked
+/// against its published SHA-256 before anything is replaced; without one
+/// it is not used.
 pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
     #[cfg(not(windows))]
     if crate::self_install::installed_by_package_manager() {
         return Err("This Platform Manager was installed with pacman: update it with pacman (the new package is on the release page).".into());
     }
+    let [address, downloading, checking, replacing] = SELF_UPDATE_STEPS;
+    sink(Progress::Step { name: address.into() });
     let asset = offer
         .installer
         .clone()
-        .ok_or_else(|| format!("Platform Manager {} has no installer for this computer.", offer.version))?;
-    sink(Progress::Step { name: format!("Downloading Platform Manager {}", offer.version) });
+        .ok_or_else(|| format!("Platform Manager {} has no installer for this computer. Nothing was changed.", offer.version))?;
+    let expected = offer
+        .sha256
+        .clone()
+        .ok_or_else(|| format!("Platform Manager {} has no published checksum, so its download cannot be checked. Nothing was changed.", offer.version))?;
     let dir = std::env::temp_dir().join(format!("sentient-manager-{}", offer.version));
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let file = dir.join(&asset.name);
@@ -238,38 +324,88 @@ pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
         .get(&asset.browser_download_url)
         .set("User-Agent", "SENTIENT-Platform-Manager")
         .call()
-        .map_err(|e| format!("download {}: {e}", asset.name))?;
+        .map_err(|e| format!("The download of Platform Manager {} could not start ({e}). Nothing was changed.", offer.version))?;
+    sink(Progress::Step { name: downloading.into() });
     let mut reader = response.into_reader();
     let mut out = std::fs::File::create(&file).map_err(|e| format!("create {}: {e}", file.display()))?;
-    let copied = std::io::copy(&mut reader, &mut out).map_err(|e| format!("download {}: {e}", asset.name))?;
+    let mut copied: u64 = 0;
+    let mut buf = vec![0u8; 256 * 1024];
+    let incomplete = |copied: u64| {
+        format!(
+            "The download of Platform Manager {} is incomplete ({} of {}). Nothing was changed.",
+            offer.version,
+            mb(copied),
+            mb(asset.size)
+        )
+    };
+    loop {
+        use std::io::{Read as _, Write as _};
+        let n = match reader.read(&mut buf) {
+            Ok(n) => n,
+            Err(_) => return Err(incomplete(copied)),
+        };
+        if n == 0 {
+            break;
+        }
+        out.write_all(&buf[..n]).map_err(|e| format!("write {}: {e}", file.display()))?;
+        copied += n as u64;
+        if asset.size > 0 {
+            sink(Progress::Percent { value: copied as f32 / asset.size as f32 });
+            sink(Progress::Log { line: format!("Downloading {} of {}", mb(copied), mb(asset.size)) });
+        }
+    }
     drop(out);
     if asset.size > 0 && copied != asset.size {
-        return Err(format!("The download of {} is incomplete ({copied} of {} bytes).", asset.name, asset.size));
+        return Err(incomplete(copied));
+    }
+    sink(Progress::Step { name: checking.into() });
+    let actual = manifest::sha256_file(&file)?;
+    if actual != expected {
+        let _ = std::fs::remove_file(&file);
+        return Err(format!("The downloaded Platform Manager {} is damaged (its checksum does not match the published one). Nothing was changed.", offer.version));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755));
     }
-    sink(Progress::Step { name: format!("Starting Platform Manager {}", offer.version) });
+    sink(Progress::Step { name: replacing.into() });
     std::process::Command::new(&file)
-        .arg("--self-update")
+        .args(["--self-update", "--from", manager_version()])
         .spawn()
         .map_err(|e| format!("start {}: {e}", file.display()))?;
     Ok(())
 }
 
 /// `--self-update`, run by the downloaded program: put itself where the
-/// manager lives and start it there.
+/// manager lives and start it there, telling it which version it replaced
+/// (`--updated-from`), so it can say so and list what it changes.
 pub fn finish_self_update() -> i32 {
+    let args: Vec<String> = std::env::args().collect();
+    let from = args.windows(2).find(|w| w[0] == "--from").map(|w| w[1].clone());
     // The previous manager quits once this has started.
     std::thread::sleep(Duration::from_secs(2));
     match crate::self_install::install_manager() {
         Ok(path) => {
             #[cfg(windows)]
-            crate::self_install::register_manager_entry(&path);
+            {
+                crate::self_install::register_manager_entry(&path);
+                // The Start menu entry under its searchable name (SPM).
+                crate::self_install::restore_menu_entry(&path);
+            }
             crate::self_install::refresh_operator_screen(&sentient_installer_core::progress::noop());
-            let _ = std::process::Command::new(&path).spawn();
+            if let Some(mut record) = crate::installation::InstallationRecord::load() {
+                record.manager_version = manager_version().into();
+                if let Ok(json) = serde_json::to_string_pretty(&record) {
+                    let _ = crate::self_install::write_record(&crate::installation::record_path(), &json);
+                }
+            }
+            let mut cmd = std::process::Command::new(&path);
+            cmd.arg("--manager");
+            if let Some(from) = from {
+                cmd.args(["--updated-from", &from]);
+            }
+            let _ = cmd.spawn();
             0
         }
         Err(e) => {
@@ -277,6 +413,25 @@ pub fn finish_self_update() -> i32 {
             1
         }
     }
+}
+
+fn found_flag() -> PathBuf {
+    prefs_dir().join("found-installation")
+}
+
+/// Setup installed this Platform Manager beside a SENTIENT it found: the
+/// manager says so once when it opens.
+pub fn mark_found_installation() {
+    let path = found_flag();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, "1");
+}
+
+/// Whether to say "Found SENTIENT…" now; the notice shows once.
+pub fn take_found_installation() -> bool {
+    std::fs::remove_file(found_flag()).is_ok()
 }
 
 /// What the manager knows about updates, shared by its screens.
@@ -413,6 +568,7 @@ mod manager_offer_tests {
                 name: if cfg!(windows) { "SENTIENT-Setup-manager-0.8.0.exe".into() } else { "SENTIENT-Setup-manager-0.8.0-linux-x86_64".into() },
                 browser_download_url: String::new(),
                 size: 1,
+                digest: Some("sha256:ab".into()),
             }],
         }
     }

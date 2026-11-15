@@ -9,6 +9,10 @@
 #     payload/
 #       sentient-payload-linux-<arch>.tar  SENTIENT server, UI and data
 #       VERSION                            the SENTIENT version, shown by setup
+#       NOTES.md                           its release notes ("What's new" in
+#                                          setup, also without internet), when
+#                                          SENTIENT_CHANGELOG names SENTIENT's
+#                                          CHANGELOG.md
 #
 # and tar it. Setup finds payload/ next to itself: the native (systemd) mode
 # installs from it without downloading SENTIENT; the Docker mode pulls the
@@ -39,6 +43,9 @@ mkdir -p "$dir/payload"
 install -m755 "$bin" "$dir/SENTIENT-Setup"
 cp "$payload_tar" "$dir/payload/"
 printf '%s\n' "$version" > "$dir/payload/VERSION"
+if [ -n "${SENTIENT_CHANGELOG:-}" ]; then
+  python3 scripts/release-notes.py extract "$SENTIENT_CHANGELOG" "$version" --public > "$dir/payload/NOTES.md"
+fi
 cp app/assets/licence.txt "$dir/EULA.txt"
 
 tar -C "$out" -czf "$out/$name.tar.gz" "$name"

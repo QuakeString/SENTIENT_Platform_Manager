@@ -46,6 +46,11 @@ pub struct InstallationRecord {
     /// records from before the choice was kept.
     #[serde(default)]
     pub kiosk: Option<bool>,
+    /// The installation changes (crate::changes) already made here. Records
+    /// from before the list start with none, so a newer Platform Manager
+    /// offers what earlier ones did not set up.
+    #[serde(default)]
+    pub changes_done: Vec<String>,
 }
 
 impl InstallationRecord {
@@ -136,6 +141,7 @@ impl InstallationRecord {
             stack: DeployConfig::default(),
             installed_at: String::new(),
             kiosk: None,
+            changes_done: Vec::new(),
         };
         record.native_config()
     }
@@ -291,8 +297,13 @@ impl Platform {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// A record for tests.
+    pub fn sample() -> InstallationRecord {
+        serde_json::from_str(r#"{"sentient_version":"4.4.0.2","manager_version":"0.8.0-rc11","engine":"native","install_dir":"C:/SENTIENT","pg_dir":"C:/SENTIENT/pg","state_dir":"C:/ProgramData/SENTIENT","stack":{},"installed_at":"2026-11-09T10:00:00Z"}"#).unwrap()
+    }
 
     #[test]
     fn records_from_before_the_kiosk_choice_still_load() {

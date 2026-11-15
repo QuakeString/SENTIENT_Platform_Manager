@@ -1087,7 +1087,16 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     write_env_file(cfg)?;
     bail_if_cancelled()?;
 
-    step(&sink, "Installing the SENTIENT schema (one-time)");
+    // Repair and reinstalls over a kept database run the same installer: it
+    // creates what is missing and leaves what is there.
+    let installed = psql(cfg, &cfg.db_name, "SELECT to_regclass('public.tb_user') IS NOT NULL;")
+        .map(|v| v.trim() == "t")
+        .unwrap_or(false);
+    step(&sink, if installed {
+        "Checking the SENTIENT database (nothing is changed when it is already installed)"
+    } else {
+        "Installing the SENTIENT schema (one-time)"
+    });
     let installer = cfg.app_bin().join("sentient-install.exe");
     if !installer.exists() {
         return Err(format!("{} is missing from the package", installer.display()));
@@ -1742,16 +1751,63 @@ pub fn cleanup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
 pub fn leftovers(default_pg_dir: &Path) -> Vec<String> {
     let mut found = Vec::new();
     if service_exists(APP_SERVICE) {
-        found.push(format!("The SENTIENT service ({APP_SERVICE})"));
+        found.push(format!("SENTIENT service ({APP_SERVICE}): installed, {}", state_words(&service_state(APP_SERVICE))));
     }
     let pg = leftover_pg_dir().unwrap_or_else(|| default_pg_dir.to_path_buf());
     if service_exists(PG_SERVICE) {
-        found.push(format!("The PostgreSQL service ({PG_SERVICE}, port in use while it runs)"));
+        let state = service_state(PG_SERVICE);
+        let port = cluster_port(&pg.join("data"));
+        found.push(if state == "running" {
+            format!("PostgreSQL service ({PG_SERVICE}): running, holds port {port}")
+        } else {
+            format!("PostgreSQL service ({PG_SERVICE}): {}", state_words(&state))
+        });
     }
     if pg.join("data").join("PG_VERSION").exists() {
-        found.push(format!("PostgreSQL data in {}", pg.display()));
+        found.push(format!("PostgreSQL data in {} ({})", pg.display(), size_words(dir_size_kb(&pg) * 1024)));
+    } else if pg.join("bin").exists() || pg.join("data").exists() {
+        // An install that stopped before its database was created.
+        found.push(format!("A PostgreSQL folder in {} without a database, from an install that did not finish", pg.display()));
     }
     found
+}
+
+/// "running" → "running"; "stopped" → "stopped, does not run".
+#[cfg_attr(not(windows), allow(dead_code))]
+fn state_words(state: &str) -> String {
+    match state {
+        "running" => "running".into(),
+        "stopped" => "stopped".into(),
+        "start_pending" => "starting".into(),
+        "stop_pending" => "stopping".into(),
+        other => other.replace('_', " "),
+    }
+}
+
+/// The port a cluster's `postgresql.conf` names (5432 when it does not).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn cluster_port(data: &Path) -> u16 {
+    let conf = std::fs::read_to_string(data.join("postgresql.auto.conf")).unwrap_or_default()
+        + &std::fs::read_to_string(data.join("postgresql.conf")).unwrap_or_default();
+    conf.lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim())
+        .filter_map(|l| l.strip_prefix("port"))
+        .filter_map(|rest| rest.trim_start().strip_prefix('=').map(|v| v.trim().trim_matches('\'')))
+        .find_map(|v| v.parse().ok())
+        .unwrap_or(5432)
+}
+
+/// "1.2 GB", "310 MB", "12 KB".
+pub fn size_words(bytes: u64) -> String {
+    const GB: u64 = 1 << 30;
+    const MB: u64 = 1 << 20;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{} MB", bytes / MB)
+    } else {
+        format!("{} KB", bytes / 1024)
+    }
 }
 
 /// The PostgreSQL folder the leftover service runs from (`-D <pg>\data`).
@@ -1776,6 +1832,18 @@ fn pg_dir_from_qc(text: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod leftover_tests {
+    #[test]
+    fn a_clusters_port_comes_from_its_configuration() {
+        let dir = std::env::temp_dir().join(format!("spm-port-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(super::cluster_port(&dir), 5432);
+        std::fs::write(dir.join("postgresql.conf"), "#port = 1\nport = 5433   # chosen\n").unwrap();
+        assert_eq!(super::cluster_port(&dir), 5433);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(super::size_words(1 << 30), "1.0 GB");
+        assert_eq!(super::size_words(310 << 20), "310 MB");
+    }
+
     #[test]
     fn the_cluster_folder_comes_from_the_service_command_line() {
         let qc = "SERVICE_NAME: sentient-postgresql\r\n        BINARY_PATH_NAME   : \"C:\\PostgreSQL\\18\\bin\\pg_ctl.exe\" runservice -N \"sentient-postgresql\" -D \"C:\\PostgreSQL\\18\\data\" -w\r\n";
@@ -1814,7 +1882,10 @@ pub fn remove_leftovers(sink: &ProgressFn, default_pg_dir: &Path) -> Result<(), 
             let _ = sc(&["delete", PG_SERVICE]);
         }
     }
-    let target = if pg.join("bin").join("pg_ctl.exe").exists() { pg.clone() } else { pg.join("data") };
+    // The whole cluster folder when it is SENTIENT's (its programs are in
+    // it, or there is no database in it: an install that did not finish);
+    // otherwise only its data folder.
+    let target = if pg.join("bin").join("pg_ctl.exe").exists() || !pg.join("data").join("PG_VERSION").exists() { pg.clone() } else { pg.join("data") };
     if target.exists() {
         step(sink, &format!("Deleting {}", target.display()));
         if !remove_tree_retrying(&target) {

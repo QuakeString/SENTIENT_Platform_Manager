@@ -115,7 +115,7 @@ mod tests {
             published_at: Some("2026-11-13T10:42:00Z".into()),
             assets: files
                 .iter()
-                .map(|f| releases::Asset { name: f.to_string(), browser_download_url: String::new(), size: 1 })
+                .map(|f| releases::Asset { name: f.to_string(), browser_download_url: String::new(), size: 1, digest: None })
                 .collect(),
         }
     }
