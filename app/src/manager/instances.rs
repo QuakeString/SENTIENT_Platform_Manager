@@ -493,6 +493,17 @@ impl InstancesPage {
 
     // -- rendering ----------------------------------------------------------
 
+    /// A job ended there: its card reads its state again.
+    pub fn after_job(&mut self, id: Option<&str>, cx: &mut Context<Self>) {
+        match id {
+            Some(id) => self.refresh(id, cx),
+            None => {
+                self.local = InstallationRecord::load();
+                self.refresh_local(cx);
+            }
+        }
+    }
+
     /// This computer's quick status, read in the background.
     fn refresh_local(&mut self, cx: &mut Context<Self>) {
         if !self.refreshing.insert(LOCAL.to_string()) {

@@ -404,6 +404,26 @@ impl RemotePages {
         cx.notify();
     }
 
+    /// Whether SENTIENT runs there, as this page last read it.
+    pub(crate) fn serving(&self) -> Option<bool> {
+        match &self.status {
+            Read::Got(s) if s.installed => Some(s.serving),
+            _ => None,
+        }
+    }
+
+    /// A job ended on this server: the page reads again, except one showing
+    /// that job's result (it reads again on "Back to …"); its status is read
+    /// either way.
+    pub(crate) fn after_job(&mut self, cx: &mut Context<Self>) {
+        if self.shown_job.is_some() {
+            let inst = self.inst.clone();
+            self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r);
+        } else {
+            self.reload(cx);
+        }
+    }
+
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         let inst = self.inst.clone();
         self.fetch(cx, move || remote::ready(&inst), |p, r| p.ready = r);

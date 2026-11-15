@@ -47,6 +47,17 @@ struct Health(HashMap<Option<String>, (String, String, Seen)>);
 
 impl Global for Health {}
 
+/// Whether SENTIENT runs on that instance (None: this computer) as the
+/// last check found; None when not checked or the server did not answer.
+pub fn serving(inst: Option<&str>, cx: &App) -> Option<bool> {
+    let h = cx.try_global::<Health>()?;
+    match h.0.get(&inst.map(str::to_string))?.2 {
+        Seen::Running => Some(true),
+        Seen::Stopped => Some(false),
+        Seen::NoAnswer => None,
+    }
+}
+
 /// A problem the checks found: instance, its name and colour, and whether
 /// the server does not answer (else SENTIENT is stopped).
 #[derive(Clone, Debug, PartialEq)]
@@ -283,7 +294,13 @@ enum Seen {
 fn check_instances(cx: &mut App) {
     cx.spawn(async move |cx| {
         let mut last: HashMap<Option<String>, Seen> = HashMap::new();
-        cx.background_executor().timer(Duration::from_secs(60)).await;
+        #[allow(unused_mut)]
+        let mut first = Duration::from_secs(60);
+        #[cfg(debug_assertions)]
+        if let Some(s) = std::env::var("SPM_DEBUG_CHECK_EVERY").ok().and_then(|v| v.parse().ok()) {
+            first = Duration::from_secs(s);
+        }
+        cx.background_executor().timer(first).await;
         loop {
             let found = cx
                 .background_executor()
@@ -335,7 +352,12 @@ fn check_instances(cx: &mut App) {
             }
             // Every minute while something is wrong, else every five; at once
             // when a job ended (request_check).
-            let wait = if last.values().any(|s| *s != Seen::Running) { PROBLEM_CHECK_EVERY } else { CHECK_EVERY };
+            let mut wait = if last.values().any(|s| *s != Seen::Running) { PROBLEM_CHECK_EVERY } else { CHECK_EVERY };
+            // Screens of real checker events: a short interval.
+            #[cfg(debug_assertions)]
+            if let Some(s) = std::env::var("SPM_DEBUG_CHECK_EVERY").ok().and_then(|v| v.parse().ok()) {
+                wait = Duration::from_secs(s);
+            }
             let mut waited = Duration::ZERO;
             while waited < wait && !RECHECK.swap(false, std::sync::atomic::Ordering::Relaxed) {
                 cx.background_executor().timer(Duration::from_secs(2)).await;

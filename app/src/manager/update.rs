@@ -388,6 +388,16 @@ impl UpdatePage {
     /// Show the release notes of `product` ("What's new").
     /// "What's new": the change log of every version between the installed
     /// one and the offered one, in a dialog.
+    /// Read the record again (another page's job may have changed it).
+    pub fn refresh_record(&mut self, cx: &mut Context<Self>) {
+        if self.job.read(cx).is_running() {
+            return;
+        }
+        self.record = InstallationRecord::load();
+        self.refresh_rollback(cx);
+        cx.notify();
+    }
+
     pub fn show_notes(&mut self, product: Product, cx: &mut Context<Self>) {
         let u = self.updates.read(cx);
         let (offer, installed, name) = match product {
