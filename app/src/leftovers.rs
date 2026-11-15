@@ -16,12 +16,15 @@ use sentient_installer_core::progress::{Progress, ProgressFn};
 pub fn find(default_pg_dir: &std::path::Path) -> Vec<String> {
     use sentient_installer_core::{clickhouse_wsl, distro, native};
     let mut found = native::leftovers(default_pg_dir);
-    if clickhouse_wsl::is_installed() {
-        found.push(format!("ClickHouse in WSL2 and its hidden account ({})", clickhouse_wsl::ACCOUNT));
-    }
     let disk = clickhouse_wsl::work_dir();
-    if disk.join("distro").exists() {
-        found.push(format!("ClickHouse's disk in {}", disk.display()));
+    let size = disk.join("distro").exists().then(|| native::size_words(dir_bytes(&disk)));
+    let port = distro::DeployConfig::default().ch_http_port;
+    let holds = if sentient_installer_core::checks::port_busy(port) { format!(", holds port {port}") } else { String::new() };
+    match (clickhouse_wsl::is_installed(), size) {
+        (true, Some(size)) => found.push(format!("ClickHouse in WSL2 with its account ({}) and disk ({size}){holds}", clickhouse_wsl::ACCOUNT)),
+        (true, None) => found.push(format!("ClickHouse in WSL2 and its account ({}){holds}", clickhouse_wsl::ACCOUNT)),
+        (false, Some(size)) => found.push(format!("ClickHouse's disk in {} ({size})", disk.display())),
+        (false, None) => {}
     }
     if distro::is_registered() {
         found.push(format!("The WSL distribution “{}” of an earlier Docker install", distro::DISTRO));
@@ -31,7 +34,31 @@ pub fn find(default_pg_dir: &std::path::Path) -> Vec<String> {
 
 #[cfg(not(windows))]
 pub fn find(_: &std::path::Path) -> Vec<String> {
+    // Development aid: pretend an earlier install was left (screens).
+    #[cfg(debug_assertions)]
+    if std::env::var_os("SPM_DEBUG_LEFTOVERS").is_some() {
+        return vec![
+            "SENTIENT service (SentientServer): installed, stopped".into(),
+            "PostgreSQL service (sentient-postgresql): running, holds port 5432".into(),
+            "PostgreSQL data in C:\\PostgreSQL\\18 (1.2 GB)".into(),
+            "ClickHouse in WSL2 with its account (sentient-ch) and disk (310 MB), holds port 8123".into(),
+        ];
+    }
     Vec::new()
+}
+
+/// The bytes in a folder and everything under it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn dir_bytes(dir: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries
+        .flatten()
+        .map(|e| match e.metadata() {
+            Ok(m) if m.is_dir() => dir_bytes(&e.path()),
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        })
+        .sum()
 }
 
 /// Remove everything [`find`] lists, with every database in it. Cannot be

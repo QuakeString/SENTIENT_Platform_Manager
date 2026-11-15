@@ -15,7 +15,147 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Added
+- Remote instances: SENTIENT on other computers, reached over SSH, on the
+  new Instances page (below the menu) and in the top bar's instance
+  switcher. Each server gets a card with its system logo, state, version,
+  database size, free disk and last backup, and Start / Stop / Restart,
+  Update SENTIENT, Back up now and Logs. Adding a server shows its key
+  fingerprint to compare before anything is sent; a changed key is refused
+  afterwards. The key passphrase or password is kept in the system's secret
+  store, never in the instance list. The Platform Manager copies itself to
+  the server (checked by SHA-256) and runs the work there detached, so a
+  dropped connection does not stop an update; it reconnects and follows on.
+  The top bar takes the open instance's colour and says "Remote". Linux
+  servers for now; Windows servers come next.
+- "What's new" before every update: the Update screen, the notice bar and
+  Setup show the release notes of every version between the installed one
+  and the new one, grouped as Added, Changed and Fixed, with what the update
+  does to the installation (database change, how long SENTIENT stops).
+  Setup carries the notes inside it, so this also works without internet.
+- Changes a newer Platform Manager makes to an installation set up by an
+  earlier one are listed after it updates ("2 changes for this
+  installation") and applied on your click, with only those steps run;
+  before, they were applied only by Repair. Status shows a quiet line while
+  they wait.
+- "Update from a file…" on the Update screen when the release page cannot be
+  reached: a Setup program or a SENTIENT package copied to this computer.
+- On the Stable channel, a line says when a release candidate is newer.
+- Setup that finds an earlier SENTIENT install that is broken or half
+  removed, with or without its installation record, shows what it found
+  (each service's state, which port it holds, data folder sizes) and three
+  ways out: "Remove it and install fresh" (with a backup first when the
+  database can still be read, a confirmation tick, and a check that the
+  ports are free afterwards), "Repair it" (keeps the databases; an install
+  without a record is taken over first; a failed repair leads to the fresh
+  install) and "Install fresh, keep the old database".
+- Status shows who uses the database's disk in one bar (PostgreSQL,
+  ClickHouse, other files, free), how fast the databases grow per day and
+  how long the disk lasts at that rate; the largest tables with plain names
+  and bars; ClickHouse's size before compression, its history per month,
+  how long history is kept and whether it has broken parts; and "Back up
+  now" beside the last backup. When the disk runs low, the warning offers
+  the two ways to free space: a history limit and removing the database
+  copies earlier updates left.
+- Settings in five tabs instead of one list of 88 variables: Platform (log
+  detail, analytics, licence server), Database (PostgreSQL sized Small /
+  Medium / Large from this computer's memory, Custom for the exact
+  numbers, and the time-series store's settings), Network and
+  certificates (SENTIENT's ports, checked free, and the certificate files
+  with a file picker), Data retention (audit log, notifications and events
+  as plain choices) and Advanced (every variable, grouped and searchable,
+  with its built-in value and a reset, plain names or variable names, and
+  "Add a variable" for ones the list does not know). One bar says how many
+  values changed and what applying restarts.
+- Replace this instance's data with a backup, from this or another instance
+  and from any database setup: the backup's summary shows first (when and
+  where it was made, its SENTIENT version, database type, size and what it
+  holds), then how it fits this installation (type converted, data brought
+  up to this SENTIENT, disk needed) with the reasons it cannot be used
+  (newer SENTIENT, not enough disk, wrong passphrase, damaged file). One
+  run restores beside the live data, switches, and, when ticked, deletes
+  the previous data only after SENTIENT answered on the restored data.
+  Backups now record their SENTIENT version, schema version, database type
+  and computer; older backups say "not recorded".
+- A port held by another program names that program (for example
+  "postgres.exe in C:\Program Files\PostgreSQL\16\bin") and offers the
+  next free port with one click.
+
+- A top bar in SENTIENT teal: the Platform Manager's icon, the instance
+  that is open ("This computer"), a monitor of its processor, memory and
+  free disk (amber when one runs high; a click opens Status) and a bell
+  that counts what needs attention (updates, waiting installation changes,
+  low disk).
+- About and preferences, from the (i) at the bottom of the menu: the
+  Platform Manager's version and update state with What's new, the update
+  channel and how often to check, and support: its own activity log, a
+  support file (logs, versions and settings in one file, without
+  passwords) and the documentation.
+- The theme is one icon at the bottom of the menu: Light, Dark or Follow
+  system, remembered.
+- Product and database logos beside their names: the Platform Manager,
+  SENTIENT and the Sentient Gateway, and PostgreSQL, ClickHouse and
+  TimescaleDB (Status, Setup's database choice, restore summary).
+- Platform settings, System administrator: the system administrator
+  accounts with their lockout state, "Reset password…" (new password twice;
+  it works at once, the account is unlocked and its open sessions are
+  signed out), "Unlock" and "Sign everyone out…". Data retention gains how
+  long telemetry history and alarms are kept by default. All of it goes
+  through SENTIENT's own administration command (sentient-admin, SENTIENT
+  4.4.0.3 and later), which writes SENTIENT's audit log; the Platform
+  Manager never writes passwords into the database. With an older SENTIENT
+  the section says to update SENTIENT first.
+- Backup and restore: back up with one click and no passwords to type
+  (Everything, Configuration only, or Choose… for the full list; telemetry
+  history all, last 90 days or none; optional passphrase), with the
+  estimated size, time and free disk shown first. Every backup is read back
+  and each part compared with its checksum before it counts as done; the
+  file's SHA-256 is shown and saved beside it as `<file>.sha256`, so a copy
+  on a USB disk or another site can be checked without the Platform
+  Manager. Large backups are written as numbered parts (4 GB by default)
+  and restored from the folder; PostgreSQL telemetry is stored month by
+  month, as ClickHouse's already was, so damage costs one month (backup
+  format 2; older backups still restore).
+- Automatic backup on the same page: every day at a set time (a scheduled
+  task on Windows, a systemd timer on Linux), keeping the last N, with an
+  optional second copy on another disk or network folder.
+- A list of the backups in the backup folder with size, how they were made
+  and their last check, and Restore…, Check (every part compared without
+  restoring, the damaged ones named) and Delete; "Add a backup file…"
+  brings in one from another instance. Status warns when the newest backup
+  is damaged.
+- Windows: typing "SPM" in Start search finds the Platform Manager (its
+  Start menu entry is now "SENTIENT Platform Manager (SPM)"; the old entry
+  is replaced when it updates or is repaired), and `spm` works in the Run
+  box. Not yet tried on a real Windows computer.
+
+### Changed
+- The menu ends with "Platform settings" (SENTIENT's settings); the
+  Platform Manager's own options are under About and preferences. The
+  version is shown once, at the bottom of the menu.
+- Setup on a computer with SENTIENT shows a tick box for what it can update:
+  the Platform Manager when this Setup is newer, SENTIENT when it carries a
+  newer package. A line that cannot be updated is greyed out with the
+  reason, and the button names what it updates ("Update both", "Update the
+  Platform Manager", "Update SENTIENT"). Repair, Change database and
+  Uninstall are under "Other choices". With nothing to update, Setup offers
+  to open the Platform Manager.
+- An older Setup no longer replaces a newer Platform Manager.
+- Setup run where the Platform Manager was removed but SENTIENT is still
+  installed installs only the Platform Manager (SENTIENT shows as
+  detected, not touched) instead of opening Repair; the new Platform
+  Manager says once what it found.
+- The Update screen names the versions each choice moves between. With a
+  new Platform Manager and a new SENTIENT, the Platform Manager goes first.
+- "Update and restart" shows its steps and checks the download against its
+  published checksum before replacing anything (before, only its size).
+- Repair's database step reads "Checking the SENTIENT database (nothing is
+  changed when it is already installed)" when the database exists, instead
+  of "Installing the SENTIENT schema (one-time)".
+
 ### Fixed
+- Removing an earlier install also removes a PostgreSQL folder left by an
+  install that stopped before its database was created.
 - "Check for updates" finds new Platform Manager versions. It asked the
   Platform Manager's private repository, which answers nobody, so the
   manager never offered its own update; it now reads the public

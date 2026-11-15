@@ -22,6 +22,79 @@ use crate::installation::{Engine, InstallationRecord};
 
 const LICENSE_SERVER_URL: &str = "LICENSE_SERVER_URL";
 
+/// SENTIENT's own ports, set on the installation itself (not environment):
+/// `port:http` and the rest.
+pub const PORTS: [(&str, &str); 5] = [
+    ("port:http", "Web (HTTP)"),
+    ("port:mqtt", "MQTT"),
+    ("port:mqtts", "MQTT over TLS"),
+    ("port:coap", "CoAP"),
+    ("port:coaps", "CoAP over DTLS"),
+];
+
+fn port_of(stack: &DeployConfig, key: &str) -> u16 {
+    match key {
+        "port:http" => stack.http_port,
+        "port:mqtt" => stack.mqtt_port,
+        "port:mqtts" => stack.mqtts_port,
+        "port:coap" => stack.coap_port,
+        "port:coaps" => stack.coaps_port,
+        _ => 0,
+    }
+}
+
+fn set_port(stack: &mut DeployConfig, key: &str, port: u16) {
+    match key {
+        "port:http" => stack.http_port = port,
+        "port:mqtt" => stack.mqtt_port = port,
+        "port:mqtts" => stack.mqtts_port = port,
+        "port:coap" => stack.coap_port = port,
+        "port:coaps" => stack.coaps_port = port,
+        _ => {}
+    }
+}
+
+/// In a values file for the root job, an added variable is `custom:<NAME>`.
+pub const CUSTOM_PREFIX: &str = "custom:";
+
+/// Split a values file into catalog values and added variables (None when
+/// it names none: they are left as they are).
+pub fn split_custom(mut values: HashMap<String, String>) -> (HashMap<String, String>, Option<Vec<(String, String)>>) {
+    let keys: Vec<String> = values.keys().filter(|k| k.starts_with(CUSTOM_PREFIX)).cloned().collect();
+    if keys.is_empty() {
+        return (values, None);
+    }
+    let custom = keys.into_iter().filter_map(|k| values.remove(&k).map(|v| (k[CUSTOM_PREFIX.len()..].to_string(), v))).collect();
+    (values, Some(custom))
+}
+
+/// Variables set on this installation that the catalog does not know
+/// ("Add a variable"): name → value.
+pub fn custom(record: &InstallationRecord) -> Vec<(String, String)> {
+    let catalog: Vec<String> = catalog::groups().into_iter().flat_map(|g| g.settings).map(|s| s.env).collect();
+    record.stack.tuning.extra_env.iter().filter(|e| !catalog.contains(&e.name)).map(|e| (e.name.clone(), e.value.clone())).collect()
+}
+
+/// `stack` with its catalog-less variables replaced by `vars`.
+pub fn with_custom(stack: &DeployConfig, vars: &[(String, String)]) -> DeployConfig {
+    let catalog: Vec<String> = catalog::groups().into_iter().flat_map(|g| g.settings).map(|s| s.env).collect();
+    let mut st = stack.clone();
+    st.tuning.extra_env.retain(|e| catalog.contains(&e.name));
+    for (name, value) in vars {
+        let name = name.trim();
+        if !name.is_empty() && !catalog.iter().any(|c| c == name) {
+            st.tuning.extra_env.push(EnvVar { name: name.to_string(), value: value.clone() });
+        }
+    }
+    st
+}
+
+/// Whether a name can be an environment variable SENTIENT reads.
+pub fn valid_name(name: &str) -> bool {
+    let n = name.trim();
+    !n.is_empty() && n.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// The values set on this installation, by catalog name (`pg:` names for
 /// PostgreSQL). Settings left at their default are absent.
 pub fn current(record: &InstallationRecord) -> HashMap<String, String> {
@@ -33,6 +106,9 @@ pub fn current(record: &InstallationRecord) -> HashMap<String, String> {
     }
     if !st.license_server_url.is_empty() {
         values.insert(LICENSE_SERVER_URL.into(), st.license_server_url.clone());
+    }
+    for (key, _) in PORTS {
+        values.insert(key.to_string(), port_of(st, key).to_string());
     }
     values
 }
@@ -53,6 +129,11 @@ pub fn with_values(stack: &DeployConfig, values: &HashMap<String, String>) -> De
         pg_effective_cache_size: set("pg:effective_cache_size").unwrap_or(pg_default.pg_effective_cache_size),
     };
     st.license_server_url = set(LICENSE_SERVER_URL).unwrap_or_else(|| DeployConfig::default().license_server_url);
+    for (key, _) in PORTS {
+        if let Some(port) = set(key).and_then(|v| v.parse::<u16>().ok()).filter(|p| *p > 0) {
+            set_port(&mut st, key, port);
+        }
+    }
     for name in &catalog {
         if name.starts_with(PG_PREFIX) || name == LICENSE_SERVER_URL {
             continue;
@@ -70,6 +151,22 @@ pub fn with_values(stack: &DeployConfig, values: &HashMap<String, String>) -> De
 /// ports in range. Returns one message per problem.
 pub fn check(values: &HashMap<String, String>) -> Vec<String> {
     let mut problems = Vec::new();
+    for (key, label) in PORTS {
+        if let Some(v) = values.get(key).map(|v| v.trim()).filter(|v| !v.is_empty()) {
+            if !v.parse::<u16>().is_ok_and(|p| p > 0) {
+                problems.push(format!("{label} port: a port number from 1 to 65535"));
+            }
+        }
+    }
+    let mut used: Vec<&str> = Vec::new();
+    for (key, label) in PORTS {
+        if let Some(v) = values.get(key).map(|v| v.trim()).filter(|v| !v.is_empty()) {
+            if used.contains(&v) {
+                problems.push(format!("{label} port: {v} is already used by another of SENTIENT's ports"));
+            }
+            used.push(v);
+        }
+    }
     for setting in catalog::groups().into_iter().flat_map(|g| g.settings) {
         let Some(value) = values.get(&setting.env).map(|v| v.trim()).filter(|v| !v.is_empty()) else { continue };
         let default = setting.default.as_str();
@@ -117,8 +214,13 @@ fn answers(port: u16) -> bool {
     false
 }
 
-/// Apply `values` to the installation. Returns the record as saved.
+/// Apply `values` (and, when given, the catalog-less variables `custom`)
+/// to the installation. Returns the record as saved.
 pub fn apply(record: InstallationRecord, values: &HashMap<String, String>, sink: ProgressFn) -> Result<InstallationRecord, String> {
+    apply_with(record, values, None, sink)
+}
+
+pub fn apply_with(record: InstallationRecord, values: &HashMap<String, String>, custom: Option<&[(String, String)]>, sink: ProgressFn) -> Result<InstallationRecord, String> {
     let problems = check(values);
     if !problems.is_empty() {
         return Err(format!("Some values are not valid:\n{}", problems.join("\n")));
@@ -126,6 +228,9 @@ pub fn apply(record: InstallationRecord, values: &HashMap<String, String>, sink:
     let old = record.clone();
     let mut new = record;
     new.stack = with_values(&old.stack, values);
+    if let Some(vars) = custom {
+        new.stack = with_custom(&new.stack, vars);
+    }
     if new.stack == old.stack {
         sink(Progress::Done { message: "Nothing changed.".into() });
         return Ok(new);
@@ -151,6 +256,9 @@ pub fn apply(record: InstallationRecord, values: &HashMap<String, String>, sink:
     }
     let json = serde_json::to_string_pretty(&new).map_err(|e| e.to_string())?;
     crate::self_install::write_record(&crate::installation::record_path(), &json)?;
+    if old.stack.http_port != new.stack.http_port {
+        crate::self_install::refresh_web_shortcuts(&new.url());
+    }
     sink(Progress::Done { message: "The new settings are in effect.".into() });
     Ok(new)
 }
@@ -189,5 +297,21 @@ mod tests {
         let st2 = with_values(&st, &HashMap::new());
         assert!(!st2.tuning.extra_env.iter().any(|e| e.name == "DB_POOL_PRIMARY_MAX"));
         assert_eq!(st2.pg, PgTuning::default());
+    }
+
+    #[test]
+    fn ports_and_added_variables_round_trip() {
+        let stack = DeployConfig::default();
+        let mut values = HashMap::new();
+        values.insert("port:mqtt".to_string(), "1884".to_string());
+        let st = with_values(&stack, &values);
+        assert_eq!(st.mqtt_port, 1884);
+        assert_eq!(st.http_port, stack.http_port);
+        values.insert("port:http".to_string(), "1884".to_string());
+        assert_eq!(check(&values).len(), 1);
+        let st = with_custom(&st, &[("MY_FLAG".into(), "true".into()), ("RUST_LOG".into(), "x".into())]);
+        assert!(st.tuning.extra_env.iter().any(|e| e.name == "MY_FLAG"));
+        assert!(!st.tuning.extra_env.iter().any(|e| e.name == "RUST_LOG"));
+        assert!(valid_name("MY_FLAG_2") && !valid_name("2X") && !valid_name("A-B"));
     }
 }

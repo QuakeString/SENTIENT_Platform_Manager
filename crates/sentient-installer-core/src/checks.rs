@@ -257,12 +257,94 @@ pub fn ports_free_of(wanted: &[(u16, String)]) -> Check {
 
 /// The ports of `wanted` something already listens on, as "8080 (HTTP)".
 pub fn busy_ports(wanted: &[(u16, String)]) -> Vec<String> {
-    use std::net::TcpListener;
-    wanted
-        .iter()
-        .filter(|(p, _)| TcpListener::bind(("127.0.0.1", *p)).is_err())
-        .map(|(p, what)| format!("{p} ({what})"))
-        .collect()
+    wanted.iter().filter(|(p, _)| port_busy(*p)).map(|(p, what)| format!("{p} ({what})")).collect()
+}
+
+/// Whether something listens on `port` (TCP, this computer).
+pub fn port_busy(port: u16) -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_err()
+}
+
+/// The first free port from `start` up (at most 100 tried).
+pub fn next_free_port(start: u16) -> Option<u16> {
+    (start..start.saturating_add(100)).find(|p| *p > 0 && !port_busy(*p))
+}
+
+/// The program listening on a port: its process name and where it runs
+/// from, as far as this computer tells.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortOwner {
+    pub process: String,
+    pub path: Option<String>,
+}
+
+impl PortOwner {
+    /// Whether it belongs to a SENTIENT install (ours or an earlier one):
+    /// its program sits under SENTIENT's or its PostgreSQL's folders, or it
+    /// is ClickHouse's WSL machine.
+    pub fn is_sentient(&self, our_dirs: &[std::path::PathBuf]) -> bool {
+        let path = self.path.as_deref().unwrap_or("").to_lowercase().replace('/', "\\");
+        our_dirs.iter().any(|d| {
+            let d = d.display().to_string().to_lowercase().replace('/', "\\");
+            !d.is_empty() && path.starts_with(&d)
+        })
+    }
+
+    /// "postgres.exe in C:\Program Files\PostgreSQL\16\bin"
+    pub fn describe(&self) -> String {
+        match self.path.as_deref().and_then(|p| p.rfind(['\\', '/']).map(|i| &p[..i])) {
+            Some(dir) if !dir.is_empty() => format!("{} in {dir}", self.process),
+            _ => self.process.clone(),
+        }
+    }
+}
+
+/// Who listens on `port`, when the system says.
+#[cfg(windows)]
+pub fn port_owner(port: u16) -> Option<PortOwner> {
+    let out = ps(&format!(
+        "$c = Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; \
+         if ($c) {{ $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; \
+         if ($p) {{ $p.ProcessName + '.exe|' + $p.Path }} else {{ 'process ' + $c.OwningProcess + '|' }} }}"
+    ));
+    parse_owner(&out)
+}
+
+#[cfg(unix)]
+pub fn port_owner(port: u16) -> Option<PortOwner> {
+    // `ss -ltnpH 'sport = :5432'`: users:(("postgres",pid=812,fd=6))
+    let (_, out) = sh(&format!("ss -ltnpH 'sport = :{port}' 2>/dev/null | head -1"))?;
+    let name = out.split("((\"").nth(1)?.split('"').next()?.to_string();
+    let pid = out.split("pid=").nth(1).and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next()).map(str::to_string);
+    let path = pid.and_then(|p| std::fs::read_link(format!("/proc/{p}/exe")).ok()).map(|p| p.display().to_string());
+    Some(PortOwner { process: name, path })
+}
+
+#[cfg(not(any(windows, unix)))]
+pub fn port_owner(_: u16) -> Option<PortOwner> {
+    None
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_owner(out: &str) -> Option<PortOwner> {
+    let line = out.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let (process, path) = line.split_once('|').unwrap_or((line, ""));
+    Some(PortOwner { process: process.trim().to_string(), path: (!path.trim().is_empty()).then(|| path.trim().to_string()) })
+}
+
+#[cfg(test)]
+mod port_owner_tests {
+    use super::*;
+
+    #[test]
+    fn an_owner_is_read_and_told_apart_from_sentient() {
+        let o = parse_owner("postgres.exe|C:\\Program Files\\PostgreSQL\\16\\bin\\postgres.exe\r\n").unwrap();
+        assert_eq!(o.process, "postgres.exe");
+        assert_eq!(o.describe(), "postgres.exe in C:\\Program Files\\PostgreSQL\\16\\bin");
+        assert!(!o.is_sentient(&[std::path::PathBuf::from("C:\\PostgreSQL\\18")]));
+        assert!(o.is_sentient(&[std::path::PathBuf::from("C:\\Program Files\\PostgreSQL\\16")]));
+        assert!(parse_owner("  ").is_none());
+    }
 }
 
 /// A PostgreSQL that we did not install is a genuine hazard: the installer would

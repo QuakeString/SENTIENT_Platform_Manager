@@ -312,6 +312,8 @@ pub fn run(record: InstallationRecord, target: Flavor, sink: ProgressFn) -> Resu
         zstd_level: 6,
         passphrase: None,
         clickhouse: (from == Flavor::Clickhouse).then(|| old.ch()),
+        origin: crate::backup_jobs::origin(&record, &old.pg()),
+        part_size: None,
     };
     block_on(backup::run(&old.pg(), &opts, bridge(sink.clone())))?.map_err(|e| format!("backup: {e}"))?;
     log(&sink, format!("Backup: {}", backup_file.display()));

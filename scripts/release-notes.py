@@ -46,6 +46,13 @@ A version section looks like:
 
   Built from master `abcd1234`.
 
+  Database: no changes.          <- optional; what the release does to the
+                                    database ("Database: one-time change,
+                                    about 1 minute."). The Platform Manager
+                                    shows it under "What's new" before an
+                                    update; without it, it says the notes
+                                    do not say.
+
   ### Added
   - A user-visible change, in plain words ([#160](https://github.com/...)).
 

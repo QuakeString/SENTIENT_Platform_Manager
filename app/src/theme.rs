@@ -41,3 +41,56 @@ pub fn toggle(cx: &mut App) {
 pub fn is_dark(cx: &App) -> bool {
     Theme::global(cx).mode.is_dark()
 }
+
+/// The theme choice: light, dark, or the system's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Choice {
+    Light,
+    Dark,
+    System,
+}
+
+impl Choice {
+    pub const ALL: [Choice; 3] = [Choice::Light, Choice::Dark, Choice::System];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Choice::Light => "Light",
+            Choice::Dark => "Dark",
+            Choice::System => "Follow system",
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Choice::Light => "light",
+            Choice::Dark => "dark",
+            Choice::System => "system",
+        }
+    }
+
+    /// The saved choice.
+    pub fn saved() -> Choice {
+        match crate::updates::Prefs::load().theme.as_deref() {
+            Some("light") => Choice::Light,
+            Some("dark") => Choice::Dark,
+            _ => Choice::System,
+        }
+    }
+}
+
+/// Apply and remember a theme choice.
+pub fn choose(choice: Choice, window: Option<&mut gpui_kit::Window>, cx: &mut App) {
+    apply(choice, window, cx);
+    let mut prefs = crate::updates::Prefs::load();
+    prefs.theme = Some(choice.key().into());
+    prefs.save();
+}
+
+pub fn apply(choice: Choice, window: Option<&mut gpui_kit::Window>, cx: &mut App) {
+    match choice {
+        Choice::Light => Theme::change(ThemeMode::Light, None, cx),
+        Choice::Dark => Theme::change(ThemeMode::Dark, None, cx),
+        Choice::System => Theme::sync_system_appearance(window, cx),
+    }
+}

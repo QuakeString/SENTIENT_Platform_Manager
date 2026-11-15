@@ -111,6 +111,11 @@ fn wait_answering(port: u16) -> bool {
     false
 }
 
+/// The schema version of the database `pg` names. Blocking.
+pub(crate) fn schema_version_now(pg: &ConnConfig) -> Result<i64, String> {
+    block_on(schema_version(pg))?
+}
+
 async fn schema_version(pg: &ConnConfig) -> Result<i64, String> {
     let client = mv::connect(pg).await.map_err(|e| e.to_string())?;
     let row = client

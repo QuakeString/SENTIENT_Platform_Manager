@@ -103,6 +103,7 @@ fn record_for_docker(cfg: &DeployConfig, version: Option<String>) -> Installatio
         stack,
         installed_at: chrono::Utc::now().to_rfc3339(),
         kiosk: None,
+        changes_done: Vec::new(),
     }
 }
 
@@ -173,6 +174,7 @@ fn native_record(cfg: &sentient_installer_core::native::NativeConfig) -> Install
         stack,
         installed_at: chrono::Utc::now().to_rfc3339(),
         kiosk: None,
+        changes_done: Vec::new(),
     }
 }
 

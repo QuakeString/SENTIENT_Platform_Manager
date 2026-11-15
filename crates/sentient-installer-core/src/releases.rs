@@ -60,6 +60,9 @@ pub struct Asset {
     pub browser_download_url: String,
     #[serde(default)]
     pub size: u64,
+    /// `sha256:<hex>`, as GitHub records it for every uploaded file.
+    #[serde(default)]
+    pub digest: Option<String>,
 }
 
 /// One GitHub release, as the API returns it.

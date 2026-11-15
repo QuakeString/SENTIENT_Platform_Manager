@@ -39,7 +39,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | uninstall [--delete-data] | apply-settings <file.json> | kept | remove-kept <name> | \
+use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | logs [<lines>] | kept | remove-kept <name> | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
 
 /// A console for the output: release builds on Windows have none of their
@@ -222,6 +222,29 @@ pub fn run(args: &[String]) -> i32 {
             }
         };
     }
+    // What a remote instance's card shows (crate::remote::status): one JSON line.
+    if job == "status-json" {
+        println!("{}", serde_json::to_string(&status_json(InstallationRecord::load().as_ref())).unwrap_or_default());
+        return 0;
+    }
+    // The top bar's reading of this computer (crate::remote::monitor).
+    if job == "monitor-json" {
+        let dir = InstallationRecord::load()
+            .map(|r| if r.pg_dir.as_os_str().is_empty() { r.install_dir } else { r.pg_dir })
+            .unwrap_or_else(|| PathBuf::from(if cfg!(windows) { "C:\\" } else { "/" }));
+        println!("{}", serde_json::to_string(&crate::sysmon::sample(&dir)).unwrap_or_default());
+        return 0;
+    }
+    // The last lines of SENTIENT's log: logs [<lines>].
+    if job == "logs" {
+        let Some(record) = InstallationRecord::load() else {
+            eprintln!("SENTIENT is not installed here.");
+            return 2;
+        };
+        let n = args.get(1).and_then(|n| n.parse().ok()).unwrap_or(300);
+        println!("{}", record.platform().logs(n));
+        return 0;
+    }
     let Some(record) = InstallationRecord::load() else {
         eprintln!("SENTIENT is not installed here (no installation record at {}).", crate::installation::record_path().display());
         return 2;
@@ -352,6 +375,11 @@ pub fn run(args: &[String]) -> i32 {
         },
         "take-over-compose" => crate::adopt::take_over_compose(record, sink.clone()).map(|_| ()),
         "repair" => crate::maintenance::run_repair(record, sink.clone()),
+        // Start, stop or restart SENTIENT (a remote instance's Control).
+        "control" => match args.get(1).map(String::as_str) {
+            Some(a @ ("start" | "stop" | "restart")) => record.platform().control(sink.clone(), a),
+            _ => Err(USAGE.into()),
+        },
         "uninstall" => {
             let keep = !args.iter().any(|a| a == "--delete-data");
             crate::maintenance::run_uninstall(record, keep, sink.clone())
@@ -360,9 +388,60 @@ pub fn run(args: &[String]) -> i32 {
             Some(file) => std::fs::read_to_string(file)
                 .map_err(|e| format!("read {file}: {e}"))
                 .and_then(|t| serde_json::from_str::<std::collections::HashMap<String, String>>(&t).map_err(|e| format!("{file}: {e}")))
-                .and_then(|values| crate::settings::apply(record, &values, sink.clone()).map(|_| ())),
+                .and_then(|values| {
+                    let (values, custom) = crate::settings::split_custom(values);
+                    crate::settings::apply_with(record, &values, custom.as_deref(), sink.clone()).map(|_| ())
+                }),
             None => Err(USAGE.into()),
         },
+        "replace" => match args.get(1) {
+            Some(file) => crate::replace::run(
+                record,
+                std::path::PathBuf::from(file),
+                if args.iter().any(|a| a == "--passphrase-stdin") {
+                    let mut line = String::new();
+                    let _ = std::io::stdin().read_line(&mut line);
+                    Some(line.trim_end_matches(['\r', '\n']).to_string()).filter(|p| !p.is_empty())
+                } else {
+                    std::env::var("SBR_BACKUP_PASSWORD").ok().filter(|p| !p.is_empty())
+                },
+                args.iter().any(|a| a == "--delete-old"),
+                sink.clone(),
+            ),
+            None => Err(USAGE.into()),
+        },
+        // sentient-admin as root (native Linux keeps the database address
+        // root-only); a password comes on standard input.
+        "admin" => {
+            let rest: Vec<String> = args[1..].to_vec();
+            let input = rest.iter().any(|a| a == "--password-stdin").then(|| {
+                let mut line = String::new();
+                let _ = std::io::stdin().read_line(&mut line);
+                line.trim_end_matches(['\r', '\n']).to_string()
+            });
+            crate::sentient_admin::run(&record, &rest, input.as_deref()).map(|out| {
+                for line in out.lines() {
+                    sink(Progress::Log { line: line.to_string() });
+                }
+            })
+        }
+        // The daily backup (scheduled task or systemd timer).
+        "scheduled-backup" => {
+            let prefs = crate::backups::BackupPrefs::load();
+            crate::backups::run(&record, &prefs, None, true, sink.clone()).map(|_| ())
+        }
+        // A backup by hand with the saved settings (native Linux, as root).
+        "backup-now" => {
+            let pass = args.iter().any(|a| a == "--passphrase-stdin").then(|| {
+                let mut line = String::new();
+                let _ = std::io::stdin().read_line(&mut line);
+                line.trim_end_matches(['\r', '\n']).to_string()
+            });
+            crate::backups::run(&record, &crate::backups::BackupPrefs::load(), pass.filter(|p| !p.is_empty()), false, sink.clone()).map(|_| ())
+        }
+        // Register or remove the daily backup from the saved settings.
+        "backup-schedule" => crate::backups::apply_schedule(&crate::backups::BackupPrefs::load()),
+        "apply-changes" => crate::changes::apply(record, &sink).map(|_| ()),
         "kept" => crate::kept::list(&record).map(|items| {
             if json {
                 for k in items {
@@ -423,5 +502,32 @@ fn print_candidates(found: &[crate::adopt::Candidate]) {
         for n in &c.notes {
             println!("   Note: {n}");
         }
+    }
+}
+
+/// This computer's state for the Platform Manager on another computer.
+pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote::RemoteStatus {
+    let manager_version = env!("CARGO_PKG_VERSION").to_string();
+    let Some(record) = record else { return crate::remote::RemoteStatus { manager_version, ..Default::default() } };
+    let snap = record.platform().snapshot();
+    // Without administrator rights the database's size needs a password
+    // prompt (native Linux): leave it out rather than ask.
+    let db = if crate::dbstatus::needs_admin(record) && !crate::rootjob::is_root() { crate::dbstatus::DbStatus::default() } else { crate::dbstatus::read(record) };
+    let database_bytes = db.pg.as_ref().map(|p| p.db_bytes + db.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0));
+    let mon = crate::sysmon::sample(&record.state_dir);
+    let prefs = crate::backups::BackupPrefs::load();
+    let last_backup = crate::backups::list(&prefs.folder).first().map(|e| e.made.clone());
+    let uptime = sysinfo::System::uptime();
+    crate::remote::RemoteStatus {
+        installed: snap.installed,
+        serving: snap.serving,
+        sentient_version: record.sentient_version.clone(),
+        database: crate::installation::flavor_label(record.flavor()).to_string(),
+        database_bytes,
+        disk_free: (mon.disk_total > 0).then_some(mon.disk_free),
+        last_backup,
+        uptime_secs: Some(uptime),
+        manager_version,
+        running_job: None,
     }
 }

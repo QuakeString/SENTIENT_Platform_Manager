@@ -9,8 +9,11 @@ mod adopt;
 mod agent;
 mod assets;
 mod backup_jobs;
+mod backups;
 mod catalog;
+mod changes;
 mod dbstatus;
+mod earlier;
 mod elevate;
 mod headless;
 mod installation;
@@ -23,15 +26,21 @@ mod maintenance;
 mod manager;
 mod migration;
 mod mode;
+mod notes;
 mod online;
 mod open_client;
+mod remote;
+mod replace;
 mod restore_switch;
 mod rootjob;
 mod secrets;
 mod secrets_key;
 mod self_install;
+mod sentient_admin;
 mod settings;
 mod standalone;
+mod support;
+mod sysmon;
 mod theme;
 mod ui;
 mod updates;
@@ -59,6 +68,12 @@ fn main() {
     if args.get(1).map(String::as_str) == Some("--open-sentient") {
         std::process::exit(open_client::run(&args[2..]));
     }
+    // ssh asks for a remote instance's passphrase or password (crate::remote):
+    // it runs this program with only its prompt as the argument, and
+    // crate::remote::ssh marks the call with SPM_ASKPASS_INSTANCE.
+    if std::env::var_os("SPM_ASKPASS_INSTANCE").is_some() || args.get(1).map(String::as_str) == Some("--askpass") {
+        std::process::exit(remote::askpass());
+    }
     if args.get(1).map(String::as_str) == Some("--job") {
         std::process::exit(headless::run(&args[2..]));
     }
@@ -74,10 +89,12 @@ fn main() {
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx| {
         gpui_kit::init(cx);
         theme::init(ThemeMode::Light, cx);
-        // Development aid: open in the dark theme (screenshots of both).
-        #[cfg(debug_assertions)]
-        if std::env::var("SPM_THEME").is_ok_and(|t| t == "dark") {
-            theme::toggle(cx);
+        // Development aid: open in a given theme (screenshots of both).
+        let forced = cfg!(debug_assertions).then(|| std::env::var("SPM_THEME").ok()).flatten();
+        match forced.as_deref() {
+            Some("dark") => theme::apply(theme::Choice::Dark, None, cx),
+            Some("light") => theme::apply(theme::Choice::Light, None, cx),
+            _ => theme::apply(theme::Choice::saved(), None, cx),
         }
 
         let size = match mode {

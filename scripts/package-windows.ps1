@@ -15,6 +15,11 @@
 #                                    SENTIENT server need (a fresh Windows
 #                                    has none); downloaded here if missing
 #       VERSION                      the SENTIENT version, shown by setup
+#       NOTES.md                     its release notes, for "What's new" in
+#                                    setup without internet: copied when the
+#                                    payload folder has one (make it with
+#                                    scripts/release-notes.py extract
+#                                    <SENTIENT CHANGELOG.md> <version> --public)
 #
 # and zip it. Setup finds payload\ next to itself and installs without
 # internet. Pure ASCII on purpose: Windows PowerShell reads a BOM-less script
@@ -82,6 +87,8 @@ foreach ($f in $required) {
     Copy-Item (Join-Path $PayloadDir $f) (Join-Path $dir "payload")
 }
 Set-Content -Path (Join-Path $dir "payload\VERSION") -Value $SentientVersion -Encoding ASCII
+$notes = Join-Path $PayloadDir "NOTES.md"
+if (Test-Path $notes) { Copy-Item $notes (Join-Path $dir "payload") }
 
 $zip = Join-Path $Out "$name.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }

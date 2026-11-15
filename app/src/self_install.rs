@@ -12,6 +12,20 @@
 
 pub const PRODUCT: &str = "SENTIENT Platform Manager";
 
+/// The Start menu entry's name. Windows Start search matches words of the
+/// shortcut's name, so "SPM" in it makes typing "SPM" find the Platform
+/// Manager. The desktop shortcut, folder, program and Apps & features entry
+/// keep [`PRODUCT`].
+pub const START_MENU_NAME: &str = "SENTIENT Platform Manager (SPM)";
+
+/// The command `spm` (Run box, Start search) through Windows' App Paths.
+pub const APP_PATH_KEY: &str = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\spm.exe";
+
+/// The Start menu shortcuts to write and the earlier one to delete.
+pub fn start_menu_links(folder: &str) -> (String, String) {
+    (format!("{folder}\\{START_MENU_NAME}.lnk"), format!("{folder}\\{PRODUCT}.lnk"))
+}
+
 /// What setup creates besides the program itself.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Shortcuts {
@@ -41,7 +55,7 @@ pub use imp::*;
 
 #[cfg(windows)]
 mod imp {
-    use super::{PRODUCT, Shortcuts};
+    use super::{APP_PATH_KEY, PRODUCT, START_MENU_NAME, Shortcuts};
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
@@ -111,9 +125,27 @@ mod imp {
             .map_err(|e| format!("write {path}: {e}"))
     }
 
+    /// The Start menu entry under its searchable name, replacing the one an
+    /// earlier Platform Manager made, and the `spm` command.
+    fn start_menu_entry(manager: &Path) -> Result<(), String> {
+        let (_, old) = super::start_menu_links(START_MENU);
+        shortcut(manager, START_MENU, START_MENU_NAME, "--manager")?;
+        let _ = std::fs::remove_file(old);
+        register_app_path(manager);
+        Ok(())
+    }
+
+    /// `spm` in the Run box and in Start search.
+    fn register_app_path(manager: &Path) {
+        let exe = manager.display().to_string();
+        let dir = manager.parent().map(|d| d.display().to_string()).unwrap_or_default();
+        let _ = quiet("reg.exe").args(["add", APP_PATH_KEY, "/ve", "/t", "REG_SZ", "/d", &exe, "/f"]).output();
+        let _ = quiet("reg.exe").args(["add", APP_PATH_KEY, "/v", "Path", "/t", "REG_SZ", "/d", &dir, "/f"]).output();
+    }
+
     pub fn create_shortcuts(manager: &Path, url: &str, s: &Shortcuts) -> Result<(), String> {
         if s.start_menu {
-            shortcut(manager, START_MENU, PRODUCT, "--manager")?;
+            start_menu_entry(manager)?;
             web_shortcut(START_MENU, "SENTIENT", url)?;
         }
         if s.desktop_manager {
@@ -127,13 +159,13 @@ mod imp {
 
     /// The manager's Start menu entry (repair puts it back).
     pub fn restore_menu_entry(manager: &Path) {
-        let _ = shortcut(manager, START_MENU, PRODUCT, "--manager");
+        let _ = start_menu_entry(manager);
     }
 
     /// Shortcuts of a Platform Manager installed without SENTIENT.
     pub fn create_manager_shortcuts(manager: &Path, s: &Shortcuts) -> Result<(), String> {
         if s.start_menu {
-            shortcut(manager, START_MENU, PRODUCT, "--manager")?;
+            start_menu_entry(manager)?;
         }
         if s.desktop_manager {
             shortcut(manager, DESKTOP, PRODUCT, "--manager")?;
@@ -165,11 +197,22 @@ mod imp {
         let _ = quiet("reg.exe").args(["delete", MANAGER_ARP_KEY, "/f"]).output();
     }
 
+    /// Point the existing "SENTIENT" web shortcuts at `url` (a new web port).
+    pub fn refresh_web_shortcuts(url: &str) {
+        for folder in [DESKTOP, START_MENU] {
+            if std::path::Path::new(&format!(r"{folder}\SENTIENT.url")).exists() {
+                let _ = web_shortcut(folder, "SENTIENT", url);
+            }
+        }
+    }
+
     pub fn remove_shortcuts() {
         for folder in [DESKTOP, START_MENU] {
             let _ = std::fs::remove_file(format!(r"{folder}\{PRODUCT}.lnk"));
+            let _ = std::fs::remove_file(format!(r"{folder}\{START_MENU_NAME}.lnk"));
             let _ = std::fs::remove_file(format!(r"{folder}\SENTIENT.url"));
         }
+        let _ = quiet("reg.exe").args(["delete", APP_PATH_KEY, "/f"]).output();
     }
 
     /// Delete the manager's folder once this process has exited (it may be
@@ -328,6 +371,8 @@ mod imp {
 
     pub fn remove_manager_entry() {}
 
+    pub fn refresh_web_shortcuts(_url: &str) {}
+
     /// The pacman package that owns the program, when it came from one
     /// (`pacman -U sentient-platform-manager-*.pkg.tar.zst`). Its files are
     /// pacman's to remove, or the package database goes stale.
@@ -397,15 +442,12 @@ mod imp {
 }
 
 /// Bring an install made by an earlier Platform Manager up to date with
-/// how this one sets up operator screens: SENTIENT's services start with
-/// Windows without the two-minute delay, and an existing kiosk shortcut runs
+/// how this one sets up operator screens: an existing kiosk shortcut runs
 /// the starting page (`--open-sentient --kiosk`) instead of the browser
-/// straight on SENTIENT. Run after the manager updates itself and on repair.
+/// straight on SENTIENT. Run after the manager updates itself and on
+/// repair. Changes that affect SENTIENT itself are listed for the operator
+/// instead (crate::changes).
 pub fn refresh_operator_screen(sink: &sentient_installer_core::progress::ProgressFn) {
-    #[cfg(windows)]
-    {
-        undelay_autostart();
-    }
     if sentient_installer_core::kiosk::shortcut_exists() {
         if let Some(record) = crate::installation::InstallationRecord::load() {
             if let Err(e) = sentient_installer_core::kiosk::create_shortcut(sink, &manager_exe(), &record.state_dir) {
@@ -426,4 +468,16 @@ pub fn set_open_at_signin(sink: &sentient_installer_core::progress::ProgressFn, 
         sink(sentient_installer_core::progress::Progress::Log { line: "SENTIENT's services start with Windows.".into() });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod start_menu_tests {
+    #[test]
+    fn the_start_menu_entry_is_found_by_spm_and_replaces_the_old_name() {
+        let (new, old) = super::start_menu_links(r"C:\Menu");
+        assert_eq!(new, r"C:\Menu\SENTIENT Platform Manager (SPM).lnk");
+        assert_eq!(old, r"C:\Menu\SENTIENT Platform Manager.lnk");
+        assert!(super::START_MENU_NAME.split(|c: char| !c.is_alphanumeric()).any(|w| w == "SPM"));
+        assert!(super::APP_PATH_KEY.ends_with(r"\App Paths\spm.exe"));
+    }
 }
