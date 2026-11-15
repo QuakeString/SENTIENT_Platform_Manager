@@ -25,6 +25,11 @@ use crate::ui::{self, Tone};
 const SHOW_DONE: Duration = Duration::from_secs(5);
 
 pub struct Strip {
+    /// The top bar is light (dark text): the chip's inset is fainter.
+    pub light_bar: std::cell::Cell<bool>,
+    /// The window's width: below 900 the chip shows only its spinner, time
+    /// and Details; at the minimum width only the spinner and time.
+    pub window_w: std::cell::Cell<f32>,
     job: Option<Entity<Job>>,
     /// The job's name as the page called it (else its current step).
     label: Option<SharedString>,
@@ -39,7 +44,7 @@ impl Global for StripSlot {}
 
 /// The strip for this window (the manager makes it once).
 pub fn install(cx: &mut App) -> Entity<Strip> {
-    let strip = cx.new(|_| Strip { job: None, label: None, finished_at: None, opened_for_failure: false, _observe: None, _hide: None });
+    let strip = cx.new(|_| Strip { light_bar: std::cell::Cell::new(false), window_w: std::cell::Cell::new(1100.), job: None, label: None, finished_at: None, opened_for_failure: false, _observe: None, _hide: None });
     cx.set_global(StripSlot(strip.clone()));
     strip
 }
@@ -160,14 +165,16 @@ impl Render for Strip {
                     (Some(l), false) => l.to_string(),
                     (None, _) => step.to_string(),
                 };
-                let secs = job.step_elapsed().map(|d| d.as_secs()).unwrap_or(0);
-                (Tone::Neutral, format!("{name} · {}:{:02}", secs / 60, secs % 60), true)
+                (Tone::Neutral, name, true)
             }
             JobState::Done(m) => (Tone::Good, m.to_string(), false),
             JobState::Failed(m) => (Tone::Bad, crate::remote::split_failure(m).0, false),
             JobState::Idle => return div().into_any_element(),
         };
         let label = self.label.clone();
+        let w = self.window_w.get();
+        let compact = w < 900.;
+        let tiny = w < 640. && running;
         let mark = match tone {
             Tone::Good => gpui_kit::component::Icon::new(IconName::CircleCheck).small().into_any_element(),
             Tone::Bad => gpui_kit::component::Icon::new(IconName::CircleX).small().text_color(rgb(0xfca5a5)).into_any_element(),
@@ -186,11 +193,18 @@ impl Render for Strip {
             .gap_2()
             .items_center()
             .rounded(px(8.))
-            .bg(black().opacity(0.18))
+            // The top bar's one inset style (the switcher's): darker than the
+            // bar, fainter on a light bar.
+            .bg(black().opacity(if self.light_bar.get() { 0.10 } else { 0.22 }))
             .text_size(px(13.))
             .child(mark)
-            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(text))
-            .child(
+            .when(!compact || !running, |r| r.child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(text)))
+            // The time in a fixed slot, so Details does not move each second.
+            .when(running, |r| {
+                let secs = job.step_elapsed().map(|d| d.as_secs()).unwrap_or(0);
+                r.child(crate::ui::live_value("99:59", 13., format!("{}:{:02}", secs / 60, secs % 60)).opacity(0.85))
+            })
+            .when(!tiny, |r| r.child(
                 div()
                     .id("strip-details")
                     .flex_shrink_0()
@@ -206,7 +220,7 @@ impl Render for Strip {
                         Some(open) => open(cx),
                         None => open_details(job_e.clone(), label.clone(), cx),
                     }),
-            )
+            ))
             .when(!running, |r| {
                 r.child(
                     div()

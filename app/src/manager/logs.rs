@@ -395,9 +395,39 @@ impl Render for LogView {
                         logsource::zone_label()
                     ))),
             );
+        let narrow = ui::narrow();
         let rows = shown.into_iter().enumerate().map(|(i, l)| {
             let sel = self.selected.contains(&i);
-            h_flex()
+            // Narrow: time, source and level on one line, the message under
+            // them at the full width.
+            let head = h_flex()
+                .gap_3()
+                .child(div().w(px(150.)).flex_shrink_0().text_color(muted).child(l.time.clone()))
+                .when(all, |r| {
+                    let c = tag_colour(l.source);
+                    r.child(h_flex().w(px(84.)).flex_shrink_0().child(div().px(px(6.)).rounded(px(4.)).bg(c.opacity(0.14)).text_color(c).text_size(px(11.5)).font_weight(FontWeight::MEDIUM).child(l.source.label())))
+                })
+                .child(div().w(px(52.)).flex_shrink_0().font_weight(FontWeight::MEDIUM).text_color(colour(l.level)).child(level_word(l.level)));
+            let message = div().flex_1().min_w_0().text_color(if l.level == Level::Error { theme.danger } else if l.level == Level::Debug { muted } else { theme.foreground }).child(l.message.clone());
+            if narrow {
+                return v_flex()
+                    .id(("log-line", i))
+                    .px_2()
+                    .py(px(2.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .when(sel, |r| r.bg(theme.primary.opacity(0.14)))
+                    .when(!sel, |r| r.hover(|r| r.bg(theme.list_hover)))
+                    .child(head)
+                    .child(message)
+                    .on_click(cx.listener(move |v, e: &ClickEvent, window, cx| {
+                        window.focus(&v.focus, cx);
+                        let m = e.modifiers();
+                        v.click(i, m.shift, m.control || m.platform, cx);
+                    }));
+            }
+            let _ = (head, message);
+            v_flex().child(h_flex()
                 .id(("log-line", i))
                 .gap_3()
                 .items_start()
@@ -424,7 +454,8 @@ impl Render for LogView {
                     window.focus(&v.focus, cx);
                     let m = e.modifiers();
                     v.click(i, m.shift, m.control || m.platform, cx);
-                }))
+                })))
+                .id(("log-wrap", i))
         });
         let total = count;
         v_flex()

@@ -440,13 +440,15 @@ impl Render for StatusPage {
         page.child(
             ui::panel(&theme)
                 .child(
+                    // Narrow: the buttons go under the state, right-aligned.
                     h_flex()
+                        .flex_wrap()
                         .gap_3()
                         .items_center()
                         .child(ui::product_logo(ui::Product::Sentient, 30.))
                         .child(ui::pill(&theme, tone, overall))
                         .child(div().flex_1())
-                        .when(stopped, |r| {
+                        .child(h_flex().ml_auto().gap_2().items_center().when(stopped, |r| {
                             let starting = self.start_job.read(cx).is_running();
                             r.child(crate::ui::button("status-start").primary().label("Start").loading(starting).disabled(starting).on_click(cx.listener(|this, _, _, cx| this.start(cx))))
                         })
@@ -454,7 +456,7 @@ impl Render for StatusPage {
                             let record = record.clone();
                             // Asked on click: whether the kiosk shortcut is there reads the disk.
                             move |_, _, cx| ui::open_sentient(record.stack.http_port, record.opens_as_kiosk(), cx)
-                        })),
+                        }))),
                 )
                 .child(ui::fact(&theme, "SENTIENT version", record.sentient_version.clone()))
                 .child(ui::fact(&theme, "Database", flavor_label(record.flavor())))

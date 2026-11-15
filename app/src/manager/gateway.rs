@@ -181,17 +181,18 @@ impl Render for GatewayPage {
                 .child(ui::fact(
                     &theme,
                     "Runs as",
-                    match (&status.container, status.managed) {
-                        (None, _) => "Windows service SentientGateway".to_string(),
-                        (Some(c), true) => format!("Docker container {c}"),
-                        (Some(c), false) => format!("Docker container {c} (from its own compose file)"),
+                    match (&status.container, status.managed, &status.service, &status.process) {
+                        (Some(c), true, ..) => format!("Docker container {c}"),
+                        (Some(c), false, ..) => format!("Docker container {c} (from its own compose file)"),
+                        (None, _, Some(u), _) => format!("Service {u}"),
+                        (None, _, None, Some(p)) => format!("A process ({p}), started outside a service"),
+                        _ => "Windows service SentientGateway".to_string(),
                     },
                 ))
-                .child(ui::fact(
-                    &theme,
-                    "Local page",
-                    status.page_url.clone().unwrap_or_else(|| "off (in a container it is on with ST_GW_UI=on)".into()),
-                ))
+                .child(match status.page_url.clone() {
+                    Some(url) => ui::fact(&theme, "Web page", url),
+                    None => ui::fact_help(&theme, "Web page", "Off", "The gateway's own web page is off. In a container it is turned on with ST_GW_UI=on."),
+                })
                 .child(
                     h_flex()
                         .gap_2()
@@ -208,23 +209,33 @@ impl Render for GatewayPage {
                                 h_flex()
                                     .gap_3()
                                     .items_center()
-                                    .child(
-                                        crate::ui::button("gw-update")
-                                            .primary()
-                                            .label(format!("Update to {}", o.version))
-                                            .disabled(busy || !status.managed || (status.container.is_none() && o.installer.is_none()))
-                                            .on_click(cx.listener(move |p, _, _, cx| p.update_to(o2.clone(), cx))),
-                                    )
-                                    .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(if status.managed {
-                                        format!("released {}; the configuration and the local page's password are kept", o.date)
-                                    } else {
-                                        format!(
-                                            "released {}; this container comes from a compose file: set its image to quakestring/sentient-gateway-rs:{} in that file and run docker compose up -d",
-                                            o.date, o.version
-                                        )
+                                    .child({
+                                        let blocked = !status.managed || (status.container.is_none() && o.installer.is_none());
+                                        let why = if !status.managed {
+                                            format!("This container comes from a compose file: set its image to quakestring/sentient-gateway-rs:{} in that file and run docker compose up -d.", o.version)
+                                        } else {
+                                            "No installer for this system in this release.".to_string()
+                                        };
+                                        let button = crate::ui::button("gw-update").primary().label(format!("Update to {}", o.version)).disabled(busy || blocked).on_click(cx.listener(move |p, _, _, cx| p.update_to(o2.clone(), cx)));
+                                        // A disabled button carries its reason as a tooltip.
+                                        if blocked {
+                                            div().id("gw-update-why").child(button).tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(why.clone()).build(w, cx)).into_any_element()
+                                        } else {
+                                            button.into_any_element()
+                                        }
+                                    })
+                                    .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Released {}", o.date)))
+                                    .child(ui::info("gw-update-help".into(), {
+                                        let mut t = if status.managed { "The configuration and the web page's password are kept.".to_string() } else { String::new() };
+                                        if !o.notes.is_empty() {
+                                            if !t.is_empty() {
+                                                t.push_str("\n\n");
+                                            }
+                                            t.push_str(&o.notes);
+                                        }
+                                        if t.is_empty() { "What's in it: see the gateway's change log.".into() } else { t.into() }
                                     })),
                             )
-                            .when(!o.notes.is_empty(), |c| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(o.notes.clone())))
                             .into_any_element()
                     }
                     (None, Some(Err(e))) => div().text_sm().text_color(theme.muted_foreground).child(format!("Gateway updates: {e}")).into_any_element(),

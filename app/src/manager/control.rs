@@ -378,12 +378,9 @@ impl Render for ControlPage {
             let changed = signin_changed || autologin_changed;
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Operator screen"))
-                .child(div().text_sm().text_color(theme.muted_foreground).child(
-                    "Open SENTIENT in the browser when someone signs in to this computer, for example a control-room screen after a power cut. It opens at once and shows SENTIENT as soon as it answers.",
-                ))
                 // Setting rows like every other panel: label left, control
-                // right; the segmented control hugs its options.
-                .child(crate::manager::settings::row(&theme, "Open SENTIENT at sign-in", None, false, match self.signin {
+                // right; the explanation behind the row's (i).
+                .child(crate::manager::settings::row(&theme, "Open SENTIENT at sign-in", Some("Open SENTIENT in the browser when someone signs in to this computer, for example a control-room screen after a power cut. It opens at once and shows SENTIENT as soon as it answers.".into()), false, match self.signin {
                     None => div().text_sm().child("Checking…").into_any_element(),
                     Some(_) => ui::seg_track(&theme)
                         .children(["Off", "Full screen (kiosk)", "Browser window"].into_iter().enumerate().map(|(i, label)| {

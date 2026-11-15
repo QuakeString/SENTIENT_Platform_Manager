@@ -1162,7 +1162,9 @@ impl Render for InstancesPage {
                 let rail = width < crate::manager::RAIL_BELOW;
                 let inner = width - if rail { 64. } else { crate::manager::NAV_W } - 32.;
                 let cols = ((inner + 12.) / (CARD_MIN_W + 12.)).floor().max(1.);
-                let card_w = ((inner - 12. * (cols - 1.)) / cols).floor();
+                // Tiles keep their size (at most CARD_MAX_W) and the row
+                // starts at the left: two instances are two tiles, not halves.
+                let card_w = ((inner - 12. * (cols - 1.)) / cols).floor().min(CARD_MAX_W);
                 h_flex()
                     .flex_wrap()
                     .gap(px(12.))
@@ -1176,6 +1178,9 @@ impl Render for InstancesPage {
 const LOCAL: &str = "@local";
 /// The narrowest a card gets before the grid drops a column.
 const CARD_MIN_W: f32 = 250.;
+const CARD_MAX_W: f32 = 300.;
+/// "Open" and "Open now" share one width, so Edit and Remove stay put.
+const OPEN_W: f32 = 78.;
 
 /// The state label of a card.
 fn state_of(status: Option<&Result<RemoteStatus, String>>, refreshing: bool) -> (Tone, String) {
@@ -1266,6 +1271,8 @@ fn colour_button(id: SharedString, label: &'static str, color: &str, on_click: i
     let c = rgb(remote::parse_hex(color).unwrap_or(0x187074));
     h_flex()
         .id(id)
+        .min_w(px(OPEN_W))
+        .justify_center()
         .h(px(28.))
         .px(px(11.))
         .rounded(px(8.))
@@ -1369,6 +1376,8 @@ fn grid_card(
 fn open_now_tag(color: &str) -> Div {
     let c = rgb(remote::parse_hex(color).unwrap_or(0x187074));
     h_flex()
+        .min_w(px(OPEN_W))
+        .justify_center()
         .items_center()
         .px(px(10.))
         .h(px(28.))

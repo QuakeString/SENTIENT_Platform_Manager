@@ -304,21 +304,27 @@ impl Manager {
             }
             None => (if dark { rgb(0x155e61).into() } else { rgb(0x187074).into() }, rgb(0xffffff).into()),
         };
-        let dim = fg.opacity(0.75);
         let (name, address): (String, Option<String>) = match (&remote, &self.record) {
             (Some(r), _) => (r.name.clone(), Some(format!("{} over SSH", r.host))),
             (None, Some(r)) => ("This computer".into(), Some(format!("SENTIENT {}", r.sentient_version))),
             (None, None) => ("This computer".into(), None),
         };
         let instance = format!("{name} {}", address.clone().unwrap_or_default());
-        let remote_amber: Hsla = rgb(0xf0b24a).into();
-        let status_green: Hsla = rgb(0x6ee7b7).into();
+        // Light bar (dark text): a fainter inset.
+        let light_bar = fg.l < 0.5;
+        let inset: Hsla = black().opacity(if light_bar { 0.10 } else { 0.22 });
+        // The open instance's state: green when its reading came back,
+        // amber while it is being read.
+        let status_green: Hsla = rgb(0x3ddc84).into();
+        let state_dot: Hsla = if remote.is_some() && self.remote_monitor.is_none() { rgb(0xf3b744).into() } else { status_green };
+        self.strip.read(cx).light_bar.set(light_bar);
+        self.strip.read(cx).window_w.set(width);
         // The mockup's top bar: above 900 px the product name and the
         // monitors' bars show; below, only the switcher and the values.
         let wide = width > 900.;
         let warn_fill: Hsla = rgb(0xf59e0b).into();
         let warn_text: Hsla = rgb(0xfcd34d).into();
-        let meter = |id: &'static str, label: &'static str, value: String, fraction: f32, high: bool| {
+        let meter = |id: &'static str, label: &'static str, widest: &'static str, value: String, fraction: f32, high: bool| {
             h_flex()
                 .id(id)
                 .gap(px(6.))
@@ -335,16 +341,15 @@ impl Manager {
                             .child(div().h_full().rounded_full().w(relative(fraction.clamp(0.0, 1.0))).bg(if high { warn_fill } else { fg })),
                     )
                 })
-                .child(div().whitespace_nowrap().text_color(if high { warn_text } else { fg }).child(value))
+                // A fixed slot for the widest value: the bars and the bell
+                // never move when a value changes.
+                .child(ui::live_value(widest, 12.5, value).text_color(if high { warn_text } else { fg }))
         };
         // What fits: a rough width per piece (about 7 px a character at
         // 12.5-14 px), kept in this order: CPU, memory, disk.
         let text_w = |s: &str| s.chars().count() as f32 * 7.2;
         let mut room = width - 20. - (20. + 12.) - (text_w(&instance) + 60. + 12.) - if remote.is_some() { 64. } else { 0. } - 40. - 12.;
-        // A running job's chip comes first: the monitors give way to it.
-        if self.strip.read(cx).active() {
-            room -= 360.;
-        }
+
         let mut fits = |need: f32| {
             let ok = room >= need;
             if ok {
@@ -372,11 +377,12 @@ impl Manager {
                 .py_1()
                 .rounded(px(6.))
                 .cursor_pointer()
-                .hover(|d| d.bg(fg.opacity(0.1)))
-                .when(show_cpu, |r| r.child(meter("m-cpu", "CPU", format!("{:.0}%", m.cpu), m.cpu / 100.0, m.cpu_high())))
+                .hover(move |d| d.bg(inset))
+                .when(show_cpu, |r| r.child(meter("m-cpu", "CPU", "100%", format!("{:.0}%", m.cpu), m.cpu / 100.0, m.cpu_high())))
                 .when(show_mem, |r| r.child(meter(
                     "m-mem",
                     "Memory",
+                    "99.9 / 999 GB",
                     format!("{:.1} / {:.0} GB", gb(m.mem_used), gb(m.mem_total)),
                     if m.mem_total > 0 { m.mem_used as f32 / m.mem_total as f32 } else { 0.0 },
                     m.mem_high(),
@@ -384,6 +390,7 @@ impl Manager {
                 .when(show_disk, |r| r.child(meter(
                     "m-disk",
                     "Disk",
+                    "9999.9 GB free",
                     format!("{} free", crate::dbstatus::bytes_label(m.disk_free)),
                     if m.disk_total > 0 { 1.0 - m.disk_free as f32 / m.disk_total as f32 } else { 0.0 },
                     m.disk_low(),
@@ -439,23 +446,24 @@ impl Manager {
                 // The mockup's switcher: a framed chip with a status dot, the
                 // name, the address faint, a chevron; a remote one is framed
                 // in amber and carries a REMOTE tag.
+                // The mockup's option B: a darker inset of the bar itself, no
+                // border; nothing on it but the bar colour and its text colour.
                 crate::ui::button("switcher")
                     .ghost()
                     .text_color(fg)
-                    .bg(fg.opacity(0.12))
-                    .border_1()
-                    .border_color(if remote.is_some() { remote_amber } else { fg.opacity(0.22) })
+                    .bg(inset)
                     .child(
                         h_flex()
                             .gap(px(7.))
                             .items_center()
                             .text_size(px(13.5))
-                            .child(div().size(px(8.)).rounded_full().bg(if remote.is_some() { remote_amber } else { status_green }))
-                            .child(div().font_weight(FontWeight::MEDIUM).child(name))
-                            .when_some(address, |r, a| r.child(div().text_color(fg.opacity(0.7)).child(a)))
-                            .child(Icon::new(IconName::ChevronDown).size_3p5().text_color(dim))
+                            // The state dot keeps its colour, ringed in the text colour.
+                            .child(div().size(px(11.)).rounded_full().border(px(1.5)).border_color(fg.opacity(0.9)).bg(state_dot))
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
+                            .when_some(address, |r, a| r.child(div().text_color(fg.opacity(0.85)).child(a)))
+                            .child(Icon::new(IconName::ChevronDown).size_3().text_color(fg.opacity(0.85)))
                             .when(remote.is_some(), |r| {
-                                r.child(div().px(px(5.)).rounded(px(4.)).bg(remote_amber).text_color(rgb(0x1b1b1b)).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child("REMOTE"))
+                                r.child(div().px(px(6.)).py(px(1.)).rounded(px(4.)).bg(fg).text_color(bg).text_size(px(10.5)).font_weight(FontWeight::SEMIBOLD).child("REMOTE"))
                             }),
                     )
                     .dropdown_menu({
@@ -588,7 +596,6 @@ impl Manager {
             };
             h_flex()
                 .id(id)
-                .flex_wrap()
                 .gap_3()
                 .px_4()
                 .py_2()
@@ -598,7 +605,8 @@ impl Manager {
                 .border_b_1()
                 .border_color(theme.border)
                 .child(Icon::new(if matches!(tone, crate::ui::Tone::Good) { IconName::CircleCheck } else { IconName::Info }).small())
-                .child(div().flex_1().min_w(px(220.)).text_sm().child(text))
+                // The buttons never wrap: the text is cut instead.
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().child(text))
         };
         let mut col = v_flex();
         // B3/B4: this run follows a self-update.
@@ -638,6 +646,33 @@ impl Manager {
                     }))),
                 );
             }
+        }
+        // Several updates: one bar that counts them and opens Update.
+        let several = [manager.is_some(), sentient.is_some(), gw.is_some()].iter().filter(|b| **b).count();
+        if several >= 2 {
+            let (mv, sv, gv) = (manager.as_ref().map(|m| m.version.clone()), sentient.as_ref().map(|s| s.version.clone()), gw.as_ref().map(|g| g.version.clone()));
+            col = col.child(
+                bar("notice-several", crate::ui::Tone::Neutral, format!("{several} updates available"))
+                    .child(crate::ui::button("notice-several-go").primary().label("View").on_click(cx.listener(|this, _, _, cx| {
+                        this.page = Page::Update;
+                        cx.notify();
+                    })))
+                    .child(crate::ui::button("notice-several-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        let (mv, sv, gv) = (mv.clone(), sv.clone(), gv.clone());
+                        this.updates.update(cx, |s, cx| {
+                            if let Some(v) = mv {
+                                s.dismiss_manager(v, cx);
+                            }
+                            if let Some(v) = sv {
+                                s.dismiss_sentient(v, cx);
+                            }
+                            if let Some(v) = gv {
+                                s.dismiss_gateway(v, cx);
+                            }
+                        });
+                    }))),
+            );
+            return Some(col.into_any_element());
         }
         match (&manager, &sentient) {
             // A4: both; the Platform Manager goes first.
@@ -1120,6 +1155,7 @@ impl Render for Manager {
         // The layout follows the window: an icon rail below RAIL_BELOW px,
         // fewer monitors in the top bar as it narrows.
         let width = f32::from(window.viewport_size().width);
+        crate::ui::set_narrow(width < 760.);
         // A Control row's "Logs" asked for the Logs page.
         if crate::logsource::take_go() {
             self.page = Page::Logs;

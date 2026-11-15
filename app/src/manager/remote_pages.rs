@@ -382,6 +382,7 @@ impl RemotePages {
                     ui::panel(&theme)
                         .child(
                             h_flex()
+                                .flex_wrap()
                                 .gap_3()
                                 .items_center()
                                 .child(ui::product_logo(ui::Product::Sentient, 30.))
@@ -394,7 +395,7 @@ impl RemotePages {
                         )
                         .child(ui::fact(&theme, "SENTIENT version", s.sentient_version.clone()))
                         .child(ui::fact(&theme, "Database", s.database.clone()))
-                        .child(ui::fact(&theme, "Runs as", if det.install.is_empty() { "Not known".to_string() } else { det.install.clone() }))
+                        .when(!det.install.is_empty(), |p| p.child(ui::fact(&theme, "Runs as", det.install.clone())))
                         .child(ui::fact(&theme, "Server", format!("{} · {} {}", self.inst.address(), det.os_name, det.arch)))
                         .child(
                             // A pill only while the update runs or when it failed;
@@ -664,6 +665,29 @@ impl RemotePages {
             ))
     }
 
+    fn confirm_restore(&mut self, path: String, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        let text = format!("Users, passwords, devices and dashboards on {} will be those of {name}. Everything there now is replaced. SENTIENT stops for about a minute while it switches.", self.inst.name);
+        crate::modal::alert(window, cx, move |d, _, _| {
+            let (this, path) = (this.clone(), path.clone());
+            d.title("Replace this server's data?").description(text.clone()).confirm().ok_text("Replace").on_ok(move |_, _, cx| {
+                this.update(cx, |p, cx| p.run_job("Restoring", vec!["replace".into(), path.clone()], cx)).ok();
+                true
+            })
+        });
+    }
+
+    fn confirm_delete(&mut self, path: String, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        crate::modal::alert(window, cx, move |d, _, _| {
+            let (this, path) = (this.clone(), path.clone());
+            d.title(format!("Delete {name}?")).description("The file is deleted from the server. This cannot be undone.").confirm().ok_text("Delete").on_ok(move |_, _, cx| {
+                this.update(cx, |p, cx| p.run_job("Deleting the backup", vec!["backup-delete".into(), path.clone()], cx)).ok();
+                true
+            })
+        });
+    }
+
     fn backup_page(&self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
@@ -693,7 +717,7 @@ impl RemotePages {
         let auto = ui::panel(&theme)
             .gap_0()
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Automatic backup"))
-            .child(crate::manager::backup::brow_pub(&theme, "Back up every", Some("A backup every day at this time, on the server's clock."), {
+            .child(crate::manager::backup::brow_pub(&theme, "Back up every day", Some("A backup every day at this time, on the server's clock."), {
                 let (t1, this1) = (time.clone(), this.clone());
                 h_flex()
                     .gap_3()
@@ -702,7 +726,7 @@ impl RemotePages {
                         let at = if *v { t1.clone() } else { "off".into() };
                         this.run_job("Saving the automatic backup", save(at, keep, include), cx);
                     })))
-                    .child(crate::ui::button("r-auto-time").outline().disabled(!on || busy).label(format!("day at {time}")).dropdown_menu(move |menu, _, _| {
+                    .child(crate::ui::button("r-auto-time").outline().disabled(!on || busy).label(time.clone()).icon(gpui_kit::component::IconName::ChevronDown).dropdown_menu(move |menu, _, _| {
                         let mut menu = menu;
                         for h in 0..24 {
                             for m in [0, 30] {
@@ -718,15 +742,8 @@ impl RemotePages {
             }))
             .child(crate::manager::backup::brow_pub(&theme, "Keep", Some("Older automatic backups are deleted."), {
                 let (t1, this1) = (if on { time.clone() } else { "off".into() }, this.clone());
-                crate::ui::button("r-auto-keep").outline().disabled(busy).label(format!("{keep} backups")).dropdown_menu(move |menu, _, _| {
-                    let mut menu = menu;
-                    for k in [3u32, 7, 14, 30, 60] {
-                        let (this, t2) = (this1.clone(), t1.clone());
-                        menu = menu.item(PopupMenuItem::new(format!("{k} backups")).checked(k == keep).on_click(move |_, _, cx| {
-                            this.update(cx, |p, cx| p.run_job("Saving the automatic backup", save(t2.clone(), k, include), cx)).ok();
-                        }));
-                    }
-                    menu
+                crate::manager::backup::keep_menu("r-auto-keep", keep, busy, move |k, _, cx| {
+                    this1.update(cx, |p, cx| p.run_job("Saving the automatic backup", save(t1.clone(), k, include), cx)).ok();
                 })
             }))
             .child(crate::manager::backup::brow_pub(&theme, "Include", Some("Everything: the whole database and its files. Configuration: devices, dashboards, users and settings, without telemetry history."), {
@@ -765,37 +782,15 @@ impl RemotePages {
             let path = e.path.display().to_string();
             let (p1, p2, p3, name) = (path.clone(), path.clone(), path, e.name.clone());
             let name2 = name.clone();
-            let server = self.inst.name.clone();
             list = list.child(
                 crate::manager::backup::entry_row_with(&theme, i, e, true)
                     .when(!damaged, |r| {
-                        r.child(crate::ui::button(SharedString::from(format!("r-restore-{}", e.name))).outline().label("Restore…").disabled(busy).on_click(cx.listener(move |_, _, window, cx| {
-                            let this = cx.entity().downgrade();
-                            let p1 = p1.clone();
-                            let text = format!("Users, passwords, devices and dashboards on {server} will be those of {name}. Everything there now is replaced. SENTIENT stops for about a minute while it switches.");
-                            crate::modal::alert(window, cx, move |d, _, _| {
-                                let (this, p1) = (this.clone(), p1.clone());
-                                d.title("Replace this server's data?").description(text.clone()).confirm().ok_text("Replace").on_ok(move |_, _, cx| {
-                                    this.update(cx, |p, cx| p.run_job("Restoring", vec!["replace".into(), p1.clone()], cx)).ok();
-                                    true
-                                })
-                            });
-                        })))
+                        r.child(crate::ui::button(SharedString::from(format!("r-restore-{}", e.name))).outline().label("Restore…").disabled(busy).on_click(cx.listener(move |this, _, window, cx| this.confirm_restore(p1.clone(), name.clone(), window, cx))))
                     })
                     .child(crate::ui::button(SharedString::from(format!("r-verify-{}", e.name))).outline().label("Verify").disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
                         this.run_job("Verifying the backup", vec!["backup-verify".into(), p2.clone()], cx);
                     })))
-                    .child(crate::ui::button(SharedString::from(format!("r-delete-{}", e.name))).ghost().label("Delete").disabled(busy).on_click(cx.listener(move |_, _, window, cx| {
-                        let this = cx.entity().downgrade();
-                        let (p3, name2) = (p3.clone(), name2.clone());
-                        crate::modal::alert(window, cx, move |d, _, _| {
-                            let (this, p3) = (this.clone(), p3.clone());
-                            d.title(format!("Delete {name2}?")).description("The file is deleted from the server. This cannot be undone.").confirm().ok_text("Delete").on_ok(move |_, _, cx| {
-                                this.update(cx, |p, cx| p.run_job("Deleting the backup", vec!["backup-delete".into(), p3.clone()], cx)).ok();
-                                true
-                            })
-                        });
-                    }))),
+                    .child(crate::ui::button(SharedString::from(format!("r-delete-{}", e.name))).outline().text_color(theme.danger).label("Delete").disabled(busy).on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), name2.clone(), window, cx)))),
             );
         }
         v_flex().gap_4().child(now).child(auto).child(list)
@@ -1091,13 +1086,21 @@ impl RemotePages {
             "windows-service" => "Windows service".to_string(),
             _ => "Not known".to_string(),
         };
-        let or_dash = |v: String| if v.is_empty() || v == ":" { "Not known".to_string() } else { v };
+        // A row only when it has a value.
         let host = get("host");
+        let version = get("version");
+        let page = get("page");
         p = p
-            .child(ui::fact(&theme, "Version", or_dash(get("version"))))
-            .child(ui::fact(&theme, "Runs as", runs_as))
-            .child(ui::fact(&theme, "Connects to", if host.is_empty() { "Not known".to_string() } else { format!("{host}:{}", get("port")) }))
-            .child(ui::fact(&theme, "Its page", get("page")));
+            .when(!version.is_empty(), |p| p.child(ui::fact(&theme, "Version", version.clone())))
+            .when(!kind.is_empty(), |p| p.child(ui::fact(&theme, "Runs as", runs_as.clone())))
+            .when(!host.is_empty(), |p| p.child(ui::fact(&theme, "Connects to", format!("{host}:{}", get("port")))))
+            .when(!page.is_empty(), |p| {
+                p.child(if page == "off" {
+                    ui::fact_help(&theme, "Web page", "Off", "The gateway's own web page is off. In a container it is turned on with ST_GW_UI=on.")
+                } else {
+                    ui::fact(&theme, "Web page", page.clone())
+                })
+            });
         // A plain process has no service to start it again: no controls.
         let controllable = kind != "process";
         let updatable = (kind == "docker" && get("managed") == "true") || kind == "windows-service";
@@ -1209,7 +1212,23 @@ impl Render for RemotePages {
             Kind::Control => self.control_page(cx),
             Kind::Logs => self.logs_page(window, cx),
             Kind::Update => self.update_page(cx),
-            Kind::Backup => self.backup_page(cx),
+            Kind::Backup => {
+                // Screens: a row's Restore or Delete confirmation open
+                // (SPM_DEBUG_BACKUP_DIALOG=restore|delete).
+                #[cfg(debug_assertions)]
+                {
+                    static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                    if let (Ok(which), Read::Got(b)) = (std::env::var("SPM_DEBUG_BACKUP_DIALOG"), &self.backups) {
+                        if let Some(e) = b.list.first().cloned() {
+                            if !SHOWN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                                let path = e.path.display().to_string();
+                                if which == "delete" { self.confirm_delete(path, e.name, window, cx) } else { self.confirm_restore(path, e.name, window, cx) }
+                            }
+                        }
+                    }
+                }
+                self.backup_page(cx)
+            }
             Kind::Settings => self.settings_page(window, cx),
             Kind::Migration => self.migration_page(cx),
             Kind::Repair => self.repair_page(cx),

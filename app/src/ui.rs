@@ -170,6 +170,25 @@ pub fn fact(theme: &Theme, label: &'static str, value: impl Into<SharedString>) 
         .child(div().min_w_0().child(value.into()))
 }
 
+/// A fact with its explanation behind an (i), never as a line of text.
+pub fn fact_help(theme: &Theme, label: &'static str, value: impl Into<SharedString>, help: impl Into<SharedString>) -> Div {
+    let help: SharedString = help.into();
+    h_flex()
+        .gap_4()
+        .text_sm()
+        .items_center()
+        .child(div().w(px(168.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
+        .child(div().min_w_0().child(value.into()))
+        .child(info(SharedString::from(format!("fact-help-{label}")), help))
+}
+
+/// An (i) whose tooltip holds the help text (the help rule: never inline).
+pub fn info(id: SharedString, help: SharedString) -> impl IntoElement {
+    use gpui_kit::component::button::ButtonVariants as _;
+    use gpui_kit::component::Sizable as _;
+    button(id).ghost().xsmall().icon(gpui_kit::component::IconName::Info).tooltip(help)
+}
+
 /// Shown on every manager screen when this computer has no installation.
 pub fn not_installed(theme: &Theme) -> Div {
     panel(theme)
@@ -546,13 +565,19 @@ pub fn service_rows(
             let plain = service_label(&name);
             let busy = actions.as_ref().and_then(|a| a.2.as_ref()).is_some_and(|b| *b == *name);
             let any_busy = actions.as_ref().is_some_and(|a| a.2.is_some());
-            gpui_kit::component::h_flex()
+            let narrow = narrow();
+            let state_pill = if busy { pill(theme, Tone::Warn, "Working…") } else { pill(theme, tone, label) }.min_w(px(86.)).justify_center();
+            let raw = plain.is_some().then(|| div().min_w_0().overflow_hidden().text_ellipsis().text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(name.clone()));
+            let uptime = (!detail.is_empty()).then(|| div().min_w_0().overflow_hidden().text_ellipsis().text_color(theme.muted_foreground).child(SharedString::from(if narrow { detail.to_string() } else { format!("· {detail}") })));
+            // Wide: the names on the row; narrow: on the second line.
+            let (raw_in, raw, uptime_in, uptime) = if narrow { (None, raw, None, uptime) } else { (raw, None, uptime, None) };
+            let row = gpui_kit::component::h_flex()
                 .gap_4()
                 .text_sm()
                 .items_center()
-                // The state column lines up with the fact labels; it gives way
-                // on a narrow window, and the names are cut, never overlapped.
-                .child(gpui_kit::component::h_flex().w(px(168.)).min_w(px(84.)).flex_shrink(1.).child(if busy { pill(theme, Tone::Warn, "Working…") } else { pill(theme, tone, label) }))
+                // The state column lines up with the fact labels; the names
+                // are cut with an ellipsis, never overlapped.
+                .child(if narrow { gpui_kit::component::h_flex().flex_shrink_0().child(state_pill) } else { gpui_kit::component::h_flex().w(px(168.)).flex_shrink_0().child(state_pill) })
                 .child(
                     gpui_kit::component::h_flex()
                         .flex_1()
@@ -560,11 +585,11 @@ pub fn service_rows(
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .gap_2()
-                        .child(div().flex_shrink_0().child(SharedString::from(plain.unwrap_or(&name).to_string())))
-                        .when(plain.is_some(), |r| r.child(div().min_w_0().overflow_hidden().text_ellipsis().text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(name.clone())))
-                        .when(!detail.is_empty(), |r| r.child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(theme.muted_foreground).child(SharedString::from(format!("· {detail}"))))),
-                )
-                .when_some(actions.clone(), |r, (act, log, _)| {
+                        .child(div().min_w_0().overflow_hidden().text_ellipsis().child(SharedString::from(plain.unwrap_or(&name).to_string())))
+                        .children(raw_in)
+                        .children(uptime_in),
+                );
+            let row = row.when_some(actions.clone(), |r, (act, log, _)| {
                     let icon = |id: &str, icon: gpui_kit::assets::IconName, tip: &'static str, enabled: bool, action: &'static str| {
                         let (act, n) = (act.clone(), name.to_string());
                         button(SharedString::from(format!("svc-{action}-{id}")))
@@ -584,7 +609,16 @@ pub fn service_rows(
                             .child(icon(&name, gpui_kit::assets::IconName::RotateCw, "Restart", running, "restart"))
                             .child(button(SharedString::from(format!("svc-log-{name}"))).ghost().label("Logs").on_click(move |_, window, cx| log(&n, window, cx))),
                     )
-                })
+                });
+            // Narrow: the unit or container name and its uptime on a second line.
+            if narrow && (raw.is_some() || uptime.is_some()) {
+                gpui_kit::component::v_flex()
+                    .gap_0p5()
+                    .child(row)
+                    .child(gpui_kit::component::h_flex().gap_2().text_sm().whitespace_nowrap().overflow_hidden().children(raw).children(uptime))
+            } else {
+                gpui_kit::component::v_flex().child(row)
+            }
         })
         .collect()
 }
@@ -643,4 +677,42 @@ pub fn open_sentient_button(id: &'static str, serving: bool, on_click: impl Fn(&
             .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("SENTIENT is stopped. Start it first.").build(w, cx))
             .into_any_element()
     }
+}
+
+/// Tabular figures: every digit the same width, so a number that changes
+/// does not change its width.
+pub fn tabular() -> FontFeatures {
+    FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
+}
+
+/// The width a text of `widest`'s length takes at `size` px with tabular
+/// figures (about 0.6 em a character in the UI font, plus a little room).
+pub fn slot_width(widest: &str, size: f32) -> Pixels {
+    px((widest.chars().count() as f32 * size * 0.6 + 2.).ceil())
+}
+
+/// A value that updates live in a fixed slot sized for its widest text,
+/// right-aligned with tabular figures: nothing beside it moves when it
+/// changes (the top bar's monitors, the strip's time, Statistics figures).
+pub fn live_value(widest: &str, size: f32, value: impl Into<SharedString>) -> Div {
+    div()
+        .w(slot_width(widest, size))
+        .flex_shrink_0()
+        .text_size(px(size))
+        .text_right()
+        .whitespace_nowrap()
+        .font_features(tabular())
+        .child(value.into())
+}
+
+static NARROW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The window is narrow (below 760 px): rows that hold several columns lay
+/// out on two lines. The manager sets it each frame.
+pub fn set_narrow(narrow: bool) {
+    NARROW.store(narrow, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn narrow() -> bool {
+    NARROW.load(std::sync::atomic::Ordering::Relaxed)
 }

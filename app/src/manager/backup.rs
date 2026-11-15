@@ -1110,7 +1110,7 @@ impl BackupPage {
             .gap_0()
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Automatic backup"))
             // The mockup's control: a switch, then the time as a choice.
-            .child(brow(theme, "Back up every", Some("A backup every day at this time, on this computer's clock."), {
+            .child(brow(theme, "Back up every day", Some("A backup every day at this time, on this computer's clock."), {
                 let on = self.auto_on;
                 let time = { let t = self.schedule_time.read(cx).value().trim().to_string(); if t.is_empty() { "23:30".to_string() } else { t } };
                 let this = cx.entity().downgrade();
@@ -1125,7 +1125,8 @@ impl BackupPage {
                         crate::ui::button("auto-time")
                             .outline()
                             .disabled(!on)
-                            .label(format!("day at {time}"))
+                            .label(time)
+                            .icon(IconName::ChevronDown)
                             .dropdown_menu(move |menu, _, _| {
                                 let mut menu = menu;
                                 for h in 0..24 {
@@ -1146,7 +1147,18 @@ impl BackupPage {
                             }),
                     )
             }))
-            .child(brow(theme, "Keep", Some("Older automatic backups are deleted."), h_flex().gap_2().child(div().w(px(100.)).child(Input::new(&self.keep))).child(div().text_sm().child("backups"))))
+            .child(brow(theme, "Keep", Some("Older automatic backups are deleted."), {
+                // The same choice as a remote server's.
+                let keep = self.keep.read(cx).value().trim().parse::<u32>().unwrap_or(7);
+                let this = cx.entity().downgrade();
+                keep_menu("keep", keep, false, move |k, window, cx| {
+                    this.update(cx, |p, cx| {
+                        p.keep.update(cx, |s, cx| s.set_value(k.to_string(), window, cx));
+                        cx.notify();
+                    })
+                    .ok();
+                })
+            }))
             .child(brow(
                 theme,
                 "Also copy to",
@@ -1200,7 +1212,7 @@ impl BackupPage {
                         })))
                     })
                     .child(crate::ui::button(SharedString::from(format!("check-{}", e.name))).outline().label(if damaged { "Details" } else { "Verify" }).on_click(cx.listener(move |this, _, _, cx| this.run_check(p2.clone(), cx))))
-                    .child(crate::ui::button(SharedString::from(format!("delete-{}", e.name))).ghost().label("Delete").on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), window, cx)))),
+                    .child(delete_button(theme, SharedString::from(format!("delete-{}", e.name))).on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), window, cx)))),
             );
         }
         out.push(list.into_any_element());
@@ -1375,4 +1387,22 @@ pub(crate) fn entry_row_with(theme: &gpui_kit::component::Theme, i: usize, e: &c
                 .child(ui::pill(theme, tone, text))
                 .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)),
         ))
+}
+
+/// "Keep: 7 backups", chosen from a list. Shared with a remote server's.
+pub(crate) fn keep_menu(id: &'static str, keep: u32, disabled: bool, pick: impl Fn(u32, &mut Window, &mut App) + 'static) -> impl IntoElement {
+    let pick = std::rc::Rc::new(pick);
+    crate::ui::button(id).outline().disabled(disabled).label(format!("{keep} backups")).icon(IconName::ChevronDown).dropdown_menu(move |menu, _, _| {
+        let mut menu = menu;
+        for k in [3u32, 7, 14, 30, 60] {
+            let pick = pick.clone();
+            menu = menu.item(PopupMenuItem::new(format!("{k} backups")).checked(k == keep).on_click(move |_, window, cx| pick(k, window, cx)));
+        }
+        menu
+    })
+}
+
+/// A backup row's Delete: a button like Restore and Verify, its text red.
+pub(crate) fn delete_button(theme: &gpui_kit::component::Theme, id: SharedString) -> gpui_kit::component::button::Button {
+    crate::ui::button(id).outline().text_color(theme.danger).label("Delete")
 }
