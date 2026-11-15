@@ -21,6 +21,11 @@ use crate::releases::{self, Release};
 pub const UI_PORT: u16 = 8642;
 pub const IMAGE: &str = "quakestring/sentient-gateway-rs";
 pub const CONTAINER: &str = "sentient-gateway";
+
+/// What the detection looks at, in order (for support and the gateway
+/// page's (i)).
+pub const CHECKS: &str = "Docker containers whose image is quakestring/sentient-gateway* or contains \"gateway\", or whose name contains \"gateway\" or starts with st-gw; systemd units named sentient-gateway, st-gateway, thingsboard-gateway, tb-gateway or containing \"gateway\"; a running program sentient-gateway, st-gateway or thingsboard_gateway; the folders /opt/sentient-gateway and /etc/sentient-gateway.";
+
 #[cfg(windows)]
 const SERVICE: &str = "SentientGateway";
 

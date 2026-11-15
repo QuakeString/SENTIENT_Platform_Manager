@@ -51,9 +51,10 @@ fn find() -> Option<(String, bool)> {
     }
     // Any gateway image; else a container named like a gateway (an image
     // built or retagged locally).
-    let named = |n: &str| ["st-gateway", "tb-gateway", "sentient_gateway", "thingsboard-gateway"].iter().any(|g| n.contains(g));
+    let named = |n: &str| n.to_ascii_lowercase().contains("gateway") || n.contains("st-gw") || n.contains("st_gw");
     rows.iter()
         .find(|(_, image)| crate::gateway::is_gateway_image(image))
+        .or_else(|| rows.iter().find(|(_, image)| image.to_ascii_lowercase().contains("gateway")))
         .or_else(|| rows.iter().find(|(n, _)| named(n)))
         .map(|(n, _)| (n.clone(), false))
 }

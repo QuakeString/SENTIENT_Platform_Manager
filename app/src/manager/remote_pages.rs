@@ -1077,7 +1077,23 @@ impl RemotePages {
                 .child(if !installed { ui::pill(&theme, Tone::Neutral, "Not installed") } else if running { ui::pill(&theme, Tone::Good, "Running") } else { ui::pill(&theme, Tone::Bad, "Stopped") }),
         );
         if !installed {
-            return p.child(div().text_sm().text_color(theme.muted_foreground).child("No gateway on this server. Install it with the Platform Manager on the server itself, so its access token stays on the server."));
+            // The pill says it; the how-to and what was looked for are behind an (i).
+            return ui::panel(&theme).child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(ui::product_logo(ui::Product::Gateway, 24.))
+                    .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
+                    .child(ui::pill(&theme, Tone::Neutral, "Not installed"))
+                    .child(ui::info(
+                        "gw-not-installed".into(),
+                        format!(
+                            "Install it with the Platform Manager on the server itself, so its access token stays on the server.\n\nLooked for: {}",
+                            sentient_installer_core::gateway::CHECKS
+                        )
+                        .into(),
+                    )),
+            );
         }
         let kind = get("kind");
         let runs_as = match kind.as_str() {
