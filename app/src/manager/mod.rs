@@ -489,13 +489,14 @@ impl Manager {
                         .child(div().text_size(px(12.5)).text_color(theme.muted_foreground).overflow_hidden().whitespace_nowrap().text_ellipsis().child(detail))
                         .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(meta)),
                 )
+                // Right: the unread dot, then the row's own clear (×), always
+                // shown so one line can be cleared without hunting for it.
                 .child(
-                    v_flex()
-                        .w(px(20.))
+                    h_flex()
                         .flex_shrink_0()
                         .items_center()
-                        .gap_1()
-                        .when(unread, |c| c.child(div().mt(px(5.)).size(px(7.)).rounded_full().bg(theme.danger)))
+                        .gap(px(6.))
+                        .when(unread, |c| c.child(div().size(px(7.)).rounded_full().bg(theme.danger)))
                         .children(clear),
                 )
         };
@@ -524,12 +525,14 @@ impl Manager {
             let icon = if e.failed { (IconName::CircleX, theme.danger) } else { (IconName::CircleCheck, theme.primary) };
             let clear = div()
                 .id(SharedString::from(format!("clear-{id}")))
-                .invisible()
-                .group_hover(SharedString::from(format!("ev-{id}")), |d| d.visible())
-                .p(px(2.))
-                .rounded(px(4.))
-                .hover(|d| d.bg(theme.list_hover))
-                .child(Icon::new(IconName::Close).size_3().text_color(theme.muted_foreground))
+                .size(px(22.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(5.))
+                .hover(|d| d.bg(theme.danger.opacity(0.12)))
+                .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Clear").build(w, cx))
+                .child(Icon::new(IconName::Close).size(px(13.)).text_color(theme.muted_foreground))
                 .on_click(move |_, _, cx| {
                     cx.stop_propagation();
                     s1.update(cx, |s, cx| s.clear(Some(id), cx));
