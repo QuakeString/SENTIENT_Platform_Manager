@@ -507,6 +507,11 @@ pub struct TakeOverPlan {
     pub needs_ch_password: bool,
     #[serde(default)]
     pub ch_user: String,
+    /// Why a password is asked for (not found, or refused), for the field.
+    #[serde(default)]
+    pub password_why: String,
+    #[serde(default)]
+    pub ch_password_why: String,
 }
 
 /// `env_file` entries in a compose file: `env_file: x` or a `- x` list.
@@ -635,7 +640,13 @@ pub fn take_over_plan(cfg: &DeployConfig, compose: Option<&str>) -> (TakeOverPla
             }
             super::docker_ops::DbPassword::Unknown => {
                 plan.needs_password = true;
+                plan.password_why = "It is not in the containers or the compose file.".into();
                 // Checked once given; validated with a stand-in meanwhile.
+                own.db_password = "given_later".into();
+            }
+            super::docker_ops::DbPassword::Refused(why) => {
+                plan.needs_password = true;
+                plan.password_why = why;
                 own.db_password = "given_later".into();
             }
         }
@@ -660,6 +671,7 @@ pub fn take_over_plan(cfg: &DeployConfig, compose: Option<&str>) -> (TakeOverPla
                 }
                 None => {
                     plan.needs_ch_password = true;
+                    plan.ch_password_why = "None of the passwords in the containers or the compose file (nor an empty one) is accepted by ClickHouse.".into();
                     own.ch_password = "given_later".into();
                 }
             }

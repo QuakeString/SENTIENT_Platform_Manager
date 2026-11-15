@@ -1336,7 +1336,7 @@ impl RemotePages {
         cx.notify();
     }
 
-    fn take_over_with_password(&mut self, mut args: Vec<String>, password: String, cx: &mut Context<Self>) {
+    fn take_over_with_password(&mut self, mut args: Vec<String>, creds: crate::manager::takeover::Creds, cx: &mut Context<Self>) {
         if self.job.read(cx).is_running() {
             return;
         }
@@ -1346,12 +1346,20 @@ impl RemotePages {
             job.start(
                 move |sink| {
                     remote::deploy(&inst, &sink)?;
-                    let file = remote::put_secret_file(&inst, &password)?;
-                    args.push("--db-password-file".into());
-                    args.push(file.clone());
+                    let mut files = Vec::new();
+                    for (flag, pw) in [("--db-password-file", &creds.db), ("--ch-password-file", &creds.ch)] {
+                        if let Some(pw) = pw {
+                            let file = remote::put_secret_file(&inst, pw)?;
+                            args.push(flag.into());
+                            args.push(file.clone());
+                            files.push(file);
+                        }
+                    }
                     let a: Vec<&str> = args.iter().map(String::as_str).collect();
                     let r = remote::start_job(&inst, &a).and_then(|id| remote::follow(&inst, &id, &sink));
-                    remote::remove_file(&inst, &file);
+                    for f in files {
+                        remote::remove_file(&inst, &f);
+                    }
                     r
                 },
                 cx,
@@ -1499,9 +1507,9 @@ impl RemotePages {
             }),
             std::sync::Arc::new({
                 let inst = inst.clone();
-                move |pw: String| remote::check_takeover_password(&inst, &pw)
+                move |ch: bool, pw: String| remote::check_takeover_password(&inst, ch, &pw)
             }),
-            std::rc::Rc::new(move |compose: Option<String>, password: Option<String>, cx: &mut App| {
+            std::rc::Rc::new(move |compose: Option<String>, creds: crate::manager::takeover::Creds, cx: &mut App| {
                 this.update(cx, |p, cx| {
                     let mut args = vec!["take-over-compose".to_string()];
                     if let Some(c) = compose {
@@ -1509,11 +1517,12 @@ impl RemotePages {
                         args.push(c);
                     }
                     p.preflight = Preflight::Idle;
-                    match password {
-                        None => p.run_job("Taking over the compose file", args, cx),
-                        // The password goes in a file only the account reads,
-                        // which the agent removes when it read it.
-                        Some(pw) => p.take_over_with_password(args, pw, cx),
+                    if creds.db.is_none() && creds.ch.is_none() {
+                        p.run_job("Taking over the compose file", args, cx);
+                    } else {
+                        // Passwords go in files only the account reads, which
+                        // the agent removes when it read them.
+                        p.take_over_with_password(args, creds, cx);
                     }
                 })
                 .ok();

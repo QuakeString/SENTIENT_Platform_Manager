@@ -39,7 +39,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|configuration> | backup-verify <backup> | backup-delete <backup> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
+use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|configuration> | backup-verify <backup> | backup-delete <backup> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
 
 /// A console for the output: release builds on Windows have none of their
@@ -314,7 +314,8 @@ pub fn run(args: &[String]) -> i32 {
             let _ = std::fs::remove_file(&w[1]);
             p
         });
-        return match crate::adopt::check_takeover_password(&record, pw.as_deref().unwrap_or("")) {
+        let ch = args.iter().any(|a| a == "--clickhouse");
+        return match crate::adopt::check_takeover_password(&record, ch, pw.as_deref().unwrap_or("")) {
             Ok(()) => {
                 println!("ok");
                 0
@@ -596,7 +597,12 @@ pub fn run(args: &[String]) -> i32 {
                 let _ = std::fs::remove_file(&w[1]);
                 p
             });
-            crate::adopt::take_over_compose(record, compose.as_deref(), password.as_deref(), sink.clone()).map(|_| ())
+            let ch_password = args.windows(2).find(|w| w[0] == "--ch-password-file").map(|w| {
+                let p = std::fs::read_to_string(&w[1]).unwrap_or_default().trim_end_matches(['\r', '\n']).to_string();
+                let _ = std::fs::remove_file(&w[1]);
+                p
+            });
+            crate::adopt::take_over_compose(record, compose.as_deref(), password.as_deref(), ch_password.as_deref(), sink.clone()).map(|_| ())
         }
         "repair" => crate::maintenance_ops::run_repair(record, sink.clone()),
         // Start, stop or restart SENTIENT (a remote instance's Control).

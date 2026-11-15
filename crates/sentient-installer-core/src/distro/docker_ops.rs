@@ -106,6 +106,13 @@ pub enum DbPassword {
     Trust,
     /// Not found anywhere: the operator gives it.
     Unknown,
+    /// Found, but PostgreSQL refused it (why): the operator gives it.
+    Refused(String),
+}
+
+fn lower_first(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_lowercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
 /// A container's whole environment, running or stopped.
@@ -242,22 +249,21 @@ pub fn db_password_of(cfg: &DeployConfig) -> DbPassword {
     let texts: Vec<String> = cfg.external.iter().flat_map(|e| e.files.iter()).filter_map(|f| capture(&format!("cat {}", shell_quote(f))).ok()).collect();
     let (app_env, pg_env) = (container_envs(&names.app), container_envs(&names.pg));
     let candidates = db_password_candidates(&app_env, &pg_env, &read_file, &texts);
-    // More than one: the first PostgreSQL takes (a container's
-    // POSTGRES_PASSWORD is only what it was created with). When PostgreSQL
-    // cannot be asked (stopped), the first.
-    if candidates.len() > 1 {
-        for (p, from) in &candidates {
-            match crate::distro::adopt::check_db_password(cfg, p) {
-                Ok(()) => return DbPassword::Found(p.clone(), from),
-                Err(e) if e.contains("refused") => continue,
-                Err(_) => break,
-            }
+    // The first PostgreSQL takes (a container's POSTGRES_PASSWORD is only
+    // what it was created with). All refused: asked for, with the reason.
+    // PostgreSQL cannot be asked (stopped): the first, as found.
+    let mut refused = None;
+    for (p, from) in &candidates {
+        match crate::distro::adopt::check_db_password(cfg, p) {
+            Ok(()) => return DbPassword::Found(p.clone(), from),
+            Err(e) if e.contains("refused") => refused = Some(format!("Found in {from}, but {}", lower_first(&e))),
+            Err(_) => return DbPassword::Found(p.clone(), from),
         }
     }
-    match candidates.into_iter().next() {
-        Some((p, from)) => DbPassword::Found(p, from),
-        None => find_db_password(&app_env, &pg_env, &read_file, &texts),
+    if let Some(why) = refused {
+        return DbPassword::Refused(why);
     }
+    find_db_password(&app_env, &pg_env, &read_file, &texts)
 }
 
 fn container_secrets(cfg: &DeployConfig) -> Option<StackSecrets> {
