@@ -297,7 +297,7 @@ pub fn adopt(wanted: &Candidate, pg_admin: Option<String>, sink: ProgressFn) -> 
         let (candidate, found) = docker_candidates()
             .into_iter()
             .find(|(c, _)| c.key() == key)
-            .ok_or("That instance is no longer found.")?;
+            .ok_or("That instance no longer exists.")?;
         if let Some(p) = &candidate.problem {
             return Err(p.clone());
         }

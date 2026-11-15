@@ -328,7 +328,7 @@ impl EarlierPage {
                 if keep_ok {
                     "Installs SENTIENT new and connects it to the existing database.".into()
                 } else {
-                    "Not possible: no database to keep.".into()
+                    "Not possible: there is no database to keep.".into()
                 },
                 keep_ok,
             )
