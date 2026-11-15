@@ -6,7 +6,7 @@
 //! then preferences and support, and where it lives as a quiet footer.
 
 use gpui_kit::component::{
-    ActiveTheme, Icon, IconName, Sizable as _, Disableable as _, h_flex, v_flex,
+    ActiveTheme, Icon, IconName, Disableable as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -129,11 +129,10 @@ impl Render for AboutPage {
                         .flex_wrap()
                         .items_center()
                         .child(ui::pill(&theme, state.0, state.1))
-                        .child(crate::ui::button("about-notes").outline().small().label("What's new").on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew))))
+                        .child(crate::ui::button("about-notes").outline().label("What's new").on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew))))
                         .child(
                             crate::ui::button("about-check")
                                 .outline()
-                                .small()
                                 .label(if checking { "Checking…" } else { "Check for updates" })
                                 .disabled(checking)
                                 .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))),

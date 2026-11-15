@@ -555,7 +555,7 @@ impl Manager {
                         p.update(cx, |p, cx| p.reload(cx));
                     }
                 })))
-                .child(crate::ui::button("remote-back").outline().small().label("Back to this computer").on_click(cx.listener(|this, _, _, cx| this.open_instance(None, cx))))
+                .child(crate::ui::button("remote-back").outline().label("Back to this computer").on_click(cx.listener(|this, _, _, cx| this.open_instance(None, cx))))
                 .into_any_element(),
         )
     }

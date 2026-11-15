@@ -666,12 +666,12 @@ impl RemotePages {
         let now = ui::panel(&theme)
             .gap_0()
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Back up now"))
-            .child(crate::manager::backup::brow_pub(&theme, "Save to", None, div().text_sm().child(b.folder.display().to_string())).border_t_0())
+            .child(crate::manager::backup::brow_pub(&theme, "Save to", None, div().text_sm().child(b.folder.display().to_string())))
             .child(h_flex().pt_2().child(crate::ui::button("r-backup").primary().label("Back up now").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx)))));
         let auto = ui::panel(&theme)
             .gap_0()
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Automatic backup"))
-            .child(crate::manager::backup::brow_pub(&theme, "Back up every day at", None, div().text_sm().child(b.daily_at.clone().unwrap_or_else(|| "No automatic backup".into()))).border_t_0())
+            .child(crate::manager::backup::brow_pub(&theme, "Back up every day at", None, div().text_sm().child(b.daily_at.clone().unwrap_or_else(|| "No automatic backup".into()))))
             .when(b.daily_at.is_some(), |p| p.child(crate::manager::backup::brow_pub(&theme, "Keep", None, div().text_sm().child(format!("{} backups", b.keep)))));
         let total: u64 = b.list.iter().map(|e| e.bytes).sum();
         let mut list = ui::panel(&theme).gap_0().child(
@@ -804,11 +804,10 @@ impl RemotePages {
         };
         if self.settings_tab < 4 {
             let mut sec = local::section(&theme, local::TAB_TITLES[self.settings_tab], None);
-            let mut first = true;
             for key in local::TAB_KEYS[self.settings_tab] {
                 let Some(st) = all.iter().find(|s| s.env == *key) else { continue };
                 let field = field_of(st, cx);
-                sec = sec.child(local::row(&theme, st.short_label(), help(st), changed.contains(&st.env), field).when(std::mem::take(&mut first), |r| r.border_t_0()));
+                sec = sec.child(local::row(&theme, st.short_label(), help(st), changed.contains(&st.env), field));
             }
             col = col.child(sec);
         } else {

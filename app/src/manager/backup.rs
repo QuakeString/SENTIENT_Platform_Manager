@@ -959,7 +959,7 @@ impl BackupPage {
         let mut now = ui::panel(theme)
             .gap_0()
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Back up now"))
-            .child(brow(theme, "What to include", Some("Sizes are read from the database."), presets).border_t_0())
+            .child(brow(theme, "What to include", Some("Sizes are read from the database."), presets))
             .when(!self.choose, |c| {
                 c.child(brow(theme, "Telemetry history", None, history))
                     .child(brow(theme, "Encrypt with a passphrase", Some("Without it the file cannot be read."), div().w(px(280.)).child(Input::new(&self.passphrase).mask_toggle())))
@@ -976,8 +976,9 @@ impl BackupPage {
         if !self.choose {
             now = now
                 .when_some(estimate, |c, (text, low)| c.child(div().pt_2().text_sm().text_color(if low { theme.danger } else { theme.muted_foreground }).child(text)))
+                // The mockup: the action at the right end.
                 .child(
-                    h_flex().pt_2().child(crate::ui::button("backup-now").primary().label(if busy { "Backing up…" } else { "Back up now" }).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_preset_backup(cx)))),
+                    h_flex().pt_2().justify_end().child(crate::ui::button("backup-now").primary().label(if busy { "Backing up…" } else { "Back up now" }).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_preset_backup(cx)))),
                 );
         }
         out.push(now.into_any_element());
@@ -1014,7 +1015,7 @@ impl BackupPage {
                                 .child(crate::ui::button("open-folder").outline().label("Open folder").on_click(move |_, _, cx| ui::open_url(&folder, cx))),
                         )
                         .child(div().font_weight(FontWeight::MEDIUM).child("Integrity"))
-                        .child(brow(theme, "Each part", None, div().text_sm().child(format!("SHA-256 stored inside the file, {} parts", m.members))).border_t_0())
+                        .child(brow(theme, "Each part", None, div().text_sm().child(format!("SHA-256 stored inside the file, {} parts", m.members))))
                         .child(if m.files.len() == 1 {
                             brow(
                                 theme,
@@ -1047,7 +1048,7 @@ impl BackupPage {
         let auto = ui::panel(theme)
             .gap_0()
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Automatic backup"))
-            .child(brow(theme, "Back up every day at", Some("Empty: no automatic backup. 24-hour time, this computer's clock."), div().w(px(120.)).child(Input::new(&self.schedule_time))).border_t_0())
+            .child(brow(theme, "Back up every day at", Some("Empty: no automatic backup. 24-hour time, this computer's clock."), div().w(px(120.)).child(Input::new(&self.schedule_time))))
             .child(brow(theme, "Keep", Some("Older automatic backups are deleted."), h_flex().gap_2().child(div().w(px(100.)).child(Input::new(&self.keep))).child(div().text_sm().child("backups"))))
             .child(brow(
                 theme,
@@ -1065,7 +1066,7 @@ impl BackupPage {
                     }),
             ))
             .child(brow(theme, "Split files larger than", Some("Numbered parts for USB disks; 0 = never."), h_flex().gap_2().child(div().w(px(100.)).child(Input::new(&self.part_gb))).child(div().text_sm().child("GB"))))
-            .child(h_flex().pt_2().gap_2().child(crate::ui::button("save-schedule").primary().label("Save").on_click(cx.listener(|this, _, _, cx| this.save_prefs(true, cx)))))
+            .child(h_flex().pt_2().gap_2().justify_end().child(crate::ui::button("save-schedule").primary().label("Save").on_click(cx.listener(|this, _, _, cx| this.save_prefs(true, cx)))))
             .when_some(self.schedule_note.clone(), |c, (tone, text)| c.child(div().pt_2().child(ui::outcome(theme, tone, text))));
         out.push(auto.into_any_element());
 

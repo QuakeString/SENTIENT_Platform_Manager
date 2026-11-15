@@ -718,23 +718,28 @@ impl InstancesPage {
         }));
         // One grid for every row: label (with its help) | control, so all
         // controls share the same left and right edges.
+        // The mockup's form row (K2): the label on the left, the control in a
+        // right-hand column of one width; rows divided by a line.
         let row = |label: &'static str, help_id: &'static str, help_text: Option<&'static str>, control: AnyElement| {
             h_flex()
                 .gap_3()
                 .items_center()
-                .min_h(px(36.))
+                .min_h(px(40.))
+                .py_1()
+                .border_t_1()
+                .border_color(theme.border)
                 .child(
                     h_flex()
-                        .w(px(150.))
-                        .flex_shrink_0()
+                        .flex_1()
+                        .min_w_0()
                         .gap_1()
                         .items_center()
                         .child(div().text_sm().child(label))
                         .when_some(help_text, |l, t| l.child(help(help_id, t))),
                 )
-                .child(div().flex_1().min_w_0().child(control))
+                .child(h_flex().w(px(290.)).flex_shrink_0().justify_end().child(div().w_full().child(control)))
         };
-        let note = |text: String| h_flex().child(div().w(px(150.)).flex_shrink_0()).child(div().pl_3().text_size(px(13.)).text_color(theme.muted_foreground).child(text));
+        let note = |text: String| h_flex().justify_end().child(div().w(px(290.)).text_size(px(13.)).text_color(theme.muted_foreground).child(text));
         let os_help = if f.os == Os::Windows {
             "Windows 10/11 or Windows Server 2019 and later, with OpenSSH Server turned on:\n1. Settings, System, Optional features, Add a feature: OpenSSH Server (or in PowerShell as administrator: Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0).\n2. Start it and start it with Windows: Start-Service sshd; Set-Service sshd -StartupType Automatic.\n3. Allow TCP port 22 in Windows Defender Firewall (the feature adds the rule).\n4. Sign in with an account in the Administrators group. For a key: put its public key in C:\\ProgramData\\ssh\\administrators_authorized_keys."
         } else {
@@ -752,11 +757,18 @@ impl InstancesPage {
             .child(div().pb_1().text_sm().text_color(theme.muted_foreground).child("A computer running SENTIENT that this Platform Manager reaches over SSH."))
             .child(row("Name", "", None, Input::new(&f.name).into_any_element()))
             .child(row(
-                "Address",
-                "",
-                None,
-                h_flex().gap_2().items_center().child(div().flex_1().min_w_0().child(Input::new(&f.host))).child(div().text_sm().child("Port")).child(div().w(px(84.)).child(Input::new(&f.port))).into_any_element(),
+                "Colour",
+                "help-colour",
+                Some("The top bar takes this colour while the instance is open, so it is clear which computer you are working on. This computer is always SENTIENT teal."),
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(swatches)
+                    .child(div().w(px(1.)).h(px(22.)).bg(theme.border))
+                    .child(ColorPicker::new(&f.color_picker).featured_colors(remote::PALETTE.iter().map(|c| rgb(remote::parse_hex(c).unwrap_or(0)).into()).collect()))
+                    .into_any_element(),
             ))
+
             .child(row(
                 "System",
                 "help-os",
@@ -786,6 +798,12 @@ impl InstancesPage {
                     .into_any_element(),
             ))
             .child(note(found))
+            .child(row(
+                "Address",
+                "",
+                None,
+                h_flex().gap_2().items_center().child(div().flex_1().min_w_0().child(Input::new(&f.host))).child(div().text_sm().child("Port")).child(div().w(px(84.)).child(Input::new(&f.port))).into_any_element(),
+            ))
             .child(row("User", "help-user", Some("An account on the server that may use sudo, or root. The Platform Manager runs its work on the server as an administrator."), Input::new(&f.user).into_any_element()))
             .child(row(
                 "Sign in with",
@@ -835,18 +853,7 @@ impl InstancesPage {
                     Input::new(&f.sudo_secret).mask_toggle().into_any_element(),
                 ))
             })
-            .child(row(
-                "Colour",
-                "help-colour",
-                Some("The top bar takes this colour while the instance is open, so it is clear which computer you are working on. This computer is always SENTIENT teal."),
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(swatches)
-                    .child(div().w(px(1.)).h(px(22.)).bg(theme.border))
-                    .child(ColorPicker::new(&f.color_picker).featured_colors(remote::PALETTE.iter().map(|c| rgb(remote::parse_hex(c).unwrap_or(0)).into()).collect()))
-                    .into_any_element(),
-            ));
+;
         if let Some(e) = &f.error {
             panel = panel.child(ui::outcome(&theme, Tone::Bad, e.clone()));
         }
