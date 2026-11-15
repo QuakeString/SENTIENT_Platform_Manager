@@ -182,6 +182,58 @@ fn compose_default(v: &str) -> String {
     out
 }
 
+/// Every ClickHouse password a stack carries, in order: SENTIENT's
+/// CLICKHOUSE_PASSWORD and the password in its CLICKHOUSE_URL, the
+/// ClickHouse container's CLICKHOUSE_PASSWORD and CLICKHOUSE_PASSWORD_FILE
+/// (read in that container), the compose files' values and defaults; then
+/// the empty password (ClickHouse's default user has none).
+pub fn ch_password_candidates(app_env: &[(String, String)], ch_env: &[(String, String)], read_file: &dyn Fn(&str) -> Option<String>, compose_texts: &[String]) -> Vec<(String, &'static str)> {
+    let get = |env: &[(String, String)], k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).filter(|v| !v.is_empty());
+    let mut v: Vec<(String, &'static str)> = Vec::new();
+    let mut push = |p: Option<String>, from: &'static str| {
+        if let Some(p) = p.map(|p| p.trim_end_matches(['\r', '\n']).to_string()) {
+            if !v.iter().any(|(q, _)| *q == p) {
+                v.push((p, from));
+            }
+        }
+    };
+    push(get(app_env, "CLICKHOUSE_PASSWORD"), "SENTIENT's CLICKHOUSE_PASSWORD");
+    push(get(app_env, "CLICKHOUSE_URL").and_then(|u| crate::distro::adopt::url_password(&u)), "SENTIENT's CLICKHOUSE_URL");
+    push(get(ch_env, "CLICKHOUSE_PASSWORD"), "the ClickHouse container's CLICKHOUSE_PASSWORD");
+    push(get(ch_env, "CLICKHOUSE_PASSWORD_FILE").and_then(|f| read_file(&f)), "CLICKHOUSE_PASSWORD_FILE");
+    for text in compose_texts {
+        push(yaml_value(text, "CLICKHOUSE_PASSWORD").map(|v| compose_default(&v)).filter(|v| !v.is_empty()), "the compose file");
+    }
+    push(Some(String::new()), "none (the default user)");
+    v
+}
+
+/// The user and password that let SENTIENT's ClickHouse user in: each
+/// candidate asked with `SELECT 1` over HTTP on the container's own address.
+/// None: none of them works.
+pub fn ch_password_of(cfg: &DeployConfig) -> Option<(String, &'static str)> {
+    let names = cfg.names();
+    let ch = names.ch.clone();
+    let read_file = move |path: &str| capture(&format!("docker exec {} cat {}", shell_quote(&ch), shell_quote(path))).ok();
+    let texts: Vec<String> = cfg.external.iter().flat_map(|e| e.files.iter()).filter_map(|f| capture(&format!("cat {}", shell_quote(f))).ok()).collect();
+    let candidates = ch_password_candidates(&container_envs(&names.app), &container_envs(&names.ch), &read_file, &texts);
+    candidates.into_iter().find(|(p, _)| check_ch_password(cfg, p).is_ok())
+}
+
+/// Whether ClickHouse takes `password` for the stack's ClickHouse user.
+pub fn check_ch_password(cfg: &DeployConfig, password: &str) -> Result<(), String> {
+    let inner = format!(
+        "wget -qO- --header {} --header {} \"http://$(hostname -i | cut -d' ' -f1):8123/?query=SELECT%201\"",
+        shell_quote(&format!("X-ClickHouse-User: {}", cfg.ch_user)),
+        shell_quote(&format!("X-ClickHouse-Key: {password}")),
+    );
+    match capture(&format!("docker exec {} sh -c {} 2>&1", shell_quote(&cfg.names().ch), shell_quote(&inner))) {
+        Ok(o) if o.trim() == "1" => Ok(()),
+        Ok(o) => Err(format!("ClickHouse refused the password for the user {}: {}", cfg.ch_user, o.trim().lines().next().unwrap_or(""))),
+        Err(e) => Err(format!("ClickHouse refused the password for the user {}: {}", cfg.ch_user, e.lines().next().unwrap_or(""))),
+    }
+}
+
 /// The stack's database password from its containers and compose files.
 pub fn db_password_of(cfg: &DeployConfig) -> DbPassword {
     let names = cfg.names();
@@ -871,6 +923,21 @@ mod password_tests {
         // Different: both kept, the URL's first.
         let pg2 = env(&[("POSTGRES_PASSWORD", "initial")]);
         assert_eq!(db_password_candidates(&app, &pg2, &none, &[]).len(), 2);
+    }
+
+    /// Our own docker-compose.clickhouse.yml: both containers carry it.
+    #[test]
+    fn clickhouse_from_the_containers_then_empty() {
+        let app = env(&[("CLICKHOUSE_URL", "http://clickhouse:8123"), ("CLICKHOUSE_USER", "sentient"), ("CLICKHOUSE_PASSWORD", "chpw")]);
+        let ch = env(&[("CLICKHOUSE_USER", "sentient"), ("CLICKHOUSE_PASSWORD", "chpw"), ("CLICKHOUSE_DB", "sentient")]);
+        let c = ch_password_candidates(&app, &ch, &none, &[]);
+        assert_eq!(c[0], ("chpw".to_string(), "SENTIENT's CLICKHOUSE_PASSWORD"));
+        assert_eq!(c.last().unwrap().0, "");
+        // Only in the ClickHouse container.
+        let c = ch_password_candidates(&env(&[("CLICKHOUSE_URL", "http://clickhouse:8123")]), &ch, &none, &[]);
+        assert_eq!(c[0].1, "the ClickHouse container's CLICKHOUSE_PASSWORD");
+        // Nowhere: the empty one is still tried.
+        assert_eq!(ch_password_candidates(&[], &[], &none, &[]), vec![(String::new(), "none (the default user)")]);
     }
 
     #[test]

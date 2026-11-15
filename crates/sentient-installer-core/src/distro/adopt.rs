@@ -499,6 +499,14 @@ pub struct TakeOverPlan {
     /// The database user the password is for.
     #[serde(default)]
     pub db_user: String,
+    /// Where ClickHouse's password was found ("" without ClickHouse).
+    #[serde(default)]
+    pub ch_password_from: String,
+    /// ClickHouse's password was found nowhere: the operator gives it.
+    #[serde(default)]
+    pub needs_ch_password: bool,
+    #[serde(default)]
+    pub ch_user: String,
 }
 
 /// `env_file` entries in a compose file: `env_file: x` or a `- x` list.
@@ -606,6 +614,12 @@ pub fn take_over_plan(cfg: &DeployConfig, compose: Option<&str>) -> (TakeOverPla
     } else {
         plan.ports.push(format!("{} PostgreSQL", cfg.pg_port));
     }
+    // ClickHouse's native port not published (only its HTTP port is): one
+    // that is free here, where the HTTP port is published.
+    if cfg.flavor.uses_clickhouse() && own.ch_native_port == 0 {
+        own.ch_native_port = free_loopback_port(19000);
+        plan.ports.push(format!("{} ClickHouse native (was not published)", own.ch_native_port));
+    }
     plan.db_user = cfg.db_user.clone();
     // The password: given (cfg), else from the containers and compose
     // files, else not needed (trust), else asked for.
@@ -627,6 +641,31 @@ pub fn take_over_plan(cfg: &DeployConfig, compose: Option<&str>) -> (TakeOverPla
         }
     } else {
         plan.password_from = "given".into();
+    }
+    // ClickHouse's password: given, else found and checked with SELECT 1
+    // (an empty one too: the default user has none). The new container
+    // takes the password from the compose file when it starts, so an empty
+    // one becomes a generated one there.
+    if cfg.flavor.uses_clickhouse() {
+        plan.ch_user = cfg.ch_user.clone();
+        if own.ch_password.is_empty() {
+            match super::docker_ops::ch_password_of(cfg) {
+                Some((p, from)) if p.is_empty() => {
+                    own.ch_password = generated_password();
+                    plan.ch_password_from = format!("{from}; the new compose file gives it one");
+                }
+                Some((p, from)) => {
+                    own.ch_password = p;
+                    plan.ch_password_from = from.to_string();
+                }
+                None => {
+                    plan.needs_ch_password = true;
+                    own.ch_password = "given_later".into();
+                }
+            }
+        } else {
+            plan.ch_password_from = "given".into();
+        }
     }
     if let Err(e) = own.validate() {
         plan.problems.push(e);
@@ -703,6 +742,9 @@ pub fn take_over(sink: ProgressFn, cfg: &DeployConfig, compose: Option<&str>) ->
     let (plan, own) = take_over_plan(cfg, compose);
     if plan.needs_password {
         return Err("The database password was not found; give it in the takeover dialog. Nothing was changed.".into());
+    }
+    if plan.needs_ch_password {
+        return Err("ClickHouse's password was not found; give it in the takeover dialog. Nothing was changed.".into());
     }
     if !plan.problems.is_empty() {
         return Err(format!("{} Nothing was changed.", plan.problems.join(" ")));
@@ -931,6 +973,96 @@ mod tests {
             taken_over(&c, &own);
             let _ = sh(&format!("docker compose -f {} down -v", own.compose_path()));
             c.down();
+        }
+
+        /// A PostgreSQL + ClickHouse stack like docker-compose.clickhouse.yml.
+        /// `mode`: 0 the ClickHouse password in both containers; 1 none at all
+        /// (the default user); 2 only in SENTIENT's environment (ClickHouse
+        /// reads it from a users.d file); 3 only in the ClickHouse container.
+        fn up_ch(n: u16, mode: u8) -> Case {
+            let c = Case::up_with(n, true, 0);
+            let (ok, out) = sh(&format!("cd {} && docker compose -p {} -f compose.yml down", c.dir.display(), c.p()));
+            assert!(ok, "{out}");
+            let user = if mode == 1 { "default" } else { "sentient" };
+            let pw = format!("ch{n}");
+            let app_pw = if matches!(mode, 0 | 2) { format!("      CLICKHOUSE_PASSWORD: {pw}\n") } else { String::new() };
+            let ch_env = match mode {
+                0 | 3 => format!("      CLICKHOUSE_USER: {user}\n      CLICKHOUSE_PASSWORD: {pw}\n      CLICKHOUSE_DB: sentient\n"),
+                _ => "      CLICKHOUSE_DB: sentient\n".to_string(),
+            };
+            let users_d = if mode == 2 {
+                std::fs::write(c.dir.join("chuser.xml"), format!("<clickhouse><users><sentient><password>{pw}</password><networks><ip>::/0</ip></networks><profile>default</profile><quota>default</quota><access_management>1</access_management></sentient></users></clickhouse>")).unwrap();
+                "      - ./chuser.xml:/etc/clickhouse-server/users.d/sentient.xml:ro\n".to_string()
+            } else {
+                String::new()
+            };
+            let y = std::fs::read_to_string(c.dir.join("compose.yml")).unwrap();
+            let y = y.replace(
+                "    environment:\n      DATABASE_URL:",
+                &format!("    environment:\n      CLICKHOUSE_URL: http://clickhouse:8123\n      CLICKHOUSE_DATABASE: sentient\n      CLICKHOUSE_USER: {user}\n{app_pw}      DATABASE_URL:"),
+            );
+            let y = y.replace(
+                "volumes:\n  data:\n",
+                &format!(
+                    "  clickhouse:\n    image: clickhouse/clickhouse-server:24.8-alpine\n    container_name: spmft{n}-clickhouse\n    environment:\n{ch_env}    ports:\n      - \"{p}:8123\"\n    volumes:\n      - ch:/var/lib/clickhouse\n{users_d}volumes:\n  ch:\n    name: spmft{n}-ch\n  data:\n",
+                    p = 26480 + n
+                ),
+            );
+            std::fs::write(c.dir.join("compose.yml"), y).unwrap();
+            let (ok, out) = sh(&format!("cd {} && docker compose -p {} -f compose.yml up -d", c.dir.display(), c.p()));
+            assert!(ok, "{out}");
+            for _ in 0..60 {
+                if sh(&format!("docker exec spmft{n}-clickhouse wget -qO- http://127.0.0.1:8123/ping")).0 {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            c
+        }
+
+        fn takes_over_ch(n: u16, mode: u8, from: &str) {
+            scratch();
+            let c = up_ch(n, mode);
+            let mut cfg = c.found();
+            assert!(cfg.flavor.uses_clickhouse(), "found as PostgreSQL + ClickHouse");
+            // As the record keeps it: no passwords.
+            cfg.db_password.clear();
+            cfg.ch_password.clear();
+            let (plan, _) = take_over_plan(&cfg, None);
+            assert!(plan.problems.is_empty() && !plan.needs_ch_password, "{:?}", plan);
+            assert!(plan.ch_password_from.starts_with(from), "{}", plan.ch_password_from);
+            let own = take_over(sink(), &cfg, None).unwrap();
+            taken_over(&c, &own);
+            assert!(c.running(&format!("spmft{n}-clickhouse")));
+            // SENTIENT's new settings and ClickHouse's agree.
+            assert!(crate::distro::docker_ops::check_ch_password(&own, &own.ch_password).is_ok());
+            let _ = sh(&format!("docker compose -f {} down -v", own.compose_path()));
+            let _ = sh(&format!("docker rm -f spmft{n}-clickhouse spmft{n}-clickhouse-before-takeover; docker volume rm spmft{n}-ch"));
+            c.down();
+        }
+
+        #[test]
+        #[ignore]
+        fn clickhouse_password_in_both_containers() {
+            takes_over_ch(8, 0, "SENTIENT's CLICKHOUSE_PASSWORD");
+        }
+
+        #[test]
+        #[ignore]
+        fn clickhouse_without_a_password() {
+            takes_over_ch(9, 1, "none (the default user)");
+        }
+
+        #[test]
+        #[ignore]
+        fn clickhouse_password_only_in_sentients_environment() {
+            takes_over_ch(10, 2, "SENTIENT's CLICKHOUSE_PASSWORD");
+        }
+
+        #[test]
+        #[ignore]
+        fn clickhouse_password_only_in_the_clickhouse_container() {
+            takes_over_ch(11, 3, "the ClickHouse container's CLICKHOUSE_PASSWORD");
         }
 
         /// The password only in SENTIENT's DATABASE_URL; the record (as the
