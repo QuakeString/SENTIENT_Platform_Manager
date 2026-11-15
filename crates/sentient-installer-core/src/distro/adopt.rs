@@ -488,6 +488,17 @@ pub struct TakeOverPlan {
     pub problems: Vec<String>,
     /// Where the Platform Manager's compose file will be.
     pub new_file: String,
+    /// Where the database password was found ("" when not needed or not
+    /// found).
+    #[serde(default)]
+    pub password_from: String,
+    /// The password was found nowhere: the operator gives it (and it is
+    /// checked against PostgreSQL) before the takeover.
+    #[serde(default)]
+    pub needs_password: bool,
+    /// The database user the password is for.
+    #[serde(default)]
+    pub db_user: String,
 }
 
 /// `env_file` entries in a compose file: `env_file: x` or a `- x` list.
@@ -595,6 +606,28 @@ pub fn take_over_plan(cfg: &DeployConfig, compose: Option<&str>) -> (TakeOverPla
     } else {
         plan.ports.push(format!("{} PostgreSQL", cfg.pg_port));
     }
+    plan.db_user = cfg.db_user.clone();
+    // The password: given (cfg), else from the containers and compose
+    // files, else not needed (trust), else asked for.
+    if own.db_password.is_empty() {
+        match super::docker_ops::db_password_of(cfg) {
+            super::docker_ops::DbPassword::Found(p, from) => {
+                own.db_password = p;
+                plan.password_from = from.to_string();
+            }
+            super::docker_ops::DbPassword::Trust => {
+                own.db_password = generated_password();
+                plan.password_from = "PostgreSQL's trust setting: none needed".into();
+            }
+            super::docker_ops::DbPassword::Unknown => {
+                plan.needs_password = true;
+                // Checked once given; validated with a stand-in meanwhile.
+                own.db_password = "given_later".into();
+            }
+        }
+    } else {
+        plan.password_from = "given".into();
+    }
     if let Err(e) = own.validate() {
         plan.problems.push(e);
     }
@@ -605,6 +638,40 @@ pub fn take_over_plan(cfg: &DeployConfig, compose: Option<&str>) -> (TakeOverPla
     }
     plan.new_file = own.compose_path();
     (plan, own)
+}
+
+/// A password for a PostgreSQL that does not ask for one (trust): letters
+/// and digits, as the Platform Manager's own compose file needs one.
+fn generated_password() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+    format!("st{:016x}", h.finish())
+}
+
+/// Whether `password` lets SENTIENT's user into the stack's PostgreSQL
+/// (over TCP inside its container, so the password is really checked).
+pub fn check_db_password(cfg: &DeployConfig, password: &str) -> Result<(), String> {
+    crate::stack::validate_password("The database password", password)?;
+    // Over the container's own network address, as SENTIENT connects: the
+    // image trusts 127.0.0.1, so a loopback connection would take any password.
+    let inner = format!(
+        "psql -h \"$(hostname -i | cut -d' ' -f1)\" -U {} -d {} -tAc 'select 1'",
+        shell_quote(&cfg.db_user),
+        shell_quote(&cfg.db_name)
+    );
+    let out = run_output(&format!(
+        "docker exec -e PGPASSWORD={} {} sh -c {} 2>&1",
+        shell_quote(password),
+        shell_quote(&cfg.names().pg),
+        shell_quote(&inner)
+    ));
+    match out {
+        Some((true, o)) if o.trim() == "1" => Ok(()),
+        Some((_, o)) if o.contains("password authentication failed") => Err(format!("PostgreSQL refused this password for the user {}.", cfg.db_user)),
+        Some((_, o)) => Err(format!("PostgreSQL could not be asked: {}", o.trim())),
+        None => Err("PostgreSQL could not be asked.".into()),
+    }
 }
 
 fn container_exists(name: &str) -> bool {
@@ -634,6 +701,9 @@ pub fn take_over(sink: ProgressFn, cfg: &DeployConfig, compose: Option<&str>) ->
         return Ok(cfg.clone());
     }
     let (plan, own) = take_over_plan(cfg, compose);
+    if plan.needs_password {
+        return Err("The database password was not found; give it in the takeover dialog. Nothing was changed.".into());
+    }
     if !plan.problems.is_empty() {
         return Err(format!("{} Nothing was changed.", plan.problems.join(" ")));
     }
@@ -755,6 +825,13 @@ mod tests {
             /// A compose project like a customer's: own names, an env_file and
             /// a .env, PostgreSQL published or not.
             fn up(n: u16, pg_published: bool) -> Case {
+                Case::up_with(n, pg_published, 0)
+            }
+
+            /// `pw`: 0 the password in both containers; 1 only in SENTIENT's
+            /// DATABASE_URL (PostgreSQL reads it from POSTGRES_PASSWORD_FILE);
+            /// 2 only in POSTGRES_PASSWORD_FILE (the URL has none).
+            fn up_with(n: u16, pg_published: bool, pw: u8) -> Case {
                 let dir = std::env::temp_dir().join(format!("spm-takeover-{n}-{}", std::process::id()));
                 let _ = std::fs::remove_dir_all(&dir);
                 std::fs::create_dir_all(&dir).unwrap();
@@ -772,6 +849,14 @@ mod tests {
                     c = 23680 + n,
                     cs = 24680 + n,
                 );
+                let y = match pw {
+                    0 => y,
+                    _ => {
+                        std::fs::write(c.dir.join("pgpass"), format!("pw{n}\n")).unwrap();
+                        let y = y.replace(&format!("      POSTGRES_PASSWORD: pw{n}\n"), "      POSTGRES_PASSWORD_FILE: /run/pgpass\n").replace("      - pg:/var/lib/postgresql\n", "      - pg:/var/lib/postgresql\n      - ./pgpass:/run/pgpass:ro\n");
+                        if pw == 2 { y.replace(&format!("postgresql://sentient:pw{n}@postgres"), "postgresql://sentient@postgres") } else { y }
+                    }
+                };
                 std::fs::write(c.dir.join("compose.yml"), y).unwrap();
                 let (ok, out) = sh(&format!("cd {} && docker compose -p {} -f compose.yml up -d", c.dir.display(), c.p()));
                 assert!(ok, "{out}");
@@ -842,6 +927,43 @@ mod tests {
             assert!(plan.files.iter().all(|(_, f)| *f), "{:?}", plan.files);
             assert_eq!(plan.env_files.iter().filter(|(_, f)| *f).count(), 2, "{:?}", plan.env_files);
             assert!(plan.extra_env.iter().any(|e| e == "MY_EXTRA_SETTING"), "{:?}", plan.extra_env);
+            let own = take_over(sink(), &cfg, None).unwrap();
+            taken_over(&c, &own);
+            let _ = sh(&format!("docker compose -f {} down -v", own.compose_path()));
+            c.down();
+        }
+
+        /// The password only in SENTIENT's DATABASE_URL; the record (as the
+        /// app keeps it) has none: the plan finds it, the takeover runs.
+        #[test]
+        #[ignore]
+        fn password_only_in_database_url() {
+            scratch();
+            let c = Case::up_with(6, true, 1);
+            let mut cfg = c.found();
+            cfg.db_password.clear();
+            let (plan, _) = take_over_plan(&cfg, None);
+            assert!(plan.problems.is_empty() && !plan.needs_password, "{:?}", plan);
+            assert_eq!(plan.password_from, "SENTIENT's DATABASE_URL");
+            let own = take_over(sink(), &cfg, None).unwrap();
+            taken_over(&c, &own);
+            let _ = sh(&format!("docker compose -f {} down -v", own.compose_path()));
+            c.down();
+        }
+
+        /// The password only in PostgreSQL's POSTGRES_PASSWORD_FILE.
+        #[test]
+        #[ignore]
+        fn password_only_in_a_password_file() {
+            scratch();
+            let c = Case::up_with(7, true, 2);
+            let mut cfg = c.found();
+            cfg.db_password.clear();
+            let (plan, _) = take_over_plan(&cfg, None);
+            assert!(plan.problems.is_empty() && !plan.needs_password, "{:?}", plan);
+            assert_eq!(plan.password_from, "POSTGRES_PASSWORD_FILE");
+            assert!(check_db_password(&cfg, &format!("pw{}", 7)).is_ok());
+            assert!(check_db_password(&cfg, "wrong").unwrap_err().contains("refused"));
             let own = take_over(sink(), &cfg, None).unwrap();
             taken_over(&c, &own);
             let _ = sh(&format!("docker compose -f {} down -v", own.compose_path()));

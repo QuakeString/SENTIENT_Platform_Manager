@@ -506,6 +506,7 @@ fn debug_plan(compose: Option<&str>) -> sentient_installer_core::distro::adopt::
         loopback_port: Some(15432),
         problems: Vec::new(),
         new_file: "/var/lib/sentient-platform-manager/stack/docker-compose.yml".into(),
+        ..Default::default()
     }
 }
 
@@ -1162,6 +1163,22 @@ pub(crate) fn after_agent_update<T>(mut ask: impl FnMut() -> Result<T, String>, 
         }
         r => r,
     }
+}
+
+/// A password for the server's agent, in a file only the account reads
+/// (never on a command line); the agent removes it when it read it.
+pub fn put_secret_file(inst: &Instance, text: &str) -> Result<String, String> {
+    let file = format!("{}/.spm-db-pw-{}", home(inst)?.trim_end_matches('/'), chrono::Utc::now().timestamp_millis());
+    put_text(inst, &file, text)?;
+    Ok(file)
+}
+
+/// Whether the server's PostgreSQL takes `password` (the takeover dialog).
+pub fn check_takeover_password(inst: &Instance, password: &str) -> Result<(), String> {
+    let file = put_secret_file(inst, password)?;
+    let r = spm_job(inst, &format!("takeover-check-password --db-password-file '{}'", file.replace('\'', ""))).map(|_| ());
+    remove_file(inst, &file);
+    r
 }
 
 /// Whether a migration could start on the server now (crate::migration::

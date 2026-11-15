@@ -375,11 +375,24 @@ fn adopt_native(pg_admin: Option<String>, sink: &ProgressFn) -> Result<Candidate
 
 /// An adopted Docker stack: let the Platform Manager's own compose file run
 /// it from now on (needed before settings or the database type change).
-pub fn take_over_compose(record: InstallationRecord, compose: Option<&str>, sink: ProgressFn) -> Result<InstallationRecord, String> {
+/// `password`: the database password the operator gave (the dialog checked
+/// it); else it is found in the containers and compose files (or not needed).
+pub fn take_over_compose(record: InstallationRecord, compose: Option<&str>, password: Option<&str>, sink: ProgressFn) -> Result<InstallationRecord, String> {
     if record.engine != Engine::Docker || record.stack.external.is_none() {
         return Err("This installation already runs from the Platform Manager's compose file.".into());
     }
-    let full = distro::docker_ops::with_secrets(&record.stack).map_err(|e| format!("{e} Nothing was changed."))?;
+    let mut full = record.stack.clone();
+    if let Some(p) = password.filter(|p| !p.is_empty()) {
+        distro::adopt::check_db_password(&full, p).map_err(|e| format!("{e} Nothing was changed."))?;
+        full.db_password = p.to_string();
+    }
+    // ClickHouse's password from the containers, when they carry one.
+    if let Ok(s) = distro::docker_ops::with_secrets(&record.stack) {
+        if full.db_password.is_empty() {
+            full.db_password = s.db_password;
+        }
+        full.ch_password = s.ch_password;
+    }
     let own = distro::adopt::take_over(sink, &full, compose)?;
     let mut updated = record;
     updated.stack = own;
@@ -396,11 +409,15 @@ pub fn take_over_plan(record: &InstallationRecord, compose: Option<&str>) -> Res
     if record.engine != Engine::Docker || record.stack.external.is_none() {
         return Err("This installation already runs from the Platform Manager's compose file.".into());
     }
-    let mut plan = distro::adopt::take_over_plan(&record.stack, compose).0;
-    if let Err(e) = distro::docker_ops::with_secrets(&record.stack) {
-        plan.problems.push(e);
-    }
+    // The record keeps no passwords: the plan finds the database's (or
+    // says it needs it given).
+    let plan = distro::adopt::take_over_plan(&record.stack, compose).0;
     Ok(plan)
+}
+
+/// Whether PostgreSQL takes `password` (the takeover dialog's Check).
+pub fn check_takeover_password(record: &InstallationRecord, password: &str) -> Result<(), String> {
+    distro::adopt::check_db_password(&record.stack, password)
 }
 
 /// One candidate as a line, for the root job's output (crate::rootjob).
