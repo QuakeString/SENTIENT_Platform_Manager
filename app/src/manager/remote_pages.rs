@@ -712,11 +712,68 @@ impl RemotePages {
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Back up now"))
             .child(crate::manager::backup::brow_pub(&theme, "Save to", None, div().text_sm().child(b.folder.display().to_string())))
             .child(h_flex().pt_2().child(crate::ui::button("r-backup").primary().label("Back up now").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx)))));
+        // The same rows as this computer's; a change is saved on the server at once.
+        let on = b.daily_at.is_some();
+        let time = b.daily_at.clone().unwrap_or_else(|| "23:30".into());
+        let include = match b.preset {
+            crate::backups::Preset::Everything => "everything",
+            crate::backups::Preset::Configuration => "configuration",
+        };
+        let save = |at: String, keep: u32, include: &'static str| -> Vec<String> { vec!["backup-auto".into(), at, keep.to_string(), include.into()] };
+        let keep = b.keep;
+        let this = cx.entity().downgrade();
         let auto = ui::panel(&theme)
             .gap_0()
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Automatic backup"))
-            .child(crate::manager::backup::brow_pub(&theme, "Back up every day at", None, div().text_sm().child(b.daily_at.clone().unwrap_or_else(|| "No automatic backup".into()))))
-            .when(b.daily_at.is_some(), |p| p.child(crate::manager::backup::brow_pub(&theme, "Keep", None, div().text_sm().child(format!("{} backups", b.keep)))));
+            .child(crate::manager::backup::brow_pub(&theme, "Back up every", Some("A backup every day at this time, on the server's clock."), {
+                let (t1, this1) = (time.clone(), this.clone());
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(gpui_kit::component::switch::Switch::new("r-auto-on").checked(on).disabled(busy).on_click(cx.listener(move |this, v: &bool, _, cx| {
+                        let at = if *v { t1.clone() } else { "off".into() };
+                        this.run_job("Saving the automatic backup", save(at, keep, include), cx);
+                    })))
+                    .child(crate::ui::button("r-auto-time").outline().disabled(!on || busy).label(format!("day at {time}")).dropdown_menu(move |menu, _, _| {
+                        let mut menu = menu;
+                        for h in 0..24 {
+                            for m in [0, 30] {
+                                let t = format!("{h:02}:{m:02}");
+                                let (this, t2) = (this1.clone(), t.clone());
+                                menu = menu.item(PopupMenuItem::new(t).on_click(move |_, _, cx| {
+                                    this.update(cx, |p, cx| p.run_job("Saving the automatic backup", save(t2.clone(), keep, include), cx)).ok();
+                                }));
+                            }
+                        }
+                        menu
+                    }))
+            }))
+            .child(crate::manager::backup::brow_pub(&theme, "Keep", Some("Older automatic backups are deleted."), {
+                let (t1, this1) = (if on { time.clone() } else { "off".into() }, this.clone());
+                crate::ui::button("r-auto-keep").outline().disabled(busy).label(format!("{keep} backups")).dropdown_menu(move |menu, _, _| {
+                    let mut menu = menu;
+                    for k in [3u32, 7, 14, 30, 60] {
+                        let (this, t2) = (this1.clone(), t1.clone());
+                        menu = menu.item(PopupMenuItem::new(format!("{k} backups")).checked(k == keep).on_click(move |_, _, cx| {
+                            this.update(cx, |p, cx| p.run_job("Saving the automatic backup", save(t2.clone(), k, include), cx)).ok();
+                        }));
+                    }
+                    menu
+                })
+            }))
+            .child(crate::manager::backup::brow_pub(&theme, "Include", Some("Everything: the whole database and its files. Configuration: devices, dashboards, users and settings, without telemetry history."), {
+                let at = if on { time.clone() } else { "off".into() };
+                let mut seg = ui::seg_track(&theme);
+                for (key, label) in [("everything", "Everything"), ("configuration", "Configuration only")] {
+                    let at = at.clone();
+                    seg = seg.child(ui::seg_item(&theme, SharedString::from(format!("r-inc-{key}")), label, include == key).on_click(cx.listener(move |this, _, _, cx| {
+                        if include != key && !this.job.read(cx).is_running() {
+                            this.run_job("Saving the automatic backup", save(at.clone(), keep, key), cx);
+                        }
+                    })));
+                }
+                seg
+            }));
         let total: u64 = b.list.iter().map(|e| e.bytes).sum();
         let mut list = ui::panel(&theme).gap_0().child(
             h_flex()
@@ -736,8 +793,42 @@ impl RemotePages {
             list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder."));
         }
         for (i, e) in b.list.iter().enumerate() {
-            // The server cannot run the integrity check yet: no pill to act on.
-            list = list.child(crate::manager::backup::entry_row_with(&theme, i, e, false));
+            let damaged = e.check.as_ref().is_some_and(|c| !c.ok);
+            let path = e.path.display().to_string();
+            let (p1, p2, p3, name) = (path.clone(), path.clone(), path, e.name.clone());
+            let name2 = name.clone();
+            let server = self.inst.name.clone();
+            list = list.child(
+                crate::manager::backup::entry_row_with(&theme, i, e, true)
+                    .when(!damaged, |r| {
+                        r.child(crate::ui::button(SharedString::from(format!("r-restore-{}", e.name))).outline().label("Restore…").disabled(busy).on_click(cx.listener(move |_, _, window, cx| {
+                            let this = cx.entity().downgrade();
+                            let p1 = p1.clone();
+                            let text = format!("Users, passwords, devices and dashboards on {server} will be those of {name}. Everything there now is replaced. SENTIENT stops for about a minute while it switches.");
+                            crate::modal::alert(window, cx, move |d, _, _| {
+                                let (this, p1) = (this.clone(), p1.clone());
+                                d.title("Replace this server's data?").description(text.clone()).confirm().ok_text("Replace").on_ok(move |_, _, cx| {
+                                    this.update(cx, |p, cx| p.run_job("Restoring", vec!["replace".into(), p1.clone()], cx)).ok();
+                                    true
+                                })
+                            });
+                        })))
+                    })
+                    .child(crate::ui::button(SharedString::from(format!("r-verify-{}", e.name))).outline().label("Verify").disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
+                        this.run_job("Verifying the backup", vec!["backup-verify".into(), p2.clone()], cx);
+                    })))
+                    .child(crate::ui::button(SharedString::from(format!("r-delete-{}", e.name))).ghost().label("Delete").disabled(busy).on_click(cx.listener(move |_, _, window, cx| {
+                        let this = cx.entity().downgrade();
+                        let (p3, name2) = (p3.clone(), name2.clone());
+                        crate::modal::alert(window, cx, move |d, _, _| {
+                            let (this, p3) = (this.clone(), p3.clone());
+                            d.title(format!("Delete {name2}?")).description("The file is deleted from the server. This cannot be undone.").confirm().ok_text("Delete").on_ok(move |_, _, cx| {
+                                this.update(cx, |p, cx| p.run_job("Deleting the backup", vec!["backup-delete".into(), p3.clone()], cx)).ok();
+                                true
+                            })
+                        });
+                    }))),
+            );
         }
         v_flex().gap_4().child(now).child(auto).child(list)
     }
@@ -855,7 +946,7 @@ impl RemotePages {
             }
             col = col.child(sec);
         } else {
-            let mut table = ui::panel(&theme).gap_0().child(local::table_header(&theme));
+            let mut table = ui::panel(&theme).gap_0().overflow_hidden().child(local::table_header(&theme));
             for st in &all {
                 let field = field_of(st, cx);
                 table = table.child(local::table_row(
@@ -863,7 +954,7 @@ impl RemotePages {
                     st.short_label(),
                     help(st),
                     changed.contains(&st.env),
-                    h_flex().gap_3().items_center().child(h_flex().w(px(local::VALUE_W)).flex_shrink_0().child(field)).child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(local::builtin_label(st))),
+                    local::table_cells(&theme, &st.env, field, local::builtin_label(st), None),
                 ));
             }
             col = col.child(table);

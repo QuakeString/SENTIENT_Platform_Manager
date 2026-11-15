@@ -591,6 +591,9 @@ pub struct RemoteBackups {
     pub daily_at: Option<String>,
     pub keep: u32,
     pub list: Vec<crate::backups::Entry>,
+    /// What an automatic backup includes (an older agent sends none).
+    #[serde(default)]
+    pub preset: crate::backups::Preset,
 }
 
 /// Ask the server's Platform Manager for `job` (as administrator) and read
@@ -1209,8 +1212,119 @@ mod tests {
         follow(&inst, &id, &collect).unwrap();
         let said = said.lock().unwrap().join(" ");
         eprintln!("add-if-one: {said}");
-        assert!(said.contains("No SENTIENT was found"), "{said}");
+        assert!(said.contains("No SENTIENT found"), "{said}");
+        backup_jobs_on_the_server(&inst, &sink);
         let _ = std::fs::remove_file(known_hosts());
+    }
+
+    /// A backup file the way sentient-backup-core writes one: a tar with a
+    /// manifest listing each part's SHA-256 (`recorded` wrong: damaged).
+    fn backup_file(path: &Path, damaged: bool) {
+        let data = b"dump";
+        let tmp = path.with_extension("part");
+        std::fs::write(&tmp, data).unwrap();
+        let sha = sentient_installer_core::manifest::sha256_file(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        let manifest = serde_json::json!({
+            "format_version": 2, "tool_version": "e2e", "created_at": "2026-11-15T00:00:00Z",
+            "source": {"database": "sentient", "postgres_version": "18", "timescaledb_version": null},
+            "components": [], "telemetry": {"mode": "none"},
+            "files": [{"path": "db/dump.pgc.zst", "bytes": data.len(), "sha256": if damaged { "0".repeat(64) } else { sha }}],
+            "file_stores": [], "encryption": {"scheme": "none"}
+        });
+        let mut tar = tar::Builder::new(std::fs::File::create(path).unwrap());
+        let mj = serde_json::to_vec(&manifest).unwrap();
+        for (n, bytes) in [("manifest.json", mj.as_slice()), ("db/dump.pgc.zst", data.as_slice())] {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(bytes.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            tar.append_data(&mut h, n, bytes).unwrap();
+        }
+        tar.finish().unwrap();
+    }
+
+    /// The Backup page's jobs against a server with an added SENTIENT (an
+    /// installation record; no running stack): the automatic backup's
+    /// schedule, Verify, Delete, and Restore reaching the restore.
+    fn backup_jobs_on_the_server(inst: &Instance, sink: &ProgressFn) {
+        let job = |args: &[&str]| -> Result<(), String> {
+            let id = start_job(inst, args)?;
+            follow(inst, &id, sink)
+        };
+        let record = crate::installation::InstallationRecord {
+            sentient_version: "4.4.0.1".into(),
+            manager_version: crate::updates::manager_version().into(),
+            engine: crate::installation::Engine::Docker,
+            install_dir: "/opt/sentient".into(),
+            pg_dir: "/opt/sentient".into(),
+            state_dir: "/opt/sentient".into(),
+            stack: Default::default(),
+            installed_at: "2026-11-15T00:00:00Z".into(),
+            kiosk: None,
+            changes_done: Vec::new(),
+        };
+        let dir = std::env::temp_dir().join(format!("spm-e2e-bk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("installation.json"), serde_json::to_string(&record).unwrap()).unwrap();
+        backup_file(&dir.join("good.sentient-backup"), false);
+        backup_file(&dir.join("bad.sentient-backup"), true);
+        for f in ["installation.json", "good.sentient-backup", "bad.sentient-backup"] {
+            sftp_put(inst, &dir.join(f), &format!("/tmp/{f}")).unwrap();
+        }
+        sudo_run(
+            inst,
+            "sh -c 'mkdir -p /var/lib/sentient-platform-manager /var/backups/sentient && mv /tmp/installation.json /var/lib/sentient-platform-manager/ && mv /tmp/good.sentient-backup /tmp/bad.sentient-backup /var/backups/sentient/'",
+            None,
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        // A log that cannot be read is an error for the page, never a line.
+        let e = logs_from(inst, crate::logsource::Source::Sentient, 10, false).unwrap_err();
+        assert!(e.contains("Could not read"), "{e}");
+        assert!(log_sources(inst).unwrap().contains(&crate::logsource::Source::Database));
+        let b = backups(inst).unwrap();
+        assert_eq!(b.list.len(), 2, "{:?}", b.list.iter().map(|e| &e.name).collect::<Vec<_>>());
+        assert!(b.daily_at.is_none());
+
+        // Schedule: saved, and the timer registered and enabled.
+        job(&["backup-auto", "02:30", "14", "configuration"]).unwrap();
+        let b = backups(inst).unwrap();
+        assert_eq!(b.daily_at.as_deref(), Some("02:30"));
+        assert_eq!(b.keep, 14);
+        assert_eq!(b.preset, crate::backups::Preset::Configuration);
+        let timer = sudo_run(inst, "cat /etc/systemd/system/sentient-backup.timer", None).unwrap();
+        assert!(timer.contains("OnCalendar=*-*-* 02:30:00"), "{timer}");
+        assert_eq!(sudo_run(inst, "systemctl is-enabled sentient-backup.timer", None).unwrap().trim(), "enabled");
+        assert!(job(&["backup-auto", "25:99", "14", "configuration"]).is_err());
+        // Off: the timer goes.
+        job(&["backup-auto", "off", "7", "everything"]).unwrap();
+        assert!(backups(inst).unwrap().daily_at.is_none());
+        assert!(sudo_run(inst, "test -e /etc/systemd/system/sentient-backup.timer && echo there || echo gone", None).unwrap().contains("gone"));
+
+        // Verify: the good file passes and is remembered; the damaged one fails.
+        job(&["backup-verify", "/var/backups/sentient/good.sentient-backup"]).unwrap();
+        let e = job(&["backup-verify", "/var/backups/sentient/bad.sentient-backup"]).unwrap_err();
+        assert!(e.contains("damaged"), "{e}");
+        let b = backups(inst).unwrap();
+        let state = |n: &str| b.list.iter().find(|e| e.name == n).and_then(|e| e.check.as_ref()).map(|c| c.ok);
+        assert_eq!(state("good"), Some(true));
+        assert_eq!(state("bad"), Some(false));
+        // Only files in the backup folder.
+        let e = job(&["backup-verify", "/etc/passwd"]).unwrap_err();
+        assert!(e.contains("is not a backup"), "{e}");
+
+        // Delete: the damaged one goes.
+        job(&["backup-delete", "/var/backups/sentient/bad.sentient-backup"]).unwrap();
+        assert_eq!(backups(inst).unwrap().list.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["good"]);
+        assert!(job(&["backup-delete", "/etc/passwd"]).is_err());
+
+        // Restore: the job reaches the restore and stops plainly where the
+        // server has no running stack to restore into.
+        let e = job(&["replace", "/var/backups/sentient/good.sentient-backup"]).unwrap_err();
+        eprintln!("restore without a running stack: {e}");
+        assert!(!e.is_empty());
+        sudo_run(inst, "rm -f /var/lib/sentient-platform-manager/installation.json", None).unwrap();
     }
 
     #[test]

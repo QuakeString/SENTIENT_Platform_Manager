@@ -1146,7 +1146,7 @@ impl BackupPage {
                             this.read_summary(cx);
                         })))
                     })
-                    .child(crate::ui::button(SharedString::from(format!("check-{}", e.name))).outline().label(if damaged { "Details" } else { "Check" }).on_click(cx.listener(move |this, _, _, cx| this.run_check(p2.clone(), cx))))
+                    .child(crate::ui::button(SharedString::from(format!("check-{}", e.name))).outline().label(if damaged { "Details" } else { "Verify" }).on_click(cx.listener(move |this, _, _, cx| this.run_check(p2.clone(), cx))))
                     .child(crate::ui::button(SharedString::from(format!("delete-{}", e.name))).ghost().label("Delete").on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), window, cx)))),
             );
         }

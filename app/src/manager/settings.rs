@@ -565,11 +565,12 @@ pub(crate) fn table_row(theme: &gpui_kit::component::Theme, label: impl Into<Sha
         .border_color(theme.border)
         .child(
             h_flex()
-                .w(px(250.))
-                .flex_shrink_0()
+                .w(px(LABEL_W))
+                .min_w(px(120.))
+                .flex_shrink(1.)
                 .gap_1()
                 .items_center()
-                .child(div().text_sm().when(changed, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.primary)).child(label.clone()))
+                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().when(changed, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.primary)).child(label.clone()))
                 .when_some(help, |r, h| {
                     r.child(crate::ui::button(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))
                 }),
@@ -1048,7 +1049,7 @@ impl SettingsPage {
                         cx.notify();
                     }))
             }));
-        let mut table = ui::panel(theme).gap_0().flex_1().min_w_0().child(table_header(theme));
+        let mut table = ui::panel(theme).gap_0().flex_1().min_w_0().overflow_hidden().child(table_header(theme));
         let mut rows = 0;
         for g in self.groups.iter().filter(|g| self.group.as_ref().is_none_or(|n| n == &g.name)) {
             for s in &g.settings {
@@ -1069,17 +1070,22 @@ impl SettingsPage {
                     label,
                     self.help(&s.env),
                     changed,
-                    h_flex()
-                        .gap_3()
-                        .items_center()
-                        .child(h_flex().w(px(VALUE_W)).flex_shrink_0().child(field))
-                        .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(builtin_label(s)))
-                        .when(set, |r| {
-                            r.child(crate::ui::button(SharedString::from(format!("reset-{}", s.env))).ghost().label("Reset").on_click(cx.listener(move |this, _, window, cx| {
-                                this.set(&key, "", window, cx);
-                                cx.notify();
-                            })))
+                    table_cells(
+                        theme,
+                        &s.env,
+                        field,
+                        builtin_label(s),
+                        set.then(|| {
+                            crate::ui::button(SharedString::from(format!("reset-{}", s.env)))
+                                .ghost()
+                                .label("Reset")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.set(&key, "", window, cx);
+                                    cx.notify();
+                                }))
+                                .into_any_element()
                         }),
+                    ),
                 ));
             }
         }
@@ -1337,9 +1343,41 @@ pub(crate) fn table_header(theme: &gpui_kit::component::Theme) -> Div {
         .pb_1()
         .text_size(px(13.))
         .text_color(theme.muted_foreground)
-        .child(div().w(px(250.)).child("Setting"))
-        .child(div().w(px(VALUE_W)).child("Value"))
-        .child(div().flex_1().child("Built-in"))
+        .child(div().w(px(LABEL_W)).min_w(px(120.)).flex_shrink(1.).child("Setting"))
+        .child(div().flex_1().min_w(px(150.)).max_w(px(VALUE_W)).child("Value"))
+        .child(div().w(px(BUILTIN_W)).flex_shrink_0().text_right().child("Built-in"))
+}
+
+/// The table's label and built-in column widths; the value takes the rest
+/// up to VALUE_W, so nothing crosses the panel at any window width.
+const LABEL_W: f32 = 220.;
+const BUILTIN_W: f32 = 120.;
+
+/// A table row's value and built-in cells (with `extra`, such as Reset,
+/// after the value). Shared with a remote server's table.
+pub(crate) fn table_cells(theme: &gpui_kit::component::Theme, key: &str, field: impl IntoElement, builtin: String, extra: Option<AnyElement>) -> Div {
+    let tip: SharedString = builtin.clone().into();
+    h_flex()
+        .flex_1()
+        .min_w_0()
+        .gap_3()
+        .items_center()
+        .child(h_flex().flex_1().min_w(px(150.)).max_w(px(VALUE_W)).gap_2().items_center().child(div().flex_1().min_w_0().child(field)).children(extra))
+        .child(div().flex_1())
+        .child(
+            div()
+                .id(SharedString::from(format!("builtin-{key}")))
+                .w(px(BUILTIN_W))
+                .flex_shrink_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_right()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(builtin)
+                .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx)),
+        )
 }
 
 /// A setting's built-in value, as the Advanced table shows it.

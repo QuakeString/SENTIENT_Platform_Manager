@@ -88,13 +88,18 @@ fn table_row(theme: &gpui_kit::component::Theme, name: String, hint: String, fra
         .items_center()
         .text_sm()
         .child(
+            // The name and its description stay inside their column: the
+            // description is cut short, never drawn over the bar.
             h_flex()
-                .w(px(190.))
-                .flex_shrink_0()
+                .w(px(270.))
+                .min_w(px(120.))
+                .flex_shrink(1.)
+                .overflow_hidden()
+                .whitespace_nowrap()
                 .gap_1p5()
                 .items_baseline()
-                .child(div().child(name))
-                .when(!hint.is_empty(), |r| r.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(hint))),
+                .child(div().flex_shrink_0().child(name))
+                .when(!hint.is_empty(), |r| r.child(div().min_w_0().overflow_hidden().text_ellipsis().text_size(px(13.)).text_color(theme.muted_foreground).child(hint))),
         )
         .child(
             div()

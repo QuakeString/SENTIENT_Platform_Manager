@@ -39,7 +39,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
+use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|configuration> | backup-verify <backup> | backup-delete <backup> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
 
 /// A console for the output: release builds on Windows have none of their
@@ -278,7 +278,7 @@ pub fn run(args: &[String]) -> i32 {
             "settings-json" => serde_json::to_string(&crate::settings::current(&record)),
             _ => {
                 let prefs = crate::backups::BackupPrefs::load();
-                serde_json::to_string(&crate::remote::RemoteBackups { folder: prefs.folder.clone(), daily_at: prefs.daily_at.clone(), keep: prefs.keep, list: crate::backups::list(&prefs.folder) })
+                serde_json::to_string(&crate::remote::RemoteBackups { folder: prefs.folder.clone(), daily_at: prefs.daily_at.clone(), keep: prefs.keep, list: crate::backups::list(&prefs.folder), preset: prefs.preset })
             }
         };
         println!("{}", line.unwrap_or_default());
@@ -308,7 +308,7 @@ pub fn run(args: &[String]) -> i32 {
         let today = args.iter().any(|a| a == "--today");
         match args.windows(2).find(|w| w[0] == "--source").map(|w| w[1].as_str()) {
             Some(key) => match crate::logsource::Source::from_key(key).filter(|s| crate::logsource::available(&record).contains(s)) {
-                Some(src) => println!("{}", crate::logsource::read(&record, src, n, today)),
+                Some(src) => return print_log(crate::logsource::read(&record, src, n, today)),
                 None => {
                     eprintln!("No such log here: {key}");
                     return 2;
@@ -316,9 +316,8 @@ pub fn run(args: &[String]) -> i32 {
             },
             // No source named (an older window): SENTIENT's own log, read
             // by container or service, never through the compose files.
-            None => println!("{}", crate::logsource::read(&record, crate::logsource::Source::Sentient, n, today)),
+            None => return print_log(crate::logsource::read(&record, crate::logsource::Source::Sentient, n, today)),
         }
-        return 0;
     }
     let Some(record) = InstallationRecord::load() else {
         eprintln!("SENTIENT is not installed here (no installation record at {}).", crate::installation::record_path().display());
@@ -522,6 +521,53 @@ pub fn run(args: &[String]) -> i32 {
         }
         // Register or remove the daily backup from the saved settings.
         "backup-schedule" => crate::backups::apply_schedule(&crate::backups::BackupPrefs::load()),
+        // The automatic backup, from a remote window: off or a time, how many
+        // to keep, what to include. Saved and registered at once.
+        "backup-auto" => match (args.get(1), args.get(2).and_then(|k| k.parse::<u32>().ok()), args.get(3).map(String::as_str)) {
+            (Some(at), Some(keep), Some(include)) if (1..=365).contains(&keep) => (|| -> Result<(), String> {
+                let mut prefs = crate::backups::BackupPrefs::load();
+                prefs.daily_at = match at.as_str() {
+                    "off" => None,
+                    t if crate::backups::parse_time(t).is_some() => Some(t.to_string()),
+                    _ => return Err(format!("Not a time: {at}")),
+                };
+                prefs.keep = keep;
+                prefs.preset = match include {
+                    "everything" => crate::backups::Preset::Everything,
+                    "configuration" => crate::backups::Preset::Configuration,
+                    _ => return Err(format!("Not a choice: {include}")),
+                };
+                prefs.save().and_then(|_| crate::backups::apply_schedule(&prefs)).map(|_| {
+                    sink(Progress::Done {
+                        message: match &prefs.daily_at {
+                            Some(t) => format!("Automatic backup every day at {t}, keeping {keep}."),
+                            None => "Automatic backup is off.".into(),
+                        },
+                    })
+                })
+            })(),
+            _ => Err(USAGE.into()),
+        },
+        // Check or delete one backup in the backup folder (only there).
+        "backup-verify" | "backup-delete" => match args.get(1) {
+            Some(file) => {
+                let prefs = crate::backups::BackupPrefs::load();
+                match crate::backups::list(&prefs.folder).into_iter().find(|e| e.path == std::path::Path::new(file)) {
+                    None => Err(format!("{file} is not a backup in {}.", prefs.folder.display())),
+                    Some(e) if job == "backup-delete" => crate::backups::delete(&e.path).map(|_| sink(Progress::Done { message: format!("{} is deleted.", e.name) })),
+                    Some(e) => crate::backups::check(&e.path, None).and_then(|r| {
+                        let summary = crate::backups::check_of(&e.path).map(|c| c.summary).unwrap_or_default();
+                        if r.ok() {
+                            sink(Progress::Done { message: format!("{}: {summary}", e.name) });
+                            Ok(())
+                        } else {
+                            Err(format!("{} is damaged. {summary}", e.name))
+                        }
+                    }),
+                }
+            }
+            None => Err(USAGE.into()),
+        },
         "apply-changes" => crate::changes::apply(record, &sink).map(|_| ()),
         "kept" => crate::kept::list(&record).map(|items| {
             if json {
@@ -633,4 +679,16 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
         http_port: Some(record.stack.http_port),
         vanished_files: record.stack.vanished_files(),
     }
+}
+
+/// A log for the window: its lines, or (exit 1) why it could not be read, so
+/// the page shows an error state instead of the reason as a log line.
+fn print_log(text: String) -> i32 {
+    let t = text.trim();
+    if t.starts_with("Could not read") || t.starts_with("No gateway") || t.starts_with("No PostgreSQL log") {
+        eprintln!("{t}");
+        return 1;
+    }
+    println!("{text}");
+    0
 }

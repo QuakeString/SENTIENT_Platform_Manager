@@ -121,12 +121,29 @@ pub struct CheckRecord {
     pub summary: String,
 }
 
+/// Where checks are remembered: beside the installation record when this
+/// runs as the administrator (the server agent's jobs, which have no home
+/// folder), else in the user's settings folder.
 fn checks_path() -> PathBuf {
-    crate::updates::prefs_dir().join("backup-checks.json")
+    if as_root() { shared_checks_path() } else { crate::updates::prefs_dir().join("backup-checks.json") }
 }
 
+fn as_root() -> bool {
+    static ROOT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ROOT.get_or_init(crate::rootjob::is_root)
+}
+
+fn shared_checks_path() -> PathBuf {
+    crate::installation::record_path().with_file_name("backup-checks.json")
+}
+
+/// Both places, the one written by this account last.
 fn load_checks() -> std::collections::HashMap<String, CheckRecord> {
-    std::fs::read_to_string(checks_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    let read = |p: PathBuf| -> std::collections::HashMap<String, CheckRecord> { std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default() };
+    let mut all = read(shared_checks_path());
+    all.extend(read(crate::updates::prefs_dir().join("backup-checks.json")).into_iter().filter(|_| !as_root()));
+    all.extend(read(checks_path()));
+    all
 }
 
 pub fn check_of(file: &Path) -> Option<CheckRecord> {
