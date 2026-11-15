@@ -29,8 +29,12 @@ use crate::ui::{self, Tone};
 /// Reads the plan, with a compose file picked on the server (or the one the
 /// containers' labels name). Runs off the window's thread.
 pub type LoadPlan = Arc<dyn Fn(Option<String>) -> Result<TakeOverPlan, String> + Send + Sync>;
-/// Starts the takeover with the compose file the plan was read with.
-pub type RunTakeOver = std::rc::Rc<dyn Fn(Option<String>, &mut App)>;
+/// Starts the takeover with the compose file the plan was read with, and
+/// the database password when the plan asked for it.
+pub type RunTakeOver = std::rc::Rc<dyn Fn(Option<String>, Option<String>, &mut App)>;
+/// Whether PostgreSQL takes a password (the plan found none). Off the
+/// window's thread.
+pub type CheckPassword = Arc<dyn Fn(String) -> Result<(), String> + Send + Sync>;
 
 enum Plan {
     Loading,
@@ -50,7 +54,13 @@ pub struct TakeOverDialog {
     /// This computer (a file chooser, "this computer"), else a server.
     local: bool,
     sudo: Option<crate::remote::Instance>,
+    check: CheckPassword,
+    password: Entity<InputState>,
+    /// The password's check: running, or its answer.
+    checked: Option<Result<(), String>>,
+    checking: bool,
     _task: Option<Task<()>>,
+    _check: Option<Task<()>>,
 }
 
 /// Open the dialog and read the plan. `sudo`: the server whose sudo
@@ -58,19 +68,22 @@ pub struct TakeOverDialog {
 ///
 /// Deferred: called from a click, the window is in the middle of its own
 /// update, and updating it again from there fails without a word.
-pub fn open(local: bool, load: LoadPlan, run: RunTakeOver, sudo: Option<crate::remote::Instance>, cx: &mut App) {
-    cx.defer(move |cx| open_now(local, load, run, sudo, cx));
+pub fn open(local: bool, load: LoadPlan, check: CheckPassword, run: RunTakeOver, sudo: Option<crate::remote::Instance>, cx: &mut App) {
+    cx.defer(move |cx| open_now(local, load, check, run, sudo, cx));
 }
 
-fn open_now(local: bool, load: LoadPlan, run: RunTakeOver, sudo: Option<crate::remote::Instance>, cx: &mut App) {
+fn open_now(local: bool, load: LoadPlan, check: CheckPassword, run: RunTakeOver, sudo: Option<crate::remote::Instance>, cx: &mut App) {
     let Some(handle) = cx.active_window().or_else(|| cx.windows().into_iter().next()) else {
         crate::ui::show_error("The compose file could not be taken over", "The Platform Manager's window was not found.", cx);
         return;
     };
     let opened = handle.update(cx, |_, window, cx| {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/docker-compose.yml"));
+        // Screens: a password typed in (and checked once the plan is read).
+        let typed = std::env::var("SPM_DEBUG_TAKEOVER_PW").ok().filter(|_| cfg!(debug_assertions)).unwrap_or_default();
+        let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("PostgreSQL password").default_value(typed));
         let view = cx.new(|cx| {
-            let mut d = TakeOverDialog { load, run, plan: Plan::Loading, compose: None, input, rebuild_ok: false, local, sudo, _task: None };
+            let mut d = TakeOverDialog { load, run, plan: Plan::Loading, compose: None, input, rebuild_ok: false, local, sudo, check, password, checked: None, checking: false, _task: None, _check: None };
             d.reload(cx);
             d
         });
@@ -82,6 +95,26 @@ fn open_now(local: bool, load: LoadPlan, run: RunTakeOver, sudo: Option<crate::r
 }
 
 impl TakeOverDialog {
+    /// Ask PostgreSQL whether the password works.
+    fn check_password(&mut self, cx: &mut Context<Self>) {
+        let pw = self.password.read(cx).value().to_string();
+        if pw.is_empty() {
+            return;
+        }
+        self.checking = true;
+        self.checked = None;
+        let check = self.check.clone();
+        self._check = Some(cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { check(pw) }).await;
+            let _ = this.update(cx, |d, cx| {
+                d.checking = false;
+                d.checked = Some(r);
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.plan = Plan::Loading;
         self.rebuild_ok = false;
@@ -94,6 +127,9 @@ impl TakeOverDialog {
                     Ok(p) => Plan::Got(p),
                     Err(e) => Plan::Failed(e),
                 };
+                if cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_TAKEOVER_PW").is_some() {
+                    d.check_password(cx);
+                }
                 cx.notify();
             });
         }));
@@ -194,7 +230,8 @@ impl Render for TakeOverDialog {
         let any_found = plan.files.iter().any(|(_, f)| *f);
         let needs_rebuild = !plan.files.is_empty() && !any_found || plan.files.is_empty();
         let blocked = !plan.problems.is_empty();
-        let can_go = !blocked && (!needs_rebuild || self.rebuild_ok);
+        let password_ok = !plan.needs_password || matches!(self.checked, Some(Ok(())));
+        let can_go = !blocked && (!needs_rebuild || self.rebuild_ok) && password_ok;
 
         let mut b = body.child(
             h_flex()
@@ -267,6 +304,26 @@ impl Render for TakeOverDialog {
             b.children(plan.env_files.iter().map(|(f, found)| file_row(&theme, f, *found)))
         };
 
+        // The database password: found (said where), or asked for and checked.
+        if plan.needs_password {
+            let user = if plan.db_user.is_empty() { "SENTIENT's user".to_string() } else { plan.db_user.clone() };
+            b = b
+                .child(section(&theme, "Database password", Some(("to-pw-help", "It was not found in the containers or the compose file. The new compose file needs it so SENTIENT can connect; it is checked against PostgreSQL first and kept in the new compose file, like the Platform Manager's own installs."))))
+                .child(div().text_sm().child(format!("The PostgreSQL password for the user {user}.")))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(div().flex_1().min_w_0().child(Input::new(&self.password).mask_toggle()))
+                        .child(crate::ui::button("to-pw-check").outline().label(if self.checking { "Checking…" } else { "Check" }).disabled(self.checking).on_click(cx.listener(|d, _, _, cx| d.check_password(cx)))),
+                )
+                .children(match &self.checked {
+                    Some(Ok(())) => Some(ui::outcome(&theme, Tone::Good, "PostgreSQL accepts it.")),
+                    Some(Err(e)) => Some(ui::outcome(&theme, Tone::Bad, e.clone())),
+                    None => None,
+                });
+        }
+
         // What is kept and what changes.
         b = b.child(section(&theme, "What happens", None));
         b = b
@@ -274,6 +331,7 @@ impl Render for TakeOverDialog {
             .child(ui::fact(&theme, "Old containers", "Kept, stopped, until the new ones answer"))
             .child(ui::fact(&theme, "Data volumes", format!("{} (used as they are)", plan.volumes.join(", "))))
             .child(ui::fact(&theme, "Ports", plan.ports.join(", ")))
+            .when(!plan.password_from.is_empty() && plan.password_from != "given", |b| b.child(ui::fact(&theme, "Database password", format!("from {}", plan.password_from))))
             .when(!plan.extra_env.is_empty(), |b| b.child(ui::fact(&theme, "Extra settings", plan.extra_env.join(", "))))
             .when_some(plan.loopback_port, |b, p| b.child(ui::fact(&theme, "PostgreSQL", format!("port {p} on 127.0.0.1 only (it was not published)"))))
             .child(ui::fact(&theme, "New compose file", plan.new_file.clone()))
@@ -291,9 +349,10 @@ impl Render for TakeOverDialog {
                 .child(crate::ui::button("to-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx)))
                 .child(crate::ui::button("to-go").primary().label("Take over").disabled(!can_go).on_click(cx.listener(|d, _, _, cx| {
                     let compose = d.compose.clone();
+                    let password = Some(d.password.read(cx).value().to_string()).filter(|p| !p.is_empty() && matches!(d.checked, Some(Ok(()))));
                     let run = d.run.clone();
                     crate::modal::close(cx);
-                    run(compose, cx);
+                    run(compose, password, cx);
                 }))),
         )
     }

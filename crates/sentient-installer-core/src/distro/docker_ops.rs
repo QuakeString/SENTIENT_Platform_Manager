@@ -96,14 +96,124 @@ fn container_env(container: &str, key: &str) -> Option<String> {
     out.lines().find_map(|l| l.strip_prefix(&prefix)).map(str::to_string)
 }
 
+/// Where an adopted stack's database password was found (or that it needs
+/// none). What the takeover's plan says, and what it uses.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DbPassword {
+    /// The password, and where it was found.
+    Found(String, &'static str),
+    /// PostgreSQL lets this stack in without one (POSTGRES_HOST_AUTH_METHOD=trust).
+    Trust,
+    /// Not found anywhere: the operator gives it.
+    Unknown,
+}
+
+/// A container's whole environment, running or stopped.
+fn container_envs(container: &str) -> Vec<(String, String)> {
+    capture(&format!("docker inspect --format '{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}' {}", shell_quote(container)))
+        .map(|out| out.lines().filter_map(|l| l.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect())
+        .unwrap_or_default()
+}
+
+/// Every database password a stack carries, in order: SENTIENT's
+/// connection string (what it connects with), SENTIENT's own password
+/// variables, the PostgreSQL container's POSTGRES_PASSWORD (resolved by
+/// Docker, whatever the compose file wrote) and POSTGRES_PASSWORD_FILE (read
+/// in that container by `read_file`), then the compose files' literal values
+/// and `${VAR:-default}` defaults. Duplicates once.
+pub fn db_password_candidates(app_env: &[(String, String)], pg_env: &[(String, String)], read_file: &dyn Fn(&str) -> Option<String>, compose_texts: &[String]) -> Vec<(String, &'static str)> {
+    let get = |env: &[(String, String)], k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).filter(|v| !v.is_empty());
+    let ok = |p: String| (!p.trim().is_empty()).then(|| p.trim_end_matches(['\r', '\n']).to_string());
+    let mut v: Vec<(String, &'static str)> = Vec::new();
+    let mut push = |p: Option<String>, from: &'static str| {
+        if let Some(p) = p {
+            if !v.iter().any(|(q, _)| *q == p) {
+                v.push((p, from));
+            }
+        }
+    };
+    push(get(app_env, "DATABASE_URL").and_then(|u| crate::distro::adopt::url_password(&u)), "SENTIENT's DATABASE_URL");
+    for k in ["DATABASE_PASSWORD", "SPRING_DATASOURCE_PASSWORD", "PGPASSWORD", "POSTGRES_PASSWORD", "DB_PASSWORD"] {
+        push(get(app_env, k).and_then(ok), "SENTIENT's environment");
+    }
+    push(get(pg_env, "POSTGRES_PASSWORD").and_then(ok), "the PostgreSQL container's POSTGRES_PASSWORD");
+    for env in [pg_env, app_env] {
+        push(get(env, "POSTGRES_PASSWORD_FILE").and_then(|f| read_file(&f)).and_then(ok), "POSTGRES_PASSWORD_FILE");
+    }
+    for text in compose_texts {
+        for k in ["POSTGRES_PASSWORD", "DATABASE_PASSWORD"] {
+            push(yaml_value(text, k).map(|v| compose_default(&v)).and_then(ok), "the compose file");
+        }
+        push(yaml_value(text, "DATABASE_URL").map(|v| compose_default(&v)).and_then(|u| crate::distro::adopt::url_password(&u)), "the compose file");
+    }
+    v
+}
+
+/// The first password a stack carries (see [`db_password_candidates`]),
+/// else trust (none needed), else unknown.
+pub fn find_db_password(app_env: &[(String, String)], pg_env: &[(String, String)], read_file: &dyn Fn(&str) -> Option<String>, compose_texts: &[String]) -> DbPassword {
+    if let Some((p, from)) = db_password_candidates(app_env, pg_env, read_file, compose_texts).into_iter().next() {
+        return DbPassword::Found(p, from);
+    }
+    if pg_env.iter().any(|(k, v)| k == "POSTGRES_HOST_AUTH_METHOD" && v == "trust") {
+        return DbPassword::Trust;
+    }
+    DbPassword::Unknown
+}
+
+/// A compose value with its `${VAR:-default}` / `${VAR-default}` parts
+/// replaced by their defaults (no default: nothing), the rest as it is.
+fn compose_default(v: &str) -> String {
+    let mut out = String::new();
+    let mut rest = v;
+    while let Some(i) = rest.find("${") {
+        out.push_str(&rest[..i]);
+        let Some(end) = rest[i..].find('}') else {
+            out.push_str(&rest[i..]);
+            return out;
+        };
+        let inner = &rest[i + 2..i + end];
+        if let Some((_, d)) = inner.split_once(":-").or_else(|| inner.split_once('-')) {
+            out.push_str(d);
+        }
+        rest = &rest[i + end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The stack's database password from its containers and compose files.
+pub fn db_password_of(cfg: &DeployConfig) -> DbPassword {
+    let names = cfg.names();
+    let pg = names.pg.clone();
+    let read_file = move |path: &str| capture(&format!("docker exec {} cat {}", shell_quote(&pg), shell_quote(path))).ok();
+    let texts: Vec<String> = cfg.external.iter().flat_map(|e| e.files.iter()).filter_map(|f| capture(&format!("cat {}", shell_quote(f))).ok()).collect();
+    let (app_env, pg_env) = (container_envs(&names.app), container_envs(&names.pg));
+    let candidates = db_password_candidates(&app_env, &pg_env, &read_file, &texts);
+    // More than one: the first PostgreSQL takes (a container's
+    // POSTGRES_PASSWORD is only what it was created with). When PostgreSQL
+    // cannot be asked (stopped), the first.
+    if candidates.len() > 1 {
+        for (p, from) in &candidates {
+            match crate::distro::adopt::check_db_password(cfg, p) {
+                Ok(()) => return DbPassword::Found(p.clone(), from),
+                Err(e) if e.contains("refused") => continue,
+                Err(_) => break,
+            }
+        }
+    }
+    match candidates.into_iter().next() {
+        Some((p, from)) => DbPassword::Found(p, from),
+        None => find_db_password(&app_env, &pg_env, &read_file, &texts),
+    }
+}
+
 fn container_secrets(cfg: &DeployConfig) -> Option<StackSecrets> {
     let names = cfg.names();
-    // SENTIENT's own connection string first: the PostgreSQL container's
-    // POSTGRES_PASSWORD is only the password it was first created with.
-    let db_password = container_env(&names.app, "DATABASE_URL")
-        .and_then(|url| crate::distro::adopt::url_password(&url))
-        .or_else(|| container_env(&names.pg, "POSTGRES_PASSWORD"))
-        .filter(|p| !p.is_empty())?;
+    let db_password = match db_password_of(cfg) {
+        DbPassword::Found(p, _) => p,
+        _ => return None,
+    };
     Some(StackSecrets {
         db_password,
         ch_password: if cfg.flavor.uses_clickhouse() {
@@ -672,5 +782,78 @@ mod tests {
         assert_eq!(repository("quakestring/sentient:4.3.0.24"), "quakestring/sentient");
         assert_eq!(repository("registry:5000/sentient"), "registry:5000/sentient");
         assert_eq!(repository("registry:5000/sentient:latest"), "registry:5000/sentient");
+    }
+}
+
+#[cfg(test)]
+mod password_tests {
+    use super::*;
+
+    fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+    fn none(_: &str) -> Option<String> {
+        None
+    }
+
+    #[test]
+    fn from_the_connection_string_first() {
+        let app = env(&[("DATABASE_URL", "postgresql://sentient:urlpw@postgres:5432/sentient"), ("DATABASE_PASSWORD", "other")]);
+        assert_eq!(find_db_password(&app, &env(&[("POSTGRES_PASSWORD", "initpw")]), &none, &[]), DbPassword::Found("urlpw".into(), "SENTIENT's DATABASE_URL"));
+    }
+
+    #[test]
+    fn from_sentients_own_variables() {
+        let app = env(&[("DATABASE_URL", "postgresql://sentient@postgres:5432/sentient"), ("SPRING_DATASOURCE_PASSWORD", "springpw")]);
+        assert_eq!(find_db_password(&app, &[], &none, &[]), DbPassword::Found("springpw".into(), "SENTIENT's environment"));
+    }
+
+    #[test]
+    fn from_the_postgres_container() {
+        let app = env(&[("DATABASE_URL", "postgresql://sentient@postgres/sentient")]);
+        assert_eq!(find_db_password(&app, &env(&[("POSTGRES_PASSWORD", "pgpw")]), &none, &[]).clone(), DbPassword::Found("pgpw".into(), "the PostgreSQL container's POSTGRES_PASSWORD"));
+    }
+
+    #[test]
+    fn from_a_password_file() {
+        let pg = env(&[("POSTGRES_PASSWORD_FILE", "/run/secrets/db")]);
+        let read = |p: &str| (p == "/run/secrets/db").then(|| "filepw\n".to_string());
+        assert_eq!(find_db_password(&[], &pg, &read, &[]), DbPassword::Found("filepw".into(), "POSTGRES_PASSWORD_FILE"));
+    }
+
+    #[test]
+    fn from_the_compose_file_and_its_defaults() {
+        let text = "services:\n  postgres:\n    environment:\n      POSTGRES_PASSWORD: ${DB_PASS:-composepw}\n".to_string();
+        assert_eq!(find_db_password(&[], &[], &none, &[text]), DbPassword::Found("composepw".into(), "the compose file"));
+        let url = "services:\n  sentient:\n    environment:\n      DATABASE_URL: postgresql://sentient:${PW:-urlpw2}@postgres/sentient\n".to_string();
+        assert_eq!(find_db_password(&[], &[], &none, &[url]), DbPassword::Found("urlpw2".into(), "the compose file"));
+        // A variable without a default is no password.
+        let bare = "      POSTGRES_PASSWORD: ${DB_PASS}\n".to_string();
+        assert_eq!(find_db_password(&[], &[], &none, &[bare]), DbPassword::Unknown);
+    }
+
+    /// SUNOIL's shape: SENTIENT has DATABASE_URL, PostgreSQL has
+    /// POSTGRES_PASSWORD, both as Docker resolved them; no .env, and the
+    /// compose file writes them through variables.
+    #[test]
+    fn sunoils_stack() {
+        let app = env(&[("DATABASE_URL", "postgresql://sentient:S3cret%21x@sentient-postgres:5432/sentient"), ("HOST", "0.0.0.0"), ("PORT", "8080")]);
+        let pg = env(&[("POSTGRES_DB", "sentient"), ("POSTGRES_USER", "sentient"), ("POSTGRES_PASSWORD", "S3cret!x")]);
+        let compose = "services:\n  sentient:\n    environment:\n      DATABASE_URL: ${DATABASE_URL}\n  postgres:\n    environment:\n      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}\n".to_string();
+        let c = db_password_candidates(&app, &pg, &none, &[compose.clone()]);
+        // Decoded from the URL; the container's (the same) not listed twice.
+        assert_eq!(c, vec![("S3cret!x".to_string(), "SENTIENT's DATABASE_URL")]);
+        // Only the postgres container has it.
+        let app2 = env(&[("DATABASE_URL", "postgresql://sentient@sentient-postgres:5432/sentient")]);
+        assert_eq!(find_db_password(&app2, &pg, &none, &[compose]), DbPassword::Found("S3cret!x".into(), "the PostgreSQL container's POSTGRES_PASSWORD"));
+        // Different: both kept, the URL's first.
+        let pg2 = env(&[("POSTGRES_PASSWORD", "initial")]);
+        assert_eq!(db_password_candidates(&app, &pg2, &none, &[]).len(), 2);
+    }
+
+    #[test]
+    fn trust_needs_none_and_otherwise_it_is_asked_for() {
+        assert_eq!(find_db_password(&[], &env(&[("POSTGRES_HOST_AUTH_METHOD", "trust")]), &none, &[]), DbPassword::Trust);
+        assert_eq!(find_db_password(&env(&[("DATABASE_URL", "postgresql://sentient@postgres/sentient")]), &[], &none, &[]), DbPassword::Unknown);
     }
 }

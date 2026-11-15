@@ -305,19 +305,24 @@ impl Manager {
                         loopback_port: (kind == "missing").then_some(15432),
                         problems: Vec::new(),
                         new_file: "/var/lib/sentient-platform-manager/stack/docker-compose.yml".into(),
+                        ..Default::default()
                     };
                     if let Some(c) = compose {
                         p.files = vec![(c, true)];
                     }
                     match kind.as_str() {
                         "blocked" => p.problems.push("The container sentient-clickhouse is not there.".into()),
+                        "password" => {
+                            p.needs_password = true;
+                            p.db_user = "sentient".into();
+                        }
                         "failed" => return Err("ssh: connect to host 10.0.4.12 port 22: Connection timed out".into()),
                         "loading" => std::thread::sleep(std::time::Duration::from_secs(60)),
                         _ => {}
                     }
                     Ok(p)
                 };
-                cx.defer(move |cx| takeover::open(std::env::var_os("SPM_DEBUG_TAKEOVER_LOCAL").is_some(), std::sync::Arc::new(plan), std::rc::Rc::new(|_, _: &mut App| {}), None, cx));
+                cx.defer(move |cx| takeover::open(std::env::var_os("SPM_DEBUG_TAKEOVER_LOCAL").is_some(), std::sync::Arc::new(plan), std::sync::Arc::new(|pw: String| if pw == "right" { Ok(()) } else { Err("PostgreSQL refused this password for the user sentient.".into()) }), std::rc::Rc::new(|_, _, _: &mut App| {}), None, cx));
             }
             if std::env::var_os("SPM_DEBUG_SUDO_PROMPT").is_some() {
                 if let Some(inst) = crate::remote::load().into_iter().next() {
@@ -437,6 +442,11 @@ impl Manager {
         if let Some(m) = self.monitor.filter(|m| m.disk_low()) {
             out.push(local("Disk almost full".into(), format!("{} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status));
         }
+        // SENTIENT stopped or a server not answering (crate::bg_app's checks):
+        // they stay while it lasts.
+        for p in crate::bg_app::problems(cx).into_iter().rev() {
+            out.insert(0, (p.title().to_string(), p.detail(), Page::Status, p.instance.clone(), p.name.clone(), p.color.clone()));
+        }
         if let (Some(id), Some(m)) = (&self.open_remote, self.remote_monitor.filter(|m| m.disk_low())) {
             if let Some(r) = self.remotes.iter().find(|r| &r.id == id) {
                 out.push(("Disk almost full".into(), format!("{} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status, Some(r.id.clone()), r.name.clone(), r.color.clone()));
@@ -484,13 +494,14 @@ impl Manager {
                         .child(div().text_size(px(12.5)).text_color(theme.muted_foreground).overflow_hidden().whitespace_nowrap().text_ellipsis().child(detail))
                         .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(meta)),
                 )
+                // Right: the unread dot, then the row's own clear (×), always
+                // shown so one line can be cleared without hunting for it.
                 .child(
-                    v_flex()
-                        .w(px(20.))
+                    h_flex()
                         .flex_shrink_0()
                         .items_center()
-                        .gap_1()
-                        .when(unread, |c| c.child(div().mt(px(5.)).size(px(7.)).rounded_full().bg(theme.danger)))
+                        .gap(px(6.))
+                        .when(unread, |c| c.child(div().size(px(7.)).rounded_full().bg(theme.danger)))
                         .children(clear),
                 )
         };
@@ -519,12 +530,14 @@ impl Manager {
             let icon = if e.failed { (IconName::CircleX, theme.danger) } else { (IconName::CircleCheck, theme.primary) };
             let clear = div()
                 .id(SharedString::from(format!("clear-{id}")))
-                .invisible()
-                .group_hover(SharedString::from(format!("ev-{id}")), |d| d.visible())
-                .p(px(2.))
-                .rounded(px(4.))
-                .hover(|d| d.bg(theme.list_hover))
-                .child(Icon::new(IconName::Close).size_3().text_color(theme.muted_foreground))
+                .size(px(22.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(5.))
+                .hover(|d| d.bg(theme.danger.opacity(0.12)))
+                .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Clear").build(w, cx))
+                .child(Icon::new(IconName::Close).size(px(13.)).text_color(theme.muted_foreground))
                 .on_click(move |_, _, cx| {
                     cx.stop_propagation();
                     s1.update(cx, |s, cx| s.clear(Some(id), cx));

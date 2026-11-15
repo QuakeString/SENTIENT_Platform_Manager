@@ -1023,25 +1023,51 @@ fn reduced_motion() -> bool {
     })
 }
 
-/// A placeholder block of `w` × `h` in the muted surface tint, with a slow
-/// shimmer (a faint lighter band sweeping left to right, 1.4 s). `key`
-/// names it among its siblings.
+/// A placeholder block of `w` × `h` in the muted surface tint, with the
+/// shimmer: one soft, slanted band of light sweeping across the whole page
+/// (see [`paint_shimmer`]). `key` names it among its siblings.
 pub fn skeleton_block(theme: &Theme, key: impl Into<SharedString>, w: Length, h: f32) -> Div {
-    let key: SharedString = key.into();
+    let _key: SharedString = key.into();
     let dark = theme.mode.is_dark();
     let base = if dark { theme.foreground.opacity(0.08) } else { theme.foreground.opacity(0.07) };
-    let band = if dark { gpui_kit::white().opacity(0.06) } else { gpui_kit::white().opacity(0.55) };
+    // A few per cent lighter than the bone, at the band's middle only.
+    let light = if dark { gpui_kit::white().opacity(0.07) } else { gpui_kit::white().opacity(0.6) };
     div().relative().overflow_hidden().w(w).h(px(h)).flex_shrink_0().rounded(px((h / 2.).min(6.))).bg(base).when(!reduced_motion(), |d| {
-        d.child(
-            div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .w(relative(0.4))
-                .bg(band)
-                .with_animation(SharedString::from(format!("shimmer-{key}")), Animation::new(std::time::Duration::from_millis(1400)).repeat(), |d, t| d.left(relative(-0.4 + t * 1.4))),
-        )
+        d.child(canvas(|_, _, _| {}, move |bounds, _, window, _| paint_shimmer(bounds, light, window)).absolute().inset_0().size_full())
     })
+}
+
+/// How long one sweep of the shimmer takes.
+const SHIMMER_PERIOD: f32 = 1.5;
+/// The band's width (each soft side half of it) and its slant (20°).
+const SHIMMER_BAND: f32 = 260.;
+const SHIMMER_TAN: f32 = 0.364;
+
+/// The shimmer in one bone. Every bone reads the same clock and places the
+/// band by its own position on the page (x minus its height times the
+/// slant), so the band lines up across rows as one light passing over the
+/// page. Two quads, light rising then falling, each a gradient at 20° so
+/// the band's edges slant too. Ease-in-out; the next frame is asked for.
+fn paint_shimmer(bounds: Bounds<Pixels>, light: Hsla, window: &mut Window) {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let start = *START.get_or_init(std::time::Instant::now);
+    let page_w = f32::from(window.viewport_size().width);
+    let p = (start.elapsed().as_secs_f32() / SHIMMER_PERIOD).fract();
+    let eased = if p < 0.5 { 2. * p * p } else { 1. - (-2. * p + 2.).powi(2) / 2. };
+    // From fully left of the page to fully right, including the slant.
+    let travel = page_w + 2. * SHIMMER_BAND + 400. * SHIMMER_TAN;
+    let centre_at_top = -SHIMMER_BAND + eased * travel;
+    let y_mid = f32::from(bounds.origin.y + bounds.size.height / 2.);
+    let centre = centre_at_top - y_mid * SHIMMER_TAN;
+    let half = SHIMMER_BAND / 2.;
+    let clear = light.opacity(0.);
+    window.with_content_mask(Some(ContentMask { bounds }), |window| {
+        let top = bounds.origin.y;
+        let h = bounds.size.height;
+        window.paint_quad(fill(Bounds::new(point(px(centre - half), top), size(px(half), h)), linear_gradient(110., linear_color_stop(clear, 0.), linear_color_stop(light, 1.))));
+        window.paint_quad(fill(Bounds::new(point(px(centre), top), size(px(half), h)), linear_gradient(110., linear_color_stop(light, 0.), linear_color_stop(clear, 1.))));
+    });
+    window.request_animation_frame();
 }
 
 /// A text-line placeholder (one line of 14 px text: 12 px high in a 20 px row).
