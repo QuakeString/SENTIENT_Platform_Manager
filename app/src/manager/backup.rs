@@ -873,8 +873,11 @@ pub(crate) fn brow_pub(theme: &gpui_kit::component::Theme, label: &'static str, 
 
 /// A row: label, then its control.
 fn brow(theme: &gpui_kit::component::Theme, label: &'static str, help: Option<&'static str>, control: impl IntoElement) -> Div {
+    // On a narrow window the control moves under the label, right-aligned.
     h_flex()
-        .gap_4()
+        .flex_wrap()
+        .gap_x_4()
+        .gap_y_1()
         .items_center()
         .py_2()
         .border_t_1()
@@ -891,7 +894,7 @@ fn brow(theme: &gpui_kit::component::Theme, label: &'static str, help: Option<&'
                 .child(div().text_sm().child(label))
                 .when_some(help, |c, h| c.child(crate::ui::button(SharedString::from(format!("bhelp-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))),
         )
-        .child(h_flex().flex_shrink_0().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
+        .child(h_flex().flex_shrink_0().ml_auto().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
 }
 
 impl BackupPage {
@@ -1326,7 +1329,9 @@ pub(crate) fn entry_row_with(theme: &gpui_kit::component::Theme, i: usize, e: &c
         None => (Tone::Neutral, "Not verified".to_string(), "Integrity check not run yet. Check reads every part of the file and compares it with its SHA-256 checksum."),
     };
     h_flex()
-        .gap_3()
+        .flex_wrap()
+        .gap_x_3()
+        .gap_y_1()
         .items_center()
         .py_1p5()
         .when(i > 0, |r| r.border_t_1())
@@ -1334,8 +1339,8 @@ pub(crate) fn entry_row_with(theme: &gpui_kit::component::Theme, i: usize, e: &c
         .child(
             v_flex()
                 .flex_1()
-                .min_w_0()
-                .child(div().text_sm().text_ellipsis().child(e.name.clone()))
+                .min_w(px(180.))
+                .child(div().text_sm().overflow_hidden().whitespace_nowrap().text_ellipsis().child(e.name.clone()))
                 .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!(
                     "{} · {}{}",
                     e.made,

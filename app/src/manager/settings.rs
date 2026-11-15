@@ -504,8 +504,11 @@ pub(crate) fn row(theme: &gpui_kit::component::Theme, label: impl Into<SharedStr
     // The mockup's setting row: the label on the left (primary when
     // changed), the control right-aligned in a fixed column.
     let label: SharedString = label.into();
+    // On a narrow window the control moves under the label, right-aligned.
     h_flex()
-        .gap_4()
+        .flex_wrap()
+        .gap_x_4()
+        .gap_y_1()
         .items_center()
         .py_2()
         .border_t_1()
@@ -521,7 +524,7 @@ pub(crate) fn row(theme: &gpui_kit::component::Theme, label: impl Into<SharedStr
                     r.child(crate::ui::button(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))
                 }),
         )
-        .child(h_flex().flex_shrink_0().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
+        .child(h_flex().flex_shrink_0().ml_auto().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
 }
 
 /// A setting row with its variable name muted beside the plain label (the
@@ -529,8 +532,11 @@ pub(crate) fn row(theme: &gpui_kit::component::Theme, label: impl Into<SharedStr
 pub(crate) fn row_with_var(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, var: &str, help: Option<String>, changed: bool, control: impl IntoElement) -> Div {
     let label: SharedString = label.into();
     let var = var.trim_start_matches("pg:").to_string();
+    // On a narrow window the control moves under the label, right-aligned.
     h_flex()
-        .gap_4()
+        .flex_wrap()
+        .gap_x_4()
+        .gap_y_1()
         .items_center()
         .py_2()
         .border_t_1()
@@ -549,7 +555,7 @@ pub(crate) fn row_with_var(theme: &gpui_kit::component::Theme, label: impl Into<
                 )
                 .child(div().text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(var)),
         )
-        .child(h_flex().flex_shrink_0().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
+        .child(h_flex().flex_shrink_0().ml_auto().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
 }
 
 /// A row of the All variables table: label column, then value and built-in
@@ -700,7 +706,7 @@ impl SettingsPage {
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading the accounts…" } else { "Not read. Reading asks for the administrator password." }))
+                        .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading the accounts…" } else { "Not read. Reading asks for the administrator password." }))
                         .when(!self.reading_admin, |r| r.child(crate::ui::button("read-admins").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
                 );
             }
@@ -1270,7 +1276,8 @@ pub(crate) const TAB_KEYS: [&[&str]; 4] = [
 pub(crate) fn tab_bar(theme: &gpui_kit::component::Theme, id: &str, active: usize, pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
     v_flex()
         .w(px(190.))
-        .flex_shrink_0()
+        .min_w(px(132.))
+        .flex_shrink(1.)
         .gap_0p5()
         .children(TAB_TITLES.iter().enumerate().map(|(i, title)| {
             let on = i == active;

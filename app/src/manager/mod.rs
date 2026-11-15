@@ -550,6 +550,7 @@ impl Manager {
             };
             h_flex()
                 .id(id)
+                .flex_wrap()
                 .gap_3()
                 .px_4()
                 .py_2()
@@ -559,7 +560,7 @@ impl Manager {
                 .border_b_1()
                 .border_color(theme.border)
                 .child(Icon::new(if matches!(tone, crate::ui::Tone::Good) { IconName::CircleCheck } else { IconName::Info }).small())
-                .child(div().flex_1().text_sm().child(text))
+                .child(div().flex_1().min_w(px(220.)).text_sm().child(text))
         };
         let mut col = v_flex();
         // B3/B4: this run follows a self-update.

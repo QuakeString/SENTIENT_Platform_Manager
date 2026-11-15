@@ -215,7 +215,7 @@ impl Render for GatewayPage {
                                             .disabled(busy || !status.managed || (status.container.is_none() && o.installer.is_none()))
                                             .on_click(cx.listener(move |p, _, _, cx| p.update_to(o2.clone(), cx))),
                                     )
-                                    .child(div().text_sm().text_color(theme.muted_foreground).child(if status.managed {
+                                    .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(if status.managed {
                                         format!("released {}; the configuration and the local page's password are kept", o.date)
                                     } else {
                                         format!(

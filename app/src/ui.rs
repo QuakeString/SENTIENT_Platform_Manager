@@ -550,15 +550,19 @@ pub fn service_rows(
                 .gap_4()
                 .text_sm()
                 .items_center()
-                .child(gpui_kit::component::h_flex().w(px(168.)).flex_shrink_0().child(if busy { pill(theme, Tone::Warn, "Working…") } else { pill(theme, tone, label) }))
+                // The state column lines up with the fact labels; it gives way
+                // on a narrow window, and the names are cut, never overlapped.
+                .child(gpui_kit::component::h_flex().w(px(168.)).min_w(px(84.)).flex_shrink(1.).child(if busy { pill(theme, Tone::Warn, "Working…") } else { pill(theme, tone, label) }))
                 .child(
                     gpui_kit::component::h_flex()
                         .flex_1()
                         .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
                         .gap_2()
                         .child(div().flex_shrink_0().child(SharedString::from(plain.unwrap_or(&name).to_string())))
-                        .when(plain.is_some(), |r| r.child(div().flex_shrink_0().text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(name.clone())))
-                        .when(!detail.is_empty(), |r| r.child(div().min_w_0().text_ellipsis().text_color(theme.muted_foreground).child(SharedString::from(format!("· {detail}"))))),
+                        .when(plain.is_some(), |r| r.child(div().min_w_0().overflow_hidden().text_ellipsis().text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(name.clone())))
+                        .when(!detail.is_empty(), |r| r.child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(theme.muted_foreground).child(SharedString::from(format!("· {detail}"))))),
                 )
                 .when_some(actions.clone(), |r, (act, log, _)| {
                     let icon = |id: &str, icon: gpui_kit::assets::IconName, tip: &'static str, enabled: bool, action: &'static str| {
