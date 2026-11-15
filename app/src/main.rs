@@ -7,23 +7,39 @@
 
 mod adopt;
 mod agent;
+#[cfg(feature = "gui")]
 mod assets;
 mod backup_jobs;
 mod backups;
 mod catalog;
 mod changes;
 mod dbstatus;
+#[cfg(feature = "gui")]
 mod earlier;
 mod elevate;
 mod headless;
 mod installation;
+#[cfg(feature = "gui")]
 mod installer;
+/// The server agent runs unattended installs from a plan too (no window).
+#[cfg(not(feature = "gui"))]
+mod installer {
+    #[path = "plan.rs"]
+    pub mod plan;
+    pub(crate) use plan::{run as run_install, *};
+    #[cfg(windows)]
+    pub use plan::provision_clickhouse_wsl;
+}
+#[cfg(feature = "gui")]
 mod jobs;
 mod log_level;
 mod kept;
 mod leftovers;
+#[cfg(feature = "gui")]
 mod maintenance;
+#[cfg(feature = "gui")]
 mod manager;
+mod maintenance_ops;
 mod migration;
 mod mode;
 mod notes;
@@ -38,17 +54,23 @@ mod secrets_key;
 mod self_install;
 mod sentient_admin;
 mod settings;
+#[cfg(feature = "gui")]
 mod standalone;
 mod support;
 mod sysmon;
+#[cfg(feature = "gui")]
 mod theme;
+#[cfg(feature = "gui")]
 mod ui;
 mod updates;
 mod updating;
 
+#[cfg(feature = "gui")]
 use gpui_kit::component::ThemeMode;
+#[cfg(feature = "gui")]
 use gpui_kit::*;
 
+#[cfg(feature = "gui")]
 use mode::AppMode;
 
 fn main() {
@@ -77,6 +99,17 @@ fn main() {
     if args.get(1).map(String::as_str) == Some("--job") {
         std::process::exit(headless::run(&args[2..]));
     }
+    #[cfg(not(feature = "gui"))]
+    {
+        eprintln!("This is the SENTIENT Platform Manager's server agent: run it with --job <job> (see --job help).");
+        std::process::exit(2);
+    }
+    #[cfg(feature = "gui")]
+    gui_main(args);
+}
+
+#[cfg(feature = "gui")]
+fn gui_main(args: Vec<String>) {
     if !elevate::ensure_admin() {
         return;
     }

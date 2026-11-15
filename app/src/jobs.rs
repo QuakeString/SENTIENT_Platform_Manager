@@ -193,11 +193,7 @@ impl Job {
     }
 }
 
-/// The Platform Manager's own log: what it did, with times
-/// (`activity.log` beside its preferences, kept under about 1 MB).
-pub fn activity_log() -> std::path::PathBuf {
-    crate::updates::prefs_dir().join("activity.log")
-}
+pub use crate::maintenance_ops::activity_log;
 
 fn activity(line: &str) {
     use std::io::Write as _;

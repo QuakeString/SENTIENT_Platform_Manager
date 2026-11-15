@@ -1125,13 +1125,13 @@ fn grid_card(
         .w(px(CARD_W))
         .flex_shrink_0()
         .min_h(px(CARD_MIN_H))
-        .rounded(theme.radius)
+        .rounded(px(ui::PANEL_RADIUS))
         .bg(theme.background)
         .border_1()
         .border_color(if current { theme.primary } else { theme.border })
         // The colour strip follows the card's rounded top corners (GPUI
         // does not clip children to a radius).
-        .child(div().h(px(5.)).w_full().rounded_t(theme.radius - px(1.)).bg(rgb(remote::parse_hex(color).unwrap_or(0x187074))))
+        .child(div().h(px(5.)).w_full().flex_shrink_0().rounded_t(px(ui::PANEL_RADIUS - 1.)).bg(rgb(remote::parse_hex(color).unwrap_or(0x187074))))
         .child(
             v_flex()
                 .flex_1()

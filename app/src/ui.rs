@@ -78,12 +78,16 @@ pub fn start_delay_row(theme: &Theme, state: &Entity<gpui_kit::component::input:
         .child(Button::new("start-delay-help").ghost().xsmall().icon(IconName::Info).tooltip(START_DELAY_HELP))
 }
 
+/// The corner radius of panels and cards (buttons and inputs keep the
+/// theme's smaller one).
+pub const PANEL_RADIUS: f32 = 8.;
+
 /// A content panel: surface colour, hairline border, panel radius.
 pub fn panel(theme: &Theme) -> Div {
     v_flex()
         .gap_3()
         .p_4()
-        .rounded(theme.radius)
+        .rounded(px(PANEL_RADIUS))
         .bg(theme.background)
         .border_1()
         .border_color(theme.border)
@@ -195,26 +199,7 @@ pub fn outcome(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div 
         }))
 }
 
-/// SENTIENT colours its console output with ANSI escape sequences
-/// (`ESC [ … m`); the app shows plain text.
-pub fn strip_ansi(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next();
-            // Parameters and intermediates, then one final byte in @..~.
-            for c in chars.by_ref() {
-                if ('@'..='~').contains(&c) {
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
+pub use crate::maintenance_ops::strip_ansi;
 
 /// How far a planned step got: done, running, failed or not yet.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

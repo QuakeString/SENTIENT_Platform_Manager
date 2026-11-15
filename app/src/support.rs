@@ -47,15 +47,15 @@ pub fn create() -> Result<PathBuf, String> {
         chrono::Local::now().to_rfc3339(),
     );
     add(&mut tar, "versions.txt", versions.as_bytes())?;
-    add_file(&mut tar, "activity.log", &crate::jobs::activity_log())?;
-    add_file(&mut tar, "activity.log.1", &crate::jobs::activity_log().with_extension("log.1"))?;
+    add_file(&mut tar, "activity.log", &crate::maintenance_ops::activity_log())?;
+    add_file(&mut tar, "activity.log.1", &crate::maintenance_ops::activity_log().with_extension("log.1"))?;
     add_file(&mut tar, "updates.json", &crate::updates::prefs_dir().join("updates.json"))?;
     if let Some(r) = &record {
         // The record holds no passwords (they live in the secret store).
         let json = serde_json::to_string_pretty(r).map_err(|e| e.to_string())?;
         add(&mut tar, "installation.json", json.as_bytes())?;
         let logs = r.platform().logs(2000);
-        add(&mut tar, "sentient.log", crate::ui::strip_ansi(&logs).as_bytes())?;
+        add(&mut tar, "sentient.log", crate::maintenance_ops::strip_ansi(&logs).as_bytes())?;
     }
     tar.finish().map_err(|e| format!("finish {}: {e}", path.display()))?;
     Ok(path)

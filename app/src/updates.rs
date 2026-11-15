@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "gui")]
 use gpui_kit::*;
 use serde::{Deserialize, Serialize};
 
@@ -435,6 +436,7 @@ pub fn take_found_installation() -> bool {
 }
 
 /// What the manager knows about updates, shared by its screens.
+#[cfg(feature = "gui")]
 pub struct UpdateState {
     pub prefs: Prefs,
     pub found: Option<Found>,
@@ -444,6 +446,7 @@ pub struct UpdateState {
     _tasks: Vec<Task<()>>,
 }
 
+#[cfg(feature = "gui")]
 impl UpdateState {
     pub fn new(installed: Option<String>, native: bool, cx: &mut Context<Self>) -> Self {
         let mut state = Self { prefs: Prefs::load(), found: None, checking: false, installed, native, _tasks: Vec::new() };

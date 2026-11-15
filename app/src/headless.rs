@@ -63,7 +63,7 @@ fn printer() -> ProgressFn {
         Progress::Step { name } => println!("== {name}"),
         // Data lines of a root job (crate::kept::encode) are printed decoded.
         Progress::Log { line } if line.starts_with("KEPT\t") || line.starts_with("ROLLBACK\t") || line.starts_with("FOUND\t") => {}
-        Progress::Log { line } => println!("   {}", crate::ui::strip_ansi(&line)),
+        Progress::Log { line } => println!("   {}", crate::maintenance_ops::strip_ansi(&line)),
         Progress::Percent { .. } => {}
         Progress::Done { message } => println!("✓ {message}"),
         Progress::Error { message } => eprintln!("✗ {message}"),
@@ -162,7 +162,7 @@ pub fn run(args: &[String]) -> i32 {
             if InstallationRecord::load().is_some() {
                 Err("SENTIENT is installed: uninstall it instead (--job uninstall), which removes the Platform Manager too.".into())
             } else {
-                crate::maintenance::run_remove_manager(sink)
+                crate::maintenance_ops::run_remove_manager(sink)
             }
         } else {
             let shortcuts = !args.iter().any(|a| a == "--no-shortcuts");
@@ -342,7 +342,7 @@ pub fn run(args: &[String]) -> i32 {
                         }
                     }
                 } else {
-                    record.stack.image = crate::manager::update::retag(&record.stack.image, v);
+                    record.stack.image = crate::maintenance_ops::retag(&record.stack.image, v);
                 }
             }
             // --latest: the newest release from the releases repository.
@@ -401,7 +401,7 @@ pub fn run(args: &[String]) -> i32 {
             None => Err(USAGE.into()),
         },
         "take-over-compose" => crate::adopt::take_over_compose(record, sink.clone()).map(|_| ()),
-        "repair" => crate::maintenance::run_repair(record, sink.clone()),
+        "repair" => crate::maintenance_ops::run_repair(record, sink.clone()),
         // Start, stop or restart SENTIENT (a remote instance's Control).
         "control" => match args.get(1).map(String::as_str) {
             Some(a @ ("start" | "stop" | "restart")) => record.platform().control(sink.clone(), a),
@@ -409,7 +409,7 @@ pub fn run(args: &[String]) -> i32 {
         },
         "uninstall" => {
             let keep = !args.iter().any(|a| a == "--delete-data");
-            crate::maintenance::run_uninstall(record, keep, sink.clone())
+            crate::maintenance_ops::run_uninstall(record, keep, sink.clone())
         }
         "apply-settings" => match args.get(1) {
             Some(file) => std::fs::read_to_string(file)
