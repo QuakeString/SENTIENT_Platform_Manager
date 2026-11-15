@@ -419,6 +419,7 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
     let have = run(inst, &format!("sha256sum {REMOTE_SPM} 2>/dev/null | cut -d' ' -f1"), None).unwrap_or_default();
     if have.trim() == want {
         sink(Progress::Log { line: "The Platform Manager on the server is up to date.".into() });
+        ensure_sampler(inst, sink, false);
         return Ok(());
     }
     sink(Progress::Step { name: "Copying the Platform Manager to the server".into() });
@@ -435,7 +436,20 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
         return Err(failed(&format!("The Platform Manager agent does not start on {}. Nothing on the server was changed.", if det.os_name.is_empty() { inst.name.as_str() } else { det.os_name.as_str() }), &e));
     }
     sudo_run(inst, &format!("install -D -m 0755 {staging} {REMOTE_SPM} && rm -f {staging} && mkdir -p {REMOTE_JOBS}"), pw.as_deref())?;
+    ensure_sampler(inst, sink, true);
     Ok(())
+}
+
+/// The statistics sampler on the server (crate::stats): installed with the
+/// agent, or when an up-to-date agent has none yet. Never fails the deploy.
+fn ensure_sampler(inst: &Instance, sink: &ProgressFn, always: bool) {
+    if !always && run(inst, "test -e /etc/systemd/system/sentient-pm-stats.timer && echo yes || echo no", None).is_ok_and(|o| o.trim() == "yes") {
+        return;
+    }
+    match spm_job(inst, "stats-install") {
+        Ok(out) => sink(Progress::Log { line: out.trim().to_string() }),
+        Err(e) => sink(Progress::Log { line: format!("The statistics sampler was not installed: {e}") }),
+    }
 }
 
 /// Copy a file with sftp, resuming a part already there (a copy cut off
@@ -782,6 +796,24 @@ pub fn logs_from(inst: &Instance, source: crate::logsource::Source, lines: u32, 
         return std::fs::read_to_string(std::path::Path::new(&t).join(format!("{}.log", source.key()))).map_err(|_| format!("Could not read the {} log.", source.label()));
     }
     spm_job(inst, &format!("logs {lines} --source {}{}", source.key(), if today { " --today" } else { "" }))
+}
+
+/// A live statistics reading of the server (crate::stats).
+pub fn stats_live(inst: &Instance) -> Result<crate::stats::Sample, String> {
+    #[cfg(debug_assertions)]
+    if let Some(d) = std::env::var_os("SPM_DEBUG_STATS") {
+        return crate::stats::debug_live(std::path::Path::new(&d));
+    }
+    read_json(inst, "stats-live")
+}
+
+/// The server's statistics history of the last `secs` seconds.
+pub fn stats_history(inst: &Instance, secs: i64) -> Result<Vec<crate::stats::Sample>, String> {
+    #[cfg(debug_assertions)]
+    if let Some(d) = std::env::var_os("SPM_DEBUG_STATS") {
+        return Ok(crate::stats::debug_history(std::path::Path::new(&d), secs));
+    }
+    read_json(inst, &format!("stats-history {secs}"))
 }
 
 /// The log sources the server has.
@@ -1182,6 +1214,17 @@ mod tests {
         assert!(m.mem_total > 0);
         // Deploying again finds it up to date.
         deploy(&inst, &sink).unwrap();
+        // Statistics: the sampler came with the agent; readings land in the
+        // history and read back; a live reading answers.
+        assert_eq!(run(&inst, "systemctl is-enabled sentient-pm-stats.timer", None).unwrap().trim(), "enabled");
+        spm_job(&inst, "stats-sample").unwrap();
+        spm_job(&inst, "stats-sample").unwrap();
+        let h = stats_history(&inst, 3600).unwrap();
+        assert!(h.len() >= 2, "{} readings", h.len());
+        assert!(h.iter().all(|s| s.mem_total > 0 && s.cores > 0), "{h:?}");
+        let live = stats_live(&inst).unwrap();
+        assert!(live.mem_total > 0 && live.boot > 0, "{live:?}");
+        eprintln!("stats: {} readings, live cpu {:.1} %, {} cores", h.len(), live.cpu, live.cores);
         // Opening a server with an older agent on it (crate::manager::
         // remote_pages::refresh_agent: ready, then deploy) replaces it.
         sudo_run(&inst, &format!("sh -c 'printf old-agent > {REMOTE_SPM}'"), None).unwrap();

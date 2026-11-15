@@ -474,6 +474,57 @@ pub fn sampler_installed() -> bool {
     }
 }
 
+/// Screens: a canned live reading (`live.json` in `dir`), moving a little
+/// each call so the live charts draw.
+#[cfg(debug_assertions)]
+pub fn debug_live(dir: &Path) -> Result<Sample, String> {
+    let mut s: Sample = serde_json::from_str(&std::fs::read_to_string(dir.join("live.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().timestamp();
+    let w = (now % 60) as f32;
+    s.t = now;
+    s.cpu = (s.cpu + (w * 0.7).sin() * 3.).max(0.);
+    s.rx *= 1. + ((w * 0.5).sin() as f64) * 0.3;
+    s.tx *= 1. + ((w * 0.3).cos() as f64) * 0.3;
+    s.io = s.io.map(|v| v * (1. + ((w * 0.9).sin() as f64) * 0.4));
+    Ok(s)
+}
+
+/// Screens: a canned history made from `live.json`: a week of minutes with
+/// a daily rhythm and a few spikes.
+#[cfg(debug_assertions)]
+pub fn debug_history(dir: &Path, secs: i64) -> Vec<Sample> {
+    if dir.join("empty").exists() {
+        return Vec::new();
+    }
+    let Ok(base) = debug_live(dir) else { return Vec::new() };
+    let now = base.t;
+    let n = (secs / 60).max(1);
+    let all: Vec<Sample> = (0..n)
+        .map(|i| {
+            let t = now - (n - 1 - i) * 60;
+            let day = ((t % 86_400) as f32 / 86_400. * std::f32::consts::TAU).sin();
+            let wob = ((t / 60) as f32 * 0.37).sin() * 0.5 + ((t / 60) as f32 * 0.11).cos() * 0.5;
+            let spike = if (t / 60) % 97 == 0 { 3.5 } else { 1. };
+            let mut s = base.clone();
+            s.t = t;
+            s.cpu = ((base.cpu + day * 4. + wob * 3.) * spike).clamp(0., 100.);
+            s.mem_used = (base.mem_used as f64 * (1. + day as f64 * 0.03)) as u64;
+            s.load = base.load.map(|l| (l + day * 0.2 + wob * 0.1).max(0.) * spike);
+            s.rx = base.rx * (1. + day as f64 * 0.4 + wob as f64 * 0.2);
+            s.tx = base.tx * (1. + day as f64 * 0.3 + wob as f64 * 0.2);
+            s.io = base.io.map(|v| v * (1. + wob as f64 * 0.5) * spike as f64);
+            s.disk_free = base.disk_free + ((now - t) as u64) * 2_000;
+            s.db = base.db.clone().map(|mut d| {
+                d.pg_bytes = d.pg_bytes.saturating_sub(((now - t) as u64) * 40);
+                d.ch_bytes = d.ch_bytes.map(|c| c.saturating_sub(((now - t) as u64) * 120));
+                d
+            });
+            s
+        })
+        .collect();
+    thin(all, MAX_POINTS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

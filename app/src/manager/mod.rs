@@ -16,6 +16,7 @@ mod repair;
 pub(crate) mod settings;
 pub(crate) mod setting_field;
 pub(crate) mod status;
+pub(crate) mod stats;
 pub(crate) mod strip;
 pub(crate) mod update;
 
@@ -51,6 +52,8 @@ enum Page {
     /// About and preferences of the Platform Manager (the (i) at the
     /// bottom of the menu, not a menu entry).
     About,
+    /// Statistics: opened from the top bar's monitors, not a menu entry.
+    Statistics,
 }
 
 impl Page {
@@ -80,6 +83,7 @@ impl Page {
             Page::Repair => "repair",
             Page::Instances => "instances",
             Page::About => "about",
+            Page::Statistics => "statistics",
         }
     }
 
@@ -96,6 +100,7 @@ impl Page {
             Page::Repair => "Repair and uninstall",
             Page::Instances => "Instances",
             Page::About => "About and preferences",
+            Page::Statistics => "Statistics",
         }
     }
 
@@ -112,6 +117,7 @@ impl Page {
             Page::Repair => Icon::new(Lucide::Wrench),
             Page::Instances => Icon::new(Lucide::Server),
             Page::About => Icon::new(IconName::Info),
+            Page::Statistics => Icon::new(Lucide::ChartLine),
         }
     }
 }
@@ -139,6 +145,8 @@ pub struct Manager {
     remote_monitor: Option<Monitor>,
     /// The pages of the open remote instance.
     remote_pages: Option<Entity<remote_pages::RemotePages>>,
+    /// Statistics of the open instance (None: this computer).
+    stats: Option<(Option<String>, Entity<stats::StatsPage>)>,
     /// Takes the keyboard while a dialog is open (Escape closes it).
     modal_focus: FocusHandle,
     /// The global progress strip (strip.rs), under the top bar.
@@ -167,12 +175,25 @@ impl Manager {
         let page = args
             .windows(2)
             .find(|w| w[0] == "--page")
-            .and_then(|w| Page::ALL.into_iter().chain([Page::Instances, Page::About]).find(|p| p.id() == w[1]))
+            .and_then(|w| Page::ALL.into_iter().chain([Page::Instances, Page::About, Page::Statistics]).find(|p| p.id() == w[1]))
             .unwrap_or(Page::Status);
         let record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
         let installed = record.as_ref().map(|r| r.sentient_version.clone());
         let native = record.as_ref().is_some_and(|r| r.platform().needs_package());
         let updates = cx.new(|cx| UpdateState::new(installed, native, cx));
+        // This computer's statistics sampler: a user timer, no password
+        // (an installed build only; a development build would point it at
+        // itself).
+        #[cfg(all(not(windows), not(debug_assertions)))]
+        cx.background_executor()
+            .spawn(async {
+                if !crate::stats::sampler_installed() {
+                    if let Ok(exe) = std::env::current_exe() {
+                        let _ = crate::stats::install_sampler(&exe);
+                    }
+                }
+            })
+            .detach();
         // The progress line under the top bar follows the strip.
         let strip = strip::install(cx);
         let subscriptions = vec![cx.observe(&updates, |_, _, cx| cx.notify()), cx.observe(&strip, |_, _, cx| cx.notify())];
@@ -196,6 +217,7 @@ impl Manager {
             open_remote: None,
             remote_monitor: None,
             remote_pages: None,
+            stats: None,
             modal_focus: cx.focus_handle(),
             strip: strip.clone(),
             _debug_job: None,
@@ -403,8 +425,9 @@ impl Manager {
                     if m.disk_total > 0 { 1.0 - m.disk_free as f32 / m.disk_total as f32 } else { 0.0 },
                     m.disk_low(),
                 )))
+                .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Statistics").build(w, cx))
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.page = Page::Status;
+                    this.page = Page::Statistics;
                     cx.notify();
                 }))
         });
@@ -993,6 +1016,18 @@ impl Manager {
 
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let record = self.record.clone();
+        // Statistics: the same view for this computer and a server.
+        if self.page == Page::Statistics {
+            let key = self.open_remote.clone();
+            if self.stats.as_ref().is_none_or(|(k, _)| *k != key) {
+                let src = match key.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
+                    Some(inst) => stats::Source::Remote(inst),
+                    None => stats::Source::Local(record.clone()),
+                };
+                self.stats = Some((key, cx.new(|cx| stats::StatsPage::new(src, cx))));
+            }
+            return self.stats.as_ref().map(|(_, p)| p.clone().into_any_element()).unwrap_or_else(|| div().into_any_element());
+        }
         if let Some(r) = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
             let kind = match self.page {
                 Page::Status => Some(remote_pages::Kind::Status),
@@ -1137,6 +1172,8 @@ impl Manager {
                 }
                 self.settings.clone().unwrap().into_any_element()
             }
+            // Handled at the top of content().
+            Page::Statistics => div().into_any_element(),
             Page::About => {
                 if self.about.is_none() {
                     let updates = self.updates.clone();
@@ -1164,6 +1201,7 @@ impl Render for Manager {
         // fewer monitors in the top bar as it narrows.
         let width = f32::from(window.viewport_size().width);
         crate::ui::set_narrow(width < 760.);
+        stats::set_open(self.page == Page::Statistics);
         // A Control row's "Logs" asked for the Logs page.
         if crate::logsource::take_go() {
             self.page = Page::Logs;
