@@ -66,6 +66,11 @@ mod imp {
         PathBuf::from(r"C:\Program Files").join(PRODUCT)
     }
 
+    /// The Platform Manager's own shortcuts setup makes (Start menu, desktop).
+    pub fn manager_links() -> Vec<PathBuf> {
+        vec![PathBuf::from(format!(r"{START_MENU}\{START_MENU_NAME}.lnk")), PathBuf::from(format!(r"{DESKTOP}\{PRODUCT}.lnk"))]
+    }
+
     pub fn manager_exe() -> PathBuf {
         manager_dir().join(format!("{PRODUCT}.exe"))
     }

@@ -103,8 +103,11 @@ pub fn start(options: fn(&mut App) -> WindowOptions, open_window: bool, request:
     cx.set_global(Bg { prefs, tray, tx, manager: None, window: None, options });
     // The taskbar's right-click Tasks (Windows).
     #[cfg(windows)]
-    if let Err(e) = crate::win_shell::update_jump_list() {
-        crate::maintenance_ops::log_line(&format!("The taskbar Jump List was not set up: {e}"));
+    {
+        if let Err(e) = crate::win_shell::update_jump_list() {
+            crate::maintenance_ops::log_line(&format!("The taskbar Jump List was not set up: {e}"));
+        }
+        crate::win_shell::stamp_own_shortcuts();
     }
     // The bell's strip lives as long as the app (jobs survive a closed window).
     crate::manager::strip::install(cx);
