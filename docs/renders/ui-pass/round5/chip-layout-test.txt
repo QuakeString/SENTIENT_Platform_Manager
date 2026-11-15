@@ -1,0 +1,17 @@
+560 done light: chip right 469, monitors left 498: ok
+560 failed light: chip right 469, monitors left 498: ok
+560 running light: chip right 469, monitors left 498: ok
+800 done light: chip right 447, monitors left 503: ok
+800 failed light: chip right 447, monitors left 503: ok
+800 running light: chip right 447, monitors left 503: ok
+900 done light: chip right 547, monitors left 603: ok
+900 failed light: chip right 547, monitors left 603: ok
+900 running light: chip right 537, monitors left 603: ok
+1100 done light: chip right 591, monitors left 647: ok
+1100 failed light: chip right 591, monitors left 647: ok
+1100 running light: chip right 591, monitors left 647: ok
+1400 done light: chip right 718, monitors left 803: ok
+1400 failed light: chip right 747, monitors left 803: ok
+1400 running light: chip right 747, monitors left 803: ok
+560 running dark: chip right 469, monitors left 498: ok
+800 running dark: chip right 447, monitors left 503: ok
