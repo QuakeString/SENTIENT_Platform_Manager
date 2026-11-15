@@ -48,6 +48,8 @@ fn embed_agents() {
 fn build_commit() {
     println!("cargo:rerun-if-env-changed=SPM_COMMIT");
     println!("cargo:rerun-if-changed=../.git/HEAD");
+    // Every commit appends to the HEAD log: a new commit rebuilds the text.
+    println!("cargo:rerun-if-changed=../.git/logs/HEAD");
     let commit = std::env::var("SPM_COMMIT").ok().filter(|c| !c.is_empty()).or_else(|| {
         std::process::Command::new("git")
             .args(["rev-parse", "--short=7", "HEAD"])
