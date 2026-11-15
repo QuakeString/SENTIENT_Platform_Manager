@@ -510,6 +510,16 @@ pub fn service_rows(
     services: impl IntoIterator<Item = (SharedString, bool, bool, SharedString)>,
     actions: Option<(ServiceAct, ServiceLog, Option<String>)>,
 ) -> Vec<Div> {
+    // One order on every page: SENTIENT, Database, ClickHouse, Gateway.
+    let rank = |n: &str| match service_label(n) {
+        Some("SENTIENT") => 0,
+        Some("Database (PostgreSQL)") => 1,
+        Some("ClickHouse") => 2,
+        Some("Gateway") => 3,
+        _ => 4,
+    };
+    let mut services: Vec<_> = services.into_iter().collect();
+    services.sort_by_key(|(n, ..)| rank(n));
     services
         .into_iter()
         .map(|(name, running, starting, detail)| {

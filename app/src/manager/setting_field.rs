@@ -58,16 +58,19 @@ pub fn field(setting: &Setting, input: &Entity<InputState>, set: SetFn, file: Fi
             let now = input.read(cx).value().trim().to_string();
             let builtin = setting.default.clone();
             let effective = if now.is_empty() { builtin.clone() } else { now };
-            let item = |label: &'static str, value: &'static str| {
-                let set = set.clone();
-                let builtin = builtin.clone();
-                let marked = if builtin == value { format!("{label} (default)") } else { label.to_string() };
-                ui::seg_item(&theme, SharedString::from(format!("{env}-{value}")), marked, effective == value).on_click(move |_, window, cx| {
+            // Yes/no is a switch; "default" is said once, quietly.
+            let on = effective == "true";
+            let builtin_on = builtin == "true";
+            h_flex()
+                .gap_3()
+                .items_center()
+                .when(!builtin.is_empty(), |r| r.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(if builtin_on { "Default: on" } else { "Default: off" })))
+                .child(gpui_kit::component::switch::Switch::new(SharedString::from(format!("sw-{env}"))).checked(on).on_click(move |v: &bool, window, cx| {
+                    let want = if *v { "true" } else { "false" };
                     // The built-in value is written as "not set".
-                    set(if builtin == value { "" } else { value }, window, cx);
-                })
-            };
-            ui::seg_track(&theme).child(item("On", "true")).child(item("Off", "false")).into_any_element()
+                    set(if builtin == want { "" } else { want }, window, cx);
+                }))
+                .into_any_element()
         }
         ValueKind::Number(unit) => h_flex()
             .gap_2()

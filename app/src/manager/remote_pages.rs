@@ -450,8 +450,10 @@ impl RemotePages {
         let this = cx.entity().downgrade();
         let (t1, t2, t3) = (this.clone(), this.clone(), this);
         let row = crate::manager::control::control_row(
+            &theme,
             "r-",
             busy || !installed,
+            self.status.got().map(|s| s.serving),
             std::rc::Rc::new(move |_, cx| {
                 t1.update(cx, |p, cx| p.run_job("Starting SENTIENT", vec!["control".into(), "start".into()], cx)).ok();
             }),

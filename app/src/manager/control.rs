@@ -303,8 +303,10 @@ impl Render for ControlPage {
                     let this = cx.entity().downgrade();
                     let (t1, t2, t3) = (this.clone(), this.clone(), this);
                     control_row(
+                        &theme,
                         "",
                         busy,
+                        self.record.as_ref().map(|_| self.serving).filter(|_| !self.services.is_empty()),
                         std::rc::Rc::new(move |_, cx| {
                             t1.update(cx, |p, cx| p.run("start", cx)).ok();
                         }),
@@ -376,7 +378,9 @@ impl Render for ControlPage {
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
                     "Open SENTIENT in the browser when someone signs in to this computer, for example a control-room screen after a power cut. It opens at once and shows SENTIENT as soon as it answers.",
                 ))
-                .child(match self.signin {
+                // Setting rows like every other panel: label left, control
+                // right; the segmented control hugs its options.
+                .child(crate::manager::settings::row(&theme, "Open SENTIENT at sign-in", None, false, match self.signin {
                     None => div().text_sm().child("Checking…").into_any_element(),
                     Some(_) => ui::seg_track(&theme)
                         .children(["Off", "Full screen (kiosk)", "Browser window"].into_iter().enumerate().map(|(i, label)| {
@@ -388,44 +392,34 @@ impl Render for ControlPage {
                             }))
                         }))
                         .into_any_element(),
-                })
+                }))
                 .when(self.autologin.is_some(), |panel| {
                     panel
-                        .child(
-                            Checkbox::new("autologin")
-                                .label("Sign in to this computer automatically after a restart")
-                                .checked(self.autologin_on)
-                                .disabled(sbusy)
-                                .on_change(cx.listener(|this, value: &bool, _, cx| {
+                        .child(crate::manager::settings::row(
+                            &theme,
+                            "Sign in to this computer automatically after a restart",
+                            None,
+                            false,
+                            gpui_kit::component::switch::Switch::new("autologin").checked(self.autologin_on).on_click(cx.listener(move |this, value: &bool, _, cx| {
+                                if !sbusy {
                                     this.autologin_on = *value;
                                     cx.notify();
-                                })),
-                        )
+                                }
+                            })),
+                        ))
                         .when(self.autologin_on, |panel| {
+                            let found = self.autologin.as_ref().is_some_and(|f| f.is_some());
                             panel
-                                .child(
-                                    h_flex()
-                                        .gap_2()
-                                        .child(
-                                            v_flex()
-                                                .gap_1p5()
-                                                .w_64()
-                                                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Operator account"))
-                                                .child(Input::new(&self.autologin_user)),
-                                        )
-                                        .when(cfg!(windows), |row| {
-                                            let found = self.autologin.as_ref().is_some_and(|f| f.is_some());
-                                            row.child(
-                                                v_flex()
-                                                    .gap_1p5()
-                                                    .w_64()
-                                                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(
-                                                        if found { "Password (only to change it)" } else { "Account password" },
-                                                    ))
-                                                    .child(Input::new(&self.autologin_password).mask_toggle()),
-                                            )
-                                        }),
-                                )
+                                .child(crate::manager::settings::row(&theme, "Operator account", None, false, div().w(px(260.)).child(Input::new(&self.autologin_user))))
+                                .when(cfg!(windows), |p| {
+                                    p.child(crate::manager::settings::row(
+                                        &theme,
+                                        if found { "Password (only to change it)" } else { "Account password" },
+                                        None,
+                                        false,
+                                        div().w(px(260.)).child(Input::new(&self.autologin_password).mask_toggle()),
+                                    ))
+                                })
                                 .child(ui::outcome(
                                     &theme,
                                     Tone::Warn,
@@ -505,16 +499,36 @@ pub(crate) fn confirm_stop(window: &mut Window, cx: &mut App, stop: std::rc::Rc<
 
 /// Start, Restart and Stop, in that order and style, on this computer and
 /// on a remote server.
+/// The whole install's state and its actions, in one order everywhere:
+/// Start, Stop, Restart. The action that fits the state is the primary one;
+/// actions that do not apply are off. `running`: None while not known.
 pub(crate) fn control_row(
+    theme: &gpui_kit::component::Theme,
     id: &str,
     busy: bool,
+    running: Option<bool>,
     start: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
     restart: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
     stop: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
 ) -> Div {
-    h_flex()
-        .gap_2()
-        .child(crate::ui::button(SharedString::from(format!("{id}start"))).primary().label("Start").disabled(busy).on_click(move |_, w, cx| start(w, cx)))
-        .child(crate::ui::button(SharedString::from(format!("{id}restart"))).outline().label("Restart").disabled(busy).on_click(move |_, w, cx| restart(w, cx)))
-        .child(crate::ui::button(SharedString::from(format!("{id}stop"))).outline().label("Stop").disabled(busy).on_click(move |_, w, cx| stop(w, cx)))
+    let up = running == Some(true);
+    let down = running == Some(false);
+    let btn = |key: &str, label: &'static str, primary: bool, on: bool| {
+        let b = crate::ui::button(SharedString::from(format!("{id}{key}"))).label(label).disabled(busy || !on);
+        if primary { b.primary() } else { b.outline() }
+    };
+    v_flex()
+        .gap_3()
+        .child(div().text_sm().text_color(theme.muted_foreground).child(match running {
+            Some(true) => "SENTIENT is running.",
+            Some(false) => "SENTIENT is stopped.",
+            None => "Reading SENTIENT's state…",
+        }))
+        .child(
+            h_flex()
+                .gap_2()
+                .child(btn("start", "Start", down, !up).on_click(move |_, w, cx| start(w, cx)))
+                .child(btn("stop", "Stop", false, !down).on_click(move |_, w, cx| stop(w, cx)))
+                .child(btn("restart", "Restart", up, !down).on_click(move |_, w, cx| restart(w, cx))),
+        )
 }

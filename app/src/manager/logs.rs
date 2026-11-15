@@ -128,7 +128,8 @@ impl LogView {
     fn read(load: &LoadFn, pick: Option<Source>, sources: &[Source], n: u32, today: bool) -> Vec<Line> {
         let parse = |s: Source| load(s, n, today).lines().filter(|l| !l.trim().is_empty()).map(|l| logsource::parse(l, s)).collect::<Vec<_>>();
         match pick {
-            Some(s) => parse(s),
+            // Every list in time order: one source sorts like several.
+            Some(s) => logsource::merge(vec![parse(s)]),
             None => logsource::merge(sources.iter().map(|s| parse(*s)).collect()),
         }
     }
@@ -377,7 +378,15 @@ impl Render for LogView {
                 .when(sel, |r| r.bg(theme.primary.opacity(0.14)))
                 .when(!sel, |r| r.hover(|r| r.bg(theme.list_hover)))
                 .child(div().w(px(150.)).flex_shrink_0().text_color(muted).child(l.time.clone()))
-                .when(all, |r| r.child(div().w(px(28.)).flex_shrink_0().font_weight(FontWeight::MEDIUM).text_color(tag_colour(l.source)).child(l.source.tag())))
+                // In All: the source's name on its own soft colour.
+                .when(all, |r| {
+                    let c = tag_colour(l.source);
+                    r.child(
+                        h_flex().w(px(84.)).flex_shrink_0().child(
+                            div().px(px(6.)).rounded(px(4.)).bg(c.opacity(0.14)).text_color(c).text_size(px(11.5)).font_weight(FontWeight::MEDIUM).child(l.source.label()),
+                        ),
+                    )
+                })
                 .child(div().w(px(52.)).flex_shrink_0().font_weight(FontWeight::MEDIUM).text_color(colour(l.level)).child(level_word(l.level)))
                 // Wrapped lines stay in the message column.
                 .child(div().flex_1().min_w_0().text_color(if l.level == Level::Error { theme.danger } else if l.level == Level::Debug { muted } else { theme.foreground }).child(l.message.clone()))
@@ -415,7 +424,14 @@ impl Render for LogView {
                     .gap_0()
                     .p_2()
                     .font_family(theme.mono_font_family.clone())
-                    .text_size(px(13.))
+                    .text_size(px(12.5))
+                    .when(total == 0, |p| {
+                        p.child(
+                            div().flex_1().flex().items_center().justify_center().font_family(theme.font_family.clone()).text_sm().text_color(theme.muted_foreground).child(
+                                if self.lines.is_empty() { "No log lines" } else { "No lines match the filter" },
+                            ),
+                        )
+                    })
                     .children(rows),
             )
     }

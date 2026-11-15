@@ -1143,6 +1143,18 @@ impl InstancesPage {
 impl Render for InstancesPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        // Screens: the trust step open (SPM_DEBUG_TRUST).
+        #[cfg(debug_assertions)]
+        {
+            static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if std::env::var_os("SPM_DEBUG_TRUST").is_some() && !SHOWN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                self.open_form(None, window, cx);
+                if let Some(f) = &mut self.form {
+                    f.host.update(cx, |s, cx| s.set_value("10.0.4.12", window, cx));
+                    f.stage = Stage::Fingerprint { keys: String::new(), fingerprint: "SHA256:k3Vd0FqW8nE2xTz1mR4cYpL7sB9aH6uJ5gKo0Qm7x8".into() };
+                }
+            }
+        }
         self.sync_dialogs(window, cx);
         let local = self.local_card(cx);
         let cards: Vec<AnyElement> = self.list.clone().iter().map(|i| self.remote_card(i, cx)).collect();

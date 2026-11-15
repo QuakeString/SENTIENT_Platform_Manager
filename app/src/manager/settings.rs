@@ -106,7 +106,6 @@ type Choices = &'static [(&'static str, &'static str)];
 pub(crate) const VALUE_W: f32 = 340.;
 
 const LOG_LEVELS: Choices = &[("Errors only", "error"), ("Normal", "info"), ("Detailed", "debug")];
-const ON_OFF: Choices = &[("On", "true"), ("Off", "false")];
 const KEEP_DAYS: Choices = &[("Forever", "0"), ("30 days", "30"), ("90 days", "90"), ("1 year", "365")];
 const KEEP_EVENTS: Choices = &[("Built-in", ""), ("7 days", "604800"), ("30 days", "2592000"), ("90 days", "7776000")];
 const KEEP_DEBUG: Choices = &[("Built-in", ""), ("1 day", "86400"), ("7 days", "604800"), ("30 days", "2592000")];
@@ -537,15 +536,19 @@ pub(crate) fn row_with_var(theme: &gpui_kit::component::Theme, label: impl Into<
         .py_2()
         .border_t_1()
         .border_color(theme.border)
+        // The label with its (i), the variable name on a muted line under it.
         .child(
-            h_flex()
+            v_flex()
                 .flex_1()
                 .min_w(px(160.))
-                .gap_2()
-                .items_center()
-                .child(div().text_sm().when(changed, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.primary)).child(label.clone()))
-                .child(div().text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(var))
-                .when_some(help, |r, h| r.child(crate::ui::button(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))),
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().text_sm().when(changed, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.primary)).child(label.clone()))
+                        .when_some(help, |r, h| r.child(crate::ui::button(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))),
+                )
+                .child(div().text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(var)),
         )
         .child(h_flex().flex_shrink_0().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
 }
@@ -595,6 +598,14 @@ impl SettingsPage {
 
     /// Buttons for a choice; the one matching the field is selected. A value
     /// that matches none shows as "Custom: …".
+    /// A yes/no setting as a switch (crate::manager::setting_field).
+    fn switch(&self, key: &'static str, cx: &mut Context<Self>) -> AnyElement {
+        match self.find(key).cloned() {
+            Some(st) => self.field(&st, cx),
+            None => div().into_any_element(),
+        }
+    }
+
     fn choice(&self, key: &'static str, choices: Choices, cx: &mut Context<Self>) -> Div {
         let now = self.value(key, cx);
         let builtin = self.find(key).map(|s| s.default.clone()).unwrap_or_default();
@@ -665,7 +676,7 @@ impl SettingsPage {
             section(theme, "Platform", Some("How SENTIENT runs on this computer."))
                 .child(row(theme, "Address users open", Some("Where browsers open SENTIENT. The web port is under Network and certificates.".into()), false, div().text_sm().child(record.url())))
                 .child(row(theme, "Log detail", self.help("RUST_LOG"), self.is_changed("RUST_LOG", cx), self.choice("RUST_LOG", LOG_LEVELS, cx)))
-                .child(row(theme, "Analytics engine", self.help("ANALYTICS_ENABLED"), self.is_changed("ANALYTICS_ENABLED", cx), self.choice("ANALYTICS_ENABLED", ON_OFF, cx)))
+                .child(row(theme, "Analytics engine", self.help("ANALYTICS_ENABLED"), self.is_changed("ANALYTICS_ENABLED", cx), self.switch("ANALYTICS_ENABLED", cx)))
                 .child(row(theme, "Starts", Some("Start with Windows, the start delay and the operator screen are under Control.".into()), false, div().text_sm().child(start)))
                 .into_any_element(),
             section(theme, "Licence", None)
@@ -830,7 +841,8 @@ impl SettingsPage {
                 pg = pg.child(match self.find(k).cloned() {
                     Some(st) => {
                         let changed = self.is_changed(k, cx);
-                        let field = self.field(&st, cx);
+                        // Every exact field one width.
+                        let field = h_flex().w(px(200.)).justify_end().child(self.field(&st, cx));
                         row_with_var(theme, st.short_label(), k, self.help(k), changed, field)
                     }
                     None => self.catalog_row(theme, k, 160., cx),
@@ -919,7 +931,7 @@ impl SettingsPage {
                     "Device claiming",
                     self.help("SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT"),
                     self.is_changed("SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT", cx),
-                    self.choice("SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT", ON_OFF, cx),
+                    self.switch("SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT", cx),
                 ))
                 .into_any_element(),
         ]
@@ -946,8 +958,8 @@ impl SettingsPage {
 ;
         let keep = keep.child(self.history_rows(theme, cx));
         let cleanup = section(theme, "Cleanup", None)
-            .child(row(theme, "Audit log cleanup", self.help("AUDIT_LOG_CLEANUP_ENABLED"), self.is_changed("AUDIT_LOG_CLEANUP_ENABLED", cx), self.choice("AUDIT_LOG_CLEANUP_ENABLED", ON_OFF, cx)))
-            .child(row(theme, "Event cleanup", self.help("SENTIENT__EVENT_CLEANUP__ENABLED"), self.is_changed("SENTIENT__EVENT_CLEANUP__ENABLED", cx), self.choice("SENTIENT__EVENT_CLEANUP__ENABLED", ON_OFF, cx)));
+            .child(row(theme, "Audit log cleanup", self.help("AUDIT_LOG_CLEANUP_ENABLED"), self.is_changed("AUDIT_LOG_CLEANUP_ENABLED", cx), self.switch("AUDIT_LOG_CLEANUP_ENABLED", cx)))
+            .child(row(theme, "Event cleanup", self.help("SENTIENT__EVENT_CLEANUP__ENABLED"), self.is_changed("SENTIENT__EVENT_CLEANUP__ENABLED", cx), self.switch("SENTIENT__EVENT_CLEANUP__ENABLED", cx)));
         vec![keep.into_any_element(), cleanup.into_any_element()]
     }
 
