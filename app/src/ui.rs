@@ -481,6 +481,7 @@ pub enum Product {
 
 pub fn product_logo(p: Product, size: f32) -> impl IntoElement {
     let path = match p {
+        Product::Manager if size <= 24. => "logos/spm-small.png",
         Product::Manager => "logos/spm.png",
         Product::Sentient => "logos/sentient-mark.svg",
         Product::Gateway => "logos/gateway.svg",

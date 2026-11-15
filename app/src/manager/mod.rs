@@ -261,6 +261,24 @@ impl Manager {
                     cx,
                 );
             }
+            // Screens: every switch state on the page's colours.
+            if std::env::var_os("SPM_DEBUG_SWITCH_SHEET").is_some() {
+                struct Sheet;
+                impl Render for Sheet {
+                    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+                        use gpui_kit::component::{switch::Switch, Disableable as _};
+                        let row = |label: &'static str, sw: Switch| h_flex().gap_3().items_center().child(div().w(px(200.)).text_sm().child(label)).child(sw);
+                        v_flex()
+                            .gap_3()
+                            .child(row("Off", Switch::new("s1").checked(false)))
+                            .child(row("On", Switch::new("s2").checked(true)))
+                            .child(row("Off, disabled", Switch::new("s3").checked(false).disabled(true)))
+                            .child(row("On, disabled", Switch::new("s4").checked(true).disabled(true)))
+                    }
+                }
+                let view = cx.new(|_| Sheet);
+                crate::modal::open(crate::modal::Modal { title: "Switches".into(), body: view.into(), width: 360., on_close: None }, cx);
+            }
             if std::env::var_os("SPM_DEBUG_SUDO_PROMPT").is_some() {
                 if let Some(inst) = crate::remote::load().into_iter().next() {
                     cx.defer(move |cx| remote_pages::ask_sudo_password(inst, std::rc::Rc::new(|_: &mut App| {}), cx));

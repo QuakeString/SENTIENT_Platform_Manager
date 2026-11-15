@@ -44,7 +44,12 @@ package() {
   ln -s /opt/sentient-platform-manager/sentient-platform-manager "$pkgdir/usr/bin/sentient-platform-manager"
   install -Dm644 "$startdir/sentient-platform-manager.desktop" \
                  "$pkgdir/usr/share/applications/sentient-platform-manager.desktop"
-  install -Dm644 "$_repo/app/assets/icon-256.png" \
-                 "$pkgdir/usr/share/icons/hicolor/256x256/apps/sentient-platform-manager.png"
+  local n
+  for n in 16 22 24 32 48 64 128 256 512; do
+    install -Dm644 "$_repo/app/assets/app-icon/$n.png" \
+                   "$pkgdir/usr/share/icons/hicolor/${n}x${n}/apps/sentient-platform-manager.png"
+  done
+  install -Dm644 "$_repo/app/assets/app-icon/spm-app-icon.svg" \
+                 "$pkgdir/usr/share/icons/hicolor/scalable/apps/sentient-platform-manager.svg"
   install -Dm644 "$_repo/app/assets/licence.txt" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
