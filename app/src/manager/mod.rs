@@ -312,13 +312,17 @@ impl Manager {
                     }
                     match kind.as_str() {
                         "blocked" => p.problems.push("The container sentient-clickhouse is not there.".into()),
+                        "password" => {
+                            p.needs_password = true;
+                            p.db_user = "sentient".into();
+                        }
                         "failed" => return Err("ssh: connect to host 10.0.4.12 port 22: Connection timed out".into()),
                         "loading" => std::thread::sleep(std::time::Duration::from_secs(60)),
                         _ => {}
                     }
                     Ok(p)
                 };
-                cx.defer(move |cx| takeover::open(std::env::var_os("SPM_DEBUG_TAKEOVER_LOCAL").is_some(), std::sync::Arc::new(plan), std::rc::Rc::new(|_, _: &mut App| {}), None, cx));
+                cx.defer(move |cx| takeover::open(std::env::var_os("SPM_DEBUG_TAKEOVER_LOCAL").is_some(), std::sync::Arc::new(plan), std::sync::Arc::new(|pw: String| if pw == "right" { Ok(()) } else { Err("PostgreSQL refused this password for the user sentient.".into()) }), std::rc::Rc::new(|_, _, _: &mut App| {}), None, cx));
             }
             if std::env::var_os("SPM_DEBUG_SUDO_PROMPT").is_some() {
                 if let Some(inst) = crate::remote::load().into_iter().next() {

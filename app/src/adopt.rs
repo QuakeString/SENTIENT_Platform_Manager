@@ -415,6 +415,11 @@ pub fn take_over_plan(record: &InstallationRecord, compose: Option<&str>) -> Res
     Ok(plan)
 }
 
+/// Whether PostgreSQL takes `password` (the takeover dialog's Check).
+pub fn check_takeover_password(record: &InstallationRecord, password: &str) -> Result<(), String> {
+    distro::adopt::check_db_password(&record.stack, password)
+}
+
 /// One candidate as a line, for the root job's output (crate::rootjob).
 pub fn encode(c: &Candidate) -> String {
     format!("FOUND\t{}", serde_json::to_string(c).unwrap_or_default())

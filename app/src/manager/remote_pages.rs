@@ -1269,6 +1269,30 @@ impl RemotePages {
         cx.notify();
     }
 
+    fn take_over_with_password(&mut self, mut args: Vec<String>, password: String, cx: &mut Context<Self>) {
+        if self.job.read(cx).is_running() {
+            return;
+        }
+        let inst = self.inst.clone();
+        self.job_label = Some(format!("Taking over the compose file on {}", inst.name).into());
+        self.job.update(cx, |job, cx| {
+            job.start(
+                move |sink| {
+                    remote::deploy(&inst, &sink)?;
+                    let file = remote::put_secret_file(&inst, &password)?;
+                    args.push("--db-password-file".into());
+                    args.push(file.clone());
+                    let a: Vec<&str> = args.iter().map(String::as_str).collect();
+                    let r = remote::start_job(&inst, &a).and_then(|id| remote::follow(&inst, &id, &sink));
+                    remote::remove_file(&inst, &file);
+                    r
+                },
+                cx,
+            )
+        });
+        cx.notify();
+    }
+
     fn apply_settings(&mut self, values: std::collections::HashMap<String, String>, cx: &mut Context<Self>) {
         if self.job.read(cx).is_running() {
             return;
@@ -1391,8 +1415,15 @@ impl RemotePages {
             false,
             // An agent too old for the plan is updated first (sudo's
             // password, when it asks, from the dialog), then asked again.
-            std::sync::Arc::new(move |compose: Option<String>| remote::takeover_plan_updating(&inst, compose.as_deref())),
-            std::rc::Rc::new(move |compose: Option<String>, cx: &mut App| {
+            std::sync::Arc::new({
+                let inst = inst.clone();
+                move |compose: Option<String>| remote::takeover_plan_updating(&inst, compose.as_deref())
+            }),
+            std::sync::Arc::new({
+                let inst = inst.clone();
+                move |pw: String| remote::check_takeover_password(&inst, &pw)
+            }),
+            std::rc::Rc::new(move |compose: Option<String>, password: Option<String>, cx: &mut App| {
                 this.update(cx, |p, cx| {
                     let mut args = vec!["take-over-compose".to_string()];
                     if let Some(c) = compose {
@@ -1400,7 +1431,12 @@ impl RemotePages {
                         args.push(c);
                     }
                     p.preflight = Preflight::Idle;
-                    p.run_job("Taking over the compose file", args, cx);
+                    match password {
+                        None => p.run_job("Taking over the compose file", args, cx),
+                        // The password goes in a file only the account reads,
+                        // which the agent removes when it read it.
+                        Some(pw) => p.take_over_with_password(args, pw, cx),
+                    }
                 })
                 .ok();
             }),

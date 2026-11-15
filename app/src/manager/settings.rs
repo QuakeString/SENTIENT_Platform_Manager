@@ -167,13 +167,17 @@ impl SettingsPage {
         let this = cx.entity().downgrade();
         crate::manager::takeover::open(
             true,
-            std::sync::Arc::new(move |compose: Option<String>| crate::adopt::take_over_plan(&record, compose.as_deref())),
-            std::rc::Rc::new(move |compose: Option<String>, cx: &mut App| {
+            std::sync::Arc::new({
+                let record = record.clone();
+                move |compose: Option<String>| crate::adopt::take_over_plan(&record, compose.as_deref())
+            }),
+            std::sync::Arc::new(move |pw: String| crate::adopt::check_takeover_password(&record, &pw)),
+            std::rc::Rc::new(move |compose: Option<String>, password: Option<String>, cx: &mut App| {
                 this.update(cx, |page, cx| {
                     let Some(record) = page.record.clone() else { return };
                     page.job.update(cx, |job, cx| {
                         job.set_label("Taking over the compose file");
-                        job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), None, sink).map(|_| ()), cx)
+                        job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), password.as_deref(), sink).map(|_| ()), cx)
                     });
                 })
                 .ok();
