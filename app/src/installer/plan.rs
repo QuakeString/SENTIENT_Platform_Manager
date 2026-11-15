@@ -138,6 +138,7 @@ impl InstallPlan {
             stack,
             installed_at: chrono::Utc::now().to_rfc3339(),
             kiosk: Some(self.shortcuts.kiosk),
+            changes_done: crate::changes::all_ids(),
         }
     }
 }

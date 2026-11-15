@@ -449,6 +449,7 @@ impl Installer {
                         .justify_center()
                         .when(selected, |r| r.child(div().size_2().rounded_full().bg(theme.primary))),
                 )
+                .child(ui::flavor_logos(flavor, 18.).w(px(52.)))
                 .child(
                     v_flex()
                         .flex_1()
@@ -597,11 +598,17 @@ impl Installer {
             .children(self.port_warning(cx))
     }
 
-    /// The full port message under the fields, when a chosen port is taken.
-    fn port_warning(&self, cx: &App) -> Option<Div> {
-        let theme = cx.theme();
-        self.port_problem(cx).map(|text| {
-            h_flex()
+    /// Under the fields, when a chosen port is taken: which program holds
+    /// it (an earlier SENTIENT install is removed on the System check page;
+    /// another program is not touched) and the next free port to use.
+    fn port_warning(&mut self, cx: &mut Context<Self>) -> Option<Div> {
+        let Some(problem) = self.port_problem(cx) else { return None };
+        self.lookup_port_owners(cx);
+        let theme = cx.theme().clone();
+        let busy = self.busy_fields(cx);
+        let ours = self.sentient_dirs(cx);
+        let box_ = || {
+            v_flex()
                 .gap_2()
                 .p_3()
                 .max_w(px(640.))
@@ -609,9 +616,50 @@ impl Installer {
                 .bg(theme.warning)
                 .text_color(theme.warning_foreground)
                 .text_sm()
-                .child(Icon::new(IconName::TriangleAlert).small())
-                .child(div().min_w_0().child(text))
-        })
+        };
+        if busy.is_empty() {
+            // Not a busy port (an invalid number): the message as it is.
+            return Some(box_().child(h_flex().gap_2().child(Icon::new(IconName::TriangleAlert).small()).child(div().min_w_0().child(problem))));
+        }
+        let mut panel = box_();
+        for (port, what, field) in busy {
+            let owner = self.port_owners.get(&port).cloned().flatten();
+            let text = match &owner {
+                Some(o) if o.is_sentient(&ours) => format!(
+                    "Port {port} ({what}) is held by an earlier SENTIENT install ({}). Go back to System check to remove it, or use another port.",
+                    o.describe()
+                ),
+                Some(o) => format!("Port {port} ({what}) is used by another program ({}). It is not part of SENTIENT and is not touched.", o.describe()),
+                None => format!("Port {port} ({what}) is in use by another program."),
+            };
+            let next = sentient_installer_core::checks::next_free_port(port.saturating_add(1));
+            panel = panel
+                .child(h_flex().gap_2().items_start().child(Icon::new(IconName::TriangleAlert).small()).child(div().min_w_0().child(text)))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .pl_6()
+                        .when_some(next, |row, next| {
+                            let field = field.clone();
+                            row.child(div().child(format!("{what} port for SENTIENT: {next} is free.")))
+                                .child(Button::new(SharedString::from(format!("use-port-{port}"))).outline().small().label(format!("Use {next}")).on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        field.update(cx, |state, cx| state.set_value(next.to_string(), window, cx));
+                                        this.problem = None;
+                                        cx.notify();
+                                    },
+                                )))
+                        })
+                        .child(Button::new(SharedString::from(format!("recheck-port-{port}"))).ghost().small().label("Check again").on_click(cx.listener(
+                            move |this, _, _, cx| {
+                                this.port_owners.remove(&port);
+                                cx.notify();
+                            },
+                        ))),
+                );
+        }
+        Some(panel)
     }
 
     fn ports(&mut self, cx: &mut Context<Self>) -> Div {

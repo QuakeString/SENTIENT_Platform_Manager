@@ -136,6 +136,13 @@ pub struct Installer {
     leftovers: Vec<String>,
     /// Removing those leftovers.
     cleanup: Entity<Job>,
+    /// An earlier install that is broken or half removed: its own screen,
+    /// before the wizard (crate::earlier).
+    earlier: Option<Entity<crate::earlier::EarlierPage>>,
+    /// That screen was answered (or there was nothing): do not show it again.
+    earlier_done: bool,
+    /// Who holds a busy port (checks::port_owner), looked up once per port.
+    port_owners: HashMap<u16, Option<checks::PortOwner>>,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -259,6 +266,9 @@ impl Installer {
             existing: None,
             leftovers: Vec::new(),
             cleanup,
+            port_owners: HashMap::new(),
+            earlier: None,
+            earlier_done: resumed.is_some(),
             keep_existing: true,
             delete_existing: false,
             kept_passwords: false,
@@ -318,12 +328,35 @@ impl Installer {
         let engine = self.engine;
         let pg_dir = std::path::PathBuf::from(self.value(&self.fields.data_dir, cx));
         let task = cx.spawn(async move |this, cx| {
-            let found = cx.background_executor().spawn(async move { crate::leftovers::find(&pg_dir) }).await;
-            this.update(cx, |page, cx| {
-                page.leftovers = found;
-                cx.notify();
-            })
-            .ok();
+            let look_dir = pg_dir.clone();
+            let found = cx.background_executor().spawn(async move { crate::leftovers::find(&look_dir) }).await;
+            let first = this
+                .update(cx, |page, cx| {
+                    let first = !found.is_empty() && !page.earlier_done && page.step == 0 && !page.manager_only;
+                    page.leftovers = found;
+                    cx.notify();
+                    first
+                })
+                .unwrap_or(false);
+            // The first look found an earlier install: its own screen first.
+            if first {
+                let earlier = cx.background_executor().spawn(async move { crate::earlier::Found::look(None, pg_dir) }).await;
+                this.update(cx, |page, cx| {
+                    if earlier.any() && !page.earlier_done {
+                        let view = cx.new(|cx| crate::earlier::EarlierPage::new(earlier, cx));
+                        let sub = cx.subscribe(&view, |page: &mut Self, _, _: &crate::earlier::Continue, cx| {
+                            page.earlier = None;
+                            page.earlier_done = true;
+                            page.run_checks(cx);
+                            cx.notify();
+                        });
+                        page._subscriptions.push(sub);
+                        page.earlier = Some(view);
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }
         });
         self._tasks.push(task);
         let task = cx.spawn(async move |this, cx| {
@@ -548,6 +581,62 @@ impl Installer {
         } else {
             Err(format!("Already in use: {}. Choose another port, or stop what is listening on it.", busy.join(", ")))
         }
+    }
+
+    /// The current page's busy ports: (port, what, its field).
+    pub(crate) fn busy_fields(&self, cx: &App) -> Vec<(u16, String, Entity<InputState>)> {
+        let f = &self.fields;
+        let fields: Vec<(&Entity<InputState>, &str)> = match self.step {
+            4 => {
+                let mut v = vec![(&f.pg_port, "PostgreSQL")];
+                if self.flavor.is_some_and(|fl| fl.uses_clickhouse()) {
+                    v.push((&f.ch_http_port, "ClickHouse HTTP"));
+                    v.push((&f.ch_native_port, "ClickHouse native"));
+                }
+                v
+            }
+            5 => vec![
+                (&f.http_port, "HTTP"),
+                (&f.mqtt_port, "MQTT"),
+                (&f.mqtts_port, "MQTTS"),
+                (&f.coap_port, "CoAP"),
+                (&f.coaps_port, "CoAPS"),
+            ],
+            _ => return Vec::new(),
+        };
+        // The same ports the page refuses (a kept cluster's own port is not).
+        let refused = self.port_problem(cx).unwrap_or_default();
+        fields
+            .into_iter()
+            .filter_map(|(field, what)| {
+                let port = self.value(field, cx).parse::<u16>().ok()?;
+                refused.contains(&format!("{port} ({what})")).then(|| (port, what.to_string(), field.clone()))
+            })
+            .collect()
+    }
+
+    /// Look up who holds each busy port on this page, once.
+    pub(crate) fn lookup_port_owners(&mut self, cx: &mut Context<Self>) {
+        for (port, _, _) in self.busy_fields(cx) {
+            if self.port_owners.contains_key(&port) {
+                continue;
+            }
+            self.port_owners.insert(port, None);
+            let task = cx.spawn(async move |this, cx| {
+                let owner = cx.background_executor().spawn(async move { checks::port_owner(port) }).await;
+                this.update(cx, |page, cx| {
+                    page.port_owners.insert(port, owner);
+                    cx.notify();
+                })
+                .ok();
+            });
+            self._tasks.push(task);
+        }
+    }
+
+    /// The folders an earlier SENTIENT install's programs run from.
+    pub(crate) fn sentient_dirs(&self, cx: &App) -> Vec<PathBuf> {
+        vec![PathBuf::from(self.value(&self.fields.install_dir, cx)), PathBuf::from(self.value(&self.fields.data_dir, cx))]
     }
 
     /// Why the current page's ports are refused, shown on the page itself.
@@ -970,6 +1059,9 @@ impl Installer {
 
 impl Render for Installer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(earlier) = &self.earlier {
+            return div().size_full().child(earlier.clone()).into_any_element();
+        }
         let nav = self.steps_nav(cx);
         let footer = self.footer(cx);
         let page = self.page(window, cx);
@@ -998,6 +1090,7 @@ impl Render for Installer {
                     )
                     .child(footer),
             )
+            .into_any_element()
     }
 }
 

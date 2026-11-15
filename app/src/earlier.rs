@@ -1,0 +1,477 @@
+// Copyright © 2016-2026 The SENTIENT Authors
+
+//! An earlier SENTIENT install that is broken or was half removed, found by
+//! Setup with or without an installation record. One screen with the three
+//! ways out, each saying what happens to the data:
+//!
+//! - Remove it and install fresh: everything listed goes (a backup first
+//!   when the database can still be read), the ports are checked free, then
+//!   the normal install runs.
+//! - Repair it: keeps the databases; puts the program files and services
+//!   back and starts SENTIENT (an install without a record is adopted
+//!   first). When that fails, the screen says why and offers the fresh
+//!   install.
+//! - Install fresh, keep the old database: the new install uses the
+//!   database that is already here.
+//!
+//! A port is asked about only when another program holds it (the install
+//! wizard names that program); ports held by the earlier install itself go
+//! with it.
+
+use std::path::PathBuf;
+
+use gpui_kit::component::{
+    ActiveTheme, Disableable as _, Icon, h_flex, v_flex,
+    button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
+    progress::Progress as ProgressBar,
+};
+use gpui_kit::assets::IconName as Lucide;
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use sentient_installer_core::checks;
+use sentient_installer_core::progress::{Progress, ProgressFn};
+
+use crate::installation::InstallationRecord;
+use crate::jobs::{Job, JobState};
+use crate::ui::{self, Tone};
+
+/// What was found. Blocking to make: build it off the UI thread.
+#[derive(Clone)]
+pub struct Found {
+    /// One line per thing found, with its state.
+    pub items: Vec<String>,
+    /// The installation: its record, or one found without a record (adopt).
+    record: Option<InstallationRecord>,
+    candidate: Option<crate::adopt::Candidate>,
+    /// A PostgreSQL database is there to keep.
+    pub has_database: bool,
+    /// Why no backup can be made first, when it cannot.
+    no_backup: Option<String>,
+    pg_dir: PathBuf,
+}
+
+impl Found {
+    /// Look at what an earlier install left. `record` is the installation
+    /// record when there is one; `pg_dir` the PostgreSQL folder Setup would
+    /// use by default.
+    pub fn look(record: Option<InstallationRecord>, pg_dir: PathBuf) -> Found {
+        let pg_dir = record.as_ref().map(|r| r.pg_dir.clone()).filter(|p| !p.as_os_str().is_empty()).unwrap_or(pg_dir);
+        let items = crate::leftovers::find(&pg_dir);
+        let candidate = if record.is_none() { crate::adopt::find().into_iter().find(|c| c.problem.is_none()) } else { None };
+        let usable = record.clone().or_else(|| candidate.as_ref().map(|c| c.record.clone()));
+        let has_database = items.iter().any(|i| i.starts_with("PostgreSQL data")) || record.is_some();
+        let no_backup = match &usable {
+            None => Some("Not possible: no SENTIENT database could be found to copy.".to_string()),
+            Some(r) => {
+                let port = if r.stack.pg_port == 0 { 5432 } else { r.stack.pg_port };
+                if !checks::port_busy(port) {
+                    Some("Not possible: PostgreSQL does not run, so the database cannot be read.".to_string())
+                } else if crate::migration::Setup::current(r).is_err() {
+                    Some("Not possible: the database password is not known on this computer.".to_string())
+                } else {
+                    None
+                }
+            }
+        };
+        Found { items, record, candidate, has_database, no_backup, pg_dir }
+    }
+
+    /// Something is there.
+    pub fn any(&self) -> bool {
+        !self.items.is_empty()
+    }
+
+    fn can_repair(&self) -> bool {
+        self.record.is_some() || self.candidate.is_some()
+    }
+}
+
+fn backup_dir() -> PathBuf {
+    #[cfg(windows)]
+    return PathBuf::from(r"C:\SENTIENT-backups");
+    #[cfg(not(windows))]
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/var/backups")).join("SENTIENT-backups")
+}
+
+/// The ports a new install needs from the earlier one.
+fn default_ports() -> Vec<(u16, String)> {
+    let d = sentient_installer_core::distro::DeployConfig::default();
+    vec![
+        (d.http_port, "HTTP".into()),
+        (d.pg_port, "PostgreSQL".into()),
+        (d.ch_http_port, "ClickHouse HTTP".into()),
+        (d.ch_native_port, "ClickHouse native".into()),
+    ]
+}
+
+fn ports_line() -> String {
+    let ports: Vec<String> = default_ports().iter().map(|(p, _)| p.to_string()).collect();
+    let (last, rest) = ports.split_last().map(|(l, r)| (l.clone(), r.join(", "))).unwrap_or_default();
+    format!("Checking that ports {rest} and {last} are free")
+}
+
+const BACKUP: &str = "Saving a backup";
+const REMOVE: &str = "Removing the earlier install";
+const CONTINUE: &str = "Continuing with the install";
+const REPAIR: &str = "Repairing";
+const ADOPT: &str = "Finding the installation's settings";
+const KEEP: &str = "Removing the earlier program, keeping its database";
+
+/// Remove everything found (a backup first when asked), then make sure the
+/// default ports are free.
+fn remove_fresh(found: Found, backup: bool, sink: ProgressFn) -> Result<(), String> {
+    if backup {
+        sink(Progress::Step { name: BACKUP.into() });
+        let r = found.record.clone().or_else(|| found.candidate.as_ref().map(|c| c.record.clone())).ok_or("no database to copy")?;
+        let dir = backup_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        let file = dir.join(format!("sentient-before-reinstall-{}.sentient-backup", chrono::Local::now().format("%Y-%m-%d_%H%M")));
+        crate::backup_jobs::backup(&r, &file, nested(&sink))?;
+        sink(Progress::Log { line: format!("Backup saved: {}", file.display()) });
+    }
+    sink(Progress::Step { name: REMOVE.into() });
+    match &found.record {
+        Some(r) => crate::maintenance::run_uninstall(r.clone(), false, nested(&sink))?,
+        None => crate::leftovers::remove(found.pg_dir.clone(), nested(&sink))?,
+    }
+    let check = ports_line();
+    sink(Progress::Step { name: check });
+    let busy: Vec<String> = default_ports()
+        .into_iter()
+        .filter(|(p, _)| checks::port_busy(*p))
+        .map(|(p, what)| match checks::port_owner(p) {
+            Some(o) => format!("{p} ({what}, used by {})", o.describe()),
+            None => format!("{p} ({what})"),
+        })
+        .collect();
+    if !busy.is_empty() {
+        sink(Progress::Log { line: format!("Still in use: {}. The install asks for other ports for these.", busy.join(", ")) });
+    }
+    sink(Progress::Step { name: CONTINUE.into() });
+    Ok(())
+}
+
+fn repair(found: Found, sink: ProgressFn) -> Result<(), String> {
+    let record = match found.record {
+        Some(r) => r,
+        None => {
+            sink(Progress::Step { name: ADOPT.into() });
+            let c = found.candidate.ok_or("No SENTIENT service is left to repair.")?;
+            crate::adopt::adopt(&c, None, nested(&sink))?
+        }
+    };
+    sink(Progress::Step { name: REPAIR.into() });
+    crate::maintenance::run_repair(record, nested(&sink))
+}
+
+fn keep_database(found: Found, sink: ProgressFn) -> Result<(), String> {
+    if let Some(r) = found.record {
+        sink(Progress::Step { name: KEEP.into() });
+        crate::maintenance::run_uninstall(r, true, nested(&sink))?;
+    }
+    sink(Progress::Step { name: CONTINUE.into() });
+    Ok(())
+}
+
+/// Steps of a nested engine call as log lines, so the checklist keeps the
+/// steps this screen planned.
+fn nested(sink: &ProgressFn) -> ProgressFn {
+    let sink = sink.clone();
+    std::sync::Arc::new(move |p| match p {
+        Progress::Step { name } => sink(Progress::Log { line: format!(">> {name}") }),
+        Progress::Done { message } => sink(Progress::Log { line: message }),
+        other => sink(other),
+    })
+}
+
+/// Go on with the normal install.
+pub struct Continue;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Run {
+    Remove,
+    Repair,
+    Keep,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    Choices,
+    ConfirmRemove,
+    Running(Run),
+}
+
+pub struct EarlierPage {
+    found: Found,
+    screen: Screen,
+    backup_first: bool,
+    understood: bool,
+    planned: Vec<String>,
+    show_log: bool,
+    job: Entity<Job>,
+    _observe: Subscription,
+}
+
+impl EventEmitter<Continue> for EarlierPage {}
+
+impl EarlierPage {
+    pub fn new(found: Found, cx: &mut Context<Self>) -> Self {
+        let job = cx.new(|_| Job::new());
+        let _observe = cx.observe(&job, |page: &mut Self, job, cx| {
+            if let (JobState::Done(_), Screen::Running(run)) = (job.read(cx).state(), page.screen) {
+                if run != Run::Repair {
+                    cx.emit(Continue);
+                }
+            }
+            cx.notify();
+        });
+        let backup_first = found.no_backup.is_none();
+        Self { found, screen: Screen::Choices, backup_first, understood: false, planned: Vec::new(), show_log: false, job, _observe }
+    }
+
+    fn start(&mut self, run: Run, cx: &mut Context<Self>) {
+        let found = self.found.clone();
+        let backup = self.backup_first && found.no_backup.is_none();
+        self.planned = match run {
+            Run::Remove => {
+                let mut p = Vec::new();
+                if backup {
+                    p.push(BACKUP.to_string());
+                }
+                p.extend([REMOVE.to_string(), ports_line(), CONTINUE.to_string()]);
+                p
+            }
+            Run::Repair if found.record.is_none() => vec![ADOPT.into(), REPAIR.into()],
+            Run::Repair => vec![REPAIR.into()],
+            Run::Keep if found.record.is_some() => vec![KEEP.into(), CONTINUE.into()],
+            Run::Keep => vec![CONTINUE.into()],
+        };
+        self.screen = Screen::Running(run);
+        self.show_log = false;
+        self.job.update(cx, |job, cx| match run {
+            Run::Remove => job.start(move |sink| remove_fresh(found, backup, sink), cx),
+            Run::Repair => job.start(move |sink| repair(found, sink), cx),
+            Run::Keep => job.start(move |sink| keep_database(found, sink), cx),
+        });
+        cx.notify();
+    }
+
+    fn found_list(&self, theme: &gpui_kit::component::Theme) -> Div {
+        ui::panel(theme)
+            .gap_1()
+            .children(self.found.items.iter().map(|i| h_flex().gap_2().text_sm().child("•").child(div().min_w_0().child(i.clone()))))
+    }
+
+    fn choice(theme: &gpui_kit::component::Theme, id: &'static str, icon: Icon, title: &'static str, about: String, enabled: bool) -> Stateful<Div> {
+        h_flex()
+            .id(id)
+            .gap_4()
+            .p_4()
+            .rounded(theme.radius)
+            .bg(theme.background)
+            .border_1()
+            .border_color(theme.border)
+            .when(enabled, |c| c.cursor_pointer().hover(|c| c.border_color(theme.primary)))
+            .when(!enabled, |c| c.opacity(0.55))
+            .child(icon.text_color(theme.primary))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(about)),
+            )
+    }
+
+    fn choices(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let repair_ok = self.found.can_repair();
+        let keep_ok = self.found.has_database;
+        vec![
+            div().text_2xl().child("An earlier SENTIENT install is on this computer").into_any_element(),
+            div().text_color(theme.muted_foreground).child("It is not working. This is what was found:").into_any_element(),
+            self.found_list(theme).into_any_element(),
+            Self::choice(
+                theme,
+                "earlier-remove",
+                Icon::new(Lucide::Trash),
+                "Remove it and install fresh",
+                "Deletes the old services, PostgreSQL, ClickHouse and every database in them. Frees their ports. Then installs SENTIENT new.".into(),
+                true,
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.screen = Screen::ConfirmRemove;
+                this.understood = false;
+                cx.notify();
+            }))
+            .into_any_element(),
+            Self::choice(
+                theme,
+                "earlier-repair",
+                Icon::new(Lucide::Wrench),
+                "Repair it",
+                if repair_ok {
+                    "Keeps the databases. Puts the program files and services back and starts SENTIENT.".into()
+                } else {
+                    "Not possible: no SENTIENT service is left to repair.".into()
+                },
+                repair_ok,
+            )
+            .when(repair_ok, |c| c.on_click(cx.listener(|this, _, _, cx| this.start(Run::Repair, cx))))
+            .into_any_element(),
+            Self::choice(
+                theme,
+                "earlier-keep",
+                Icon::new(Lucide::Database),
+                "Install fresh, keep the old database",
+                if keep_ok {
+                    "Installs SENTIENT new and connects it to the database that is already here.".into()
+                } else {
+                    "Not possible: there is no database to keep.".into()
+                },
+                keep_ok,
+            )
+            .when(keep_ok, |c| c.on_click(cx.listener(|this, _, _, cx| this.start(Run::Keep, cx))))
+            .into_any_element(),
+        ]
+    }
+
+    fn confirm(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let can_backup = self.found.no_backup.is_none();
+        vec![
+            div().text_2xl().child("Remove the earlier install?").into_any_element(),
+            div().text_color(theme.muted_foreground).child("This will be deleted from this computer and cannot be undone:").into_any_element(),
+            self.found_list(theme).into_any_element(),
+            v_flex()
+                .gap_1()
+                .child(
+                    Checkbox::new("backup-first")
+                        .label("Save a backup first")
+                        .checked(self.backup_first && can_backup)
+                        .disabled(!can_backup)
+                        .on_change(cx.listener(|this, v: &bool, _, cx| {
+                            this.backup_first = *v;
+                            cx.notify();
+                        })),
+                )
+                .child(div().pl_6().text_sm().text_color(theme.muted_foreground).child(match &self.found.no_backup {
+                    None => format!("To {}. Possible because PostgreSQL still runs.", backup_dir().display()),
+                    Some(why) => why.clone(),
+                }))
+                .into_any_element(),
+            Checkbox::new("understood")
+                .label("I understand that every database listed above is deleted")
+                .checked(self.understood)
+                .on_change(cx.listener(|this, v: &bool, _, cx| {
+                    this.understood = *v;
+                    cx.notify();
+                }))
+                .into_any_element(),
+            h_flex()
+                .gap_2()
+                .child(Button::new("remove-fresh").danger().label("Remove and install fresh").disabled(!self.understood).on_click(cx.listener(|this, _, _, cx| this.start(Run::Remove, cx))))
+                .child(Button::new("back").outline().label("Back").on_click(cx.listener(|this, _, _, cx| {
+                    this.screen = Screen::Choices;
+                    cx.notify();
+                })))
+                .into_any_element(),
+        ]
+    }
+
+    fn running(&self, theme: &gpui_kit::component::Theme, run: Run, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let job = self.job.read(cx);
+        let finished = match job.state() {
+            JobState::Done(_) => Some(true),
+            JobState::Failed(_) => Some(false),
+            _ => None,
+        };
+        let title = match (run, finished) {
+            (Run::Remove, Some(false)) => "The earlier install was not removed",
+            (Run::Remove, _) => "Removing the earlier install",
+            (Run::Repair, None) => "Repairing the earlier install",
+            (Run::Repair, Some(true)) => "Repaired: SENTIENT is running",
+            (Run::Repair, Some(false)) => "The earlier install could not be repaired",
+            (Run::Keep, Some(false)) => "The earlier program was not removed",
+            (Run::Keep, _) => "Keeping the old database",
+        };
+        let log: Vec<SharedString> = job.log().iter().rev().take(14).rev().cloned().collect();
+        let marked = ui::mark_steps(&self.planned, job.steps(), finished);
+        let mut out = vec![div().text_2xl().child(title).into_any_element()];
+        if let JobState::Failed(m) = job.state() {
+            let tail = if run == Run::Repair { " Nothing was deleted." } else { "" };
+            out.push(ui::outcome(theme, Tone::Bad, format!("{m}{tail}")).into_any_element());
+        }
+        out.push(ui::steps(theme, &marked).into_any_element());
+        if finished.is_none() {
+            if let Some(p) = job.percent() {
+                out.push(ProgressBar::new("earlier-progress").value(p).into_any_element());
+            }
+        }
+        if (self.show_log || finished.is_none()) && !log.is_empty() {
+            out.push(
+                ui::panel(theme)
+                    .text_xs()
+                    .font_family(theme.mono_font_family.clone())
+                    .text_color(theme.muted_foreground)
+                    .children(log.into_iter().map(|l| div().child(l)))
+                    .into_any_element(),
+            );
+        }
+        match finished {
+            Some(false) => out.push(
+                h_flex()
+                    .gap_2()
+                    .when(run == Run::Repair, |r| {
+                        r.child(Button::new("fresh-after-repair").primary().label("Remove it and install fresh").on_click(cx.listener(|this, _, _, cx| {
+                            this.screen = Screen::ConfirmRemove;
+                            this.understood = false;
+                            cx.notify();
+                        })))
+                    })
+                    .when(run != Run::Repair, |r| r.child(Button::new("retry").primary().label("Try again").on_click(cx.listener(move |this, _, _, cx| this.start(run, cx)))))
+                    .child(Button::new("log").outline().label(if self.show_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
+                        this.show_log = !this.show_log;
+                        cx.notify();
+                    })))
+                    .child(Button::new("close").outline().label("Close").on_click(|_, window, _| window.remove_window()))
+                    .into_any_element(),
+            ),
+            Some(true) if run == Run::Repair => out.push(
+                h_flex()
+                    .gap_2()
+                    .child(Button::new("open").primary().label("Open the Platform Manager").on_click(|_, window, _| {
+                        let exe = crate::self_install::manager_exe();
+                        let exe = if exe.exists() { exe } else { std::env::current_exe().unwrap_or(exe) };
+                        if std::process::Command::new(&exe).arg("--manager").spawn().is_ok() {
+                            window.remove_window();
+                        }
+                    }))
+                    .child(Button::new("close").outline().label("Close").on_click(|_, window, _| window.remove_window()))
+                    .into_any_element(),
+            ),
+            _ => {}
+        }
+        out
+    }
+}
+
+impl Render for EarlierPage {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let children = match self.screen {
+            Screen::Choices => self.choices(&theme, cx),
+            Screen::ConfirmRemove => self.confirm(&theme, cx),
+            Screen::Running(run) => self.running(&theme, run, cx),
+        };
+        v_flex()
+            .id("earlier")
+            .size_full()
+            .overflow_y_scroll()
+            .p_8()
+            .gap_4()
+            .bg(theme.muted)
+            .text_color(theme.foreground)
+            .children(children)
+    }
+}
