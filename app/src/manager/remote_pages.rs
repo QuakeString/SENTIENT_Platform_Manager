@@ -62,8 +62,10 @@ pub struct RemotePages {
     /// One input per catalog setting, made once the values are read.
     inputs: Vec<(String, Entity<InputState>)>,
     gateway: Read<std::collections::HashMap<String, String>>,
-    /// Migration's chosen target: stock, timescaledb or clickhouse.
-    target: usize,
+    /// Migration's chosen target (an index into the types other than the one now).
+    target: Option<usize>,
+    /// Migration: Change was pressed; the confirmation shows.
+    migrate_confirm: bool,
     logs: Read<String>,
     /// The newest SENTIENT on the update channel (None: none newer).
     offer: Read<Option<crate::updates::Offer>>,
@@ -116,7 +118,8 @@ impl RemotePages {
             settings: Read::Loading,
             inputs: Vec::new(),
             gateway: Read::Loading,
-            target: 2,
+            target: None,
+            migrate_confirm: false,
             logs: Read::Loading,
             offer: Read::Loading,
             versions: Read::Loading,
@@ -366,54 +369,50 @@ impl RemotePages {
                 } else {
                     (Tone::Bad, "SENTIENT is stopped")
                 };
+                let url = format!("http://{}:{}", self.inst.host, s.http_port.unwrap_or(8080));
                 col = col.child(
                     ui::panel(&theme)
-                        .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Sentient, 28.)).child(ui::pill(&theme, tone, state)))
+                        .child(
+                            h_flex()
+                                .gap_3()
+                                .items_center()
+                                .child(ui::product_logo(ui::Product::Sentient, 30.))
+                                .child(ui::pill(&theme, tone, state))
+                                .child(div().flex_1())
+                                .when(s.installed, |r| r.child(Button::new("r-open").primary().label("Open SENTIENT").on_click(move |_, _, cx| ui::open_url(&url, cx)))),
+                        )
                         .child(ui::fact(&theme, "SENTIENT version", s.sentient_version.clone()))
                         .child(ui::fact(&theme, "Database", s.database.clone()))
-                        .child(ui::fact(&theme, "Server", format!("{} · {} {}", self.inst.address(), det.os_name, det.arch)))
                         .child(ui::fact(&theme, "Runs as", if det.install.is_empty() { "Not known".to_string() } else { det.install.clone() }))
-                        .child(ui::fact(&theme, "Disk free", s.disk_free.map(bytes_label).unwrap_or_else(|| "Not known".into())))
-                        .child(ui::fact(&theme, "Last backup", s.last_backup.clone().unwrap_or_else(|| "none yet".into())))
+                        .child(ui::fact(&theme, "Server", format!("{} · {} {}", self.inst.address(), det.os_name, det.arch)))
                         .child(ui::fact(&theme, "Platform Manager there", s.manager_version.clone())),
                 );
             }
         }
         col = col.child(self.services_panel(&theme));
-        let mut db = ui::panel(&theme).gap_2().child(div().font_weight(FontWeight::MEDIUM).child("Database"));
-        match &self.db {
-            Read::Loading => db = db.child(div().text_sm().text_color(theme.muted_foreground).child("Reading…")),
-            Read::Failed(e) => db = db.child(ui::outcome(&theme, Tone::Bad, e.clone())),
+        // The same Database panel as this computer's, read without asking.
+        let db = ui::panel(&theme).child(div().font_weight(FontWeight::MEDIUM).child("Database"));
+        let db = match &self.db {
+            Read::Loading => db.child(div().text_sm().text_color(theme.muted_foreground).child("Reading the database's size and state…")),
+            Read::Failed(e) => db.child(ui::outcome(&theme, Tone::Warn, format!("The database's size and state could not be read.\n{e}"))),
             Read::Got(d) => {
-                if let Some(pg) = &d.pg {
-                    db = db
-                        .child(h_flex().gap_2().items_center().child(ui::database_logo("postgresql", 16.)).child(div().text_sm().child(format!("PostgreSQL {}", pg.version))))
-                        .child(ui::fact(&theme, "Size", bytes_label(pg.db_bytes)))
-                        .child(ui::fact(&theme, "Connections", format!("{} of {}", pg.connections, pg.max_connections)));
-                    for t in pg.tables.iter().take(5) {
-                        db = db.child(
-                            h_flex()
-                                .gap_4()
-                                .text_sm()
-                                .child(div().w_56().flex_shrink_0().text_color(theme.muted_foreground).child(crate::dbstatus::plain_table(&t.name).map(|(l, _)| l.to_string()).unwrap_or_else(|| t.name.clone())))
-                                .child(div().child(bytes_label(t.bytes))),
-                        );
-                    }
-                }
-                if let Some(e) = &d.pg_error {
-                    db = db.child(ui::outcome(&theme, Tone::Bad, format!("PostgreSQL: {e}")));
-                }
-                if let Some(ch) = &d.ch {
-                    db = db
-                        .child(h_flex().gap_2().items_center().child(ui::database_logo("clickhouse", 16.)).child(div().text_sm().child(format!("ClickHouse {}", ch.version))))
-                        .child(ui::fact(&theme, "Telemetry history", format!("{} values, {}", count_label(ch.rows), bytes_label(ch.disk_bytes))))
-                        .when_some(ch.first_ms.zip(ch.last_ms), |p, (a, b)| p.child(ui::fact(&theme, "From – to", format!("{} – {}", day_label(a), day_label(b)))));
-                }
-                if let Some(e) = &d.ch_error {
-                    db = db.child(ui::outcome(&theme, Tone::Bad, format!("ClickHouse: {e}")));
-                }
+                let last = self.status.got().and_then(|s| s.last_backup.clone()).unwrap_or_else(|| "none yet".into());
+                let this = cx.entity().downgrade();
+                let back_up: std::rc::Rc<dyn Fn(&mut App)> = std::rc::Rc::new(move |cx| {
+                    this.update(cx, |p, cx| p.run_job("Backing up", vec!["backup-now".into()], cx)).ok();
+                });
+                crate::manager::status::db_details(
+                    &theme,
+                    db,
+                    d,
+                    "The server's database disk",
+                    None,
+                    last,
+                    crate::manager::status::DbActions { set_limit: None, remove_kept: None, back_up: Some(back_up) },
+                    crate::theme::is_dark(cx),
+                )
             }
-        }
+        };
         col.child(db)
     }
 
@@ -422,23 +421,28 @@ impl RemotePages {
         let busy = self.job.read(cx).is_running();
         let installed = self.status.got().is_some_and(|s| s.installed);
         let serving = self.status.got().is_some_and(|s| s.serving);
-        let btn = |id: &'static str, label: &'static str, icon: Lucide, primary: bool| {
-            let b = Button::new(id).label(label).icon(Icon::new(icon)).disabled(busy || !installed);
-            if primary { b.primary() } else { b.outline() }
-        };
+        let this = cx.entity().downgrade();
+        let (t1, t2, t3) = (this.clone(), this.clone(), this);
+        let row = crate::manager::control::control_row(
+            "r-",
+            busy || !installed,
+            std::rc::Rc::new(move |_, cx| {
+                t1.update(cx, |p, cx| p.run_job("Starting SENTIENT", vec!["control".into(), "start".into()], cx)).ok();
+            }),
+            std::rc::Rc::new(move |_, cx| {
+                t2.update(cx, |p, cx| p.run_job("Restarting SENTIENT", vec!["control".into(), "restart".into()], cx)).ok();
+            }),
+            std::rc::Rc::new(move |w, cx| {
+                let t3 = t3.clone();
+                crate::manager::control::confirm_stop(w, cx, std::rc::Rc::new(move |cx| {
+                    t3.update(cx, |p, cx| p.run_job("Stopping SENTIENT", vec!["control".into(), "stop".into()], cx)).ok();
+                }));
+            }),
+        );
+        let _ = serving;
         v_flex()
             .gap_4()
-            .child(
-                ui::panel(&theme)
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(if serving { "SENTIENT is running on this server." } else { "SENTIENT is not running on this server." }))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(btn("r-start", "Start", Lucide::Play, !serving).on_click(cx.listener(|this, _, _, cx| this.run_job("Starting SENTIENT", vec!["control".into(), "start".into()], cx))))
-                            .child(btn("r-stop", "Stop", Lucide::Square, false).on_click(cx.listener(|this, _, _, cx| this.run_job("Stopping SENTIENT", vec!["control".into(), "stop".into()], cx))))
-                            .child(btn("r-restart", "Restart", Lucide::RotateCw, serving).on_click(cx.listener(|this, _, _, cx| this.run_job("Restarting SENTIENT", vec!["control".into(), "restart".into()], cx)))),
-                    ),
-            )
+            .child(ui::panel(&theme).child(row))
             .child(self.services_panel(&theme))
     }
 
@@ -820,37 +824,63 @@ impl RemotePages {
         cx.notify();
     }
 
+    /// The same panel as this computer's Migration: the type now, the
+    /// types to change to as cards, the steps, then Change and its confirmation.
     fn migration_page(&self, cx: &mut Context<Self>) -> Div {
+        use sentient_installer_core::stack::Flavor;
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
         let current = self.status.got().map(|s| s.database.clone()).unwrap_or_default();
-        const TARGETS: [(&str, &str); 3] = [("stock", "PostgreSQL"), ("timescaledb", "PostgreSQL + TimescaleDB"), ("clickhouse", "PostgreSQL + ClickHouse")];
-        let (flavor, label) = TARGETS[self.target.min(2)];
-        let same = current == label;
+        let all = [Flavor::Stock, Flavor::Timescaledb, Flavor::Clickhouse];
+        let now = all.into_iter().find(|f| crate::installation::flavor_label(*f) == current);
+        let targets: Vec<Flavor> = all.into_iter().filter(|f| Some(*f) != now).collect();
+        let chosen = self.target.and_then(|i| targets.get(i).copied());
+        let this = cx.entity().downgrade();
         ui::panel(&theme)
-            .child(ui::fact(&theme, "Database now", if current.is_empty() { "reading…".to_string() } else { current.clone() }))
+            .child(ui::fact(&theme, "Database now", if current.is_empty() { "Reading…".to_string() } else { current.clone() }))
+            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Change to"))
+            .child(crate::manager::migration::target_cards(&theme, "r-", &targets, self.target, crate::remote::is_windows(&self.inst), std::rc::Rc::new(move |i, cx| {
+                this.update(cx, |p, cx| {
+                    if !p.job.read(cx).is_running() {
+                        p.target = Some(i);
+                        p.migrate_confirm = false;
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })))
+            .child(crate::manager::migration::steps_text(&theme, false))
             .child(
-                h_flex().gap_3().items_center().child(div().text_sm().child("Move to")).child(
-                    gpui_kit::component::radio::RadioGroup::horizontal("r-target")
-                        .children(TARGETS.map(|t| t.1))
-                        .selected_index(Some(self.target))
-                        .on_change(cx.listener(|this, v: &usize, _, cx| {
-                            this.target = *v;
+                h_flex()
+                    .gap_2()
+                    .when(!self.migrate_confirm, |r| {
+                        r.child(
+                            Button::new("r-migrate")
+                                .primary()
+                                .label(chosen.map(|f| format!("Change to {}", crate::installation::flavor_label(f))).unwrap_or_else(|| "Change database".into()))
+                                .disabled(busy || chosen.is_none() || now.is_none())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.migrate_confirm = true;
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .when_some(chosen.filter(|_| self.migrate_confirm), |r, f| {
+                        r.child(
+                            Button::new("r-migrate-confirm")
+                                .danger()
+                                .label("Stop SENTIENT and change now")
+                                .disabled(busy)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.migrate_confirm = false;
+                                    this.run_job("Moving the database", vec!["migrate".into(), f.as_str().into()], cx);
+                                })),
+                        )
+                        .child(Button::new("r-migrate-no").ghost().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                            this.migrate_confirm = false;
                             cx.notify();
-                        })),
-                ),
-            )
-            .child(div().text_sm().text_color(theme.muted_foreground).child(
-                "The data is copied into the new type beside the old one, SENTIENT switches over, and the old database is kept until you remove it. SENTIENT stops while it switches.",
-            ))
-            .child(
-                h_flex().child(
-                    Button::new("r-migrate")
-                        .primary()
-                        .label(if same { "This is the database type already".to_string() } else { format!("Move to {label}") })
-                        .disabled(busy || same || current.is_empty())
-                        .on_click(cx.listener(move |this, _, _, cx| this.run_job("Moving the database", vec!["migrate".into(), flavor.into()], cx))),
-                ),
+                        })))
+                    }),
             )
     }
 
@@ -858,10 +888,14 @@ impl RemotePages {
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
         let installed = self.status.got().is_some_and(|s| s.installed);
+        // The same panel as this computer's Repair. Uninstalling is done on
+        // the server itself, so that panel is left out here.
         ui::panel(&theme)
-            .child(div().text_sm().child("Repair puts SENTIENT's services, files and settings on this server back as the Platform Manager installed them. The database and its data are kept."))
-            .child(h_flex().child(Button::new("r-repair").primary().label("Repair").icon(Icon::new(Lucide::Wrench)).disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job("Repairing", vec!["repair".into()], cx)))))
-            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Uninstalling SENTIENT is done on the server itself, not from another computer."))
+            .child(div().font_weight(FontWeight::MEDIUM).child("Repair"))
+            .child(div().text_sm().text_color(theme.muted_foreground).child(
+                "For a SENTIENT that does not start or a service that went missing: the services and their configuration are written again from this installation's record, and SENTIENT is started. Data and settings are kept.",
+            ))
+            .child(h_flex().child(Button::new("r-repair").outline().label("Repair").disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job("Repairing", vec!["repair".into()], cx)))))
     }
 
     fn gateway_page(&self, cx: &mut Context<Self>) -> Div {
@@ -959,7 +993,7 @@ impl Render for RemotePages {
             Kind::Backup => ("Backup and restore", "The backups on this server."),
             Kind::Settings => ("Platform settings", "SENTIENT's settings on this server."),
             Kind::Migration => ("Migration", "Move this server's SENTIENT to another database type."),
-            Kind::Repair => ("Repair", "Put SENTIENT's services and files on this server back in order."),
+            Kind::Repair => ("Repair and uninstall", "Write the services and their configuration again on this server."),
             Kind::Gateway => ("Gateway", "The Sentient Gateway on this server."),
         };
         let gate: Option<Div> = match &self.ready {

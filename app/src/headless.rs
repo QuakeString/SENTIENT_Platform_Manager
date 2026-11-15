@@ -575,5 +575,6 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
         uptime_secs: Some(uptime),
         manager_version,
         running_job: None,
+        http_port: Some(record.stack.http_port),
     }
 }

@@ -207,7 +207,7 @@ impl StatusPage {
     /// The Database panel: who uses the disk and how fast it fills, then
     /// PostgreSQL and (on hybrid installs) ClickHouse side by side.
     fn db_panel(&self, theme: &gpui_kit::component::Theme, record: &InstallationRecord, cx: &mut Context<Self>) -> Div {
-        use crate::dbstatus::{CRITICAL_DISK, LOW_DISK, bytes_label, count_label, day_label, month_label, plain_table};
+        use crate::dbstatus::bytes_label;
         let header = h_flex()
             .gap_3()
             .items_center()
@@ -223,7 +223,7 @@ impl StatusPage {
                     .disabled(self.db_reading)
                     .on_click(cx.listener(|this, _, _, cx| this.read_db(cx))),
             );
-        let mut panel = ui::panel(theme).child(header);
+        let panel = ui::panel(theme).child(header);
         let Some(db) = &self.db else {
             return panel.child(div().text_sm().text_color(theme.muted_foreground).child(if self.db_reading {
                 "Reading the database's size and state…"
@@ -233,228 +233,27 @@ impl StatusPage {
                 "Not read yet."
             }));
         };
-        let drive = disk_name(record);
-        let pg_bytes = db.pg.as_ref().map(|p| p.db_bytes).unwrap_or(0);
-        let ch_bytes = db.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0);
-        let free = db.pg.as_ref().and_then(|p| p.free_bytes);
-        let total = db.pg.as_ref().and_then(|p| p.disk_total);
-        let growth = crate::dbstatus::growth_per_day();
-        let lasts = match (free, growth) {
-            (Some(f), Some((per_day, _))) => crate::dbstatus::lasts_label(f, per_day),
-            _ => None,
+        let this = cx.entity().downgrade();
+        let go = move |to: Go| -> std::rc::Rc<dyn Fn(&mut App)> {
+            let this = this.clone();
+            std::rc::Rc::new(move |cx| {
+                this.update(cx, |_, cx| cx.emit(to)).ok();
+            })
         };
-
-        // G3: the disk is running low, with the two ways to free space.
-        if let Some(f) = free.filter(|f| *f < LOW_DISK) {
-            let tone = if f < CRITICAL_DISK { Tone::Bad } else { Tone::Warn };
-            let (bg, fg) = match tone {
-                Tone::Bad => (theme.danger, theme.danger_foreground),
-                _ => (theme.warning, theme.warning_foreground),
-            };
-            let when = match &lasts {
-                Some(l) => format!(" At this rate it is full in {}, and SENTIENT stops storing data when it is.", l.trim_start_matches("about ").replace("less than a day", "less than a day")),
-                None => " SENTIENT stops storing data when it is full.".to_string(),
-            };
-            let kept = db.kept_bytes.filter(|b| *b > 0);
-            panel = panel.child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .flex_wrap()
-                    .px_3()
-                    .py_2()
-                    .rounded(theme.radius)
-                    .bg(bg)
-                    .text_color(fg)
-                    .text_sm()
-                    .child(div().flex_1().min_w(px(240.)).child(format!("{drive} is almost full ({} free).{when}", bytes_label(f))))
-                    .when(db.hybrid, |r| {
-                        r.child(Button::new("low-limit").outline().label("Set a history limit…").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Settings))))
-                    })
-                    .when_some(kept, |r, k| {
-                        r.child(
-                            Button::new("low-kept")
-                                .outline()
-                                .label(format!("Remove kept copies ({})", bytes_label(k)))
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Migration))),
-                        )
-                    }),
-            );
-        }
-
-        // Who uses the disk.
-        if let (Some(free), Some(total)) = (free, total.filter(|t| *t > 0)) {
-            let other = total.saturating_sub(free).saturating_sub(pg_bytes).saturating_sub(ch_bytes);
-            let frac = |b: u64| (b as f32 / total as f32).clamp(0.0, 1.0);
-            // A blue that stands apart from the teal and the grey in both themes.
-            let ch_color: Hsla = if crate::theme::is_dark(cx) { rgb(0x64b5f6).into() } else { rgb(0x1e6fb8).into() };
-            let segs: Vec<(Hsla, u64, &str)> = [
-                (theme.primary, pg_bytes, "PostgreSQL"),
-                (ch_color, ch_bytes, "ClickHouse"),
-                (theme.muted_foreground.opacity(0.45), other, "Other files"),
-            ]
-            .into_iter()
-            .filter(|(_, b, name)| *b > 0 || *name == "PostgreSQL")
-            .collect();
-            let bar = h_flex()
-                .w_full()
-                .h(px(14.))
-                .rounded_full()
-                .overflow_hidden()
-                .bg(theme.secondary)
-                .children(segs.iter().map(|(c, b, _)| div().h_full().w(relative(frac(*b))).bg(*c)));
-            let legend = h_flex()
-                .gap_4()
-                .flex_wrap()
-                .text_size(px(13.))
-                .text_color(theme.muted_foreground)
-                .children(segs.iter().map(|(c, b, name)| {
-                    h_flex().gap_1p5().items_center().child(div().size(px(9.)).rounded_sm().bg(*c)).child(format!("{name} {}", bytes_label(*b)))
-                }))
-                .child(h_flex().gap_1p5().items_center().child(div().size(px(9.)).rounded_sm().bg(theme.secondary)).child(format!("Free {}", bytes_label(free))));
-            panel = panel
-                .child(div().pt_1().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(format!("{} ({})", drive.to_uppercase(), bytes_label(total))))
-                .child(bar)
-                .child(legend);
-        } else if let Some(f) = free {
-            panel = panel.child(ui::fact(theme, "Free disk", bytes_label(f)));
-        }
-        panel = panel
-            .child(ui::fact(theme, "Growth", match growth {
-                Some((per_day, days)) if per_day > 0 => format!("about {} a day over the last {days} day{}", bytes_label(per_day as u64), if days == 1 { "" } else { "s" }),
-                Some((_, days)) => format!("not growing over the last {days} day{}", if days == 1 { "" } else { "s" }),
-                None => "measured from tomorrow (one size reading a day)".into(),
-            }))
-            .when_some(lasts.clone(), |p, l| p.child(ui::fact(theme, "Disk lasts", format!("{l} at this rate"))));
-
-        // PostgreSQL.
-        let pg_col = {
-            let mut col = v_flex().flex_1().min_w(px(280.)).gap_2();
-            match (&db.pg, &db.pg_error) {
-                (Some(pg), _) => {
-                    col = col
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .child(ui::database_logo("postgresql", 16.))
-                                .when(pg.timescaledb.is_some(), |r| r.child(ui::database_logo("timescale", 16.)))
-                                .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(match &pg.timescaledb {
-                                    Some(ts) => format!("POSTGRESQL {} · TIMESCALEDB {ts}", pg.version),
-                                    None => format!("POSTGRESQL {}", pg.version),
-                                })),
-                        )
-                        .child(small_fact(theme, "Size", bytes_label(pg.db_bytes)))
-                        .child(small_fact(theme, "Connections", format!("{} open of {} allowed", pg.connections, pg.max_connections)))
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .text_sm()
-                                .child(div().w_32().flex_shrink_0().text_color(theme.muted_foreground).child("Last backup"))
-                                .child(div().flex_1().min_w_0().child(match &self.last_backup {
-                                    Some(b) => format!(
-                                        "{}{}",
-                                        crate::dbstatus::ago_label(&b.at, chrono::Local::now()),
-                                        b.bytes.map(|n| format!(", {}", bytes_label(n))).unwrap_or_default()
-                                    ),
-                                    None => "none from the Platform Manager".to_string(),
-                                }))
-                                .child(Button::new("backup-now").outline().label("Back up now").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Backup)))),
-                        )
-                        .child(div().pt_1().text_size(px(13.)).text_color(theme.muted_foreground).child("Largest tables"));
-                    let shown: Vec<&crate::dbstatus::Table> = pg.tables.iter().filter(|t| t.bytes > 0).take(5).collect();
-                    let max = shown.iter().map(|t| t.bytes).max().unwrap_or(1).max(1);
-                    for t in &shown {
-                        let (name, hint) = plain_table(&t.name).unwrap_or(("", ""));
-                        let name = if name.is_empty() { t.name.clone() } else { name.to_string() };
-                        col = col.child(table_row(theme, name, hint.to_string(), t.bytes as f32 / max as f32, bytes_label(t.bytes)));
-                    }
-                    let shown_bytes: u64 = shown.iter().map(|t| t.bytes).sum();
-                    let rest = pg.db_bytes.saturating_sub(shown_bytes);
-                    let rest_count = (pg.table_count as usize).saturating_sub(shown.len());
-                    if rest_count > 0 {
-                        col = col.child(table_row(theme, "Everything else".into(), format!("{rest_count} tables"), rest as f32 / max as f32, bytes_label(rest)));
-                    }
-                }
-                (None, Some(e)) => col = col.child(ui::outcome(theme, Tone::Warn, format!("Could not read PostgreSQL: {e}"))),
-                (None, None) => {}
-            }
-            col
+        let last_backup = match &self.last_backup {
+            Some(b) => format!("{}{}", crate::dbstatus::ago_label(&b.at, chrono::Local::now()), b.bytes.map(|n| format!(", {}", bytes_label(n))).unwrap_or_default()),
+            None => "none from the Platform Manager".to_string(),
         };
-
-        // ClickHouse.
-        let ch_col = db.hybrid.then(|| {
-            let mut col = v_flex().flex_1().min_w(px(280.)).gap_2();
-            match (&db.ch, &db.ch_error) {
-                (Some(ch), _) => {
-                    let health = match ch.broken_parts {
-                        Some(0) => ("No broken parts".to_string(), None),
-                        Some(n) => (format!("{n} broken part{} set aside", if n == 1 { "" } else { "s" }), Some(Tone::Warn)),
-                        None => ("Not checked".to_string(), None),
-                    };
-                    col = col
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .child(ui::database_logo("clickhouse", 14.))
-                                .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(format!("CLICKHOUSE {}", ch.version))),
-                        )
-                        .child(small_fact(theme, "Size", if ch.uncompressed_bytes > ch.disk_bytes {
-                            format!("{} on disk ({} before compression)", bytes_label(ch.disk_bytes), bytes_label(ch.uncompressed_bytes))
-                        } else {
-                            format!("{} on disk", bytes_label(ch.disk_bytes))
-                        }))
-                        .child(small_fact(theme, "Telemetry history", format!("{} values", count_label(ch.rows))))
-                        .children(match (ch.first_ms, ch.last_ms) {
-                            (Some(a), Some(b)) => Some(small_fact(theme, "From, to", format!("{} to {}", day_label(a), day_label(b)))),
-                            _ => None,
-                        })
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .text_sm()
-                                .child(div().w_32().flex_shrink_0().text_color(theme.muted_foreground).child("Kept for"))
-                                .child(div().flex_1().child(match ch.ttl_days {
-                                    Some(d) => format!("{d} days"),
-                                    None => "forever".into(),
-                                }))
-                                .child(Button::new("history-limit").outline().label("Set a limit…").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Settings)))),
-                        )
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .text_sm()
-                                .child(div().w_32().flex_shrink_0().text_color(theme.muted_foreground).child("Health"))
-                                .child(match health.1 {
-                                    Some(tone) => ui::pill(theme, tone, health.0),
-                                    None => div().child(health.0),
-                                }),
-                        );
-                    if !ch.months.is_empty() {
-                        col = col.child(div().pt_1().text_size(px(13.)).text_color(theme.muted_foreground).child("History by month"));
-                        let max = ch.months.iter().map(|(_, b)| *b).max().unwrap_or(1).max(1);
-                        let this_month = chrono::Local::now().format("%Y%m").to_string();
-                        for (p, b) in ch.months.iter().take(3) {
-                            let label = if p.trim_matches('\'') == this_month { format!("{} so far", month_label(p)) } else { month_label(p) };
-                            col = col.child(table_row(theme, label, String::new(), *b as f32 / max as f32, bytes_label(*b)));
-                        }
-                        let older: Vec<&(String, u64)> = ch.months.iter().skip(3).collect();
-                        if !older.is_empty() {
-                            let bytes: u64 = older.iter().map(|(_, b)| *b).sum();
-                            col = col.child(table_row(theme, "Older".into(), format!("{} months", older.len()), bytes as f32 / max as f32, bytes_label(bytes)));
-                        }
-                    }
-                }
-                (None, Some(e)) => col = col.child(ui::outcome(theme, Tone::Warn, format!("Could not read ClickHouse: {e}"))),
-                (None, None) => {}
-            }
-            col
-        });
-        panel.child(h_flex().pt_2().gap_8().items_start().flex_wrap().child(pg_col).children(ch_col))
+        db_details(
+            theme,
+            panel,
+            db,
+            &disk_name(record),
+            Some(crate::dbstatus::growth_per_day()),
+            last_backup,
+            DbActions { set_limit: Some(go(Go::Settings)), remove_kept: Some(go(Go::Migration)), back_up: Some(go(Go::Backup)) },
+            crate::theme::is_dark(cx),
+        )
     }
 
     fn look_for_existing(&mut self, cx: &mut Context<Self>) {
@@ -709,3 +508,242 @@ impl StatusPage {
             )
     }
 }
+
+/// What the database details may offer, each where the page can do it.
+pub(crate) struct DbActions {
+    pub set_limit: Option<std::rc::Rc<dyn Fn(&mut App)>>,
+    pub remove_kept: Option<std::rc::Rc<dyn Fn(&mut App)>>,
+    pub back_up: Option<std::rc::Rc<dyn Fn(&mut App)>>,
+}
+
+/// The Database panel's body: the disk, growth, PostgreSQL and ClickHouse.
+/// The same on this computer and on a remote server.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn db_details(
+    theme: &gpui_kit::component::Theme,
+    panel: Div,
+    db: &crate::dbstatus::DbStatus,
+    drive: &str,
+    // None: not measured there (the line is left out).
+    growth: Option<Option<(i64, i64)>>,
+    last_backup: String,
+    actions: DbActions,
+    dark: bool,
+) -> Div {
+    use crate::dbstatus::{CRITICAL_DISK, LOW_DISK, bytes_label, count_label, day_label, month_label, plain_table};
+    let mut panel = panel;
+        let pg_bytes = db.pg.as_ref().map(|p| p.db_bytes).unwrap_or(0);
+    let ch_bytes = db.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0);
+    let free = db.pg.as_ref().and_then(|p| p.free_bytes);
+    let total = db.pg.as_ref().and_then(|p| p.disk_total);
+    let lasts = match (free, growth.flatten()) {
+        (Some(f), Some((per_day, _))) => crate::dbstatus::lasts_label(f, per_day),
+        _ => None,
+    };
+
+    // G3: the disk is running low, with the two ways to free space.
+    if let Some(f) = free.filter(|f| *f < LOW_DISK) {
+        let tone = if f < CRITICAL_DISK { Tone::Bad } else { Tone::Warn };
+        let (bg, fg) = match tone {
+            Tone::Bad => (theme.danger, theme.danger_foreground),
+            _ => (theme.warning, theme.warning_foreground),
+        };
+        let when = match &lasts {
+            Some(l) => format!(" At this rate it is full in {}, and SENTIENT stops storing data when it is.", l.trim_start_matches("about ").replace("less than a day", "less than a day")),
+            None => " SENTIENT stops storing data when it is full.".to_string(),
+        };
+        let kept = db.kept_bytes.filter(|b| *b > 0);
+        panel = panel.child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .flex_wrap()
+                .px_3()
+                .py_2()
+                .rounded(theme.radius)
+                .bg(bg)
+                .text_color(fg)
+                .text_sm()
+                .child(div().flex_1().min_w(px(240.)).child(format!("{drive} is almost full ({} free).{when}", bytes_label(f))))
+                .when(db.hybrid && actions.set_limit.is_some(), |r| {
+                    let set_limit = actions.set_limit.clone().unwrap();
+                    r.child(Button::new("low-limit").outline().label("Set a history limit…").on_click({ let f = set_limit.clone(); move |_, _, cx| f(cx) }))
+                })
+                .when_some(kept.zip(actions.remove_kept.clone()), |r, (k, remove_kept)| {
+                    r.child(
+                        Button::new("low-kept")
+                            .outline()
+                            .label(format!("Remove kept copies ({})", bytes_label(k)))
+                            .on_click(move |_, _, cx| remove_kept(cx)),
+                    )
+                }),
+        );
+    }
+
+    // Who uses the disk.
+    if let (Some(free), Some(total)) = (free, total.filter(|t| *t > 0)) {
+        let other = total.saturating_sub(free).saturating_sub(pg_bytes).saturating_sub(ch_bytes);
+        let frac = |b: u64| (b as f32 / total as f32).clamp(0.0, 1.0);
+        // A blue that stands apart from the teal and the grey in both themes.
+        let ch_color: Hsla = if dark { rgb(0x64b5f6).into() } else { rgb(0x1e6fb8).into() };
+        let segs: Vec<(Hsla, u64, &str)> = [
+            (theme.primary, pg_bytes, "PostgreSQL"),
+            (ch_color, ch_bytes, "ClickHouse"),
+            (theme.muted_foreground.opacity(0.45), other, "Other files"),
+        ]
+        .into_iter()
+        .filter(|(_, b, name)| *b > 0 || *name == "PostgreSQL")
+        .collect();
+        let bar = h_flex()
+            .w_full()
+            .h(px(14.))
+            .rounded_full()
+            .overflow_hidden()
+            .bg(theme.secondary)
+            .children(segs.iter().map(|(c, b, _)| div().h_full().w(relative(frac(*b))).bg(*c)));
+        let legend = h_flex()
+            .gap_4()
+            .flex_wrap()
+            .text_size(px(13.))
+            .text_color(theme.muted_foreground)
+            .children(segs.iter().map(|(c, b, name)| {
+                h_flex().gap_1p5().items_center().child(div().size(px(9.)).rounded_sm().bg(*c)).child(format!("{name} {}", bytes_label(*b)))
+            }))
+            .child(h_flex().gap_1p5().items_center().child(div().size(px(9.)).rounded_sm().bg(theme.secondary)).child(format!("Free {}", bytes_label(free))));
+        panel = panel
+            .child(div().pt_1().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(format!("{} ({})", drive.to_uppercase(), bytes_label(total))))
+            .child(bar)
+            .child(legend);
+    } else if let Some(f) = free {
+        panel = panel.child(ui::fact(theme, "Free disk", bytes_label(f)));
+    }
+    panel = panel
+        .when_some(growth, |p, growth| p.child(ui::fact(theme, "Growth", match growth {
+            Some((per_day, days)) if per_day > 0 => format!("about {} a day over the last {days} day{}", bytes_label(per_day as u64), if days == 1 { "" } else { "s" }),
+            Some((_, days)) => format!("not growing over the last {days} day{}", if days == 1 { "" } else { "s" }),
+            None => "measured from tomorrow (one size reading a day)".into(),
+        })))
+        .when_some(lasts.clone(), |p, l| p.child(ui::fact(theme, "Disk lasts", format!("{l} at this rate"))));
+
+    // PostgreSQL.
+    let pg_col = {
+        let mut col = v_flex().flex_1().min_w(px(280.)).gap_2();
+        match (&db.pg, &db.pg_error) {
+            (Some(pg), _) => {
+                col = col
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(ui::database_logo("postgresql", 16.))
+                            .when(pg.timescaledb.is_some(), |r| r.child(ui::database_logo("timescale", 16.)))
+                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(match &pg.timescaledb {
+                                Some(ts) => format!("POSTGRESQL {} · TIMESCALEDB {ts}", pg.version),
+                                None => format!("POSTGRESQL {}", pg.version),
+                            })),
+                    )
+                    .child(small_fact(theme, "Size", bytes_label(pg.db_bytes)))
+                    .child(small_fact(theme, "Connections", format!("{} open of {} allowed", pg.connections, pg.max_connections)))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .text_sm()
+                            .child(div().w_32().flex_shrink_0().text_color(theme.muted_foreground).child("Last backup"))
+                            .child(div().flex_1().min_w_0().child(last_backup.clone()))
+                            .when_some(actions.back_up.clone(), |r, f| r.child(Button::new("backup-now").outline().label("Back up now").on_click(move |_, _, cx| f(cx)))),
+                    )
+                    .child(div().pt_1().text_size(px(13.)).text_color(theme.muted_foreground).child("Largest tables"));
+                let shown: Vec<&crate::dbstatus::Table> = pg.tables.iter().filter(|t| t.bytes > 0).take(5).collect();
+                let max = shown.iter().map(|t| t.bytes).max().unwrap_or(1).max(1);
+                for t in &shown {
+                    let (name, hint) = plain_table(&t.name).unwrap_or(("", ""));
+                    let name = if name.is_empty() { t.name.clone() } else { name.to_string() };
+                    col = col.child(table_row(theme, name, hint.to_string(), t.bytes as f32 / max as f32, bytes_label(t.bytes)));
+                }
+                let shown_bytes: u64 = shown.iter().map(|t| t.bytes).sum();
+                let rest = pg.db_bytes.saturating_sub(shown_bytes);
+                let rest_count = (pg.table_count as usize).saturating_sub(shown.len());
+                if rest_count > 0 {
+                    col = col.child(table_row(theme, "Everything else".into(), format!("{rest_count} tables"), rest as f32 / max as f32, bytes_label(rest)));
+                }
+            }
+            (None, Some(e)) => col = col.child(ui::outcome(theme, Tone::Warn, format!("Could not read PostgreSQL: {e}"))),
+            (None, None) => {}
+        }
+        col
+    };
+
+    // ClickHouse.
+    let ch_col = db.hybrid.then(|| {
+        let mut col = v_flex().flex_1().min_w(px(280.)).gap_2();
+        match (&db.ch, &db.ch_error) {
+            (Some(ch), _) => {
+                let health = match ch.broken_parts {
+                    Some(0) => ("No broken parts".to_string(), None),
+                    Some(n) => (format!("{n} broken part{} set aside", if n == 1 { "" } else { "s" }), Some(Tone::Warn)),
+                    None => ("Not checked".to_string(), None),
+                };
+                col = col
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(ui::database_logo("clickhouse", 14.))
+                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(format!("CLICKHOUSE {}", ch.version))),
+                    )
+                    .child(small_fact(theme, "Size", if ch.uncompressed_bytes > ch.disk_bytes {
+                        format!("{} on disk ({} before compression)", bytes_label(ch.disk_bytes), bytes_label(ch.uncompressed_bytes))
+                    } else {
+                        format!("{} on disk", bytes_label(ch.disk_bytes))
+                    }))
+                    .child(small_fact(theme, "Telemetry history", format!("{} values", count_label(ch.rows))))
+                    .children(match (ch.first_ms, ch.last_ms) {
+                        (Some(a), Some(b)) => Some(small_fact(theme, "From, to", format!("{} to {}", day_label(a), day_label(b)))),
+                        _ => None,
+                    })
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .text_sm()
+                            .child(div().w_32().flex_shrink_0().text_color(theme.muted_foreground).child("Kept for"))
+                            .child(div().flex_1().child(match ch.ttl_days {
+                                Some(d) => format!("{d} days"),
+                                None => "forever".into(),
+                            }))
+                            .when_some(actions.set_limit.clone(), |r, f| r.child(Button::new("history-limit").outline().label("Set a limit…").on_click(move |_, _, cx| f(cx)))),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .text_sm()
+                            .child(div().w_32().flex_shrink_0().text_color(theme.muted_foreground).child("Health"))
+                            .child(match health.1 {
+                                Some(tone) => ui::pill(theme, tone, health.0),
+                                None => div().child(health.0),
+                            }),
+                    );
+                if !ch.months.is_empty() {
+                    col = col.child(div().pt_1().text_size(px(13.)).text_color(theme.muted_foreground).child("History by month"));
+                    let max = ch.months.iter().map(|(_, b)| *b).max().unwrap_or(1).max(1);
+                    let this_month = chrono::Local::now().format("%Y%m").to_string();
+                    for (p, b) in ch.months.iter().take(3) {
+                        let label = if p.trim_matches('\'') == this_month { format!("{} so far", month_label(p)) } else { month_label(p) };
+                        col = col.child(table_row(theme, label, String::new(), *b as f32 / max as f32, bytes_label(*b)));
+                    }
+                    let older: Vec<&(String, u64)> = ch.months.iter().skip(3).collect();
+                    if !older.is_empty() {
+                        let bytes: u64 = older.iter().map(|(_, b)| *b).sum();
+                        col = col.child(table_row(theme, "Older".into(), format!("{} months", older.len()), bytes as f32 / max as f32, bytes_label(bytes)));
+                    }
+                }
+            }
+            (None, Some(e)) => col = col.child(ui::outcome(theme, Tone::Warn, format!("Could not read ClickHouse: {e}"))),
+            (None, None) => {}
+        }
+        col
+    });
+    panel.child(h_flex().pt_2().gap_8().items_start().flex_wrap().child(pg_col).children(ch_col))
+    }

@@ -36,12 +36,37 @@ pub struct MigrationPage {
 
 impl EventEmitter<RecordChanged> for MigrationPage {}
 
-fn describe(flavor: Flavor) -> &'static str {
+fn describe(flavor: Flavor, windows: bool) -> &'static str {
     match flavor {
         Flavor::Stock => "Everything in PostgreSQL. Simplest; suits small sites.",
         Flavor::Timescaledb => "PostgreSQL with TimescaleDB: history compressed and in time chunks.",
-        Flavor::Clickhouse => "History in ClickHouse (Docker in WSL2), everything else in PostgreSQL. For large sites.",
+        Flavor::Clickhouse if windows => "History in ClickHouse (Docker in WSL2), everything else in PostgreSQL. For large sites.",
+        Flavor::Clickhouse => "History in ClickHouse, everything else in PostgreSQL. For large sites.",
     }
+}
+
+/// The database types to change to, as choice cards. Shared with a remote
+/// server's Migration.
+pub(crate) fn target_cards(theme: &gpui_kit::component::Theme, id: &str, targets: &[Flavor], selected: Option<usize>, windows: bool, pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
+    v_flex().gap_2().children(targets.iter().enumerate().map(|(i, f)| {
+        let pick = pick.clone();
+        ui::radio_card(theme, SharedString::from(format!("{id}target-{i}")), flavor_label(*f), describe(*f, windows), selected == Some(i)).on_click(move |_, _, cx| pick(i, cx))
+    }))
+}
+
+/// What changing the database does, step by step.
+pub(crate) fn steps_text(theme: &gpui_kit::component::Theme, clickhouse_on_windows: bool) -> Div {
+    v_flex()
+        .gap_1()
+        .text_sm()
+        .text_color(theme.muted_foreground)
+        .child("1. A full backup, history included, is written to the backups folder of the installation.")
+        .child("2. SENTIENT stops for about a minute and starts again on the new type.")
+        .child("3. The history from before the switch is then copied month by month while SENTIENT runs; charts fill in as it goes.")
+        .child("4. The old history is kept where it was until you remove it.")
+        .when(clickhouse_on_windows, |c| {
+            c.child("ClickHouse is installed first (WSL2 and Docker under a hidden service account); if Windows must restart for WSL2, nothing is changed and you start again afterwards.")
+        })
 }
 
 impl MigrationPage {
@@ -189,31 +214,21 @@ impl Render for MigrationPage {
             Ok(targets) => ui::panel(&theme)
                 .child(ui::fact(&theme, "Database now", flavor_label(current)))
                 .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Change to"))
-                .child(
-                    v_flex().gap_2().children(targets.iter().enumerate().map(|(i, f)| {
-                        let locked = busy || unfinished.is_some();
-                        ui::radio_card(&theme, SharedString::from(format!("target-{i}")), flavor_label(*f), describe(*f), self.target == Some(i)).on_click(cx.listener(move |this, _, _, cx| {
-                            if !locked {
+                .child({
+                    let locked = busy || unfinished.is_some();
+                    let this = cx.entity().downgrade();
+                    target_cards(&theme, "", targets, self.target, cfg!(windows), std::rc::Rc::new(move |i, cx| {
+                        if !locked {
+                            this.update(cx, |this, cx| {
                                 this.target = Some(i);
                                 this.confirm = false;
                                 cx.notify();
-                            }
-                        }))
-                    })),
-                )
-                .child(
-                    v_flex()
-                        .gap_1()
-                        .text_sm()
-                        .text_color(theme.muted_foreground)
-                        .child("1. A full backup, history included, is written to the backups folder of the installation.")
-                        .child("2. SENTIENT stops for about a minute and starts again on the new type.")
-                        .child("3. The history from before the switch is then copied month by month while SENTIENT runs; charts fill in as it goes.")
-                        .child("4. The old history is kept where it was until you remove it.")
-                        .when(chosen == Some(Flavor::Clickhouse), |c| {
-                            c.child("ClickHouse is installed first (WSL2 and Docker under a hidden service account); if Windows must restart for WSL2, nothing is changed and you start again afterwards.")
-                        }),
-                )
+                            })
+                            .ok();
+                        }
+                    }))
+                })
+                .child(steps_text(&theme, cfg!(windows) && chosen == Some(Flavor::Clickhouse)))
                 .child(
                     h_flex()
                         .gap_2()

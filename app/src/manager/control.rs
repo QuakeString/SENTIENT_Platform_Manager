@@ -224,20 +224,9 @@ impl ControlPage {
     /// Stopping takes every device connection down, so it is confirmed.
     fn confirm_stop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
-        window.open_alert_dialog(cx, move |dialog, _, _| {
-            let this = this.clone();
-            dialog
-                .title("Stop SENTIENT?")
-                .description(
-                    "Devices lose their connection and dashboards stop updating until SENTIENT is started again.",
-                )
-                .confirm()
-                .ok_text("Stop")
-                .on_ok(move |_, _, cx| {
-                    this.update(cx, |page, cx| page.run("stop", cx)).ok();
-                    true
-                })
-        });
+        confirm_stop(window, cx, std::rc::Rc::new(move |cx| {
+            this.update(cx, |page, cx| page.run("stop", cx)).ok();
+        }));
     }
 }
 
@@ -263,31 +252,23 @@ impl Render for ControlPage {
         let log: Vec<SharedString> = job.log().to_vec();
         page.child(
             ui::panel(&theme)
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Button::new("start")
-                                .primary()
-                                .label("Start")
-                                .disabled(busy)
-                                .on_click(cx.listener(|this, _, _, cx| this.run("start", cx))),
-                        )
-                        .child(
-                            Button::new("restart")
-                                .outline()
-                                .label("Restart")
-                                .disabled(busy)
-                                .on_click(cx.listener(|this, _, _, cx| this.run("restart", cx))),
-                        )
-                        .child(
-                            Button::new("stop")
-                                .outline()
-                                .label("Stop")
-                                .disabled(busy)
-                                .on_click(cx.listener(|this, _, window, cx| this.confirm_stop(window, cx))),
-                        ),
-                )
+                .child({
+                    let this = cx.entity().downgrade();
+                    let (t1, t2, t3) = (this.clone(), this.clone(), this);
+                    control_row(
+                        "",
+                        busy,
+                        std::rc::Rc::new(move |_, cx| {
+                            t1.update(cx, |p, cx| p.run("start", cx)).ok();
+                        }),
+                        std::rc::Rc::new(move |_, cx| {
+                            t2.update(cx, |p, cx| p.run("restart", cx)).ok();
+                        }),
+                        std::rc::Rc::new(move |w, cx| {
+                            t3.update(cx, |p, cx| p.confirm_stop(w, cx)).ok();
+                        }),
+                    )
+                })
                 .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
                 .children(log.into_iter().map(|line| {
                     div().text_sm().text_color(theme.muted_foreground).child(line)
@@ -416,4 +397,37 @@ impl Render for ControlPage {
             )
         })
     }
+}
+
+/// Stopping takes every device connection down, so it is confirmed. Shared
+/// with a remote server's Control.
+pub(crate) fn confirm_stop(window: &mut Window, cx: &mut App, stop: std::rc::Rc<dyn Fn(&mut App)>) {
+    window.open_alert_dialog(cx, move |dialog, _, _| {
+        let stop = stop.clone();
+        dialog
+            .title("Stop SENTIENT?")
+            .description("Devices lose their connection and dashboards stop updating until SENTIENT is started again.")
+            .confirm()
+            .ok_text("Stop")
+            .on_ok(move |_, _, cx| {
+                stop(cx);
+                true
+            })
+    });
+}
+
+/// Start, Restart and Stop, in that order and style, on this computer and
+/// on a remote server.
+pub(crate) fn control_row(
+    id: &str,
+    busy: bool,
+    start: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+    restart: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+    stop: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+) -> Div {
+    h_flex()
+        .gap_2()
+        .child(Button::new(SharedString::from(format!("{id}start"))).primary().label("Start").disabled(busy).on_click(move |_, w, cx| start(w, cx)))
+        .child(Button::new(SharedString::from(format!("{id}restart"))).outline().label("Restart").disabled(busy).on_click(move |_, w, cx| restart(w, cx)))
+        .child(Button::new(SharedString::from(format!("{id}stop"))).outline().label("Stop").disabled(busy).on_click(move |_, w, cx| stop(w, cx)))
 }

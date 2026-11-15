@@ -564,6 +564,9 @@ pub struct RemoteStatus {
     /// A job running there now (started earlier, maybe from a closed window).
     #[serde(default)]
     pub running_job: Option<String>,
+    /// SENTIENT's web port there (Open SENTIENT).
+    #[serde(default)]
+    pub http_port: Option<u16>,
 }
 
 /// One service or container on the server (Status and Control).

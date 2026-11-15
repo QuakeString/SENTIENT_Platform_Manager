@@ -6,7 +6,7 @@
 
 mod about;
 mod backup;
-mod control;
+pub(crate) mod control;
 mod gateway;
 mod instances;
 pub(crate) mod logs;
@@ -15,7 +15,7 @@ mod remote_pages;
 mod repair;
 mod settings;
 pub(crate) mod setting_field;
-mod status;
+pub(crate) mod status;
 pub(crate) mod update;
 
 use gpui_kit::assets::IconName as Lucide;
