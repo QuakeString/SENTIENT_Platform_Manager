@@ -656,11 +656,11 @@ impl InstancesPage {
             let hex = c.to_string();
             div()
                 .id(SharedString::from(format!("swatch-{c}")))
-                .size(px(22.))
+                .size(px(24.))
                 .rounded_full()
                 .bg(rgb(remote::parse_hex(c).unwrap_or(0)))
                 .border_2()
-                .border_color(if selected { theme.foreground } else { theme.background })
+                .border_color(if selected { theme.primary } else { theme.background })
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if let Some(f) = &mut this.form {
@@ -671,69 +671,104 @@ impl InstancesPage {
                     cx.notify();
                 }))
         }));
+        // One grid for every row: label (with its help) | control, so all
+        // controls share the same left and right edges.
+        let row = |label: &'static str, help_id: &'static str, help_text: Option<&'static str>, control: AnyElement| {
+            h_flex()
+                .gap_3()
+                .items_center()
+                .min_h(px(36.))
+                .child(
+                    h_flex()
+                        .w(px(150.))
+                        .flex_shrink_0()
+                        .gap_1()
+                        .items_center()
+                        .child(div().text_sm().child(label))
+                        .when_some(help_text, |l, t| l.child(help(help_id, t))),
+                )
+                .child(div().flex_1().min_w_0().child(control))
+        };
+        let note = |text: String| h_flex().child(div().w(px(150.)).flex_shrink_0()).child(div().pl_3().text_xs().text_color(theme.muted_foreground).child(text));
+        let os_help = if f.os == Os::Windows {
+            "Windows 10/11 or Windows Server 2019 and later, with OpenSSH Server turned on:\n1. Settings, System, Optional features, Add a feature: OpenSSH Server (or in PowerShell as administrator: Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0).\n2. Start it and start it with Windows: Start-Service sshd; Set-Service sshd -StartupType Automatic.\n3. Allow TCP port 22 in Windows Defender Firewall (the feature adds the rule).\n4. Sign in with an account in the Administrators group. For a key: put its public key in C:\\ProgramData\\ssh\\administrators_authorized_keys."
+        } else {
+            "Ubuntu, Debian, Red Hat, Rocky, Alma, Fedora, openSUSE and others, with an SSH server (openssh-server):\n1. Install it if missing: sudo apt install openssh-server (Debian, Ubuntu) or sudo dnf install openssh-server (Red Hat family).\n2. Start it with the system: sudo systemctl enable --now ssh (sshd on Red Hat).\n3. Allow TCP port 22 in the firewall if one is on.\n4. Sign in as root or a user that may use sudo. For a key: add its public key to ~/.ssh/authorized_keys of that user."
+        };
+        let found = f
+            .editing
+            .as_ref()
+            .and_then(|id| self.instance(id))
+            .and_then(|i| i.detected)
+            .map(|d| format!("Found when connecting: {} {}", d.os_name, d.arch))
+            .unwrap_or_else(|| "Connecting checks the system and keeps what it finds.".into());
         let mut panel = v_flex()
             .gap_2()
-            .child(div().text_sm().text_color(theme.muted_foreground).child("A computer running SENTIENT that this Platform Manager reaches over SSH."))
-            .child(field("Name", Input::new(&f.name).into_any_element()))
-            .child(field(
+            .child(div().pb_1().text_sm().text_color(theme.muted_foreground).child("A computer running SENTIENT that this Platform Manager reaches over SSH."))
+            .child(row("Name", "", None, Input::new(&f.name).into_any_element()))
+            .child(row(
                 "Address",
-                h_flex().gap_2().child(div().flex_1().child(Input::new(&f.host))).child(div().text_sm().child("Port")).child(div().w_20().child(Input::new(&f.port))).into_any_element(),
+                "",
+                None,
+                h_flex().gap_2().items_center().child(div().flex_1().min_w_0().child(Input::new(&f.host))).child(div().text_sm().child("Port")).child(div().w(px(84.)).child(Input::new(&f.port))).into_any_element(),
             ))
-            .child(field(
+            .child(row(
                 "System",
+                "help-os",
+                Some(os_help),
                 h_flex()
-                    .gap_2()
+                    .gap_3()
                     .items_center()
                     .child(
-                        div().flex_none().child(RadioGroup::horizontal("os")
-                            .children(["Linux", "Windows"])
-                            .selected_index(Some(if f.os == Os::Windows { 1 } else { 0 }))
-                            .on_change(cx.listener(|this, v: &usize, _, cx| {
+                        ui::seg_track(&theme)
+                            .child(ui::seg_item(&theme, "os-linux", "Linux", f.os == Os::Linux).on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(f) = &mut this.form {
-                                    f.os = if *v == 1 { Os::Windows } else { Os::Linux };
+                                    f.os = Os::Linux;
+                                }
+                                cx.notify();
+                            })))
+                            .child(ui::seg_item(&theme, "os-windows", "Windows", f.os == Os::Windows).on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(f) = &mut this.form {
+                                    f.os = Os::Windows;
                                 }
                                 cx.notify();
                             }))),
                     )
-                    .child(help(
-                        "help-os",
-                        if f.os == Os::Windows {
-                            "Windows 10/11 or Windows Server 2019 and later, with OpenSSH Server turned on:\n1. Settings, System, Optional features, Add a feature: OpenSSH Server (or in PowerShell as administrator: Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0).\n2. Start it and start it with Windows: Start-Service sshd; Set-Service sshd -StartupType Automatic.\n3. Allow TCP port 22 in Windows Defender Firewall (the feature adds the rule).\n4. Sign in with an account in the Administrators group. For a key: put its public key in C:\\ProgramData\\ssh\\administrators_authorized_keys."
-                        } else {
-                            "Ubuntu, Debian, Red Hat, Rocky, Alma, Fedora, openSUSE and others, with an SSH server (openssh-server):\n1. Install it if missing: sudo apt install openssh-server (Debian, Ubuntu) or sudo dnf install openssh-server (Red Hat family).\n2. Start it with the system: sudo systemctl enable --now ssh (sshd on Red Hat).\n3. Allow TCP port 22 in the firewall if one is on.\n4. Sign in as root or a user that may use sudo. For a key: add its public key to ~/.ssh/authorized_keys of that user."
-                        },
-                    ))
                     .child(Button::new("os-guide").ghost().small().label("Setup guide").icon(IconName::ExternalLink).on_click({
                         let anchor = if f.os == Os::Windows { "windows-servers" } else { "linux-servers" };
                         move |_, _, cx| ui::open_url(&format!("https://sentient.invenia.in/docs/installation/remote-instances/#{anchor}"), cx)
                     }))
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(
-                        f.editing
-                            .as_ref()
-                            .and_then(|id| self.instance(id))
-                            .and_then(|i| i.detected)
-                            .map(|d| format!("Found: {} {}", d.os_name, d.arch))
-                            .unwrap_or_else(|| "Checked when connecting".into()),
-                    ))
                     .into_any_element(),
             ))
-            .child(field("User", h_flex().gap_1().items_center().child(div().flex_1().child(Input::new(&f.user))).child(help("help-user", "An account on the server that may use sudo, or root. The Platform Manager runs its work there as an administrator.")).into_any_element()))
-            .child(field(
+            .child(note(found))
+            .child(row("User", "help-user", Some("An account on the server that may use sudo, or root. The Platform Manager runs its work there as an administrator."), Input::new(&f.user).into_any_element()))
+            .child(row(
                 "Sign in with",
-                RadioGroup::horizontal("auth")
-                    .children(["Key file", "Password"])
-                    .selected_index(Some(if f.auth == Auth::Key { 0 } else { 1 }))
-                    .on_change(cx.listener(|this, v: &usize, _, cx| {
-                        if let Some(f) = &mut this.form {
-                            f.auth = if *v == 0 { Auth::Key } else { Auth::Password };
-                        }
-                        cx.notify();
-                    }))
+                "",
+                None,
+                h_flex()
+                    .child(
+                        ui::seg_track(&theme)
+                            .child(ui::seg_item(&theme, "auth-key", "Key file", f.auth == Auth::Key).on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(f) = &mut this.form {
+                                    f.auth = Auth::Key;
+                                }
+                                cx.notify();
+                            })))
+                            .child(ui::seg_item(&theme, "auth-password", "Password", f.auth == Auth::Password).on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(f) = &mut this.form {
+                                    f.auth = Auth::Password;
+                                }
+                                cx.notify();
+                            }))),
+                    )
                     .into_any_element(),
             ))
             .when(f.auth == Auth::Key, |p| {
-                p.child(field(
+                p.child(row(
                     "Key file",
+                    "",
+                    None,
                     h_flex()
                         .gap_2()
                         .child(div().flex_1().min_w_0().child(Input::new(&f.key_file)))
@@ -741,38 +776,32 @@ impl InstancesPage {
                         .into_any_element(),
                 ))
             })
-            .child(field(
+            .child(row(
                 if f.auth == Auth::Key { "Key passphrase" } else { "Password" },
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .child(div().flex_1().child(Input::new(&f.secret).mask_toggle()))
-                    .child(help("help-secret", "Kept in this computer's secret store (Windows: sealed to this computer; Linux: the desktop keyring, else until the Platform Manager closes). It is never written to the instance list."))
-                    .into_any_element(),
+                "help-secret",
+                Some("Kept in this computer's secret store (Windows: sealed to this computer; Linux: the desktop keyring, else until the Platform Manager closes). It is never written to the instance list."),
+                Input::new(&f.secret).mask_toggle().into_any_element(),
             ))
             .when(f.auth == Auth::Key && f.os == Os::Linux, |p| {
-                p.child(field(
+                p.child(row(
                     "sudo password",
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .child(div().flex_1().child(Input::new(&f.sudo_secret).mask_toggle()))
-                        .child(help("help-sudo", "The password sudo asks for on the server, when the user is not root and sudo is not set up without one. Kept in the secret store like the passphrase."))
-                        .into_any_element(),
+                    "help-sudo",
+                    Some("The password sudo asks for on the server, when the user is not root and sudo is not set up without one. Kept in the secret store like the passphrase."),
+                    Input::new(&f.sudo_secret).mask_toggle().into_any_element(),
                 ))
             })
-            .child(field(
+            .child(row(
                 "Colour",
+                "help-colour",
+                Some("The top bar takes this colour while the instance is open, so it is clear which computer you are working on. This computer is always SENTIENT teal."),
                 h_flex()
                     .gap_3()
                     .items_center()
                     .child(swatches)
-                    .child(div().w(px(1.)).h(px(20.)).bg(theme.border))
+                    .child(div().w(px(1.)).h(px(22.)).bg(theme.border))
                     .child(ColorPicker::new(&f.color_picker).featured_colors(remote::PALETTE.iter().map(|c| rgb(remote::parse_hex(c).unwrap_or(0)).into()).collect()))
-                    .child(help("help-colour", "The top bar takes this colour while the instance is open, so it is clear which computer you are working on. This computer is always SENTIENT teal."))
                     .into_any_element(),
-            ))
-;
+            ));
         if let Some(e) = &f.error {
             panel = panel.child(ui::outcome(&theme, Tone::Bad, e.clone()));
         }
@@ -801,7 +830,10 @@ impl InstancesPage {
         }
         panel = panel.child(
             h_flex()
-                .pt_2()
+                .mt_2()
+                .pt_3()
+                .border_t_1()
+                .border_color(theme.border)
                 .gap_2()
                 .items_center()
                 .child(div().flex_1().text_sm().text_color(theme.muted_foreground).child(match f.stage {
@@ -859,9 +891,11 @@ impl InstancesPage {
             let title = if self.form.as_ref().is_some_and(|f| f.editing.is_some()) { "Edit instance" } else { "Add a remote instance" };
             let slot = cx.new(|cx| Slot::new(page.clone(), SlotKind::Form, cx));
             let p2 = page.clone();
-            window.open_dialog(cx, move |d, _, _| {
+            let top = dialog_top(window, 640.);
+            window.open_dialog(cx, move |d, window, _| {
                 let p3 = p2.clone();
-                d.title(title).w(px(700.)).child(slot.clone()).on_close(move |_, _, cx| {
+                let w = (window.viewport_size().width - px(48.)).min(px(620.));
+                d.title(title).w(w).margin_top(top).overlay(true).child(slot.clone()).on_close(move |_, _, cx| {
                     p3.update(cx, |p, cx| {
                         p.form = None;
                         p.form_dialog = false;
@@ -878,9 +912,11 @@ impl InstancesPage {
                 self.job_dialog = true;
                 let slot = cx.new(|cx| Slot::new(page.clone(), SlotKind::Job, cx));
                 let p2 = page.clone();
-                window.open_dialog(cx, move |d, _, _| {
+                let top = dialog_top(window, 320.);
+                window.open_dialog(cx, move |d, window, _| {
                     let p3 = p2.clone();
-                    d.title(label.clone()).w(px(620.)).child(slot.clone()).on_close(move |_, _, cx| {
+                    let w = (window.viewport_size().width - px(48.)).min(px(560.));
+                    d.title(label.clone()).w(w).margin_top(top).overlay(true).child(slot.clone()).on_close(move |_, _, cx| {
                         p3.update(cx, |p, cx| {
                             p.job_dialog = false;
                             if !p.job.read(cx).is_running() {
@@ -1247,7 +1283,7 @@ impl Render for Slot {
         });
         // Scrolls inside when the window is short.
         let max_h = (window.viewport_size().height - px(200.)).max(px(220.));
-        div().id("slot").max_h(max_h).overflow_y_scroll().children(body)
+        div().id("slot").max_h(max_h).overflow_y_scroll().border_t_1().border_color(cx.theme().border).pt_3().children(body)
     }
 }
 
@@ -1256,4 +1292,12 @@ fn hex_of(c: Hsla) -> String {
     let r: Rgba = c.into();
     let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     format!("#{:02x}{:02x}{:02x}", b(r.r), b(r.g), b(r.b))
+}
+
+/// The dialog's top margin that centres one of about `height` px in the
+/// page area (below the top bar), or near the top when the window is short.
+fn dialog_top(window: &Window, height: f32) -> Pixels {
+    let h = window.viewport_size().height;
+    let page_top = px(42.);
+    ((h - page_top - px(height)) / 2. + page_top).max(px(24.))
 }
