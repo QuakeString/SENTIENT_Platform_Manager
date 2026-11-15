@@ -489,7 +489,43 @@ pub fn sudo_key(id: &str) -> String {
 /// Put this Platform Manager's build for the server's system on the
 /// server (Linux): this very program when the systems match, checked by its
 /// SHA-256 after copying; the copy is resumed after a dropped connection.
+#[cfg(debug_assertions)]
+static DEBUG_AGENT_UPDATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(debug_assertions)]
+fn debug_plan(compose: Option<&str>) -> sentient_installer_core::distro::adopt::TakeOverPlan {
+    sentient_installer_core::distro::adopt::TakeOverPlan {
+        project: "sentient".into(),
+        files: vec![(compose.unwrap_or("/home/sunoil/sentient/docker-compose.yml").to_string(), true)],
+        env_files: vec![("/home/sunoil/sentient/.env".into(), true)],
+        containers: vec!["sentient".into(), "sentient-postgres".into()],
+        image: "quakestring/sentient:4.4.0.1".into(),
+        volumes: vec!["sentient_data".into(), "sentient_pg".into()],
+        ports: vec!["8080 web".into(), "1883 MQTT".into(), "8883 MQTTS".into(), "5683 CoAP".into(), "5684 CoAPS".into()],
+        extra_env: Vec::new(),
+        loopback_port: Some(15432),
+        problems: Vec::new(),
+        new_file: "/var/lib/sentient-platform-manager/stack/docker-compose.yml".into(),
+    }
+}
+
 pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    match std::env::var("SPM_DEBUG_REMOTE_TAKEOVER").as_deref() {
+        Ok("old") => {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            DEBUG_AGENT_UPDATED.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Ok(());
+        }
+        Ok("sudo") if secret(&sudo_key(&inst.id)).is_none() => {
+            return Err(failed(&format!("{} needs administrator rights on the server: sudo asks for a password.", inst.user), "sudo: a password is required"));
+        }
+        Ok("sudo") => {
+            DEBUG_AGENT_UPDATED.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Ok(());
+        }
+        _ => {}
+    }
     let det = inst.detected.clone().ok_or("Connect to the server first.")?;
     if det.os == Os::Windows {
         return win::deploy(inst, sink);
@@ -1085,6 +1121,16 @@ fn spm_job(inst: &Instance, job: &str) -> Result<String, String> {
 /// What taking the server's SENTIENT over would do (crate::manager::takeover),
 /// with a compose file picked on the server.
 pub fn takeover_plan(inst: &Instance, compose: Option<&str>) -> Result<sentient_installer_core::distro::adopt::TakeOverPlan, String> {
+    // Screens and click tests: a canned plan; "old" answers as an old agent
+    // until the agent was updated (deploy, below), "sudo" as well but the
+    // update needs sudo's password.
+    #[cfg(debug_assertions)]
+    if let Ok(kind) = std::env::var("SPM_DEBUG_REMOTE_TAKEOVER") {
+        if (kind == "old" || kind == "sudo") && !DEBUG_AGENT_UPDATED.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(AGENT_OLD.into());
+        }
+        return Ok(debug_plan(compose));
+    }
     let job = match compose {
         Some(c) => format!("takeover-plan --compose '{}'", c.replace('\'', "")),
         None => "takeover-plan".into(),
@@ -1095,6 +1141,27 @@ pub fn takeover_plan(inst: &Instance, compose: Option<&str>) -> Result<sentient_
     }
     let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's Platform Manager gave no plan.")?;
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
+}
+
+/// The plan, updating an agent too old to answer it first (the same update
+/// as the Status page's Update agent), then asking again.
+pub fn takeover_plan_updating(inst: &Instance, compose: Option<&str>) -> Result<sentient_installer_core::distro::adopt::TakeOverPlan, String> {
+    let sink: ProgressFn = std::sync::Arc::new(|_| {});
+    after_agent_update(|| takeover_plan(inst, compose), || deploy(inst, &sink))
+}
+
+/// Ask; when the agent is too old for it, update the agent and ask once more.
+pub(crate) fn after_agent_update<T>(mut ask: impl FnMut() -> Result<T, String>, update: impl FnOnce() -> Result<(), String>) -> Result<T, String> {
+    match ask() {
+        Err(e) if e == AGENT_OLD => {
+            update().map_err(|e| {
+                let (head, details) = split_failure(&e);
+                failed(&format!("The server agent is out of date and could not be updated first: {head}"), details.as_deref().unwrap_or(""))
+            })?;
+            ask()
+        }
+        r => r,
+    }
 }
 
 /// Whether a migration could start on the server now (crate::migration::
@@ -1567,6 +1634,34 @@ mod tests {
         assert_eq!(back.files, p.files);
         assert_eq!(back.env_files, p.env_files);
         assert_eq!(back.loopback_port, Some(15432));
+    }
+
+    /// The takeover button on a server: a current agent answers at once; an
+    /// old one is updated first and then answers; a failed update says so
+    /// (with sudo's message, which the dialog turns into the password prompt).
+    #[test]
+    fn an_old_agent_is_updated_before_the_plan() {
+        use std::cell::Cell;
+        // Current agent: asked once, never updated.
+        let current = Cell::new(0);
+        assert_eq!(after_agent_update(|| { current.set(current.get() + 1); Ok::<_, String>("plan") }, || panic!("no update for a current agent")), Ok("plan"));
+        assert_eq!(current.get(), 1);
+        // Old agent: updated, then asked again.
+        let asked = Cell::new(0);
+        let updated = Cell::new(false);
+        let ask = || {
+            asked.set(asked.get() + 1);
+            if updated.get() { Ok("plan") } else { Err(AGENT_OLD.to_string()) }
+        };
+        assert_eq!(after_agent_update(ask, || { updated.set(true); Ok(()) }), Ok("plan"));
+        assert_eq!(asked.get(), 2);
+        // The update fails: the reason, nothing asked again.
+        let e = after_agent_update(|| Err::<&str, _>(AGENT_OLD.to_string()), || Err("ops needs administrator rights on the server: sudo asks for a password.".into())).unwrap_err();
+        assert!(e.contains("could not be updated first") && e.contains("needs administrator rights"), "{e}");
+        #[cfg(feature = "gui")]
+        assert!(crate::manager::remote_pages::needs_sudo_password(&e));
+        // Another failure passes through untouched.
+        assert_eq!(after_agent_update(|| Err::<&str, _>("ssh: timeout".into()), || panic!()), Err("ssh: timeout".to_string()));
     }
 
     #[test]

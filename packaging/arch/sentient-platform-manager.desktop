@@ -2,7 +2,28 @@
 Type=Application
 Name=SENTIENT Platform Manager
 Comment=Install, run, update and back up SENTIENT
-Exec=/opt/sentient-platform-manager/sentient-platform-manager
+Exec=/opt/sentient-platform-manager/sentient-platform-manager --manager
 Icon=sentient-platform-manager
 Terminal=false
 Categories=System;Monitor;
+Actions=statistics;notifications;backup;check-updates;exit;
+
+[Desktop Action statistics]
+Name=Statistics
+Exec=/opt/sentient-platform-manager/sentient-platform-manager --manager --action statistics
+
+[Desktop Action notifications]
+Name=Notifications
+Exec=/opt/sentient-platform-manager/sentient-platform-manager --manager --action notifications
+
+[Desktop Action backup]
+Name=Back up this computer now
+Exec=/opt/sentient-platform-manager/sentient-platform-manager --manager --action backup
+
+[Desktop Action check-updates]
+Name=Check for updates
+Exec=/opt/sentient-platform-manager/sentient-platform-manager --manager --action check-updates
+
+[Desktop Action exit]
+Name=Exit
+Exec=/opt/sentient-platform-manager/sentient-platform-manager --manager --action exit

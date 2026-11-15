@@ -340,6 +340,18 @@ mod imp {
         )
     }
 
+    /// The Platform Manager's entry, with its taskbar actions
+    /// (crate::background::ACTIONS; Open is the entry itself).
+    fn manager_entry(name: &str, exe: &Path, comment: &str) -> String {
+        let actions: Vec<_> = crate::background::ACTIONS.iter().filter(|(a, _)| *a != "open").collect();
+        let mut s = desktop_entry(name, &format!("{} --manager", exe.display()), comment);
+        s.push_str(&format!("Actions={};\n", actions.iter().map(|(a, _)| *a).collect::<Vec<_>>().join(";")));
+        for (a, label) in actions {
+            s.push_str(&format!("\n[Desktop Action {a}]\nName={label}\nExec={} --manager --action {a}\n", exe.display()));
+        }
+        s
+    }
+
     pub fn create_shortcuts(manager: &Path, url: &str, s: &Shortcuts) -> Result<(), String> {
         if !s.start_menu && !s.desktop_sentient {
             return Ok(());
@@ -348,7 +360,7 @@ mod imp {
         if s.start_menu {
             script.push_str(&format!(
                 "cat > {APPS}/sentient-platform-manager.desktop <<'EOF'\n{}EOF\n",
-                desktop_entry(super::PRODUCT, &format!("{} --manager", manager.display()), "Run, update and back up SENTIENT")
+                manager_entry(super::PRODUCT, manager, "Run, update and back up SENTIENT")
             ));
         }
         if s.desktop_sentient || s.start_menu {
@@ -383,7 +395,7 @@ mod imp {
         run(&noop(), &format!(
             "set -e\ncat > {APPS}/sentient-platform-manager.desktop <<'EOF'\n{}EOF\n\
              command -v update-desktop-database >/dev/null && update-desktop-database -q || true\n",
-            desktop_entry(super::PRODUCT, &format!("{} --manager", manager.display()), "Run, update and back up SENTIENT")
+            manager_entry(super::PRODUCT, manager, "Run, update and back up SENTIENT")
         ))
     }
 

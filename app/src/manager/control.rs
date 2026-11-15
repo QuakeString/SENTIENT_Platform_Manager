@@ -237,7 +237,7 @@ impl ControlPage {
         });
     }
 
-    fn run(&mut self, action: &'static str, cx: &mut Context<Self>) {
+    pub(crate) fn run(&mut self, action: &'static str, cx: &mut Context<Self>) {
         let Some(record) = &self.record else { return };
         let platform = record.platform();
         self.job.update(cx, |job, cx| {

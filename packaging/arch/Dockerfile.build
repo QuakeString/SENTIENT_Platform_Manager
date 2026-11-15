@@ -1,0 +1,7 @@
+# The Arch package builder (packaging/arch/build-cached.sh): the toolchain
+# and the libraries GPUI compiles against, installed once.
+FROM archlinux:base-devel
+RUN pacman -Syu --noconfirm --needed git rust rust-musl musl clang cmake pkgconf \
+      fontconfig freetype2 libxcb libxkbcommon libxkbcommon-x11 wayland vulkan-icd-loader alsa-lib \
+    && pacman -Scc --noconfirm \
+    && useradd -m -u 1000 builder

@@ -422,7 +422,7 @@ impl BackupPage {
     }
 
     /// Back up now with the chosen preset (crate::backups::run).
-    fn run_preset_backup(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn run_preset_backup(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         let prefs = self.prefs.clone();
         let pass = Some(self.passphrase.read(cx).value().to_string()).filter(|p| !p.is_empty());

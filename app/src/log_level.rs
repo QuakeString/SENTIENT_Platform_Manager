@@ -26,6 +26,10 @@ pub fn classify(line: &str) -> (Level, usize) {
 }
 
 fn level(line: &str) -> Level {
+    // The Platform Manager's own activity log: "<time> Failed: …" is an error.
+    if line.starts_with("Failed:") || line.contains(" Failed: ") {
+        return Level::Error;
+    }
     let head = match line.char_indices().nth(LOOK) {
         Some((i, _)) => &line[..i],
         None => line,
@@ -77,6 +81,8 @@ mod tests {
         let l = "2026-11-14T06:33:25.123456Z  INFO sentient_api::server: listening on 0.0.0.0:8080";
         assert_eq!(classify(l), (Level::Info, "2026-11-14T06:33:25.123456Z".len()));
         assert_eq!(classify("2026-11-14T06:33:25Z  WARN ws: slow consumer").0, Level::Warn);
+        assert_eq!(classify("2026-11-15 20:41:02 Failed: The copy to the server failed").0, Level::Error);
+        assert_eq!(classify("2026-11-15 20:41:02 Updating the server agent: done").0, Level::Plain);
         assert_eq!(classify("2026-11-14T06:33:25Z ERROR dao: connection refused").0, Level::Error);
         assert_eq!(classify("2026-11-14T06:33:25Z DEBUG rule: tick").0, Level::Debug);
         assert_eq!(classify("2026-11-14T06:33:25Z TRACE mqtt: frame").0, Level::Debug);

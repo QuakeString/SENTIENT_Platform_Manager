@@ -214,6 +214,7 @@ impl MigrationPage {
                 })
                 .ok();
             }),
+            None,
             cx,
         );
     }
@@ -278,7 +279,8 @@ impl Render for MigrationPage {
                                 crate::ui::button("migrate")
                                     .primary()
                                     .label(chosen.map(|f| format!("Change to {}", flavor_label(f))).unwrap_or_else(|| "Change database".into()))
-                                    .disabled(busy || chosen.is_none() || unfinished.is_some() || self.preflight == crate::manager::remote_pages::Preflight::Checking)
+                                    // Off while the preflight says the change cannot be made.
+                                    .disabled(busy || chosen.is_none() || unfinished.is_some() || self.preflight != crate::manager::remote_pages::Preflight::Idle)
                                     .loading(self.preflight == crate::manager::remote_pages::Preflight::Checking)
                                     .on_click(cx.listener(|this, _, _, cx| this.check(cx))),
                             )

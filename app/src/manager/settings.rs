@@ -160,6 +160,29 @@ pub struct SettingsPage {
 impl EventEmitter<RecordChanged> for SettingsPage {}
 
 impl SettingsPage {
+    /// The takeover from here (crate::manager::takeover); the record is read
+    /// again when the job ends, and the notice goes.
+    fn open_take_over(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        let this = cx.entity().downgrade();
+        crate::manager::takeover::open(
+            true,
+            std::sync::Arc::new(move |compose: Option<String>| crate::adopt::take_over_plan(&record, compose.as_deref())),
+            std::rc::Rc::new(move |compose: Option<String>, cx: &mut App| {
+                this.update(cx, |page, cx| {
+                    let Some(record) = page.record.clone() else { return };
+                    page.job.update(cx, |job, cx| {
+                        job.set_label("Taking over the compose file");
+                        job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), sink).map(|_| ()), cx)
+                    });
+                })
+                .ok();
+            }),
+            None,
+            cx,
+        );
+    }
+
     pub fn new(record: Option<InstallationRecord>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let groups = catalog::groups();
         let applied = record.as_ref().map(crate::settings::current).unwrap_or_default();
@@ -1173,6 +1196,15 @@ impl Render for SettingsPage {
         let job = self.job.read(cx);
         let busy = job.is_running();
         let changed = self.changed(cx);
+        // Someone else's compose file: the notice, and Apply stays off.
+        let external = record.engine == crate::installation::Engine::Docker && record.stack.external.is_some();
+        let foreign = external.then(|| {
+            crate::manager::remote_pages::foreign_compose_notice(
+                &theme,
+                "The settings cannot be changed now.",
+                crate::ui::button("set-take-over").outline().label("Take over the compose file…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element(),
+            )
+        });
         let mut problems = crate::settings::check(&self.values(cx));
         for (n, _) in self.custom_values(cx) {
             if !crate::settings::valid_name(&n) {
@@ -1213,7 +1245,7 @@ impl Render for SettingsPage {
                     crate::ui::button("apply")
                         .primary()
                         .label("Apply")
-                        .disabled(busy || !problems.is_empty())
+                        .disabled(busy || external || !problems.is_empty())
                         .on_click(cx.listener(|this, _, window, cx| this.confirm_apply(window, cx))),
                 )
         });
@@ -1230,6 +1262,7 @@ impl Render for SettingsPage {
         let _ = page;
         layout(&theme, tabs, active, v_flex()
             .gap(px(14.))
+            .children(foreign)
             .children(applybar)
             .children(problems.into_iter().map(|p| div().text_sm().text_color(theme.danger).child(p)))
             

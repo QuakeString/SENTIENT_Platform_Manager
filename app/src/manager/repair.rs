@@ -57,6 +57,7 @@ impl RepairPage {
             std::rc::Rc::new(move |compose, cx: &mut App| {
                 this.update(cx, |page, cx| page.take_over(compose, cx)).ok();
             }),
+            None,
             cx,
         );
     }

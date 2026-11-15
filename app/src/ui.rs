@@ -253,9 +253,63 @@ pub fn fact_help(theme: &Theme, label: &'static str, value: impl Into<SharedStri
 
 /// An (i) whose tooltip holds the help text (the help rule: never inline).
 pub fn info(id: SharedString, help: SharedString) -> impl IntoElement {
-    use gpui_kit::component::button::ButtonVariants as _;
-    use gpui_kit::component::Sizable as _;
-    button(id).ghost().xsmall().icon(gpui_kit::component::IconName::Info).tooltip(help)
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(22.))
+        .flex_shrink_0()
+        .rounded(px(5.))
+        .cursor_default()
+        .hover(|d| d.bg(black().opacity(0.06)))
+        .child(InfoIcon)
+        .tooltip(move |_, cx| cx.new(|_| InfoTip(help.clone())).into())
+}
+
+/// The (i) itself, in the muted text colour of its theme.
+#[derive(IntoElement)]
+struct InfoIcon;
+
+use gpui_kit::component::ActiveTheme as _;
+
+impl RenderOnce for InfoIcon {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        gpui_kit::component::Icon::new(gpui_kit::component::IconName::Info).size(px(14.)).text_color(cx.theme().muted_foreground)
+    }
+}
+
+/// The one tooltip style: an inverted surface (dark on the light theme, a
+/// lighter raised one on the dark theme), at most 360 px wide, wrapping, a
+/// little below the pointer so it never sits on the (i) itself.
+struct InfoTip(SharedString);
+
+impl Render for InfoTip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let dark = cx.theme().mode.is_dark();
+        let (bg, fg, border) = if dark { (rgb(0x3a4a52), rgb(0xf1f5f7), rgb(0x56676f)) } else { (rgb(0x1f2a30), rgb(0xffffff), rgb(0x1f2a30)) };
+        // Laid out at its smallest size, so the width is set: the longest
+        // line's length, at most 360 px.
+        let longest = self.0.lines().map(|l| l.chars().count()).max().unwrap_or(0) as f32;
+        let w = (longest * 6.9 + 22.).clamp(60., 360.);
+        let shadow = BoxShadow { color: black().opacity(if dark { 0.45 } else { 0.25 }), offset: point(px(0.), px(4.)), blur_radius: px(12.), spread_radius: px(0.), inset: false };
+        div().pt(px(8.)).pl(px(4.)).child(
+            gpui_kit::component::v_flex()
+                .w(px(w))
+                .gap(px(6.))
+                .px(px(10.))
+                .py(px(8.))
+                .rounded(px(8.))
+                .bg(bg)
+                .border_1()
+                .border_color(border)
+                .shadow(vec![shadow])
+                .text_size(px(13.))
+                .line_height(px(18.))
+                .text_color(fg)
+                .children(self.0.split("\n\n").map(|p| div().child(p.trim().to_string()))),
+        )
+    }
 }
 
 /// Shown on every manager screen when this computer has no installation.

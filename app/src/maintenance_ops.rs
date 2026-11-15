@@ -64,6 +64,8 @@ pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result
         // Write the compose file again from the record (with the stack's
         // passwords) and bring everything up; without a readable compose
         // file, just start what is there.
+        // A compose file someone else wrote is not rewritten: start what is there.
+        Engine::Docker if record.stack.external.is_some() => distro::control(sink.clone(), &record.stack, "start")?,
         Engine::Docker => match distro::docker_ops::with_secrets(&record.stack) {
             Ok(cfg) => distro::docker_ops::reconfigure(&sink, &cfg)?,
             Err(_) => distro::control(sink.clone(), &record.stack, "start")?,
