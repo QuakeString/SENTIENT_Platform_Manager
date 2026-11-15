@@ -727,9 +727,10 @@ impl UpdatePage {
                         .px_3()
                         .py_2()
                         .rounded(theme.radius)
+                        .flex_wrap()
                         .bg(theme.warning)
                         .text_color(theme.warning_foreground)
-                        .child(div().flex_1().text_sm().child(if e.contains("limiting") {
+                        .child(div().flex_1().min_w(px(240.)).text_sm().child(if e.contains("limiting") {
                             "GitHub is limiting requests from this network. Try again in an hour.".to_string()
                         } else {
                             "The release page could not be reached. Nothing was changed.".to_string()

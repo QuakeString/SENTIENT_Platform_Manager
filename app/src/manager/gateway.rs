@@ -136,8 +136,7 @@ impl Render for GatewayPage {
             &theme,
             "Gateway",
             "The Sentient Gateway on this computer: it collects data from the plant's devices and sends it to SENTIENT.",
-        )
-        .child(h_flex().gap_2().items_center().child(ui::product_logo(ui::Product::Gateway, 28.)).child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway")));
+        );
         let u = self.updates.read(cx);
         let newest = u.found.as_ref().map(|f| f.gateway.clone());
         let channel = u.prefs.channel;
@@ -170,6 +169,8 @@ impl Render for GatewayPage {
                     h_flex()
                         .gap_3()
                         .items_center()
+                        .child(ui::product_logo(ui::Product::Gateway, 28.))
+                        .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
                         .child(ui::pill(&theme, tone, pill))
                         .child(div().flex_1())
                         .when_some(status.page_url.clone(), |r, url| {
@@ -249,7 +250,7 @@ impl Render for GatewayPage {
             };
             let o = offer.clone();
             ui::panel(&theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child("No gateway on this computer"))
+                .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Gateway, 28.)).child(div().font_weight(FontWeight::MEDIUM).child("No gateway on this computer")))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
                     "Install one here to read devices next to this computer. In SENTIENT, add a gateway device and copy its access token (Manage credentials).",
                 ))

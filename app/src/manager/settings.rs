@@ -991,7 +991,7 @@ impl SettingsPage {
                         .child(self.input(&s.env, 200.))
                         .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(if s.default.is_empty() { "SENTIENT's own".to_string() } else { s.default.clone() }))
                         .when(set, |r| {
-                            r.child(Button::new(SharedString::from(format!("reset-{}", s.env))).ghost().xsmall().label("Reset").on_click(cx.listener(move |this, _, window, cx| {
+                            r.child(Button::new(SharedString::from(format!("reset-{}", s.env))).ghost().label("Reset").on_click(cx.listener(move |this, _, window, cx| {
                                 this.set(&key, "", window, cx);
                                 cx.notify();
                             })))
@@ -1011,7 +1011,7 @@ impl SettingsPage {
                     .py_1()
                     .child(div().w(px(250.)).child(Input::new(n)))
                     .child(div().w(px(260.)).child(Input::new(v)))
-                    .child(Button::new(SharedString::from(format!("remove-var-{i}"))).ghost().xsmall().label("Remove").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(Button::new(SharedString::from(format!("remove-var-{i}"))).ghost().label("Remove").on_click(cx.listener(move |this, _, _, cx| {
                         if i < this.custom.len() {
                             this.custom.remove(i);
                         }

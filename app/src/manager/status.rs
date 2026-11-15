@@ -559,6 +559,9 @@ impl Render for StatusPage {
 
         let (overall, tone) = match &self.snapshot {
             None => ("Checking…", Tone::Neutral),
+            // Its port answers but none of its own services runs: some
+            // other program is serving there.
+            Some(s) if s.serving && !s.services.is_empty() && !s.services.iter().any(|svc| svc.running || svc.starting) => ("Another program answers on SENTIENT's port", Tone::Warn),
             Some(s) if s.serving => ("SENTIENT is running", Tone::Good),
             Some(s) if s.services.iter().any(|svc| svc.running) => ("Starting or partly stopped", Tone::Warn),
             Some(s) if s.services.iter().any(|svc| svc.starting) => ("SENTIENT is starting with Windows", Tone::Warn),
@@ -579,8 +582,8 @@ impl Render for StatusPage {
                     .px_4()
                     .py_2()
                     .rounded(theme.radius)
-                    .bg(theme.danger)
-                    .text_color(theme.danger_foreground)
+                    .bg(theme.danger.opacity(0.14))
+                    .text_color(theme.danger)
                     .text_sm()
                     .child(div().flex_1().child(format!(
                         "The newest backup, {}, is damaged: {}",

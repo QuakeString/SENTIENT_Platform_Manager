@@ -100,32 +100,30 @@ impl Render for AboutPage {
             (Some(f), None) if f.manager.is_ok() => (Tone::Good, "Up to date".to_string()),
             _ => (Tone::Neutral, "Not checked".to_string()),
         };
-        let hero = h_flex()
-            .gap_4()
-            .items_center()
-            .flex_wrap()
-            .p_4()
-            .rounded(theme.radius)
-            .bg(theme.background)
-            .border_1()
-            .border_color(theme.border)
-            .child(ui::product_logo(ui::Product::Manager, 48.))
+        let hero = ui::panel(&theme)
+            .gap_3()
             .child(
-                v_flex()
-                    .flex_1()
-                    .min_w(px(200.))
-                    .child(div().text_lg().font_weight(FontWeight::MEDIUM).child("SENTIENT Platform Manager"))
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Version {version} · checked {last}"))),
+                h_flex()
+                    .gap_4()
+                    .items_center()
+                    .child(ui::product_logo(ui::Product::Manager, 48.))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().text_lg().font_weight(FontWeight::MEDIUM).child("SENTIENT Platform Manager"))
+                            .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Version {version} · checked {last}"))),
+                    )
+                    .child(ui::pill(&theme, state.0, state.1)),
             )
-            .child(ui::pill(&theme, state.0, state.1))
-            .child(Button::new("about-notes").outline().label("What's new").on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew))))
+            .child(h_flex().gap_2().flex_wrap().child(Button::new("about-notes").outline().label("What's new").on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew))))
             .child(
                 Button::new("about-check")
                     .outline()
                     .label(if checking { "Checking…" } else { "Check for updates" })
                     .disabled(checking)
                     .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))),
-            );
+            ));
         let channels = ui::seg_track(&theme).children(Channel::ALL.into_iter().map(|c| {
             ui::seg_item(&theme, SharedString::from(format!("about-channel-{}", c.label())), c.label(), c == channel)
                 .on_click(cx.listener(move |this, _, _, cx| this.updates.update(cx, |u, cx| u.set_channel(c, cx))))
@@ -162,23 +160,26 @@ impl Render for AboutPage {
                 Ok(p) => ui::outcome(&theme, Tone::Good, format!("Support file saved: {}", p.display())).into_any_element(),
                 Err(e) => ui::outcome(&theme, Tone::Bad, format!("The support file could not be made: {e}")).into_any_element(),
             }));
-        let footer = h_flex()
-            .gap_4()
-            .flex_wrap()
-            .justify_center()
-            .text_size(px(13.))
-            .text_color(theme.muted_foreground)
-            .child(format!("Installed in {}", crate::self_install::manager_dir().display()))
-            .child(format!("Data in {}", crate::updates::prefs_dir().display()));
-        v_flex()
-            .id("about")
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .overflow_y_scroll()
-            .bg(theme.muted)
-            .p_8()
-            .items_center()
-            .child(v_flex().w_full().max_w(px(720.)).gap_4().child(hero).child(prefs).child(support).child(footer))
+        // Where it lives: the paths wrap, and Copy takes the whole path.
+        let place = |id: &'static str, label: &'static str, path: String| {
+            let copy = path.clone();
+            h_flex()
+                .gap_3()
+                .items_center()
+                .py_1p5()
+                .child(div().w(px(110.)).flex_shrink_0().text_sm().text_color(theme.muted_foreground).child(label))
+                .child(div().flex_1().min_w_0().text_sm().font_family(theme.mono_font_family.clone()).child(path))
+                .child(Button::new(id).outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+        };
+        let places = ui::panel(&theme)
+            .gap_0()
+            .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Files"))
+            .child(place("copy-installed", "Installed in", crate::self_install::manager_dir().display().to_string()))
+            .child(place("copy-data", "Data in", crate::updates::prefs_dir().display().to_string()).border_t_1().border_color(theme.border));
+        ui::page(&theme, "About", "This program's version, updates and support.")
+            .child(hero)
+            .child(prefs)
+            .child(support)
+            .child(places)
     }
 }

@@ -978,7 +978,7 @@ impl Render for Manager {
 }
 
 /// Below this window width the menu becomes an icon rail.
-const RAIL_BELOW: f32 = 960.;
+pub(crate) const RAIL_BELOW: f32 = 960.;
 
 /// ", released 2026-10-24", or nothing.
 fn dated(date: &str) -> String {

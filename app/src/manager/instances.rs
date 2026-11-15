@@ -489,7 +489,7 @@ impl InstancesPage {
         let (tone, state) = state_of(status.as_ref(), self.refreshing.contains(LOCAL));
         let current = self.open.is_none();
         let open_btn: AnyElement = if current {
-            Button::new("open-local").primary().label("Open").disabled(true).tooltip("This instance is open").into_any_element()
+            open_now_tag(&theme).into_any_element()
         } else {
             Button::new("open-local").primary().label("Open").on_click(cx.listener(|_, _, _, cx| cx.emit(OpenInstance(None)))).into_any_element()
         };
@@ -566,7 +566,7 @@ impl InstancesPage {
                 move |this, _, _, cx| this.set_up(&id, cx)
             })).into_any_element()
         } else if current {
-            Button::new(SharedString::from(format!("open-{id}"))).primary().label("Open").disabled(true).tooltip("This instance is open").into_any_element()
+            open_now_tag(&theme).into_any_element()
         } else {
             Button::new(SharedString::from(format!("open-{id}"))).primary().label("Open").on_click(cx.listener({
                 let id = id.clone();
@@ -1083,14 +1083,27 @@ impl Render for InstancesPage {
                     }),
             )
             .children(logs)
-            .child(h_flex().flex_wrap().gap_4().items_stretch().child(local).children(cards))
+            .child({
+                // The cards fill the page: as many columns as fit (one on
+                // narrow windows), all the same width.
+                let width = f32::from(window.viewport_size().width);
+                let rail = width < crate::manager::RAIL_BELOW;
+                let inner = width - if rail { 64. } else { 224. } - 64.;
+                let cols = if rail { 1. } else { ((inner + 16.) / (CARD_MIN_W + 16.)).floor().max(1.) };
+                let card_w = ((inner - 16. * (cols - 1.)) / cols).floor();
+                h_flex()
+                    .flex_wrap()
+                    .gap_4()
+                    .items_stretch()
+                    .children(std::iter::once(local).chain(cards).map(|c| v_flex().w(px(card_w)).flex_shrink_0().child(c)))
+            })
     }
 }
 
 /// The key for this computer's status.
 const LOCAL: &str = "@local";
-/// A card's width in the grid.
-const CARD_W: f32 = 330.;
+/// The narrowest a card gets before the grid drops a column.
+const CARD_MIN_W: f32 = 320.;
 /// Cards in a row stretch to the tallest; none is shorter than this.
 const CARD_MIN_H: f32 = 268.;
 
@@ -1175,8 +1188,8 @@ fn grid_card(
     footer: Div,
 ) -> Div {
     v_flex()
-        .w(px(CARD_W))
-        .flex_shrink_0()
+        .w_full()
+        .flex_1()
         .min_h(px(CARD_MIN_H))
         .rounded(px(ui::PANEL_RADIUS))
         .bg(theme.background)
@@ -1200,7 +1213,7 @@ fn grid_card(
                                 .flex_1()
                                 .min_w_0()
                                 .child(div().font_weight(FontWeight::MEDIUM).text_ellipsis().child(name))
-                                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).text_ellipsis().child(sub)),
+                                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(sub)),
                         )
                         .child(ui::pill(theme, tone, state)),
                 )
@@ -1208,6 +1221,19 @@ fn grid_card(
                 .child(div().h(px(1.)).bg(theme.border))
                 .child(footer),
         )
+}
+
+/// On the open instance's card, in place of its Open button.
+fn open_now_tag(theme: &gpui_kit::component::Theme) -> Div {
+    h_flex()
+        .gap_1p5()
+        .items_center()
+        .px_2()
+        .h(px(32.))
+        .text_sm()
+        .text_color(theme.muted_foreground)
+        .child(gpui_kit::component::Icon::new(IconName::Check).size_4().text_color(theme.success))
+        .child("Open now")
 }
 
 /// The system's logo on a tile.

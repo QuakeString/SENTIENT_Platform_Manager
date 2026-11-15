@@ -338,8 +338,13 @@ impl RemotePages {
             }
             Read::Got(s) => {
                 let det = self.inst.detected.clone().unwrap_or_default();
+                // Its port answers but none of its own services runs: some
+                // other program is serving there.
+                let none_running = matches!(&self.services, Read::Got(list) if !list.is_empty() && !list.iter().any(|v| v.running || v.starting));
                 let (tone, state) = if !s.installed {
                     (Tone::Neutral, "SENTIENT is not installed")
+                } else if s.serving && none_running {
+                    (Tone::Warn, "Another program answers on SENTIENT's port")
                 } else if s.serving {
                     (Tone::Good, "SENTIENT is running")
                 } else {
