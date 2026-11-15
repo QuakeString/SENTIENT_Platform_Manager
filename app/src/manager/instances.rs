@@ -859,27 +859,32 @@ impl InstancesPage {
         if let Some(e) = &f.error {
             panel = panel.child(ui::outcome(&theme, Tone::Bad, e.clone()));
         }
+        // The mockup's K3: the trust step on its own, before anything else.
         if let Stage::Fingerprint { fingerprint, keys } = &f.stage {
             let keys = keys.clone();
             let fp = fingerprint.clone();
-            panel = panel.child(
+            let host = format!("{}{}", self.form.as_ref().map(|f| f.host.read(cx).value().to_string()).unwrap_or_default(), "");
+            return Some(
                 v_flex()
-                    .gap_2()
-                    .p_3()
-                    .rounded(theme.radius)
-                    .border_1()
-                    .border_color(theme.warning)
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Is this the server's key?"))
-                    .child(div().text_sm().font_family(theme.mono_font_family.clone()).child(fingerprint.clone()))
+                    .gap_3()
+                    .child(div().font_weight(FontWeight::MEDIUM).child("Is this the right computer?"))
+                    .child(ui::fact(&theme, "Address", host))
+                    .child(ui::fact(&theme, "Its fingerprint", fingerprint.clone()))
                     .child(div().text_sm().text_color(theme.muted_foreground).child(
-                        "Compare it with what the server shows for: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub. After you accept it, a different key is refused.",
+                        "Compare it with the fingerprint shown on that server (ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub). It is asked once and remembered; if it ever changes, the connection is refused.",
                     ))
                     .child(
                         h_flex()
+                            .mt_2()
+                            .pt_3()
+                            .border_t_1()
+                            .border_color(theme.border)
                             .gap_2()
-                            .child(crate::ui::button("trust").primary().label("It matches: connect").on_click(cx.listener(move |this, _, _, cx| this.connect(Some((keys.clone(), fp.clone())), cx))))
-                            .child(crate::ui::button("distrust").ghost().label("It does not match").on_click(cx.listener(|this, _, _, cx| this.set_error("Not connected: the key was not accepted.", cx)))),
-                    ),
+                            .justify_end()
+                            .child(crate::ui::button("distrust").outline().label("Cancel").on_click(cx.listener(|this, _, _, cx| this.set_error("Not connected: the fingerprint was not accepted.", cx))))
+                            .child(crate::ui::button("trust").primary().label("Trust and add").on_click(cx.listener(move |this, _, _, cx| this.connect(Some((keys.clone(), fp.clone())), cx)))),
+                    )
+                    .into_any_element(),
             );
         }
         panel = panel.child(
@@ -1040,8 +1045,18 @@ impl InstancesPage {
         };
         let done = !job.is_running();
         let failed = matches!(job.state(), JobState::Failed(_));
+        // The raw steps show while it runs; afterwards only under Show details.
+        let show_log = !done || self.show_details;
+        let shown_toggle = done && !failed && !log.is_empty();
+        let details_on = self.show_details;
         Some(
-            p.when(!log.is_empty(), |p| {
+            p.when(shown_toggle, |p| {
+                p.child(h_flex().child(crate::ui::button("job-log").ghost().label(if details_on { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
+                    this.show_details = !this.show_details;
+                    cx.notify();
+                }))))
+            })
+            .when(!log.is_empty() && show_log, |p| {
                 p.child(
                     v_flex()
                         .p_2()
