@@ -215,3 +215,168 @@ pub fn strip_ansi(text: &str) -> String {
     }
     out
 }
+
+/// How far a planned step got: done, running, failed or not yet.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StepMark {
+    Done,
+    Running,
+    Failed,
+    Todo,
+}
+
+impl StepMark {
+    /// ✓ for a match, ✕ for a mismatch.
+    pub fn from_ok(ok: bool) -> StepMark {
+        if ok { StepMark::Done } else { StepMark::Failed }
+    }
+}
+
+/// Mark `planned` against the steps a job started: every started step but
+/// the last is done; the last is running, done (the job finished) or failed.
+/// A step the job started that is not planned still counts (a job may say
+/// more than the plan shows) without being drawn.
+pub fn mark_steps(planned: &[String], started: &[SharedString], finished: Option<bool>) -> Vec<(String, StepMark)> {
+    let last = started.last().map(|s| s.to_string());
+    let seen = |name: &str| started.iter().any(|s| s.as_ref() == name);
+    planned
+        .iter()
+        .map(|p| {
+            let mark = if !seen(p) {
+                StepMark::Todo
+            } else if last.as_deref() != Some(p.as_str()) {
+                StepMark::Done
+            } else {
+                match finished {
+                    None => StepMark::Running,
+                    Some(true) => StepMark::Done,
+                    Some(false) => StepMark::Failed,
+                }
+            };
+            (p.clone(), mark)
+        })
+        .collect()
+}
+
+/// A checklist of steps: ✓ done, ● running, ✕ failed, ○ not yet.
+pub fn steps(theme: &Theme, marked: &[(String, StepMark)]) -> Div {
+    v_flex().gap_1().text_sm().children(marked.iter().map(|(name, mark)| {
+        let (sign, color, strong) = match mark {
+            StepMark::Done => ("✓", theme.success_foreground, false),
+            StepMark::Running => ("●", theme.primary, true),
+            StepMark::Failed => ("✕", theme.danger, true),
+            StepMark::Todo => ("○", theme.muted_foreground, false),
+        };
+        gpui_kit::component::h_flex()
+            .gap_2()
+            .child(div().w_4().flex_shrink_0().text_color(color).child(sign))
+            .child(
+                div()
+                    .when(*mark == StepMark::Todo, |d| d.text_color(theme.muted_foreground))
+                    .when(*mark == StepMark::Failed, |d| d.text_color(theme.danger))
+                    .when(strong, |d| d.font_weight(FontWeight::MEDIUM))
+                    .child(name.clone()),
+            )
+    }))
+}
+
+/// Release notes, newest first: version and date, the summary, then the
+/// Added / Changed / Fixed lists.
+pub fn release_notes(theme: &Theme, notes: &[crate::notes::Notes]) -> Div {
+    v_flex().gap_3().children(notes.iter().map(|n| {
+        v_flex()
+            .gap_1()
+            .child(
+                gpui_kit::component::h_flex()
+                    .gap_2()
+                    .items_baseline()
+                    .child(div().font_weight(FontWeight::MEDIUM).child(n.version.clone()))
+                    .when(!n.date.is_empty(), |r| r.child(div().text_xs().text_color(theme.muted_foreground).child(n.date.clone()))),
+            )
+            .when(!n.summary.is_empty(), |c| c.child(div().text_sm().text_color(theme.muted_foreground).child(n.summary.clone())))
+            .children(n.sections.iter().map(|(name, entries)| {
+                v_flex()
+                    .gap_0p5()
+                    .pt_1()
+                    .child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(theme.primary).child(name.to_uppercase()))
+                    .children(entries.iter().map(|e| {
+                        gpui_kit::component::h_flex()
+                            .gap_2()
+                            .items_start()
+                            .text_sm()
+                            .child(div().flex_shrink_0().child("•"))
+                            .child(div().min_w_0().child(e.clone()))
+                    }))
+            }))
+    }))
+}
+
+#[cfg(test)]
+mod step_tests {
+    // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
+    use super::{mark_steps, StepMark};
+    use gpui_kit::SharedString;
+
+    #[test]
+    fn steps_are_marked_by_what_the_job_started() {
+        let planned: Vec<String> = ["A", "B", "C"].map(String::from).to_vec();
+        let started: Vec<SharedString> = vec!["A".into(), "B".into()];
+        let m: Vec<StepMark> = mark_steps(&planned, &started, None).into_iter().map(|(_, m)| m).collect();
+        assert_eq!(m, [StepMark::Done, StepMark::Running, StepMark::Todo]);
+        let m: Vec<StepMark> = mark_steps(&planned, &started, Some(false)).into_iter().map(|(_, m)| m).collect();
+        assert_eq!(m, [StepMark::Done, StepMark::Failed, StepMark::Todo]);
+    }
+}
+
+/// A product's own logo, in colour.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Product {
+    Manager,
+    Sentient,
+    Gateway,
+}
+
+pub fn product_logo(p: Product, size: f32) -> impl IntoElement {
+    let path = match p {
+        Product::Manager => "logos/spm.png",
+        Product::Sentient => "logos/sentient-mark.svg",
+        Product::Gateway => "logos/gateway.svg",
+    };
+    img(path).size(px(size)).flex_shrink_0()
+}
+
+/// A brand mark (one colour) by its file under `logos/`.
+pub fn brand_mark(name: &str, color: Hsla, size: f32) -> impl IntoElement {
+    svg().path(SharedString::from(format!("logos/{name}.svg"))).size(px(size)).flex_shrink_0().text_color(color)
+}
+
+/// A database's logo in its brand colour; ClickHouse's yellow sits on a
+/// dark tile so it reads on light backgrounds too.
+pub fn database_logo(name: &str, size: f32) -> AnyElement {
+    match name {
+        "clickhouse" => div()
+            .flex_shrink_0()
+            .size(px(size + 4.))
+            .rounded(px(3.))
+            .bg(rgb(0x1f1f1f))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(brand_mark("clickhouse", rgb(0xffcc01).into(), size - 2.))
+            .into_any_element(),
+        "timescale" => brand_mark("timescale", rgb(0xfdb515).into(), size).into_any_element(),
+        _ => brand_mark("postgresql", rgb(0x4169e1).into(), size).into_any_element(),
+    }
+}
+
+/// The logos of an installation's databases, by its type.
+pub fn flavor_logos(flavor: sentient_installer_core::stack::Flavor, size: f32) -> Div {
+    use sentient_installer_core::stack::Flavor;
+    let mut row = gpui_kit::component::h_flex().gap_1().items_center().child(database_logo("postgresql", size));
+    match flavor {
+        Flavor::Clickhouse => row = row.child(database_logo("clickhouse", size)),
+        Flavor::Timescaledb => row = row.child(database_logo("timescale", size)),
+        Flavor::Stock => {}
+    }
+    row
+}

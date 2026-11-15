@@ -136,7 +136,8 @@ impl Render for GatewayPage {
             &theme,
             "Gateway",
             "The Sentient Gateway on this computer: it collects data from the plant's devices and sends it to SENTIENT.",
-        );
+        )
+        .child(h_flex().gap_2().items_center().child(ui::product_logo(ui::Product::Gateway, 28.)).child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway")));
         let u = self.updates.read(cx);
         let newest = u.found.as_ref().map(|f| f.gateway.clone());
         let channel = u.prefs.channel;
