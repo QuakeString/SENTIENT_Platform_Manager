@@ -779,7 +779,7 @@ pub fn logs(inst: &Instance, lines: u32) -> Result<String, String> {
 pub fn logs_from(inst: &Instance, source: crate::logsource::Source, lines: u32, today: bool) -> Result<String, String> {
     #[cfg(debug_assertions)]
     if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_LOGS") {
-        return Ok(std::fs::read_to_string(std::path::Path::new(&t).join(format!("{}.log", source.key()))).unwrap_or_default());
+        return std::fs::read_to_string(std::path::Path::new(&t).join(format!("{}.log", source.key()))).map_err(|_| format!("Could not read the {} log.", source.label()));
     }
     spm_job(inst, &format!("logs {lines} --source {}{}", source.key(), if today { " --today" } else { "" }))
 }

@@ -845,28 +845,6 @@ impl BackupPage {
         panel
     }
 
-    fn job_view(&self, job: &Entity<Job>, cx: &App) -> Option<Div> {
-        let theme = cx.theme().clone();
-        let job = job.read(cx);
-        let outcome = match job.state() {
-            JobState::Idle => return None,
-            JobState::Running => None,
-            JobState::Done(m) => Some((Tone::Good, m.clone())),
-            JobState::Failed(m) => Some((Tone::Bad, m.clone())),
-        };
-        Some(
-            v_flex()
-                .gap_2()
-                .when(job.is_running(), |c| {
-                    c.child(div().text_sm().child(job.step_with_time()))
-                        .when_some(job.percent(), |c, p| c.child(ProgressBar::new("job-progress").value(p)))
-                })
-                .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
-                .children(job.log().iter().rev().take(6).rev().map(|l| {
-                    div().text_size(px(13.)).text_color(theme.muted_foreground).child(l.clone())
-                })),
-        )
-    }
 }
 
 impl BackupPage {

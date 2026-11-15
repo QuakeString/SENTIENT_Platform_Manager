@@ -143,6 +143,8 @@ pub struct Manager {
     modal_focus: FocusHandle,
     /// The global progress strip (strip.rs), under the top bar.
     strip: Entity<strip::Strip>,
+    /// Screens: the canned job the strip follows.
+    _debug_job: Option<Entity<crate::jobs::Job>>,
     /// The theme popover in the menu's bottom group is open.
     theme_open: bool,
     /// The open instance's processor, memory and disk (top bar).
@@ -171,7 +173,9 @@ impl Manager {
         let installed = record.as_ref().map(|r| r.sentient_version.clone());
         let native = record.as_ref().is_some_and(|r| r.platform().needs_package());
         let updates = cx.new(|cx| UpdateState::new(installed, native, cx));
-        let subscriptions = vec![cx.observe(&updates, |_, _, cx| cx.notify())];
+        // The progress line under the top bar follows the strip.
+        let strip = strip::install(cx);
+        let subscriptions = vec![cx.observe(&updates, |_, _, cx| cx.notify()), cx.observe(&strip, |_, _, cx| cx.notify())];
         let updated_from = args.windows(2).find(|w| w[0] == "--updated-from").map(|w| w[1].clone());
         let found_notice = record.is_some() && crate::updates::take_found_installation();
         let mut manager = Self {
@@ -193,7 +197,8 @@ impl Manager {
             remote_monitor: None,
             remote_pages: None,
             modal_focus: cx.focus_handle(),
-            strip: strip::install(cx),
+            strip: strip.clone(),
+            _debug_job: None,
             theme_open: cfg!(debug_assertions) && std::env::var_os("SPM_THEME_OPEN").is_some(),
             monitor: None,
             updates,
@@ -208,6 +213,31 @@ impl Manager {
         if let Some(id) = args.windows(2).find(|w| w[0] == "--instance").map(|w| w[1].clone()) {
             manager.open_instance(Some(id), cx);
             manager.page = page;
+        }
+        // Screens: a job in the progress strip (SPM_DEBUG_STRIP=running|failed|done).
+        #[cfg(debug_assertions)]
+        if let Ok(kind) = std::env::var("SPM_DEBUG_STRIP") {
+            let job = cx.new(|_| crate::jobs::Job::new());
+            job.update(cx, |j, cx| {
+                j.set_label("Stopping ClickHouse on Plant B server");
+                j.start(
+                    move |sink| {
+                        sink(sentient_installer_core::progress::Progress::Step { name: "Stopping ClickHouse".into() });
+                        sink(sentient_installer_core::progress::Progress::Log { line: "docker compose -p sentient stop clickhouse".into() });
+                        sink(sentient_installer_core::progress::Progress::Log { line: " Container sentient-clickhouse  Stopping".into() });
+                        std::thread::sleep(std::time::Duration::from_secs(if kind == "running" { 600 } else { 6 }));
+                        match kind.as_str() {
+                            "failed" => Err("ClickHouse did not stop within 30 seconds.".into()),
+                            _ => {
+                                sink(sentient_installer_core::progress::Progress::Done { message: "ClickHouse is stopped.".into() });
+                                Ok(())
+                            }
+                        }
+                    },
+                    cx,
+                )
+            });
+            manager._debug_job = Some(job);
         }
         manager
     }
@@ -311,6 +341,10 @@ impl Manager {
         // 12.5-14 px), kept in this order: CPU, memory, disk.
         let text_w = |s: &str| s.chars().count() as f32 * 7.2;
         let mut room = width - 20. - (20. + 12.) - (text_w(&instance) + 60. + 12.) - if remote.is_some() { 64. } else { 0. } - 40. - 12.;
+        // A running job's chip comes first: the monitors give way to it.
+        if self.strip.read(cx).active() {
+            room -= 360.;
+        }
         let mut fits = |need: f32| {
             let ok = room >= need;
             if ok {
@@ -387,8 +421,11 @@ impl Manager {
                     menu
                 }
             });
+        let line = self.strip.read(cx).line(cx);
         h_flex()
             .id("top-bar")
+            .relative()
+            .children(line)
             .h(px(42.))
             .flex_shrink_0()
             .px_3()
@@ -450,7 +487,8 @@ impl Manager {
                         }
                     }),
             )
-            .child(div().flex_1())
+            // A running job: its chip in the middle of the bar.
+            .child(h_flex().flex_1().min_w_0().justify_center().child(self.strip.clone()))
             .children(monitor)
             .child(
                 // The bell with an amber count, as in the mockup.
@@ -1121,9 +1159,7 @@ impl Render for Manager {
                             .min_w_0()
                             .relative()
                             .children(notices)
-                            .child(crate::ui::appear(h_flex().flex_1().min_h_0().w_full().child(content), SharedString::from(format!("page-{}", self.page.id())), 140))
-                            // Over the page, directly under the top bar: nothing moves.
-                            .child(self.strip.clone()),
+                            .child(crate::ui::appear(h_flex().flex_1().min_h_0().w_full().child(content), SharedString::from(format!("page-{}", self.page.id())), 140)),
                     ),
             )
             .children(layer)

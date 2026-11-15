@@ -1,9 +1,10 @@
 // Copyright © 2016-2026 The SENTIENT Authors
 
-//! The global progress strip: a thin line directly under the top bar while a
-//! job runs anywhere in the Platform Manager ("Stopping ClickHouse on
-//! ST-DEV · 0:06 · Details"), drawn over the page so nothing on the page
-//! moves. Pages never insert a progress or log panel of their own.
+//! The global progress strip: while a job runs anywhere in the Platform
+//! Manager, its name, time and Details sit in the top bar ("Stopping
+//! ClickHouse on ST-DEV · 0:06 · Details") and a thin progress line runs
+//! along the bar's bottom edge. Both live inside the bar, so nothing on the
+//! page moves. Pages never insert a progress or log panel of their own.
 //!
 //! Every crate::jobs::Job reports here when it starts (Job::start). Its
 //! output goes to the Platform Manager's own log (About → Open the log) and
@@ -22,9 +23,6 @@ use crate::ui::{self, Tone};
 
 /// How long a finished job's message stays in the strip.
 const SHOW_DONE: Duration = Duration::from_secs(5);
-/// The strip's height (the page's top padding is larger, so a title under
-/// it stays readable).
-pub const HEIGHT: f32 = 30.;
 
 pub struct Strip {
     job: Option<Entity<Job>>,
@@ -104,17 +102,61 @@ fn open_details(job: Entity<Job>, label: Option<SharedString>, cx: &mut App) {
     crate::modal::open(crate::modal::Modal { title, body: view.into(), width: 760., on_close: None }, cx);
 }
 
+impl Strip {
+    /// A job is shown in the top bar.
+    pub fn active(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// The progress line under the top bar: (fraction or None while it
+    /// cannot say, its colour), or nothing when no job is shown.
+    pub fn line(&self, cx: &App) -> Option<AnyElement> {
+        let job = self.job.as_ref()?.read(cx);
+        let theme = cx.theme();
+        let (running, accent) = match job.state() {
+            JobState::Running => (true, theme.primary),
+            JobState::Done(_) => (false, theme.success_foreground),
+            JobState::Failed(_) => (false, theme.danger),
+            JobState::Idle => return None,
+        };
+        Some(
+            div()
+                .absolute()
+                .bottom_0()
+                .left_0()
+                .right_0()
+                .h(px(3.))
+                .bg(accent.opacity(0.25))
+                .child(match (running, job.percent()) {
+                    (true, Some(p)) => div().h_full().w(relative(p / 100.)).bg(accent).into_any_element(),
+                    (true, None) => div()
+                        .absolute()
+                        .top_0()
+                        .h_full()
+                        .w(relative(0.25))
+                        .bg(accent)
+                        .with_animation("strip-run", Animation::new(Duration::from_millis(1400)).repeat(), |d, t| d.left(relative(-0.25 + t * 1.25)))
+                        .into_any_element(),
+                    _ => div().h_full().w_full().bg(accent).into_any_element(),
+                })
+                .into_any_element(),
+        )
+    }
+}
+
+/// The job's name, time and Details as a chip in the top bar (its text takes
+/// the bar's colour); the line under the bar is `Strip::line`.
 impl Render for Strip {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(job_e) = self.job.clone() else { return div().into_any_element() };
-        let theme = cx.theme().clone();
         let job = job_e.read(cx);
         let (tone, text, running) = match job.state() {
             JobState::Running => {
                 let step = job.step().clone();
                 let name = match (&self.label, step.is_empty()) {
                     (Some(l), true) => l.to_string(),
-                    (Some(l), false) if l.as_ref() != step.as_ref() => format!("{l}: {step}"),
+                    // The step adds something only when the name does not say it.
+                    (Some(l), false) if !l.to_lowercase().contains(&step.to_lowercase()) => format!("{l}: {step}"),
                     (Some(l), false) => l.to_string(),
                     (None, _) => step.to_string(),
                 };
@@ -125,59 +167,63 @@ impl Render for Strip {
             JobState::Failed(m) => (Tone::Bad, crate::remote::split_failure(m).0, false),
             JobState::Idle => return div().into_any_element(),
         };
-        let percent = job.percent();
         let label = self.label.clone();
-        let accent = match tone {
-            Tone::Good => theme.success_foreground,
-            Tone::Bad => theme.danger,
-            _ => theme.primary,
-        };
-        let bar = div().absolute().bottom_0().left_0().right_0().h(px(2.)).bg(accent.opacity(0.18)).child(match (running, percent) {
-            (true, Some(p)) => div().h_full().w(relative(p / 100.)).bg(accent).into_any_element(),
-            (true, None) => div()
-                .absolute()
-                .top_0()
-                .h_full()
-                .w(relative(0.25))
-                .bg(accent)
-                .with_animation("strip-run", Animation::new(Duration::from_millis(1400)).repeat(), |d, t| d.left(relative(-0.25 + t * 1.25)))
+        let mark = match tone {
+            Tone::Good => gpui_kit::component::Icon::new(IconName::CircleCheck).small().into_any_element(),
+            Tone::Bad => gpui_kit::component::Icon::new(IconName::CircleX).small().text_color(rgb(0xfca5a5)).into_any_element(),
+            _ => gpui_kit::component::Icon::new(IconName::LoaderCircle)
+                .small()
+                .with_animation("strip-spin", Animation::new(Duration::from_millis(1000)).repeat(), |i, t| i.transform(Transformation::rotate(percentage(t))))
                 .into_any_element(),
-            _ => div().h_full().w_full().bg(accent).into_any_element(),
-        });
+        };
         h_flex()
             .id("progress-strip")
-            .occlude()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .h(px(HEIGHT))
-            .px_4()
-            .gap_3()
+            .min_w_0()
+            .max_w(px(560.))
+            .h(px(28.))
+            .pl(px(10.))
+            .pr(px(4.))
+            .gap_2()
             .items_center()
-            .bg(theme.background)
-            .border_b_1()
-            .border_color(theme.border)
-            .shadow_sm()
+            .rounded(px(8.))
+            .bg(black().opacity(0.18))
             .text_size(px(13.))
-            .child(match tone {
-                Tone::Good => gpui_kit::component::Icon::new(IconName::CircleCheck).small().text_color(accent).into_any_element(),
-                Tone::Bad => gpui_kit::component::Icon::new(IconName::CircleX).small().text_color(accent).into_any_element(),
-                _ => div().size(px(8.)).rounded_full().bg(accent).into_any_element(),
-            })
-            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if matches!(tone, Tone::Bad) { theme.danger } else { theme.foreground }).child(text))
-            .child(crate::ui::button("strip-details").ghost().xsmall().label("Details").on_click(move |_, _, cx| match job_e.read(cx).details() {
-                Some(open) => open(cx),
-                None => open_details(job_e.clone(), label.clone(), cx),
-            }))
+            .child(mark)
+            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(text))
+            .child(
+                div()
+                    .id("strip-details")
+                    .flex_shrink_0()
+                    .px(px(8.))
+                    .py(px(2.))
+                    .rounded(px(6.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .underline()
+                    .cursor_pointer()
+                    .hover(|d| d.bg(white().opacity(0.12)))
+                    .child("Details")
+                    .on_click(move |_, _, cx| match job_e.read(cx).details() {
+                        Some(open) => open(cx),
+                        None => open_details(job_e.clone(), label.clone(), cx),
+                    }),
+            )
             .when(!running, |r| {
-                r.child(crate::ui::button("strip-close").ghost().xsmall().icon(IconName::Close).on_click(cx.listener(|s, _, _, cx| {
-                    s.job = None;
-                    s._observe = None;
-                    cx.notify();
-                })))
+                r.child(
+                    div()
+                        .id("strip-close")
+                        .flex_shrink_0()
+                        .p(px(3.))
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .hover(|d| d.bg(white().opacity(0.12)))
+                        .child(gpui_kit::component::Icon::new(IconName::Close).xsmall())
+                        .on_click(cx.listener(|s, _, _, cx| {
+                            s.job = None;
+                            s._observe = None;
+                            cx.notify();
+                        })),
+                )
             })
-            .child(bar)
             .into_any_element()
     }
 }

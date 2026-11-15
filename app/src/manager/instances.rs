@@ -1106,6 +1106,16 @@ impl Render for InstancesPage {
                 }
             }
         }
+        // Screens: an instance's logs dialog (SPM_DEBUG_INSTANCE_LOGS=<id>).
+        #[cfg(debug_assertions)]
+        {
+            static LOGS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if let Ok(id) = std::env::var("SPM_DEBUG_INSTANCE_LOGS") {
+                if !LOGS.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    self.show_logs(&id, window, cx);
+                }
+            }
+        }
         self.sync_dialogs(window, cx);
         let local = self.local_card(cx);
         let cards: Vec<AnyElement> = self.list.clone().iter().map(|i| self.remote_card(i, cx)).collect();
@@ -1400,32 +1410,6 @@ fn os_brand(d: &Detected) -> (&'static str, u32, bool) {
     }
 }
 
-/// The system's logo on a tile.
-pub fn os_tile(d: &Detected, size: f32) -> impl IntoElement {
-    let (name, color, dark_tile) = match (d.os, d.distro.as_str()) {
-        (Os::Windows, _) => ("windows", 0x0078d4, false),
-        (_, "ubuntu") => ("ubuntu", 0xe95420, false),
-        (_, "debian") => ("debian", 0xa81d33, false),
-        (_, "rhel") => ("redhat", 0xee0000, false),
-        (_, "fedora") => ("fedora", 0x51a2da, false),
-        (_, "centos") => ("centos", 0x262577, false),
-        (_, "rocky") => ("rockylinux", 0x10b981, false),
-        (_, "almalinux") => ("almalinux", 0x0f4266, false),
-        (_, "arch") => ("archlinux", 0x1793d1, false),
-        (_, id) if id.starts_with("opensuse") => ("opensuse", 0x73ba25, false),
-        (_, "raspbian") => ("raspberrypi", 0xa22846, false),
-        _ => ("linux", 0xfcc624, true),
-    };
-    div()
-        .flex_shrink_0()
-        .size(px(size))
-        .rounded(px(8.))
-        .bg(if dark_tile { rgb(0x1f1f1f) } else { rgba(color << 8 | 0x1f) })
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(ui::brand_mark(name, rgb(color).into(), size * 0.6))
-}
 
 fn default_key() -> String {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(std::path::PathBuf::from).unwrap_or_default();
