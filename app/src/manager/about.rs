@@ -111,12 +111,14 @@ impl Render for AboutPage {
             (Some(f), None) if f.manager.is_ok() => Some((Tone::Good, "Up to date")),
             _ => None,
         };
-        let checked_line = match &u.found {
-            _ if checking => "checking for updates…".to_string(),
-            Some(f) if f.manager.is_ok() => format!("checked {last}"),
-            Some(_) => "the last check did not answer".to_string(),
-            None => "not checked yet".to_string(),
+        // The version alone until a check has answered, then what it found.
+        let checked_line = match (&u.found, u.manager()) {
+            _ if checking => " · checking for updates…".to_string(),
+            (_, Some(o)) => format!(" · {} available", o.version),
+            (Some(f), None) if f.manager.is_ok() => " · up to date".to_string(),
+            _ => String::new(),
         };
+        let _ = &last;
         // The mockup's K6: one centred column; the product line with its
         // state and buttons on the right; captioned groups; icon tiles; the
         // paths as a footer line.
@@ -131,7 +133,7 @@ impl Render for AboutPage {
                         .flex_1()
                         .min_w(px(200.))
                         .child(div().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child("SENTIENT Platform Manager"))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Version {version} (build {}) · {checked_line}", crate::updates::build_commit()))),
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Version {version} (build {}){checked_line}", crate::updates::build_commit()))),
                 )
                 .child(
                     h_flex()
@@ -170,10 +172,12 @@ impl Render for AboutPage {
                     .gap_3()
                     .flex_wrap()
                     .items_stretch()
-                    .child(tile(&theme, "about-log", IconName::File, "Open the log", "What the Platform Manager did, with times.").on_click(move |_, _, cx| {
-                        if log_path.exists() {
-                            ui::open_url(&log_path.display().to_string(), cx);
-                        }
+                    .child(tile(&theme, "about-log", IconName::File, "Open the log", "What the Platform Manager did, with times.").on_click(move |_, window, cx| {
+                        // In the app, with the Logs page's tools: never an
+                        // outside program that may fail silently.
+                        let path = log_path.clone();
+                        let view = cx.new(|cx| crate::manager::logs::LogView::file(path, window, cx));
+                        crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., on_close: None }, cx);
                     }))
                     .child(
                         tile(&theme, "about-support", IconName::ArrowDown, "Create a support file", if self.making { "Collecting…" } else { "Logs, versions and settings in one file, without passwords." })

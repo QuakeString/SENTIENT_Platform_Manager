@@ -252,12 +252,37 @@ struct Chart {
 }
 
 /// A round top for a chart's scale: 1, 2 or 5 times a power of ten.
+/// A chart's top: the smallest of 1, 2, 4, 5 × 10^n at or above `v`, so
+/// its half (the middle grid line) is round too (0.5, 1, 2, 2.5).
 fn nice(v: f32) -> f32 {
     if v <= 0. {
         return 1.;
     }
     let p = 10f32.powf(v.log10().floor());
-    [1., 2., 5., 10.].iter().map(|m| m * p).find(|c| *c >= v).unwrap_or(10. * p)
+    [1., 2., 4., 5., 10.].iter().map(|m| m * p).find(|c| *c >= v * 0.9999).unwrap_or(10. * p)
+}
+
+/// Memory's top: the total rounded up to a power of two (31 GB → 32, 7 → 8).
+fn nice_memory(total: f32) -> f32 {
+    let mut t = 1.;
+    while t < total * 0.999 {
+        t *= 2.;
+    }
+    t
+}
+
+/// A scale label: as many decimals as the middle line needs, so the three
+/// labels are always distinct (0, 0.25, 0.5; 0, 1, 2).
+pub(crate) fn tick(v: f32, max: f32) -> String {
+    if v == 0. {
+        return "0".into();
+    }
+    let mid = max / 2.;
+    let decimals = (0..=2).find(|d| {
+        let f = 10f32.powi(*d);
+        ((mid * f).round() - mid * f).abs() < 1e-3
+    });
+    format!("{v:.*}", decimals.unwrap_or(2) as usize)
 }
 
 fn mb(v: f64) -> f32 {
@@ -278,13 +303,14 @@ fn charts(points: &[Sample]) -> Vec<Chart> {
     let rx = col(&|s| mb(s.rx));
     let tx = col(&|s| mb(s.tx));
     let io = col(&|s| mb(s.io.unwrap_or(0.)));
+    // Rates keep a floor of 1 MB/s, so a quiet line is not stretched.
     let io_max = nice(peak(&io).max(1.));
     vec![
         Chart { title: "Processor", values: col(&|s| s.cpu), max: 100., fmt: |v| format!("{v:.0} %"), axis: |v| format!("{v:.0}"), high: last.is_some_and(|s| s.cpu_high()) },
-        Chart { title: "Memory", values: col(&|s| gb(s.mem_used)), max: mem_total, fmt: |v| format!("{v:.1} GB"), axis: |v| if v.fract() == 0. { format!("{v:.0}") } else { format!("{v:.1}") }, high: last.is_some_and(|s| s.mem_high()) },
+        Chart { title: "Memory", values: col(&|s| gb(s.mem_used)), max: nice_memory(mem_total), fmt: |v| format!("{v:.1} GB"), axis: |v| format!("{v}"), high: last.is_some_and(|s| s.mem_high()) },
         Chart { title: "Processor load", max: nice(peak(&load).max(cores)), values: load, fmt: |v| format!("{v:.2}"), axis: |v| if v.fract() == 0. { format!("{v:.0}") } else { format!("{v:.1}") }, high: last.is_some_and(|s| s.load.unwrap_or(0.) > s.cores as f32) },
-        Chart { title: "Network received", max: nice(peak(&rx).max(0.1)), values: rx, fmt: |v| format!("{v:.1} MB/s"), axis: |v| if v == 0. || (v >= 1. && v.fract() == 0.) { format!("{v:.0}") } else { format!("{v:.1}") }, high: false },
-        Chart { title: "Network sent", max: nice(peak(&tx).max(0.1)), values: tx, fmt: |v| format!("{v:.1} MB/s"), axis: |v| if v == 0. || (v >= 1. && v.fract() == 0.) { format!("{v:.0}") } else { format!("{v:.1}") }, high: false },
+        Chart { title: "Network received", max: nice(peak(&rx).max(1.)), values: rx, fmt: |v| format!("{v:.1} MB/s"), axis: |v| if v == 0. || (v >= 1. && v.fract() == 0.) { format!("{v:.0}") } else { format!("{v:.1}") }, high: false },
+        Chart { title: "Network sent", max: nice(peak(&tx).max(1.)), values: tx, fmt: |v| format!("{v:.1} MB/s"), axis: |v| if v == 0. || (v >= 1. && v.fract() == 0.) { format!("{v:.0}") } else { format!("{v:.1}") }, high: false },
         // Disk activity is high when it runs near its own peak for the
         // range and that peak is real work (over 50 MB/s).
         Chart { title: "Disk activity", high: io.last().is_some_and(|v| *v >= 50. && *v >= io_max * 0.8), max: io_max, values: io, fmt: |v| format!("{v:.0} MB/s"), axis: |v| format!("{v:.0}") },
@@ -355,7 +381,7 @@ impl StatsPage {
             },
         )
         .size_full();
-        let axis = |f: f32| div().text_size(px(10.5)).text_color(theme.muted_foreground).font_features(ui::tabular()).child((c.axis)(c.max * f));
+        let axis = |f: f32| div().text_size(px(10.5)).text_color(theme.muted_foreground).font_features(ui::tabular()).child(tick(c.max * f, c.max));
         let tip = hover.map(|k| {
             let at = if self.range == Range::Live {
                 let ago = times.last().copied().unwrap_or(0) - times.get(k).copied().unwrap_or(0);
@@ -382,6 +408,7 @@ impl StatsPage {
         let empty = n < 2;
         let plot_bounds = bounds;
         ui::panel(&theme)
+            .flex_1()
             .gap_1()
             .min_w_0()
             .child(
@@ -566,7 +593,13 @@ impl Render for StatsPage {
         let services = latest.as_ref().map(|s| services_panel(&theme, s)).unwrap_or_else(|| ui::panel(&theme));
         let db = database_panel(&theme, latest.as_ref(), &self.day);
         col = col.child(if side_by_side {
-            h_flex().gap(px(10.)).items_start().child(div().flex_grow(1.6).flex_basis(px(0.)).min_w_0().child(services)).child(div().flex_grow(1.).flex_basis(px(0.)).min_w_0().child(db)).into_any_element()
+            // Siblings in a row share its height.
+            h_flex()
+                .gap(px(10.))
+                .items_stretch()
+                .child(div().flex_grow(1.6).flex_basis(px(0.)).min_w_0().flex().flex_col().child(services.flex_1()))
+                .child(div().flex_grow(1.).flex_basis(px(0.)).min_w_0().flex().flex_col().child(db.flex_1()))
+                .into_any_element()
         } else {
             v_flex().gap(px(10.)).child(services).child(db).into_any_element()
         });
@@ -687,4 +720,24 @@ fn database_panel(theme: &gpui_kit::component::Theme, latest: Option<&Sample>, d
         None => "None".into(),
     };
     p.child(fact("Last backup", last))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{nice, nice_memory, tick};
+
+    #[test]
+    fn scales_are_round_and_labels_distinct() {
+        assert_eq!(nice_memory(31.), 32.);
+        assert_eq!(nice_memory(7.), 8.);
+        assert_eq!(nice(0.3), 0.4);
+        assert_eq!(nice(1.), 1.);
+        assert_eq!(nice(130.), 200.);
+        let labels = |max: f32| [tick(0., max), tick(max / 2., max), tick(max, max)];
+        assert_eq!(labels(1.), ["0", "0.5", "1.0"]);
+        assert_eq!(labels(32.), ["0", "16", "32"]);
+        assert_eq!(labels(5.), ["0", "2.5", "5.0"]);
+        assert_eq!(labels(0.4), ["0", "0.2", "0.4"]);
+        assert_eq!(labels(100.), ["0", "50", "100"]);
+    }
 }

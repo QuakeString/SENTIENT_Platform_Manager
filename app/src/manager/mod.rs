@@ -52,14 +52,15 @@ enum Page {
     /// About and preferences of the Platform Manager (the (i) at the
     /// bottom of the menu, not a menu entry).
     About,
-    /// Statistics: opened from the top bar's monitors, not a menu entry.
+    /// Statistics: in the menu under Status, and opened from the top bar's monitors.
     Statistics,
 }
 
 impl Page {
     /// The menu, in its order: Platform settings last.
-    const ALL: [Page; 9] = [
+    const ALL: [Page; 10] = [
         Page::Status,
+        Page::Statistics,
         Page::Control,
         Page::Logs,
         Page::Update,
@@ -175,7 +176,7 @@ impl Manager {
         let page = args
             .windows(2)
             .find(|w| w[0] == "--page")
-            .and_then(|w| Page::ALL.into_iter().chain([Page::Instances, Page::About, Page::Statistics]).find(|p| p.id() == w[1]))
+            .and_then(|w| Page::ALL.into_iter().chain([Page::Instances, Page::About]).find(|p| p.id() == w[1]))
             .unwrap_or(Page::Status);
         let record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
         let installed = record.as_ref().map(|r| r.sentient_version.clone());

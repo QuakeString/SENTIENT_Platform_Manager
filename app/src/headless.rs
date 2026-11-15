@@ -671,7 +671,9 @@ fn print_candidates(found: &[crate::adopt::Candidate]) {
 /// The SENTIENT version to show. A stack taken over from its own compose file
 /// may record an image tag such as "latest": then the running container's
 /// version label says which SENTIENT it is.
-fn shown_version(record: &InstallationRecord) -> String {
+/// SENTIENT's version as shown: an image tag like "latest" with the real
+/// version from the image's label, "4.4.0.2 (image tag latest)".
+pub(crate) fn shown_version(record: &InstallationRecord) -> String {
     let recorded = record.sentient_version.clone();
     let numbered = recorded.split('.').next().is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
     if numbered || record.engine != crate::installation::Engine::Docker {
@@ -684,7 +686,10 @@ fn shown_version(record: &InstallationRecord) -> String {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|v| !v.is_empty() && v != "<no value>" && v != "dev");
-    label.unwrap_or_else(|| format!("version unknown (image tag {recorded})"))
+    match label {
+        Some(v) => format!("{v} (image tag {recorded})"),
+        None => format!("version unknown (image tag {recorded})"),
+    }
 }
 
 /// This computer's state for the Platform Manager on another computer.

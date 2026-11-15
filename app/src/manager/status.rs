@@ -33,6 +33,8 @@ pub struct StatusPage {
     adopt_job: Entity<Job>,
     /// Start, offered here while SENTIENT is stopped.
     start_job: Entity<Job>,
+    /// SENTIENT's version as shown ("4.4.0.2 (image tag latest)").
+    shown_version: Option<String>,
     /// The gateway on this computer (None while looking).
     gateway: Option<sentient_installer_core::gateway::Status>,
     updates: Entity<crate::updates::UpdateState>,
@@ -119,16 +121,19 @@ impl StatusPage {
     pub fn new(record: Option<InstallationRecord>, updates: Entity<crate::updates::UpdateState>, cx: &mut Context<Self>) -> Self {
         let poll = record.as_ref().map(|record| {
             let platform = record.platform();
+            let rec = record.clone();
             cx.spawn(async move |this, cx| {
                 loop {
                     let platform = platform.clone();
-                    let snapshot = cx
+                    let rec = rec.clone();
+                    let (snapshot, version) = cx
                         .background_executor()
-                        .spawn(async move { platform.snapshot() })
+                        .spawn(async move { (platform.snapshot(), crate::headless::shown_version(&rec)) })
                         .await;
                     let alive = this
                         .update(cx, |page, cx| {
                             page.snapshot = Some(snapshot);
+                            page.shown_version = Some(version);
                             cx.notify();
                         })
                         .is_ok();
@@ -163,6 +168,7 @@ impl StatusPage {
             found: None,
             adopt_job,
             start_job,
+            shown_version: None,
             gateway: None,
             updates,
             db: None,
@@ -458,7 +464,7 @@ impl Render for StatusPage {
                             move |_, _, cx| ui::open_sentient(record.stack.http_port, record.opens_as_kiosk(), cx)
                         }))),
                 )
-                .child(ui::fact(&theme, "SENTIENT version", record.sentient_version.clone()))
+                .child(ui::fact(&theme, "SENTIENT version", self.shown_version.clone().unwrap_or_else(|| record.sentient_version.clone())))
                 .child(ui::fact(&theme, "Database", flavor_label(record.flavor())))
                 .child(ui::fact(
                     &theme,

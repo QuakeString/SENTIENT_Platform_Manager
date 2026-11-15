@@ -33,12 +33,57 @@ const ORIGINAL_WAYLAND: &str = "SPM_ORIGINAL_WAYLAND_DISPLAY";
 
 /// Open `url` in the browser, on the desktop's own display server.
 pub fn open_url(url: &str, cx: &mut App) {
+    // Linux: xdg-open, and its answer is checked: a link or folder that
+    // cannot be opened says so instead of doing nothing.
     #[cfg(target_os = "linux")]
-    if let Some(wayland) = std::env::var_os(ORIGINAL_WAYLAND) {
-        let _ = std::process::Command::new("xdg-open").arg(url).env("WAYLAND_DISPLAY", wayland).spawn();
-        return;
+    {
+        let url = url.to_string();
+        cx.spawn(async move |cx| {
+            let u = url.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut c = std::process::Command::new("xdg-open");
+                    c.arg(&u);
+                    if let Some(wayland) = std::env::var_os(ORIGINAL_WAYLAND) {
+                        c.env("WAYLAND_DISPLAY", wayland);
+                    }
+                    match c.output() {
+                        Ok(o) if o.status.success() => Ok(()),
+                        Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+                        Err(e) => Err(format!("xdg-open: {e}")),
+                    }
+                })
+                .await;
+            if let Err(e) = result {
+                cx.update(|cx| show_error("Could not open it", format!("{url} could not be opened.{}", if e.is_empty() { String::new() } else { format!("\n{e}") }), cx));
+            }
+        })
+        .detach();
     }
+    #[cfg(not(target_os = "linux"))]
     cx.open_url(url);
+}
+
+/// A short error in the shared dialog, with Close (no window needed).
+pub fn show_error(title: impl Into<SharedString>, text: impl Into<SharedString>, cx: &mut App) {
+    struct ErrorBody(SharedString);
+    impl Render for ErrorBody {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            use gpui_kit::component::ActiveTheme as _;
+            let theme = cx.theme().clone();
+            gpui_kit::component::v_flex()
+                .gap_4()
+                .child(div().text_sm().text_color(theme.muted_foreground).child(self.0.clone()))
+                .child(gpui_kit::component::h_flex().justify_end().child({
+                    use gpui_kit::component::button::ButtonVariants as _;
+                    button("error-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx))
+                }))
+        }
+    }
+    let text = text.into();
+    let view = cx.new(|_| ErrorBody(text));
+    crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 480., on_close: None }, cx);
 }
 
 /// Open SENTIENT on `port`: full screen like the kiosk shortcut when the
