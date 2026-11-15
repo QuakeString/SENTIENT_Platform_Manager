@@ -17,7 +17,7 @@ publish = false
 # server agent: --job, status, logs, backups and the rest, with no desktop
 # libraries at all (crate::remote copies it to servers).
 default = ["gui"]
-gui = ["dep:gpui-kit", "dep:ksni", "dep:tray-icon", "dep:png", "dep:notify-rust"]
+gui = ["dep:gpui-kit", "dep:ksni", "dep:tray-icon", "dep:png", "dep:notify-rust", "dep:windows"]
 
 [build-dependencies]
 winresource = "0.1"
@@ -55,9 +55,18 @@ raw-window-handle = "0.6"
 # GNOME with its AppIndicator extension), the notification area on Windows.
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { version = "0.3", optional = true, default-features = false, features = ["blocking", "async-io"] }
+
+# Desktop notifications (crate::bg_app): Linux and Windows (toasts).
+[target.'cfg(any(target_os = "linux", windows))'.dependencies]
 notify-rust = { version = "4", optional = true }
 
 [target.'cfg(windows)'.dependencies.tray-icon]
 version = "0.26"
 optional = true
 default-features = false
+
+# The taskbar Jump List, the AppUserModelID (crate::win_shell).
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.61"
+optional = true
+features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_Storage_EnhancedStorage", "Win32_System_Variant"]

@@ -101,6 +101,11 @@ pub fn start(options: fn(&mut App) -> WindowOptions, open_window: bool, request:
     };
     let running = tray.is_some();
     cx.set_global(Bg { prefs, tray, tx, manager: None, window: None, options });
+    // The taskbar's right-click Tasks (Windows).
+    #[cfg(windows)]
+    if let Err(e) = crate::win_shell::update_jump_list() {
+        crate::maintenance_ops::log_line(&format!("The taskbar Jump List was not set up: {e}"));
+    }
     // The bell's strip lives as long as the app (jobs survive a closed window).
     crate::manager::strip::install(cx);
     // Screens: problems as the checks would find them.
@@ -353,9 +358,12 @@ fn desktop_notification(summary: &str, body: &str) {
     {
         let _ = notify_rust::Notification::new().appname("SENTIENT Platform Manager").icon("sentient-platform-manager").summary(summary).body(body).show();
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
     {
-        // Windows: the tray's tooltip carries the count; toasts follow.
+        let _ = notify_rust::Notification::new().app_id(crate::win_shell::AUMID).summary(summary).body(body).show();
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
         let _ = (summary, body);
     }
 }

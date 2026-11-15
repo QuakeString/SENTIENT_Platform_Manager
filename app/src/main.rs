@@ -14,6 +14,8 @@ mod bg_app;
 mod tray;
 #[cfg(all(windows, feature = "gui"))]
 mod win_icon;
+#[cfg(all(windows, feature = "gui"))]
+mod win_shell;
 mod agent;
 #[cfg(feature = "gui")]
 mod assets;
@@ -186,6 +188,12 @@ fn gui_main(args: Vec<String>) {
     }
     if !elevate::ensure_admin() {
         return;
+    }
+    // The taskbar button, its Jump List and the toasts belong to the
+    // Platform Manager (not Setup's window).
+    #[cfg(windows)]
+    if mode == AppMode::Manager {
+        win_shell::set_app_id();
     }
     // The downloaded Platform Manager replacing the installed one.
     if args.get(1).map(String::as_str) == Some("--self-update") {

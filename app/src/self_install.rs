@@ -117,6 +117,15 @@ mod imp {
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
+        if ok {
+            // The Platform Manager's AppUserModelID: its Jump List and toasts.
+            #[cfg(feature = "gui")]
+            if !args.contains("--open-sentient") {
+                if let Err(e) = crate::win_shell::set_shortcut_app_id(Path::new(&lnk)) {
+                    crate::maintenance_ops::log_line(&format!("The shortcut {lnk} has no app id: {e}"));
+                }
+            }
+        }
         if ok { Ok(()) } else { Err(format!("Could not create the {name} shortcut")) }
     }
 
