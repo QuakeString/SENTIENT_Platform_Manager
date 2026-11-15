@@ -48,6 +48,13 @@ impl<T> Read<T> {
     }
 }
 
+/// The server agent update started when a server is opened.
+enum AgentRefresh {
+    Idle,
+    Running,
+    Failed(String),
+}
+
 pub struct RemotePages {
     inst: Instance,
     pub kind: Kind,
@@ -72,6 +79,8 @@ pub struct RemotePages {
     versions: Read<Vec<crate::online::Version>>,
     /// "add-if-one" ran once for this instance.
     auto_add_tried: bool,
+    /// The server agent update that runs when the server is opened.
+    agent_refresh: AgentRefresh,
     /// Platform settings: the open tab (crate::manager::settings::TAB_TITLES).
     settings_tab: usize,
     /// Control: the service whose own action runs now.
@@ -129,6 +138,7 @@ impl RemotePages {
             svc_busy: None,
             settings_tab: 0,
             auto_add_tried: false,
+            agent_refresh: AgentRefresh::Idle,
             updates,
             follow: true,
             job,
@@ -166,9 +176,16 @@ impl RemotePages {
     fn refresh_agent(&mut self, cx: &mut Context<Self>) {
         #[cfg(debug_assertions)]
         if std::env::var_os("SPM_DEBUG_REMOTE_STATUS").is_some() {
+            // Development aid: show a refresh state (screens).
+            self.agent_refresh = match std::env::var("SPM_DEBUG_AGENT_REFRESH").as_deref() {
+                Ok("updating") => AgentRefresh::Running,
+                Ok("failed") => AgentRefresh::Failed("The server did not answer (address, port or firewall).".into()),
+                _ => AgentRefresh::Idle,
+            };
             return;
         }
         let inst = self.inst.clone();
+        self.agent_refresh = AgentRefresh::Running;
         let task = cx.spawn(async move |this, cx| {
             let done = cx
                 .background_executor()
@@ -177,9 +194,17 @@ impl RemotePages {
                     remote::deploy(&inst, &sentient_installer_core::progress::noop())
                 })
                 .await;
-            if done.is_ok() {
-                this.update(cx, |p, cx| p.reload(cx)).ok();
-            }
+            this.update(cx, |p, cx| {
+                match done {
+                    Ok(_) => {
+                        p.agent_refresh = AgentRefresh::Idle;
+                        p.reload(cx);
+                    }
+                    Err(e) => p.agent_refresh = AgentRefresh::Failed(e.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
         });
         self._tasks.push(task);
     }
@@ -429,15 +454,22 @@ impl RemotePages {
                             div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!("This SENTIENT was started with an extra compose file that no longer exists: {f}"))
                         }))
                         .child(ui::fact(&theme, "Server", format!("{} · {} {}", self.inst.address(), det.os_name, det.arch)))
-                        .child({
-                            let here = crate::updates::manager_version();
-                            let older = sentient_installer_core::releases::is_newer(here, &s.manager_version, false);
+                        .child(
+                            // A pill only while the update runs or when it failed;
+                            // the normal state has none.
                             h_flex()
                                 .gap_3()
                                 .items_center()
                                 .child(ui::fact(&theme, "Server agent", s.manager_version.clone()).flex_1())
-                                .when(s.manager_version != here, |r| r.child(ui::pill(&theme, Tone::Neutral, if older { "Updated when the server is opened" } else { "Newer than this Platform Manager" })))
-                        }),
+                                .map(|r| match &self.agent_refresh {
+                                    AgentRefresh::Running => r.child(ui::pill(&theme, Tone::Warn, "Updating")),
+                                    AgentRefresh::Failed(why) => {
+                                        let why = SharedString::from(why.clone());
+                                        r.child(div().id("agent-failed").child(ui::pill(&theme, Tone::Bad, "Update failed")).tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(why.clone()).build(w, cx)))
+                                    }
+                                    AgentRefresh::Idle => r,
+                                }),
+                        ),
                 );
             }
         }
