@@ -1,17 +1,26 @@
-560 done light: chip right 469, monitors left 498: ok
-560 failed light: chip right 469, monitors left 498: ok
-560 running light: chip right 469, monitors left 498: ok
-800 done light: chip right 447, monitors left 503: ok
-800 failed light: chip right 447, monitors left 503: ok
-800 running light: chip right 447, monitors left 503: ok
-900 done light: chip right 547, monitors left 603: ok
-900 failed light: chip right 547, monitors left 603: ok
-900 running light: chip right 537, monitors left 603: ok
-1100 done light: chip right 591, monitors left 647: ok
-1100 failed light: chip right 591, monitors left 647: ok
-1100 running light: chip right 591, monitors left 647: ok
-1400 done light: chip right 718, monitors left 803: ok
-1400 failed light: chip right 747, monitors left 803: ok
-1400 running light: chip right 747, monitors left 803: ok
-560 running dark: chip right 469, monitors left 498: ok
-800 running dark: chip right 447, monitors left 503: ok
+560 dark none: monitors none; chip right –; first monitor left –; time : ok
+560 dark running: monitors none; chip right 485; first monitor left –; time drawn: ok
+560 light done: monitors none; chip right 488; first monitor left –; time drawn: ok
+560 light failed: monitors none; chip right 488; first monitor left –; time drawn: ok
+560 light none: monitors none; chip right –; first monitor left –; time : ok
+560 light running: monitors none; chip right 485; first monitor left –; time drawn: ok
+800 dark none: monitors m-cpu; chip right –; first monitor left 682; time : ok
+800 dark running: monitors m-cpu; chip right 606; first monitor left 682; time drawn: ok
+800 light done: monitors m-cpu; chip right 650; first monitor left 682; time drawn: ok
+800 light failed: monitors m-cpu; chip right 650; first monitor left 682; time drawn: ok
+800 light none: monitors m-cpu; chip right –; first monitor left 682; time : ok
+800 light running: monitors m-cpu; chip right 606; first monitor left 682; time drawn: ok
+900 light done: monitors m-cpu m-mem; chip right 600; first monitor left 633; time drawn: ok
+900 light failed: monitors m-cpu m-mem; chip right 600; first monitor left 633; time drawn: ok
+900 light none: monitors m-cpu m-mem; chip right –; first monitor left 633; time : ok
+900 light running: monitors m-cpu m-mem; chip right 549; first monitor left 633; time drawn: ok
+1100 dark none: monitors m-cpu m-mem m-disk; chip right –; first monitor left 541; time : ok
+1100 dark running: monitors m-cpu m-mem m-disk; chip right 503; first monitor left 541; time drawn: ok
+1100 light done: monitors m-cpu m-mem m-disk; chip right 506; first monitor left 541; time drawn: ok
+1100 light failed: monitors m-cpu m-mem m-disk; chip right 506; first monitor left 541; time drawn: ok
+1100 light none: monitors m-cpu m-mem m-disk; chip right –; first monitor left 541; time : ok
+1100 light running: monitors m-cpu m-mem m-disk; chip right 503; first monitor left 541; time drawn: ok
+1400 light done: monitors m-cpu m-mem m-disk; chip right 733; first monitor left 841; time drawn: ok
+1400 light failed: monitors m-cpu m-mem m-disk; chip right 795; first monitor left 841; time drawn: ok
+1400 light none: monitors m-cpu m-mem m-disk; chip right –; first monitor left 841; time : ok
+1400 light running: monitors m-cpu m-mem m-disk; chip right 805; first monitor left 841; time drawn: ok
