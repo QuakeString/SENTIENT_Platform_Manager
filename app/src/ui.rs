@@ -716,3 +716,20 @@ pub fn set_narrow(narrow: bool) {
 pub fn narrow() -> bool {
     NARROW.load(std::sync::atomic::Ordering::Relaxed)
 }
+
+/// Screens and layout tests: an invisible child that reports its parent's
+/// bounds on stderr as `LAYOUT <name> left right` (SPM_DEBUG_LAYOUT set).
+pub fn layout_probe(name: &'static str) -> impl IntoElement {
+    let on = cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_LAYOUT").is_some();
+    div().absolute().inset_0().when(on, move |d| {
+        d.child(
+            canvas(
+                move |bounds, _, _| {
+                    eprintln!("LAYOUT {name} {:.0} {:.0}", f32::from(bounds.origin.x), f32::from(bounds.origin.x + bounds.size.width));
+                },
+                |_, _, _, _| {},
+            )
+            .size_full(),
+        )
+    })
+}

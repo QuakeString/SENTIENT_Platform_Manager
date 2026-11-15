@@ -30,6 +30,9 @@ pub struct Strip {
     /// The window's width: below 900 the chip shows only its spinner, time
     /// and Details; at the minimum width only the spinner and time.
     pub window_w: std::cell::Cell<f32>,
+    /// The room the top bar leaves the chip between the switcher and the
+    /// monitors (the manager measures it each frame).
+    pub slot_w: std::cell::Cell<f32>,
     job: Option<Entity<Job>>,
     /// The job's name as the page called it (else its current step).
     label: Option<SharedString>,
@@ -44,7 +47,7 @@ impl Global for StripSlot {}
 
 /// The strip for this window (the manager makes it once).
 pub fn install(cx: &mut App) -> Entity<Strip> {
-    let strip = cx.new(|_| Strip { light_bar: std::cell::Cell::new(false), window_w: std::cell::Cell::new(1100.), job: None, label: None, finished_at: None, opened_for_failure: false, _observe: None, _hide: None });
+    let strip = cx.new(|_| Strip { light_bar: std::cell::Cell::new(false), window_w: std::cell::Cell::new(1100.), slot_w: std::cell::Cell::new(400.), job: None, label: None, finished_at: None, opened_for_failure: false, _observe: None, _hide: None });
     cx.set_global(StripSlot(strip.clone()));
     strip
 }
@@ -172,9 +175,11 @@ impl Render for Strip {
             JobState::Idle => return div().into_any_element(),
         };
         let label = self.label.clone();
-        let w = self.window_w.get();
-        let compact = w < 900.;
-        let tiny = w < 640. && running;
+        // What fits the slot: name + time + Details, then time + Details,
+        // then the time alone; the chip never reaches the monitors.
+        let slot = (self.slot_w.get() - 16.).max(0.);
+        let compact = running && slot < 260.;
+        let tiny = running && slot < 160.;
         let mark = match tone {
             Tone::Good => gpui_kit::component::Icon::new(IconName::CircleCheck).small().into_any_element(),
             Tone::Bad => gpui_kit::component::Icon::new(IconName::CircleX).small().text_color(rgb(0xfca5a5)).into_any_element(),
@@ -186,7 +191,10 @@ impl Render for Strip {
         h_flex()
             .id("progress-strip")
             .min_w_0()
-            .max_w(px(560.))
+            .max_w(px(slot.min(560.)))
+            .overflow_hidden()
+            .relative()
+            .child(crate::ui::layout_probe("chip"))
             .h(px(28.))
             .pl(px(10.))
             .pr(px(4.))
@@ -202,7 +210,8 @@ impl Render for Strip {
             // The time in a fixed slot, so Details does not move each second.
             .when(running, |r| {
                 let secs = job.step_elapsed().map(|d| d.as_secs()).unwrap_or(0);
-                r.child(crate::ui::live_value("99:59", 13., format!("{}:{:02}", secs / 60, secs % 60)).opacity(0.85))
+                let t = if secs >= 3600 { format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60) } else { format!("{}:{:02}", secs / 60, secs % 60) };
+                r.child(crate::ui::live_value("00:00:00", 13., t).opacity(0.85))
             })
             .when(!tiny, |r| r.child(
                 div()

@@ -38,6 +38,16 @@ pub fn choices_for(env: &str) -> Option<&'static [(&'static str, &'static str)]>
 }
 
 pub fn field(setting: &Setting, input: &Entity<InputState>, set: SetFn, file: FileButton, cx: &App) -> AnyElement {
+    match field_parts(setting, input, set, file, false, cx) {
+        (f, Some(button)) => h_flex().flex_1().min_w_0().gap_2().items_center().child(f).child(button).into_any_element(),
+        (f, None) => f,
+    }
+}
+
+/// The field and, for a file, its button apart: the All variables table puts
+/// every input at one width and the buttons in a column of their own
+/// (`table`: inputs fill their cell).
+pub fn field_parts(setting: &Setting, input: &Entity<InputState>, set: SetFn, file: FileButton, table: bool, cx: &App) -> (AnyElement, Option<AnyElement>) {
     let theme = cx.theme().clone();
     let env = setting.env.clone();
     if let Some(choices) = choices_for(&env) {
@@ -46,14 +56,17 @@ pub fn field(setting: &Setting, input: &Entity<InputState>, set: SetFn, file: Fi
         // A log filter ("info,sqlx=warn") counts by its overall level.
         let level = effective.split(',').next().unwrap_or("").trim().to_string();
         let at = choices.iter().position(|(_, v)| !v.is_empty() && (*v == effective || *v == level)).or_else(|| if now.is_empty() { choices.iter().position(|(_, v)| v.is_empty()) } else { None });
-        return ui::seg_track(&theme)
-            .children(choices.iter().enumerate().map(|(i, (label, value))| {
-                let set = set.clone();
-                ui::seg_item(&theme, SharedString::from(format!("{env}-c{i}")), *label, at == Some(i)).on_click(move |_, window, cx| set(value, window, cx))
-            }))
-            .into_any_element();
+        return (
+            ui::seg_track(&theme)
+                .children(choices.iter().enumerate().map(|(i, (label, value))| {
+                    let set = set.clone();
+                    ui::seg_item(&theme, SharedString::from(format!("{env}-c{i}")), *label, at == Some(i)).on_click(move |_, window, cx| set(value, window, cx))
+                }))
+                .into_any_element(),
+            None,
+        );
     }
-    match setting.kind() {
+    let el = match setting.kind() {
         ValueKind::Switch => {
             let now = input.read(cx).value().trim().to_string();
             let builtin = setting.default.clone();
@@ -75,7 +88,8 @@ pub fn field(setting: &Setting, input: &Entity<InputState>, set: SetFn, file: Fi
         ValueKind::Number(unit) => h_flex()
             .gap_2()
             .items_center()
-            .child(div().w(px(130.)).child(Input::new(input)))
+            .when(table, |r| r.flex_1().min_w_0())
+            .child(if table { div().flex_1().min_w_0().child(Input::new(input)) } else { div().w(px(130.)).child(Input::new(input)) })
             .when_some(unit, |r, u| r.child(div().text_sm().text_color(theme.muted_foreground).child(u)))
             .into_any_element(),
         ValueKind::File => {
@@ -83,15 +97,11 @@ pub fn field(setting: &Setting, input: &Entity<InputState>, set: SetFn, file: Fi
                 FileButton::Choose(f) => ("Choose…", f),
                 FileButton::Check(f) => ("Check", f),
             };
-            h_flex()
-                .flex_1()
-                .min_w_0()
-                .gap_2()
-                .items_center()
-                .child(div().flex_1().min_w(px(160.)).max_w(px(420.)).child(Input::new(input)))
-                .child(crate::ui::button(SharedString::from(format!("file-{env}"))).outline().label(label).on_click(move |_, window, cx| act(window, cx)))
-                .into_any_element()
+            let button = crate::ui::button(SharedString::from(format!("file-{env}"))).outline().label(label).on_click(move |_, window, cx| act(window, cx)).into_any_element();
+            let input_el = if table { div().flex_1().min_w_0().child(Input::new(input)) } else { div().flex_1().min_w(px(160.)).max_w(px(420.)).child(Input::new(input)) };
+            return (input_el.into_any_element(), Some(button));
         }
-        ValueKind::Text => div().flex_1().min_w(px(180.)).max_w(px(420.)).child(Input::new(input)).into_any_element(),
-    }
+        ValueKind::Text => if table { div().flex_1().min_w_0().child(Input::new(input)) } else { div().flex_1().min_w(px(180.)).max_w(px(420.)).child(Input::new(input)) }.into_any_element(),
+    };
+    (el, None)
 }

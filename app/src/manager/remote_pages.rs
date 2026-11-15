@@ -867,8 +867,8 @@ impl RemotePages {
         }));
         let active = self.settings_tab;
         let all: Vec<crate::catalog::Setting> = groups.iter().flat_map(|g| g.settings.iter().cloned()).collect();
-        let field_of = |st: &crate::catalog::Setting, cx: &mut Context<Self>| -> AnyElement {
-            let Some((_, input)) = self.inputs.iter().find(|(e, _)| *e == st.env) else { return div().into_any_element() };
+        let parts_of = |st: &crate::catalog::Setting, table: bool, cx: &mut Context<Self>| -> (AnyElement, Option<AnyElement>) {
+            let Some((_, input)) = self.inputs.iter().find(|(e, _)| *e == st.env) else { return (div().into_any_element(), None) };
             let this = cx.entity().downgrade();
             let inp = input.clone();
             let set: crate::manager::setting_field::SetFn = std::rc::Rc::new(move |v, window, cx| {
@@ -882,19 +882,20 @@ impl RemotePages {
                 let env = env.clone();
                 this.update(cx, |p, cx| p.check_file(env, path, cx)).ok();
             });
-            h_flex()
-                .flex_1()
-                .min_w_0()
-                .gap_2()
-                .items_center()
-                .child(crate::manager::setting_field::field(st, input, set, crate::manager::setting_field::FileButton::Check(check), cx))
-                .children(self.file_checks.get(&st.env).map(|r| match r {
-                    Read::Loading => ui::pill(&theme, Tone::Neutral, "Checking…"),
-                    Read::Got(true) => ui::pill(&theme, Tone::Good, "Found on the server"),
-                    Read::Got(false) => ui::pill(&theme, Tone::Bad, "Not on the server"),
-                    Read::Failed(_) => ui::pill(&theme, Tone::Warn, "Could not check"),
-                }))
-                .into_any_element()
+            let (f, button) = crate::manager::setting_field::field_parts(st, input, set, crate::manager::setting_field::FileButton::Check(check), table, cx);
+            let checked = self.file_checks.get(&st.env).map(|r| match r {
+                Read::Loading => ui::pill(&theme, Tone::Neutral, "Checking…"),
+                Read::Got(true) => ui::pill(&theme, Tone::Good, "Found on the server"),
+                Read::Got(false) => ui::pill(&theme, Tone::Bad, "Not on the server"),
+                Read::Failed(_) => ui::pill(&theme, Tone::Warn, "Could not check"),
+            });
+            (h_flex().flex_1().min_w_0().gap_2().items_center().child(f).children(checked).into_any_element(), button)
+        };
+        let field_of = |st: &crate::catalog::Setting, cx: &mut Context<Self>| -> AnyElement {
+            match parts_of(st, false, cx) {
+                (f, Some(b)) => h_flex().flex_1().min_w_0().gap_2().items_center().child(f).child(b).into_any_element(),
+                (f, None) => f,
+            }
         };
         let help = |st: &crate::catalog::Setting| {
             let default = if st.default.is_empty() { "SENTIENT's own".to_string() } else { st.default.clone() };
@@ -911,13 +912,13 @@ impl RemotePages {
         } else {
             let mut table = ui::panel(&theme).gap_0().overflow_hidden().child(local::table_header(&theme));
             for st in &all {
-                let field = field_of(st, cx);
+                let (field, action) = parts_of(st, true, cx);
                 table = table.child(local::table_row(
                     &theme,
                     st.short_label(),
                     help(st),
                     changed.contains(&st.env),
-                    local::table_cells(&theme, &st.env, field, local::builtin_label(st), None),
+                    local::table_cells(&theme, &st.env, field, action, local::builtin_label(st), None),
                 ));
             }
             col = col.child(table);

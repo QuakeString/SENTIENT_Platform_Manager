@@ -62,6 +62,7 @@ mod settings;
 #[cfg(feature = "gui")]
 mod standalone;
 mod support;
+mod stats;
 mod sysmon;
 #[cfg(feature = "gui")]
 mod theme;

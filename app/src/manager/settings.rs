@@ -652,8 +652,16 @@ impl SettingsPage {
 
     /// A catalog setting's field, by its kind (crate::manager::setting_field).
     fn field(&self, setting: &crate::catalog::Setting, cx: &mut Context<Self>) -> AnyElement {
+        match self.field_parts(setting, false, cx) {
+            (f, Some(b)) => h_flex().flex_1().min_w_0().gap_2().items_center().child(f).child(b).into_any_element(),
+            (f, None) => f,
+        }
+    }
+
+    /// The field and its file button apart (the All variables table).
+    fn field_parts(&self, setting: &crate::catalog::Setting, table: bool, cx: &mut Context<Self>) -> (AnyElement, Option<AnyElement>) {
         use crate::manager::setting_field::{self, FileButton};
-        let Some(input) = self.inputs.get(&setting.env) else { return div().into_any_element() };
+        let Some(input) = self.inputs.get(&setting.env) else { return (div().into_any_element(), None) };
         let this = cx.entity().downgrade();
         let key = setting.env.clone();
         let set: setting_field::SetFn = std::rc::Rc::new(move |v, window, cx| {
@@ -668,7 +676,7 @@ impl SettingsPage {
         let choose: setting_field::ActFn = std::rc::Rc::new(move |window, cx| {
             this.update(cx, |page, cx| page.choose_file(key.clone(), window, cx)).ok();
         });
-        setting_field::field(setting, input, set, FileButton::Choose(choose), cx)
+        setting_field::field_parts(setting, input, set, FileButton::Choose(choose), table, cx)
     }
 
     // ---- tabs --------------------------------------------------------------
@@ -1069,7 +1077,7 @@ impl SettingsPage {
                 rows += 1;
                 let key = s.env.clone();
                 let label: SharedString = if self.show_names { s.env.clone().into() } else { s.short_label().into() };
-                let field = self.field(s, cx);
+                let (field, action) = self.field_parts(s, true, cx);
                 table = table.child(table_row(
                     theme,
                     label,
@@ -1079,6 +1087,7 @@ impl SettingsPage {
                         theme,
                         &s.env,
                         field,
+                        action,
                         builtin_label(s),
                         set.then(|| {
                             crate::ui::button(SharedString::from(format!("reset-{}", s.env)))
@@ -1336,6 +1345,8 @@ pub(crate) fn table_header(theme: &gpui_kit::component::Theme) -> Div {
         .text_color(theme.muted_foreground)
         .child(div().w(px(LABEL_W)).min_w(px(120.)).flex_shrink(1.).child("Setting"))
         .child(div().flex_1().min_w(px(150.)).max_w(px(VALUE_W)).child("Value"))
+        .child(div().w(px(ACTION_W)).flex_shrink_0())
+        .child(div().flex_1())
         .child(div().w(px(BUILTIN_W)).flex_shrink_0().text_right().child("Built-in"))
 }
 
@@ -1343,17 +1354,21 @@ pub(crate) fn table_header(theme: &gpui_kit::component::Theme) -> Div {
 /// up to VALUE_W, so nothing crosses the panel at any window width.
 const LABEL_W: f32 = 220.;
 const BUILTIN_W: f32 = 120.;
+const ACTION_W: f32 = 84.;
 
 /// A table row's value and built-in cells (with `extra`, such as Reset,
 /// after the value). Shared with a remote server's table.
-pub(crate) fn table_cells(theme: &gpui_kit::component::Theme, key: &str, field: impl IntoElement, builtin: String, extra: Option<AnyElement>) -> Div {
+pub(crate) fn table_cells(theme: &gpui_kit::component::Theme, key: &str, field: impl IntoElement, action: Option<AnyElement>, builtin: String, extra: Option<AnyElement>) -> Div {
     let tip: SharedString = builtin.clone().into();
     h_flex()
         .flex_1()
         .min_w_0()
         .gap_3()
         .items_center()
-        .child(h_flex().flex_1().min_w(px(150.)).max_w(px(VALUE_W)).gap_2().items_center().child(div().flex_1().min_w_0().child(field)).children(extra))
+        // Every value field one width; a file's Check or Choose in a column
+        // of its own (empty where it does not apply).
+        .child(h_flex().flex_1().min_w(px(150.)).max_w(px(VALUE_W)).gap_2().items_center().child(h_flex().flex_1().min_w_0().child(field)).children(extra))
+        .child(h_flex().w(px(ACTION_W)).flex_shrink_0().children(action))
         .child(div().flex_1())
         .child(
             div()

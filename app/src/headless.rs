@@ -39,7 +39,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|configuration> | backup-verify <backup> | backup-delete <backup> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
+use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|configuration> | backup-verify <backup> | backup-delete <backup> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
 
 /// A console for the output: release builds on Windows have none of their
@@ -283,6 +283,42 @@ pub fn run(args: &[String]) -> i32 {
         };
         println!("{}", line.unwrap_or_default());
         return 0;
+    }
+    // Statistics (crate::stats): a live reading with the database numbers,
+    // one reading for the history (the sampler's timer), the history of the
+    // last <seconds>, and installing the sampler.
+    if job == "stats-live" {
+        let record = InstallationRecord::load();
+        println!("{}", serde_json::to_string(&crate::stats::read(record.as_ref(), std::time::Duration::from_secs(1), true)).unwrap_or_default());
+        return 0;
+    }
+    if job == "stats-sample" {
+        return match crate::stats::sample_now() {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+    }
+    if job == "stats-history" {
+        let secs: i64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(3600);
+        let h = crate::stats::history(&crate::stats::history_path(), secs, chrono::Utc::now().timestamp());
+        println!("{}", serde_json::to_string(&h).unwrap_or_default());
+        return 0;
+    }
+    if job == "stats-install" {
+        let exe = std::env::current_exe().unwrap_or_else(|_| crate::self_install::manager_exe());
+        return match crate::stats::install_sampler(&exe) {
+            Ok(how) => {
+                println!("The statistics sampler runs every minute ({how}).");
+                0
+            }
+            Err(e) => {
+                eprintln!("The statistics sampler could not be installed: {e}");
+                1
+            }
+        };
     }
     // The top bar's reading of this computer (crate::remote::monitor).
     if job == "monitor-json" {

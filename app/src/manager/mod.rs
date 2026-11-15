@@ -321,7 +321,10 @@ impl Manager {
         self.strip.read(cx).window_w.set(width);
         // The mockup's top bar: above 900 px the product name and the
         // monitors' bars show; below, only the switcher and the values.
-        let wide = width > 900.;
+        // Bars only on a wide window: the room under 1300 px goes to the values
+        // and the progress chip (always the same, so nothing moves when a job
+        // starts).
+        let wide = width > 1300.;
         let warn_fill: Hsla = rgb(0xf59e0b).into();
         let warn_text: Hsla = rgb(0xfcd34d).into();
         let meter = |id: &'static str, label: &'static str, widest: &'static str, value: String, fraction: f32, high: bool| {
@@ -361,17 +364,22 @@ impl Manager {
         let (show_cpu, show_mem, show_disk) = match shown {
             Some(_) => {
                 let bar = if wide { 48. } else { 0. };
-                let cpu = fits(16. + 70. + bar);
-                let mem = cpu && fits(16. + 140. + bar);
-                let disk = mem && fits(16. + 120. + bar);
+                let cpu = fits(16. + 16. + 80. + bar);
+                let mem = cpu && fits(16. + 160. + bar);
+                let disk = mem && fits(16. + 140. + bar);
                 (cpu, mem, disk)
             }
             None => (false, false, false),
         };
+        // What the monitors leave between the switcher and themselves: the
+        // progress chip's slot.
+        self.strip.read(cx).slot_w.set(room.max(0.));
         let monitor = shown.map(|m| {
             let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
             h_flex()
                 .id("monitor")
+                .relative()
+                .child(crate::ui::layout_probe("monitors"))
                 .gap(px(16.))
                 .px_2()
                 .py_1()
@@ -496,7 +504,7 @@ impl Manager {
                     }),
             )
             // A running job: its chip in the middle of the bar.
-            .child(h_flex().flex_1().min_w_0().justify_center().child(self.strip.clone()))
+            .child(h_flex().flex_1().min_w_0().overflow_hidden().justify_center().child(self.strip.clone()))
             .children(monitor)
             .child(
                 // The bell with an amber count, as in the mockup.
