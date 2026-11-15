@@ -87,6 +87,10 @@ fn keeps_running(cx: &App) -> bool {
 /// Start the manager: the background part when the tray is on, and the
 /// window unless started with `--background`.
 pub fn start(options: fn(&mut App) -> WindowOptions, open_window: bool, request: String, cx: &mut App) {
+    // GPUI quits by itself when the last window closes (Linux, Windows);
+    // here closing the window keeps the tray, so quitting is ours alone
+    // (on_window_closed below, Exit).
+    cx.set_quit_mode(QuitMode::Explicit);
     let prefs = Prefs::load();
     let (tx, mut rx) = unbounded::<Command>();
     let tray = if prefs.show_tray {
@@ -133,6 +137,7 @@ pub fn start(options: fn(&mut App) -> WindowOptions, open_window: bool, request:
             }
         }
         if cx.windows().is_empty() && !keeps_running(cx) {
+            crate::maintenance_ops::log_line("The window closed and there is no tray: quitting");
             crate::background::release();
             cx.quit();
         }

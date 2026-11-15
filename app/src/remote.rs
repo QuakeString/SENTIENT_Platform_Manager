@@ -506,6 +506,7 @@ fn debug_plan(compose: Option<&str>) -> sentient_installer_core::distro::adopt::
         loopback_port: Some(15432),
         problems: Vec::new(),
         new_file: "/var/lib/sentient-platform-manager/stack/docker-compose.yml".into(),
+        ..Default::default()
     }
 }
 

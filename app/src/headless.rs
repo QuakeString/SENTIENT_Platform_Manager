@@ -563,7 +563,14 @@ pub fn run(args: &[String]) -> i32 {
         // take-over-compose [--compose <file on this machine>]
         "take-over-compose" => {
             let compose = args.windows(2).find(|w| w[0] == "--compose").map(|w| w[1].clone());
-            crate::adopt::take_over_compose(record, compose.as_deref(), sink.clone()).map(|_| ())
+            // The password the operator gave, from a file only the account
+            // reads (never on the command line); the file goes at once.
+            let password = args.windows(2).find(|w| w[0] == "--db-password-file").map(|w| {
+                let p = std::fs::read_to_string(&w[1]).unwrap_or_default().trim_end_matches(['\r', '\n']).to_string();
+                let _ = std::fs::remove_file(&w[1]);
+                p
+            });
+            crate::adopt::take_over_compose(record, compose.as_deref(), password.as_deref(), sink.clone()).map(|_| ())
         }
         "repair" => crate::maintenance_ops::run_repair(record, sink.clone()),
         // Start, stop or restart SENTIENT (a remote instance's Control).

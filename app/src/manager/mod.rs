@@ -305,6 +305,7 @@ impl Manager {
                         loopback_port: (kind == "missing").then_some(15432),
                         problems: Vec::new(),
                         new_file: "/var/lib/sentient-platform-manager/stack/docker-compose.yml".into(),
+                        ..Default::default()
                     };
                     if let Some(c) = compose {
                         p.files = vec![(c, true)];

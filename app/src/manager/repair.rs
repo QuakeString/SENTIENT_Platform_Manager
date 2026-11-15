@@ -65,7 +65,7 @@ impl RepairPage {
     fn take_over(&mut self, compose: Option<String>, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         self.running = Some(Action::TakeOver);
-        self.job.update(cx, |job, cx| job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), sink).map(|_| ()), cx));
+        self.job.update(cx, |job, cx| job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), None, sink).map(|_| ()), cx));
     }
 
     fn start(&mut self, action: Action, cx: &mut Context<Self>) {

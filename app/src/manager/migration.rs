@@ -210,7 +210,7 @@ impl MigrationPage {
                 this.update(cx, |page, cx| {
                     let Some(record) = page.record.clone() else { return };
                     page.preflight = crate::manager::remote_pages::Preflight::Idle;
-                    page.job.update(cx, |job, cx| job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), sink).map(|_| ()), cx));
+                    page.job.update(cx, |job, cx| job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), None, sink).map(|_| ()), cx));
                 })
                 .ok();
             }),

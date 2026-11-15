@@ -173,7 +173,7 @@ impl SettingsPage {
                     let Some(record) = page.record.clone() else { return };
                     page.job.update(cx, |job, cx| {
                         job.set_label("Taking over the compose file");
-                        job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), sink).map(|_| ()), cx)
+                        job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), None, sink).map(|_| ()), cx)
                     });
                 })
                 .ok();
