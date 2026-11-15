@@ -49,16 +49,6 @@ enum Tab {
 
 impl Tab {
     const ALL: [Tab; 5] = [Tab::Platform, Tab::Database, Tab::Network, Tab::Retention, Tab::Advanced];
-
-    fn title(self) -> &'static str {
-        match self {
-            Tab::Platform => "Platform",
-            Tab::Database => "Database",
-            Tab::Network => "Network and certificates",
-            Tab::Retention => "Data retention",
-            Tab::Advanced => "Advanced",
-        }
-    }
 }
 
 /// PostgreSQL sized for the computer.

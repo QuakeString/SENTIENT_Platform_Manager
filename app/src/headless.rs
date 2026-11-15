@@ -295,7 +295,23 @@ pub fn run(args: &[String]) -> i32 {
             return 2;
         };
         let n = args.get(1).and_then(|n| n.parse().ok()).unwrap_or(300);
-        println!("{}", record.platform().logs(n));
+        // --sources: which logs this install has (JSON); --source <key>:
+        // one of them, by its key from that list only; --today: since midnight.
+        if args.iter().any(|a| a == "--sources") {
+            println!("{}", serde_json::to_string(&crate::logsource::available(&record)).unwrap_or_default());
+            return 0;
+        }
+        let today = args.iter().any(|a| a == "--today");
+        match args.windows(2).find(|w| w[0] == "--source").map(|w| w[1].as_str()) {
+            Some(key) => match crate::logsource::Source::from_key(key).filter(|s| crate::logsource::available(&record).contains(s)) {
+                Some(src) => println!("{}", crate::logsource::read(&record, src, n, today)),
+                None => {
+                    eprintln!("No such log here: {key}");
+                    return 2;
+                }
+            },
+            None => println!("{}", record.platform().logs(n)),
+        }
         return 0;
     }
     let Some(record) = InstallationRecord::load() else {

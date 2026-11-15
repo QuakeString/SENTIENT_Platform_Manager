@@ -765,12 +765,28 @@ pub fn follow(inst: &Instance, id: &str, sink: &ProgressFn) -> Result<(), String
 
 /// The last lines of SENTIENT's log on the server.
 pub fn logs(inst: &Instance, lines: u32) -> Result<String, String> {
-    let pw = secret(&inst.id);
-    let _ = pw;
     spm_job(inst, &format!("logs {lines}"))
 }
 
-/// The server runs Windows.
+/// One log source on the server: the last `lines`, or since midnight with
+/// `today` (crate::logsource).
+pub fn logs_from(inst: &Instance, source: crate::logsource::Source, lines: u32, today: bool) -> Result<String, String> {
+    #[cfg(debug_assertions)]
+    if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_LOGS") {
+        return Ok(std::fs::read_to_string(std::path::Path::new(&t).join(format!("{}.log", source.key()))).unwrap_or_default());
+    }
+    spm_job(inst, &format!("logs {lines} --source {}{}", source.key(), if today { " --today" } else { "" }))
+}
+
+/// The log sources the server has.
+pub fn log_sources(inst: &Instance) -> Result<Vec<crate::logsource::Source>, String> {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("SPM_DEBUG_REMOTE_LOGS").is_some() {
+        return Ok(vec![crate::logsource::Source::Sentient, crate::logsource::Source::Database, crate::logsource::Source::ClickHouse]);
+    }
+    read_json(inst, "logs 0 --sources")
+}
+
 /// Is there a file at `path` on the server (a certificate or key for
 /// Platform settings)? Looks only; nothing is read.
 pub fn file_exists(inst: &Instance, path: &str) -> Result<bool, String> {
@@ -781,6 +797,7 @@ pub fn file_exists(inst: &Instance, path: &str) -> Result<bool, String> {
     Ok(run(inst, &format!("test -f {quoted} && echo yes || echo no"), None)?.trim() == "yes")
 }
 
+/// The server runs Windows.
 pub fn is_windows(inst: &Instance) -> bool {
     inst.os == Os::Windows || inst.detected.as_ref().is_some_and(|d| d.os == Os::Windows)
 }

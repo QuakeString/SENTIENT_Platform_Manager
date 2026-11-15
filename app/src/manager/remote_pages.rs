@@ -74,15 +74,15 @@ pub struct RemotePages {
     auto_add_tried: bool,
     /// Platform settings: the open tab (crate::manager::settings::TAB_TITLES).
     settings_tab: usize,
-    /// Logs: where Export saved the text, or why it could not.
-    log_note: Option<SharedString>,
+    /// Logs: the shared view, made when the page first shows.
+    log_view: Option<Entity<crate::manager::logs::LogView>>,
+
     /// Platform settings: what "Check" found for a file path on the server.
     file_checks: std::collections::HashMap<String, Read<bool>>,
     /// A version picked under "Other version", waiting for its confirmation.
     pick: Option<String>,
     /// This Platform Manager's update channel (shared with the local Update).
     updates: Entity<crate::updates::UpdateState>,
-    filter: Entity<InputState>,
     follow: bool,
     job: Entity<Job>,
     job_label: Option<SharedString>,
@@ -94,20 +94,14 @@ pub struct RemotePages {
 }
 
 impl RemotePages {
-    pub fn new(inst: Instance, kind: Kind, updates: Entity<crate::updates::UpdateState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(inst: Instance, kind: Kind, updates: Entity<crate::updates::UpdateState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let job = cx.new(|_| Job::new());
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter lines, e.g. ERROR"));
         let subs = vec![
             cx.observe(&job, |this, job, cx| {
                 if !job.read(cx).is_running() {
                     this.reload(cx);
                 }
                 cx.notify();
-            }),
-            cx.subscribe_in(&filter, window, |_, _, e, _, cx| {
-                if matches!(e, InputEvent::Change) {
-                    cx.notify();
-                }
             }),
         ];
         let mut p = Self {
@@ -128,11 +122,10 @@ impl RemotePages {
             versions: Read::Loading,
             pick: None,
             file_checks: Default::default(),
-            log_note: None,
+            log_view: None,
             settings_tab: 0,
             auto_add_tried: false,
             updates,
-            filter,
             follow: true,
             job,
             job_label: None,
@@ -474,57 +467,11 @@ impl RemotePages {
             .child(self.services_panel(&theme))
     }
 
-    /// The same toolbar and log box as this computer's Logs.
-    fn logs_page(&self, cx: &mut Context<Self>) -> Div {
-        use std::rc::Rc;
-        let theme = cx.theme().clone();
-        let needle = self.filter.read(cx).value().to_lowercase();
-        let lines: Vec<SharedString> = match &self.logs {
-            Read::Got(t) => t.lines().filter(|l| needle.is_empty() || l.to_lowercase().contains(&needle)).map(|l| SharedString::from(l.to_string())).collect(),
-            _ => Vec::new(),
-        };
-        let this = cx.entity().downgrade();
-        let (t1, t2, t3) = (this.clone(), this.clone(), this);
-        let text = match &self.logs {
-            Read::Got(t) => t.clone(),
-            _ => String::new(),
-        };
-        let toolbar = crate::manager::logs::toolbar(
-            &theme,
-            "r-",
-            &self.filter,
-            self.follow,
-            lines.len(),
-            Rc::new(move |on, _, cx| {
-                t1.update(cx, |p, cx| {
-                    p.follow = on;
-                    cx.notify();
-                })
-                .ok();
-            }),
-            Rc::new(move |_, cx| {
-                t2.update(cx, |p, cx| p.reload(cx)).ok();
-            }),
-            Rc::new(move |_, cx| {
-                let t3 = t3.clone();
-                crate::manager::logs::export_text(text.clone(), cx, move |message, cx| {
-                    t3.update(cx, |p, cx| {
-                        p.log_note = Some(message.into());
-                        cx.notify();
-                    })
-                    .ok();
-                });
-            }),
-        );
-        v_flex()
-            .gap_4()
-            .child(toolbar)
-            .children(self.log_note.clone().map(|s| div().text_sm().child(s)))
-            .child(match &self.logs {
-                Read::Loading => ui::panel(&theme).child(div().text_sm().text_color(theme.muted_foreground).child("Reading the log…")).into_any_element(),
-                Read::Failed(e) => ui::outcome(&theme, Tone::Bad, e.clone()).into_any_element(),
-                Read::Got(_) => crate::manager::logs::log_box(&theme, "remote-log", &self.scroll, lines).into_any_element(),
-            })
+    /// The same Logs view as this computer's, reading through the agent.
+    fn logs_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let inst = self.inst.clone();
+        let view = self.log_view.get_or_insert_with(|| cx.new(|cx| crate::manager::logs::LogView::remote(inst, window, cx))).clone();
+        v_flex().child(view)
     }
 
     /// The same layout as this computer's Update: the channel, then one
@@ -1080,7 +1027,7 @@ impl Render for RemotePages {
         let body = if let Some(g) = gate { g } else { match self.kind {
             Kind::Status => self.status_page(cx),
             Kind::Control => self.control_page(cx),
-            Kind::Logs => self.logs_page(cx),
+            Kind::Logs => self.logs_page(window, cx),
             Kind::Update => self.update_page(cx),
             Kind::Backup => self.backup_page(cx),
             Kind::Settings => self.settings_page(window, cx),

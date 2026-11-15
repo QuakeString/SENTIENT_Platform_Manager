@@ -33,6 +33,7 @@ mod installer {
 #[cfg(feature = "gui")]
 mod jobs;
 mod log_level;
+mod logsource;
 mod kept;
 mod leftovers;
 #[cfg(feature = "gui")]
