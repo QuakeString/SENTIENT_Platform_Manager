@@ -9,11 +9,16 @@ fn main() {
     embed_agents();
     build_commit();
     println!("cargo:rerun-if-changed=assets/icon.ico");
+    println!("cargo:rerun-if-changed=assets/spm-app.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
     let mut res = winresource::WindowsResource::new();
+    // Icon 1 is the Setup icon: Explorer shows it for the downloaded file,
+    // and the window takes it at first. Icon 2 is the Platform Manager's:
+    // its window switches to it (crate::win_icon) and its shortcuts use it.
     res.set_icon("assets/icon.ico")
+        .set_icon_with_id("assets/spm-app.ico", "2")
         .set("ProductName", "SENTIENT Platform Manager")
         .set("FileDescription", "SENTIENT Setup and Platform Manager")
         .set("CompanyName", "INVENIA SYSTEMS")

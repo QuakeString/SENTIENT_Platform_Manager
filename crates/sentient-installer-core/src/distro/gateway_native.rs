@@ -8,6 +8,7 @@
 //! log is its journal. A plain process is shown (running, version) but not
 //! controlled: nothing would start it again.
 
+use std::path::Path;
 use std::process::Command;
 
 use crate::gateway::Status;
@@ -29,9 +30,22 @@ fn out(cmd: &str, args: &[&str]) -> Option<String> {
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
+/// A unit, container or program name that is a gateway's: one of NAMES,
+/// st-gw, or any name with "gateway" in it.
 fn is_gateway_name(s: &str) -> bool {
     let s = s.to_ascii_lowercase();
-    NAMES.iter().any(|n| s.contains(n))
+    NAMES.iter().any(|n| s.contains(n)) || s.contains("gateway") || s.starts_with("st-gw") || s.starts_with("st_gw")
+}
+
+/// Where a gateway is installed without a service or a running process.
+const DIRS: [&str; 2] = ["/opt/sentient-gateway", "/etc/sentient-gateway"];
+
+/// The gateway's program in an install folder (for its version).
+fn program_in(dir: &str) -> Option<String> {
+    ["bin/sentient-gateway", "sentient-gateway", "bin/st-gateway", "st-gateway"]
+        .iter()
+        .map(|p| format!("{dir}/{p}"))
+        .find(|p| Path::new(p).is_file())
 }
 
 /// The gateway's systemd unit, from the unit files there are.
@@ -103,8 +117,15 @@ pub fn status() -> Status {
         };
     }
     if let Some(program) = process() {
+        // (A plain process; else an install folder below.)
         let (host, port) = host_port();
         return Status { installed: true, version: version_of(Some(&program)), running: true, host, port, process: Some(program), ..Status::default() };
+    }
+    // Installed in a folder, neither a service nor running.
+    if let Some(dir) = DIRS.iter().find(|d| Path::new(d).is_dir()) {
+        let program = program_in(dir);
+        let (host, port) = host_port();
+        return Status { installed: true, version: version_of(program.as_deref()), running: false, host, port, process: Some(program.unwrap_or_else(|| dir.to_string())), ..Status::default() };
     }
     Status::default()
 }

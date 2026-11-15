@@ -6,6 +6,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod adopt;
+#[cfg(all(windows, feature = "gui"))]
+mod win_icon;
 mod agent;
 #[cfg(feature = "gui")]
 mod assets;
@@ -173,6 +175,8 @@ fn gui_main(args: Vec<String>) {
             })
             .map(|_| ()),
             AppMode::Manager => gpui_kit::open_window(options, cx, |window, cx| {
+                #[cfg(windows)]
+                win_icon::use_manager_icon(window);
                 cx.new(|cx| manager::Manager::new(window, cx))
             })
             .map(|_| ()),

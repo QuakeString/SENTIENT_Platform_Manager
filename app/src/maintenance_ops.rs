@@ -213,6 +213,18 @@ pub fn strip_ansi(text: &str) -> String {
 
 /// The Platform Manager's own log: what it did, with times
 /// (`activity.log` beside its preferences, kept under about 1 MB).
+/// A line in the Platform Manager's own log, with its time (both builds).
+pub fn log_line(line: &str) {
+    use std::io::Write as _;
+    let path = activity_log();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{} {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), line.lines().next().unwrap_or(""));
+    }
+}
+
 pub fn activity_log() -> std::path::PathBuf {
     crate::updates::prefs_dir().join("activity.log")
 }

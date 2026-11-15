@@ -9,13 +9,13 @@ use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex, v_flex,
     button::ButtonVariants as _,
     menu::{DropdownMenu as _, PopupMenuItem},
-    input::{InputEvent, InputState},
+    input::{Input, InputEvent, InputState},
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::dbstatus::{DbStatus, bytes_label};
-use crate::jobs::Job;
+use crate::jobs::{Job, JobState};
 use crate::remote::{self, Instance, RemoteBackups, RemoteService, RemoteStatus};
 use crate::ui::{self, Tone};
 
@@ -47,6 +47,79 @@ impl<T> Read<T> {
         }
     }
 }
+
+/// sudo on the server wants a password the Platform Manager does not have
+/// (or refused the one it has).
+fn needs_sudo_password(e: &str) -> bool {
+    e.contains("needs administrator rights") || e.contains("sudo refused") || e.contains("a password is required")
+}
+
+/// Ask for the server's sudo password, keep it like the instance form does
+/// (the secret store, never a log), then run `then`.
+pub(crate) fn ask_sudo_password(inst: Instance, then: std::rc::Rc<dyn Fn(&mut App)>, cx: &mut App) {
+    struct SudoPrompt {
+        inst: Instance,
+        input: Entity<InputState>,
+        then: std::rc::Rc<dyn Fn(&mut App)>,
+    }
+    impl Render for SudoPrompt {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            v_flex()
+                .gap_3()
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().text_sm().child(format!("sudo on {} asks for {}'s password.", self.inst.name, self.inst.user)))
+                        .child(crate::ui::info(
+                            "sudo-help".into(),
+                            "It is kept in this computer's secret store, never in a log.\n\nIf the account has no sudo, the agent is set up in its home folder instead, and jobs that need root say so.".into(),
+                        )),
+                )
+                .child(Input::new(&self.input).mask_toggle())
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .justify_end()
+                        // An account without sudo: the agent goes in its home
+                        // folder (crate::remote::choose_user_install).
+                        .child(crate::ui::button("sudo-none").ghost().label("This account has no sudo").on_click(cx.listener(|p, _, _, cx| {
+                            let inst = p.inst.clone();
+                            let then = p.then.clone();
+                            crate::modal::close(cx);
+                            cx.spawn(async move |_, cx| {
+                                let r = cx.background_executor().spawn(async move { remote::choose_user_install(&inst) }).await;
+                                let _ = cx.update(|cx| match r {
+                                    Ok(()) => then(cx),
+                                    Err(e) => ui::show_error("The agent could not be set up for this account", e, cx),
+                                });
+                            })
+                            .detach();
+                        })))
+                        .child(div().flex_1())
+                        .child(crate::ui::button("sudo-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx)))
+                        .child(crate::ui::button("sudo-save").primary().label("Save and retry").on_click(cx.listener(|p, _, _, cx| {
+                            let pw = p.input.read(cx).value().to_string();
+                            if pw.is_empty() {
+                                return;
+                            }
+                            remote::set_secret(&remote::sudo_key(&p.inst.id), &pw);
+                            crate::modal::close(cx);
+                            (p.then)(cx);
+                        }))),
+                )
+        }
+    }
+    let Some(handle) = cx.active_window().or_else(|| cx.windows().into_iter().next()) else { return };
+    let _ = handle.update(cx, |_, window, cx| {
+        let input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("sudo password"));
+        let view = cx.new(|_| SudoPrompt { inst, input, then });
+        crate::modal::open(crate::modal::Modal { title: "Administrator password needed".into(), body: view.into(), width: 480., on_close: None }, cx);
+    });
+}
+
+/// How long a reading may take before the page says the server does not answer.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// The server agent update started when a server is opened.
 enum AgentRefresh {
@@ -80,6 +153,8 @@ pub struct RemotePages {
     auto_add_tried: bool,
     /// The server agent update that runs when the server is opened.
     agent_refresh: AgentRefresh,
+    /// The sudo password was asked for after the last failure.
+    sudo_asked: bool,
     /// Platform settings: the open tab (crate::manager::settings::TAB_TITLES).
     settings_tab: usize,
     /// Control: the service whose own action runs now.
@@ -110,6 +185,24 @@ impl RemotePages {
             cx.observe(&job, |this, job, cx| {
                 if !job.read(cx).is_running() {
                     this.svc_busy = None;
+                    // An agent update run as a job: its pill follows it.
+                    if matches!(this.agent_refresh, AgentRefresh::Running) {
+                        this.agent_refresh = match job.read(cx).state() {
+                            JobState::Failed(m) => AgentRefresh::Failed(m.to_string()),
+                            _ => AgentRefresh::Idle,
+                        };
+                    }
+                    // sudo wants a password: ask for it and run the job again.
+                    if let JobState::Failed(m) = job.read(cx).state() {
+                        if needs_sudo_password(m) && !this.sudo_asked {
+                            this.sudo_asked = true;
+                            if let Some(retry) = job.read(cx).retry() {
+                                ask_sudo_password(this.inst.clone(), retry, cx);
+                            }
+                        }
+                    } else if !job.read(cx).is_running() {
+                        this.sudo_asked = false;
+                    }
                     this.reload(cx);
                 }
                 cx.notify();
@@ -137,6 +230,7 @@ impl RemotePages {
             settings_tab: 0,
             auto_add_tried: false,
             agent_refresh: AgentRefresh::Idle,
+            sudo_asked: false,
             updates,
             follow: true,
             job,
@@ -206,6 +300,45 @@ impl RemotePages {
         self._tasks.push(task);
     }
 
+    /// A reading came back "agent out of date".
+    fn agent_old(&self) -> bool {
+        let old = |e: &str| e == remote::AGENT_OLD;
+        matches!(&self.ready, Read::Failed(e) if old(e))
+            || matches!(&self.status, Read::Failed(e) if old(e))
+            || matches!(&self.services, Read::Failed(e) if old(e))
+            || matches!(&self.db, Read::Failed(e) if old(e))
+            || matches!(&self.backups, Read::Failed(e) if old(e))
+            || matches!(&self.settings, Read::Failed(e) if old(e))
+            || matches!(&self.gateway, Read::Failed(e) if old(e))
+    }
+
+    /// Update the server agent as a job (the progress chip; on failure its
+    /// dialog with the error, Copy and Retry).
+    pub(crate) fn update_agent(&mut self, cx: &mut Context<Self>) {
+        if self.job.read(cx).is_running() {
+            return;
+        }
+        let inst = self.inst.clone();
+        let me = cx.entity().downgrade();
+        self.agent_refresh = AgentRefresh::Running;
+        self.job.update(cx, |job, cx| {
+            job.set_label(format!("Updating the server agent on {}", inst.name));
+            job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
+            job.set_retry(std::rc::Rc::new(move |cx: &mut App| {
+                me.update(cx, |p, cx| p.update_agent(cx)).ok();
+            }));
+            job.start(
+                move |sink| {
+                    remote::deploy(&inst, &sink)?;
+                    sink(sentient_installer_core::progress::Progress::Done { message: format!("The server agent on {} is up to date.", inst.name) });
+                    Ok(())
+                },
+                cx,
+            )
+        });
+        cx.notify();
+    }
+
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         let inst = self.inst.clone();
         self.fetch(cx, move || remote::ready(&inst), |p, r| p.ready = r);
@@ -273,18 +406,35 @@ impl RemotePages {
         work: impl FnOnce() -> Result<T, String> + Send + 'static,
         put: impl FnOnce(&mut Self, Read<T>) + 'static,
     ) {
+        // Whichever comes first: the answer, or 20 seconds without one (a
+        // reading never waits forever).
+        let put = std::rc::Rc::new(std::cell::RefCell::new(Some(put)));
+        let p2 = put.clone();
         let task = cx.spawn(async move |this, cx| {
             let got = cx.background_executor().spawn(async move { work() }).await;
             this.update(cx, |p, cx| {
-                put(p, match got {
-                    Ok(v) => Read::Got(v),
-                    Err(e) => Read::Failed(e),
-                });
+                if let Some(put) = put.borrow_mut().take() {
+                    put(p, match got {
+                        Ok(v) => Read::Got(v),
+                        Err(e) => Read::Failed(e),
+                    });
+                }
                 cx.notify();
             })
             .ok();
         });
         self._tasks.push(task);
+        let timeout = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(READ_TIMEOUT).await;
+            this.update(cx, |p, cx| {
+                if let Some(put) = p2.borrow_mut().take() {
+                    put(p, Read::Failed(format!("The server did not answer within {} seconds.", READ_TIMEOUT.as_secs())));
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
+        self._tasks.push(timeout);
     }
 
     fn run_job(&mut self, label: impl Into<String>, args: Vec<String>, cx: &mut Context<Self>) {
@@ -295,15 +445,31 @@ impl RemotePages {
         let inst = self.inst.clone();
         self.job_label = Some(format!("{label} on {}", inst.name).into());
         let strip_label = format!("{label} on {}", inst.name);
+        let me = cx.entity().downgrade();
+        let (l2, a2) = (label.clone(), args.clone());
         self.job.update(cx, |job, cx| {
             job.set_label(strip_label);
+            job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
+            job.set_retry(std::rc::Rc::new(move |cx: &mut App| {
+                let (l, a) = (l2.clone(), a2.clone());
+                me.update(cx, |p, cx| p.run_job(l, a, cx)).ok();
+            }));
             job.start(
                 move |sink| {
-                    remote::deploy(&inst, &sink)?;
+                    // The agent is brought up to date first; when that fails
+                    // the job still runs on the agent there, and only a job it
+                    // does not know says the agent could not be updated.
+                    let updated = remote::deploy(&inst, &sink);
+                    if let Err(e) = &updated {
+                        sink(sentient_installer_core::progress::Progress::Log { line: format!("The agent could not be updated: {}", remote::split_failure(e).0) });
+                    }
                     sink(sentient_installer_core::progress::Progress::Step { name: label.to_string() });
                     let a: Vec<&str> = args.iter().map(String::as_str).collect();
-                    let id = remote::start_job(&inst, &a)?;
-                    remote::follow(&inst, &id, &sink)
+                    let run = remote::start_job(&inst, &a).and_then(|id| remote::follow(&inst, &id, &sink));
+                    match (run, updated) {
+                        (Err(e), Err(u)) if e == remote::AGENT_OLD || e.contains("usage: --job") => Err(remote::failed("The agent on this server could not be updated, and the one there is too old for this.", &remote::split_failure(&u).1.unwrap_or(u.clone()))),
+                        (r, _) => r,
+                    }
                 },
                 cx,
             )
@@ -314,17 +480,68 @@ impl RemotePages {
     // -- rendering ----------------------------------------------------------
 
     fn failed(theme: &gpui_kit::component::Theme, e: &str) -> Div {
-        ui::panel(theme).child(ui::outcome(theme, Tone::Bad, e.to_string()))
+        ui::notice(theme, Tone::Bad, e.to_string())
     }
 
-    fn loading(theme: &gpui_kit::component::Theme, what: &str) -> Div {
-        ui::panel(theme).child(div().text_sm().text_color(theme.muted_foreground).child(format!("Reading {what} from the server…")))
+    /// This page's final layout with placeholders, while it loads: the same
+    /// cards and labels, so nothing moves when the values arrive.
+    fn skeleton(&self, theme: &gpui_kit::component::Theme) -> Div {
+        let status_card = || {
+            ui::panel(theme)
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .child(ui::skeleton_block(theme, "st-logo", px(30.).into(), 30.))
+                        .child(ui::skeleton_block(theme, "st-pill", px(150.).into(), 24.))
+                        .child(div().flex_1())
+                        .child(ui::skeleton_block(theme, "st-open", px(124.).into(), 30.)),
+                )
+                .child(ui::fact_loading(theme, "SENTIENT version", 120.))
+                .child(ui::fact_loading(theme, "Database", 170.))
+                .child(ui::fact_loading(theme, "Runs as", 70.))
+                .child(ui::fact_loading(theme, "Server", 260.))
+                .child(ui::fact_loading(theme, "Server agent", 180.))
+        };
+        let services = || ui::panel(theme).gap_2().child(div().font_weight(FontWeight::MEDIUM).child("Services")).children(ui::skeleton_service_rows(theme, "svc", 3));
+        let col = v_flex().gap_4();
+        match self.kind {
+            Kind::Status => col
+                .child(status_card())
+                .child(services())
+                .child(
+                    ui::panel(theme)
+                        .child(div().font_weight(FontWeight::MEDIUM).child("Database"))
+                        .child(ui::skeleton_line(theme, "db-disk", 220.))
+                        .child(ui::skeleton_block(theme, "db-bar", relative(1.).into(), 10.))
+                        .child(ui::skeleton_line(theme, "db-legend", 420.)),
+                ),
+            Kind::Control => col
+                .child(
+                    ui::panel(theme).child(ui::skeleton_line(theme, "ctl-state", 160.)).child(
+                        h_flex()
+                            .gap_2()
+                            .child(ui::skeleton_block(theme, "ctl-a", px(64.).into(), 32.))
+                            .child(ui::skeleton_block(theme, "ctl-b", px(64.).into(), 32.))
+                            .child(ui::skeleton_block(theme, "ctl-c", px(80.).into(), 32.)),
+                    ),
+                )
+                .child(services()),
+            Kind::Backup => col
+                .child(ui::skeleton_card(theme, "bk-now", Some("Back up now"), &["Save to"]))
+                .child(ui::skeleton_card(theme, "bk-auto", Some("Automatic backup"), &["Back up every day", "Keep", "Include"]))
+                .child(ui::skeleton_card(theme, "bk-list", Some("Backups"), &["", "", ""])),
+            Kind::Gateway => col.child(ui::skeleton_card(theme, "gw", Some("Sentient Gateway"), &["Version", "Runs as", "Connects to"])),
+            Kind::Settings => col.child(ui::skeleton_card(theme, "set", None, &["", "", "", "", ""])),
+            Kind::Update => col.child(ui::skeleton_card(theme, "upd", None, &["", ""])),
+            _ => col.child(ui::skeleton_card(theme, "page", None, &["", "", ""])),
+        }
     }
 
     fn services_panel(&self, theme: &gpui_kit::component::Theme) -> Div {
         let mut p = ui::panel(theme).gap_2().child(div().font_weight(FontWeight::MEDIUM).child("Services"));
         match &self.services {
-            Read::Loading => p = p.child(div().text_sm().text_color(theme.muted_foreground).child("Reading…")),
+            Read::Loading => p = p.children(ui::skeleton_service_rows(&theme, "svc", 3)),
             Read::Failed(e) => p = p.child(ui::outcome(theme, Tone::Bad, e.clone())),
             Read::Got(list) => {
                 p = p.children(ui::service_rows(theme, list.iter().map(|s| (s.name.clone().into(), s.running, s.starting, s.detail.clone().into())), None));
@@ -356,7 +573,7 @@ impl RemotePages {
         let theme = cx.theme().clone();
         let mut col = v_flex().gap_4();
         match &self.status {
-            Read::Loading => col = col.child(Self::loading(&theme, "the state")),
+            Read::Loading => return self.skeleton(&theme),
             Read::Failed(e) => col = col.child(Self::failed(&theme, e)),
             Read::Got(s) if !s.installed => {
                 // Nothing added there yet: only the calm panel, no empty
@@ -407,8 +624,28 @@ impl RemotePages {
                                 .map(|r| match &self.agent_refresh {
                                     AgentRefresh::Running => r.child(ui::pill(&theme, Tone::Warn, "Updating")),
                                     AgentRefresh::Failed(why) => {
-                                        let why = SharedString::from(why.clone());
-                                        r.child(div().id("agent-failed").child(ui::pill(&theme, Tone::Bad, "Update failed")).tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(why.clone()).build(w, cx)))
+                                        // A button: the real error, Copy and Retry.
+                                        let why = why.clone();
+                                        let this = cx.entity().downgrade();
+                                        let inst_for_sudo = self.inst.clone();
+                                        r.child(div().id("agent-failed").cursor_pointer().child(ui::pill(&theme, Tone::Bad, "Update failed ›")).on_click(move |_, _, cx| {
+                                            let this = this.clone();
+                                            if needs_sudo_password(&why) {
+                                                let t = this.clone();
+                                                ask_sudo_password(inst_for_sudo.clone(), std::rc::Rc::new(move |cx: &mut App| {
+                                                    t.update(cx, |p, cx| p.update_agent(cx)).ok();
+                                                }), cx);
+                                                return;
+                                            }
+                                            ui::show_error_with(
+                                                "The server agent could not be updated",
+                                                why.clone(),
+                                                Some(std::rc::Rc::new(move |cx: &mut App| {
+                                                    this.update(cx, |p, cx| p.update_agent(cx)).ok();
+                                                })),
+                                                cx,
+                                            );
+                                        }))
                                     }
                                     AgentRefresh::Idle => r,
                                 }),
@@ -420,10 +657,21 @@ impl RemotePages {
         // The same Database panel as this computer's, read without asking.
         let db = ui::panel(&theme).child(div().font_weight(FontWeight::MEDIUM).child("Database"));
         let db = match &self.db {
-            Read::Loading => db.child(div().text_sm().text_color(theme.muted_foreground).child("Reading the database's size and state…")),
-            Read::Failed(e) => db.child(ui::outcome(&theme, Tone::Warn, format!("The database's size and state could not be read.\n{e}"))),
+            Read::Loading => db.child(ui::skeleton_line(&theme, "db-disk", 220.)).child(ui::skeleton_block(&theme, "db-bar", relative(1.).into(), 10.)).child(ui::skeleton_line(&theme, "db-legend", 420.)),
+            // A notice in the page in place of the card, with Retry.
+            Read::Failed(e) => ui::notice_with(
+                &theme,
+                Tone::Warn,
+                format!("The database's size and state could not be read.\n{e}"),
+                Some(crate::ui::button("db-retry").outline().label("Retry").on_click(cx.listener(|p, _, _, cx| p.reload(cx))).into_any_element()),
+            ),
             Read::Got(d) => {
-                let last = self.status.got().and_then(|s| s.last_backup.clone()).unwrap_or_else(|| "None".into());
+                // From the server's status (the same as its tile); "None" only
+                // once the status says so, never while it is being read.
+                let last = match &self.status {
+                    Read::Got(s) => s.last_backup.clone().unwrap_or_else(|| "None".into()),
+                    _ => String::new(),
+                };
                 let this = cx.entity().downgrade();
                 let back_up: std::rc::Rc<dyn Fn(&mut App)> = std::rc::Rc::new(move |cx| {
                     this.update(cx, |p, cx| p.run_job("Backing up", vec!["backup-now".into()], cx)).ok();
@@ -435,7 +683,22 @@ impl RemotePages {
                     "The server's database disk",
                     None,
                     last,
-                    crate::manager::status::DbActions { set_limit: None, remove_kept: None, back_up: Some(back_up) },
+                    crate::manager::status::DbActions {
+                        set_limit: None,
+                        remove_kept: None,
+                        back_up: Some(back_up),
+                        broken_parts: Some({
+                            let inst = self.inst.clone();
+                            std::rc::Rc::new(move |cx: &mut App| {
+                                let (i1, i2) = (inst.clone(), inst.clone());
+                                crate::manager::status::BrokenParts::open(
+                                    std::sync::Arc::new(move || remote::ch_detached(&i1)),
+                                    std::sync::Arc::new(move |attach, parts| remote::ch_parts(&i2, attach, &parts)),
+                                    cx,
+                                )
+                            })
+                        }),
+                    },
                     crate::theme::is_dark(cx),
                 )
             }
@@ -524,7 +787,7 @@ impl RemotePages {
             cx.refresh_windows();
         });
         match &self.services {
-            Read::Loading => p = p.child(div().text_sm().text_color(theme.muted_foreground).child("Reading…")),
+            Read::Loading => p = p.children(ui::skeleton_service_rows(&theme, "svc", 3)),
             Read::Failed(e) => p = p.child(ui::outcome(&theme, Tone::Bad, e.clone())),
             Read::Got(list) => {
                 p = p.children(ui::service_rows(&theme, list.iter().map(|s| (s.name.clone().into(), s.running, s.starting, s.detail.clone().into())), Some((act, log, self.svc_busy.clone()))));
@@ -695,7 +958,7 @@ impl RemotePages {
         // daily backup, then the list. Rows the server cannot change from
         // here yet are left out.
         let b = match &self.backups {
-            Read::Loading => return Self::loading(&theme, "the backups"),
+            Read::Loading => return self.skeleton(&theme),
             Read::Failed(e) => return Self::failed(&theme, e),
             Read::Got(b) => b.clone(),
         };
@@ -801,7 +1064,7 @@ impl RemotePages {
     fn settings_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let values = match &self.settings {
-            Read::Loading => return Self::loading(&theme, "the settings"),
+            Read::Loading => return self.skeleton(&theme),
             Read::Failed(e) => return Self::failed(&theme, e),
             Read::Got(v) => v.clone(),
         };
@@ -1061,7 +1324,7 @@ impl RemotePages {
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
         let g = match &self.gateway {
-            Read::Loading => return Self::loading(&theme, "the gateway"),
+            Read::Loading => return self.skeleton(&theme),
             Read::Failed(e) => return Self::failed(&theme, e),
             Read::Got(g) => g.clone(),
         };
@@ -1077,7 +1340,23 @@ impl RemotePages {
                 .child(if !installed { ui::pill(&theme, Tone::Neutral, "Not installed") } else if running { ui::pill(&theme, Tone::Good, "Running") } else { ui::pill(&theme, Tone::Bad, "Stopped") }),
         );
         if !installed {
-            return p.child(div().text_sm().text_color(theme.muted_foreground).child("No gateway on this server. Install it with the Platform Manager on the server itself, so its access token stays on the server."));
+            // The pill says it; the how-to and what was looked for are behind an (i).
+            return ui::panel(&theme).child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(ui::product_logo(ui::Product::Gateway, 24.))
+                    .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
+                    .child(ui::pill(&theme, Tone::Neutral, "Not installed"))
+                    .child(ui::info(
+                        "gw-not-installed".into(),
+                        format!(
+                            "Install it with the Platform Manager on the server itself, so its access token stays on the server.\n\nLooked for: {}",
+                            sentient_installer_core::gateway::CHECKS
+                        )
+                        .into(),
+                    )),
+            );
         }
         let kind = get("kind");
         let runs_as = match kind.as_str() {
@@ -1199,7 +1478,7 @@ impl Render for RemotePages {
             self.run_job("Looking for SENTIENT on the server", vec!["add-if-one".into()], cx);
         }
         let gate: Option<Div> = match &self.ready {
-            Read::Loading => Some(Self::loading(&theme, "the server's state")),
+            Read::Loading => Some(self.skeleton(&theme)),
             // While Set up runs or shows its result, only its panel.
             Read::Failed(_) if self.job_label.is_some() => Some(div()),
             Read::Failed(e) => Some(self.gate_panel(e.clone(), cx)),
@@ -1235,6 +1514,19 @@ impl Render for RemotePages {
             Kind::Repair => self.repair_page(cx),
             Kind::Gateway => self.gateway_page(cx),
         } };
+        // An agent too old for this page's jobs: one notice and Update agent,
+        // in place of every panel that cannot load.
+        let body = if self.agent_old() {
+            let busy = self.job.read(cx).is_running();
+            ui::notice_with(
+                &theme,
+                Tone::Warn,
+                "The agent on this server is out of date.\nUpdate it to use this page. Nothing else on the server changes.",
+                Some(crate::ui::button("agent-update").primary().label("Update agent").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.update_agent(cx))).into_any_element()),
+            )
+        } else {
+            body
+        };
         // Which server this is shows in the top bar (its colour, the
         // switcher with REMOTE); a job shows in the progress strip.
         let reload = { use gpui_kit::component::Sizable as _; crate::ui::button("remote-reload").ghost().small().icon(gpui_kit::component::IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(|this, _, _, cx| this.reload(cx))) };

@@ -478,6 +478,16 @@ pub fn sampler_installed() -> bool {
 /// each call so the live charts draw.
 #[cfg(debug_assertions)]
 pub fn debug_live(dir: &Path) -> Result<Sample, String> {
+    // Screens: an agent too old, a failed read, a reading that never comes.
+    if dir.join("agent-old").exists() {
+        return Err(crate::remote::AGENT_OLD.into());
+    }
+    if dir.join("fail").exists() {
+        return Err("The server did not answer (address, port or firewall).".into());
+    }
+    if dir.join("slow").exists() {
+        std::thread::sleep(std::time::Duration::from_secs(600));
+    }
     let mut s: Sample = serde_json::from_str(&std::fs::read_to_string(dir.join("live.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp();
     let w = (now % 60) as f32;

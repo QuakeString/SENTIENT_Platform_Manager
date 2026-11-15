@@ -287,6 +287,46 @@ pub fn run(args: &[String]) -> i32 {
     // Statistics (crate::stats): a live reading with the database numbers,
     // one reading for the history (the sampler's timer), the history of the
     // last <seconds>, and installing the sampler.
+    // ClickHouse parts set aside: ch-detached (JSON), ch-attach / ch-drop
+    // <table> <part> [<table> <part> ...] (one line per part: ok or why not).
+    if job == "ch-detached" || job == "ch-attach" || job == "ch-drop" {
+        let Some(record) = InstallationRecord::load() else {
+            println!("null");
+            return 0;
+        };
+        if job == "ch-detached" {
+            return match crate::dbstatus::detached_parts(&record) {
+                Ok(list) => {
+                    println!("{}", serde_json::to_string(&list).unwrap_or_default());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    1
+                }
+            };
+        }
+        let parts: Vec<(String, String)> = args[1..].chunks(2).filter(|c| c.len() == 2).map(|c| (c[0].clone(), c[1].clone())).collect();
+        let r = if job == "ch-attach" { crate::dbstatus::attach_parts(&record, &parts) } else { crate::dbstatus::drop_parts(&record, &parts) };
+        return match r {
+            Ok(results) => {
+                let failed = results.iter().filter(|(_, r)| r.is_err()).count();
+                for (p, r) in results {
+                    match r {
+                        Ok(()) => println!("ok {p}"),
+                        Err(e) => println!("failed {p}: {}", e.lines().next().unwrap_or("")),
+                    }
+                }
+                // Per-part results are on the lines; the job itself answered.
+                let _ = failed;
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+    }
     if job == "stats-live" {
         let record = InstallationRecord::load();
         println!("{}", serde_json::to_string(&crate::stats::read(record.as_ref(), std::time::Duration::from_secs(1), true)).unwrap_or_default());
@@ -671,7 +711,9 @@ fn print_candidates(found: &[crate::adopt::Candidate]) {
 /// The SENTIENT version to show. A stack taken over from its own compose file
 /// may record an image tag such as "latest": then the running container's
 /// version label says which SENTIENT it is.
-fn shown_version(record: &InstallationRecord) -> String {
+/// SENTIENT's version as shown: an image tag like "latest" with the real
+/// version from the image's label, "4.4.0.2 (image tag latest)".
+pub(crate) fn shown_version(record: &InstallationRecord) -> String {
     let recorded = record.sentient_version.clone();
     let numbered = recorded.split('.').next().is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
     if numbered || record.engine != crate::installation::Engine::Docker {
@@ -684,7 +726,10 @@ fn shown_version(record: &InstallationRecord) -> String {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|v| !v.is_empty() && v != "<no value>" && v != "dev");
-    label.unwrap_or_else(|| format!("version unknown (image tag {recorded})"))
+    match label {
+        Some(v) => format!("{v} (image tag {recorded})"),
+        None => format!("version unknown (image tag {recorded})"),
+    }
 }
 
 /// This computer's state for the Platform Manager on another computer.
