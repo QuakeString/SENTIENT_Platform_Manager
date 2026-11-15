@@ -942,3 +942,82 @@ pub fn layout_probe(name: &'static str) -> impl IntoElement {
         )
     })
 }
+
+// ---------------------------------------------------------------------------
+// Skeletons: a page's final layout while its data loads
+// ---------------------------------------------------------------------------
+
+/// Motion off: static placeholders (SPM_REDUCED_MOTION, or GNOME/KDE's
+/// "reduce animations" when it can be read).
+fn reduced_motion() -> bool {
+    static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *R.get_or_init(|| {
+        std::env::var_os("SPM_REDUCED_MOTION").is_some()
+            || std::process::Command::new("gsettings")
+                .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+                .output()
+                .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "false")
+    })
+}
+
+/// A placeholder block of `w` × `h` in the muted surface tint, with a slow
+/// shimmer (a faint lighter band sweeping left to right, 1.4 s). `key`
+/// names it among its siblings.
+pub fn skeleton_block(theme: &Theme, key: impl Into<SharedString>, w: Length, h: f32) -> Div {
+    let key: SharedString = key.into();
+    let dark = theme.mode.is_dark();
+    let base = if dark { theme.foreground.opacity(0.08) } else { theme.foreground.opacity(0.07) };
+    let band = if dark { gpui_kit::white().opacity(0.06) } else { gpui_kit::white().opacity(0.55) };
+    div().relative().overflow_hidden().w(w).h(px(h)).flex_shrink_0().rounded(px((h / 2.).min(6.))).bg(base).when(!reduced_motion(), |d| {
+        d.child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .w(relative(0.4))
+                .bg(band)
+                .with_animation(SharedString::from(format!("shimmer-{key}")), Animation::new(std::time::Duration::from_millis(1400)).repeat(), |d, t| d.left(relative(-0.4 + t * 1.4))),
+        )
+    })
+}
+
+/// A text-line placeholder (one line of 14 px text: 12 px high in a 20 px row).
+pub fn skeleton_line(theme: &Theme, key: impl Into<SharedString>, w: f32) -> Div {
+    div().h(px(20.)).flex().items_center().child(skeleton_block(theme, key, px(w).into(), 12.))
+}
+
+/// A fact row whose value is still loading: the label as it will be, the
+/// value a placeholder (same height as the loaded row).
+pub fn fact_loading(theme: &Theme, label: &'static str, w: f32) -> Div {
+    gpui_kit::component::h_flex()
+        .gap_4()
+        .text_sm()
+        .child(div().w(px(168.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
+        .child(skeleton_line(theme, label, w))
+}
+
+/// A card while it loads: its title and `rows` placeholder rows.
+pub fn skeleton_card(theme: &Theme, key: &'static str, title: Option<&'static str>, labels: &[&'static str]) -> Div {
+    let mut p = panel(theme);
+    if let Some(t) = title {
+        p = p.child(div().font_weight(FontWeight::MEDIUM).child(t));
+    }
+    for (i, l) in labels.iter().enumerate() {
+        let w = [180., 140., 220., 120., 160.][i % 5];
+        p = p.child(if l.is_empty() { skeleton_line(theme, format!("{key}-{i}"), w + 120.) } else { fact_loading(theme, l, w) });
+    }
+    p
+}
+
+/// Service rows while they load: the state pill and the name as placeholders.
+pub fn skeleton_service_rows(theme: &Theme, key: &'static str, n: usize) -> Vec<Div> {
+    (0..n)
+        .map(|i| {
+            gpui_kit::component::h_flex()
+                .gap_4()
+                .items_center()
+                .child(gpui_kit::component::h_flex().w(px(168.)).flex_shrink_0().child(skeleton_block(theme, format!("{key}-p{i}"), px(86.).into(), 22.)))
+                .child(skeleton_line(theme, format!("{key}-n{i}"), [260., 300., 240.][i % 3]))
+        })
+        .collect()
+}

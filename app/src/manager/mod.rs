@@ -395,28 +395,48 @@ impl Manager {
         // every digit an 8 (tabular figures share one width).
         let eights = |s: String| s.chars().map(|c| if c.is_ascii_digit() { '8' } else { c }).collect::<String>();
         let gbf = |b: u64| b as f64 / (1u64 << 30) as f64;
-        let mem_widest = shown.map(|m| eights(format!("{:.1} / {:.0} GB", gbf(m.mem_total), gbf(m.mem_total)))).unwrap_or_default();
+        // (Before the first reading: typical widths, so the placeholders take
+        // the room the values will.)
+        let mem_widest = shown.map(|m| eights(format!("{:.1} / {:.0} GB", gbf(m.mem_total), gbf(m.mem_total)))).unwrap_or_else(|| "88.8 / 88 GB".into());
         // On a disk of a terabyte or more, less than a terabyte free reads in GB.
         let disk_widest = shown
             .map(|m| {
                 let total = eights(format!("{} free", crate::dbstatus::bytes_label(m.disk_total)));
                 if m.disk_total >= 1 << 40 && total.len() < "8888.8 GB free".len() { "8888.8 GB free".to_string() } else { total }
             })
-            .unwrap_or_default();
-        let (show_cpu, show_mem, show_disk) = match shown {
-            Some(_) => {
-                let bar = if wide { 48. } else { 0. };
-                let slot = |w: &str| f32::from(ui::slot_width(w, 12.5));
-                let cpu = fits(16. + 6. + 26. + slot("100%") + bar);
-                let mem = cpu && fits(16. + 6. + 52. + slot(&mem_widest) + bar);
-                let disk = mem && fits(16. + 6. + 30. + slot(&disk_widest) + bar);
-                (cpu, mem, disk)
-            }
-            None => (false, false, false),
+            .unwrap_or_else(|| "888.8 GB free".into());
+        // The same room with and without a reading (placeholders before it).
+        let (show_cpu, show_mem, show_disk) = {
+            let bar = if wide { 48. } else { 0. };
+            let slot = |w: &str| f32::from(ui::slot_width(w, 12.5));
+            let cpu = fits(16. + 6. + 26. + slot("100%") + bar);
+            let mem = cpu && fits(16. + 6. + 52. + slot(&mem_widest) + bar);
+            let disk = mem && fits(16. + 6. + 30. + slot(&disk_widest) + bar);
+            (cpu, mem, disk)
         };
         // What the monitors leave between the switcher and themselves: the
         // progress chip's slot.
         self.strip.read(cx).slot_w.set(room.max(0.) + strip::CHIP_MIN);
+        // Before the first reading: the monitors as placeholders in their
+        // slots, so nothing moves when the values come.
+        let monitor_loading = shown.is_none().then(|| {
+            let slot = |label: &'static str, widest: &str| {
+                h_flex()
+                    .gap(px(6.))
+                    .items_center()
+                    .text_size(px(12.5))
+                    .child(div().text_color(fg.opacity(0.65)).child(label))
+                    .when(wide, |r| r.child(div().w(px(42.)).h(px(5.)).rounded_full().bg(fg.opacity(0.2))))
+                    .child(div().w(ui::slot_width(widest, 12.5)).flex().items_center().child(div().w(relative(0.75)).h(px(10.)).rounded(px(5.)).bg(fg.opacity(0.22))))
+            };
+            h_flex()
+                .gap(px(16.))
+                .px_2()
+                .py_1()
+                .when(show_cpu, |r| r.child(slot("CPU", "100%")))
+                .when(show_mem, |r| r.child(slot("Memory", &mem_widest)))
+                .when(show_disk, |r| r.child(slot("Disk", &disk_widest)))
+        });
         let monitor = shown.map(|m| {
             let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
             h_flex()
@@ -607,6 +627,7 @@ impl Manager {
             // A running job: its chip in the middle of the bar.
             .child(h_flex().flex_1().min_w_0().overflow_hidden().justify_center().child(self.strip.clone()))
             .children(monitor)
+            .children(monitor_loading)
             .child(
                 // The bell with an amber count, as in the mockup.
                 div().relative().child(bell).when(count > 0, |b| {

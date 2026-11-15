@@ -611,7 +611,35 @@ impl Render for StatsPage {
                         cx.notify();
                     })).into_any_element()),
                 ),
-                None => div().text_sm().text_color(theme.muted_foreground).child("Reading the statistics…"),
+                // Loading: the page's final layout with placeholders.
+                None => {
+                    let fig = |i: usize, name: &'static str| {
+                        ui::panel(&theme)
+                            .flex_1()
+                            .gap_0()
+                            .child(div().text_sm().text_color(theme.muted_foreground).child(name))
+                            .child(div().h(px(30.)).flex().items_center().child(ui::skeleton_block(&theme, format!("fig-{i}"), px(70.).into(), 18.)))
+                            .child(div().mt(px(7.)).child(ui::skeleton_block(&theme, format!("figbar-{i}"), relative(1.).into(), 5.)))
+                            .child(div().mt(px(5.)).child(ui::skeleton_line(&theme, format!("figline-{i}"), 110.)))
+                            .into_any_element()
+                    };
+                    let figs = ["Processor", "Memory", "Disk", "Running for"].into_iter().enumerate().map(|(i, n)| fig(i, n)).collect();
+                    let chart = |i: usize, title: &'static str| {
+                        ui::panel(&theme)
+                            .flex_1()
+                            .gap_1()
+                            .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                            .child(ui::skeleton_block(&theme, format!("plot-{i}"), relative(1.).into(), 96.))
+                            .child(div().h(px(15.)))
+                            .into_any_element()
+                    };
+                    let charts = ["Processor", "Memory", "Processor load", "Network received", "Network sent", "Disk activity"].into_iter().enumerate().map(|(i, t)| chart(i, t)).collect();
+                    v_flex()
+                        .gap(px(10.))
+                        .child(grid(fig_cols, figs))
+                        .child(grid(chart_cols, charts))
+                        .child(ui::skeleton_card(&theme, "stats-svc", Some("Services"), &["", "", ""]))
+                }
             });
             return page(col);
         }

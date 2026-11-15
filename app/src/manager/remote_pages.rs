@@ -397,14 +397,65 @@ impl RemotePages {
         ui::notice(theme, Tone::Bad, e.to_string())
     }
 
-    fn loading(theme: &gpui_kit::component::Theme, what: &str) -> Div {
-        ui::panel(theme).child(div().text_sm().text_color(theme.muted_foreground).child(format!("Reading {what} from the server…")))
+    /// This page's final layout with placeholders, while it loads: the same
+    /// cards and labels, so nothing moves when the values arrive.
+    fn skeleton(&self, theme: &gpui_kit::component::Theme) -> Div {
+        let status_card = || {
+            ui::panel(theme)
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .child(ui::skeleton_block(theme, "st-logo", px(30.).into(), 30.))
+                        .child(ui::skeleton_block(theme, "st-pill", px(150.).into(), 24.))
+                        .child(div().flex_1())
+                        .child(ui::skeleton_block(theme, "st-open", px(124.).into(), 32.)),
+                )
+                .child(ui::fact_loading(theme, "SENTIENT version", 120.))
+                .child(ui::fact_loading(theme, "Database", 170.))
+                .child(ui::fact_loading(theme, "Runs as", 70.))
+                .child(ui::fact_loading(theme, "Server", 260.))
+                .child(ui::fact_loading(theme, "Server agent", 180.))
+        };
+        let services = || ui::panel(theme).gap_2().child(div().font_weight(FontWeight::MEDIUM).child("Services")).children(ui::skeleton_service_rows(theme, "svc", 3));
+        let col = v_flex().gap_4();
+        match self.kind {
+            Kind::Status => col
+                .child(status_card())
+                .child(services())
+                .child(
+                    ui::panel(theme)
+                        .child(div().font_weight(FontWeight::MEDIUM).child("Database"))
+                        .child(ui::skeleton_line(theme, "db-disk", 220.))
+                        .child(ui::skeleton_block(theme, "db-bar", relative(1.).into(), 10.))
+                        .child(ui::skeleton_line(theme, "db-legend", 420.)),
+                ),
+            Kind::Control => col
+                .child(
+                    ui::panel(theme).child(ui::skeleton_line(theme, "ctl-state", 160.)).child(
+                        h_flex()
+                            .gap_2()
+                            .child(ui::skeleton_block(theme, "ctl-a", px(64.).into(), 32.))
+                            .child(ui::skeleton_block(theme, "ctl-b", px(64.).into(), 32.))
+                            .child(ui::skeleton_block(theme, "ctl-c", px(80.).into(), 32.)),
+                    ),
+                )
+                .child(services()),
+            Kind::Backup => col
+                .child(ui::skeleton_card(theme, "bk-now", Some("Back up now"), &["Save to"]))
+                .child(ui::skeleton_card(theme, "bk-auto", Some("Automatic backup"), &["Back up every day", "Keep", "Include"]))
+                .child(ui::skeleton_card(theme, "bk-list", Some("Backups"), &["", "", ""])),
+            Kind::Gateway => col.child(ui::skeleton_card(theme, "gw", Some("Sentient Gateway"), &["Version", "Runs as", "Connects to"])),
+            Kind::Settings => col.child(ui::skeleton_card(theme, "set", None, &["", "", "", "", ""])),
+            Kind::Update => col.child(ui::skeleton_card(theme, "upd", None, &["", ""])),
+            _ => col.child(ui::skeleton_card(theme, "page", None, &["", "", ""])),
+        }
     }
 
     fn services_panel(&self, theme: &gpui_kit::component::Theme) -> Div {
         let mut p = ui::panel(theme).gap_2().child(div().font_weight(FontWeight::MEDIUM).child("Services"));
         match &self.services {
-            Read::Loading => p = p.child(div().text_sm().text_color(theme.muted_foreground).child("Reading…")),
+            Read::Loading => p = p.children(ui::skeleton_service_rows(&theme, "svc", 3)),
             Read::Failed(e) => p = p.child(ui::outcome(theme, Tone::Bad, e.clone())),
             Read::Got(list) => {
                 p = p.children(ui::service_rows(theme, list.iter().map(|s| (s.name.clone().into(), s.running, s.starting, s.detail.clone().into())), None));
@@ -436,7 +487,7 @@ impl RemotePages {
         let theme = cx.theme().clone();
         let mut col = v_flex().gap_4();
         match &self.status {
-            Read::Loading => col = col.child(Self::loading(&theme, "the state")),
+            Read::Loading => return self.skeleton(&theme),
             Read::Failed(e) => col = col.child(Self::failed(&theme, e)),
             Read::Got(s) if !s.installed => {
                 // Nothing added there yet: only the calm panel, no empty
@@ -512,7 +563,7 @@ impl RemotePages {
         // The same Database panel as this computer's, read without asking.
         let db = ui::panel(&theme).child(div().font_weight(FontWeight::MEDIUM).child("Database"));
         let db = match &self.db {
-            Read::Loading => db.child(div().text_sm().text_color(theme.muted_foreground).child("Reading the database's size and state…")),
+            Read::Loading => db.child(ui::skeleton_line(&theme, "db-disk", 220.)).child(ui::skeleton_block(&theme, "db-bar", relative(1.).into(), 10.)).child(ui::skeleton_line(&theme, "db-legend", 420.)),
             Read::Failed(e) => db.child(ui::outcome(&theme, Tone::Warn, format!("The database's size and state could not be read.\n{e}"))),
             Read::Got(d) => {
                 let last = self.status.got().and_then(|s| s.last_backup.clone()).unwrap_or_else(|| "None".into());
@@ -616,7 +667,7 @@ impl RemotePages {
             cx.refresh_windows();
         });
         match &self.services {
-            Read::Loading => p = p.child(div().text_sm().text_color(theme.muted_foreground).child("Reading…")),
+            Read::Loading => p = p.children(ui::skeleton_service_rows(&theme, "svc", 3)),
             Read::Failed(e) => p = p.child(ui::outcome(&theme, Tone::Bad, e.clone())),
             Read::Got(list) => {
                 p = p.children(ui::service_rows(&theme, list.iter().map(|s| (s.name.clone().into(), s.running, s.starting, s.detail.clone().into())), Some((act, log, self.svc_busy.clone()))));
@@ -787,7 +838,7 @@ impl RemotePages {
         // daily backup, then the list. Rows the server cannot change from
         // here yet are left out.
         let b = match &self.backups {
-            Read::Loading => return Self::loading(&theme, "the backups"),
+            Read::Loading => return self.skeleton(&theme),
             Read::Failed(e) => return Self::failed(&theme, e),
             Read::Got(b) => b.clone(),
         };
@@ -893,7 +944,7 @@ impl RemotePages {
     fn settings_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let values = match &self.settings {
-            Read::Loading => return Self::loading(&theme, "the settings"),
+            Read::Loading => return self.skeleton(&theme),
             Read::Failed(e) => return Self::failed(&theme, e),
             Read::Got(v) => v.clone(),
         };
@@ -1153,7 +1204,7 @@ impl RemotePages {
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
         let g = match &self.gateway {
-            Read::Loading => return Self::loading(&theme, "the gateway"),
+            Read::Loading => return self.skeleton(&theme),
             Read::Failed(e) => return Self::failed(&theme, e),
             Read::Got(g) => g.clone(),
         };
@@ -1307,7 +1358,7 @@ impl Render for RemotePages {
             self.run_job("Looking for SENTIENT on the server", vec!["add-if-one".into()], cx);
         }
         let gate: Option<Div> = match &self.ready {
-            Read::Loading => Some(Self::loading(&theme, "the server's state")),
+            Read::Loading => Some(self.skeleton(&theme)),
             // While Set up runs or shows its result, only its panel.
             Read::Failed(_) if self.job_label.is_some() => Some(div()),
             Read::Failed(e) => Some(self.gate_panel(e.clone(), cx)),
