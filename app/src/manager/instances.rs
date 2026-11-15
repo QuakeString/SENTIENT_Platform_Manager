@@ -700,7 +700,7 @@ impl InstancesPage {
                     .child(div().text_sm().text_color(theme.muted_foreground).child(
                         f.editing.as_ref().and_then(|id| self.instance(id)).and_then(|i| i.detected).map(|d| format!("{} {}", d.os_name, d.arch)).unwrap_or_else(|| "Found out when connecting".into()),
                     ))
-                    .child(help("help-os", "Linux servers (Ubuntu, Debian, Red Hat and others) work now; Windows servers come next. The Platform Manager puts its own matching build on the server."))
+                    .child(help("help-os", "Linux (Ubuntu, Debian, Red Hat and others) and Windows servers with OpenSSH Server. The account needs administrator rights there (root or sudo on Linux; the Administrators group on Windows). The Platform Manager puts its own matching build on the server."))
                     .into_any_element(),
             ));
         if let Some(e) = &f.error {

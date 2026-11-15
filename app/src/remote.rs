@@ -408,14 +408,19 @@ pub fn sudo_key(id: &str) -> String {
 /// SHA-256 after copying; the copy is resumed after a dropped connection.
 pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
     let det = inst.detected.clone().ok_or("Connect to the server first.")?;
-    if det.os != Os::Linux {
-        return Err("Remote Windows servers come in the next step; Linux servers work now.".into());
+    if det.os == Os::Windows {
+        return win::deploy(inst, sink);
     }
     let local_arch = std::env::consts::ARCH;
-    if !cfg!(target_os = "linux") || det.arch != local_arch {
-        return Err(format!("This Platform Manager is built for {} {local_arch}; the server is Linux {}. A matching build is downloaded in the next step.", std::env::consts::OS, det.arch));
-    }
-    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    // This very program when the systems match, else the released build
+    // of this version for the server.
+    let me = if cfg!(target_os = "linux") && det.arch == local_arch {
+        std::env::current_exe().map_err(|e| e.to_string())?
+    } else if det.arch == "x86_64" {
+        released_build(false, sink)?
+    } else {
+        return Err(format!("There is no Platform Manager build for Linux {} yet.", det.arch));
+    };
     let want = sentient_installer_core::manifest::sha256_file(&me)?;
     let have = run(inst, &format!("sha256sum {REMOTE_SPM} 2>/dev/null | cut -d' ' -f1"), None).unwrap_or_default();
     if have.trim() == want {
@@ -492,6 +497,14 @@ pub const NOT_SET_UP: &str = "The Platform Manager is not on this server yet. Se
 
 /// The server's state, from its own Platform Manager (`--job status-json`).
 pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {
+    if is_windows(inst) {
+        #[cfg(debug_assertions)]
+        if std::env::var_os("SPM_DEBUG_REMOTE_STATUS").is_none() {
+            return win::status(inst);
+        }
+        #[cfg(not(debug_assertions))]
+        return win::status(inst);
+    }
     // Development aid: canned answers by instance id (screens).
     #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("SPM_DEBUG_REMOTE_STATUS") {
@@ -499,9 +512,6 @@ pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {
         if let Some(s) = all.get(&inst.id) {
             return Ok(s.clone());
         }
-    }
-    if inst.detected.as_ref().is_some_and(|d| d.os == Os::Windows) {
-        return Err("Remote Windows servers come in the next step; Linux servers work now.".into());
     }
     if run(inst, &format!("test -x {REMOTE_SPM} && echo yes || echo no"), None)?.trim() != "yes" {
         return Err(NOT_SET_UP.into());
@@ -531,6 +541,98 @@ pub struct RemoteStatus {
     pub running_job: Option<String>,
 }
 
+/// One service or container on the server (Status and Control).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RemoteService {
+    pub name: String,
+    pub running: bool,
+    pub starting: bool,
+    pub detail: String,
+}
+
+/// The server's backups and their settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteBackups {
+    pub folder: PathBuf,
+    pub daily_at: Option<String>,
+    pub keep: u32,
+    pub list: Vec<crate::backups::Entry>,
+}
+
+/// Ask the server's Platform Manager for `job` (as administrator) and read
+/// the one JSON line it prints.
+fn read_json<T: serde::de::DeserializeOwned>(inst: &Instance, job: &str) -> Result<T, String> {
+    let out = spm_job(inst, job)?;
+    let line = out.lines().rev().find(|l| { let t = l.trim_start(); t.starts_with('{') || t.starts_with('[') }).ok_or("The server's Platform Manager gave no answer.")?;
+    serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
+}
+
+pub fn services(inst: &Instance) -> Result<Vec<RemoteService>, String> {
+    #[cfg(debug_assertions)]
+    if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_SERVICES") {
+        return serde_json::from_str(&t.to_string_lossy()).map_err(|e| e.to_string());
+    }
+    read_json(inst, "services-json")
+}
+
+pub fn dbstatus(inst: &Instance) -> Result<crate::dbstatus::DbStatus, String> {
+    #[cfg(debug_assertions)]
+    if let Some(p) = std::env::var_os("SPM_DEBUG_DBSTATUS") {
+        return std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()));
+    }
+    read_json(inst, "dbstatus-json")
+}
+
+/// The server's settings by catalog name (crate::settings::current there).
+pub fn settings(inst: &Instance) -> Result<HashMap<String, String>, String> {
+    #[cfg(debug_assertions)]
+    if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_SETTINGS") {
+        return serde_json::from_str(&t.to_string_lossy()).map_err(|e| e.to_string());
+    }
+    read_json(inst, "settings-json")
+}
+
+/// Write `text` to `path` on the server (readable by the owner only).
+pub fn put_text(inst: &Instance, path: &str, text: &str) -> Result<(), String> {
+    if is_windows(inst) {
+        use base64::Engine as _;
+        let b = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+        return win::ps(inst, &format!("[IO.File]::WriteAllText('{}', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{b}')))", path.replace('\'', "''"))).map(|_| ());
+    }
+    let mut c = ssh(inst, &format!("umask 077 && cat > '{}'", path.replace('\'', "")), None);
+    c.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+    let mut child = c.spawn().map_err(|e| format!("start ssh: {e}"))?;
+    if let Some(mut s) = child.stdin.take() {
+        use std::io::Write as _;
+        s.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if out.status.success() { Ok(()) } else { Err(explain(&String::from_utf8_lossy(&out.stderr)).unwrap_or_else(|| String::from_utf8_lossy(&out.stderr).trim().to_string())) }
+}
+
+/// The gateway on the server (`gateway-status` there): key → value.
+pub fn gateway(inst: &Instance) -> Result<HashMap<String, String>, String> {
+    #[cfg(debug_assertions)]
+    if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_GATEWAY") {
+        return Ok(t.to_string_lossy().split(' ').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect());
+    }
+    let out = spm_job(inst, "gateway-status")?;
+    let line = out.lines().rev().find(|l| l.starts_with("installed=")).ok_or("The server's Platform Manager gave no gateway state.")?;
+    Ok(line.split(' ').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect())
+}
+
+/// The account's home folder on the server.
+pub fn home(inst: &Instance) -> Result<String, String> {
+    if is_windows(inst) {
+        return Ok(win::ps(inst, "$env:USERPROFILE")?.trim().to_string());
+    }
+    Ok(run(inst, "printf %s \"$HOME\"", None)?.trim().to_string())
+}
+
+pub fn backups(inst: &Instance) -> Result<RemoteBackups, String> {
+    read_json(inst, "backups-json")
+}
+
 /// The server's processor, memory and disk now (the top bar while it is
 /// open). No administrator rights needed.
 pub fn monitor(inst: &Instance) -> Result<crate::sysmon::Monitor, String> {
@@ -539,13 +641,16 @@ pub fn monitor(inst: &Instance) -> Result<crate::sysmon::Monitor, String> {
     if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_MONITOR") {
         return serde_json::from_str(&t.to_string_lossy()).map_err(|e| e.to_string());
     }
-    let out = run(inst, &format!("{REMOTE_SPM} --job monitor-json"), None)?;
+    let out = if is_windows(inst) { spm_job(inst, "monitor-json")? } else { run(inst, &format!("{REMOTE_SPM} --job monitor-json"), None)? };
     let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("no reading")?;
     serde_json::from_str(line).map_err(|e| e.to_string())
 }
 
 /// The id of the job running on the server, if one is.
 pub fn running_job(inst: &Instance) -> Option<String> {
+    if is_windows(inst) {
+        return win::running_job(inst);
+    }
     let pw = secret(&inst.id);
     let out = sudo_run(inst, "systemctl list-units --type=service --state=running --no-legend --plain 'spm-job-*' | head -1", pw.as_deref()).ok()?;
     out.split_whitespace().next()?.strip_prefix("spm-job-")?.strip_suffix(".service").map(str::to_string)
@@ -555,6 +660,9 @@ pub fn running_job(inst: &Instance) -> Option<String> {
 /// Returns the job's id; its progress goes to a file [`follow`] reads.
 pub fn start_job(inst: &Instance, args: &[&str]) -> Result<String, String> {
     let id = format!("{}", chrono::Utc::now().format("%Y%m%d%H%M%S"));
+    if is_windows(inst) {
+        return win::start_job(inst, &id, args).map(|_| id);
+    }
     let pw = secret(&inst.id);
     // One job at a time on a server.
     let busy = sudo_run(inst, "systemctl list-units --type=service --state=running --no-legend 'spm-job-*' | head -1", pw.as_deref()).unwrap_or_default();
@@ -576,6 +684,9 @@ pub fn start_job(inst: &Instance, args: &[&str]) -> Result<String, String> {
 /// Follow a job's progress until it ends, reconnecting when the connection
 /// drops (the job keeps running there). Blocking.
 pub fn follow(inst: &Instance, id: &str, sink: &ProgressFn) -> Result<(), String> {
+    if is_windows(inst) {
+        return win::follow(inst, id, sink);
+    }
     let mut seen = 0usize;
     let mut drops = 0u32;
     loop {
@@ -615,7 +726,212 @@ pub fn follow(inst: &Instance, id: &str, sink: &ProgressFn) -> Result<(), String
 /// The last lines of SENTIENT's log on the server.
 pub fn logs(inst: &Instance, lines: u32) -> Result<String, String> {
     let pw = secret(&inst.id);
-    sudo_run(inst, &format!("{REMOTE_SPM} --job logs {lines}"), pw.as_deref())
+    let _ = pw;
+    spm_job(inst, &format!("logs {lines}"))
+}
+
+/// The server runs Windows.
+pub fn is_windows(inst: &Instance) -> bool {
+    inst.os == Os::Windows || inst.detected.as_ref().is_some_and(|d| d.os == Os::Windows)
+}
+
+/// Run `--job <job>` with the server's Platform Manager as administrator
+/// and return what it printed.
+fn spm_job(inst: &Instance, job: &str) -> Result<String, String> {
+    if is_windows(inst) {
+        win::ps(inst, &format!("& '{}' --job {job}", win::EXE))
+    } else {
+        sudo_run(inst, &format!("{REMOTE_SPM} --job {job}"), None)
+    }
+}
+
+/// Delete a file on the server (the settings file after applying).
+pub fn remove_file(inst: &Instance, path: &str) {
+    let _ = if is_windows(inst) {
+        win::ps(inst, &format!("Remove-Item -Force -ErrorAction SilentlyContinue '{}'", path.replace('\'', "''")))
+    } else {
+        run(inst, &format!("rm -f '{}'", path.replace('\'', "")), None)
+    };
+}
+
+/// The released build of this Platform Manager's version for a server
+/// (Windows .exe, or Linux x86_64), downloaded once and checked against its
+/// published SHA-256.
+fn released_build(windows: bool, sink: &ProgressFn) -> Result<PathBuf, String> {
+    use sentient_installer_core::releases;
+    let version = crate::updates::manager_version().to_string();
+    let dir = crate::updates::prefs_dir().join("remote-builds");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    sink(Progress::Step { name: format!("Getting Platform Manager {version} for the server") });
+    let all = releases::fetch(releases::MANAGER_REPO)?;
+    let r = all
+        .iter()
+        .find(|r| releases::is_manager(r) && releases::manager_version_of(r) == version)
+        .ok_or_else(|| format!("Platform Manager {version} is not a published release, so there is no build of it for the server. Use a released Platform Manager."))?;
+    let asset = r
+        .assets
+        .iter()
+        .find(|a| a.name.starts_with("SENTIENT-Setup-manager") && if windows { a.name.ends_with(".exe") } else { a.name.ends_with("-linux-x86_64") })
+        .ok_or_else(|| format!("Platform Manager {version} has no {} build.", if windows { "Windows" } else { "Linux" }))?;
+    let sha = crate::updates::published_sha256(r, asset).ok_or("The build has no published checksum, so it cannot be checked.")?;
+    let file = dir.join(&asset.name);
+    let ok = |f: &Path| sentient_installer_core::manifest::sha256_file(f).is_ok_and(|h| h.eq_ignore_ascii_case(&sha));
+    if !ok(&file) {
+        let resp = sentient_installer_core::net::agent()
+            .get(&asset.browser_download_url)
+            .set("User-Agent", "SENTIENT-Platform-Manager")
+            .call()
+            .map_err(|e| format!("download {}: {e}", asset.name))?;
+        let mut out = std::fs::File::create(&file).map_err(|e| e.to_string())?;
+        std::io::copy(&mut resp.into_reader(), &mut out).map_err(|e| format!("download {}: {e}", asset.name))?;
+        if !ok(&file) {
+            let _ = std::fs::remove_file(&file);
+            return Err(format!("The download of {} does not match its published checksum.", asset.name));
+        }
+    }
+    Ok(file)
+}
+
+/// Windows servers: OpenSSH Server, commands in PowerShell, the Platform
+/// Manager under ProgramData, jobs as scheduled tasks running as SYSTEM
+/// (they outlive the connection), progress in a file polled from here.
+mod win {
+    use super::*;
+
+    pub const DIR: &str = r"C:\ProgramData\SENTIENT\Platform Manager\remote";
+    pub const EXE: &str = r"C:\ProgramData\SENTIENT\Platform Manager\remote\sentient-platform-manager.exe";
+    const JOBS: &str = r"C:\ProgramData\SENTIENT\Platform Manager\remote\jobs";
+
+    /// Run a PowerShell script on the server (encoded, so no quoting
+    /// passes through cmd).
+    pub fn ps(inst: &Instance, script: &str) -> Result<String, String> {
+        use base64::Engine as _;
+        let utf16: Vec<u8> = format!("$ProgressPreference='SilentlyContinue'; {script}").encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let enc = base64::engine::general_purpose::STANDARD.encode(utf16);
+        run(inst, &format!("powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {enc}"), None)
+    }
+
+    pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
+        let file = released_build(true, sink)?;
+        let want = sentient_installer_core::manifest::sha256_file(&file)?;
+        let have = ps(inst, &format!("if (Test-Path '{EXE}') {{ (Get-FileHash -Algorithm SHA256 '{EXE}').Hash }}")).unwrap_or_default();
+        if have.trim().eq_ignore_ascii_case(&want) {
+            sink(Progress::Log { line: "The Platform Manager on the server is up to date.".into() });
+            return Ok(());
+        }
+        sink(Progress::Step { name: "Copying the Platform Manager to the server".into() });
+        ps(inst, &format!("New-Item -ItemType Directory -Force '{JOBS}' | Out-Null"))?;
+        let upload = format!("{DIR}\\upload.exe");
+        let sftp_path = format!("/{}", upload.replace('\\', "/"));
+        sftp_put(inst, &file, &sftp_path)?;
+        let got = ps(inst, &format!("(Get-FileHash -Algorithm SHA256 '{upload}').Hash"))?;
+        if !got.trim().eq_ignore_ascii_case(&want) {
+            return Err("The copy on the server does not match (checksum); nothing was replaced. Try again.".into());
+        }
+        ps(inst, &format!("Move-Item -Force '{upload}' '{EXE}'"))?;
+        Ok(())
+    }
+
+    pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {
+        if ps(inst, &format!("Test-Path '{EXE}'"))?.trim() != "True" {
+            return Err(NOT_SET_UP.into());
+        }
+        let out = ps(inst, &format!("& '{EXE}' --job status-json"))?;
+        let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's Platform Manager gave no status.")?;
+        let mut st: RemoteStatus = serde_json::from_str(line).map_err(|e| format!("unexpected status from the server: {e}"))?;
+        st.running_job = running_job(inst);
+        Ok(st)
+    }
+
+    pub fn running_job(inst: &Instance) -> Option<String> {
+        let out = ps(inst, "Get-ScheduledTask -TaskName 'spm-job-*' -ErrorAction SilentlyContinue | Where-Object State -eq 'Running' | Select-Object -First 1 -ExpandProperty TaskName").ok()?;
+        out.trim().strip_prefix("spm-job-").map(str::to_string)
+    }
+
+    pub fn start_job(inst: &Instance, id: &str, args: &[&str]) -> Result<(), String> {
+        let quoted: Vec<String> = args.iter().map(|a| format!("\"{}\"", a.replace(['"', '\''], ""))).collect();
+        let cmdline = format!("/c \"\"{EXE}\" --job --json {} > \"{JOBS}\\{id}.log\" 2> \"{JOBS}\\{id}.err\"\"", quoted.join(" "));
+        let script = format!(
+            "New-Item -ItemType Directory -Force '{JOBS}' | Out-Null; \
+             if (Get-ScheduledTask -TaskName 'spm-job-*' -ErrorAction SilentlyContinue | Where-Object State -eq 'Running') {{ 'BUSY'; exit }}; \
+             $a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '{}'; \
+             $p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; \
+             Register-ScheduledTask -TaskName 'spm-job-{id}' -Action $a -Principal $p -Force | Out-Null; \
+             Start-ScheduledTask -TaskName 'spm-job-{id}'; 'STARTED'",
+            cmdline.replace('\'', "''")
+        );
+        let out = ps(inst, &script)?;
+        if out.contains("BUSY") {
+            return Err("Another job is still running on this server. Wait until it ends.".into());
+        }
+        if !out.contains("STARTED") {
+            return Err(format!("The job did not start on the server: {}", out.trim()));
+        }
+        Ok(())
+    }
+
+    /// Poll the job's progress file until its task stops; a dropped
+    /// connection only delays the next poll.
+    pub fn follow(inst: &Instance, id: &str, sink: &ProgressFn) -> Result<(), String> {
+        let mut seen = 0usize;
+        let mut failure: Option<String> = None;
+        let mut drops = 0u32;
+        let read = |skip: usize| {
+            ps(
+                inst,
+                &format!(
+                    "$f='{JOBS}\\{id}.log'; if (Test-Path $f) {{ Get-Content -Encoding UTF8 $f | Select-Object -Skip {skip} }}; \
+                     $t = Get-ScheduledTask -TaskName 'spm-job-{id}' -ErrorAction SilentlyContinue; \
+                     if ($t -and $t.State -eq 'Running') {{ '@@RUNNING' }} else {{ '@@END' }}"
+                ),
+            )
+        };
+        loop {
+            match read(seen) {
+                Ok(out) => {
+                    drops = 0;
+                    let mut ended = false;
+                    for line in out.lines() {
+                        match line.trim_end() {
+                            "@@RUNNING" => {}
+                            "@@END" => ended = true,
+                            l => {
+                                seen += 1;
+                                match serde_json::from_str::<Progress>(l) {
+                                    Ok(Progress::Error { message }) => failure = Some(message),
+                                    Ok(p) => sink(p),
+                                    Err(_) => sink(Progress::Log { line: l.to_string() }),
+                                }
+                            }
+                        }
+                    }
+                    if ended {
+                        // What it wrote between the read and the end.
+                        if let Ok(rest) = read(seen) {
+                            for l in rest.lines().filter(|l| !l.starts_with("@@")) {
+                                match serde_json::from_str::<Progress>(l) {
+                                    Ok(Progress::Error { message }) => failure = Some(message),
+                                    Ok(p) => sink(p),
+                                    Err(_) => sink(Progress::Log { line: l.to_string() }),
+                                }
+                            }
+                        }
+                        let _ = ps(inst, &format!("Unregister-ScheduledTask -TaskName 'spm-job-{id}' -Confirm:$false -ErrorAction SilentlyContinue"));
+                        return match failure {
+                            Some(e) => Err(e),
+                            None => Ok(()),
+                        };
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                }
+                Err(_) => {
+                    drops += 1;
+                    sink(Progress::Log { line: format!("The connection to {} was lost; the job keeps running there. Reconnecting…", inst.name) });
+                    std::thread::sleep(std::time::Duration::from_secs((2 * drops as u64).min(30)));
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

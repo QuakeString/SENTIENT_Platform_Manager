@@ -11,6 +11,7 @@ mod gateway;
 mod instances;
 mod logs;
 pub(crate) mod migration;
+mod remote_pages;
 mod repair;
 mod settings;
 mod status;
@@ -135,6 +136,8 @@ pub struct Manager {
     /// That instance's processor, memory and disk (None until read, or
     /// when it does not answer).
     remote_monitor: Option<Monitor>,
+    /// The pages of the open remote instance.
+    remote_pages: Option<Entity<remote_pages::RemotePages>>,
     /// The open instance's processor, memory and disk (top bar).
     monitor: Option<Monitor>,
     updates: Entity<UpdateState>,
@@ -181,6 +184,7 @@ impl Manager {
             remotes: crate::remote::load(),
             open_remote: None,
             remote_monitor: None,
+            remote_pages: None,
             monitor: None,
             updates,
             updated_from,
@@ -400,10 +404,11 @@ impl Manager {
     /// worked on from their card on Instances for now.
     fn open_instance(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         if id.is_some() {
-            self.page = Page::Instances;
+            self.page = Page::Status;
         }
         self.open_remote = id.clone();
         self.remote_monitor = None;
+        self.remote_pages = None;
         if let Some(inst) = id.as_ref().and_then(|id| self.remotes.iter().find(|r| &r.id == id)).cloned() {
             // Read it every few seconds while it stays open.
             let task = cx.spawn(async move |this, cx| loop {
@@ -737,12 +742,38 @@ impl Manager {
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let record = self.record.clone();
         if let Some(r) = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
+            let kind = match self.page {
+                Page::Status => Some(remote_pages::Kind::Status),
+                Page::Control => Some(remote_pages::Kind::Control),
+                Page::Logs => Some(remote_pages::Kind::Logs),
+                Page::Update => Some(remote_pages::Kind::Update),
+                Page::Backup => Some(remote_pages::Kind::Backup),
+                Page::Settings => Some(remote_pages::Kind::Settings),
+                Page::Migration => Some(remote_pages::Kind::Migration),
+                Page::Repair => Some(remote_pages::Kind::Repair),
+                Page::Gateway => Some(remote_pages::Kind::Gateway),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                let page = match &self.remote_pages {
+                    Some(p) => {
+                        p.update(cx, |p, cx| p.show(kind, cx));
+                        p.clone()
+                    }
+                    None => {
+                        let p = cx.new(|cx| remote_pages::RemotePages::new(r.clone(), kind, window, cx));
+                        self.remote_pages = Some(p.clone());
+                        p
+                    }
+                };
+                return page.into_any_element();
+            }
             if !matches!(self.page, Page::Instances | Page::About) {
                 let theme = cx.theme().clone();
                 return ui::page(&theme, self.page.title(), "")
                     .child(
                         ui::panel(&theme)
-                            .child(div().child(format!("{} is open. This page works on this computer for now; {}'s state, Control, Update, Back up now and Logs are on its card.", r.name, r.name)))
+                            .child(div().child(format!("{} is open. This page works on this computer only for now; Status, Control, Logs, Update and Backup and restore work on {}.", r.name, r.name)))
                             .child(
                                 h_flex()
                                     .gap_2()

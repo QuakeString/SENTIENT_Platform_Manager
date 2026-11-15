@@ -16,6 +16,17 @@ refreshes that repository's Downloads table.
 ## [Unreleased]
 
 ### Added
+- Every page works on a remote instance: with a server open, Status,
+  Control, Logs, Update, Backup and restore, Platform settings, Migration,
+  Repair and Gateway show and change that server. "Open" on an instance
+  card lands on its Status. Installing a gateway and uninstalling SENTIENT
+  are done on the server itself.
+- Windows servers as remote instances, over Windows' own OpenSSH Server:
+  the Platform Manager copies the released Windows build there (checked
+  by its published SHA-256) and runs each job as a scheduled task, so it
+  outlives the connection like on Linux.
+- A sudo password for key sign-ins, kept in the secret store, for servers
+  where sudo asks for one.
 - Remote instances: SENTIENT on other computers, reached over SSH, on the
   new Instances page (below the menu) and in the top bar's instance
   switcher. Each server gets a card with its system logo, state, version,
@@ -27,7 +38,7 @@ refreshes that repository's Downloads table.
   the server (checked by SHA-256) and runs the work there detached, so a
   dropped connection does not stop an update; it reconnects and follows on.
   The top bar takes the open instance's colour and says "Remote". Linux
-  servers for now; Windows servers come next.
+  and Windows servers.
 - "What's new" before every update: the Update screen, the notice bar and
   Setup show the release notes of every version between the installed one
   and the new one, grouped as Added, Changed and Fixed, with what the update

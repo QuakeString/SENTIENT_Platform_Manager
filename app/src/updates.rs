@@ -155,7 +155,7 @@ impl Offer {
 
 /// The published SHA-256 of `asset`: GitHub's digest, else the checksum
 /// table of the release notes (`| \`name\` | size | \`hex\` |`).
-fn published_sha256(r: &Release, asset: &releases::Asset) -> Option<String> {
+pub(crate) fn published_sha256(r: &Release, asset: &releases::Asset) -> Option<String> {
     if let Some(d) = asset.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")) {
         return Some(d.to_lowercase());
     }
