@@ -6,6 +6,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod adopt;
+// Always built: the menu entries list its actions (crate::self_install).
+mod background;
+#[cfg(feature = "gui")]
+mod bg_app;
+#[cfg(feature = "gui")]
+mod tray;
 #[cfg(all(windows, feature = "gui"))]
 mod win_icon;
 mod agent;
@@ -117,7 +123,67 @@ fn main() {
 }
 
 #[cfg(feature = "gui")]
+fn window_options(mode: AppMode, cx: &mut gpui_kit::App) -> WindowOptions {
+    let size = match mode {
+        AppMode::Install => size(px(980.), px(680.)),
+        AppMode::Maintenance => size(px(820.), px(600.)),
+        AppMode::Manager => size(px(1100.), px(720.)),
+    };
+    // Development aid: open at a given size (layout renders).
+    #[cfg(debug_assertions)]
+    let size = std::env::var("SPM_WINDOW_SIZE")
+        .ok()
+        .and_then(|v| v.split_once('x').and_then(|(w, h)| Some(gpui_kit::size(px(w.parse().ok()?), px(h.parse().ok()?)))))
+        .unwrap_or(size);
+    WindowOptions {
+        window_bounds: Some(WindowBounds::centered(size, cx)),
+        // Small enough for a half screen, large enough that nothing breaks.
+        window_min_size: Some(gpui_kit::size(px(560.), px(480.))),
+        titlebar: Some(TitlebarOptions {
+            title: Some(mode.window_title().into()),
+            ..Default::default()
+        }),
+        // Matches the application-menu entry, so the desktop shows its icon.
+        app_id: Some("sentient-platform-manager".into()),
+        ..Default::default()
+    }
+}
+
+#[cfg(feature = "gui")]
+fn window_options_manager(cx: &mut gpui_kit::App) -> WindowOptions {
+    window_options(AppMode::Manager, cx)
+}
+
+/// The Platform Manager's window (crate::bg_app opens it, again after a close).
+#[cfg(feature = "gui")]
+pub(crate) fn open_manager_window(options: WindowOptions, cx: &mut gpui_kit::App) -> anyhow::Result<(gpui_kit::AnyWindowHandle, gpui_kit::Entity<manager::Manager>)> {
+    gpui_kit::open_window(options, cx, |window, cx| {
+        #[cfg(windows)]
+        win_icon::use_manager_icon(window);
+        cx.new(|cx| manager::Manager::new(window, cx))
+    })
+}
+
+#[cfg(feature = "gui")]
 fn gui_main(args: Vec<String>) {
+    let mode = AppMode::detect();
+    // The Platform Manager runs once per user: a later start (a menu entry,
+    // a taskbar action) hands its request to the running one, before asking
+    // for administrator rights again.
+    let request = background::request_of(&args);
+    if mode == AppMode::Manager && !args.iter().any(|a| a == "--self-update") {
+        if background::Prefs::load().show_tray && background::forward(&request) {
+            return;
+        }
+        if request == "action exit" {
+            return;
+        }
+    }
+    let background_start = args.iter().any(|a| a == "--background");
+    if mode == AppMode::Manager && background_start && !background::Prefs::load().background() {
+        // Started at sign-in, but the tray was turned off since.
+        return;
+    }
     if !elevate::ensure_admin() {
         return;
     }
@@ -126,7 +192,6 @@ fn gui_main(args: Vec<String>) {
         std::process::exit(updates::finish_self_update());
     }
     ui::prefer_native_frame();
-    let mode = AppMode::detect();
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx| {
         gpui_kit::init(cx);
         theme::init(ThemeMode::Light, cx);
@@ -142,42 +207,18 @@ fn gui_main(args: Vec<String>) {
             }
         }
 
-        let size = match mode {
-            AppMode::Install => size(px(980.), px(680.)),
-            AppMode::Maintenance => size(px(820.), px(600.)),
-            AppMode::Manager => size(px(1100.), px(720.)),
-        };
-        // Development aid: open at a given size (layout renders).
-        #[cfg(debug_assertions)]
-        let size = std::env::var("SPM_WINDOW_SIZE")
-            .ok()
-            .and_then(|v| v.split_once('x').and_then(|(w, h)| Some(gpui_kit::size(px(w.parse().ok()?), px(h.parse().ok()?)))))
-            .unwrap_or(size);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size, cx)),
-            // Small enough for a half screen, large enough that nothing breaks.
-            window_min_size: Some(gpui_kit::size(px(560.), px(480.))),
-            titlebar: Some(TitlebarOptions {
-                title: Some(mode.window_title().into()),
-                ..Default::default()
-            }),
-            // Matches the application-menu entry, so the desktop shows its icon.
-            app_id: Some("sentient-platform-manager".into()),
-            ..Default::default()
-        };
+        if mode == AppMode::Manager {
+            bg_app::start(window_options_manager, !background_start, request.clone(), cx);
+            return;
+        }
+        let options = window_options(mode, cx);
         let opened = match mode {
             AppMode::Install => gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| installer::Installer::new(window, cx))
             })
             .map(|_| ()),
-            AppMode::Maintenance => gpui_kit::open_window(options, cx, |window, cx| {
+            _ => gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| maintenance::Maintenance::new(window, cx))
-            })
-            .map(|_| ()),
-            AppMode::Manager => gpui_kit::open_window(options, cx, |window, cx| {
-                #[cfg(windows)]
-                win_icon::use_manager_icon(window);
-                cx.new(|cx| manager::Manager::new(window, cx))
             })
             .map(|_| ()),
         };

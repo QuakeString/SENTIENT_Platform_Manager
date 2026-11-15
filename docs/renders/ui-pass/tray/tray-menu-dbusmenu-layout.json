@@ -1,0 +1,120 @@
+{
+ "id": "sentient-platform-manager",
+ "title": "SENTIENT Platform Manager",
+ "icon_name": "sentient-platform-manager",
+ "pixmaps": [
+  [
+   22,
+   22
+  ],
+  [
+   32,
+   32
+  ],
+  [
+   64,
+   64
+  ]
+ ],
+ "tooltip": "SENTIENT Platform Manager · 3 new notifications",
+ "menu": {
+  "children-display": "submenu",
+  "children": [
+   {
+    "label": "Open SENTIENT Platform Manager",
+    "children": []
+   },
+   {
+    "type": "separator",
+    "children": []
+   },
+   {
+    "children-display": "submenu",
+    "label": "Notifications (3)",
+    "children": [
+     {
+      "label": "! Updating the server agent failed — BSMPL SENTIENT",
+      "children": []
+     },
+     {
+      "label": "• Backing up: done — This computer",
+      "children": []
+     },
+     {
+      "label": "! The server does not answer — INVENIA IIoT",
+      "children": []
+     },
+     {
+      "label": "SENTIENT runs again — Plant B server",
+      "children": []
+     },
+     {
+      "label": "Updating SENTIENT: done — ST-DEV",
+      "children": []
+     },
+     {
+      "type": "separator",
+      "children": []
+     },
+     {
+      "label": "Show all notifications",
+      "children": []
+     }
+    ]
+   },
+   {
+    "children-display": "submenu",
+    "label": "Instances",
+    "children": [
+     {
+      "label": "This computer",
+      "children": []
+     },
+     {
+      "label": "Plant B server",
+      "children": []
+     }
+    ]
+   },
+   {
+    "children-display": "submenu",
+    "label": "SENTIENT on this computer",
+    "children": [
+     {
+      "enabled": false,
+      "label": "Start",
+      "children": []
+     },
+     {
+      "label": "Stop",
+      "children": []
+     },
+     {
+      "label": "Restart",
+      "children": []
+     }
+    ]
+   },
+   {
+    "label": "Back up this computer now",
+    "children": []
+   },
+   {
+    "label": "Statistics",
+    "children": []
+   },
+   {
+    "label": "Check for updates",
+    "children": []
+   },
+   {
+    "type": "separator",
+    "children": []
+   },
+   {
+    "label": "Exit",
+    "children": []
+   }
+  ]
+ }
+}

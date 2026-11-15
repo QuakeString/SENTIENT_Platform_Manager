@@ -60,7 +60,7 @@ fn events_path() -> std::path::PathBuf {
     crate::updates::prefs_dir().join("notifications.json")
 }
 
-fn load_events() -> Vec<Event> {
+pub(crate) fn load_events() -> Vec<Event> {
     std::fs::read_to_string(events_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
@@ -89,11 +89,30 @@ pub struct Strip {
 struct StripSlot(Entity<Strip>);
 impl Global for StripSlot {}
 
-/// The strip for this window (the manager makes it once).
+/// The strip, made once per run: a window opened again (crate::bg_app)
+/// finds the running job and the events where they were.
 pub fn install(cx: &mut App) -> Entity<Strip> {
+    if let Some(s) = cx.try_global::<StripSlot>() {
+        return s.0.clone();
+    }
     let strip = cx.new(|_| Strip { events: load_events(), retries: Default::default(), light_bar: std::cell::Cell::new(false), window_w: std::cell::Cell::new(1100.), slot_w: std::cell::Cell::new(400.), job: None, label: None, finished_at: None, opened_for_failure: false, _observe: None, _hide: None });
     cx.set_global(StripSlot(strip.clone()));
     strip
+}
+
+/// A job is running (closing the window then minimizes it instead).
+pub fn busy(cx: &App) -> bool {
+    cx.try_global::<StripSlot>().is_some_and(|s| s.0.read(cx).job.as_ref().is_some_and(|j| j.read(cx).is_running()))
+}
+
+/// A condition the background checks found (crate::bg_app): a line in the
+/// bell, as a job's would be.
+pub fn push_condition(inst: Option<(String, String, String)>, failed: bool, title: String, detail: String, cx: &mut App) {
+    let strip = install(cx);
+    strip.update(cx, |s, cx| {
+        s.push_event(inst, failed, title, detail.clone(), detail);
+        cx.notify();
+    });
 }
 
 /// A job started: follow it in the strip. Without a strip (the installer,

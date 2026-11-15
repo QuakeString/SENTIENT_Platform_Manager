@@ -171,8 +171,16 @@ pub struct Manager {
     /// Setup installed this Platform Manager beside a SENTIENT it found:
     /// say so once.
     found_notice: bool,
+    /// A tray or taskbar action that runs on its page once the page exists
+    /// (crate::background): `backup`, `control:<verb>`.
+    pending: Option<String>,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
+}
+
+/// The bell's events as saved (the tray's menu reads them without a window).
+pub fn saved_events() -> Vec<strip::Event> {
+    strip::load_events()
 }
 
 impl Manager {
@@ -235,6 +243,7 @@ impl Manager {
             monitor: None,
             updates,
             updated_from,
+            pending: None,
             found_notice,
             _subscriptions: subscriptions,
             _tasks: Vec::new(),
@@ -1556,6 +1565,60 @@ impl Manager {
     }
 }
 
+impl Manager {
+    /// A tray or taskbar action (crate::background::Command::Action).
+    pub fn act(&mut self, action: &str, cx: &mut Context<Self>) {
+        match action {
+            "statistics" => self.page = Page::Statistics,
+            "notifications" => self.bell_open = true,
+            "check-updates" => {
+                self.page = Page::About;
+                self.updates.update(cx, |u, cx| u.check(cx));
+            }
+            "backup" => {
+                self.open_instance(None, cx);
+                self.page = Page::Backup;
+                self.pending = Some("backup".into());
+            }
+            a => {
+                if let Some(id) = a.strip_prefix("notification:").and_then(|n| n.parse::<u64>().ok()) {
+                    self.bell_open = true;
+                    self.strip.update(cx, |s, cx| s.open_event(id, cx));
+                } else if let Some(id) = a.strip_prefix("instance:") {
+                    self.open_instance((!id.is_empty()).then(|| id.to_string()), cx);
+                    self.page = Page::Status;
+                } else if let Some(verb) = a.strip_prefix("control:") {
+                    self.open_instance(None, cx);
+                    self.page = Page::Control;
+                    self.pending = Some(format!("control:{verb}"));
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Run the pending action on its page (it exists after a render).
+    fn run_pending(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.pending.clone() else { return };
+        if p == "backup" {
+            if let Some(page) = self.backup.clone() {
+                self.pending = None;
+                cx.defer(move |cx| page.update(cx, |b, cx| b.run_preset_backup(cx)));
+            }
+        } else if let Some(verb) = p.strip_prefix("control:") {
+            if let Some(page) = self.control.clone() {
+                self.pending = None;
+                let verb: &'static str = match verb {
+                    "start" => "start",
+                    "stop" => "stop",
+                    _ => "restart",
+                };
+                cx.defer(move |cx| page.update(cx, |c, cx| c.run(verb, cx)));
+            }
+        }
+    }
+}
+
 impl Render for Manager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The layout follows the window: an icon rail below RAIL_BELOW px,
@@ -1572,6 +1635,7 @@ impl Render for Manager {
         let nav = self.nav(width < RAIL_BELOW, cx);
         let notices = self.notices(cx);
         let content = self.content(window, cx);
+        self.run_pending(cx);
         let rail = width < RAIL_BELOW;
         let layer = crate::modal::layer(window, cx, if rail { 64. } else { NAV_W }, 42.);
         if layer.is_some() && window.focused(cx).is_none() {

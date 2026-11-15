@@ -23,6 +23,8 @@ pub struct AboutPage {
     /// The support file just made, or why it was not.
     support: Option<Result<std::path::PathBuf, String>>,
     making: bool,
+    /// Saving the background preferences failed (start at sign-in).
+    bg_error: Option<String>,
     _observe: Subscription,
     _tasks: Vec<Task<()>>,
 }
@@ -30,9 +32,53 @@ pub struct AboutPage {
 impl EventEmitter<ShowWhatsNew> for AboutPage {}
 
 impl AboutPage {
+    /// Start at sign-in, the tray, and what closing the window does
+    /// (crate::background). Without the tray there is no background part:
+    /// the other two do not apply and are off.
+    fn background_rows(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        use gpui_kit::component::{Disableable as _, switch::Switch};
+        let p = crate::bg_app::prefs(cx);
+        let set = |f: fn(&mut crate::background::Prefs, bool)| {
+            cx.listener(move |this: &mut Self, v: &bool, _, cx| {
+                let mut p = crate::bg_app::prefs(cx);
+                f(&mut p, *v);
+                this.bg_error = crate::bg_app::set_prefs(p, cx).err();
+                cx.notify();
+            })
+        };
+        let tray_help = if p.show_tray && !crate::bg_app::tray_up(cx) {
+            "This desktop shows no tray icons (on GNOME, the AppIndicator extension adds them): the Platform Manager runs as without a tray."
+        } else {
+            "An icon by the clock: click it to open or close the window; its menu has the latest notifications, the instances and Exit. The instances are checked in the background."
+        };
+        let mut rows = vec![
+            pref_row(theme, "Show in the system tray", Some(tray_help), Switch::new("bg-tray").checked(p.show_tray).on_click(set(|p, v| p.show_tray = v))).into_any_element(),
+            pref_row(
+                theme,
+                "Start at sign-in",
+                Some("In the background, with the tray icon; the window opens when you click it."),
+                Switch::new("bg-signin").checked(p.show_tray && p.start_at_signin).disabled(!p.show_tray).on_click(set(|p, v| p.start_at_signin = v)),
+            )
+            .into_any_element(),
+            pref_row(
+                theme,
+                "Closing the window quits",
+                Some("Off: closing the window leaves the Platform Manager in the tray. Exit from the tray menu quits."),
+                Switch::new("bg-close").checked(!p.show_tray || p.close_quits).disabled(!p.show_tray).on_click(set(|p, v| p.close_quits = v)),
+            )
+            .into_any_element(),
+        ];
+        if let Some(e) = &self.bg_error {
+            rows.push(ui::outcome(theme, Tone::Bad, format!("Could not change starting at sign-in: {e}")).into_any_element());
+        }
+        rows
+    }
+}
+
+impl AboutPage {
     pub fn new(updates: Entity<UpdateState>, cx: &mut Context<Self>) -> Self {
         let _observe = cx.observe(&updates, |_, _, cx| cx.notify());
-        Self { updates, support: None, making: false, _observe, _tasks: Vec::new() }
+        Self { updates, support: None, making: false, bg_error: None, _observe, _tasks: Vec::new() }
     }
 
     fn make_support_file(&mut self, cx: &mut Context<Self>) {
@@ -163,7 +209,8 @@ impl Render for AboutPage {
             .py_1()
             .child(pref_row(&theme, "Language", None, div().text_sm().child("English")).border_t_0())
             .child(pref_row(&theme, "Update channel", Some("Release candidates arrive earlier and are less tested."), channels))
-            .child(pref_row(&theme, "Check for updates", None, checks));
+            .child(pref_row(&theme, "Check for updates", None, checks))
+            .children(self.background_rows(&theme, cx));
         let log_path = crate::jobs::activity_log();
         let support = v_flex()
             .gap_3()
