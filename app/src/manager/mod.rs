@@ -321,7 +321,6 @@ impl Manager {
         let count = items.len();
         let bell = Button::new("bell")
             .ghost()
-            .small()
             .icon(Icon::new(IconName::Bell).text_color(fg))
             .when(count > 0, |b| b.label(count.to_string()))
             .text_color(fg)
@@ -361,7 +360,6 @@ impl Manager {
             .child(
                 Button::new("switcher")
                     .ghost()
-                    .small()
                     .label(instance)
                     .icon(Icon::new(IconName::ChevronDown).size_3p5().text_color(dim))
                     .text_color(fg)
@@ -499,12 +497,12 @@ impl Manager {
             col = col.child(
                 bar("notice-updated", crate::ui::Tone::Good, text)
                     .when(pending > 0, |b| {
-                        b.child(Button::new("notice-updated-changes").primary().small().label("Show the changes").on_click(cx.listener(|this, _, _, cx| {
+                        b.child(Button::new("notice-updated-changes").primary().label("Show the changes").on_click(cx.listener(|this, _, _, cx| {
                             this.page = Page::Update;
                             cx.notify();
                         })))
                     })
-                    .child(Button::new("notice-updated-close").ghost().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                    .child(Button::new("notice-updated-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
                         this.updated_from = None;
                         cx.notify();
                     }))),
@@ -519,7 +517,7 @@ impl Manager {
                         crate::ui::Tone::Good,
                         format!("Found SENTIENT {} on this computer with its database, settings and backups. Nothing was changed.", r.sentient_version),
                     )
-                    .child(Button::new("notice-found-close").ghost().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                    .child(Button::new("notice-found-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
                         this.found_notice = false;
                         cx.notify();
                     }))),
@@ -533,15 +531,15 @@ impl Manager {
                 col = col.child(
                     bar("notice-both", crate::ui::Tone::Neutral, format!("Platform Manager {} and SENTIENT {} are available.", m.version, s.version))
                         .when(m.installer.is_some(), |b| {
-                            b.child(Button::new("notice-both-go").primary().small().label("Update Platform Manager").on_click(cx.listener(|this, _, _, cx| {
+                            b.child(Button::new("notice-both-go").primary().label("Update Platform Manager").on_click(cx.listener(|this, _, _, cx| {
                                 let page = this.update_page(cx);
                                 page.update(cx, |p, cx| p.start_manager_update(cx));
                                 this.page = Page::Update;
                                 cx.notify();
                             })))
                         })
-                        .child(Button::new("notice-both-notes").ghost().small().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx))))
-                        .child(Button::new("notice-both-later").ghost().small().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        .child(Button::new("notice-both-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx))))
+                        .child(Button::new("notice-both-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                             let (mv, sv) = (mv.clone(), sv.clone());
                             this.updates.update(cx, |s, cx| {
                                 s.dismiss_manager(mv, cx);
@@ -556,15 +554,15 @@ impl Manager {
                 col = col.child(
                     bar("notice-manager", crate::ui::Tone::Neutral, format!("Platform Manager {} is available.", m.version))
                         .when(m.installer.is_some(), |b| {
-                            b.child(Button::new("notice-manager-go").primary().small().label("Update and restart").on_click(cx.listener(|this, _, _, cx| {
+                            b.child(Button::new("notice-manager-go").primary().label("Update and restart").on_click(cx.listener(|this, _, _, cx| {
                                 let page = this.update_page(cx);
                                 page.update(cx, |p, cx| p.start_manager_update(cx));
                                 this.page = Page::Update;
                                 cx.notify();
                             })))
                         })
-                        .child(Button::new("notice-manager-notes").ghost().small().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx))))
-                        .child(Button::new("notice-manager-later").ghost().small().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        .child(Button::new("notice-manager-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx))))
+                        .child(Button::new("notice-manager-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                             let v = v.clone();
                             this.updates.update(cx, |s, cx| s.dismiss_manager(v, cx));
                         }))),
@@ -575,12 +573,12 @@ impl Manager {
                 let v = s.version.clone();
                 col = col.child(
                     bar("notice-sentient", crate::ui::Tone::Neutral, format!("SENTIENT {} is available{}.", s.version, dated(&s.date)))
-                        .child(Button::new("notice-sentient-go").primary().small().label("Update…").on_click(cx.listener(|this, _, _, cx| {
+                        .child(Button::new("notice-sentient-go").primary().label("Update…").on_click(cx.listener(|this, _, _, cx| {
                             this.page = Page::Update;
                             cx.notify();
                         })))
-                        .child(Button::new("notice-sentient-notes").ghost().small().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Sentient, cx))))
-                        .child(Button::new("notice-sentient-later").ghost().small().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        .child(Button::new("notice-sentient-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Sentient, cx))))
+                        .child(Button::new("notice-sentient-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                             let v = v.clone();
                             this.updates.update(cx, |s, cx| s.dismiss_sentient(v, cx));
                         }))),
@@ -592,11 +590,11 @@ impl Manager {
             let v = o.version.clone();
             col = col.child(
                 bar("notice-gateway", crate::ui::Tone::Neutral, format!("Sentient Gateway {} is available{}.", o.version, dated(&o.date)))
-                    .child(Button::new("notice-gateway-go").primary().small().label("Update…").on_click(cx.listener(|this, _, _, cx| {
+                    .child(Button::new("notice-gateway-go").primary().label("Update…").on_click(cx.listener(|this, _, _, cx| {
                         this.page = Page::Gateway;
                         cx.notify();
                     })))
-                    .child(Button::new("notice-gateway-later").ghost().small().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(Button::new("notice-gateway-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                         let v = v.clone();
                         this.updates.update(cx, |s, cx| s.dismiss_gateway(v, cx));
                     }))),
@@ -722,7 +720,6 @@ impl Manager {
                     .child(
                         Button::new("theme")
                             .ghost()
-                            .small()
                             .icon(match choice {
                                 theme::Choice::Light => Icon::new(IconName::Sun),
                                 theme::Choice::Dark => Icon::new(IconName::Moon),
@@ -786,11 +783,11 @@ impl Manager {
                             .child(
                                 h_flex()
                                     .gap_2()
-                                    .child(Button::new("to-instances").primary().small().label(format!("Go to {}", r.name)).on_click(cx.listener(|this, _, _, cx| {
+                                    .child(Button::new("to-instances").primary().label(format!("Go to {}", r.name)).on_click(cx.listener(|this, _, _, cx| {
                                         this.page = Page::Instances;
                                         cx.notify();
                                     })))
-                                    .child(Button::new("to-local").ghost().small().label("Back to this computer").on_click(cx.listener(|this, _, _, cx| this.open_instance(None, cx)))),
+                                    .child(Button::new("to-local").ghost().label("Back to this computer").on_click(cx.listener(|this, _, _, cx| this.open_instance(None, cx)))),
                             ),
                     )
                     .into_any_element();

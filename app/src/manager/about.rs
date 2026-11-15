@@ -6,7 +6,7 @@
 //! then preferences and support, and where it lives as a quiet footer.
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, h_flex, v_flex,
     button::Button,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -118,11 +118,10 @@ impl Render for AboutPage {
                     .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Version {version} · checked {last}"))),
             )
             .child(ui::pill(&theme, state.0, state.1))
-            .child(Button::new("about-notes").outline().small().label("What's new").on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew))))
+            .child(Button::new("about-notes").outline().label("What's new").on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew))))
             .child(
                 Button::new("about-check")
                     .outline()
-                    .small()
                     .label(if checking { "Checking…" } else { "Check for updates" })
                     .disabled(checking)
                     .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))),
@@ -137,7 +136,7 @@ impl Render for AboutPage {
         let prefs = ui::panel(&theme)
             .gap_0()
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Preferences"))
-            .child(pref_row(&theme, "Language", None, div().text_sm().child("English")))
+            .child(pref_row(&theme, "Language", None, div().text_sm().child("English")).border_t_0())
             .child(pref_row(&theme, "Update channel", Some("Release candidates arrive earlier and are less tested."), channels))
             .child(pref_row(&theme, "Check for updates", None, checks));
         let log_path = crate::jobs::activity_log();

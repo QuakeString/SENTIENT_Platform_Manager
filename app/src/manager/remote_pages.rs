@@ -260,7 +260,7 @@ impl RemotePages {
                 };
                 let shown = self.show_details;
                 p.child(ui::outcome(&theme, Tone::Bad, headline)).when_some(details, |p, d| {
-                    p.child(Button::new("job-details").ghost().small().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
+                    p.child(Button::new("job-details").ghost().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
                         this.show_details = !this.show_details;
                         cx.notify();
                     })))
@@ -273,7 +273,7 @@ impl RemotePages {
         Some(
             p.child(v_flex().p_2().rounded(theme.radius).bg(theme.muted).text_size(px(13.)).font_family(theme.mono_font_family.clone()).children(log.into_iter().map(|l| div().child(l))))
                 .when(done, |p| {
-                    p.child(h_flex().justify_end().child(Button::new("job-close").outline().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                    p.child(h_flex().justify_end().child(Button::new("job-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
                         this.job_label = None;
                         this.job.update(cx, |j, cx| j.reset(cx));
                         cx.notify();
@@ -448,10 +448,9 @@ impl RemotePages {
                 h_flex()
                     .gap_3()
                     .items_center()
-                    .child(div().w_80().child(Input::new(&self.filter).small()))
+                    .child(div().w_80().child(Input::new(&self.filter)))
                     .child(
                         Button::new("r-follow")
-                            .small()
                             .label(if self.follow { "Following" } else { "Follow" })
                             .when(self.follow, |b| b.primary())
                             .when(!self.follow, |b| b.outline())
@@ -523,7 +522,7 @@ impl RemotePages {
                             .child(Button::new("r-backup").primary().label("Back up now").icon(Icon::new(Lucide::Archive)).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx)))),
                     )
                     .when(b.list.is_empty(), |p| p.child(div().text_sm().text_color(theme.muted_foreground).child("No backups on the server yet.")));
-                for e in &b.list {
+                for (i, e) in b.list.iter().enumerate() {
                     let check = match &e.check {
                         Some(c) if c.ok => ui::pill(&theme, Tone::Good, format!("Checked {}", c.at.get(..10).unwrap_or(&c.at))),
                         Some(_) => ui::pill(&theme, Tone::Bad, "Damaged"),
@@ -534,7 +533,7 @@ impl RemotePages {
                             .gap_3()
                             .items_center()
                             .py_1p5()
-                            .border_t_1()
+                            .when(i > 0, |r| r.border_t_1())
                             .border_color(theme.border)
                             .child(v_flex().flex_1().min_w_0().child(div().text_sm().text_ellipsis().child(e.name.clone())).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!("{} · {}", e.made, if e.automatic { "automatic" } else { "by hand" }))))
                             .child(div().text_sm().child(format!("{}{}", bytes_label(e.bytes), if e.parts > 1 { format!(" · {} parts", e.parts) } else { String::new() })))
@@ -596,15 +595,16 @@ impl RemotePages {
                     .border_color(theme.primary)
                     .bg(theme.accent)
                     .child(div().flex_1().text_sm().child(format!("{n} change{} to apply on {}. SENTIENT restarts when a setting needs it.", if n == 1 { "" } else { "s" }, self.inst.name)))
-                    .child(Button::new("r-set-undo").ghost().small().label("Undo").on_click(cx.listener(|this, _, _, cx| {
+                    .child(Button::new("r-set-undo").ghost().label("Undo").on_click(cx.listener(|this, _, _, cx| {
                         this.inputs.clear();
                         cx.notify();
                     })))
-                    .child(Button::new("r-set-apply").primary().small().label("Apply").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.apply_settings(all.clone(), cx)))),
+                    .child(Button::new("r-set-apply").primary().label("Apply").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.apply_settings(all.clone(), cx)))),
             );
         }
         for g in groups {
             let mut panel = ui::panel(&theme).gap_1().child(div().font_weight(FontWeight::MEDIUM).child(g.name.clone()));
+            let mut first = true;
             for st in g.settings {
                 let Some((_, input)) = self.inputs.iter().find(|(e, _)| *e == st.env) else { continue };
                 let is_changed = changed.contains(&st.env);
@@ -613,7 +613,7 @@ impl RemotePages {
                         .gap_3()
                         .items_center()
                         .py_1()
-                        .border_t_1()
+                        .when(!std::mem::take(&mut first), |r| r.border_t_1())
                         .border_color(theme.border)
                         .child(
                             h_flex()
@@ -624,7 +624,7 @@ impl RemotePages {
                                 .child(div().text_sm().when(is_changed, |d| d.text_color(theme.primary).font_weight(FontWeight::MEDIUM)).child(st.label.clone()))
                                 .child(Button::new(SharedString::from(format!("r-help-{}", st.env))).ghost().xsmall().icon(IconName::Info).tooltip(st.help.clone())),
                         )
-                        .child(div().flex_1().min_w_0().child(Input::new(input).small())),
+                        .child(div().flex_1().min_w_0().child(Input::new(input))),
                 );
             }
             col = col.child(panel);
@@ -728,7 +728,7 @@ impl RemotePages {
             .child(ui::fact(&theme, "Connects to", format!("{}:{}", get("host"), get("port"))))
             .child(ui::fact(&theme, "Its page", get("page")));
         let act = |id: &'static str, label: &'static str, action: &'static str| {
-            Button::new(id).outline().small().label(label).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.run_job("Gateway", vec!["gateway-control".into(), action.into()], cx)))
+            Button::new(id).outline().label(label).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.run_job("Gateway", vec!["gateway-control".into(), action.into()], cx)))
         };
         p.child(
             h_flex()
@@ -736,7 +736,7 @@ impl RemotePages {
                 .child(act("r-gw-start", "Start", "start"))
                 .child(act("r-gw-stop", "Stop", "stop"))
                 .child(act("r-gw-restart", "Restart", "restart"))
-                .child(Button::new("r-gw-update").primary().small().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx)))),
+                .child(Button::new("r-gw-update").primary().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx)))),
         )
     }
 

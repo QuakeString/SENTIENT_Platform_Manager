@@ -73,7 +73,7 @@ pub fn start_delay_row(theme: &Theme, state: &Entity<gpui_kit::component::input:
         .gap_2()
         .items_center()
         .child(div().text_sm().child("Start delay"))
-        .child(div().w_20().child(Input::new(state).small()))
+        .child(div().w_20().child(Input::new(state)))
         .child(div().text_sm().text_color(theme.muted_foreground).child("seconds"))
         .child(Button::new("start-delay-help").ghost().xsmall().icon(IconName::Info).tooltip(START_DELAY_HELP))
 }
@@ -121,7 +121,8 @@ pub fn pill(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div {
     let (bg, fg) = match tone {
         Tone::Good => (theme.success, theme.success_foreground),
         Tone::Warn => (theme.warning, theme.warning_foreground),
-        Tone::Bad => (theme.danger, theme.danger_foreground),
+        // Soft like the others: a red tint with red text.
+        Tone::Bad => (theme.danger.opacity(0.14), theme.danger),
         Tone::Neutral => (theme.secondary, theme.secondary_foreground),
     };
     h_flex()
@@ -181,7 +182,8 @@ pub fn outcome(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div 
     let (bg, fg) = match tone {
         Tone::Good => (theme.success, theme.success_foreground),
         Tone::Warn => (theme.warning, theme.warning_foreground),
-        Tone::Bad => (theme.danger, theme.danger_foreground),
+        // Soft like the others: a red tint with red text.
+        Tone::Bad => (theme.danger.opacity(0.14), theme.danger),
         Tone::Neutral => (theme.secondary, theme.secondary_foreground),
     };
     let text: SharedString = text.into();
@@ -434,4 +436,41 @@ pub fn appear<E: IntoElement + Styled + 'static>(el: E, key: impl Into<ElementId
     }
     el.with_animation(key, Animation::new(std::time::Duration::from_millis(ms)).with_easing(ease_out_quint()), |el, d| el.opacity(d))
         .into_any_element()
+}
+
+/// One choice of several, with a real radio mark, a title and a line about
+/// it. Give it `.on_click(...)`.
+pub fn radio_card(theme: &Theme, id: impl Into<ElementId>, title: impl Into<SharedString>, desc: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
+    gpui_kit::component::h_flex()
+        .id(id)
+        .gap_3()
+        .p_3()
+        .items_start()
+        .rounded(px(PANEL_RADIUS))
+        .border_1()
+        .border_color(if selected { theme.primary } else { theme.border })
+        .when(selected, |c| c.bg(theme.list_active))
+        .cursor_pointer()
+        .hover(|c| c.border_color(theme.primary))
+        .child(
+            div()
+                .mt(px(2.))
+                .size_4()
+                .flex_shrink_0()
+                .rounded_full()
+                .border_2()
+                .border_color(if selected { theme.primary } else { theme.muted_foreground })
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(selected, |r| r.child(div().size_2().rounded_full().bg(theme.primary))),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .child(div().font_weight(FontWeight::MEDIUM).child(title.into()))
+                .child(div().text_sm().text_color(theme.muted_foreground).child(desc.into())),
+        )
 }

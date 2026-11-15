@@ -573,7 +573,7 @@ impl SettingsPage {
     }
 
     fn input(&self, key: &str, width: f32) -> Div {
-        div().w(px(width)).child(Input::new(&self.inputs[key]).small())
+        div().w(px(width)).child(Input::new(&self.inputs[key]))
     }
 
     fn catalog_row(&self, theme: &gpui_kit::component::Theme, key: &'static str, width: f32, cx: &App) -> Div {
@@ -590,13 +590,13 @@ impl SettingsPage {
         vec![
             self.admin_section(theme, cx).into_any_element(),
             section(theme, "Platform", Some("How SENTIENT runs on this computer."))
-                .child(row(theme, "Address users open", Some("Where browsers open SENTIENT. The web port is under Network and certificates.".into()), false, div().text_sm().child(record.url())))
+                .child(row(theme, "Address users open", Some("Where browsers open SENTIENT. The web port is under Network and certificates.".into()), false, div().text_sm().child(record.url())).border_t_0())
                 .child(row(theme, "Log detail", self.help("RUST_LOG"), self.is_changed("RUST_LOG", cx), self.choice("RUST_LOG", LOG_LEVELS, cx)))
                 .child(row(theme, "Analytics engine", self.help("ANALYTICS_ENABLED"), self.is_changed("ANALYTICS_ENABLED", cx), self.choice("ANALYTICS_ENABLED", ON_OFF, cx)))
                 .child(row(theme, "Starts", Some("Start with Windows, the start delay and the operator screen are under Control.".into()), false, div().text_sm().child(start)))
                 .into_any_element(),
             section(theme, "Licence", None)
-                .child(self.catalog_row(theme, "LICENSE_SERVER_URL", 320., cx))
+                .child(self.catalog_row(theme, "LICENSE_SERVER_URL", 320., cx).border_t_0())
                 .child(self.catalog_row(theme, "LICENSE_HEARTBEAT_INTERVAL_SECS", 120., cx))
                 .into_any_element(),
         ]
@@ -617,12 +617,12 @@ impl SettingsPage {
                         .gap_2()
                         .items_center()
                         .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading the accounts…" } else { "Not read yet. Reading asks for the administrator password." }))
-                        .when(!self.reading_admin, |r| r.child(Button::new("read-admins").outline().small().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
+                        .when(!self.reading_admin, |r| r.child(Button::new("read-admins").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
                 );
             }
             Some(Err(e)) => sec = sec.child(ui::outcome(theme, Tone::Warn, e.clone())),
             Some(Ok(list)) => {
-                for a in list {
+                for (i, a) in list.iter().enumerate() {
                     let email = a.email.clone().unwrap_or_default();
                     let locked = a.locked_since.is_some();
                     let state = if locked {
@@ -648,25 +648,25 @@ impl SettingsPage {
                             .items_center()
                             .child(div().flex_1().text_sm().text_color(if locked { theme.danger } else { theme.muted_foreground }).child(format!("{state}{last}")))
                             .when(locked, |r| {
-                                r.child(Button::new(SharedString::from(format!("unlock-{email}"))).outline().small().label("Unlock").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
+                                r.child(Button::new(SharedString::from(format!("unlock-{email}"))).outline().label("Unlock").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                     let e = e1.clone();
                                     this.admin_action(move |r| crate::sentient_admin::unlock(r, &e), cx);
                                 })))
                             })
-                            .child(Button::new(SharedString::from(format!("reset-{email}"))).outline().small().label("Reset password…").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
+                            .child(Button::new(SharedString::from(format!("reset-{email}"))).outline().label("Reset password…").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                 this.reset_for = Some(e2.clone());
                                 this.admin_result = None;
                                 cx.notify();
                             }))),
-                    ));
+                    ).when(i == 0, |r| r.border_t_0()));
                 }
                 sec = sec.child(row(
                     theme,
                     "Everyone signed in",
                     Some("Makes every open session sign in again, on every device.".into()),
                     false,
-                    h_flex().child(Button::new("sign-out-all").outline().small().label("Sign everyone out…").disabled(self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.confirm_sign_out_all(window, cx)))),
-                ));
+                    h_flex().child(Button::new("sign-out-all").outline().label("Sign everyone out…").disabled(self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.confirm_sign_out_all(window, cx)))),
+                ).when(list.is_empty(), |r| r.border_t_0()));
             }
         }
         if let Some(email) = &self.reset_for {
@@ -738,7 +738,7 @@ impl SettingsPage {
         };
         let pg_changed = PRESET_KEYS.iter().filter(|k| k.starts_with("pg:")).any(|k| self.is_changed(k, cx));
         let mut pg = section(theme, "PostgreSQL memory and connections", None)
-            .child(row(theme, "This computer", None, false, div().text_sm().child(format!("{} of memory", crate::dbstatus::bytes_label(self.ram_mb << 20)))))
+            .child(row(theme, "This computer", None, false, div().text_sm().child(format!("{} of memory", crate::dbstatus::bytes_label(self.ram_mb << 20)))).border_t_0())
             .child(row(theme, "Size for", Some("Sets PostgreSQL's memory and connections and SENTIENT's connection pools together. Custom shows the exact numbers.".into()), false, presets));
         if open_custom {
             for k in [
@@ -774,8 +774,8 @@ impl SettingsPage {
         };
         if let Some((title, keys)) = ts {
             let mut s = section(theme, title, None);
-            for k in keys {
-                s = s.child(self.catalog_row(theme, k, 160., cx));
+            for (i, k) in keys.into_iter().enumerate() {
+                s = s.child(self.catalog_row(theme, k, 160., cx).when(i == 0, |r| r.border_t_0()));
             }
             out.push(s.into_any_element());
         }
@@ -785,7 +785,7 @@ impl SettingsPage {
                     "In its Docker volume".to_string()
                 } else {
                     format!("{}, port {}", record.pg_dir.display(), record.stack.pg_port)
-                })))
+                })).border_t_0())
                 .into_any_element(),
         );
         out
@@ -793,7 +793,7 @@ impl SettingsPage {
 
     fn network(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut ports = section(theme, "Ports", Some("SENTIENT's own ports. A new port is checked free before it is used."));
-        for (key, label) in PORTS {
+        for (i, (key, label)) in PORTS.into_iter().enumerate() {
             let now = self.value(key, cx);
             let changed = self.is_changed(key, cx);
             let busy = changed && now.parse::<u16>().is_ok_and(sentient_installer_core::checks::port_busy);
@@ -807,7 +807,7 @@ impl SettingsPage {
                     .items_center()
                     .child(self.input(key, 110.))
                     .when(busy, |r| r.child(ui::pill(theme, Tone::Warn, "in use by another program"))),
-            ));
+            ).when(i == 0, |r| r.border_t_0()));
         }
         ports = ports.child(self.catalog_row(theme, "EDGE_GRPC_PORT", 110., cx));
         let mut certs = section(
@@ -815,7 +815,7 @@ impl SettingsPage {
             "Certificates",
             Some("PEM files on this computer. Without the HTTPS pair SENTIENT is served over HTTP; without the MQTT pair, MQTT over TLS is off."),
         );
-        for (key, label) in CERTS {
+        for (i, (key, label)) in CERTS.into_iter().enumerate() {
             certs = certs.child(row(
                 theme,
                 label,
@@ -824,17 +824,16 @@ impl SettingsPage {
                 h_flex().gap_2().child(self.input(key, 360.)).child(
                     Button::new(SharedString::from(format!("choose-{key}")))
                         .outline()
-                        .small()
                         .label("Choose…")
                         .on_click(cx.listener(move |this, _, window, cx| this.choose_file(key, window, cx))),
                 ),
-            ));
+            ).when(i == 0, |r| r.border_t_0()));
         }
         vec![
             ports.into_any_element(),
             certs.into_any_element(),
             section(theme, "Access", None)
-                .child(self.catalog_row(theme, "SENTIENT_CORS_ALLOWED_ORIGINS", 360., cx))
+                .child(self.catalog_row(theme, "SENTIENT_CORS_ALLOWED_ORIGINS", 360., cx).border_t_0())
                 .child(row(
                     theme,
                     "Device claiming",
@@ -848,7 +847,7 @@ impl SettingsPage {
 
     fn retention(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let keep = section(theme, "How long data is kept", Some("Older records are deleted by SENTIENT's nightly cleanup."))
-            .child(row(theme, "Audit log", self.help("AUDIT_LOG_TTL_DAYS"), self.is_changed("AUDIT_LOG_TTL_DAYS", cx), self.choice("AUDIT_LOG_TTL_DAYS", KEEP_DAYS, cx)))
+            .child(row(theme, "Audit log", self.help("AUDIT_LOG_TTL_DAYS"), self.is_changed("AUDIT_LOG_TTL_DAYS", cx), self.choice("AUDIT_LOG_TTL_DAYS", KEEP_DAYS, cx)).border_t_0())
             .child(row(theme, "Notifications", self.help("NOTIFICATIONS_TTL_DAYS"), self.is_changed("NOTIFICATIONS_TTL_DAYS", cx), self.choice("NOTIFICATIONS_TTL_DAYS", KEEP_DAYS, cx)))
             .child(row(
                 theme,
@@ -867,7 +866,7 @@ impl SettingsPage {
 ;
         let keep = keep.child(self.history_rows(theme, cx));
         let cleanup = section(theme, "Cleanup", None)
-            .child(row(theme, "Audit log cleanup", self.help("AUDIT_LOG_CLEANUP_ENABLED"), self.is_changed("AUDIT_LOG_CLEANUP_ENABLED", cx), self.choice("AUDIT_LOG_CLEANUP_ENABLED", ON_OFF, cx)))
+            .child(row(theme, "Audit log cleanup", self.help("AUDIT_LOG_CLEANUP_ENABLED"), self.is_changed("AUDIT_LOG_CLEANUP_ENABLED", cx), self.choice("AUDIT_LOG_CLEANUP_ENABLED", ON_OFF, cx)).border_t_0())
             .child(row(theme, "Event cleanup", self.help("SENTIENT__EVENT_CLEANUP__ENABLED"), self.is_changed("SENTIENT__EVENT_CLEANUP__ENABLED", cx), self.choice("SENTIENT__EVENT_CLEANUP__ENABLED", ON_OFF, cx)));
         vec![keep.into_any_element(), cleanup.into_any_element()]
     }
@@ -886,7 +885,7 @@ impl SettingsPage {
                 h_flex()
                     .gap_2()
                     .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading…" } else { "Not read yet." }))
-                    .when(!self.reading_admin, |r| r.child(Button::new("read-retention").outline().small().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
+                    .when(!self.reading_admin, |r| r.child(Button::new("read-retention").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
             )),
             Some(Err(e)) => v_flex().child(row(theme, "Telemetry history and alarms", Some(help.into()), false, div().text_sm().text_color(theme.muted_foreground).child(e.clone()))),
             Some(Ok(now)) => {
@@ -895,7 +894,7 @@ impl SettingsPage {
                 let pick = |id: &'static str, current: i64, telemetry: bool, cx: &mut Context<Self>| {
                     h_flex().gap_1().flex_wrap().children(DAYS.iter().map(move |(label, d)| {
                         let d = *d;
-                        let b = Button::new(SharedString::from(format!("{id}-{d}"))).small().label(*label).on_click(cx.listener(move |this, _, _, cx| {
+                        let b = Button::new(SharedString::from(format!("{id}-{d}"))).label(*label).on_click(cx.listener(move |this, _, _, cx| {
                             if telemetry { this.retention_edit.telemetry_days = d } else { this.retention_edit.alarms_days = d }
                             cx.notify();
                         }));
@@ -911,11 +910,11 @@ impl SettingsPage {
                             h_flex()
                                 .gap_2()
                                 .pt_1()
-                                .child(Button::new("save-retention").primary().small().label("Save").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
+                                .child(Button::new("save-retention").primary().label("Save").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                     let r = this.retention_edit;
                                     this.admin_action(move |rec| crate::sentient_admin::set_retention(rec, r), cx);
                                 })))
-                                .child(Button::new("undo-retention").outline().small().label("Discard").on_click(cx.listener(move |this, _, _, cx| {
+                                .child(Button::new("undo-retention").outline().label("Discard").on_click(cx.listener(move |this, _, _, cx| {
                                     this.retention_edit = now;
                                     cx.notify();
                                 }))),
@@ -1010,8 +1009,8 @@ impl SettingsPage {
                     .gap_2()
                     .items_center()
                     .py_1()
-                    .child(div().w(px(250.)).child(Input::new(n).small()))
-                    .child(div().w(px(260.)).child(Input::new(v).small()))
+                    .child(div().w(px(250.)).child(Input::new(n)))
+                    .child(div().w(px(260.)).child(Input::new(v)))
                     .child(Button::new(SharedString::from(format!("remove-var-{i}"))).ghost().xsmall().label("Remove").on_click(cx.listener(move |this, _, _, cx| {
                         if i < this.custom.len() {
                             this.custom.remove(i);
@@ -1026,12 +1025,12 @@ impl SettingsPage {
                 .gap_2()
                 .items_center()
                 .pt_1()
-                .child(div().w(px(250.)).child(Input::new(&self.new_name).small()))
-                .child(div().w(px(260.)).child(Input::new(&self.new_value).small()))
-                .child(Button::new("add-var").outline().small().label("Add a variable").disabled(!name_ok).on_click(cx.listener(|this, _, window, cx| this.add_variable(window, cx)))),
+                .child(div().w(px(250.)).child(Input::new(&self.new_name)))
+                .child(div().w(px(260.)).child(Input::new(&self.new_value)))
+                .child(Button::new("add-var").outline().label("Add a variable").disabled(!name_ok).on_click(cx.listener(|this, _, window, cx| this.add_variable(window, cx)))),
         );
         let filter = |id: &'static str, text: String, on: bool, only: bool| {
-            let b = Button::new(id).small().label(text).on_click(cx.listener(move |this, _, _, cx| {
+            let b = Button::new(id).label(text).on_click(cx.listener(move |this, _, _, cx| {
                 this.changed_only = only;
                 cx.notify();
             }));
@@ -1047,7 +1046,6 @@ impl SettingsPage {
                 .child(
                     Button::new("show-names")
                         .ghost()
-                        .small()
                         .label(if self.show_names { "Show plain names" } else { "Show variable names" })
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.show_names = !this.show_names;

@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, WindowExt as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     input::{Input, InputState},
@@ -724,7 +724,7 @@ impl BackupPage {
                                     .items_center()
                                     .child(div().flex_1().child(ui::outcome(theme, Tone::Bad, why.clone())))
                                     .when(fix == Fix::UpdateSentient, |r| {
-                                        r.child(Button::new("fix-update").outline().small().label("Update SENTIENT first").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Update))))
+                                        r.child(Button::new("fix-update").outline().label("Update SENTIENT first").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Update))))
                                     }),
                             );
                         } else {
@@ -941,7 +941,7 @@ impl BackupPage {
         let mut now = ui::panel(theme)
             .gap_0()
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Back up now"))
-            .child(brow(theme, "What to include", Some("Sizes are read from the database."), presets))
+            .child(brow(theme, "What to include", Some("Sizes are read from the database."), presets).border_t_0())
             .when(!self.choose, |c| {
                 c.child(brow(theme, "Telemetry history", None, history))
                     .child(brow(theme, "Encrypt with a passphrase", Some("Without it the file cannot be read."), div().w(px(280.)).child(Input::new(&self.passphrase).mask_toggle())))
@@ -952,7 +952,7 @@ impl BackupPage {
                         h_flex()
                             .gap_2()
                             .child(div().min_w_0().flex_shrink(1.).overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().child(p.folder.display().to_string()))
-                            .child(Button::new("folder").outline().small().label("Change…").on_click(cx.listener(|this, _, _, cx| this.choose_folder(false, cx)))),
+                            .child(Button::new("folder").outline().label("Change…").on_click(cx.listener(|this, _, _, cx| this.choose_folder(false, cx)))),
                     ))
             });
         if !self.choose {
@@ -993,10 +993,10 @@ impl BackupPage {
                                 .gap_2()
                                 .items_center()
                                 .child(div().flex_1().child(ui::outcome(theme, Tone::Good, format!("Backup finished and checked: {name}, {}.", bytes_label(m.bytes)))))
-                                .child(Button::new("open-folder").outline().small().label("Open folder").on_click(move |_, _, cx| ui::open_url(&folder, cx))),
+                                .child(Button::new("open-folder").outline().label("Open folder").on_click(move |_, _, cx| ui::open_url(&folder, cx))),
                         )
                         .child(div().font_weight(FontWeight::MEDIUM).child("Integrity"))
-                        .child(brow(theme, "Each part", None, div().text_sm().child(format!("SHA-256 stored inside the file, {} parts", m.members))))
+                        .child(brow(theme, "Each part", None, div().text_sm().child(format!("SHA-256 stored inside the file, {} parts", m.members))).border_t_0())
                         .child(if m.files.len() == 1 {
                             brow(
                                 theme,
@@ -1005,7 +1005,7 @@ impl BackupPage {
                                 h_flex()
                                     .gap_2()
                                     .child(div().text_sm().font_family(theme.mono_font_family.clone()).child(short))
-                                    .child(Button::new("copy-hash").outline().small().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(whole.clone())))),
+                                    .child(Button::new("copy-hash").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(whole.clone())))),
                             )
                         } else {
                             brow(theme, "Files", None, div().text_sm().child(format!("{} parts, each with its SHA-256", m.files.len())))
@@ -1029,8 +1029,8 @@ impl BackupPage {
         let auto = ui::panel(theme)
             .gap_0()
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Automatic backup"))
-            .child(brow(theme, "Back up every day at", Some("Empty: no automatic backup. 24-hour time, this computer's clock."), div().w(px(110.)).child(Input::new(&self.schedule_time).small())))
-            .child(brow(theme, "Keep", Some("Older automatic backups are deleted."), h_flex().gap_2().child(div().w(px(70.)).child(Input::new(&self.keep).small())).child(div().text_sm().child("backups"))))
+            .child(brow(theme, "Back up every day at", Some("Empty: no automatic backup. 24-hour time, this computer's clock."), div().w(px(120.)).child(Input::new(&self.schedule_time))).border_t_0())
+            .child(brow(theme, "Keep", Some("Older automatic backups are deleted."), h_flex().gap_2().child(div().w(px(100.)).child(Input::new(&self.keep))).child(div().text_sm().child("backups"))))
             .child(brow(
                 theme,
                 "Also copy to",
@@ -1038,16 +1038,16 @@ impl BackupPage {
                 h_flex()
                     .gap_2()
                     .child(div().text_sm().child(p.copy_to.as_ref().map(|d| d.display().to_string()).unwrap_or_else(|| "Nowhere".into())))
-                    .child(Button::new("copy-to").outline().small().label("Choose…").on_click(cx.listener(|this, _, _, cx| this.choose_folder(true, cx))))
+                    .child(Button::new("copy-to").outline().label("Choose…").on_click(cx.listener(|this, _, _, cx| this.choose_folder(true, cx))))
                     .when(p.copy_to.is_some(), |r| {
-                        r.child(Button::new("copy-to-off").ghost().small().label("Stop copying").on_click(cx.listener(|this, _, _, cx| {
+                        r.child(Button::new("copy-to-off").ghost().label("Stop copying").on_click(cx.listener(|this, _, _, cx| {
                             this.prefs.copy_to = None;
                             this.save_prefs(false, cx);
                         })))
                     }),
             ))
-            .child(brow(theme, "Split files larger than", Some("Numbered parts for USB disks; 0 = never."), h_flex().gap_2().child(div().w(px(70.)).child(Input::new(&self.part_gb).small())).child(div().text_sm().child("GB"))))
-            .child(h_flex().pt_2().gap_2().child(Button::new("save-schedule").primary().small().label("Save").on_click(cx.listener(|this, _, _, cx| this.save_prefs(true, cx)))))
+            .child(brow(theme, "Split files larger than", Some("Numbered parts for USB disks; 0 = never."), h_flex().gap_2().child(div().w(px(100.)).child(Input::new(&self.part_gb))).child(div().text_sm().child("GB"))))
+            .child(h_flex().pt_2().gap_2().child(Button::new("save-schedule").primary().label("Save").on_click(cx.listener(|this, _, _, cx| this.save_prefs(true, cx)))))
             .when_some(self.schedule_note.clone(), |c, (tone, text)| c.child(div().pt_2().child(ui::outcome(theme, tone, text))));
         out.push(auto.into_any_element());
 
@@ -1066,12 +1066,12 @@ impl BackupPage {
                     if self.list.len() == 1 { "" } else { "s" },
                     bytes_label(total)
                 )))
-                .child(Button::new("add-backup").outline().small().label("Add a backup file…").on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx)))),
+                .child(Button::new("add-backup").outline().label("Add a backup file…").on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx)))),
         );
         if self.list.is_empty() {
             list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder yet."));
         }
-        for e in &self.list {
+        for (i, e) in self.list.iter().enumerate() {
             let (pill_tone, pill_text) = match &e.check {
                 Some(c) if c.ok => (Tone::Good, format!("Checked {}", c.at.get(..10).unwrap_or(""))),
                 Some(_) => (Tone::Bad, "Damaged".to_string()),
@@ -1084,7 +1084,7 @@ impl BackupPage {
                     .gap_3()
                     .items_center()
                     .py_1p5()
-                    .border_t_1()
+                    .when(i > 0, |r| r.border_t_1())
                     .border_color(theme.border)
                     .child(
                         v_flex()
@@ -1101,14 +1101,14 @@ impl BackupPage {
                     .child(div().w(px(80.)).text_sm().text_right().child(bytes_label(e.bytes)))
                     .child(div().w(px(120.)).child(ui::pill(theme, pill_tone, pill_text)))
                     .when(!damaged, |r| {
-                        r.child(Button::new(SharedString::from(format!("restore-{}", e.name))).outline().small().label("Restore…").on_click(cx.listener(move |this, _, _, cx| {
+                        r.child(Button::new(SharedString::from(format!("restore-{}", e.name))).outline().label("Restore…").on_click(cx.listener(move |this, _, _, cx| {
                             this.restore_input = Some(p1.clone());
                             this.replace_stage = ReplaceStage::Choose;
                             this.read_summary(cx);
                         })))
                     })
-                    .child(Button::new(SharedString::from(format!("check-{}", e.name))).outline().small().label(if damaged { "Details" } else { "Check" }).on_click(cx.listener(move |this, _, _, cx| this.run_check(p2.clone(), cx))))
-                    .child(Button::new(SharedString::from(format!("delete-{}", e.name))).ghost().small().label("Delete").on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), window, cx)))),
+                    .child(Button::new(SharedString::from(format!("check-{}", e.name))).outline().label(if damaged { "Details" } else { "Check" }).on_click(cx.listener(move |this, _, _, cx| this.run_check(p2.clone(), cx))))
+                    .child(Button::new(SharedString::from(format!("delete-{}", e.name))).ghost().label("Delete").on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), window, cx)))),
             );
         }
         // J6: a check's result, part by part.
@@ -1237,7 +1237,7 @@ impl Render for BackupPage {
                                         cx.notify();
                                     })),
                             )
-                            .when(self.telemetry == 1, |r| r.child(div().w_20().child(Input::new(&self.telemetry_days).small()))),
+                            .when(self.telemetry == 1, |r| r.child(div().w_20().child(Input::new(&self.telemetry_days)))),
                     )
                     .child(div().w_80().child(Input::new(&self.passphrase).mask_toggle()))
                     .child(

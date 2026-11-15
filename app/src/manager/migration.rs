@@ -3,10 +3,9 @@
 //! Migration: change the database type (crate::migration does the work).
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, WindowExt as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     progress::Progress,
-    radio::RadioGroup,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -191,15 +190,16 @@ impl Render for MigrationPage {
                 .child(ui::fact(&theme, "Database now", flavor_label(current)))
                 .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Change to"))
                 .child(
-                    RadioGroup::vertical("target")
-                        .children(targets.iter().map(|f| format!("{} — {}", flavor_label(*f), describe(*f))))
-                        .selected_index(self.target)
-                        .disabled(busy || unfinished.is_some())
-                        .on_change(cx.listener(|this, value: &usize, _, cx| {
-                            this.target = Some(*value);
-                            this.confirm = false;
-                            cx.notify();
-                        })),
+                    v_flex().gap_2().children(targets.iter().enumerate().map(|(i, f)| {
+                        let locked = busy || unfinished.is_some();
+                        ui::radio_card(&theme, SharedString::from(format!("target-{i}")), flavor_label(*f), describe(*f), self.target == Some(i)).on_click(cx.listener(move |this, _, _, cx| {
+                            if !locked {
+                                this.target = Some(i);
+                                this.confirm = false;
+                                cx.notify();
+                            }
+                        }))
+                    })),
                 )
                 .child(
                     v_flex()
@@ -269,7 +269,6 @@ impl Render for MigrationPage {
                         h_flex().child(
                             Button::new("show-kept")
                                 .outline()
-                                .small()
                                 .label("Show (asks for the administrator password)")
                                 .disabled(busy)
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -301,7 +300,6 @@ impl Render for MigrationPage {
                         .child(
                             Button::new(SharedString::from(format!("remove-{i}")))
                                 .outline()
-                                .small()
                                 .label("Remove")
                                 .disabled(busy)
                                 .on_click(cx.listener(move |this, _, window, cx| {

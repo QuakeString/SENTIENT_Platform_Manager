@@ -21,7 +21,6 @@
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, Icon, WindowExt as _, h_flex, v_flex,
-    Sizable as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     progress::Progress as ProgressBar,
@@ -406,7 +405,7 @@ fn line(
 impl Maintenance {
     /// The "What's new" button of a line: the notes this Setup carries.
     fn notes_button(&self, id: &'static str, cx: &mut Context<Self>) -> Button {
-        Button::new(id).outline().small().label("What's new").on_click(cx.listener(|this, _, _, cx| {
+        Button::new(id).outline().label("What's new").on_click(cx.listener(|this, _, _, cx| {
             this.screen = Screen::WhatsNew;
             cx.notify();
         }))
@@ -444,7 +443,6 @@ impl Maintenance {
             .child(h_flex().gap_2().children(Action::ALL.into_iter().map(|action| {
                 Button::new(SharedString::from(format!("other-{}", action.id())))
                     .outline()
-                    .small()
                     .label(action.title())
                     .on_click(cx.listener(move |this, _, window, cx| this.confirm(action, window, cx)))
             })))

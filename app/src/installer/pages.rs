@@ -87,7 +87,6 @@ impl Installer {
         Some(
             Button::new("sentient-version")
                 .outline()
-                .small()
                 .label(format!("{chosen} ▾"))
                 .dropdown_menu(move |menu, _, _| {
                     let mut menu = menu.max_h(px(320.)).scrollable(true);
@@ -646,7 +645,7 @@ impl Installer {
                         .when_some(next, |row, next| {
                             let field = field.clone();
                             row.child(div().child(format!("{what} port for SENTIENT: {next} is free.")))
-                                .child(Button::new(SharedString::from(format!("use-port-{port}"))).outline().small().label(format!("Use {next}")).on_click(cx.listener(
+                                .child(Button::new(SharedString::from(format!("use-port-{port}"))).outline().label(format!("Use {next}")).on_click(cx.listener(
                                     move |this, _, window, cx| {
                                         field.update(cx, |state, cx| state.set_value(next.to_string(), window, cx));
                                         this.problem = None;
@@ -654,7 +653,7 @@ impl Installer {
                                     },
                                 )))
                         })
-                        .child(Button::new(SharedString::from(format!("recheck-port-{port}"))).ghost().small().label("Check again").on_click(cx.listener(
+                        .child(Button::new(SharedString::from(format!("recheck-port-{port}"))).ghost().label("Check again").on_click(cx.listener(
                             move |this, _, _, cx| {
                                 this.port_owners.remove(&port);
                                 cx.notify();
@@ -771,7 +770,7 @@ impl Installer {
                                 .text_color(theme.muted_foreground)
                                 .child(s.env.clone()),
                         )
-                        .child(div().w_48().flex_shrink_0().child(Input::new(&self.settings[&s.env]).small()))
+                        .child(div().w_48().flex_shrink_0().child(Input::new(&self.settings[&s.env])))
                         .child(
                             Button::new(SharedString::from(format!("help-{}", s.env)))
                                 .ghost()
@@ -1001,7 +1000,6 @@ impl Installer {
                 .child(
                     Button::new(SharedString::from(format!("change-{step}-{label}")))
                         .ghost()
-                        .small()
                         .label("Change")
                         .on_click(cx.listener(move |this, _, _, cx| this.go(step, cx))),
                 )

@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, WindowExt as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -269,13 +269,12 @@ impl StatusPage {
                     .text_sm()
                     .child(div().flex_1().min_w(px(240.)).child(format!("{drive} is almost full ({} free).{when}", bytes_label(f))))
                     .when(db.hybrid, |r| {
-                        r.child(Button::new("low-limit").outline().small().label("Set a history limit…").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Settings))))
+                        r.child(Button::new("low-limit").outline().label("Set a history limit…").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Settings))))
                     })
                     .when_some(kept, |r, k| {
                         r.child(
                             Button::new("low-kept")
                                 .outline()
-                                .small()
                                 .label(format!("Remove kept copies ({})", bytes_label(k)))
                                 .on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Migration))),
                         )
@@ -361,7 +360,7 @@ impl StatusPage {
                                     ),
                                     None => "none from the Platform Manager".to_string(),
                                 }))
-                                .child(Button::new("backup-now").outline().small().label("Back up now").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Backup)))),
+                                .child(Button::new("backup-now").outline().label("Back up now").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Backup)))),
                         )
                         .child(div().pt_1().text_size(px(13.)).text_color(theme.muted_foreground).child("Largest tables"));
                     let shown: Vec<&crate::dbstatus::Table> = pg.tables.iter().filter(|t| t.bytes > 0).take(5).collect();
@@ -422,7 +421,7 @@ impl StatusPage {
                                     Some(d) => format!("{d} days"),
                                     None => "forever".into(),
                                 }))
-                                .child(Button::new("history-limit").outline().small().label("Set a limit…").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Settings)))),
+                                .child(Button::new("history-limit").outline().label("Set a limit…").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Settings)))),
                         )
                         .child(
                             h_flex()

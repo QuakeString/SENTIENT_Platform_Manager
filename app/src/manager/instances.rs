@@ -489,9 +489,9 @@ impl InstancesPage {
         let (tone, state) = state_of(status.as_ref(), self.refreshing.contains(LOCAL));
         let current = self.open.is_none();
         let open_btn: AnyElement = if current {
-            Button::new("open-local").primary().small().label("Open").disabled(true).tooltip("This instance is open").into_any_element()
+            Button::new("open-local").primary().label("Open").disabled(true).tooltip("This instance is open").into_any_element()
         } else {
-            Button::new("open-local").primary().small().label("Open").on_click(cx.listener(|_, _, _, cx| cx.emit(OpenInstance(None)))).into_any_element()
+            Button::new("open-local").primary().label("Open").on_click(cx.listener(|_, _, _, cx| cx.emit(OpenInstance(None)))).into_any_element()
         };
         let more = Button::new("more-local").ghost().small().icon(IconName::Ellipsis).tooltip("More").dropdown_menu({
             let this = cx.entity().downgrade();
@@ -556,19 +556,19 @@ impl InstancesPage {
         let unreachable = matches!(&status, Some(Err(e)) if e != remote::NOT_SET_UP && e != remote::FORGOTTEN && !e.contains("administrator rights"));
         let current = self.open.as_deref() == Some(id.as_str());
         let primary: AnyElement = if unreachable {
-            Button::new(SharedString::from(format!("retry-{id}"))).primary().small().label("Try again").loading(refreshing).on_click(cx.listener({
+            Button::new(SharedString::from(format!("retry-{id}"))).primary().label("Try again").loading(refreshing).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.refresh(&id, cx)
             })).into_any_element()
         } else if not_set_up {
-            Button::new(SharedString::from(format!("setup-{id}"))).primary().small().label("Set up").disabled(busy).on_click(cx.listener({
+            Button::new(SharedString::from(format!("setup-{id}"))).primary().label("Set up").disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.set_up(&id, cx)
             })).into_any_element()
         } else if current {
-            Button::new(SharedString::from(format!("open-{id}"))).primary().small().label("Open").disabled(true).tooltip("This instance is open").into_any_element()
+            Button::new(SharedString::from(format!("open-{id}"))).primary().label("Open").disabled(true).tooltip("This instance is open").into_any_element()
         } else {
-            Button::new(SharedString::from(format!("open-{id}"))).primary().small().label("Open").on_click(cx.listener({
+            Button::new(SharedString::from(format!("open-{id}"))).primary().label("Open").on_click(cx.listener({
                 let id = id.clone();
                 move |_, _, _, cx| cx.emit(OpenInstance(Some(id.clone())))
             })).into_any_element()
@@ -577,11 +577,11 @@ impl InstancesPage {
             .gap_2()
             .items_center()
             .child(primary)
-            .child(Button::new(SharedString::from(format!("edit-{id}"))).outline().small().label("Edit").disabled(busy).on_click(cx.listener({
+            .child(Button::new(SharedString::from(format!("edit-{id}"))).outline().label("Edit").disabled(busy).on_click(cx.listener({
                 let inst = inst.clone();
                 move |this, _, window, cx| this.open_form(Some(inst.clone()), window, cx)
             })))
-            .child(Button::new(SharedString::from(format!("remove-{id}"))).outline().small().label("Remove").disabled(busy).on_click(cx.listener({
+            .child(Button::new(SharedString::from(format!("remove-{id}"))).outline().label("Remove").disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| {
                     this.confirm_remove = Some(id.clone());
@@ -609,7 +609,7 @@ impl InstancesPage {
                         .rounded(theme.radius)
                         .bg(theme.accent)
                         .child(div().flex_1().text_sm().child("A job is running on this server."))
-                        .child(Button::new(SharedString::from(format!("follow-{id}"))).small().outline().label("Follow").disabled(busy).on_click(cx.listener({
+                        .child(Button::new(SharedString::from(format!("follow-{id}"))).outline().label("Follow").disabled(busy).on_click(cx.listener({
                             let id = id.clone();
                             move |this, _, _, cx| this.follow_job(&id, job_id.clone(), cx)
                         }))),
@@ -627,11 +627,11 @@ impl InstancesPage {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(Button::new("remove-yes").danger().small().label("Remove").on_click(cx.listener({
+                            .child(Button::new("remove-yes").danger().label("Remove").on_click(cx.listener({
                                 let id = id.clone();
                                 move |this, _, _, cx| this.remove(&id, cx)
                             })))
-                            .child(Button::new("remove-no").ghost().small().label("Keep").on_click(cx.listener(|this, _, _, cx| {
+                            .child(Button::new("remove-no").ghost().label("Keep").on_click(cx.listener(|this, _, _, cx| {
                                 this.confirm_remove = None;
                                 cx.notify();
                             }))),
@@ -818,8 +818,8 @@ impl InstancesPage {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(Button::new("trust").primary().small().label("It matches: connect").on_click(cx.listener(move |this, _, _, cx| this.connect(Some((keys.clone(), fp.clone())), cx))))
-                            .child(Button::new("distrust").ghost().small().label("It does not match").on_click(cx.listener(|this, _, _, cx| this.set_error("Not connected: the key was not accepted.", cx)))),
+                            .child(Button::new("trust").primary().label("It matches: connect").on_click(cx.listener(move |this, _, _, cx| this.connect(Some((keys.clone(), fp.clone())), cx))))
+                            .child(Button::new("distrust").ghost().label("It does not match").on_click(cx.listener(|this, _, _, cx| this.set_error("Not connected: the key was not accepted.", cx)))),
                     ),
             );
         }
@@ -952,7 +952,7 @@ impl InstancesPage {
                 };
                 let shown = self.show_details;
                 p.child(ui::outcome(&theme, Tone::Bad, headline)).when_some(details, |p, d| {
-                    p.child(Button::new("job-details").ghost().small().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
+                    p.child(Button::new("job-details").ghost().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
                         this.show_details = !this.show_details;
                         cx.notify();
                     })))
@@ -981,7 +981,7 @@ impl InstancesPage {
                         .gap_2()
                         .justify_end()
                         .when(failed && self.retry.is_some(), |r| {
-                            r.child(Button::new("job-retry").primary().small().label("Try again").on_click(cx.listener(|this, _, _, cx| {
+                            r.child(Button::new("job-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
                                 this.job.update(cx, |j, cx| j.reset(cx));
                                 match this.retry.clone() {
                                     Some(Retry::SetUp(id)) => this.set_up(&id, cx),
@@ -990,7 +990,7 @@ impl InstancesPage {
                                 }
                             })))
                         })
-                        .child(Button::new("job-close").outline().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                        .child(Button::new("job-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
                             this.job_for = None;
                             this.job.update(cx, |j, cx| j.reset(cx));
                             cx.notify();
@@ -1017,7 +1017,7 @@ impl InstancesPage {
                             let id = id.clone();
                             move |this, _, _, cx| this.show_logs(&id, cx)
                         })))
-                        .child(Button::new("logs-close").ghost().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                        .child(Button::new("logs-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
                             this.logs = None;
                             cx.notify();
                         }))),

@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, WindowExt as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -485,8 +485,8 @@ impl UpdatePage {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(Button::new("changes-retry").primary().small().label("Try again").on_click(cx.listener(|this, _, _, cx| this.apply_changes(cx))))
-                            .child(Button::new("changes-log").outline().small().label(if self.show_changes_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
+                            .child(Button::new("changes-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.apply_changes(cx))))
+                            .child(Button::new("changes-log").outline().label(if self.show_changes_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
                                 this.show_changes_log = !this.show_changes_log;
                                 cx.notify();
                             }))),
@@ -636,8 +636,8 @@ impl UpdatePage {
                             .gap_2()
                             .items_center()
                             .child(div().flex_1().child(ui::outcome(theme, Tone::Bad, m)))
-                            .child(Button::new("manager-retry").primary().small().label("Try again").on_click(cx.listener(|this, _, _, cx| this.start_manager_update(cx))))
-                            .child(Button::new("manager-close").outline().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                            .child(Button::new("manager-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.start_manager_update(cx))))
+                            .child(Button::new("manager-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
                                 this.manager_job.update(cx, |job, cx| job.reset(cx));
                             }))),
                     )
@@ -735,9 +735,9 @@ impl UpdatePage {
                             "The release page could not be reached. Nothing was changed.".to_string()
                         }))
                         .when(!e.contains("limiting"), |r| {
-                            r.child(Button::new("retry-check").outline().small().label("Try again").on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))))
+                            r.child(Button::new("retry-check").outline().label("Try again").on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))))
                         })
-                        .child(Button::new("from-file").outline().small().label("Update from a file…").on_click(cx.listener(|this, _, _, cx| this.update_from_file(cx)))),
+                        .child(Button::new("from-file").outline().label("Update from a file…").on_click(cx.listener(|this, _, _, cx| this.update_from_file(cx)))),
                 )
             })
             .child(manager_row)
@@ -851,7 +851,7 @@ impl UpdatePage {
                         "The release notes could not be loaded.{}",
                         if o.notes.is_empty() { String::new() } else { format!(" Short summary: {}", o.notes) }
                     )))
-                    .child(Button::new("notes-retry").outline().small().label("Try again").on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))))
+                    .child(Button::new("notes-retry").outline().label("Try again").on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))))
                     .into_any_element()
             })
             .child(div().text_sm().child(effect))

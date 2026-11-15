@@ -11,7 +11,6 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     input::{Input, InputState},
-    radio::RadioGroup,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -311,13 +310,14 @@ impl Render for ControlPage {
                 ))
                 .child(match self.signin {
                     None => div().text_sm().child("Checking…").into_any_element(),
-                    Some(_) => RadioGroup::horizontal("open-at-signin")
-                        .children(["Off", "Full screen (kiosk)", "Browser window"])
-                        .selected_index(Some(self.signin_choice))
-                        .disabled(sbusy)
-                        .on_change(cx.listener(|this, value: &usize, _, cx| {
-                            this.signin_choice = *value;
-                            cx.notify();
+                    Some(_) => ui::seg_track(&theme)
+                        .children(["Off", "Full screen (kiosk)", "Browser window"].into_iter().enumerate().map(|(i, label)| {
+                            ui::seg_item(&theme, SharedString::from(format!("signin-{i}")), label, self.signin_choice == i).on_click(cx.listener(move |this, _, _, cx| {
+                                if !sbusy {
+                                    this.signin_choice = i;
+                                    cx.notify();
+                                }
+                            }))
                         }))
                         .into_any_element(),
                 })
