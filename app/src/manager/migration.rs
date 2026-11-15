@@ -376,6 +376,9 @@ impl Render for MigrationPage {
         let current = record.flavor();
         let targets = migration::targets(record);
         let unfinished = self.state.clone().filter(|s| !s.done);
+        // A compose file the Platform Manager did not write: known before
+        // any check, the change stays off until it is taken over.
+        let external = record.engine == crate::installation::Engine::Docker && record.stack.external.is_some();
         let chosen = self.target.and_then(|i| targets.as_ref().ok()?.get(i).copied());
 
         let main = match &targets {
@@ -410,7 +413,7 @@ impl Render for MigrationPage {
                                     .primary()
                                     .label(chosen.map(|f| format!("Change to {}", flavor_label(f))).unwrap_or_else(|| "Change database".into()))
                                     // Off while the preflight says the change cannot be made.
-                                    .disabled(busy || chosen.is_none() || unfinished.is_some() || self.preflight != crate::manager::remote_pages::Preflight::Idle)
+                                    .disabled(busy || external || chosen.is_none() || unfinished.is_some() || self.preflight != crate::manager::remote_pages::Preflight::Idle)
                                     .loading(self.preflight == crate::manager::remote_pages::Preflight::Checking)
                                     .on_click(cx.listener(|this, _, _, cx| this.check(cx))),
                             )
@@ -438,7 +441,8 @@ impl Render for MigrationPage {
         };
 
         let preflight_failed = match &self.preflight {
-            crate::manager::remote_pages::Preflight::Failed(why) => Some((why.clone(), record.engine == crate::installation::Engine::Docker && record.stack.external.is_some())),
+            _ if external => Some((String::new(), true)),
+            crate::manager::remote_pages::Preflight::Failed(why) => Some((why.clone(), false)),
             _ => None,
         };
         let root_only = crate::rootjob::needed(record) && !self.kept_asked;
@@ -520,11 +524,15 @@ impl Render for MigrationPage {
             )
         })
         .when_some(preflight_failed, |page, (why, external)| {
-            page.child(crate::manager::remote_pages::preflight_notice(
-                &theme,
-                &why,
-                external.then(|| crate::ui::button("mig-take-over").outline().label("Take over the compose file…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element()),
-            ))
+            page.child(if external {
+                crate::manager::remote_pages::foreign_compose_notice(
+                    &theme,
+                    "The database type cannot be changed now.",
+                    crate::ui::button("mig-take-over").outline().label("Take over the compose file…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element(),
+                )
+            } else {
+                crate::manager::remote_pages::preflight_notice(&theme, &why, None)
+            })
         })
         .child(main)
         .child(kept_panel)
