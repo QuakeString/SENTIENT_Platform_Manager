@@ -809,12 +809,27 @@ fn agent_file(windows: bool, sink: &ProgressFn) -> Result<PathBuf, String> {
     if let Some(found) = dirs.into_iter().map(|d| d.join(name)).find(|p| p.is_file()) {
         return Ok(found);
     }
+    // Carried inside this program: written out once per version.
+    if let Some(bytes) = if windows { embedded::WINDOWS } else { embedded::LINUX } {
+        let dir = crate::updates::prefs_dir().join("remote-builds");
+        let file = dir.join(format!("{}-{name}", crate::updates::manager_version()));
+        if std::fs::metadata(&file).map(|m| m.len() as usize) .ok() != Some(bytes.len()) {
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            std::fs::write(&file, bytes).map_err(|e| format!("write {}: {e}", file.display()))?;
+        }
+        return Ok(file);
+    }
     released_agent(name, sink).map_err(|e| {
         failed(
             "This Platform Manager package does not carry the server agent, and none could be downloaded for its version.",
             &e,
         )
     })
+}
+
+/// The agents this build carries (build.rs).
+mod embedded {
+    include!(concat!(env!("OUT_DIR"), "/agents.rs"));
 }
 
 /// The agent published with this Platform Manager's version.
@@ -1057,6 +1072,54 @@ mod tests {
         std::fs::write(known_hosts(), keys.replace("AAAA", "AAAB")).unwrap();
         assert!(run(&inst, "true", Some(v[4])).unwrap_err().contains("not the one accepted"));
         untrust(v[0], port);
+    }
+
+    /// End to end against a bare server: SPM_E2E="port", SPM_E2E_KEY,
+    /// SPM_E2E_SUDO, SPM_AGENT_DIR (the static agent), XDG_CONFIG_HOME scratch.
+    #[test]
+    #[ignore]
+    fn sets_up_a_bare_server_and_runs_a_job() {
+        let port: u16 = std::env::var("SPM_E2E").expect("SPM_E2E").parse().unwrap();
+        let _ = std::fs::remove_file(known_hosts());
+        let mut inst = Instance {
+            id: format!("e2e{port}"),
+            name: format!("e2e {port}"),
+            color: PALETTE[0].into(),
+            os: Os::Linux,
+            host: "127.0.0.1".into(),
+            port,
+            user: "ops".into(),
+            auth: Auth::Key,
+            key_file: Some(std::env::var("SPM_E2E_KEY").unwrap().into()),
+            key_has_passphrase: false,
+            host_key: None,
+            detected: None,
+        };
+        let (keys, fp) = scan("127.0.0.1", port).unwrap();
+        trust(&keys).unwrap();
+        inst.host_key = Some(fp);
+        let d = detect(&inst, None).unwrap();
+        eprintln!("detected: {d:?}");
+        inst.detected = Some(d);
+        assert_eq!(ready(&inst).unwrap_err(), NOT_SET_UP);
+        set_secret(&sudo_key(&inst.id), &std::env::var("SPM_E2E_SUDO").unwrap());
+        let sink: ProgressFn = std::sync::Arc::new(|p| eprintln!("  {p:?}"));
+        deploy(&inst, &sink).unwrap();
+        ready(&inst).unwrap();
+        let st = status(&inst).unwrap();
+        eprintln!("status: {st:?}");
+        assert!(!st.installed);
+        let m = monitor(&inst).unwrap();
+        assert!(m.mem_total > 0);
+        // Deploying again finds it up to date.
+        deploy(&inst, &sink).unwrap();
+        // A detached job, followed to its end.
+        let id = start_job(&inst, &["find-existing"]).unwrap();
+        follow(&inst, &id, &sink).unwrap();
+        assert!(running_job(&inst).is_none());
+        let e = logs(&inst, 10).unwrap_err();
+        eprintln!("logs without SENTIENT: {e}");
+        let _ = std::fs::remove_file(known_hosts());
     }
 
     #[test]

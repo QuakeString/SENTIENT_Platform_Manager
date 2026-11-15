@@ -6,6 +6,7 @@
 //! per-monitor DPI), so elevation is done at startup instead (src/elevate.rs).
 
 fn main() {
+    embed_agents();
     println!("cargo:rerun-if-changed=assets/icon.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -17,4 +18,25 @@ fn main() {
         .set("CompanyName", "INVENIA SYSTEMS")
         .set("LegalCopyright", "Copyright © 2016-2026 The SENTIENT Authors");
     res.compile().expect("compile the Windows resources");
+}
+
+/// The server agents this build carries (crate::remote): SPM_LINUX_AGENT and
+/// SPM_WINDOWS_AGENT name the built agent files (`--no-default-features`;
+/// the Linux one static, musl). Without them the program downloads the
+/// agent published with its version instead.
+fn embed_agents() {
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("agents.rs");
+    let mut code = String::new();
+    for (var, name) in [("SPM_LINUX_AGENT", "LINUX"), ("SPM_WINDOWS_AGENT", "WINDOWS")] {
+        println!("cargo:rerun-if-env-changed={var}");
+        match std::env::var(var).ok().filter(|p| std::path::Path::new(p).is_file()) {
+            Some(path) => {
+                println!("cargo:rerun-if-changed={path}");
+                let path = std::fs::canonicalize(&path).unwrap();
+                code.push_str(&format!("pub const {name}: Option<&[u8]> = Some(include_bytes!({:?}));\n", path.display().to_string()));
+            }
+            None => code.push_str(&format!("pub const {name}: Option<&[u8]> = None;\n")),
+        }
+    }
+    std::fs::write(out, code).unwrap();
 }

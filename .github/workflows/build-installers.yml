@@ -64,13 +64,65 @@ jobs:
   # The GPUI installer + Platform Manager (app/): one exe. The offline package
   # (PostgreSQL, TimescaleDB, SENTIENT payload) is assembled from it by
   # scripts/package-windows.ps1 where the payload files are.
+  #
+  # The server agents first: the job code without the window (crate::remote
+  # copies them to the servers a Platform Manager manages). Linux is static
+  # (musl) so it runs on any distribution without desktop libraries. Both
+  # are carried inside every build below (build.rs) and attached to the
+  # release, which is where an agent comes from when a build lacks one.
+  agents:
+    name: server agents
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            file: sentient-platform-manager
+            name: sentient-platform-manager-agent-linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            file: sentient-platform-manager.exe
+            name: sentient-platform-manager-agent-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        working-directory: app
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then export SPM_VERSION="${GITHUB_REF_NAME#v}"; fi
+          if [ -n "${{ needs.gate.outputs.version }}" ]; then export SPM_VERSION="${{ needs.gate.outputs.version }}"; fi
+          cargo build --release --locked --no-default-features --target ${{ matrix.target }}
+          mkdir -p ../agents
+          cp "target/${{ matrix.target }}/release/${{ matrix.file }}" "../agents/${{ matrix.name }}"
+      - if: runner.os == 'Linux'
+        name: The Linux agent is static
+        run: file agents/* | grep -q 'static' && ldd agents/* 2>&1 | grep -qE 'not a dynamic|statically linked'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-${{ matrix.target }}
+          if-no-files-found: error
+          path: agents/*
+
   gpui-windows:
     name: GPUI setup (windows)
-    needs: gate
+    needs: [gate, agents]
     if: needs.gate.outputs.build == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: agent-*
+          path: agents
+          merge-multiple: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -79,6 +131,9 @@ jobs:
         working-directory: app
         shell: bash
         run: |
+          # The server agents this build carries (build.rs).
+          export SPM_LINUX_AGENT="$GITHUB_WORKSPACE/agents/sentient-platform-manager-agent-linux-x86_64"
+          export SPM_WINDOWS_AGENT="$GITHUB_WORKSPACE/agents/sentient-platform-manager-agent-windows-x86_64.exe"
           # The version the program reports and compares updates against:
           # the tag it is built from (v0.8.0-rc6 -> 0.8.0-rc6).
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then export SPM_VERSION="${GITHUB_REF_NAME#v}"; fi
@@ -120,11 +175,16 @@ jobs:
   # older distributions too (glibc).
   gpui-linux:
     name: GPUI setup (linux)
-    needs: gate
+    needs: [gate, agents]
     if: needs.gate.outputs.build == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: agent-*
+          path: agents
+          merge-multiple: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -137,6 +197,9 @@ jobs:
       - name: Build
         working-directory: app
         run: |
+          # The server agents this build carries (build.rs).
+          export SPM_LINUX_AGENT="$GITHUB_WORKSPACE/agents/sentient-platform-manager-agent-linux-x86_64"
+          export SPM_WINDOWS_AGENT="$GITHUB_WORKSPACE/agents/sentient-platform-manager-agent-windows-x86_64.exe"
           # The version the program reports and compares updates against:
           # the tag it is built from (v0.8.0-rc6 -> 0.8.0-rc6).
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then export SPM_VERSION="${GITHUB_REF_NAME#v}"; fi
@@ -172,7 +235,7 @@ jobs:
     steps:
       - name: Install build dependencies
         run: |
-          pacman -Syu --noconfirm --needed git rust clang cmake pkgconf \
+          pacman -Syu --noconfirm --needed git rust rust-musl musl clang cmake pkgconf \
             fontconfig freetype2 libxcb libxkbcommon libxkbcommon-x11 wayland vulkan-icd-loader alsa-lib
       - uses: actions/checkout@v4
       - name: Build
@@ -195,7 +258,7 @@ jobs:
   release:
     name: publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [gpui-windows, gpui-linux, arch-package]
+    needs: [agents, gpui-windows, gpui-linux, arch-package]
     runs-on: ubuntu-latest
     permissions:
       contents: write
