@@ -222,6 +222,16 @@ pub fn system_dark() -> Option<bool> {
 /// kdeglobals: dark when [Colors:Window] BackgroundNormal is dark (works for
 /// any colour scheme, custom ones too).
 fn kde_dark(text: &str) -> Option<bool> {
+    // The scheme's name when its colours are not written out.
+    let by_name = text
+        .lines()
+        .map(str::trim)
+        .find_map(|l| l.strip_prefix("ColorScheme="))
+        .map(|n| n.to_lowercase().contains("dark"));
+    kde_window_dark(text).or(by_name)
+}
+
+fn kde_window_dark(text: &str) -> Option<bool> {
     let mut in_window = false;
     for line in text.lines() {
         let l = line.trim();
@@ -263,7 +273,9 @@ mod scheme_tests {
         assert_eq!(kde_dark(breeze_light), Some(false));
         assert_eq!(kde_dark(breeze_dark), Some(true));
         assert_eq!(kde_dark(custom_dark), Some(true));
-        assert_eq!(kde_dark("[General]\nColorScheme=X\n"), None);
+        assert_eq!(kde_dark("[General]\nColorScheme=X\n"), Some(false));
+        assert_eq!(kde_dark("[General]\nColorScheme=BreezeDark\n"), Some(true));
+        assert_eq!(kde_dark("[KDE]\nLookAndFeelPackage=x\n"), None);
         assert_eq!(portal_dark("v u 1"), Some(true));
         assert_eq!(portal_dark("v u 2"), Some(false));
         assert_eq!(portal_dark("v u 0"), None);

@@ -27,6 +27,11 @@ const TICK: Duration = Duration::from_secs(15 * 60);
 
 /// This program's version: the release tag CI builds it from
 /// (`SPM_VERSION`, e.g. `0.8.0-rc6`), else the crate's.
+/// The commit this build is from, short (build.rs).
+pub fn build_commit() -> &'static str {
+    env!("SPM_BUILD_COMMIT")
+}
+
 pub fn manager_version() -> &'static str {
     // Development aid: act as another version (screens that compare them).
     #[cfg(debug_assertions)]

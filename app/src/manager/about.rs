@@ -104,10 +104,18 @@ impl Render for AboutPage {
         let channel = u.prefs.channel;
         let daily = u.prefs.daily;
         let last = u.last_checked();
-        let state = match (&u.found, u.manager()) {
-            (_, Some(o)) => (Tone::Warn, format!("{} is available", o.version)),
-            (Some(f), None) if f.manager.is_ok() => (Tone::Good, "Up to date".to_string()),
-            _ => (Tone::Neutral, "Not checked".to_string()),
+        // Only two pills: "Up to date" or "Update available". Before a check
+        // has answered in this run there is no pill and the line says so.
+        let state: Option<(Tone, &str)> = match (&u.found, u.manager()) {
+            (_, Some(_)) => Some((Tone::Warn, "Update available")),
+            (Some(f), None) if f.manager.is_ok() => Some((Tone::Good, "Up to date")),
+            _ => None,
+        };
+        let checked_line = match &u.found {
+            _ if checking => "checking for updates…".to_string(),
+            Some(f) if f.manager.is_ok() => format!("checked {last}"),
+            Some(_) => "the last check did not answer".to_string(),
+            None => "not checked yet".to_string(),
         };
         // The mockup's K6: one centred column; the product line with its
         // state and buttons on the right; captioned groups; icon tiles; the
@@ -123,14 +131,14 @@ impl Render for AboutPage {
                         .flex_1()
                         .min_w(px(200.))
                         .child(div().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child("SENTIENT Platform Manager"))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Version {version} · checked {last}"))),
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Version {version} (build {}) · {checked_line}", crate::updates::build_commit()))),
                 )
                 .child(
                     h_flex()
                         .gap_2()
                         .flex_wrap()
                         .items_center()
-                        .child(ui::pill(&theme, state.0, state.1))
+                        .when_some(state, |r, (tone, text)| r.child(ui::pill(&theme, tone, text)))
                         .child(crate::ui::button("about-notes").outline().label("What's new").on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew))))
                         .child(
                             crate::ui::button("about-check")
