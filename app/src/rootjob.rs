@@ -29,6 +29,12 @@ pub fn needed(record: &InstallationRecord) -> bool {
 /// Run `--job <args>` as root, forwarding its progress to `sink`. Returns the
 /// job's log lines (for jobs that answer with data, like `kept`).
 pub fn run(args: &[String], sink: &ProgressFn) -> Result<Vec<String>, String> {
+    run_with_input(args, None, sink)
+}
+
+/// [`run`], writing `input` to the job's standard input (a passphrase:
+/// pkexec clears the environment, and a command line is visible to others).
+pub fn run_with_input(args: &[String], input: Option<&str>, sink: &ProgressFn) -> Result<Vec<String>, String> {
     let exe = std::env::current_exe().map_err(|e| format!("find this program: {e}"))?;
     let have_pkexec = Command::new("sh").args(["-c", "command -v pkexec"]).output().map(|o| o.status.success()).unwrap_or(false);
     let mut cmd = if have_pkexec {
@@ -41,7 +47,12 @@ pub fn run(args: &[String], sink: &ProgressFn) -> Result<Vec<String>, String> {
         c
     };
     cmd.arg("--job").arg("--json").args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() });
     let mut child = cmd.spawn().map_err(|e| format!("start the job as administrator: {e}"))?;
+    if let (Some(text), Some(mut stdin)) = (input, child.stdin.take()) {
+        use std::io::Write as _;
+        let _ = writeln!(stdin, "{text}");
+    }
     let stdout = child.stdout.take().expect("piped");
     let stderr = child.stderr.take().expect("piped");
     let err_reader = std::thread::spawn(move || {

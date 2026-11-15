@@ -44,6 +44,26 @@ fn ch_of(setup: &Setup) -> Option<ChConn> {
     (setup.flavor() == Flavor::Clickhouse).then(|| setup.ch())
 }
 
+/// What a backup records about this installation: SENTIENT's version and
+/// schema, the database type and the computer's name.
+pub fn origin(record: &InstallationRecord, pg: &db::ConnConfig) -> sentient_backup_core::backup::Origin {
+    sentient_backup_core::backup::Origin {
+        sentient_version: Some(record.sentient_version.clone()).filter(|v| !v.is_empty() && v != "unknown"),
+        schema_version: crate::restore_switch::schema_version_now(pg).ok(),
+        database_type: Some(crate::installation::flavor_label(record.flavor()).to_string()),
+        host: host_name(),
+    }
+}
+
+/// This computer's name.
+pub fn host_name() -> Option<String> {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+}
+
 pub fn backup(record: &InstallationRecord, output: &Path, sink: ProgressFn) -> Result<(), String> {
     let setup = Setup::current(record)?;
     let opts = BackupOptions {
@@ -53,6 +73,8 @@ pub fn backup(record: &InstallationRecord, output: &Path, sink: ProgressFn) -> R
         zstd_level: 10,
         passphrase: std::env::var("SBR_BACKUP_PASSWORD").ok().filter(|p| !p.is_empty()),
         clickhouse: ch_of(&setup),
+        origin: origin(record, &setup.pg()),
+        part_size: None,
     };
     let summary = block_on(backup::run(&setup.pg(), &opts, bridge(sink.clone())))?.map_err(|e| e.to_string())?;
     crate::secrets_key::save_beside(record, output, &sink);
@@ -68,6 +90,12 @@ pub fn backup(record: &InstallationRecord, output: &Path, sink: ProgressFn) -> R
 }
 
 pub fn restore(record: &InstallationRecord, input: &Path, target: &str, key: Option<&Path>, sink: ProgressFn) -> Result<(), String> {
+    let passphrase = std::env::var("SBR_BACKUP_PASSWORD").ok().filter(|p| !p.is_empty());
+    restore_with(record, input, target, key, passphrase, sink)
+}
+
+/// [`restore`] with the backup's passphrase given.
+pub fn restore_with(record: &InstallationRecord, input: &Path, target: &str, key: Option<&Path>, passphrase: Option<String>, sink: ProgressFn) -> Result<(), String> {
     if target.is_empty() || !target.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(format!("'{target}' is not a usable database name."));
     }
@@ -86,7 +114,7 @@ pub fn restore(record: &InstallationRecord, input: &Path, target: &str, key: Opt
             ("reports".into(), record.state_dir.join("reports")),
             ("vc-repos".into(), record.state_dir.join("vc-repos")),
         ],
-        passphrase: std::env::var("SBR_BACKUP_PASSWORD").ok().filter(|p| !p.is_empty()),
+        passphrase,
         clickhouse: ch_target.clone(),
         telemetry_into: Some(crate::migration::telemetry_into(record)?),
     };
