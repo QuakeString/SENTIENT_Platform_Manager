@@ -749,6 +749,97 @@ pub fn pointer_down(fill: Hsla, border: Hsla, x: Pixels) -> impl IntoElement {
     )
 }
 
+/// A popover's pointer above it (the popover hangs below its anchor).
+pub fn pointer_up(fill: Hsla, border: Hsla, x: Pixels) -> impl IntoElement {
+    div().absolute().left(x).top(px(-7.)).w(px(14.)).h(px(8.)).child(
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                let o = bounds.origin;
+                let tri = |inset: f32| {
+                    let mut p = gpui_kit::Path::new(point(o.x + px(inset), o.y + px(8.)));
+                    p.line_to(point(o.x + px(14. - inset), o.y + px(8.)));
+                    p.line_to(point(o.x + px(7.), o.y + px(inset)));
+                    p
+                };
+                window.paint_path(tri(0.), border);
+                window.paint_path(tri(1.4), fill);
+            },
+        )
+        .size_full(),
+    )
+}
+
+/// One row of a popover menu.
+pub enum MenuRow {
+    Item {
+        id: SharedString,
+        icon: Option<AnyElement>,
+        label: SharedString,
+        /// A second, quieter text after the label (an address).
+        secondary: Option<SharedString>,
+        /// The chosen one: tinted, with a check at the right.
+        on: bool,
+        click: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+    },
+    Divider,
+}
+
+/// The app's popover menu (the theme menu, the instance switcher): a
+/// 12 px panel with tinted chosen row and a check at the right, and its
+/// pointer toward the anchor at `pointer_x`, above (`up`) or below it. The
+/// caller places it (deferred, absolute) and closes it on `on_close`.
+pub fn popover_menu(theme: &Theme, id: &'static str, width: f32, rows: Vec<MenuRow>, up: bool, pointer_x: Pixels, on_close: impl Fn(&mut Window, &mut App) + 'static) -> Div {
+    use gpui_kit::component::{h_flex, v_flex};
+    let rows = rows.into_iter().map(|r| match r {
+        MenuRow::Divider => div().my_1().mx_1().h(px(1.)).bg(theme.border).into_any_element(),
+        MenuRow::Item { id, icon, label, secondary, on, click } => h_flex()
+            .id(id)
+            .gap_2()
+            .items_center()
+            .px_2()
+            .py(px(6.))
+            .rounded(px(6.))
+            .cursor_pointer()
+            .text_sm()
+            .when(on, |r| r.bg(theme.primary.opacity(0.10)).text_color(theme.primary).font_weight(FontWeight::MEDIUM))
+            .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))
+            .children(icon)
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_2()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(div().flex_shrink_0().child(label))
+                    .when_some(secondary, |r, s| r.child(div().min_w_0().overflow_hidden().text_ellipsis().font_weight(FontWeight::NORMAL).text_color(theme.muted_foreground).child(s))),
+            )
+            .when(on, |r| r.child(gpui_kit::component::Icon::new(gpui_kit::component::IconName::Check).size_4()))
+            .on_click(move |_, window, cx| click(window, cx))
+            .into_any_element(),
+    });
+    div()
+        .relative()
+        .w(px(width))
+        .child(
+            v_flex()
+                .id(id)
+                .occlude()
+                .p_1()
+                .gap_px()
+                .rounded(px(PANEL_RADIUS))
+                .bg(theme.popover)
+                .text_color(theme.popover_foreground)
+                .border_1()
+                .border_color(theme.border)
+                .shadow_lg()
+                .children(rows)
+                .on_mouse_down_out(move |_, window, cx| on_close(window, cx)),
+        )
+        .map(|d| if up { d.child(pointer_up(theme.popover, theme.border, pointer_x)) } else { d.child(pointer_down(theme.popover, theme.border, pointer_x)) })
+}
+
 /// Every button: the toolkit's, with the mockup's medium-weight label.
 pub fn button(id: impl Into<gpui_kit::ElementId>) -> gpui_kit::component::button::Button {
     gpui_kit::component::button::Button::new(id).font_weight(FontWeight::MEDIUM)

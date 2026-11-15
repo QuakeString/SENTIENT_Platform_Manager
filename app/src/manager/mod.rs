@@ -150,6 +150,8 @@ pub struct Manager {
     stats: Option<(Option<String>, Entity<stats::StatsPage>)>,
     /// Takes the keyboard while a dialog is open (Escape closes it).
     modal_focus: FocusHandle,
+    /// The instance switcher's menu is open.
+    switcher_open: bool,
     /// The global progress strip (strip.rs), under the top bar.
     strip: Entity<strip::Strip>,
     /// Screens: the canned job the strip follows.
@@ -221,6 +223,7 @@ impl Manager {
             stats: None,
             modal_focus: cx.focus_handle(),
             strip: strip.clone(),
+            switcher_open: false,
             _debug_job: None,
             theme_open: cfg!(debug_assertions) && std::env::var_os("SPM_THEME_OPEN").is_some(),
             monitor: None,
@@ -318,6 +321,8 @@ impl Manager {
     /// takes the open instance's colour (SENTIENT teal for this computer).
     fn top_bar(&self, width: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let dark = theme::is_dark(cx);
+        let menu_theme = cx.theme().clone();
+        let theme_radius = menu_theme.radius;
         let remote = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned();
         let (bg, fg): (Hsla, Hsla) = match &remote {
             Some(r) => {
@@ -489,16 +494,23 @@ impl Manager {
             .text_color(fg)
             .child(ui::product_logo(ui::Product::Manager, 20.))
             // No product name here: the window's own title carries it.
-            .child(
-                // The mockup's switcher: a framed chip with a status dot, the
-                // name, the address faint, a chevron; a remote one is framed
-                // in amber and carries a REMOTE tag.
+            .child({
                 // The mockup's option B: a darker inset of the bar itself, no
-                // border; nothing on it but the bar colour and its text colour.
-                crate::ui::button("switcher")
-                    .ghost()
+                // border; hover one step darker (the text keeps its contrast).
+                // Its menu is the app's popover, like the theme menu.
+                let open = self.switcher_open;
+                let hover_inset: Hsla = black().opacity(if light_bar { 0.16 } else { 0.30 });
+                let chip = div()
+                    .id("switcher")
+                    .flex()
+                    .items_center()
+                    .h(px(30.))
+                    .px(px(10.))
+                    .rounded(theme_radius)
+                    .cursor_pointer()
                     .text_color(fg)
-                    .bg(inset)
+                    .bg(if open { hover_inset } else { inset })
+                    .hover(move |d| d.bg(hover_inset))
                     .child(
                         h_flex()
                             .gap(px(7.))
@@ -513,35 +525,72 @@ impl Manager {
                                 r.child(div().px(px(6.)).py(px(1.)).rounded(px(4.)).bg(fg).text_color(bg).text_size(px(10.5)).font_weight(FontWeight::SEMIBOLD).child("REMOTE"))
                             }),
                     )
-                    .dropdown_menu({
-                        let this = cx.entity().downgrade();
-                        let remotes = self.remotes.clone();
-                        let open = self.open_remote.clone();
-                        move |menu, _, _| {
-                            let t = this.clone();
-                            let mut menu = menu.item(PopupMenuItem::new(if open.is_some() { "Back to this computer" } else { "This computer" }).when(open.is_some(), |i| i.icon(Lucide::Monitor)).checked(open.is_none()).on_click(move |_, _, cx| {
-                                t.update(cx, |m, cx| m.open_instance(None, cx)).ok();
-                            }));
-                            if !remotes.is_empty() {
-                                menu = menu.separator();
-                            }
-                            for r in &remotes {
-                                let (t, id) = (this.clone(), r.id.clone());
-                                menu = menu.item(PopupMenuItem::new(format!("{} · {}", r.name, r.host)).when(open.as_deref() != Some(r.id.as_str()), |i| i.icon(Lucide::Server)).checked(open.as_deref() == Some(r.id.as_str())).on_click(move |_, _, cx| {
-                                    t.update(cx, |m, cx| m.open_instance(Some(id.clone()), cx)).ok();
-                                }));
-                            }
-                            let t = this.clone();
-                            menu.separator().item(PopupMenuItem::new("Manage instances…").icon(Lucide::Settings).on_click(move |_, _, cx| {
-                                t.update(cx, |m, cx| {
-                                    m.page = Page::Instances;
-                                    cx.notify();
-                                })
-                                .ok();
-                            }))
-                        }
-                    }),
-            )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.switcher_open = !this.switcher_open;
+                        cx.notify();
+                    }));
+                let popover = open.then(|| {
+                    let this = cx.entity().downgrade();
+                    let go = |t: WeakEntity<Manager>, id: Option<String>| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
+                        std::rc::Rc::new(move |_, cx| {
+                            t.update(cx, |m, cx| {
+                                m.switcher_open = false;
+                                m.open_instance(id.clone(), cx);
+                            })
+                            .ok();
+                        })
+                    };
+                    let mut rows = vec![ui::MenuRow::Item {
+                        id: "switch-local".into(),
+                        icon: Some(Icon::new(Lucide::Monitor).size_4().into_any_element()),
+                        label: if self.open_remote.is_some() { "Back to this computer".into() } else { "This computer".into() },
+                        secondary: None,
+                        on: self.open_remote.is_none(),
+                        click: go(this.clone(), None),
+                    }];
+                    if !self.remotes.is_empty() {
+                        rows.push(ui::MenuRow::Divider);
+                    }
+                    for r in &self.remotes {
+                        let c = crate::remote::parse_hex(&r.color).unwrap_or(0x187074);
+                        rows.push(ui::MenuRow::Item {
+                            id: SharedString::from(format!("switch-{}", r.id)),
+                            icon: Some(div().size(px(10.)).mx(px(3.)).rounded_full().bg(rgb(c)).into_any_element()),
+                            label: r.name.clone().into(),
+                            secondary: Some(format!("{} over SSH", r.host).into()),
+                            on: self.open_remote.as_deref() == Some(r.id.as_str()),
+                            click: go(this.clone(), Some(r.id.clone())),
+                        });
+                    }
+                    rows.push(ui::MenuRow::Divider);
+                    let t = this.clone();
+                    rows.push(ui::MenuRow::Item {
+                        id: "switch-manage".into(),
+                        icon: Some(Icon::new(Lucide::Settings).size_4().into_any_element()),
+                        label: "Manage instances…".into(),
+                        secondary: None,
+                        on: false,
+                        click: std::rc::Rc::new(move |_, cx| {
+                            t.update(cx, |m, cx| {
+                                m.switcher_open = false;
+                                m.page = Page::Instances;
+                                cx.notify();
+                            })
+                            .ok();
+                        }),
+                    });
+                    let close = this.clone();
+                    deferred(div().absolute().top(px(30. + 9.)).left_0().child(ui::popover_menu(&menu_theme, "switcher-popover", 320., rows, true, px(24.), move |_, cx| {
+                        close.update(cx, |m, cx| {
+                            m.switcher_open = false;
+                            cx.notify();
+                        })
+                        .ok();
+                    })))
+                    .with_priority(1)
+                });
+                div().relative().child(chip).children(popover)
+            })
             // A running job: its chip in the middle of the bar.
             .child(h_flex().flex_1().min_w_0().overflow_hidden().justify_center().child(self.strip.clone()))
             .children(monitor)
@@ -973,57 +1022,46 @@ impl Manager {
                 cx.notify();
             }));
         let popover = open.then(|| {
-            let rows = theme::Choice::ALL.into_iter().map(|c| {
-                let on = c == choice;
-                h_flex()
-                    .id(SharedString::from(format!("theme-{}", c.label())))
-                    .gap_2()
-                    .items_center()
-                    .px_2()
-                    .py(px(6.))
-                    .rounded(px(6.))
-                    .cursor_pointer()
-                    .text_sm()
-                    .when(on, |r| r.bg(theme.primary.opacity(0.10)).text_color(theme.primary).font_weight(FontWeight::MEDIUM))
-                    .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))
-                    .child(icon_of(c).size_4())
-                    .child(div().flex_1().child(c.label()))
-                    .when(on, |r| r.child(Icon::new(IconName::Check).size_4()))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        theme::choose(c, Some(window), cx);
-                        this.theme_open = false;
-                        cx.notify();
-                    }))
-            });
-            // The pointer: a small square turned 45 degrees is not possible
-            // here, so a bordered triangle is drawn from two stacked borders.
-            let pointer_x = if rail { px(9.) } else { px(162. - 24.) };
-            deferred(
-                div()
-                    .absolute()
-                    .bottom(px(30. + 9.))
-                    .when(rail, |d| d.left(px(-2.)))
-                    .when(!rail, |d| d.right(px(-6.)))
-                    .w(px(162.))
-                    .child(
-                        v_flex()
-                            .id("theme-popover")
-                            .occlude()
-                            .p_1()
-                            .gap_px()
-                            .rounded(px(ui::PANEL_RADIUS))
-                            .bg(theme.popover)
-                            .text_color(theme.popover_foreground)
-                            .border_1()
-                            .border_color(theme.border)
-                            .shadow_lg()
-                            .children(rows)
-                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                this.theme_open = false;
+            let this = cx.entity().downgrade();
+            let rows = theme::Choice::ALL
+                .into_iter()
+                .map(|c| {
+                    let this = this.clone();
+                    ui::MenuRow::Item {
+                        id: SharedString::from(format!("theme-{}", c.label())),
+                        icon: Some(icon_of(c).size_4().into_any_element()),
+                        label: c.label().into(),
+                        secondary: None,
+                        on: c == choice,
+                        click: std::rc::Rc::new(move |window, cx| {
+                            theme::choose(c, Some(window), cx);
+                            this.update(cx, |m, cx| {
+                                m.theme_open = false;
                                 cx.notify();
-                            })),
-                    )
-                    .child(ui::pointer_down(theme.popover, theme.border, pointer_x)),
+                            })
+                            .ok();
+                        }),
+                    }
+                })
+                .collect();
+            let pointer_x = if rail { px(9.) } else { px(162. - 24.) };
+            let close = cx.entity().downgrade();
+            deferred(
+                div().absolute().bottom(px(30. + 9.)).when(rail, |d| d.left(px(-2.))).when(!rail, |d| d.right(px(-6.))).child(ui::popover_menu(
+                    &theme,
+                    "theme-popover",
+                    162.,
+                    rows,
+                    false,
+                    pointer_x,
+                    move |_, cx| {
+                        close.update(cx, |m, cx| {
+                            m.theme_open = false;
+                            cx.notify();
+                        })
+                        .ok();
+                    },
+                )),
             )
             .with_priority(1)
         });
