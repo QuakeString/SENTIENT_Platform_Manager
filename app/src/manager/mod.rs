@@ -754,7 +754,19 @@ impl Manager {
             .items_center()
             .bg(bg)
             .text_color(fg)
-            .child(ui::product_logo(ui::Product::Manager, 20.))
+            // On a white tile: the icon's own teal would fade into a teal
+            // (or any instance-coloured) bar.
+            .child(
+                div()
+                    .size(px(28.))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(7.))
+                    .bg(white().opacity(0.94))
+                    .child(ui::product_logo(ui::Product::Manager, 22.)),
+            )
             // No product name here: the window's own title carries it.
             .child({
                 // The mockup's option B: a darker inset of the bar itself, no

@@ -6,7 +6,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod adopt;
-#[cfg(windows)]
+#[cfg(all(windows, feature = "gui"))]
 mod win_icon;
 mod agent;
 #[cfg(feature = "gui")]
