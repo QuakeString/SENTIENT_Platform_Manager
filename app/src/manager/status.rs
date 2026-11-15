@@ -644,6 +644,20 @@ pub(crate) fn db_details(
                     )
                     .child(small_fact(theme, "Size", bytes_label(pg.db_bytes)))
                     .child(small_fact(theme, "Connections", format!("{} open of {} allowed", pg.connections, pg.max_connections)))
+                    // Telemetry history kept in PostgreSQL: the same rows as
+                    // ClickHouse shows (approximate count from statistics).
+                    .when(!db.hybrid, |c| {
+                        let ts_bytes = pg.tables.iter().find(|t| t.name == "ts_kv").map(|t| t.bytes);
+                        c.when(pg.ts_rows.is_some() || ts_bytes.is_some(), |c| {
+                            c.child(small_fact(theme, "Telemetry history", match (pg.ts_rows, ts_bytes) {
+                                (Some(r), Some(b)) => format!("about {} values, {}", count_label(r), bytes_label(b)),
+                                (Some(r), None) => format!("about {} values", count_label(r)),
+                                (None, Some(b)) => bytes_label(b),
+                                (None, None) => String::new(),
+                            }))
+                        })
+                        .when_some(pg.ts_first_ms.zip(pg.ts_last_ms), |c, (a, b)| c.child(small_fact(theme, "Period", format!("{} to {}", day_label(a), day_label(b)))))
+                    })
                     .child(
                         h_flex()
                             .gap_2()
@@ -697,10 +711,13 @@ pub(crate) fn db_details(
                     } else {
                         format!("{} on disk", bytes_label(ch.disk_bytes))
                     }))
-                    .child(small_fact(theme, "Telemetry history", format!("{} values", count_label(ch.rows))))
+                    .child(small_fact(theme, "Telemetry history", format!("{} values, {}", count_label(ch.rows), bytes_label(ch.disk_bytes))))
                     .children(match (ch.first_ms, ch.last_ms) {
-                        (Some(a), Some(b)) => Some(small_fact(theme, "From, to", format!("{} to {}", day_label(a), day_label(b)))),
+                        (Some(a), Some(b)) => Some(small_fact(theme, "Period", format!("{} to {}", day_label(a), day_label(b)))),
                         _ => None,
+                    })
+                    .when(ch.invalid_rows > 0, |c| {
+                        c.child(div().pl(px(136.)).text_size(px(13.)).text_color(theme.muted_foreground).child(format!("{} values with no valid time", count_label(ch.invalid_rows))))
                     })
                     .child(
                         h_flex()
