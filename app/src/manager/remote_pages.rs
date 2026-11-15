@@ -607,7 +607,7 @@ impl RemotePages {
                     sink(sentient_installer_core::progress::Progress::Step { name: "Applying the settings".into() });
                     let id = remote::start_job(&inst, &["apply-settings", &file])?;
                     let r = remote::follow(&inst, &id, &sink);
-                    let _ = remote::run(&inst, &format!("rm -f '{file}'"), None);
+                    remote::remove_file(&inst, &file);
                     r
                 },
                 cx,
