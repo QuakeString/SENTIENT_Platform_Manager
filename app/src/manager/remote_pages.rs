@@ -131,7 +131,7 @@ pub(crate) enum Preflight {
 pub(crate) fn preflight_notice(theme: &gpui_kit::component::Theme, why: &str, take_over: Option<AnyElement>) -> Div {
     // With the button beside it, the way there needs no words.
     let why = if take_over.is_some() && why.contains("own compose file") {
-        "SENTIENT runs from its own compose file. Let the Platform Manager take it over first; its data stays."
+        "SENTIENT runs from a compose file the Platform Manager did not write.\nLet the Platform Manager take it over first; the data stays."
     } else {
         why
     };
@@ -1364,6 +1364,7 @@ impl RemotePages {
         let inst = self.inst.clone();
         let this = cx.entity().downgrade();
         crate::manager::takeover::open(
+            false,
             std::sync::Arc::new(move |compose: Option<String>| remote::takeover_plan(&inst, compose.as_deref())),
             std::rc::Rc::new(move |compose: Option<String>, cx: &mut App| {
                 this.update(cx, |p, cx| {
@@ -1399,7 +1400,7 @@ impl RemotePages {
                     h_flex()
                         .gap_1()
                         .items_center()
-                        .child(div().text_sm().text_color(theme.muted_foreground).child("SENTIENT runs from its own compose file."))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child("SENTIENT runs from a compose file the Platform Manager did not write."))
                         .child(ui::info("r-take-over-help".into(), "The Platform Manager does not change that file. Changing settings or the database type needs the Platform Manager's own compose file: the same containers on the same data.".into())),
                 )
                 .child(h_flex().child(self.take_over_button("r-take-over", busy, cx)))

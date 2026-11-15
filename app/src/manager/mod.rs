@@ -52,7 +52,7 @@ enum Page {
     /// About and preferences of the Platform Manager (the (i) at the
     /// bottom of the menu, not a menu entry).
     About,
-    /// Statistics: in the menu under Status, and opened from the top bar's monitors.
+    /// Statistics: in the menu after Status, and opened from the top bar's monitors.
     Statistics,
 }
 
@@ -308,7 +308,7 @@ impl Manager {
                     }
                     Ok(p)
                 };
-                cx.defer(move |cx| takeover::open(std::sync::Arc::new(plan), std::rc::Rc::new(|_, _: &mut App| {}), cx));
+                cx.defer(move |cx| takeover::open(std::env::var_os("SPM_DEBUG_TAKEOVER_LOCAL").is_some(), std::sync::Arc::new(plan), std::rc::Rc::new(|_, _: &mut App| {}), cx));
             }
             if std::env::var_os("SPM_DEBUG_SUDO_PROMPT").is_some() {
                 if let Some(inst) = crate::remote::load().into_iter().next() {

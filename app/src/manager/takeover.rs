@@ -47,16 +47,18 @@ pub struct TakeOverDialog {
     input: Entity<InputState>,
     /// The compose file is gone: rebuilding from the running containers was confirmed.
     rebuild_ok: bool,
+    /// This computer (a file chooser, "this computer"), else a server.
+    local: bool,
     _task: Option<Task<()>>,
 }
 
 /// Open the dialog and read the plan.
-pub fn open(load: LoadPlan, run: RunTakeOver, cx: &mut App) {
+pub fn open(local: bool, load: LoadPlan, run: RunTakeOver, cx: &mut App) {
     let Some(handle) = cx.active_window().or_else(|| cx.windows().into_iter().next()) else { return };
     let _ = handle.update(cx, |_, window, cx| {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/docker-compose.yml"));
         let view = cx.new(|cx| {
-            let mut d = TakeOverDialog { load, run, plan: Plan::Loading, compose: None, input, rebuild_ok: false, _task: None };
+            let mut d = TakeOverDialog { load, run, plan: Plan::Loading, compose: None, input, rebuild_ok: false, local, _task: None };
             d.reload(cx);
             d
         });
@@ -81,6 +83,29 @@ impl TakeOverDialog {
             });
         }));
         cx.notify();
+    }
+
+    /// This computer: the desktop's file chooser, in the labels' folder.
+    fn choose(&mut self, cx: &mut Context<Self>) {
+        let start = match &self.plan {
+            Plan::Got(p) => p.files.first().map(|(f, _)| std::path::PathBuf::from(f)),
+            _ => None,
+        };
+        let rx = crate::chooser::open(
+            cx,
+            crate::chooser::Ask { title: "Choose the compose file", start: start.as_deref(), directory: false },
+            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use this file".into()) },
+        );
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            // The chosen file is listed in place of the labels' one.
+            let _ = this.update(cx, |d, cx| {
+                d.compose = Some(path.display().to_string());
+                d.reload(cx);
+            });
+        })
+        .detach();
     }
 
     fn use_file(&mut self, cx: &mut Context<Self>) {
@@ -166,11 +191,29 @@ impl Render for TakeOverDialog {
             Some(("to-compose-help", "The file the containers were started from, as their labels name it. If it moved, name it here: the plan is read again with it.")),
         ));
         b = b.children(plan.files.iter().map(|(f, found)| file_row(&theme, f, *found)));
+        // Another compose file: typed on a server, chosen on this computer.
+        let place = if self.local { "this computer" } else { "this server" };
+        b = b
+            .child(div().text_size(px(12.5)).text_color(theme.muted_foreground).mt_1().child(format!("Another compose file on {place}")))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().flex_1().min_w_0().child(Input::new(&self.input)))
+                    .when(self.local, |r| r.child(crate::ui::button("to-choose").outline().label("Choose…").on_click(cx.listener(|d, _, _, cx| d.choose(cx)))))
+                    .child(crate::ui::button("to-use-file").outline().label("Use this file").on_click(cx.listener(|d, _, _, cx| d.use_file(cx))))
+                    .when(self.compose.is_some(), |r| {
+                        r.child(crate::ui::button("to-labels").ghost().label("Back to the labels' file").on_click(cx.listener(|d, _, _, cx| {
+                            d.compose = None;
+                            d.reload(cx);
+                        })))
+                    }),
+            );
         if needs_rebuild {
             b = b
-                .child(div().text_sm().text_color(if theme.mode.is_dark() { theme.warning_foreground } else { gpui::rgb(0xb45309).into() }).child(
-                    "The compose file is not on the server. The new one is written from the running containers' own settings (image, ports, volumes, environment).",
-                ))
+                .child(div().text_sm().text_color(theme.warning_foreground).child(format!(
+                    "The compose file is not on {place}. The new one is written from the running containers' own settings (image, ports, volumes, environment)."
+                )))
                 .child(
                     Checkbox::new("to-rebuild")
                         .label("Write the new compose file from the running containers")
@@ -182,19 +225,6 @@ impl Render for TakeOverDialog {
                         })),
                 );
         }
-        b = b.child(
-            h_flex()
-                .gap_2()
-                .items_center()
-                .child(div().flex_1().min_w_0().child(Input::new(&self.input)))
-                .child(crate::ui::button("to-use-file").outline().label("Use this file").on_click(cx.listener(|d, _, _, cx| d.use_file(cx))))
-                .when(self.compose.is_some(), |r| {
-                    r.child(crate::ui::button("to-labels").ghost().label("Back to the labels' file").on_click(cx.listener(|d, _, _, cx| {
-                        d.compose = None;
-                        d.reload(cx);
-                    })))
-                }),
-        );
 
         // Environment files carried along.
         b = b.child(section(

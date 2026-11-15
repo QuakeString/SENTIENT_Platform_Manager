@@ -204,6 +204,7 @@ impl MigrationPage {
         let Some(record) = self.record.clone() else { return };
         let this = cx.entity().downgrade();
         crate::manager::takeover::open(
+            true,
             std::sync::Arc::new(move |compose: Option<String>| crate::adopt::take_over_plan(&record, compose.as_deref())),
             std::rc::Rc::new(move |compose: Option<String>, cx: &mut App| {
                 this.update(cx, |page, cx| {

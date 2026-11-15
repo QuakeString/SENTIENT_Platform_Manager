@@ -52,6 +52,7 @@ impl RepairPage {
         let Some(record) = self.record.clone() else { return };
         let this = cx.entity().downgrade();
         crate::manager::takeover::open(
+            true,
             std::sync::Arc::new(move |compose: Option<String>| crate::adopt::take_over_plan(&record, compose.as_deref())),
             std::rc::Rc::new(move |compose, cx: &mut App| {
                 this.update(cx, |page, cx| page.take_over(compose, cx)).ok();
@@ -164,7 +165,7 @@ impl Render for RepairPage {
                         h_flex()
                             .gap_1()
                             .items_center()
-                            .child(div().text_sm().text_color(theme.muted_foreground).child("SENTIENT runs from its own compose file."))
+                            .child(div().text_sm().text_color(theme.muted_foreground).child("SENTIENT runs from a compose file the Platform Manager did not write."))
                             .child(ui::info(
                                 "take-over-help".into(),
                                 format!(
