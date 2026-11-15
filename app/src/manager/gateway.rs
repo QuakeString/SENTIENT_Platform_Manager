@@ -183,7 +183,7 @@ impl Render for GatewayPage {
                     "Runs as",
                     match (&status.container, status.managed, &status.service, &status.process) {
                         (Some(c), true, ..) => format!("Docker container {c}"),
-                        (Some(c), false, ..) => format!("Docker container {c} (from its own compose file)"),
+                        (Some(c), false, ..) => format!("Docker container {c} (from a compose file the Platform Manager did not write)"),
                         (None, _, Some(u), _) => format!("Service {u}"),
                         (None, _, None, Some(p)) => format!("A process ({p}), started outside a service"),
                         _ => "Windows service SentientGateway".to_string(),

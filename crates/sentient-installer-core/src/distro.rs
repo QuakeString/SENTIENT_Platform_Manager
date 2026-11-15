@@ -122,8 +122,7 @@ pub struct ExternalCompose {
 
 /// What operations that rewrite the compose file say about a stack started
 /// from someone else's.
-pub const EXTERNAL_COMPOSE: &str = "This SENTIENT runs from its own compose file, which the Platform Manager does not rewrite. \
-To change settings or the database type, first let the Platform Manager take over the compose file (Repair and uninstall → Take over the compose file).";
+pub const EXTERNAL_COMPOSE: &str = "SENTIENT runs from a compose file the Platform Manager did not write. Let the Platform Manager take it over first (Repair and uninstall → Take over the compose file); the data stays.";
 
 impl Default for DeployConfig {
     fn default() -> Self {

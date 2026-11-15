@@ -124,8 +124,8 @@ fn docker_candidates() -> Vec<(Candidate, distro::adopt::FoundStack)> {
             let mut notes = found.notes.clone();
             if found.cfg.external.is_some() {
                 notes.push(match &found.take_over {
-                    Ok(()) => "It keeps running from its own compose file. Changing settings or the database type needs the Platform Manager to take the compose file over first (Repair and uninstall).".into(),
-                    Err(why) => format!("It keeps running from its own compose file. Settings and the database type cannot be changed by the Platform Manager: {why}"),
+                    Ok(()) => "It runs from a compose file the Platform Manager did not write. Changing settings or the database type needs the Platform Manager to take it over first (Repair and uninstall).".into(),
+                    Err(why) => format!("It runs from a compose file the Platform Manager did not write. Settings and the database type cannot be changed by the Platform Manager: {why}"),
                 });
             }
             let c = Candidate {

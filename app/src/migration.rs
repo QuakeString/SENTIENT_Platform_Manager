@@ -286,7 +286,7 @@ fn write_record(record: &InstallationRecord) -> Result<(), String> {
 pub fn preflight(record: &InstallationRecord) -> Result<(), String> {
     if record.engine == Engine::Docker {
         if record.stack.external.is_some() {
-            return Err("This SENTIENT runs from its own compose file, which the Platform Manager does not rewrite. Let the Platform Manager take it over first (Repair and uninstall → Take over the compose file); its data stays.".into());
+            return Err(sentient_installer_core::distro::EXTERNAL_COMPOSE.into());
         }
         if record.stack.pg_port == 0 {
             return Err("PostgreSQL is not published on this machine, so it cannot be backed up from here.".into());

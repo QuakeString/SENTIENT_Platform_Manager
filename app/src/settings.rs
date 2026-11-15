@@ -221,6 +221,11 @@ pub fn apply(record: InstallationRecord, values: &HashMap<String, String>, sink:
 }
 
 pub fn apply_with(record: InstallationRecord, values: &HashMap<String, String>, custom: Option<&[(String, String)]>, sink: ProgressFn) -> Result<InstallationRecord, String> {
+    // A compose file someone else wrote is never rewritten: say so before
+    // anything starts (the pages keep Apply off until the takeover).
+    if record.engine == Engine::Docker && record.stack.external.is_some() {
+        return Err(sentient_installer_core::distro::EXTERNAL_COMPOSE.into());
+    }
     let problems = check(values);
     if !problems.is_empty() {
         return Err(format!("Some values are not valid:\n{}", problems.join("\n")));

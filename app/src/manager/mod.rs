@@ -11,7 +11,7 @@ mod gateway;
 mod instances;
 pub(crate) mod logs;
 pub(crate) mod migration;
-mod remote_pages;
+pub(crate) mod remote_pages;
 mod repair;
 mod takeover;
 pub(crate) mod settings;
@@ -317,7 +317,7 @@ impl Manager {
                     }
                     Ok(p)
                 };
-                cx.defer(move |cx| takeover::open(std::env::var_os("SPM_DEBUG_TAKEOVER_LOCAL").is_some(), std::sync::Arc::new(plan), std::rc::Rc::new(|_, _: &mut App| {}), cx));
+                cx.defer(move |cx| takeover::open(std::env::var_os("SPM_DEBUG_TAKEOVER_LOCAL").is_some(), std::sync::Arc::new(plan), std::rc::Rc::new(|_, _: &mut App| {}), None, cx));
             }
             if std::env::var_os("SPM_DEBUG_SUDO_PROMPT").is_some() {
                 if let Some(inst) = crate::remote::load().into_iter().next() {

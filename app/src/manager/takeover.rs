@@ -49,21 +49,36 @@ pub struct TakeOverDialog {
     rebuild_ok: bool,
     /// This computer (a file chooser, "this computer"), else a server.
     local: bool,
+    sudo: Option<crate::remote::Instance>,
     _task: Option<Task<()>>,
 }
 
-/// Open the dialog and read the plan.
-pub fn open(local: bool, load: LoadPlan, run: RunTakeOver, cx: &mut App) {
-    let Some(handle) = cx.active_window().or_else(|| cx.windows().into_iter().next()) else { return };
-    let _ = handle.update(cx, |_, window, cx| {
+/// Open the dialog and read the plan. `sudo`: the server whose sudo
+/// password a failure may ask for (an agent update before the plan).
+///
+/// Deferred: called from a click, the window is in the middle of its own
+/// update, and updating it again from there fails without a word.
+pub fn open(local: bool, load: LoadPlan, run: RunTakeOver, sudo: Option<crate::remote::Instance>, cx: &mut App) {
+    cx.defer(move |cx| open_now(local, load, run, sudo, cx));
+}
+
+fn open_now(local: bool, load: LoadPlan, run: RunTakeOver, sudo: Option<crate::remote::Instance>, cx: &mut App) {
+    let Some(handle) = cx.active_window().or_else(|| cx.windows().into_iter().next()) else {
+        crate::ui::show_error("The compose file could not be taken over", "The Platform Manager's window was not found.", cx);
+        return;
+    };
+    let opened = handle.update(cx, |_, window, cx| {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("/path/to/docker-compose.yml"));
         let view = cx.new(|cx| {
-            let mut d = TakeOverDialog { load, run, plan: Plan::Loading, compose: None, input, rebuild_ok: false, local, _task: None };
+            let mut d = TakeOverDialog { load, run, plan: Plan::Loading, compose: None, input, rebuild_ok: false, local, sudo, _task: None };
             d.reload(cx);
             d
         });
         crate::modal::open(crate::modal::Modal { title: "Take over the compose file".into(), body: view.into(), width: 620., on_close: None }, cx);
     });
+    if let Err(e) = opened {
+        crate::ui::show_error("The compose file could not be taken over", format!("The dialog could not open: {e}"), cx);
+    }
 }
 
 impl TakeOverDialog {
@@ -153,12 +168,26 @@ impl Render for TakeOverDialog {
                     .child(ui::skeleton_line(&theme, "to-4", 260.));
             }
             Plan::Failed(e) => {
-                return body.child(ui::notice_with(
-                    &theme,
-                    Tone::Bad,
-                    format!("What taking it over would do could not be read.\n{e}"),
-                    Some(crate::ui::button("to-retry").outline().label("Retry").on_click(cx.listener(|d, _, _, cx| d.reload(cx))).into_any_element()),
-                ));
+                // The reason, Copy and Retry; when the agent update before it
+                // needs sudo's password, the prompt, then the plan again.
+                let copy = e.clone();
+                let sudo = self.sudo.clone().filter(|_| crate::manager::remote_pages::needs_sudo_password(e));
+                let this = cx.entity().downgrade();
+                return body.child(ui::notice(&theme, Tone::Bad, format!("What taking it over would do could not be read.\n{e}"))).child(
+                    h_flex()
+                        .gap_2()
+                        .justify_end()
+                        .child(crate::ui::button("to-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+                        .when_some(sudo, |r, inst| {
+                            r.child(crate::ui::button("to-sudo").outline().label("Enter the sudo password…").on_click(move |_, _, cx| {
+                                let this = this.clone();
+                                crate::manager::remote_pages::ask_sudo_password(inst.clone(), std::rc::Rc::new(move |cx: &mut App| {
+                                    this.update(cx, |d, cx| d.reload(cx)).ok();
+                                }), cx);
+                            }))
+                        })
+                        .child(crate::ui::button("to-retry").primary().label("Retry").on_click(cx.listener(|d, _, _, cx| d.reload(cx)))),
+                );
             }
             Plan::Got(p) => p.clone(),
         };
