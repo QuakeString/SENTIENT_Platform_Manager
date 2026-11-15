@@ -502,7 +502,8 @@ pub fn run(args: &[String]) -> i32 {
                 eprintln!("✗ --version needs a release number, e.g. --version 4.4.0.1");
                 return 1;
             }
-            let mut record = record;
+            let record = record;
+            let mut target: Option<String> = None;
             let mut package = args
                 .iter()
                 .skip(1)
@@ -525,7 +526,9 @@ pub fn run(args: &[String]) -> i32 {
                         }
                     }
                 } else {
-                    record.stack.image = crate::maintenance_ops::retag(&record.stack.image, v);
+                    // The chosen release, run under the tag the stack's
+                    // compose file names (it is not rewritten here).
+                    target = Some(crate::maintenance_ops::retag(&record.stack.image, v));
                 }
             }
             // --latest: the newest release from the releases repository.
@@ -538,7 +541,7 @@ pub fn run(args: &[String]) -> i32 {
                     }
                 }
             }
-            crate::updating::run(record, package.as_deref(), accept, sink.clone()).map(|_| ())
+            crate::updating::run_to(record, package.as_deref(), target.as_deref(), accept, sink.clone()).map(|_| ())
         }
         "rollback" => crate::updating::rollback(record, sink.clone()).map(|_| ()),
         "rollback-info" => crate::updating::rollback_point(&record).map(|point| {

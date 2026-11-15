@@ -63,10 +63,22 @@ pub fn run(
     accept_breaking: bool,
     sink: ProgressFn,
 ) -> Result<InstallationRecord, String> {
+    run_to(record, package, None, accept_breaking, sink)
+}
+
+/// [`run`] to the image `target` (Docker: a chosen release), which runs
+/// under the tag the stack's compose file names.
+pub fn run_to(
+    record: InstallationRecord,
+    package: Option<&Path>,
+    target: Option<&str>,
+    accept_breaking: bool,
+    sink: ProgressFn,
+) -> Result<InstallationRecord, String> {
     let (version, message) = match record.engine {
         Engine::Docker => {
             let cfg = distro::docker_ops::with_secrets(&record.stack)?;
-            let report = distro::docker_ops::safe_update(sink.clone(), &cfg, accept_breaking)?;
+            let report = distro::docker_ops::safe_update_to(sink.clone(), &cfg, target, accept_breaking)?;
             let message = format!(
                 " The database from before the update is kept as {}{}, until the next update.",
                 report.snapshot,

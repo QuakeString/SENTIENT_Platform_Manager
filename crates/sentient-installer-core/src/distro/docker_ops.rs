@@ -558,6 +558,14 @@ pub struct UpdateReport {
 /// Update to `cfg.image` (pulled, or already loaded on an offline site).
 /// `cfg` must carry the stack's passwords (`with_secrets`).
 pub fn safe_update(sink: ProgressFn, cfg: &DeployConfig, accept_breaking: bool) -> Result<UpdateReport, String> {
+    safe_update_to(sink, cfg, None, accept_breaking)
+}
+
+/// [`safe_update`] to `target` (an image such as `…:4.4.0.2`): pulled, then
+/// tagged as the image the compose file names, so the stack runs it
+/// whatever tag its file holds (`:latest`, the release it was installed
+/// with). A failed update puts the previous image back under that name.
+pub fn safe_update_to(sink: ProgressFn, cfg: &DeployConfig, target: Option<&str>, accept_breaking: bool) -> Result<UpdateReport, String> {
     // Keep what runs now under a tag of its own, to go back to: the image of
     // the SENTIENT container, not the tag, which an offline site may already
     // have pointed at the new image (`docker load`).
@@ -572,8 +580,22 @@ pub fn safe_update(sink: ProgressFn, cfg: &DeployConfig, accept_breaking: bool) 
     }
 
     step(&sink, "Getting the new SENTIENT image");
-    if let Err(e) = pull_images(&sink, cfg) {
-        log(&sink, format!("note: {e}; using the images already on this machine"));
+    match target.filter(|t| *t != cfg.image) {
+        Some(t) => {
+            if let Err(e) = run(&sink, &format!("docker pull {}", shell_quote(t))) {
+                log(&sink, format!("note: {e}; using the images already on this machine"));
+            }
+            if image_id(t).is_none() {
+                return Err(format!("The image {t} is not on this machine and could not be pulled. Nothing has been changed."));
+            }
+            run(&sink, &format!("docker tag {} {}", shell_quote(t), shell_quote(&cfg.image)))?;
+            log(&sink, format!("{t} runs as {}, the image the compose file names.", cfg.image));
+        }
+        None => {
+            if let Err(e) = pull_images(&sink, cfg) {
+                log(&sink, format!("note: {e}; using the images already on this machine"));
+            }
+        }
     }
     if image_id(&cfg.image).is_none() {
         return Err(format!("The image {} is not on this machine and could not be pulled. Nothing has been changed.", cfg.image));
