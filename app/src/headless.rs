@@ -654,7 +654,8 @@ fn shown_version(record: &InstallationRecord) -> String {
 /// This computer's state for the Platform Manager on another computer.
 pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote::RemoteStatus {
     // The full version, as the window shows it (0.8.0-rc12).
-    let manager_version = crate::updates::manager_version().to_string();
+    // The same text as the window's About: version and build.
+    let manager_version = format!("{} (build {})", crate::updates::manager_version(), crate::updates::build_commit());
     let Some(record) = record else { return crate::remote::RemoteStatus { manager_version, ..Default::default() } };
     let snap = record.platform().snapshot();
     // Without administrator rights the database's size needs a password
