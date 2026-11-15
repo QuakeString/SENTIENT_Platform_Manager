@@ -612,7 +612,7 @@ macro_rules! bail_if_cancelled {
 pub fn deploy_clickhouse(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     cfg.validate()?;
     if !is_ready() {
-        return Err("Docker is not reachable — run the Docker setup step first.".into());
+        return Err("Docker is not reachable. Run the Docker setup step first.".into());
     }
     sink(Progress::Step { name: "Writing the ClickHouse configuration".into() });
     write_host_file(&sink, &cfg.compose_path(), &compose_clickhouse_only(cfg))?;
@@ -655,12 +655,12 @@ pub fn deploy(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
 pub fn deploy_with(sink: ProgressFn, cfg: &DeployConfig, keep_existing: Option<bool>) -> Result<(), String> {
     cfg.validate()?;
     if !is_ready() {
-        return Err("Docker is not reachable — run the Docker setup step first.".into());
+        return Err("Docker is not reachable. Run the Docker setup step first.".into());
     }
 
     sink(Progress::Step { name: "Writing the SENTIENT configuration".into() });
     write_stack_files(&sink, cfg)?;
-    sink(Progress::Log { line: format!("{} — {}", cfg.compose_path(), cfg.flavor.label()) });
+    sink(Progress::Log { line: format!("{}: {}", cfg.compose_path(), cfg.flavor.label()) });
     bail_if_cancelled!();
 
     sink(Progress::Step { name: "Pulling SENTIENT images (first time, a few minutes)".into() });
@@ -684,7 +684,7 @@ pub fn deploy_with(sink: ProgressFn, cfg: &DeployConfig, keep_existing: Option<b
     if let Err(e) = run_stream(&sink, &cfg.compose_cmd(&format!("run --rm -e INSTALL_SENTIENT=true{demo} sentient"))) {
         bail_if_cancelled!();
         sink(Progress::Log { line: format!(
-            "note: install step returned an error ({e}). If the database was already installed this is expected — continuing."
+            "note: install step returned an error ({e}). If the database was already installed this is expected. Continuing."
         ) });
     }
     bail_if_cancelled!();
@@ -703,7 +703,7 @@ pub fn deploy_with(sink: ProgressFn, cfg: &DeployConfig, keep_existing: Option<b
         sink(Progress::Log { line: format!("waiting for SENTIENT to start… ({}s)", i * 5) });
         std::thread::sleep(std::time::Duration::from_secs(5));
     }
-    Err("SENTIENT didn't answer in time — it may still be initializing the database.".into())
+    Err("SENTIENT didn't answer in time. It may still be initializing the database.".into())
 }
 
 /// Tear down a partial/cancelled deploy: containers, network, volumes, and
@@ -762,7 +762,7 @@ pub fn cleanup(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     let _ = run_stream(&sink, &format!("docker rm -f {} {} {} 2>/dev/null || true", n.app, n.pg, n.ch));
     // No `docker image prune`: it removes every untagged image on the host,
     // other projects' included, and a partial pull leaves no image behind.
-    sink(Progress::Done { message: "Cleanup complete — you can safely retry the install.".into() });
+    sink(Progress::Done { message: "Cleanup complete. You can safely retry the install.".into() });
     Ok(())
 }
 
@@ -805,7 +805,7 @@ pub fn uninstall(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
             let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
             let _ = sys::output("wsl.exe", &["--unregister", DISTRO]);
         } else {
-            sink(Progress::Log { line: "No SENTIENT distro found — nothing to remove.".into() });
+            sink(Progress::Log { line: "No SENTIENT distro found. Nothing to remove.".into() });
         }
         sink(Progress::Done { message: "SENTIENT and its Docker environment were removed.".into() });
         Ok(())
@@ -930,7 +930,7 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
         sink(Progress::Done { message: "Docker Engine is installed and running.".into() });
         Ok(())
     } else {
-        Err("Docker was installed but isn't responding yet — try the step again.".into())
+        Err("Docker was installed but isn't responding yet. Try the step again.".into())
     }
 }
 
@@ -970,7 +970,7 @@ elif command -v dnf >/dev/null 2>&1; then
 elif command -v zypper >/dev/null 2>&1; then
   zypper --non-interactive install docker docker-compose
 else
-  echo "No supported package manager (apt, pacman, dnf, zypper) — install Docker Engine by hand and re-run." >&2
+  echo "No supported package manager (apt, pacman, dnf, zypper). Install Docker Engine by hand and re-run." >&2
   exit 1
 fi
 "#.to_string()
@@ -1078,7 +1078,7 @@ pub fn control(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Result<(),
     };
     sink(Progress::Step { name: label.into() });
     run_stream(&sink, &cfg.compose_cmd(sub))?;
-    sink(Progress::Done { message: format!("{label} — done.") });
+    sink(Progress::Done { message: format!("{label}: done.") });
     Ok(())
 }
 

@@ -989,7 +989,7 @@ impl SettingsPage {
                         .gap_3()
                         .items_center()
                         .child(self.input(&s.env, 200.))
-                        .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(if s.default.is_empty() { "—".to_string() } else { s.default.clone() }))
+                        .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(if s.default.is_empty() { "SENTIENT's own".to_string() } else { s.default.clone() }))
                         .when(set, |r| {
                             r.child(Button::new(SharedString::from(format!("reset-{}", s.env))).ghost().xsmall().label("Reset").on_click(cx.listener(move |this, _, window, cx| {
                                 this.set(&key, "", window, cx);

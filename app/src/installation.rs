@@ -249,7 +249,7 @@ impl Platform {
                         detail: if up {
                             format!("Answering on 127.0.0.1:{}", cfg.ch_http_port)
                         } else {
-                            "Not answering — it starts about half a minute after boot".into()
+                            "Not answering. It starts about half a minute after boot".into()
                         },
                     });
                 }

@@ -495,7 +495,7 @@ fn read_archive(input: &Path, passphrase: Option<&str>) -> Result<(Manifest, Has
     let input = base.as_path();
     let reader: Box<dyn Read> = if is_encrypted(input)? {
         let pw = passphrase.ok_or_else(|| {
-            Error::msg("this backup is password-protected — a password is required to restore")
+            Error::msg("this backup is password-protected. A password is required to restore")
         })?;
         let decryptor = match age::Decryptor::new(io::BufReader::new(f))
             .map_err(|e| Error::msg(format!("reading encrypted backup: {e}")))?
@@ -541,7 +541,7 @@ fn verify_all(manifest: &Manifest, members: &HashMap<String, PathBuf>) -> Result
         let (got, _) = sha256_file(tmp)?;
         if got != fe.sha256 {
             return Err(Error::msg(format!(
-                "integrity check failed for '{}' — the backup is corrupted or altered",
+                "integrity check failed for '{}'. The backup is corrupted or altered",
                 fe.path
             )));
         }

@@ -1131,7 +1131,7 @@ fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<Remote
                 .child(row("Database", db, false))
                 .child(row(
                     "Disk",
-                    s.disk_free.map(|d| format!("{} free", crate::dbstatus::bytes_label(d))).unwrap_or_else(|| "—".into()),
+                    s.disk_free.map(|d| format!("{} free", crate::dbstatus::bytes_label(d))).unwrap_or_else(|| "Not known".into()),
                     s.disk_free.is_some_and(|d| d < crate::dbstatus::LOW_DISK),
                 ))
                 .child(row("Last backup", s.last_backup.clone().unwrap_or_else(|| "none yet".into()), s.last_backup.is_none()))

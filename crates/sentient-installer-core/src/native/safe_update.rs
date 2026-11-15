@@ -325,7 +325,7 @@ pub(crate) fn breaking_changes(output: &str) -> Vec<String> {
             for next in lines.iter().skip(i + 1).take(3) {
                 let t = next.trim();
                 if t.starts_with("safe") || t.starts_with("changelog") || t.starts_with("resource") {
-                    entry.push_str(&format!(" — {t}"));
+                    entry.push_str(&format!(": {t}"));
                 }
             }
             found.push(entry);

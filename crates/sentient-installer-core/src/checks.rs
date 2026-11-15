@@ -120,7 +120,7 @@ fn download_hosts_linux() -> Check {
         check("downloads", "Download servers", Status::Pass, "packages.clickhouse.com is reachable (PostgreSQL comes from your distribution's mirrors).")
     } else {
         check("downloads", "Download servers", Status::Setup,
-              "Can't reach packages.clickhouse.com — fine for “PostgreSQL only”; the ClickHouse flavour needs it (or an offline bundle).")
+              "Can't reach packages.clickhouse.com. Fine for “PostgreSQL only”; the ClickHouse flavour needs it (or an offline bundle).")
     }
 }
 
@@ -152,11 +152,11 @@ fn docker_daemon() -> Check {
     match sh("docker info --format '{{.ServerVersion}}' 2>&1") {
         Some((true, v)) => check("docker-daemon", "Docker daemon", Status::Pass, format!("Engine {} is running and reachable.", v)),
         Some((false, e)) if e.contains("permission denied") => check("docker-daemon", "Docker daemon", Status::Setup,
-            "Running, but this user isn't in the `docker` group yet — the installer will add you (asks for your password)."),
+            "Running, but this user isn't in the `docker` group yet. The installer will add you (asks for your password)."),
         Some((false, _)) if matches!(sh("command -v docker"), Some((true, _))) => check("docker-daemon", "Docker daemon", Status::Setup,
-            "Docker is installed but not running — the installer will enable and start it."),
+            "Docker is installed but not running. The installer will enable and start it."),
         Some((false, _)) => check("docker-daemon", "Docker daemon", Status::Setup,
-            "Not set up yet — the installer will install Docker from your distribution."),
+            "Not set up yet. The installer will install Docker from your distribution."),
         None => check("docker-daemon", "Docker daemon", Status::Unknown, "Could not query Docker."),
     }
 }
@@ -197,7 +197,7 @@ fn root_privileges() -> Check {
 fn package_manager() -> Check {
     for (bin, label, _family) in [("apt-get", "apt (Debian/Ubuntu)", "apt"), ("pacman", "pacman (Arch)", "pacman"), ("dnf", "dnf (Fedora/RHEL)", "dnf"), ("zypper", "zypper (openSUSE)", "zypper")] {
         if matches!(sh(&format!("command -v {bin}")), Some((true, _))) {
-            return check("pkg", "Package manager", Status::Pass, format!("{label} — PostgreSQL will come from here."));
+            return check("pkg", "Package manager", Status::Pass, format!("{label}. PostgreSQL will come from here."));
         }
     }
     check("pkg", "Package manager", Status::Fail, "No supported package manager found (apt, pacman, dnf, zypper).")
@@ -248,7 +248,7 @@ pub fn ports_free_of(wanted: &[(u16, String)]) -> Check {
             "Required ports",
             Status::Fail,
             format!(
-                "already in use: {} — stop whatever is listening, or choose other ports later in setup (PostgreSQL under Database settings, the rest under Network ports).",
+                "already in use: {}. Stop whatever is listening, or choose other ports later in setup (PostgreSQL under Database settings, the rest under Network ports).",
                 busy.join(", ")
             ),
         )
@@ -439,7 +439,7 @@ fn administrator() -> Check {
             check("admin", "Administrator rights", Status::Pass, "Running elevated.")
         } else {
             check("admin", "Administrator rights", Status::Setup,
-                  "Not elevated — the installer will request administrator rights when needed.")
+                  "Not elevated. The installer will request administrator rights when needed.")
         }
     }
     #[cfg(not(windows))]
@@ -453,7 +453,7 @@ fn virtualization() -> Check {
         match v.as_str() {
             "enabled" => check("virt", "CPU virtualization", Status::Pass, "Enabled in firmware."),
             "disabled" => check("virt", "CPU virtualization", Status::Fail,
-                "Disabled — enable virtualization (VT-x / AMD-V, SVM) in your BIOS/UEFI. Required for WSL2."),
+                "Disabled. Enable virtualization (VT-x / AMD-V, SVM) in your BIOS/UEFI. Required for WSL2."),
             _ => check("virt", "CPU virtualization", Status::Unknown, "Could not determine virtualization state."),
         }
     }
@@ -471,7 +471,7 @@ fn wsl_installed() -> Check {
                 check("wsl", "WSL2", Status::Pass,
                       if v2 { "Installed.".into() } else { "Installed (will ensure default version 2).".to_string() })
             }
-            _ => check("wsl", "WSL2", Status::Setup, "Not installed — the installer will install and update WSL2."),
+            _ => check("wsl", "WSL2", Status::Setup, "Not installed. The installer will install and update WSL2."),
         }
     }
     #[cfg(not(windows))]
@@ -487,7 +487,7 @@ fn distro_present() -> Check {
         if present {
             check("distro", "SENTIENT WSL distro", Status::Pass, "The 'sentient' distro exists.")
         } else {
-            check("distro", "SENTIENT WSL distro", Status::Setup, "Not present — the installer will create it.")
+            check("distro", "SENTIENT WSL distro", Status::Setup, "Not present. The installer will create it.")
         }
     }
     #[cfg(not(windows))]
@@ -499,7 +499,7 @@ fn docker_ready() -> Check {
     {
         match output("wsl.exe", &["-d", "sentient", "--", "docker", "version"]) {
             Some((true, _, _)) => check("docker", "Docker Engine", Status::Pass, "Docker is running in the distro."),
-            _ => check("docker", "Docker Engine", Status::Setup, "Not set up yet — the installer will install Docker Engine."),
+            _ => check("docker", "Docker Engine", Status::Setup, "Not set up yet. The installer will install Docker Engine."),
         }
     }
     #[cfg(not(windows))]
@@ -529,7 +529,7 @@ fn disk_space() -> Check {
                 check("disk", "Disk space", Status::Pass, format!("{gb:.0} GB free."))
             } else {
                 check("disk", "Disk space", Status::Fail,
-                      format!("{gb:.1} GB free — 10 GB+ recommended for the images and data."))
+                      format!("{gb:.1} GB free. 10 GB+ recommended for the images and data."))
             }
         }
         None => check("disk", "Disk space", Status::Unknown, "Could not read free disk space."),

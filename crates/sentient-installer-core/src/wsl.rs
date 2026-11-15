@@ -46,7 +46,7 @@ pub fn install(sink: ProgressFn) -> WslOutcome {
     #[cfg(windows)]
     {
         sink(Progress::Log {
-            line: "Windows is provisioning WSL2. These steps are handled by Windows itself and can be quiet for a minute or two (features, kernel download) — please wait.".into(),
+            line: "Windows is provisioning WSL2. These steps are handled by Windows itself and can be quiet for a minute or two (features, kernel download). Please wait.".into(),
         });
         step(&sink, "Installing WSL2 (features + kernel)", "wsl.exe", &["--install", "--no-distribution"]);
         step(&sink, "Updating the WSL kernel", "wsl.exe", &["--update"]);
@@ -56,7 +56,7 @@ pub fn install(sink: ProgressFn) -> WslOutcome {
             sink(Progress::Done { message: "WSL2 is installed and ready.".into() });
         } else {
             sink(Progress::Log {
-                line: "WSL isn't active yet — a restart is required to finish enabling it.".into(),
+                line: "WSL isn't active yet. A restart is required to finish enabling it.".into(),
             });
         }
         WslOutcome { ready, reboot_required: !ready }

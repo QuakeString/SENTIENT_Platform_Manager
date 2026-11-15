@@ -351,8 +351,8 @@ impl RemotePages {
                         .child(ui::fact(&theme, "SENTIENT version", s.sentient_version.clone()))
                         .child(ui::fact(&theme, "Database", s.database.clone()))
                         .child(ui::fact(&theme, "Server", format!("{} · {} {}", self.inst.address(), det.os_name, det.arch)))
-                        .child(ui::fact(&theme, "Runs as", if det.install.is_empty() { "—".to_string() } else { det.install.clone() }))
-                        .child(ui::fact(&theme, "Disk free", s.disk_free.map(bytes_label).unwrap_or_else(|| "—".into())))
+                        .child(ui::fact(&theme, "Runs as", if det.install.is_empty() { "Not known".to_string() } else { det.install.clone() }))
+                        .child(ui::fact(&theme, "Disk free", s.disk_free.map(bytes_label).unwrap_or_else(|| "Not known".into())))
                         .child(ui::fact(&theme, "Last backup", s.last_backup.clone().unwrap_or_else(|| "none yet".into())))
                         .child(ui::fact(&theme, "Platform Manager there", s.manager_version.clone())),
                 );

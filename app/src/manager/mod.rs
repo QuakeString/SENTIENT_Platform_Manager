@@ -268,7 +268,7 @@ impl Manager {
             (None, Some(r)) => format!("This computer · SENTIENT {}", r.sentient_version),
             (None, None) => "This computer".to_string(),
         };
-        let meter = |id: &'static str, icon: Icon, label: String, fraction: f32, high: bool| {
+        let meter = |id: &'static str, icon: Icon, label: &'static str, value: String, fraction: f32, high: bool| {
             h_flex()
                 .id(id)
                 .gap_1p5()
@@ -285,8 +285,30 @@ impl Manager {
                         .bg(fg.opacity(0.25))
                         .child(div().h_full().rounded_full().w(relative(fraction.clamp(0.0, 1.0))).bg(if high { amber } else { fg })),
                 )
+                .child(div().whitespace_nowrap().child(value))
+        };
+        // What fits: a rough width per piece (about 7 px a character at
+        // 13-14 px), kept in this order: CPU, memory, disk, the product name.
+        let text_w = |s: &str| s.chars().count() as f32 * 7.2;
+        let mut room = width - 24. - (22. + 12.) - (text_w(&instance) + 40. + 12.) - if remote.is_some() { 72. } else { 0. } - 48. - 12.;
+        let mut fits = |need: f32| {
+            let ok = room >= need;
+            if ok {
+                room -= need;
+            }
+            ok
         };
         let shown = if remote.is_some() { self.remote_monitor } else { self.monitor };
+        let (show_cpu, show_title, show_mem, show_disk) = match shown {
+            Some(_) => {
+                let cpu = fits(16. + 122. + 12.);
+                let mem = cpu && fits(16. + 196.);
+                let disk = mem && fits(16. + 186.);
+                let title = fits(text_w("SENTIENT Platform Manager") + 12.);
+                (cpu, title, mem, disk)
+            }
+            None => (false, fits(text_w("SENTIENT Platform Manager") + 12.), false, false),
+        };
         let monitor = shown.map(|m| {
             let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
             h_flex()
@@ -297,18 +319,20 @@ impl Manager {
                 .rounded(px(6.))
                 .cursor_pointer()
                 .hover(|d| d.bg(fg.opacity(0.1)))
-                .when(width >= 760., |r| r.child(meter("m-cpu", Icon::new(IconName::Cpu), format!("CPU {:.0}%", m.cpu), m.cpu / 100.0, m.cpu_high())))
-                .when(width >= 900., |r| r.child(meter(
+                .when(show_cpu, |r| r.child(meter("m-cpu", Icon::new(IconName::Cpu), "CPU", format!("{:.0}%", m.cpu), m.cpu / 100.0, m.cpu_high())))
+                .when(show_mem, |r| r.child(meter(
                     "m-mem",
                     Icon::new(IconName::MemoryStick),
-                    format!("Memory {:.1} / {:.0} GB", gb(m.mem_used), gb(m.mem_total)),
+                    "Memory",
+                    format!("{:.1} / {:.0} GB", gb(m.mem_used), gb(m.mem_total)),
                     if m.mem_total > 0 { m.mem_used as f32 / m.mem_total as f32 } else { 0.0 },
                     m.mem_high(),
                 )))
-                .when(width >= 1040., |r| r.child(meter(
+                .when(show_disk, |r| r.child(meter(
                     "m-disk",
                     Icon::new(IconName::HardDrive),
-                    format!("Disk {} free", crate::dbstatus::bytes_label(m.disk_free)),
+                    "Disk",
+                    format!("{} free", crate::dbstatus::bytes_label(m.disk_free)),
                     if m.disk_total > 0 { 1.0 - m.disk_free as f32 / m.disk_total as f32 } else { 0.0 },
                     m.disk_low(),
                 )))
@@ -356,7 +380,7 @@ impl Manager {
             .bg(bg)
             .text_color(fg)
             .child(ui::product_logo(ui::Product::Manager, 22.))
-            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("SENTIENT Platform Manager"))
+            .when(show_title, |b| b.child(div().text_sm().font_weight(FontWeight::MEDIUM).whitespace_nowrap().child("SENTIENT Platform Manager")))
             .child(
                 Button::new("switcher")
                     .ghost()
@@ -668,9 +692,17 @@ impl Manager {
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.sidebar_border)
-            .children(items)
-            .child(div().my_1().h(px(1.)).bg(theme.sidebar_border))
-            .child({
+            .child(
+                // The menu scrolls when the window is short; the bottom group stays.
+                v_flex()
+                    .id("nav-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .gap_1()
+                    .children(items)
+                    .child(div().my_1().h(px(1.)).flex_shrink_0().bg(theme.sidebar_border))
+                    .child({
                 let active = self.page == Page::Instances;
                 h_flex()
                     .id("instances")
@@ -691,10 +723,11 @@ impl Manager {
                         this.page = Page::Instances;
                         cx.notify();
                     }))
-            })
-            .child(div().flex_1())
+                    }),
+            )
             .child(
                 h_flex()
+                    .flex_shrink_0()
                     .when(rail, |r| r.flex_col().px_0())
                     .when(!rail, |r| r.px_2())
                     .pt_2()
@@ -711,7 +744,7 @@ impl Manager {
                             .child(format!("v{}", crate::updates::manager_version())),
                     ))
                     .child({
-                        let b = Button::new("about").ghost().small().icon(IconName::Info).tooltip("About and preferences").on_click(cx.listener(|this, _, _, cx| {
+                        let b = Button::new("about").ghost().icon(IconName::Info).tooltip("About and preferences").on_click(cx.listener(|this, _, _, cx| {
                             this.page = Page::About;
                             cx.notify();
                         }));

@@ -307,7 +307,7 @@ foreach ($dir in $targets) {{
                     }
                 }
                 sink(Progress::Done {
-                    message: format!("Desktop shortcut created — opens SENTIENT in {}.", browser.label()),
+                    message: format!("Desktop shortcut created. It opens SENTIENT in {}.", browser.label()),
                 });
                 Ok(())
             }
@@ -338,7 +338,7 @@ foreach ($dir in $targets) {{
             let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
             sink(Progress::Log { line: format!("launcher: {}", path.display()) });
         }
-        sink(Progress::Done { message: format!("Desktop launcher created — opens SENTIENT in {}.", browser.label()) });
+        sink(Progress::Done { message: format!("Desktop launcher created. It opens SENTIENT in {}.", browser.label()) });
         Ok(())
     }
 }

@@ -195,7 +195,7 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         } });
         Ok(())
     } else {
-        Err("The database packages installed but their services are not registered — check the log above.".into())
+        Err("The database packages installed but their services are not registered. Check the log above.".into())
     }
 }
 
@@ -262,7 +262,7 @@ fn obtain_payload(sink: &ProgressFn, cfg: &NativeConfig) -> Result<PathBuf, Stri
 }
 
 fn env_file_body(cfg: &NativeConfig) -> String {
-    let mut body = String::from("# SENTIENT service environment — read by systemd (EnvironmentFile=).\n# Written by the SENTIENT Platform Manager; edit and `systemctl restart sentient`.\n");
+    let mut body = String::from("# SENTIENT service environment, read by systemd (EnvironmentFile=).\n# Written by the SENTIENT Platform Manager; edit and `systemctl restart sentient`.\n");
     for (k, v) in crate::native::service_env(cfg) {
         // systemd's EnvironmentFile takes shell-like quoting.
         body.push_str(&format!("{k}={}\n", shq(&v)));
@@ -369,7 +369,7 @@ pub(crate) fn superuser_sql(cfg: &NativeConfig, db: &str, sql: &str) -> Result<S
 
 pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     if !is_ready(cfg) {
-        return Err("database prerequisites are not installed — run setup first".into());
+        return Err("database prerequisites are not installed. Run setup first".into());
     }
     let install_dir = cfg.install_dir.display().to_string();
     let state_dir = cfg.state_dir.display().to_string();
@@ -421,7 +421,7 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
          fi\n\
          set -a; . {ENV_FILE}; set +a\n\
          if ! {inst}/bin/sentient-install --database-url {url} --data-dir {inst}/data{demo} 2>&1 | tail -n 3; then\n\
-           echo '>> note: the schema installer returned an error. If the database was already installed this is expected — continuing.'\n\
+           echo '>> note: the schema installer returned an error. If the database was already installed this is expected. Continuing.'\n\
          fi\n\
          {stock_fix}\
          echo '>> Registering the SENTIENT service'\n\
@@ -455,7 +455,7 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
     log(&sink, logs(cfg, 20));
-    Err("SENTIENT did not start listening within 90s — check the service log".into())
+    Err("SENTIENT did not start listening within 90s. Check the service log".into())
 }
 
 /// The passwords SENTIENT runs with, read back from its environment file
@@ -822,7 +822,7 @@ pub fn control(sink: ProgressFn, _cfg: &NativeConfig, action: &str) -> Result<()
     }
     step(&sink, &format!("{action} {APP_UNIT}"));
     exec::run_privileged(&sink, &format!("systemctl {action} {APP_UNIT}"))?;
-    sink(Progress::Done { message: format!("{action} — done.") });
+    sink(Progress::Done { message: format!("{action}: done.") });
     Ok(())
 }
 
