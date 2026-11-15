@@ -6,8 +6,8 @@
       "is_default": true,
       "name": "SENTIENT Light",
       "mode": "light",
-      "radius": 6,
-      "radius.lg": 10,
+      "radius": 8,
+      "radius.lg": 12,
       "font.size": 14,
       "colors": {
         "background": "#ffffff",
@@ -65,8 +65,8 @@
       "is_default": true,
       "name": "SENTIENT Dark",
       "mode": "dark",
-      "radius": 6,
-      "radius.lg": 10,
+      "radius": 8,
+      "radius.lg": 12,
       "font.size": 14,
       "colors": {
         "background": "#2d363b",

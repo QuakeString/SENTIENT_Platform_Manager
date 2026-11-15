@@ -1187,22 +1187,29 @@ fn grid_card(
     facts: Div,
     footer: Div,
 ) -> Div {
+    // One rounded box. Its own background is the instance colour, so the
+    // colour band's top corners are the card's corners (GPUI does not clip
+    // children to a radius); the white body sits below the band and rounds
+    // only its bottom corners, inside the border. The open card changes only
+    // the border's colour: same width, same box.
+    let inner = ui::PANEL_RADIUS - 1.;
     v_flex()
         .w_full()
         .flex_1()
         .min_h(px(CARD_MIN_H))
         .rounded(px(ui::PANEL_RADIUS))
-        .bg(theme.background)
+        .bg(rgb(remote::parse_hex(color).unwrap_or(0x187074)))
         .border_1()
-        .border_color(if current { theme.primary } else { theme.border })
-        // The colour strip follows the card's rounded top corners (GPUI
-        // does not clip children to a radius).
-        .child(div().h(px(5.)).w_full().flex_shrink_0().rounded_t(px(ui::PANEL_RADIUS - 1.)).bg(rgb(remote::parse_hex(color).unwrap_or(0x187074))))
+        // Opaque, so the colour under the border does not show through it.
+        .border_color(if current { theme.primary } else { theme.background.blend(theme.border) })
+        .pt(px(5.))
         .child(
             v_flex()
                 .flex_1()
                 .gap_3()
                 .p_4()
+                .bg(theme.background)
+                .rounded_b(px(inner))
                 .child(
                     h_flex()
                         .gap_3()

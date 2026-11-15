@@ -80,7 +80,7 @@ pub fn start_delay_row(theme: &Theme, state: &Entity<gpui_kit::component::input:
 
 /// The corner radius of panels and cards (buttons and inputs keep the
 /// theme's smaller one).
-pub const PANEL_RADIUS: f32 = 8.;
+pub const PANEL_RADIUS: f32 = 12.;
 
 /// A content panel: surface colour, hairline border, panel radius.
 pub fn panel(theme: &Theme) -> Div {

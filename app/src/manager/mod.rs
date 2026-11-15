@@ -837,7 +837,13 @@ impl Manager {
         match self.page {
             Page::Instances => {
                 if self.instances.is_none() {
-                    let page = cx.new(|cx| instances::InstancesPage::new(record, cx));
+                    let open = self.open_remote.clone();
+                    let page = cx.new(|cx| {
+                        let mut p = instances::InstancesPage::new(record, cx);
+                        // An instance opened before this page was first shown.
+                        p.open = open;
+                        p
+                    });
                     self._subscriptions.push(cx.subscribe(&page, |this, _, e: &instances::OpenInstance, cx| {
                         this.open_instance(e.0.clone(), cx);
                     }));
