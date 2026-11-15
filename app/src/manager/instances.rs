@@ -74,6 +74,8 @@ pub struct InstancesPage {
     job_for: Option<(String, SharedString)>,
     /// What "Try again" repeats after a job failed.
     retry: Option<Retry>,
+    /// The failed job's technical details are shown.
+    show_details: bool,
     /// The add/edit dialog and the job dialog are open.
     form_dialog: bool,
     job_dialog: bool,
@@ -110,6 +112,7 @@ impl InstancesPage {
             job,
             job_for: None,
             retry: None,
+            show_details: false,
             form_dialog: false,
             job_dialog: false,
             logs: None,
@@ -905,7 +908,20 @@ impl InstancesPage {
         p = match job.state() {
             JobState::Running => p.child(div().text_sm().child(job.step_with_time())),
             JobState::Done(m) => p.child(ui::outcome(&theme, Tone::Good, m.clone())),
-            JobState::Failed(m) => p.child(ui::outcome(&theme, Tone::Bad, m.clone())),
+            JobState::Failed(m) => {
+                let (headline, details) = match m.split_once(remote::DETAILS) {
+                    Some((h, d)) => (h.to_string(), Some(d.to_string())),
+                    None => (m.to_string(), None),
+                };
+                let shown = self.show_details;
+                p.child(ui::outcome(&theme, Tone::Bad, headline)).when_some(details, |p, d| {
+                    p.child(Button::new("job-details").ghost().small().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
+                        this.show_details = !this.show_details;
+                        cx.notify();
+                    })))
+                    .when(shown, |p| p.child(div().p_2().rounded(theme.radius).bg(theme.muted).text_xs().font_family(theme.mono_font_family.clone()).child(d)))
+                })
+            }
             JobState::Idle => p,
         };
         let done = !job.is_running();
