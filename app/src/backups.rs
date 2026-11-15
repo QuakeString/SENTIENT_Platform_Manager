@@ -169,7 +169,7 @@ pub fn check(file: &Path, passphrase: Option<&str>) -> Result<sentient_backup_co
 // The backups in the folder
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
     /// The file, or the base name of its parts.
     pub path: PathBuf,

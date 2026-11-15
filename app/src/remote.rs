@@ -531,6 +531,52 @@ pub struct RemoteStatus {
     pub running_job: Option<String>,
 }
 
+/// One service or container on the server (Status and Control).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RemoteService {
+    pub name: String,
+    pub running: bool,
+    pub starting: bool,
+    pub detail: String,
+}
+
+/// The server's backups and their settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteBackups {
+    pub folder: PathBuf,
+    pub daily_at: Option<String>,
+    pub keep: u32,
+    pub list: Vec<crate::backups::Entry>,
+}
+
+/// Ask the server's Platform Manager for `job` (as administrator) and read
+/// the one JSON line it prints.
+fn read_json<T: serde::de::DeserializeOwned>(inst: &Instance, job: &str) -> Result<T, String> {
+    let out = sudo_run(inst, &format!("{REMOTE_SPM} --job {job}"), None)?;
+    let line = out.lines().rev().find(|l| { let t = l.trim_start(); t.starts_with('{') || t.starts_with('[') }).ok_or("The server's Platform Manager gave no answer.")?;
+    serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
+}
+
+pub fn services(inst: &Instance) -> Result<Vec<RemoteService>, String> {
+    #[cfg(debug_assertions)]
+    if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_SERVICES") {
+        return serde_json::from_str(&t.to_string_lossy()).map_err(|e| e.to_string());
+    }
+    read_json(inst, "services-json")
+}
+
+pub fn dbstatus(inst: &Instance) -> Result<crate::dbstatus::DbStatus, String> {
+    #[cfg(debug_assertions)]
+    if let Some(p) = std::env::var_os("SPM_DEBUG_DBSTATUS") {
+        return std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()));
+    }
+    read_json(inst, "dbstatus-json")
+}
+
+pub fn backups(inst: &Instance) -> Result<RemoteBackups, String> {
+    read_json(inst, "backups-json")
+}
+
 /// The server's processor, memory and disk now (the top bar while it is
 /// open). No administrator rights needed.
 pub fn monitor(inst: &Instance) -> Result<crate::sysmon::Monitor, String> {
