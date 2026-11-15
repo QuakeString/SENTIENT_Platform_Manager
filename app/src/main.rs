@@ -135,8 +135,16 @@ fn gui_main(args: Vec<String>) {
             AppMode::Maintenance => size(px(820.), px(600.)),
             AppMode::Manager => size(px(1100.), px(720.)),
         };
+        // Development aid: open at a given size (layout renders).
+        #[cfg(debug_assertions)]
+        let size = std::env::var("SPM_WINDOW_SIZE")
+            .ok()
+            .and_then(|v| v.split_once('x').and_then(|(w, h)| Some(gpui_kit::size(px(w.parse().ok()?), px(h.parse().ok()?)))))
+            .unwrap_or(size);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size, cx)),
+            // Small enough for a half screen, large enough that nothing breaks.
+            window_min_size: Some(gpui_kit::size(px(680.), px(480.))),
             titlebar: Some(TitlebarOptions {
                 title: Some(mode.window_title().into()),
                 ..Default::default()

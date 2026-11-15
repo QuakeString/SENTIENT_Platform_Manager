@@ -247,7 +247,7 @@ impl Manager {
     /// The top bar: the Platform Manager's icon, the instance that is
     /// open, its processor / memory / disk, and what needs attention. It
     /// takes the open instance's colour (SENTIENT teal for this computer).
-    fn top_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn top_bar(&self, width: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let dark = theme::is_dark(cx);
         let remote = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned();
         let (bg, fg): (Hsla, Hsla) = match &remote {
@@ -294,21 +294,21 @@ impl Manager {
                 .rounded(px(6.))
                 .cursor_pointer()
                 .hover(|d| d.bg(fg.opacity(0.1)))
-                .child(meter("m-cpu", Icon::new(IconName::Cpu), format!("CPU {:.0}%", m.cpu), m.cpu / 100.0, m.cpu_high()))
-                .child(meter(
+                .when(width >= 760., |r| r.child(meter("m-cpu", Icon::new(IconName::Cpu), format!("CPU {:.0}%", m.cpu), m.cpu / 100.0, m.cpu_high())))
+                .when(width >= 900., |r| r.child(meter(
                     "m-mem",
                     Icon::new(IconName::MemoryStick),
                     format!("Memory {:.1} / {:.0} GB", gb(m.mem_used), gb(m.mem_total)),
                     if m.mem_total > 0 { m.mem_used as f32 / m.mem_total as f32 } else { 0.0 },
                     m.mem_high(),
-                ))
-                .child(meter(
+                )))
+                .when(width >= 1040., |r| r.child(meter(
                     "m-disk",
                     Icon::new(IconName::HardDrive),
                     format!("Disk {} free", crate::dbstatus::bytes_label(m.disk_free)),
                     if m.disk_total > 0 { 1.0 - m.disk_free as f32 / m.disk_total as f32 } else { 0.0 },
                     m.disk_low(),
-                ))
+                )))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.page = Page::Status;
                     cx.notify();
@@ -631,14 +631,15 @@ impl Manager {
         self.repair = repair;
     }
 
-    fn nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn nav(&self, rail: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let items = Page::ALL.into_iter().map(|page| {
             let active = page == self.page;
             h_flex()
                 .id(page.id())
                 .gap_3()
-                .px_4()
+                .when(rail, |r| r.justify_center().px_2())
+                .when(!rail, |r| r.px_4())
                 .py_2()
                 .rounded(theme.radius)
                 .cursor_pointer()
@@ -647,8 +648,9 @@ impl Manager {
                     row.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground)
                 })
                 .when(!active, |row| row.hover(|row| row.bg(theme.list_hover)))
-                .child(page.icon().small())
-                .child(page.title())
+                .child(page.icon())
+                .when(!rail, |r| r.child(page.title()))
+                .when(rail, |r| r.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(page.title()).build(window, cx)))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.page = page;
                     cx.notify();
@@ -656,7 +658,8 @@ impl Manager {
         });
         let choice = theme::Choice::saved();
         v_flex()
-            .w_56()
+            .when(rail, |n| n.w(px(64.)))
+            .when(!rail, |n| n.w_56())
             .h_full()
             .flex_shrink_0()
             .p_3()
@@ -671,16 +674,18 @@ impl Manager {
                 h_flex()
                     .id("instances")
                     .gap_3()
-                    .px_4()
+                    .when(rail, |r| r.justify_center().px_2())
+                    .when(!rail, |r| r.px_4())
                     .py_2()
                     .rounded(theme.radius)
                     .cursor_pointer()
                     .text_sm()
                     .when(active, |row| row.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground))
                     .when(!active, |row| row.hover(|row| row.bg(theme.list_hover)))
-                    .child(Page::Instances.icon().small())
-                    .child(Page::Instances.title())
-                    .when(!self.remotes.is_empty(), |r| r.child(div().flex_1()).child(div().text_xs().text_color(theme.muted_foreground).child((self.remotes.len() + 1).to_string())))
+                    .child(Page::Instances.icon())
+                    .when(!rail, |r| r.child(Page::Instances.title()))
+                    .when(rail, |r| r.tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Instances").build(window, cx)))
+                    .when(!self.remotes.is_empty() && !rail, |r| r.child(div().flex_1()).child(div().text_xs().text_color(theme.muted_foreground).child((self.remotes.len() + 1).to_string())))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.page = Page::Instances;
                         cx.notify();
@@ -689,20 +694,21 @@ impl Manager {
             .child(div().flex_1())
             .child(
                 h_flex()
-                    .px_2()
+                    .when(rail, |r| r.flex_col().px_0())
+                    .when(!rail, |r| r.px_2())
                     .pt_2()
                     .gap_1()
                     .items_center()
                     .border_t_1()
                     .border_color(theme.sidebar_border)
-                    .child(
+                    .when(!rail, |r| r.child(
                         div()
                             .flex_1()
                             .text_xs()
                             .font_family(theme.mono_font_family.clone())
                             .text_color(theme.muted_foreground)
                             .child(format!("v{}", crate::updates::manager_version())),
-                    )
+                    ))
                     .child({
                         let b = Button::new("about").ghost().small().icon(IconName::Info).tooltip("About and preferences").on_click(cx.listener(|this, _, _, cx| {
                             this.page = Page::About;
@@ -901,8 +907,11 @@ impl Manager {
 
 impl Render for Manager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let top = self.top_bar(cx);
-        let nav = self.nav(cx);
+        // The layout follows the window: an icon rail below RAIL_BELOW px,
+        // fewer monitors in the top bar as it narrows.
+        let width = f32::from(window.viewport_size().width);
+        let top = self.top_bar(width, cx);
+        let nav = self.nav(width < RAIL_BELOW, cx);
         let notices = self.notices(cx);
         let content = self.content(window, cx);
         v_flex()
@@ -920,6 +929,9 @@ impl Render for Manager {
             )
     }
 }
+
+/// Below this window width the menu becomes an icon rail.
+const RAIL_BELOW: f32 = 960.;
 
 /// ", released 2026-10-24", or nothing.
 fn dated(date: &str) -> String {
