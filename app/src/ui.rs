@@ -151,12 +151,15 @@ pub const PANEL_RADIUS: f32 = 12.;
 /// A content panel: surface colour, hairline border, panel radius.
 pub fn panel(theme: &Theme) -> Div {
     v_flex()
+        .relative()
         .gap_3()
         .p_4()
         .rounded(px(PANEL_RADIUS))
         .bg(theme.background)
         .border_1()
         .border_color(theme.border)
+        // Layout tests: every card reports its bounds (debug builds only).
+        .child(layout_probe("panel"))
 }
 
 /// The scrolling page area to the right of the navigation.
@@ -257,37 +260,40 @@ pub fn info(id: SharedString, help: SharedString) -> impl IntoElement {
 
 /// Shown on every manager screen when this computer has no installation.
 pub fn not_installed(theme: &Theme) -> Div {
+    // One short line; the how-to behind the (i). The buttons wrap on a
+    // narrow window. Removing the Platform Manager lives in Repair.
     panel(theme)
         .child(div().font_weight(FontWeight::MEDIUM).child("SENTIENT isn't installed on this computer"))
-        .child(div().text_sm().text_color(theme.muted_foreground).child(
-            "Download and install SENTIENT: Setup downloads the version you choose from GitHub. Without internet, install from local files: the unpacked SENTIENT package folder (with SENTIENT-Setup and payload).",
-        ))
         .child(
-            h_flex()
-                .gap_2()
-                .child(
-                    crate::ui::button("install-sentient")
-                        .primary()
-                        .label("Download and install SENTIENT")
-                        .on_click(|_, window, cx| crate::standalone::install_sentient(window, cx)),
-                )
-                .child(
-                    crate::ui::button("install-sentient-package")
-                        .outline()
-                        .label("Install from local files…")
-                        .on_click(|_, window, cx| crate::standalone::install_sentient_from_package(window, cx)),
-                )
-                .child(
-                    crate::ui::button("remove-manager")
-                        .outline()
-                        .label("Remove the Platform Manager")
-                        .on_click(|_, window, cx| crate::standalone::remove_manager(window, cx)),
-                ),
+            gpui_kit::component::h_flex()
+                .gap_1()
+                .items_center()
+                .child(div().text_sm().text_color(theme.muted_foreground).child("Install it from the internet or from a SENTIENT package folder."))
+                .child(info(
+                    "install-help".into(),
+                    "Download and install: Setup downloads the version you choose from GitHub.\n\nInstall from local files: without internet, choose the unpacked SENTIENT package folder (the one with SENTIENT-Setup and payload).".into(),
+                )),
         )
+        .child(button_row(vec![
+            {
+                crate::ui::button("install-sentient").primary().label("Download and install SENTIENT").on_click(|_, window, cx| crate::standalone::install_sentient(window, cx)).into_any_element()
+            },
+            {
+                crate::ui::button("install-sentient-package").outline().label("Install from local files…").on_click(|_, window, cx| crate::standalone::install_sentient_from_package(window, cx)).into_any_element()
+            },
+        ]))
 }
 
-/// The result of a job: like a pill in colour, but a block that wraps, one
-/// row per line, for messages longer than a word or two.
+/// A row of buttons that wraps on a narrow window: a button never shrinks
+/// below its label or runs out of its card (each reports its bounds to the
+/// layout probe).
+pub fn button_row(buttons: Vec<AnyElement>) -> Div {
+    gpui_kit::component::h_flex()
+        .flex_wrap()
+        .gap_2()
+        .children(buttons.into_iter().map(|b| div().relative().flex_shrink_0().child(b).child(layout_probe("button"))))
+}
+
 /// A page's own notice, directly in the page (never inside a card): an
 /// icon, a headline, the rest of the text, and an optional action.
 pub fn notice(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div {
@@ -326,6 +332,8 @@ pub fn notice_with(theme: &Theme, tone: Tone, text: impl Into<SharedString>, act
         .children(action)
 }
 
+/// The result of a job: like a pill in colour, but a block that wraps, one
+/// row per line, for messages longer than a word or two.
 pub fn outcome(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div {
     let (bg, fg) = match tone {
         Tone::Good => (theme.success, theme.success_foreground),

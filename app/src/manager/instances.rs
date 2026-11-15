@@ -1165,7 +1165,9 @@ impl Render for InstancesPage {
                 // Tiles keep their size (at most CARD_MAX_W) and the row
                 // starts at the left: two instances are two tiles, not halves.
                 let card_w = ((inner - 12. * (cols - 1.)) / cols).floor().min(CARD_MAX_W);
+                // One tile per row: the column sits in the middle.
                 h_flex()
+                    .when(cols <= 1., |r| r.justify_center())
                     .flex_wrap()
                     .gap(px(12.))
                     .items_stretch()

@@ -379,9 +379,11 @@ impl Render for StatusPage {
         let theme = cx.theme().clone();
         let page = ui::page(&theme, "Status", "Services, version, database type and ports.");
         let Some(record) = &self.record else {
-            let existing = self.existing(&theme, cx);
+            // "Add existing instance" only when one was found, with its Add
+            // button; nothing while looking or when there is none.
+            let existing = self.found.as_ref().is_some_and(|f| !f.is_empty()).then(|| self.existing(&theme, cx));
             let gw = self.gateway_card(&theme, cx);
-            return page.child(ui::not_installed(&theme)).child(existing).child(gw);
+            return page.child(ui::not_installed(&theme)).children(existing).child(gw);
         };
 
         let (overall, tone) = match &self.snapshot {
