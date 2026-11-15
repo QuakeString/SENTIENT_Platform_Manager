@@ -1429,8 +1429,12 @@ impl RemotePages {
         let this = cx.entity().downgrade();
         // Why it cannot start now: a page notice above the card.
         let external = self.status.got().is_some_and(|s| s.external_compose);
+        // A compose file the Platform Manager did not write is known before
+        // any check: the notice shows and the change stays off until the
+        // takeover is done.
         let notice = match &self.preflight {
-            Preflight::Failed(why) => Some(preflight_notice(&theme, why, external.then(|| self.take_over_button("r-mig-take-over", busy, cx)))),
+            _ if external => Some(foreign_compose_notice(&theme, "The database type cannot be changed now.", self.take_over_button("r-mig-take-over", busy, cx))),
+            Preflight::Failed(why) => Some(preflight_notice(&theme, why, None)),
             _ => None,
         };
         v_flex().gap_4().children(notice).child(ui::panel(&theme)
@@ -1457,7 +1461,7 @@ impl RemotePages {
                                 .primary()
                                 .label(chosen.map(|f| format!("Change to {}", crate::installation::flavor_label(f))).unwrap_or_else(|| "Change database".into()))
                                 // Off while the preflight says the change cannot be made.
-                                .disabled(busy || chosen.is_none() || now.is_none() || self.preflight != Preflight::Idle)
+                                .disabled(busy || external || chosen.is_none() || now.is_none() || self.preflight != Preflight::Idle)
                                 .loading(self.preflight == Preflight::Checking)
                                 .on_click(cx.listener(|this, _, _, cx| this.check_migration(cx))),
                         )
