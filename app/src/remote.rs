@@ -379,6 +379,89 @@ pub fn detect(inst: &Instance, once: Option<&str>) -> Result<Detected, String> {
 /// Where the Platform Manager lives on a Linux server.
 pub const REMOTE_SPM: &str = "/opt/sentient-platform-manager/sentient-platform-manager";
 const REMOTE_JOBS: &str = "/var/lib/sentient-platform-manager/jobs";
+/// For an account without sudo, the agent lives in its home instead and its
+/// jobs run as that account (jobs that need root say so). Shell text: `$HOME`
+/// is expanded on the server.
+const USER_DIR: &str = "$HOME/.local/share/sentient-platform-manager";
+const USER_SPM: &str = "$HOME/.local/share/sentient-platform-manager/sentient-platform-manager";
+const USER_JOBS: &str = "$HOME/.local/share/sentient-platform-manager/jobs";
+/// Printed (stderr) by the shell when it ran the per-user agent.
+const USER_MARK: &str = "@@SPM_USER_AGENT";
+
+/// What the account can do as administrator on the server.
+#[derive(Debug, Clone, PartialEq)]
+enum Admin {
+    /// root, or sudo works (no password, or the one kept).
+    Yes,
+    /// sudo asks for a password and none is kept (or the kept one is wrong).
+    NeedsPassword(String),
+    /// No sudo for this account at all.
+    No,
+}
+
+/// Find out with one connection whether sudo works for the account.
+fn probe_admin(inst: &Instance) -> Admin {
+    if inst.user == "root" {
+        return Admin::Yes;
+    }
+    let pw = sudo_password(inst);
+    let script = format!(
+        "if [ \"$(id -u)\" = 0 ]; then echo ADMIN_OK; elif ! command -v sudo >/dev/null 2>&1; then echo NO_SUDO; else echo \"GROUPS $(id -nG)\"; {}true && echo ADMIN_OK; fi",
+        sudo(inst, pw.is_some())
+    );
+    let mut c = ssh(inst, &script, None);
+    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let Ok(mut child) = c.spawn() else { return Admin::NeedsPassword("ssh did not start".into()) };
+    if let Some(mut s) = child.stdin.take() {
+        use std::io::Write as _;
+        if let Some(pw) = &pw {
+            let _ = writeln!(s, "{pw}");
+        }
+    }
+    let Ok(out) = child.wait_with_output() else { return Admin::NeedsPassword("no answer".into()) };
+    classify_admin(&String::from_utf8_lossy(&out.stdout), &String::from_utf8_lossy(&out.stderr), pw.is_some())
+}
+
+fn classify_admin(stdout: &str, stderr: &str, had_password: bool) -> Admin {
+    if stdout.contains("ADMIN_OK") {
+        return Admin::Yes;
+    }
+    if stdout.contains("NO_SUDO") || ["not in the sudoers", "may not run sudo", "is not allowed to execute"].iter().any(|w| stderr.contains(w)) {
+        return Admin::No;
+    }
+    // Not in sudo, wheel or admin and sudo wants a password: most likely an
+    // account without sudo; asked anyway when it is in one of them.
+    let groups = stdout.lines().find_map(|l| l.strip_prefix("GROUPS ")).unwrap_or("");
+    let admin_group = groups.split_whitespace().any(|g| ["sudo", "wheel", "admin"].contains(&g));
+    if !had_password && !admin_group {
+        return Admin::No;
+    }
+    Admin::NeedsPassword(stderr.trim().to_string())
+}
+
+/// Shell text that runs the agent with `args`: the system one as
+/// administrator when it is there, else the per-user one as the account.
+fn agent_cmd(inst: &Instance, args: &str, password: bool) -> String {
+    let sys = format!("{REMOTE_SPM} {args}");
+    format!(
+        "if [ -x {REMOTE_SPM} ]; then {}sh -c '{}'; elif [ -x \"{USER_SPM}\" ]; then echo {USER_MARK} >&2; \"{USER_SPM}\" {args}; else echo 'The server agent is not set up on this server.' >&2; exit 3; fi",
+        sudo(inst, password),
+        sys.replace('\'', "'\\''")
+    )
+}
+
+/// The account has no sudo: the next Set up puts the agent in its home.
+pub fn choose_user_install(inst: &Instance) -> Result<(), String> {
+    run(inst, &format!("mkdir -p \"{USER_DIR}\""), None).map(|_| ())
+}
+
+/// Put the agent in the account's home (no sudo there).
+fn deploy_user(inst: &Instance, staging: &str, sink: &ProgressFn) -> Result<(), String> {
+    sink(Progress::Log { line: format!("{} has no administrator rights on the server: the agent goes in its home folder, and jobs that need root will say so.", inst.user) });
+    run(inst, &format!("mkdir -p \"{USER_JOBS}\" && install -m 0755 {staging} \"{USER_SPM}\""), None)
+        .map_err(|e| failed("The agent could not be put in the account's home folder. The agent there is unchanged.", &e))?;
+    Ok(())
+}
 
 /// `sudo` that reads its password from standard input when the instance
 /// signs in with one (else the account needs passwordless sudo, or root).
@@ -416,7 +499,7 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
     }
     let me = agent_file(false, sink)?;
     let want = sentient_installer_core::manifest::sha256_file(&me)?;
-    let have = run(inst, &format!("sha256sum {REMOTE_SPM} 2>/dev/null | cut -d' ' -f1"), None).unwrap_or_default();
+    let have = run(inst, &format!("if [ -x {REMOTE_SPM} ]; then sha256sum {REMOTE_SPM}; else sha256sum \"{USER_SPM}\"; fi 2>/dev/null | cut -d' ' -f1"), None).unwrap_or_default();
     if have.trim() == want {
         sink(Progress::Log { line: "The Platform Manager on the server is up to date.".into() });
         ensure_sampler(inst, sink, false);
@@ -443,15 +526,44 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
             return Err("The copy on the server does not match (checksum); nothing was replaced. Try again.".into());
         }
     }
-    let pw = secret(&inst.id);
     // It must start on the server before it replaces anything.
     if let Err(e) = run(inst, &format!("chmod +x {staging} && {staging} --job monitor-json"), None) {
         clean(inst);
         return Err(failed(&format!("The Platform Manager agent does not start on {}. Nothing on the server was changed.", if det.os_name.is_empty() { inst.name.as_str() } else { det.os_name.as_str() }), &e));
     }
-    if let Err(e) = sudo_run(inst, &format!("install -D -m 0755 {staging} {REMOTE_SPM} && mkdir -p {REMOTE_JOBS}"), pw.as_deref()) {
-        clean(inst);
-        return Err(failed(&format!("The agent could not be put in place at {REMOTE_SPM} (as administrator). The agent there is unchanged."), &e));
+    // Where it goes: the system place when sudo works; the account's home
+    // when it has no sudo, or chose that earlier (a per-user agent and no
+    // system one there); sudo's password asked for otherwise.
+    let user_chosen = run(inst, &format!("[ ! -e {REMOTE_SPM} ] && [ -d \"{USER_DIR}\" ] && echo yes || echo no"), None).is_ok_and(|o| o.trim() == "yes");
+    match probe_admin(inst) {
+        Admin::Yes => {
+            if let Err(e) = sudo_run(inst, &format!("install -D -m 0755 {staging} {REMOTE_SPM} && mkdir -p {REMOTE_JOBS}"), None) {
+                clean(inst);
+                return Err(failed(&format!("The agent could not be put in place at {REMOTE_SPM} (as administrator). The agent there is unchanged."), &e));
+            }
+        }
+        Admin::No => {
+            let r = deploy_user(inst, &staging, sink);
+            clean(inst);
+            r?;
+        }
+        Admin::NeedsPassword(_) if user_chosen => {
+            let r = deploy_user(inst, &staging, sink);
+            clean(inst);
+            r?;
+        }
+        Admin::NeedsPassword(why) => {
+            clean(inst);
+            let had = sudo_password(inst).is_some();
+            return Err(failed(
+                &if had {
+                    format!("sudo refused the administrator password for {} on the server. Enter it again.", inst.user)
+                } else {
+                    format!("{} needs administrator rights on the server: sudo asks for a password.", inst.user)
+                },
+                &why,
+            ));
+        }
     }
     clean(inst);
     ensure_sampler(inst, sink, true);
@@ -472,7 +584,7 @@ fn sftp_copy(inst: &Instance, local: &Path, remote: &str) -> Result<(), String> 
 /// The statistics sampler on the server (crate::stats): installed with the
 /// agent, or when an up-to-date agent has none yet. Never fails the deploy.
 fn ensure_sampler(inst: &Instance, sink: &ProgressFn, always: bool) {
-    if !always && run(inst, "test -e /etc/systemd/system/sentient-pm-stats.timer && echo yes || echo no", None).is_ok_and(|o| o.trim() == "yes") {
+    if !always && run(inst, "[ -e /etc/systemd/system/sentient-pm-stats.timer ] || [ -e \"$HOME/.config/systemd/user/sentient-pm-stats.timer\" ] && echo yes || echo no", None).is_ok_and(|o| o.trim() == "yes") {
         return;
     }
     match spm_job(inst, "stats-install") {
@@ -516,6 +628,49 @@ fn sftp_batch(inst: &Instance, command: &str) -> Result<(), String> {
     }
 }
 
+/// Run the agent with `args` (crate::remote::agent_cmd): as administrator
+/// from the system place, else as the account from its home. A per-user
+/// agent refused for want of root says so plainly.
+fn agent_run(inst: &Instance, args: &str) -> Result<String, String> {
+    let pw = sudo_password(inst);
+    let mut c = ssh(inst, &agent_cmd(inst, args, pw.is_some()), None);
+    if pw.is_some() {
+        c.stdin(Stdio::piped());
+    }
+    c.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = c.spawn().map_err(|e| format!("start ssh: {e}"))?;
+    if let (Some(pw), Some(mut s)) = (&pw, child.stdin.take()) {
+        use std::io::Write as _;
+        let _ = writeln!(s, "{pw}");
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let user = stderr.contains(USER_MARK);
+    let err = stderr.replace(USER_MARK, "").trim().to_string();
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+    }
+    if user {
+        let lower = err.to_lowercase();
+        if lower.contains("permission denied") || lower.contains("operation not permitted") || lower.contains("must be root") || lower.contains("as root") {
+            return Err(failed(&format!("This takes root on the server, and {} has no sudo there. Sign in as an account with sudo, or as root, to do it.", inst.user), &err));
+        }
+        return Err(explain(&err).unwrap_or(err));
+    }
+    Err(sudo_error(inst, pw.is_some(), &err))
+}
+
+fn sudo_error(inst: &Instance, password: bool, err: &str) -> String {
+    if err.contains("a password is required") || err.contains("sudo:") {
+        return if password {
+            format!("sudo refused the administrator password for {} on the server. Enter it again with Edit.", inst.user)
+        } else {
+            format!("{} needs administrator rights on the server: enter its sudo password with Edit, sign in as root, or allow it sudo without a password.", inst.user)
+        };
+    }
+    explain(err).unwrap_or(err.to_string())
+}
+
 fn sudo_run(inst: &Instance, cmd: &str, _login: Option<&str>) -> Result<String, String> {
     let pw = sudo_password(inst);
     let password = pw.as_deref();
@@ -535,14 +690,7 @@ fn sudo_run(inst: &Instance, cmd: &str, _login: Option<&str>) -> Result<String, 
         return Ok(String::from_utf8_lossy(&out.stdout).to_string());
     }
     let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    if err.contains("a password is required") || err.contains("sudo:") {
-        return Err(if password.is_some() {
-            format!("sudo refused the administrator password for {} on the server. Enter it again with Edit.", inst.user)
-        } else {
-            format!("{} needs administrator rights on the server: enter its sudo password with Edit, sign in as root, or allow it sudo without a password.", inst.user)
-        });
-    }
-    Err(explain(&err).unwrap_or(err))
+    Err(sudo_error(inst, password.is_some(), &err))
 }
 
 /// Whether the server answers and has the Platform Manager (Err:
@@ -555,7 +703,7 @@ pub fn ready(inst: &Instance) -> Result<(), String> {
     let there = if is_windows(inst) {
         win::ps(inst, &format!("Test-Path '{}'", win::EXE))?.trim() == "True"
     } else {
-        run(inst, &format!("test -x {REMOTE_SPM} && echo yes || echo no"), None)?.trim() == "yes"
+        run(inst, &format!("[ -x {REMOTE_SPM} ] || [ -x \"{USER_SPM}\" ] && echo yes || echo no"), None)?.trim() == "yes"
     };
     if there { Ok(()) } else { Err(NOT_SET_UP.into()) }
 }
@@ -588,11 +736,10 @@ pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {
             return Ok(s.clone());
         }
     }
-    if run(inst, &format!("test -x {REMOTE_SPM} && echo yes || echo no"), None)?.trim() != "yes" {
+    if run(inst, &format!("[ -x {REMOTE_SPM} ] || [ -x \"{USER_SPM}\" ] && echo yes || echo no"), None)?.trim() != "yes" {
         return Err(NOT_SET_UP.into());
     }
-    let pw = secret(&inst.id);
-    let out = sudo_run(inst, &format!("{REMOTE_SPM} --job status-json"), pw.as_deref())?;
+    let out = spm_job(inst, "status-json")?;
     let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's Platform Manager gave no status.")?;
     let mut st: RemoteStatus = serde_json::from_str(line).map_err(|e| format!("unexpected status from the server: {e}"))?;
     st.running_job = running_job(inst);
@@ -742,9 +889,15 @@ pub fn monitor(inst: &Instance) -> Result<crate::sysmon::Monitor, String> {
     if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_MONITOR") {
         return serde_json::from_str(&t.to_string_lossy()).map_err(|e| e.to_string());
     }
-    let out = if is_windows(inst) { spm_job(inst, "monitor-json")? } else { run(inst, &format!("{REMOTE_SPM} --job monitor-json"), None)? };
+    let out = if is_windows(inst) { spm_job(inst, "monitor-json")? } else { run(inst, &format!("A={REMOTE_SPM}; [ -x $A ] || A=\"{USER_SPM}\"; \"$A\" --job monitor-json"), None)? };
     let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("no reading")?;
     serde_json::from_str(line).map_err(|e| e.to_string())
+}
+
+/// Shell text that prints the job running on the server, if one is: a
+/// systemd unit (`spm-job-<id>.service`) or a per-user one (`user-job-<id>`).
+fn running_script() -> String {
+    format!("systemctl list-units --type=service --state=running --no-legend --plain 'spm-job-*' 2>/dev/null | head -1; for f in \"{USER_JOBS}\"/*.pid; do [ -e \"$f\" ] && kill -0 \"$(cat \"$f\")\" 2>/dev/null && basename \"$f\" .pid | sed 's/^/user-job-/'; done 2>/dev/null | head -1")
 }
 
 /// The id of the job running on the server, if one is.
@@ -752,9 +905,9 @@ pub fn running_job(inst: &Instance) -> Option<String> {
     if is_windows(inst) {
         return win::running_job(inst);
     }
-    let pw = secret(&inst.id);
-    let out = sudo_run(inst, "systemctl list-units --type=service --state=running --no-legend --plain 'spm-job-*' | head -1", pw.as_deref()).ok()?;
-    out.split_whitespace().next()?.strip_prefix("spm-job-")?.strip_suffix(".service").map(str::to_string)
+    let out = run(inst, &running_script(), None).ok()?;
+    let w = out.split_whitespace().next()?;
+    w.strip_prefix("spm-job-").and_then(|w| w.strip_suffix(".service")).or_else(|| w.strip_prefix("user-job-")).map(str::to_string)
 }
 
 /// Start `--job <args>` on the server, detached from this connection.
@@ -764,21 +917,34 @@ pub fn start_job(inst: &Instance, args: &[&str]) -> Result<String, String> {
     if is_windows(inst) {
         return win::start_job(inst, &id, args).map(|_| id);
     }
-    let pw = secret(&inst.id);
     // One job at a time on a server.
-    let busy = sudo_run(inst, "systemctl list-units --type=service --state=running --no-legend 'spm-job-*' | head -1", pw.as_deref()).unwrap_or_default();
+    let busy = run(inst, &running_script(), None).unwrap_or_default();
     if !busy.trim().is_empty() {
         return Err("Another job is still running on this server. Wait until it ends.".into());
     }
     let quoted: Vec<String> = args.iter().map(|a| format!("'{}'", a.replace('\'', ""))).collect();
-    sudo_run(
-        inst,
-        &format!(
-            "mkdir -p {REMOTE_JOBS} && systemd-run --unit=spm-job-{id} --collect --property=StandardOutput=file:{REMOTE_JOBS}/{id}.log --property=StandardError=file:{REMOTE_JOBS}/{id}.err {REMOTE_SPM} --job --json {}",
-            quoted.join(" ")
-        ),
-        pw.as_deref(),
-    )?;
+    let system = run(inst, &format!("[ -x {REMOTE_SPM} ] && echo yes || echo no"), None)?.trim() == "yes";
+    if system {
+        sudo_run(
+            inst,
+            &format!(
+                "mkdir -p {REMOTE_JOBS} && systemd-run --unit=spm-job-{id} --collect --property=StandardOutput=file:{REMOTE_JOBS}/{id}.log --property=StandardError=file:{REMOTE_JOBS}/{id}.err {REMOTE_SPM} --job --json {}",
+                quoted.join(" ")
+            ),
+            None,
+        )?;
+    } else {
+        // The per-user agent: detached from the connection with setsid; its
+        // process id marks it running.
+        run(
+            inst,
+            &format!(
+                "mkdir -p \"{USER_JOBS}\" && cd \"{USER_JOBS}\" && (setsid nohup \"{USER_SPM}\" --job --json {} > {id}.log 2> {id}.err < /dev/null & echo $! > {id}.pid)",
+                quoted.join(" ")
+            ),
+            None,
+        )?;
+    }
     Ok(id)
 }
 
@@ -791,7 +957,7 @@ pub fn follow(inst: &Instance, id: &str, sink: &ProgressFn) -> Result<(), String
     let mut seen = 0usize;
     let mut drops = 0u32;
     loop {
-        let mut child = ssh(inst, &format!("tail -n +{} -F {REMOTE_JOBS}/{id}.log 2>/dev/null & TP=$!; while systemctl is-active --quiet spm-job-{id} 2>/dev/null; do sleep 2; done; sleep 2; kill $TP 2>/dev/null; echo '@@END'", seen + 1), None)
+        let mut child = ssh(inst, &format!("L={REMOTE_JOBS}/{id}.log; [ -e $L ] || L=\"{USER_JOBS}/{id}.log\"; tail -n +{} -F \"$L\" 2>/dev/null & TP=$!; while systemctl is-active --quiet spm-job-{id} 2>/dev/null || kill -0 \"$(cat \"{USER_JOBS}/{id}.pid\" 2>/dev/null)\" 2>/dev/null; do sleep 2; done; sleep 2; kill $TP 2>/dev/null; echo '@@END'", seen + 1), None)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -898,7 +1064,7 @@ fn spm_job(inst: &Instance, job: &str) -> Result<String, String> {
     let r = if is_windows(inst) {
         win::ps(inst, &format!("& '{}' --job {job}", win::EXE))
     } else {
-        sudo_run(inst, &format!("{REMOTE_SPM} --job {job}"), None)
+        agent_run(inst, &format!("--job {job}"))
     };
     // An agent that does not know the job answers with its usage text: that
     // text goes to the activity log, the pages say the agent is out of date.
@@ -1275,8 +1441,18 @@ mod tests {
         eprintln!("detected: {d:?}");
         inst.detected = Some(d);
         assert_eq!(ready(&inst).unwrap_err(), NOT_SET_UP);
-        set_secret(&sudo_key(&inst.id), &std::env::var("SPM_E2E_SUDO").unwrap());
         let sink: ProgressFn = std::sync::Arc::new(|p| eprintln!("  {p:?}"));
+        // sudo asks for a password: without one kept, Set up asks for it
+        // (crate::manager::remote_pages::ask_sudo_password) and changes nothing;
+        // a wrong one is refused the same way.
+        forget_one(&sudo_key(&inst.id));
+        let e = deploy(&inst, &sink).unwrap_err();
+        assert!(e.contains("needs administrator rights"), "{e}");
+        set_secret(&sudo_key(&inst.id), "wrong-password");
+        let e = deploy(&inst, &sink).unwrap_err();
+        assert!(e.contains("sudo refused"), "{e}");
+        assert_eq!(ready(&inst).unwrap_err(), NOT_SET_UP);
+        set_secret(&sudo_key(&inst.id), &std::env::var("SPM_E2E_SUDO").unwrap());
         deploy(&inst, &sink).unwrap();
         ready(&inst).unwrap();
         let st = status(&inst).unwrap();
@@ -1347,6 +1523,77 @@ mod tests {
         eprintln!("add-if-one: {said}");
         assert!(said.contains("No SENTIENT found"), "{said}");
         backup_jobs_on_the_server(&inst, &sink);
+        let _ = std::fs::remove_file(known_hosts());
+    }
+
+    #[test]
+    fn tells_what_sudo_allows() {
+        assert_eq!(classify_admin("GROUPS ops sudo\nADMIN_OK\n", "", true), Admin::Yes);
+        assert_eq!(classify_admin("NO_SUDO\n", "", false), Admin::No);
+        assert_eq!(classify_admin("GROUPS solo\n", "sudo: a password is required", false), Admin::No);
+        assert!(matches!(classify_admin("GROUPS ops sudo\n", "sudo: a password is required", false), Admin::NeedsPassword(_)));
+        assert!(matches!(classify_admin("GROUPS solo\n", "Sorry, try again.", true), Admin::NeedsPassword(_)));
+        assert_eq!(classify_admin("GROUPS solo\n", "solo is not in the sudoers file.", true), Admin::No);
+    }
+
+    /// An account without sudo (SPM_E2E_NOSUDO="user", same key): the agent
+    /// goes in its home, its jobs run as it, a job that needs root says so.
+    #[test]
+    #[ignore]
+    fn sets_up_for_an_account_without_sudo() {
+        let port: u16 = std::env::var("SPM_E2E").expect("SPM_E2E").parse().unwrap();
+        let user = std::env::var("SPM_E2E_NOSUDO").unwrap_or_else(|_| "solo".into());
+        let _ = std::fs::remove_file(known_hosts());
+        let mut inst = Instance {
+            id: format!("e2e-nosudo{port}"),
+            name: format!("e2e no sudo {port}"),
+            color: PALETTE[0].into(),
+            os: Os::Linux,
+            host: "127.0.0.1".into(),
+            port,
+            user,
+            auth: Auth::Key,
+            key_file: Some(std::env::var("SPM_E2E_KEY").unwrap().into()),
+            key_has_passphrase: false,
+            host_key: None,
+            detected: None,
+        };
+        let (keys, fp) = scan("127.0.0.1", port).unwrap();
+        trust(&keys).unwrap();
+        inst.host_key = Some(fp);
+        inst.detected = Some(detect(&inst, None).unwrap());
+        forget_one(&sudo_key(&inst.id));
+        let _ = run(&inst, &format!("rm -rf \"{USER_DIR}\""), None);
+        assert_eq!(probe_admin(&inst), Admin::No);
+        assert_eq!(ready(&inst).unwrap_err(), NOT_SET_UP);
+        let sink: ProgressFn = std::sync::Arc::new(|p| eprintln!("  {p:?}"));
+        deploy(&inst, &sink).unwrap();
+        ready(&inst).unwrap();
+        assert!(run(&inst, &format!("test -x \"{USER_SPM}\" && echo yes"), None).unwrap().contains("yes"));
+        let st = status(&inst).unwrap();
+        assert!(!st.installed);
+        assert!(monitor(&inst).unwrap().mem_total > 0);
+        // Up to date the second time.
+        deploy(&inst, &sink).unwrap();
+        // A detached job as the account, followed to its end.
+        let id = start_job(&inst, &["find-existing"]).unwrap();
+        follow(&inst, &id, &sink).unwrap();
+        assert!(running_job(&inst).is_none());
+        // A long one shows as running while it runs.
+        let id = run(&inst, &format!("mkdir -p \"{USER_JOBS}\" && cd \"{USER_JOBS}\" && (setsid nohup sleep 6 >/dev/null 2>&1 < /dev/null & echo $! > e2esleep.pid) && echo e2esleep"), None).unwrap();
+        assert_eq!(running_job(&inst).as_deref(), Some(id.trim()));
+        assert!(start_job(&inst, &["find-existing"]).unwrap_err().contains("Another job"));
+        std::thread::sleep(std::time::Duration::from_secs(7));
+        assert!(running_job(&inst).is_none());
+        // A job refused for want of root (Docker's socket, a root-owned
+        // folder) says so: a stand-in agent that fails like one.
+        run(&inst, &format!("cp \"{USER_SPM}\" \"{USER_SPM}.real\" && printf '#!/bin/sh\\necho \"Got permission denied while trying to connect to the Docker daemon socket\" >&2\\nexit 1\\n' > \"{USER_SPM}\""), None).unwrap();
+        let e = spm_job(&inst, "services-json").unwrap_err();
+        eprintln!("root-only job as {}: {e}", inst.user);
+        assert!(e.contains("takes root"), "{e}");
+        run(&inst, &format!("mv \"{USER_SPM}.real\" \"{USER_SPM}\""), None).unwrap();
+        ready(&inst).unwrap();
+        let _ = run(&inst, &format!("rm -rf \"{USER_DIR}\""), None);
         let _ = std::fs::remove_file(known_hosts());
     }
 

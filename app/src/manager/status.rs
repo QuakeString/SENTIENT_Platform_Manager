@@ -376,13 +376,24 @@ impl StatusPage {
             ));
         }
         panel = panel
-            .child(div().text_sm().text_color(theme.muted_foreground).child(
-                "SENTIENT instances already on this computer. Add one and the Platform Manager manages it as it is, without reinstalling anything.",
-            ))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .child(div().text_sm().text_color(theme.muted_foreground).child("Found on this computer."))
+                    .child(ui::info("existing-help".into(), "Add one and the Platform Manager manages it as it is, without reinstalling anything.".into())),
+            )
             .when(busy, |p| p.child(div().text_sm().child(step)))
             .children(failed.map(|m| ui::outcome(theme, Tone::Bad, m)));
         for (i, c) in found.iter().enumerate() {
             let candidate = c.clone();
+            let from = c.facts().into_iter().find(|(l, _)| *l == "From").map(|(_, v)| v).unwrap_or_default();
+            let mut help = format!("Started from: {from}");
+            for n in &c.notes {
+                help.push_str("\n\n");
+                help.push_str(n);
+            }
+            let missing = c.notes.iter().any(|n| n.contains("no longer at"));
             panel = panel.child(
                 div()
                     .mt_2()
@@ -390,17 +401,24 @@ impl StatusPage {
                     .border_1()
                     .border_color(theme.border)
                     .rounded(theme.radius)
-                    .children(c.facts().into_iter().map(|(label, value)| ui::fact(theme, label, value)))
-                    .children(c.notes.iter().map(|n| div().text_size(px(13.)).text_color(theme.muted_foreground).child(n.clone())))
+                    // The essentials; where it came from and the notes behind an
+                    // (i); a short amber line only when its compose file is gone.
+                    .children(c.facts().into_iter().filter(|(l, _)| ["Runs as", "Version", "Database type", "State", "Web port"].contains(l)).map(|(label, value)| ui::fact(theme, label, value)))
+                    .when(missing, |d| d.child(div().mt_1().text_sm().text_color(if theme.mode.is_dark() { theme.warning_foreground } else { gpui::rgb(0xb45309).into() }).child("Compose file missing")))
                     .children(c.problem.clone().map(|p| ui::outcome(theme, Tone::Warn, format!("Cannot be added: {p}"))))
                     .child(
-                        h_flex().mt_2().child(
-                            crate::ui::button(("adopt", i))
-                                .primary()
-                                .label("Add this instance…")
-                                .disabled(busy || c.problem.is_some())
-                                .on_click(cx.listener(move |this, _, window, cx| this.confirm_adopt(candidate.clone(), window, cx))),
-                        ),
+                        h_flex()
+                            .mt_2()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                crate::ui::button(("adopt", i))
+                                    .primary()
+                                    .label("Add this instance…")
+                                    .disabled(busy || c.problem.is_some())
+                                    .on_click(cx.listener(move |this, _, window, cx| this.confirm_adopt(candidate.clone(), window, cx))),
+                            )
+                            .child(ui::info(SharedString::from(format!("existing-{i}")), help.into())),
                     ),
             );
         }
@@ -689,7 +707,7 @@ impl Render for BrokenParts {
                 }
                 let mut t = v_flex().gap_0();
                 for (i, (table, part, n, bytes)) in groups.into_iter().enumerate() {
-                    let month = if part.len() == 6 { format!("{}-{}", &part[..4], &part[4..]) } else { part };
+                    let month = if part == "tuple()" { "whole table".to_string() } else if part.len() == 6 { format!("{}-{}", &part[..4], &part[4..]) } else { part };
                     t = t.child(
                         h_flex()
                             .gap_3()

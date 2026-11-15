@@ -9,7 +9,7 @@ use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex, v_flex,
     button::ButtonVariants as _,
     menu::{DropdownMenu as _, PopupMenuItem},
-    input::{InputEvent, InputState},
+    input::{Input, InputEvent, InputState},
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -48,6 +48,76 @@ impl<T> Read<T> {
     }
 }
 
+/// sudo on the server wants a password the Platform Manager does not have
+/// (or refused the one it has).
+fn needs_sudo_password(e: &str) -> bool {
+    e.contains("needs administrator rights") || e.contains("sudo refused") || e.contains("a password is required")
+}
+
+/// Ask for the server's sudo password, keep it like the instance form does
+/// (the secret store, never a log), then run `then`.
+pub(crate) fn ask_sudo_password(inst: Instance, then: std::rc::Rc<dyn Fn(&mut App)>, cx: &mut App) {
+    struct SudoPrompt {
+        inst: Instance,
+        input: Entity<InputState>,
+        then: std::rc::Rc<dyn Fn(&mut App)>,
+    }
+    impl Render for SudoPrompt {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            v_flex()
+                .gap_3()
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().text_sm().child(format!("sudo on {} asks for {}'s password.", self.inst.name, self.inst.user)))
+                        .child(crate::ui::info(
+                            "sudo-help".into(),
+                            "It is kept in this computer's secret store, never in a log.\n\nIf the account has no sudo, the agent is set up in its home folder instead, and jobs that need root say so.".into(),
+                        )),
+                )
+                .child(Input::new(&self.input).mask_toggle())
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .justify_end()
+                        // An account without sudo: the agent goes in its home
+                        // folder (crate::remote::choose_user_install).
+                        .child(crate::ui::button("sudo-none").ghost().label("This account has no sudo").on_click(cx.listener(|p, _, _, cx| {
+                            let inst = p.inst.clone();
+                            let then = p.then.clone();
+                            crate::modal::close(cx);
+                            cx.spawn(async move |_, cx| {
+                                let r = cx.background_executor().spawn(async move { remote::choose_user_install(&inst) }).await;
+                                let _ = cx.update(|cx| match r {
+                                    Ok(()) => then(cx),
+                                    Err(e) => ui::show_error("The agent could not be set up for this account", e, cx),
+                                });
+                            })
+                            .detach();
+                        })))
+                        .child(div().flex_1())
+                        .child(crate::ui::button("sudo-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx)))
+                        .child(crate::ui::button("sudo-save").primary().label("Save and retry").on_click(cx.listener(|p, _, _, cx| {
+                            let pw = p.input.read(cx).value().to_string();
+                            if pw.is_empty() {
+                                return;
+                            }
+                            remote::set_secret(&remote::sudo_key(&p.inst.id), &pw);
+                            crate::modal::close(cx);
+                            (p.then)(cx);
+                        }))),
+                )
+        }
+    }
+    let Some(handle) = cx.active_window().or_else(|| cx.windows().into_iter().next()) else { return };
+    let _ = handle.update(cx, |_, window, cx| {
+        let input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("sudo password"));
+        let view = cx.new(|_| SudoPrompt { inst, input, then });
+        crate::modal::open(crate::modal::Modal { title: "Administrator password needed".into(), body: view.into(), width: 480., on_close: None }, cx);
+    });
+}
+
 /// How long a reading may take before the page says the server does not answer.
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -83,6 +153,8 @@ pub struct RemotePages {
     auto_add_tried: bool,
     /// The server agent update that runs when the server is opened.
     agent_refresh: AgentRefresh,
+    /// The sudo password was asked for after the last failure.
+    sudo_asked: bool,
     /// Platform settings: the open tab (crate::manager::settings::TAB_TITLES).
     settings_tab: usize,
     /// Control: the service whose own action runs now.
@@ -120,6 +192,17 @@ impl RemotePages {
                             _ => AgentRefresh::Idle,
                         };
                     }
+                    // sudo wants a password: ask for it and run the job again.
+                    if let JobState::Failed(m) = job.read(cx).state() {
+                        if needs_sudo_password(m) && !this.sudo_asked {
+                            this.sudo_asked = true;
+                            if let Some(retry) = job.read(cx).retry() {
+                                ask_sudo_password(this.inst.clone(), retry, cx);
+                            }
+                        }
+                    } else if !job.read(cx).is_running() {
+                        this.sudo_asked = false;
+                    }
                     this.reload(cx);
                 }
                 cx.notify();
@@ -147,6 +230,7 @@ impl RemotePages {
             settings_tab: 0,
             auto_add_tried: false,
             agent_refresh: AgentRefresh::Idle,
+            sudo_asked: false,
             updates,
             follow: true,
             job,
@@ -543,8 +627,16 @@ impl RemotePages {
                                         // A button: the real error, Copy and Retry.
                                         let why = why.clone();
                                         let this = cx.entity().downgrade();
+                                        let inst_for_sudo = self.inst.clone();
                                         r.child(div().id("agent-failed").cursor_pointer().child(ui::pill(&theme, Tone::Bad, "Update failed ›")).on_click(move |_, _, cx| {
                                             let this = this.clone();
+                                            if needs_sudo_password(&why) {
+                                                let t = this.clone();
+                                                ask_sudo_password(inst_for_sudo.clone(), std::rc::Rc::new(move |cx: &mut App| {
+                                                    t.update(cx, |p, cx| p.update_agent(cx)).ok();
+                                                }), cx);
+                                                return;
+                                            }
                                             ui::show_error_with(
                                                 "The server agent could not be updated",
                                                 why.clone(),

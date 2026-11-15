@@ -261,6 +261,11 @@ impl Manager {
                     cx,
                 );
             }
+            if std::env::var_os("SPM_DEBUG_SUDO_PROMPT").is_some() {
+                if let Some(inst) = crate::remote::load().into_iter().next() {
+                    cx.defer(move |cx| remote_pages::ask_sudo_password(inst, std::rc::Rc::new(|_: &mut App| {}), cx));
+                }
+            }
             if std::env::var_os("SPM_DEBUG_PARTS_DIALOG").is_some() {
                 let part = |t: &str, m: &str, n: &str, b: u64| crate::dbstatus::DetachedPart { table: t.into(), partition: m.into(), name: n.into(), reason: "broken-on-start".into(), bytes: b };
                 let list = vec![
