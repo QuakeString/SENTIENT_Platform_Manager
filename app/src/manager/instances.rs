@@ -1168,7 +1168,7 @@ impl Render for InstancesPage {
                 // narrow windows), all the same width.
                 let width = f32::from(window.viewport_size().width);
                 let rail = width < crate::manager::RAIL_BELOW;
-                let inner = width - if rail { 64. } else { 224. } - 64.;
+                let inner = width - if rail { 64. } else { crate::manager::NAV_W } - 64.;
                 let cols = if rail { 1. } else { ((inner + 16.) / (CARD_MIN_W + 16.)).floor().max(1.) };
                 let card_w = ((inner - 16. * (cols - 1.)) / cols).floor();
                 h_flex()

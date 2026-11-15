@@ -6,7 +6,7 @@
 //! menu chooses which page it shows.
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, h_flex, v_flex,
     button::ButtonVariants as _,
     menu::{DropdownMenu as _, PopupMenuItem},
     input::{InputEvent, InputState},
@@ -161,7 +161,7 @@ impl RemotePages {
     }
 
     /// Read what the page shows (in the background).
-    fn reload(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         let inst = self.inst.clone();
         self.fetch(cx, move || remote::ready(&inst), |p, r| p.ready = r);
         // Every page needs to know whether a SENTIENT is added there.
@@ -1072,16 +1072,9 @@ impl Render for RemotePages {
             Kind::Gateway => self.gateway_page(cx),
         } };
         let job = self.job_panel(cx);
+        // Which server this is about shows in the bar under the top bar
+        // (crate::manager), as in the mockup.
         ui::page(&theme, title, summary)
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().size(px(10.)).rounded_full().bg(rgb(remote::parse_hex(&self.inst.color).unwrap_or(0x187074))))
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(format!("{} · {}", self.inst.name, self.inst.host)))
-                    .child(div().flex_1())
-                    .when(self.kind != Kind::Logs, |r| r.child(crate::ui::button("r-reload").ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(|this, _, _, cx| this.reload(cx))))),
-            )
             .children(job)
             .child(body)
     }

@@ -25,7 +25,6 @@ use gpui_kit::component::{
     menu::{DropdownMenu as _, PopupMenuItem},
 };
 use gpui_kit::component::Sizable as _;
-use gpui_kit::component::Selectable as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -273,34 +272,29 @@ impl Manager {
         };
         let dim = fg.opacity(0.75);
         let amber: Hsla = rgb(0xfbbf24).into();
-        let instance = match (&remote, &self.record) {
-            (Some(r), _) => format!("{} · {}", r.name, r.host),
-            (None, Some(r)) => format!("This computer · SENTIENT {}", r.sentient_version),
-            (None, None) => "This computer".to_string(),
+        let (name, address): (String, Option<String>) = match (&remote, &self.record) {
+            (Some(r), _) => (r.name.clone(), Some(format!("{} over SSH", r.host))),
+            (None, Some(r)) => ("This computer".into(), Some(format!("SENTIENT {}", r.sentient_version))),
+            (None, None) => ("This computer".into(), None),
         };
-        let meter = |id: &'static str, icon: Icon, label: &'static str, value: String, fraction: f32, high: bool| {
+        let instance = format!("{name} {}", address.clone().unwrap_or_default());
+        let remote_amber: Hsla = rgb(0xf0b24a).into();
+        let status_green: Hsla = rgb(0x6ee7b7).into();
+        // The mockup's monitors: a faint label, then the value (amber when
+        // high); no icons, no bars.
+        let meter = |id: &'static str, label: &'static str, value: String, high: bool| {
             h_flex()
                 .id(id)
-                .gap_1p5()
+                .gap(px(6.))
                 .items_center()
-                .text_size(px(13.))
-                .text_color(if high { amber } else { fg })
-                .child(icon.size_4())
-                .child(div().child(label))
-                .child(
-                    div()
-                        .w(px(36.))
-                        .h(px(5.))
-                        .rounded_full()
-                        .bg(fg.opacity(0.25))
-                        .child(div().h_full().rounded_full().w(relative(fraction.clamp(0.0, 1.0))).bg(if high { amber } else { fg })),
-                )
-                .child(div().whitespace_nowrap().child(value))
+                .text_size(px(12.5))
+                .child(div().text_color(fg.opacity(0.65)).child(label))
+                .child(div().whitespace_nowrap().text_color(if high { amber } else { fg }).child(value))
         };
         // What fits: a rough width per piece (about 7 px a character at
-        // 13-14 px), kept in this order: CPU, memory, disk, the product name.
+        // 12.5-14 px), kept in this order: CPU, memory, disk.
         let text_w = |s: &str| s.chars().count() as f32 * 7.2;
-        let mut room = width - 24. - (22. + 12.) - (text_w(&instance) + 40. + 12.) - if remote.is_some() { 72. } else { 0. } - 48. - 12.;
+        let mut room = width - 20. - (20. + 12.) - (text_w(&instance) + 60. + 12.) - if remote.is_some() { 64. } else { 0. } - 40. - 12.;
         let mut fits = |need: f32| {
             let ok = room >= need;
             if ok {
@@ -309,41 +303,36 @@ impl Manager {
             ok
         };
         let shown = if remote.is_some() { self.remote_monitor } else { self.monitor };
-        let (show_cpu, show_title, show_mem, show_disk) = match shown {
+        let (show_cpu, show_mem, show_disk) = match shown {
             Some(_) => {
-                let cpu = fits(16. + 122. + 12.);
-                let mem = cpu && fits(16. + 196.);
-                let disk = mem && fits(16. + 186.);
-                let title = fits(text_w("SENTIENT Platform Manager") + 12.);
-                (cpu, title, mem, disk)
+                let cpu = fits(16. + 70.);
+                let mem = cpu && fits(16. + 140.);
+                let disk = mem && fits(16. + 120.);
+                (cpu, mem, disk)
             }
-            None => (false, fits(text_w("SENTIENT Platform Manager") + 12.), false, false),
+            None => (false, false, false),
         };
         let monitor = shown.map(|m| {
             let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
             h_flex()
                 .id("monitor")
-                .gap_4()
+                .gap(px(16.))
                 .px_2()
                 .py_1()
                 .rounded(px(6.))
                 .cursor_pointer()
                 .hover(|d| d.bg(fg.opacity(0.1)))
-                .when(show_cpu, |r| r.child(meter("m-cpu", Icon::new(IconName::Cpu), "CPU", format!("{:.0}%", m.cpu), m.cpu / 100.0, m.cpu_high())))
+                .when(show_cpu, |r| r.child(meter("m-cpu", "CPU", format!("{:.0}%", m.cpu), m.cpu_high())))
                 .when(show_mem, |r| r.child(meter(
                     "m-mem",
-                    Icon::new(IconName::MemoryStick),
                     "Memory",
                     format!("{:.1} / {:.0} GB", gb(m.mem_used), gb(m.mem_total)),
-                    if m.mem_total > 0 { m.mem_used as f32 / m.mem_total as f32 } else { 0.0 },
                     m.mem_high(),
                 )))
                 .when(show_disk, |r| r.child(meter(
                     "m-disk",
-                    Icon::new(IconName::HardDrive),
                     "Disk",
                     format!("{} free", crate::dbstatus::bytes_label(m.disk_free)),
-                    if m.disk_total > 0 { 1.0 - m.disk_free as f32 / m.disk_total as f32 } else { 0.0 },
                     m.disk_low(),
                 )))
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -356,7 +345,6 @@ impl Manager {
         let bell = crate::ui::button("bell")
             .ghost()
             .icon(Icon::new(IconName::Bell).text_color(fg))
-            .when(count > 0, |b| b.label(count.to_string()))
             .text_color(fg)
             .tooltip(if count == 0 { "Nothing needs attention" } else { "Needs attention" })
             .dropdown_menu({
@@ -389,15 +377,30 @@ impl Manager {
             .items_center()
             .bg(bg)
             .text_color(fg)
-            .child(ui::product_logo(ui::Product::Manager, 22.))
-            .when(show_title, |b| b.child(div().text_sm().font_weight(FontWeight::MEDIUM).whitespace_nowrap().child("SENTIENT Platform Manager")))
+            .child(ui::product_logo(ui::Product::Manager, 20.))
             .child(
+                // The mockup's switcher: a framed chip with a status dot, the
+                // name, the address faint, a chevron; a remote one is framed
+                // in amber and carries a REMOTE tag.
                 crate::ui::button("switcher")
                     .ghost()
-                    .label(instance)
-                    .icon(Icon::new(IconName::ChevronDown).size_3p5().text_color(dim))
                     .text_color(fg)
-                    .bg(fg.opacity(0.14))
+                    .bg(fg.opacity(0.12))
+                    .border_1()
+                    .border_color(if remote.is_some() { remote_amber } else { fg.opacity(0.22) })
+                    .child(
+                        h_flex()
+                            .gap(px(7.))
+                            .items_center()
+                            .text_size(px(13.5))
+                            .child(div().size(px(8.)).rounded_full().bg(if remote.is_some() { remote_amber } else { status_green }))
+                            .child(div().font_weight(FontWeight::MEDIUM).child(name))
+                            .when_some(address, |r, a| r.child(div().text_color(fg.opacity(0.7)).child(a)))
+                            .child(Icon::new(IconName::ChevronDown).size_3p5().text_color(dim))
+                            .when(remote.is_some(), |r| {
+                                r.child(div().px(px(5.)).rounded(px(4.)).bg(remote_amber).text_color(rgb(0x1b1b1b)).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child("REMOTE"))
+                            }),
+                    )
                     .dropdown_menu({
                         let this = cx.entity().downgrade();
                         let remotes = self.remotes.clone();
@@ -427,12 +430,31 @@ impl Manager {
                         }
                     }),
             )
-            .when(remote.is_some(), |b| {
-                b.child(div().px_1p5().py_0p5().rounded(px(4.)).border_1().border_color(fg.opacity(0.6)).text_size(px(13.)).font_weight(FontWeight::MEDIUM).child("Remote"))
-            })
             .child(div().flex_1())
             .children(monitor)
-            .child(bell)
+            .child(
+                // The bell with an amber count, as in the mockup.
+                div().relative().child(bell).when(count > 0, |b| {
+                    b.child(
+                        div()
+                            .absolute()
+                            .top(px(1.))
+                            .right(px(1.))
+                            .min_w(px(15.))
+                            .h(px(15.))
+                            .px(px(3.))
+                            .rounded_full()
+                            .bg(rgb(0xf59e0b))
+                            .text_color(rgb(0x1c1917))
+                            .text_size(px(10.))
+                            .font_weight(FontWeight::BOLD)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(count.to_string()),
+                    )
+                }),
+            )
     }
 
     /// Switch to an instance (None: this computer). Remote instances are
@@ -493,6 +515,35 @@ impl Manager {
     /// The notices above every screen: what this run follows (a self-update,
     /// a Setup that found SENTIENT) and a newer SENTIENT, Platform Manager
     /// or gateway on the update channel (crate::updates).
+    /// On a remote instance: a bar saying every page acts on that server,
+    /// with Read again and the way back (the mockup's K4).
+    fn remote_bar(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let r = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned()?;
+        let theme = cx.theme().clone();
+        let info: Hsla = if theme::is_dark(cx) { rgb(0x27403f).into() } else { rgb(0xe6f1f1).into() };
+        Some(
+            h_flex()
+                .gap_3()
+                .px_4()
+                .py(px(7.))
+                .items_center()
+                .flex_wrap()
+                .bg(info)
+                .border_b_1()
+                .border_color(theme.border)
+                .text_sm()
+                .child(div().size(px(9.)).rounded_full().bg(rgb(crate::remote::parse_hex(&r.color).unwrap_or(0x187074))))
+                .child(div().flex_1().min_w(px(200.)).child(format!("Remote: {} ({}). Everything on these pages acts on that server.", r.name, r.host)))
+                .child(crate::ui::button("remote-reload").ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(p) = this.remote_pages.clone() {
+                        p.update(cx, |p, cx| p.reload(cx));
+                    }
+                })))
+                .child(crate::ui::button("remote-back").outline().small().label("Back to this computer").on_click(cx.listener(|this, _, _, cx| this.open_instance(None, cx))))
+                .into_any_element(),
+        )
+    }
+
     fn notices(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let theme = cx.theme().clone();
         let (sentient, manager) = self.updates.read(cx).notices();
@@ -670,20 +721,21 @@ impl Manager {
         let theme = cx.theme().clone();
         let items = Page::ALL.into_iter().map(|page| {
             let active = page == self.page;
+            // The mockup's menu item: muted text, the open page tinted in
+            // the primary colour and medium weight.
             h_flex()
                 .id(page.id())
-                .gap_3()
+                .gap(px(9.))
                 .when(rail, |r| r.justify_center().px_2())
-                .when(!rail, |r| r.px_4())
-                .py_2()
-                .rounded(theme.radius)
+                .when(!rail, |r| r.px(px(11.)))
+                .py(px(7.))
+                .rounded(px(7.))
                 .cursor_pointer()
                 .text_sm()
-                .when(active, |row| {
-                    row.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground)
-                })
-                .when(!active, |row| row.hover(|row| row.bg(theme.list_hover)))
-                .child(page.icon().size(px(20.)))
+                .text_color(theme.muted_foreground)
+                .when(active, |row| row.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground).font_weight(FontWeight::MEDIUM))
+                .when(!active, |row| row.hover(|row| row.bg(theme.list_hover).text_color(theme.foreground)))
+                .child(page.icon().size(px(17.)))
                 .when(!rail, |r| r.child(page.title()))
                 .when(rail, |r| r.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(page.title()).build(window, cx)))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -693,7 +745,7 @@ impl Manager {
         });
         v_flex()
             .when(rail, |n| n.w(px(64.)))
-            .when(!rail, |n| n.w_56())
+            .when(!rail, |n| n.w(px(NAV_W)))
             .h_full()
             .flex_shrink_0()
             .p_3()
@@ -715,16 +767,17 @@ impl Manager {
                 let active = self.page == Page::Instances;
                 h_flex()
                     .id("instances")
-                    .gap_3()
+                    .gap(px(9.))
                     .when(rail, |r| r.justify_center().px_2())
-                    .when(!rail, |r| r.px_4())
-                    .py_2()
-                    .rounded(theme.radius)
+                    .when(!rail, |r| r.px(px(11.)))
+                    .py(px(7.))
+                    .rounded(px(7.))
                     .cursor_pointer()
                     .text_sm()
-                    .when(active, |row| row.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground))
-                    .when(!active, |row| row.hover(|row| row.bg(theme.list_hover)))
-                    .child(Page::Instances.icon().size(px(20.)))
+                    .text_color(theme.muted_foreground)
+                    .when(active, |row| row.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground).font_weight(FontWeight::MEDIUM))
+                    .when(!active, |row| row.hover(|row| row.bg(theme.list_hover).text_color(theme.foreground)))
+                    .child(Page::Instances.icon().size(px(17.)))
                     .when(!rail, |r| r.child(Page::Instances.title()))
                     .when(rail, |r| r.tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Instances").build(window, cx)))
                     .when(!self.remotes.is_empty() && !rail, |r| r.child(div().flex_1()).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child((self.remotes.len() + 1).to_string())))
@@ -753,11 +806,26 @@ impl Manager {
                             .child(format!("v{}", crate::updates::manager_version())),
                     ))
                     .child({
-                        let b = crate::ui::button("about").ghost().icon(IconName::Info).tooltip("About and preferences").on_click(cx.listener(|this, _, _, cx| {
-                            this.page = Page::About;
-                            cx.notify();
-                        }));
-                        if self.page == Page::About { b.selected(true) } else { b }
+                        // The same 30 px icon box as the theme icon; tinted
+                        // while About is open.
+                        let on = self.page == Page::About;
+                        div()
+                            .id("about")
+                            .size(px(30.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(theme.radius)
+                            .cursor_pointer()
+                            .text_color(if on { theme.primary } else { theme.muted_foreground })
+                            .when(on, |b| b.bg(theme.primary.opacity(0.10)))
+                            .when(!on, |b| b.hover(|b| b.bg(theme.list_hover)))
+                            .child(Icon::new(IconName::Info).size_4())
+                            .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("About and preferences").build(window, cx))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.page = Page::About;
+                                cx.notify();
+                            }))
                     })
                     .child(self.theme_button(rail, cx)),
             )
@@ -1025,9 +1093,10 @@ impl Render for Manager {
         let top = self.top_bar(width, cx);
         let nav = self.nav(width < RAIL_BELOW, cx);
         let notices = self.notices(cx);
+        let remote_bar = self.remote_bar(cx);
         let content = self.content(window, cx);
         let rail = width < RAIL_BELOW;
-        let layer = crate::modal::layer(window, cx, if rail { 64. } else { 224. }, 42.);
+        let layer = crate::modal::layer(window, cx, if rail { 64. } else { NAV_W }, 42.);
         if layer.is_some() && window.focused(cx).is_none() {
             window.focus(&self.modal_focus, cx);
         }
@@ -1050,7 +1119,7 @@ impl Render for Manager {
                     .min_h_0()
                     .w_full()
                     .child(nav)
-                    .child(v_flex().flex_1().h_full().min_w_0().children(notices).child(crate::ui::appear(h_flex().flex_1().min_h_0().w_full().child(content), SharedString::from(format!("page-{}", self.page.id())), 140))),
+                    .child(v_flex().flex_1().h_full().min_w_0().children(remote_bar).children(notices).child(crate::ui::appear(h_flex().flex_1().min_h_0().w_full().child(content), SharedString::from(format!("page-{}", self.page.id())), 140))),
             )
             .children(layer)
     }
@@ -1058,6 +1127,9 @@ impl Render for Manager {
 
 /// Below this window width the menu becomes an icon rail.
 pub(crate) const RAIL_BELOW: f32 = 960.;
+
+/// The menu's width (the mockup's 188 px at its 12.5 px text, for 14 px).
+pub(crate) const NAV_W: f32 = 210.;
 
 /// ", released 2026-10-24", or nothing.
 fn dated(date: &str) -> String {
