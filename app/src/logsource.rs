@@ -238,7 +238,8 @@ pub fn parse(raw: &str, source: Source) -> Line {
     let (level, _) = crate::log_level::classify(rest);
     let mut message = rest.trim_start().to_string();
     // The level word is a column of its own: drop it from the front.
-    for w in ["ERROR", "WARN", "WARNING", "INFO", "DEBUG", "TRACE", "FATAL", "PANIC", "LOG:", "WARNING:", "ERROR:", "FATAL:", "PANIC:"] {
+    // Longest first: "WARN" would leave "ING:" of "WARNING:".
+    for w in ["WARNING:", "WARNING", "ERROR:", "FATAL:", "PANIC:", "LOG:", "ERROR", "WARN", "INFO", "DEBUG", "TRACE", "FATAL", "PANIC"] {
         if let Some(r) = message.strip_prefix(w) {
             message = r.trim_start().to_string();
             break;
