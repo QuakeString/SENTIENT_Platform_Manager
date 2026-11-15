@@ -21,8 +21,11 @@ use crate::pg_tools::PgTools;
 use crate::progress::{Progress, ProgressFn, Steps};
 use crate::util::HashingWriter;
 
-const DUMP_MEMBER: &str = "db/dump.pgc.zst";
+pub const DUMP_MEMBER: &str = "db/dump.pgc.zst";
+/// Format 1's one telemetry member (still read by restore).
 pub const TELEMETRY_MEMBER: &str = "db/telemetry.copy.zst";
+/// Format 2: one telemetry member per month, `db/telemetry/2026-11.copy.zst`.
+pub const TELEMETRY_MONTH_PREFIX: &str = "db/telemetry/";
 
 /// How telemetry (`ts_kv`) is captured. Always via COPY (never the pg_dump).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +97,19 @@ pub struct BackupOptions {
     pub passphrase: Option<String>,
     /// ClickHouse holding the telemetry, when the install uses it.
     pub clickhouse: Option<crate::clickhouse::ChConn>,
+    /// Where the backup comes from (recorded in the manifest).
+    pub origin: Origin,
+    /// Split the file into numbered parts of this size (None: one file).
+    pub part_size: Option<u64>,
+}
+
+/// What a backup records about the installation it was made on.
+#[derive(Debug, Clone, Default)]
+pub struct Origin {
+    pub sentient_version: Option<String>,
+    pub schema_version: Option<i64>,
+    pub database_type: Option<String>,
+    pub host: Option<String>,
 }
 
 impl Default for BackupOptions {
@@ -105,6 +121,8 @@ impl Default for BackupOptions {
             zstd_level: 10,
             passphrase: None,
             clickhouse: None,
+            origin: Origin::default(),
+            part_size: None,
         }
     }
 }
@@ -115,6 +133,10 @@ pub struct BackupSummary {
     pub archive_bytes: u64,
     pub dump_sha256: String,
     pub file_stores: usize,
+    /// The files written (one, or the numbered parts) with their SHA-256.
+    pub files: Vec<(PathBuf, String, u64)>,
+    /// `<output>.sha256`, listing them.
+    pub sidecar: PathBuf,
 }
 
 /// A member staged in a temp file, to be written into the archive.
@@ -200,30 +222,31 @@ pub async fn run(cfg: &ConnConfig, opts: &BackupOptions, sink: ProgressFn) -> Re
             TelemetryMode::LastDays(d) => format!("Exporting telemetry (last {d} days)"),
             TelemetryMode::None => unreachable!(),
         });
-        let sql = match tmode {
-            TelemetryMode::All => {
-                "COPY (SELECT * FROM ts_kv) TO STDOUT WITH (FORMAT binary)".to_string()
-            }
-            TelemetryMode::LastDays(d) => format!(
-                "COPY (SELECT * FROM ts_kv WHERE ts >= \
-                 (extract(epoch from now())*1000 - {d}::bigint*86400000)::bigint) \
-                 TO STDOUT WITH (FORMAT binary)"
-            ),
-            TelemetryMode::None => unreachable!(),
+        // Month by month, so a damaged part costs one month.
+        let since_ms: Option<i64> = match tmode {
+            TelemetryMode::LastDays(d) => Some(chrono::Utc::now().timestamp_millis() - d as i64 * 86_400_000),
+            _ => None,
         };
-        let temp = opts.output.with_extension("telemetry.tmp");
-        let (sha, bytes, raw) = db.copy_out_compressed(&sql, &temp, opts.zstd_level).await?;
-        steps.log(format!(
-            "  telemetry: {} raw → {} compressed",
-            human_bytes(raw as i64),
-            human_bytes(bytes as i64)
-        ));
-        members.push(StagedMember {
-            archive_path: TELEMETRY_MEMBER.into(),
-            temp,
-            sha256: sha,
-            bytes,
-        });
+        let range = db
+            .text("SELECT COALESCE(min(ts), 0)::text || ' ' || COALESCE(max(ts), 0)::text FROM ts_kv")
+            .await?
+            .unwrap_or_default();
+        let mut it = range.split_whitespace().map(|v| v.parse::<i64>().unwrap_or(0));
+        let (min_ts, max_ts) = (it.next().unwrap_or(0), it.next().unwrap_or(0));
+        let start = since_ms.map_or(min_ts, |s| s.max(min_ts));
+        for (label, from, to) in months_between(start, max_ts) {
+            let lower = since_ms.map_or(from, |s| s.max(from));
+            let sql = format!("COPY (SELECT * FROM ts_kv WHERE ts >= {lower} AND ts < {to}) TO STDOUT WITH (FORMAT binary)");
+            let temp = opts.output.with_extension(format!("telemetry-{label}.tmp"));
+            let (sha, bytes, raw) = db.copy_out_compressed(&sql, &temp, opts.zstd_level).await?;
+            steps.log(format!("  telemetry {label}: {} raw → {} compressed", human_bytes(raw as i64), human_bytes(bytes as i64)));
+            members.push(StagedMember {
+                archive_path: format!("{TELEMETRY_MONTH_PREFIX}{label}.copy.zst"),
+                temp,
+                sha256: sha,
+                bytes,
+            });
+        }
     }
 
     // ClickHouse telemetry: history by monthly partition, then latest values.
@@ -295,6 +318,10 @@ pub async fn run(cfg: &ConnConfig, opts: &BackupOptions, sink: ProgressFn) -> Re
             database: server.database,
             postgres_version: server.postgres_version,
             timescaledb_version: server.timescaledb_version,
+            sentient_version: opts.origin.sentient_version.clone(),
+            schema_version: opts.origin.schema_version,
+            database_type: opts.origin.database_type.clone(),
+            host: opts.origin.host.clone(),
         },
         components: report
             .iter()
@@ -328,18 +355,21 @@ pub async fn run(cfg: &ConnConfig, opts: &BackupOptions, sink: ProgressFn) -> Re
         },
         clickhouse: ch_section,
     };
-    write_archive(&opts.output, &manifest, &members, opts.passphrase.as_deref())?;
+    let files = write_archive(&opts.output, &manifest, &members, opts.passphrase.as_deref(), opts.part_size)?;
     for m in &members {
         let _ = std::fs::remove_file(&m.temp);
     }
+    let sidecar = crate::parts::write_sidecar(&opts.output, &files)?;
 
-    let archive_bytes = std::fs::metadata(&opts.output)?.len();
+    let archive_bytes = files.iter().map(|(_, _, b)| *b).sum();
     steps.done(format!("Backup written: {}", opts.output.display()));
     Ok(BackupSummary {
         output: opts.output.clone(),
         archive_bytes,
         dump_sha256: dump_sha,
         file_stores: file_store_entries.len(),
+        files,
+        sidecar,
     })
 }
 
@@ -406,8 +436,9 @@ fn write_archive(
     manifest: &Manifest,
     members: &[StagedMember],
     passphrase: Option<&str>,
-) -> Result<()> {
-    let f = File::create(output).map_err(|e| Error::msg(format!("creating archive: {e}")))?;
+    part_size: Option<u64>,
+) -> Result<Vec<(PathBuf, String, u64)>> {
+    let f = crate::parts::PartWriter::new(output, part_size.unwrap_or(u64::MAX));
     match passphrase {
         // Passphrase → wrap the tar stream in an age (scrypt + ChaCha20-Poly1305)
         // encryptor so the whole .sentient-backup file is locked.
@@ -417,15 +448,50 @@ fn write_archive(
                 .wrap_output(f)
                 .map_err(|e| Error::msg(format!("encrypting: {e}")))?;
             let writer = write_tar(writer, manifest, members)?;
-            writer
-                .finish()
-                .map_err(|e| Error::msg(format!("finalizing encryption: {e}")))?;
+            let parts = writer.finish().map_err(|e| Error::msg(format!("finalizing encryption: {e}")))?;
+            parts.finish().map_err(|e| Error::msg(format!("closing the archive: {e}")))
         }
         None => {
-            write_tar(f, manifest, members)?;
+            let parts = write_tar(f, manifest, members)?;
+            parts.finish().map_err(|e| Error::msg(format!("closing the archive: {e}")))
         }
     }
-    Ok(())
+}
+
+/// Calendar months (UTC) from `from_ms` to `to_ms` inclusive:
+/// ("2026-11", first ms of the month, first ms of the next).
+pub fn months_between(from_ms: i64, to_ms: i64) -> Vec<(String, i64, i64)> {
+    use chrono::{Datelike, TimeZone, Utc};
+    let (Some(a), Some(b)) = (Utc.timestamp_millis_opt(from_ms).single(), Utc.timestamp_millis_opt(to_ms).single()) else { return Vec::new() };
+    if to_ms < from_ms {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let (mut y, mut m) = (a.year(), a.month());
+    loop {
+        let start = Utc.with_ymd_and_hms(y, m, 1, 0, 0, 0).single().map(|t| t.timestamp_millis()).unwrap_or(0);
+        let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+        let end = Utc.with_ymd_and_hms(ny, nm, 1, 0, 0, 0).single().map(|t| t.timestamp_millis()).unwrap_or(i64::MAX);
+        out.push((format!("{y:04}-{m:02}"), start, end));
+        if (y, m) >= (b.year(), b.month()) {
+            break;
+        }
+        (y, m) = (ny, nm);
+    }
+    out
+}
+
+#[cfg(test)]
+mod month_tests {
+    #[test]
+    fn months_cover_the_range() {
+        // 2025-12-15 to 2026-02-01
+        let m = super::months_between(1_765_800_000_000, 1_769_904_000_000);
+        let labels: Vec<&str> = m.iter().map(|(l, _, _)| l.as_str()).collect();
+        assert_eq!(labels, ["2025-12", "2026-01", "2026-02"]);
+        assert_eq!(m[0].2, m[1].1);
+        assert!(super::months_between(10, 5).is_empty());
+    }
 }
 
 /// Stream the manifest + members into a tar over any writer; returns the writer

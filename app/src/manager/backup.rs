@@ -29,10 +29,9 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use sentient_backup_core::backup::{self, BackupOptions, FileStoreSpec, Selection};
-use sentient_backup_core::clickhouse::{self, ChConn};
+use sentient_backup_core::clickhouse::ChConn;
 use sentient_backup_core::db::{self, CategoryReport, ConnConfig, DbInspector};
 use sentient_backup_core::progress as bk;
-use sentient_backup_core::restore::{self, RestoreOptions};
 use sentient_installer_core::progress::{Progress, ProgressFn};
 use sentient_installer_core::stack::Flavor;
 
@@ -62,15 +61,52 @@ pub struct BackupPage {
     backup: Entity<Job>,
     restore_input: Option<PathBuf>,
     restore_passphrase: Entity<InputState>,
-    restore_db: Entity<InputState>,
+    /// Replacing this instance's data with a backup (crate::replace).
     restore: Entity<Job>,
-    /// The database the running restore writes into, then the last one
-    /// restored successfully (offered to be put into service).
-    restoring: Option<String>,
-    restored: Option<String>,
-    switch: Entity<Job>,
+    summary: Option<Result<crate::replace::Summary, crate::replace::Unreadable>>,
+    reading_summary: bool,
+    /// The backup compared with this installation (after Next).
+    check: Option<crate::replace::Check>,
+    checking: bool,
+    replace_stage: ReplaceStage,
+    delete_old: bool,
+    planned: Vec<String>,
+    show_restore_log: bool,
+    /// The Platform Manager's backups: settings, the one being made, the
+    /// folder's list and the last check (crate::backups).
+    prefs: crate::backups::BackupPrefs,
+    /// "Choose…": the tick list of parts (the earlier, by-hand backup).
+    choose: bool,
+    made: Option<crate::backups::Made>,
+    planned_backup: Vec<String>,
+    list: Vec<crate::backups::Entry>,
+    /// The backup being checked, and what the check found.
+    checked: Option<(PathBuf, Option<Result<sentient_backup_core::restore::CheckReport, String>>)>,
+    /// Sizes for the estimate: (database, ClickHouse, telemetry history in PostgreSQL), and free disk.
+    sizes: Option<(u64, u64, u64, Option<u64>)>,
+    schedule_time: Entity<InputState>,
+    keep: Entity<InputState>,
+    part_gb: Entity<InputState>,
+    schedule_note: Option<(Tone, String)>,
     _tasks: Vec<Task<()>>,
     _observe: Vec<Subscription>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReplaceStage {
+    /// Choose a file; its summary shows below (I1).
+    Choose,
+    /// The backup against this installation, and what happens to the data now (I2, I6).
+    Compare,
+    /// Running, finished or failed (I3–I5).
+    Run,
+}
+
+/// A button that leads to another screen.
+#[derive(Clone, Copy)]
+pub enum Go {
+    Update,
+    Settings,
 }
 
 /// Forward the backup engine's progress into a job's sink.
@@ -121,26 +157,25 @@ impl BackupPage {
         let restore_passphrase = cx.new(|cx| {
             InputState::new(window, cx).masked(true).placeholder("Only for an encrypted backup")
         });
-        let restore_db = cx.new(|cx| InputState::new(window, cx).default_value("sentient_restored"));
+        let prefs = crate::backups::BackupPrefs::load();
+        let schedule_time = cx.new(|cx| InputState::new(window, cx).placeholder("23:30").default_value(prefs.daily_at.clone().unwrap_or_default()));
+        let keep = cx.new(|cx| InputState::new(window, cx).default_value(prefs.keep.to_string()));
+        let part_gb = cx.new(|cx| InputState::new(window, cx).default_value(prefs.part_gb.to_string()));
         let backup = cx.new(|_| Job::new());
         let restore = cx.new(|_| Job::new());
-        let switch = cx.new(|_| Job::new());
-        let _observe = vec![
-            cx.observe(&backup, |_, _, cx| cx.notify()),
-            cx.observe(&restore, |page: &mut Self, job, cx| {
-                if matches!(job.read(cx).state(), JobState::Done(_)) {
-                    page.restored = page.restoring.take();
+        let mut _observe = vec![
+            cx.observe(&backup, |page: &mut Self, job, cx| {
+                if !job.read(cx).is_running() {
+                    page.refresh_list();
                 }
                 cx.notify();
             }),
-            cx.observe(&switch, |page: &mut Self, job, cx| {
-                if matches!(job.read(cx).state(), JobState::Done(_)) {
-                    page.restored = None;
-                }
-                cx.notify();
-            }),
+            cx.observe(&restore, |_, _, cx| cx.notify()),
         ];
-        Self {
+        for input in [&schedule_time, &keep, &part_gb] {
+            _observe.push(cx.subscribe(input, |_, _, _: &gpui_kit::component::input::InputEvent, cx| cx.notify()));
+        }
+        let mut page = Self {
             record,
             password,
             ch_password,
@@ -154,14 +189,37 @@ impl BackupPage {
             backup,
             restore_input: None,
             restore_passphrase,
-            restore_db,
             restore,
-            restoring: None,
-            restored: None,
-            switch,
+            summary: None,
+            reading_summary: false,
+            check: None,
+            checking: false,
+            replace_stage: ReplaceStage::Choose,
+            delete_old: true,
+            planned: Vec::new(),
+            show_restore_log: false,
+            list: crate::backups::list(&prefs.folder),
+            prefs,
+            choose: false,
+            made: None,
+            planned_backup: Vec::new(),
+            checked: None,
+            sizes: None,
+            schedule_time,
+            keep,
+            part_gb,
+            schedule_note: None,
             _tasks: Vec::new(),
             _observe,
+        };
+        page.read_sizes(cx);
+        // Development aid: open with a backup chosen (screens).
+        #[cfg(debug_assertions)]
+        if let Some(f) = std::env::var_os("SPM_DEBUG_RESTORE_FILE") {
+            page.restore_input = Some(PathBuf::from(f));
+            page.read_summary(cx);
         }
+        page
     }
 
     fn conn(&self, dbname: Option<String>, cx: &App) -> Option<ConnConfig> {
@@ -285,11 +343,14 @@ impl BackupPage {
             .collect();
         let passphrase = Some(self.passphrase.read(cx).value().to_string()).filter(|p| !p.is_empty());
         let clickhouse = self.ch_conn(None, cx);
-        let opts = BackupOptions { output, selection, file_stores, zstd_level: 10, passphrase, clickhouse };
+        let mut opts = BackupOptions { output, selection, file_stores, zstd_level: 10, passphrase, clickhouse, origin: Default::default(), part_size: None };
         let record = self.record.clone();
         self.backup.update(cx, |job, cx| {
             job.start(
                 move |sink| {
+                    if let Some(r) = &record {
+                        opts.origin = crate::backup_jobs::origin(r, &conn);
+                    }
                     let summary = block_on(backup::run(&conn, &opts, bridge(sink.clone())))?
                         .map_err(|e| e.to_string())?;
                     if let Some(record) = &record {
@@ -323,6 +384,8 @@ impl BackupPage {
             let Ok(Ok(Some(paths))) = rx.await else { return };
             this.update(cx, |page, cx| {
                 page.restore_input = paths.into_iter().next();
+                page.replace_stage = ReplaceStage::Choose;
+                page.read_summary(cx);
                 cx.notify();
             })
             .ok();
@@ -330,84 +393,435 @@ impl BackupPage {
         self._tasks.push(task);
     }
 
-    fn run_restore(&mut self, cx: &mut Context<Self>) {
-        let target = self.restore_db.read(cx).value().trim().to_string();
-        let (Some(input), Some(admin), Some(conn)) =
-            (self.restore_input.clone(), self.conn(None, cx), self.conn(Some(target.clone()), cx))
-        else {
+    fn refresh_list(&mut self) {
+        self.list = crate::backups::list(&self.prefs.folder);
+    }
+
+    /// The database's sizes and free disk, for the estimate (background).
+    fn read_sizes(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        if crate::dbstatus::needs_admin(&record) {
             return;
-        };
-        let state_dir = self.record.as_ref().map(|r| r.state_dir.clone()).unwrap_or_default();
-        let opts = RestoreOptions {
-            input,
-            allow_nonempty: false,
-            file_store_paths: vec![
-                ("reports".into(), state_dir.join("reports")),
-                ("vc-repos".into(), state_dir.join("vc-repos")),
-            ],
-            passphrase: Some(self.restore_passphrase.read(cx).value().to_string()).filter(|p| !p.is_empty()),
-            clickhouse: self.ch_conn(Some(target.clone()), cx),
-            telemetry_into: None,
-        };
-        let live_ch = self.record.as_ref().map(|r| r.stack.ch_db.clone()).unwrap_or_default();
-        let record = self.record.clone();
-        self.restoring = Some(target.clone());
-        self.restored = None;
-        self.restore.update(cx, |job, cx| {
+        }
+        let task = cx.spawn(async move |this, cx| {
+            let st = cx.background_executor().spawn(async move { crate::dbstatus::read(&record) }).await;
+            this.update(cx, |page, cx| {
+                if let Some(pg) = &st.pg {
+                    let history = pg.tables.iter().find(|t| t.name == "ts_kv").map(|t| t.bytes).unwrap_or(0);
+                    page.sizes = Some((pg.db_bytes, st.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0), history, pg.free_bytes));
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
+    /// Back up now with the chosen preset (crate::backups::run).
+    fn run_preset_backup(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        let prefs = self.prefs.clone();
+        let pass = Some(self.passphrase.read(cx).value().to_string()).filter(|p| !p.is_empty());
+        self.planned_backup = crate::backups::planned_steps(&prefs, false);
+        self.made = None;
+        let made = cx.entity().downgrade();
+        let (tx, rx) = std::sync::mpsc::channel::<crate::backups::Made>();
+        self.backup.update(cx, |job, cx| {
             job.start(
                 move |sink| {
-                    let mut opts = opts;
-                    // A backup from another database type is converted to this one.
-                    opts.telemetry_into = record.as_ref().map(crate::migration::telemetry_into).transpose()?;
-                    block_on(async {
-                        sink(Progress::Step { name: format!("Creating the empty database {target}") });
-                        db::create_database(&admin, &target).await.map_err(|e| e.to_string())?;
-                        if let Some(ch) = &opts.clickhouse {
-                            sink(Progress::Step { name: format!("Creating the ClickHouse database {target}") });
-                            clickhouse::clone_schema(ch, &live_ch).map_err(|e| e.to_string())?;
+                    // Native Linux: the database password is root-only.
+                    if crate::rootjob::needed(&record) {
+                        let mut args = vec!["backup-now".to_string()];
+                        if pass.is_some() {
+                            args.push("--passphrase-stdin".into());
                         }
-                        restore::run(&conn, &opts, bridge(sink.clone())).await.map_err(|e| e.to_string())
-                    })??;
-                    if let Some(record) = &record {
-                        let ch_password = opts.clickhouse.as_ref().map(|c| c.password.clone()).unwrap_or_default();
-                        crate::restore_switch::match_schema(record, &admin, &ch_password, &target, &sink)?;
+                        return crate::rootjob::run_with_input(&args, pass.as_deref(), &sink).map(|_| ());
                     }
-                    crate::secrets_key::after_restore(&admin, &target, &opts.input, None, &sink)?;
-                    sink(Progress::Done { message: format!("Restored into the database {target}") });
+                    let m = crate::backups::run(&record, &prefs, pass, false, sink)?;
+                    let _ = tx.send(m);
                     Ok(())
                 },
                 cx,
             )
         });
+        let task = cx.spawn(async move |_, cx| {
+            let got = cx.background_executor().spawn(async move { rx.recv().ok() }).await;
+            if let Some(m) = got {
+                made.update(cx, |page, cx| {
+                    page.made = Some(m);
+                    cx.notify();
+                })
+                .ok();
+            }
+        });
+        self._tasks.push(task);
+        cx.notify();
     }
 
-    /// Put the restored database into service, after a confirmation.
-    fn confirm_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(record), Some(name)) = (self.record.clone(), self.restored.clone()) else { return };
+    fn run_check(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let pass = Some(self.passphrase.read(cx).value().to_string()).filter(|p| !p.is_empty());
+        self.checked = Some((path.clone(), None));
+        let task = cx.spawn(async move |this, cx| {
+            let p = path.clone();
+            let r = cx.background_executor().spawn(async move { crate::backups::check(&p, pass.as_deref()) }).await;
+            this.update(cx, |page, cx| {
+                page.checked = Some((path, Some(r)));
+                page.refresh_list();
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+        cx.notify();
+    }
+
+    fn confirm_delete(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
-        let text = format!(
-            "SENTIENT stops and starts again on the data in {name}. Its current database is kept under another name (listed under Migration, Kept after earlier changes); if SENTIENT does not start on the restored data, the current data is put back."
-        );
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         window.open_alert_dialog(cx, move |dialog, _, _| {
             let this = this.clone();
-            let record = record.clone();
-            let name = name.clone();
-            dialog.title("Put the restored data into service?").description(text.clone()).confirm().ok_text("Switch").on_ok(move |_, _, cx| {
-                let (record, name) = (record.clone(), name.clone());
+            let path = path.clone();
+            dialog.title(format!("Delete {name}?")).description("The backup file (all its parts) and its .sha256 are deleted. This cannot be undone.").confirm().ok_text("Delete").on_ok(move |_, _, cx| {
+                let path = path.clone();
                 this.update(cx, |page, cx| {
-                    page.switch.update(cx, |job, cx| {
-                        if crate::rootjob::needed(&record) {
-                            let args = vec!["use-restored".to_string(), name];
-                            job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx)
-                        } else {
-                            job.start(move |sink| crate::restore_switch::run(&record, &name, sink).map(|_| ()), cx)
-                        }
-                    });
+                    page.schedule_note = crate::backups::delete(&path).err().map(|e| (Tone::Bad, e));
+                    page.refresh_list();
+                    cx.notify();
                 })
                 .ok();
                 true
             })
         });
+    }
+
+    fn choose_folder(&mut self, second: bool, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Use this folder".into()) });
+        let task = cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else { return };
+            let Some(dir) = paths.into_iter().next() else { return };
+            this.update(cx, |page, cx| {
+                if second { page.prefs.copy_to = Some(dir) } else { page.prefs.folder = dir }
+                page.save_prefs(false, cx);
+                page.refresh_list();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
+    fn add_backup_file(&mut self, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Add this backup".into()) });
+        let folder = self.prefs.folder.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else { return };
+            let Some(file) = paths.into_iter().next() else { return };
+            let r = cx.background_executor().spawn(async move { crate::backups::add(&file, &folder) }).await;
+            this.update(cx, |page, cx| {
+                page.schedule_note = Some(match r {
+                    Ok(p) => (Tone::Good, format!("Added {}", p.display())),
+                    Err(e) => (Tone::Bad, e),
+                });
+                page.refresh_list();
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
+    /// Save the backup settings; with `schedule`, also (re)register the
+    /// daily backup.
+    fn save_prefs(&mut self, schedule: bool, cx: &mut Context<Self>) {
+        if schedule {
+            let t = self.schedule_time.read(cx).value().trim().to_string();
+            self.prefs.daily_at = (!t.is_empty()).then_some(t);
+            self.prefs.keep = self.keep.read(cx).value().trim().parse().unwrap_or(7).max(1);
+            self.prefs.part_gb = self.part_gb.read(cx).value().trim().parse().unwrap_or(4);
+        }
+        let prefs = self.prefs.clone();
+        let record = self.record.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let r = cx
+                .background_executor()
+                .spawn(async move {
+                    prefs.save()?;
+                    if !schedule {
+                        return Ok(None);
+                    }
+                    match record.as_ref().filter(|r| crate::rootjob::needed(r)) {
+                        Some(_) => crate::rootjob::run(&["backup-schedule".to_string()], &sentient_installer_core::progress::noop()).map(|_| ()),
+                        None => crate::backups::apply_schedule(&prefs),
+                    }?;
+                    Ok::<_, String>(Some(match crate::backups::next_run(&prefs) {
+                        Some(n) => format!("Saved. The next automatic backup is {n}."),
+                        None => "Saved. No automatic backup.".to_string(),
+                    }))
+                })
+                .await;
+            this.update(cx, |page, cx| {
+                page.schedule_note = match r {
+                    Ok(Some(m)) => Some((Tone::Good, m)),
+                    Ok(None) => None,
+                    Err(e) => Some((Tone::Bad, e)),
+                };
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+        cx.notify();
+    }
+
+    /// Read the chosen file's summary (with the passphrase when typed).
+    fn read_summary(&mut self, cx: &mut Context<Self>) {
+        let Some(file) = self.restore_input.clone() else { return };
+        let pass = Some(self.restore_passphrase.read(cx).value().to_string()).filter(|p| !p.is_empty());
+        self.reading_summary = true;
+        self.summary = None;
+        self.check = None;
+        let task = cx.spawn(async move |this, cx| {
+            let s = cx.background_executor().spawn(async move { crate::replace::summary(&file, pass.as_deref()) }).await;
+            this.update(cx, |page, cx| {
+                page.summary = Some(s);
+                page.reading_summary = false;
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
+    /// I2: compare the backup with this installation.
+    fn compare(&mut self, cx: &mut Context<Self>) {
+        let (Some(record), Some(Ok(summary))) = (self.record.clone(), self.summary.clone()) else { return };
+        self.replace_stage = ReplaceStage::Compare;
+        self.checking = true;
+        let task = cx.spawn(async move |this, cx| {
+            let c = cx.background_executor().spawn(async move { crate::replace::check(&record, &summary) }).await;
+            this.update(cx, |page, cx| {
+                page.check = Some(c);
+                page.checking = false;
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+        cx.notify();
+    }
+
+    fn confirm_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        let text = "Users, passwords, devices and dashboards will be those of the backup. Everything on this instance now is replaced. SENTIENT stops for about a minute while it switches.";
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let this = this.clone();
+            dialog.title("Replace this instance's data?").description(text).confirm().ok_text("Replace").on_ok(move |_, _, cx| {
+                this.update(cx, |page, cx| page.run_replace(cx)).ok();
+                true
+            })
+        });
+    }
+
+    fn run_replace(&mut self, cx: &mut Context<Self>) {
+        let (Some(record), Some(file)) = (self.record.clone(), self.restore_input.clone()) else { return };
+        let pass = Some(self.restore_passphrase.read(cx).value().to_string()).filter(|p| !p.is_empty());
+        let delete_old = self.delete_old;
+        self.planned = crate::replace::planned_steps(delete_old);
+        self.replace_stage = ReplaceStage::Run;
+        self.show_restore_log = false;
+        self.restore.update(cx, |job, cx| {
+            if crate::rootjob::needed(&record) {
+                let mut args = vec!["replace".to_string(), file.display().to_string()];
+                if delete_old {
+                    args.push("--delete-old".into());
+                }
+                if pass.is_some() {
+                    args.push("--passphrase-stdin".into());
+                }
+                // The passphrase goes on the job's standard input, never on its command line.
+                job.start(move |sink| crate::rootjob::run_with_input(&args, pass.as_deref(), &sink).map(|_| ()), cx)
+            } else {
+                job.start(move |sink| crate::replace::run(record, file, pass, delete_old, sink), cx)
+            }
+        });
+        cx.notify();
+    }
+
+    /// I1–I6.
+    fn replace_panel(&self, theme: &gpui_kit::component::Theme, busy: bool, cx: &mut Context<Self>) -> Div {
+        use crate::replace::{Fix, Unreadable};
+        let mut panel = ui::panel(theme)
+            .child(div().font_weight(FontWeight::MEDIUM).child("Restore from a backup"))
+            .child(div().text_sm().text_color(theme.muted_foreground).child(
+                "Bring back this instance's data, or replace it with another instance's. This installation keeps its own database setup; a backup from another type is converted, one from an older SENTIENT is brought up to this version.",
+            ));
+        let fact = |label: &'static str, value: String| {
+            h_flex().gap_3().text_sm().child(div().w_40().flex_shrink_0().text_color(theme.muted_foreground).child(label)).child(div().min_w_0().child(value))
+        };
+        match self.replace_stage {
+            ReplaceStage::Choose => {
+                panel = panel.child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .child(Button::new("restore-input").outline().label("Choose backup…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.choose_restore_input(cx))))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(
+                            self.restore_input.as_ref().and_then(|p| p.file_name()).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "No file chosen".into()),
+                        )),
+                );
+                if self.reading_summary {
+                    panel = panel.child(div().text_sm().text_color(theme.muted_foreground).child("Reading the backup…"));
+                }
+                match &self.summary {
+                    Some(Ok(s)) => {
+                        panel = panel
+                            .child(fact("Made", format!("{}{}", s.made, s.host.as_ref().map(|h| format!(", on {h}")).unwrap_or_default())))
+                            .child(fact("SENTIENT", s.sentient_version.clone().unwrap_or_else(|| "not recorded".into())))
+                            .child(
+                                h_flex()
+                                    .gap_3()
+                                    .text_sm()
+                                    .child(div().w_40().flex_shrink_0().text_color(theme.muted_foreground).child("Database type"))
+                                    .child(ui::database_logo("postgresql", 15.))
+                                    .when(s.database_type.contains("ClickHouse"), |r| r.child(ui::database_logo("clickhouse", 13.)))
+                                    .when(s.database_type.contains("TimescaleDB"), |r| r.child(ui::database_logo("timescale", 15.)))
+                                    .child(div().min_w_0().child(s.database_type.clone())),
+                            )
+                            .child(fact("Size", format!("{} (about {} restored)", crate::dbstatus::bytes_label(s.file_bytes), crate::dbstatus::bytes_label(s.restored_bytes))))
+                            .child(fact("Holds", s.holds.join(", ")))
+                            .child(fact("Protected", if s.encrypted { "encrypted with a passphrase".into() } else { "not encrypted".to_string() }))
+                            .child(h_flex().child(Button::new("replace-next").primary().label("Next").disabled(busy || self.record.is_none()).on_click(cx.listener(|this, _, _, cx| this.compare(cx)))));
+                    }
+                    Some(Err(Unreadable::Passphrase(e))) => {
+                        panel = panel
+                            .child(div().text_sm().child(if e.contains("wrong") { "The passphrase is wrong, or the file is damaged." } else { "This backup is encrypted. Type its passphrase to read it." }))
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(div().w_64().child(Input::new(&self.restore_passphrase).mask_toggle()))
+                                    .child(Button::new("read-encrypted").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_summary(cx)))),
+                            );
+                    }
+                    Some(Err(Unreadable::Other(e))) => panel = panel.child(ui::outcome(theme, Tone::Bad, format!("This file cannot be used: {e}"))),
+                    None => {}
+                }
+            }
+            ReplaceStage::Compare => {
+                let here = self.record.as_ref().map(|r| r.sentient_version.clone()).unwrap_or_default();
+                panel = panel.child(div().text_lg().child("This backup into this installation"));
+                match &self.check {
+                    None => panel = panel.child(div().text_sm().text_color(theme.muted_foreground).child("Comparing with this installation…")),
+                    Some(c) => {
+                        panel = panel
+                            .child(fact("Database type", c.type_line.clone()))
+                            .child(fact("SENTIENT", c.version_line.clone()))
+                            .child(fact("Disk", c.disk_line.clone()))
+                            .child(fact("Licence", "This computer keeps its own licence.".into()));
+                        if let Some((why, fix)) = &c.refusal {
+                            let fix = *fix;
+                            panel = panel.child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(div().flex_1().child(ui::outcome(theme, Tone::Bad, why.clone())))
+                                    .when(fix == Fix::UpdateSentient, |r| {
+                                        r.child(Button::new("fix-update").outline().small().label("Update SENTIENT first").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Update))))
+                                    }),
+                            );
+                        } else {
+                            let live = c.live_bytes.map(crate::dbstatus::bytes_label).unwrap_or_else(|| "size unknown".into());
+                            panel = panel
+                                .child(div().pt_2().font_weight(FontWeight::MEDIUM).child(format!("The data on this instance now ({live})")))
+                                .child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(Checkbox::new("delete-old").label("Delete it once the restored data runs").checked(self.delete_old).on_change(cx.listener(|this, v: &bool, _, cx| {
+                                            this.delete_old = *v;
+                                            cx.notify();
+                                        })))
+                                        .child(div().pl_6().text_sm().text_color(theme.muted_foreground).child(if self.delete_old {
+                                            format!("Frees {live}. It is deleted only after SENTIENT has started on the restored data.")
+                                        } else {
+                                            "Kept under \"Kept after earlier changes\" until you remove it.".to_string()
+                                        })),
+                                )
+                                .child(ui::outcome(theme, Tone::Warn, format!("Users, passwords, devices and dashboards will be those of the backup. Everything on this instance now is replaced (SENTIENT {here} keeps running until the switch).")));
+                        }
+                        panel = panel.child(
+                            h_flex()
+                                .gap_2()
+                                .child(Button::new("replace-go").primary().label("Replace this instance's data").disabled(busy || c.refusal.is_some()).on_click(cx.listener(|this, _, window, cx| this.confirm_replace(window, cx))))
+                                .child(Button::new("replace-back").outline().label("Back").on_click(cx.listener(|this, _, _, cx| {
+                                    this.replace_stage = ReplaceStage::Choose;
+                                    cx.notify();
+                                }))),
+                        );
+                    }
+                }
+            }
+            ReplaceStage::Run => {
+                let job = self.restore.read(cx);
+                let finished = match job.state() {
+                    JobState::Done(_) => Some(true),
+                    JobState::Failed(_) => Some(false),
+                    _ => None,
+                };
+                let marked = ui::mark_steps(&self.planned, job.steps(), finished);
+                let log: Vec<SharedString> = job.log().iter().rev().take(12).rev().cloned().collect();
+                panel = panel.child(div().text_lg().child(match finished {
+                    None => "Replacing this instance's data",
+                    Some(true) => "This instance runs on the restored data",
+                    Some(false) => "The data was not replaced",
+                }));
+                if finished.is_none() {
+                    panel = panel.child(div().text_sm().text_color(theme.muted_foreground).child("SENTIENT keeps running on the current data until the switch."));
+                }
+                match job.state() {
+                    JobState::Done(m) => panel = panel.child(ui::outcome(theme, Tone::Good, m.clone())),
+                    JobState::Failed(m) => panel = panel.child(ui::outcome(theme, Tone::Bad, format!("{m} Nothing was deleted."))),
+                    _ => {}
+                }
+                panel = panel.child(ui::steps(theme, &marked));
+                if finished.is_none() {
+                    if let Some(p) = job.percent() {
+                        panel = panel.child(ProgressBar::new("replace-progress").value(p));
+                    }
+                    if let Some(l) = log.last() {
+                        panel = panel.child(div().text_xs().text_color(theme.muted_foreground).child(l.clone()));
+                    }
+                }
+                if finished == Some(true) {
+                    let port = self.record.as_ref().map(|r| r.stack.http_port).unwrap_or(8080);
+                    panel = panel
+                        .child(div().pt_2().font_weight(FontWeight::MEDIUM).child("Sign in"))
+                        .child(div().text_sm().child("Use the accounts of the backup. If you do not know its system administrator password, reset it in Platform settings."))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(Button::new("open-sentient").primary().label("Open SENTIENT").on_click(move |_, _, cx| ui::open_sentient(port, false, cx)))
+                                .child(Button::new("reset-password").outline().label("Reset password…").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Settings)))),
+                        )
+                        .child(div().pt_2().font_weight(FontWeight::MEDIUM).child("Devices"))
+                        .child(div().text_sm().child("Devices connect with the credentials stored in the backup. Point them or the gateway to this computer's address."));
+                }
+                if finished == Some(false) {
+                    panel = panel
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(Button::new("restore-log").outline().label(if self.show_restore_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
+                                    this.show_restore_log = !this.show_restore_log;
+                                    cx.notify();
+                                })))
+                                .child(Button::new("restore-again").outline().label("Back").on_click(cx.listener(|this, _, _, cx| {
+                                    this.replace_stage = ReplaceStage::Choose;
+                                    cx.notify();
+                                }))),
+                        )
+                        .when(self.show_restore_log, |p| p.children(log.into_iter().map(|l| div().text_xs().text_color(theme.muted_foreground).child(l))));
+                }
+            }
+        }
+        panel
     }
 
     fn job_view(&self, job: &Entity<Job>, cx: &App) -> Option<Div> {
@@ -434,6 +848,309 @@ impl BackupPage {
     }
 }
 
+impl EventEmitter<Go> for BackupPage {}
+
+/// A row: label, then its control.
+fn brow(theme: &gpui_kit::component::Theme, label: &'static str, help: Option<&'static str>, control: impl IntoElement) -> Div {
+    h_flex()
+        .gap_3()
+        .items_center()
+        .py_1p5()
+        .border_t_1()
+        .border_color(theme.border)
+        .child(
+            v_flex()
+                .w(px(220.))
+                .flex_shrink_0()
+                .child(div().text_sm().child(label))
+                .when_some(help, |c, h| c.child(div().text_xs().text_color(theme.muted_foreground).child(h))),
+        )
+        .child(h_flex().flex_1().min_w_0().gap_2().items_center().child(control))
+}
+
+impl BackupPage {
+    /// J2–J6: the last backup, back up now, the automatic backup, and the
+    /// backups in the folder with their checks.
+    fn backup_panels(&self, theme: &gpui_kit::component::Theme, busy: bool, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        use crate::backups::{History, Preset};
+        use crate::dbstatus::bytes_label;
+        let mut out = Vec::new();
+        // The line under the title.
+        let newest = self.list.first();
+        let last = match newest {
+            Some(e) => format!(
+                "Last backup: {}, {}{}.",
+                e.made,
+                bytes_label(e.bytes),
+                match &e.check {
+                    Some(c) if c.ok => ", checked".to_string(),
+                    Some(_) => ", DAMAGED".to_string(),
+                    None => String::new(),
+                }
+            ),
+            None => "No backup in the backup folder yet.".to_string(),
+        };
+        let next = match crate::backups::next_run(&self.prefs) {
+            Some(n) => format!(" Next: {n}."),
+            None => " No automatic backup.".to_string(),
+        };
+        out.push(div().text_sm().child(format!("{last}{next}")).into_any_element());
+
+        // Back up now.
+        let p = &self.prefs;
+        let seg = |id: &'static str, label: &'static str, on: bool| {
+            let b = Button::new(id).small().label(label);
+            if on { b.primary() } else { b.outline() }
+        };
+        let presets = h_flex()
+            .gap_1()
+            .child(seg("preset-everything", "Everything", p.preset == Preset::Everything && !self.choose).on_click(cx.listener(|this, _, _, cx| {
+                this.prefs.preset = Preset::Everything;
+                this.choose = false;
+                this.save_prefs(false, cx);
+            })))
+            .child(seg("preset-config", "Configuration only", p.preset == Preset::Configuration && !self.choose).on_click(cx.listener(|this, _, _, cx| {
+                this.prefs.preset = Preset::Configuration;
+                this.choose = false;
+                this.save_prefs(false, cx);
+            })))
+            .child(seg("preset-choose", "Choose…", self.choose).on_click(cx.listener(|this, _, _, cx| {
+                this.choose = true;
+                if this.inspection.is_none() {
+                    this.inspect(cx);
+                }
+                cx.notify();
+            })));
+        let history = h_flex()
+            .gap_1()
+            .child(seg("hist-all", "All", p.history == History::All).on_click(cx.listener(|this, _, _, cx| {
+                this.prefs.history = History::All;
+                this.save_prefs(false, cx);
+            })))
+            .child(seg("hist-90", "Last 90 days", p.history == History::LastDays(90)).on_click(cx.listener(|this, _, _, cx| {
+                this.prefs.history = History::LastDays(90);
+                this.save_prefs(false, cx);
+            })))
+            .child(seg("hist-none", "None", p.history == History::None).on_click(cx.listener(|this, _, _, cx| {
+                this.prefs.history = History::None;
+                this.save_prefs(false, cx);
+            })));
+        let estimate = self.sizes.map(|(pg, ch, hist, free)| {
+            let (bytes, secs) = crate::backups::estimate(p, pg, ch, hist);
+            let mins = secs.div_ceil(60);
+            let free_text = free.map(|f| format!(" · {} free", bytes_label(f))).unwrap_or_default();
+            let low = free.is_some_and(|f| f < bytes.saturating_mul(2));
+            (format!("Estimated file: {} · takes about {} minute{}{free_text}", bytes_label(bytes), mins, if mins == 1 { "" } else { "s" }), low)
+        });
+        let mut now = ui::panel(theme)
+            .gap_0()
+            .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Back up now"))
+            .child(brow(theme, "What to include", Some("Sizes are read from the database."), presets))
+            .when(!self.choose, |c| {
+                c.child(brow(theme, "Telemetry history", None, history))
+                    .child(brow(theme, "Encrypt with a passphrase", Some("Without it the file cannot be read."), div().w(px(280.)).child(Input::new(&self.passphrase).mask_toggle())))
+                    .child(brow(
+                        theme,
+                        "Save to",
+                        None,
+                        h_flex()
+                            .gap_2()
+                            .child(div().min_w_0().flex_shrink(1.).overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().child(p.folder.display().to_string()))
+                            .child(Button::new("folder").outline().small().label("Change…").on_click(cx.listener(|this, _, _, cx| this.choose_folder(false, cx)))),
+                    ))
+            });
+        if !self.choose {
+            now = now
+                .when_some(estimate, |c, (text, low)| c.child(div().pt_2().text_sm().text_color(if low { theme.danger } else { theme.muted_foreground }).child(text)))
+                .child(
+                    h_flex().pt_2().child(Button::new("backup-now").primary().label(if busy { "Backing up…" } else { "Back up now" }).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_preset_backup(cx)))),
+                );
+        }
+        out.push(now.into_any_element());
+
+        // J3/J4: the run and its result.
+        let job = self.backup.read(cx);
+        if !self.planned_backup.is_empty() && !matches!(job.state(), JobState::Idle) {
+            let finished = match job.state() {
+                JobState::Done(_) => Some(true),
+                JobState::Failed(_) => Some(false),
+                _ => None,
+            };
+            let marked = ui::mark_steps(&self.planned_backup, job.steps(), finished);
+            let mut run = ui::panel(theme);
+            match (finished, &self.made) {
+                (None, _) => {
+                    run = run
+                        .child(div().font_weight(FontWeight::MEDIUM).child(format!("Backing up to {}", self.prefs.folder.display())))
+                        .when_some(job.log().last().cloned(), |c, l| c.child(div().text_xs().text_color(theme.muted_foreground).child(l)))
+                        .when_some(job.percent(), |c, v| c.child(ProgressBar::new("backup-progress").value(v)))
+                        .child(div().text_xs().text_color(theme.muted_foreground).child("SENTIENT keeps running during a backup."));
+                }
+                (Some(true), Some(m)) => {
+                    let name = m.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    let whole = m.files.first().map(|(_, h, _)| h.clone()).unwrap_or_default();
+                    let short = if whole.len() > 16 { format!("{}…{}", &whole[..8], &whole[whole.len() - 8..]) } else { whole.clone() };
+                    let folder = self.prefs.folder.display().to_string();
+                    run = run
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(div().flex_1().child(ui::outcome(theme, Tone::Good, format!("Backup finished and checked: {name}, {}.", bytes_label(m.bytes)))))
+                                .child(Button::new("open-folder").outline().small().label("Open folder").on_click(move |_, _, cx| ui::open_url(&folder, cx))),
+                        )
+                        .child(div().font_weight(FontWeight::MEDIUM).child("Integrity"))
+                        .child(brow(theme, "Each part", None, div().text_sm().child(format!("SHA-256 stored inside the file, {} parts", m.members))))
+                        .child(if m.files.len() == 1 {
+                            brow(
+                                theme,
+                                "Whole file SHA-256",
+                                None,
+                                h_flex()
+                                    .gap_2()
+                                    .child(div().text_sm().font_family(theme.mono_font_family.clone()).child(short))
+                                    .child(Button::new("copy-hash").outline().small().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(whole.clone())))),
+                            )
+                        } else {
+                            brow(theme, "Files", None, div().text_sm().child(format!("{} parts, each with its SHA-256", m.files.len())))
+                        })
+                        .child(brow(theme, "Saved beside it", None, div().text_sm().child(m.sidecar.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())))
+                        .child(brow(theme, "Read back", None, div().text_sm().child(m.check.summary.clone())))
+                        .when_some(m.copied_to.clone(), |c, p| c.child(brow(theme, "Second copy", None, div().text_sm().child(p.display().to_string()))));
+                }
+                (Some(true), None) => run = run.child(ui::outcome(theme, Tone::Good, "Backup finished and checked.")),
+                (Some(false), _) => {
+                    if let JobState::Failed(e) = job.state() {
+                        run = run.child(ui::outcome(theme, Tone::Bad, e.clone()));
+                    }
+                }
+            }
+            run = run.child(ui::steps(theme, &marked));
+            out.push(run.into_any_element());
+        }
+
+        // Automatic backup.
+        let auto = ui::panel(theme)
+            .gap_0()
+            .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Automatic backup"))
+            .child(brow(theme, "Back up every day at", Some("Empty: no automatic backup. 24-hour time, this computer's clock."), div().w(px(110.)).child(Input::new(&self.schedule_time).small())))
+            .child(brow(theme, "Keep", Some("Older automatic backups are deleted."), h_flex().gap_2().child(div().w(px(70.)).child(Input::new(&self.keep).small())).child(div().text_sm().child("backups"))))
+            .child(brow(
+                theme,
+                "Also copy to",
+                Some("A second disk or a network folder, in case this computer fails."),
+                h_flex()
+                    .gap_2()
+                    .child(div().text_sm().child(p.copy_to.as_ref().map(|d| d.display().to_string()).unwrap_or_else(|| "Nowhere".into())))
+                    .child(Button::new("copy-to").outline().small().label("Choose…").on_click(cx.listener(|this, _, _, cx| this.choose_folder(true, cx))))
+                    .when(p.copy_to.is_some(), |r| {
+                        r.child(Button::new("copy-to-off").ghost().small().label("Stop copying").on_click(cx.listener(|this, _, _, cx| {
+                            this.prefs.copy_to = None;
+                            this.save_prefs(false, cx);
+                        })))
+                    }),
+            ))
+            .child(brow(theme, "Split files larger than", Some("Numbered parts for USB disks; 0 = never."), h_flex().gap_2().child(div().w(px(70.)).child(Input::new(&self.part_gb).small())).child(div().text_sm().child("GB"))))
+            .child(h_flex().pt_2().gap_2().child(Button::new("save-schedule").primary().small().label("Save").on_click(cx.listener(|this, _, _, cx| this.save_prefs(true, cx)))))
+            .when_some(self.schedule_note.clone(), |c, (tone, text)| c.child(div().pt_2().child(ui::outcome(theme, tone, text))));
+        out.push(auto.into_any_element());
+
+        // J5: the backups in the folder.
+        let total: u64 = self.list.iter().map(|e| e.bytes).sum();
+        let mut list = ui::panel(theme).gap_0().child(
+            h_flex()
+                .gap_2()
+                .pb_1()
+                .items_center()
+                .child(div().font_weight(FontWeight::MEDIUM).child("Backups"))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().text_color(theme.muted_foreground).child(format!(
+                    "{} · {} file{}, {}",
+                    self.prefs.folder.display(),
+                    self.list.len(),
+                    if self.list.len() == 1 { "" } else { "s" },
+                    bytes_label(total)
+                )))
+                .child(Button::new("add-backup").outline().small().label("Add a backup file…").on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx)))),
+        );
+        if self.list.is_empty() {
+            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder yet."));
+        }
+        for e in &self.list {
+            let (pill_tone, pill_text) = match &e.check {
+                Some(c) if c.ok => (Tone::Good, format!("Checked {}", c.at.get(..10).unwrap_or(""))),
+                Some(_) => (Tone::Bad, "Damaged".to_string()),
+                None => (Tone::Neutral, "Not checked".to_string()),
+            };
+            let damaged = e.check.as_ref().is_some_and(|c| !c.ok);
+            let (p1, p2, p3) = (e.path.clone(), e.path.clone(), e.path.clone());
+            list = list.child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .py_1p5()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().text_sm().child(e.name.clone()))
+                            .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
+                                "{} · {}{}",
+                                e.made,
+                                if e.automatic { "automatic" } else { "by hand" },
+                                if e.parts > 1 { format!(" · {} parts", e.parts) } else { String::new() }
+                            ))),
+                    )
+                    .child(div().w(px(80.)).text_sm().text_right().child(bytes_label(e.bytes)))
+                    .child(div().w(px(120.)).child(ui::pill(theme, pill_tone, pill_text)))
+                    .when(!damaged, |r| {
+                        r.child(Button::new(SharedString::from(format!("restore-{}", e.name))).outline().small().label("Restore…").on_click(cx.listener(move |this, _, _, cx| {
+                            this.restore_input = Some(p1.clone());
+                            this.replace_stage = ReplaceStage::Choose;
+                            this.read_summary(cx);
+                        })))
+                    })
+                    .child(Button::new(SharedString::from(format!("check-{}", e.name))).outline().small().label(if damaged { "Details" } else { "Check" }).on_click(cx.listener(move |this, _, _, cx| this.run_check(p2.clone(), cx))))
+                    .child(Button::new(SharedString::from(format!("delete-{}", e.name))).ghost().small().label("Delete").on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), window, cx)))),
+            );
+        }
+        // J6: a check's result, part by part.
+        if let Some((path, result)) = &self.checked {
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let mut c = v_flex().gap_1().pt_2();
+            match result {
+                None => c = c.child(div().text_sm().text_color(theme.muted_foreground).child(format!("Checking {name}: reading every part…"))),
+                Some(Err(e)) => c = c.child(ui::outcome(theme, Tone::Bad, format!("{name} could not be checked: {e}"))),
+                Some(Ok(r)) => {
+                    let n = r.members.len() + r.missing.len();
+                    c = c.child(ui::outcome(
+                        theme,
+                        if r.ok() { Tone::Good } else { Tone::Bad },
+                        if r.ok() { format!("{name}: all {n} parts match.") } else { format!("{name} is damaged. Do not rely on this file.") },
+                    ));
+                    let mark = |ok: bool| ui::StepMark::from_ok(ok);
+                    let mut rows: Vec<(String, ui::StepMark)> = Vec::new();
+                    if let Some(files) = &r.files {
+                        let all = files.iter().all(|(_, ok)| *ok);
+                        rows.push((format!("File{} against its .sha256", if files.len() > 1 { "s" } else { "" }), mark(all)));
+                    }
+                    for m in &r.members {
+                        rows.push((format!("{} ({})", m.label, bytes_label(m.bytes)), mark(m.ok)));
+                    }
+                    for missing in &r.missing {
+                        rows.push((format!("{}: missing", sentient_backup_core::restore::member_label(missing)), ui::StepMark::Failed));
+                    }
+                    c = c.child(ui::steps(theme, &rows));
+                }
+            }
+            list = list.child(c);
+        }
+        out.push(list.into_any_element());
+        out
+    }
+}
+
 impl Render for BackupPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
@@ -446,10 +1163,9 @@ impl Render for BackupPage {
             return page.child(ui::not_installed(&theme));
         };
         let clickhouse = record.flavor() == Flavor::Clickhouse;
-        let busy = self.backup.read(cx).is_running() || self.restore.read(cx).is_running() || self.switch.read(cx).is_running();
+        let busy = self.backup.read(cx).is_running() || self.restore.read(cx).is_running();
+        let replace_panel = self.replace_panel(&theme, busy, cx);
         let backup_status = self.job_view(&self.backup, cx);
-        let restore_status = self.job_view(&self.restore, cx);
-        let switch_status = self.job_view(&self.switch, cx);
 
         let categories = self.inspection.as_ref().map(|i| {
             i.categories
@@ -473,9 +1189,10 @@ impl Render for BackupPage {
         });
         let can_backup = !busy && self.inspection.is_some() && self.output.is_some();
 
-        page.child(
+        let panels = self.backup_panels(&theme, busy, cx);
+        page.children(panels).when(self.choose, |page| page.child(
             ui::panel(&theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child("Back up"))
+                .child(div().font_weight(FontWeight::MEDIUM).child("Choose what to back up"))
                 .child(
                     h_flex()
                         .gap_2()
@@ -553,72 +1270,7 @@ impl Render for BackupPage {
                     )
                 })
                 .children(backup_status),
-        )
-        .child(
-            ui::panel(&theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child("Restore"))
-                .child(div().text_sm().text_color(theme.muted_foreground).child(
-                    "Restores into a new, empty database next to the current one (in ClickHouse too, on a ClickHouse install). Every part is checked against its checksum first. A backup from another database type is converted to this one; one from an older SENTIENT is upgraded.",
-                ))
-                .child(
-                    h_flex()
-                        .gap_3()
-                        .items_center()
-                        .child(
-                            Button::new("restore-input")
-                                .outline()
-                                .label("Choose backup…")
-                                .disabled(busy)
-                                .on_click(cx.listener(|this, _, _, cx| this.choose_restore_input(cx))),
-                        )
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(
-                            self.restore_input.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "No file chosen".into()),
-                        )),
-                )
-                .child(
-                    h_flex()
-                        .gap_3()
-                        .child(
-                            v_flex()
-                                .gap_1p5()
-                                .w_64()
-                                .child(div().text_xs().text_color(theme.muted_foreground).child("New database name"))
-                                .child(Input::new(&self.restore_db)),
-                        )
-                        .child(
-                            v_flex()
-                                .gap_1p5()
-                                .w_64()
-                                .child(div().text_xs().text_color(theme.muted_foreground).child("Passphrase"))
-                                .child(Input::new(&self.restore_passphrase).mask_toggle()),
-                        ),
-                )
-                .child(
-                    h_flex().child(
-                        Button::new("run-restore")
-                            .primary()
-                            .label("Restore")
-                            .disabled(busy || self.restore_input.is_none())
-                            .on_click(cx.listener(|this, _, _, cx| this.run_restore(cx))),
-                    ),
-                )
-                .children(restore_status)
-                .when_some(self.restored.clone(), |p, name| {
-                    p.child(
-                        h_flex()
-                            .gap_3()
-                            .items_center()
-                            .child(div().text_sm().child(format!("The backup is restored into {name}, next to the data SENTIENT uses.")))
-                            .child(
-                                Button::new("use-restored")
-                                    .outline()
-                                    .label("Put the restored data into service")
-                                    .disabled(busy)
-                                    .on_click(cx.listener(|this, _, window, cx| this.confirm_switch(window, cx))),
-                            ),
-                    )
-                })
-                .children(switch_status),
-        )
+        ))
+        .child(replace_panel)
     }
 }

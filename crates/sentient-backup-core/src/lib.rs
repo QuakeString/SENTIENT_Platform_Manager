@@ -18,6 +18,7 @@ pub mod db;
 pub mod error;
 pub mod files;
 pub mod manifest;
+pub mod parts;
 pub mod pg_tools;
 pub mod progress;
 pub mod restore;

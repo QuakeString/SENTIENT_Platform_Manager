@@ -97,7 +97,13 @@ pub async fn run(
 ) -> Result<RestoreSummary> {
     let restorable_stores: Vec<_> = opts.file_store_paths.iter().cloned().collect();
     let (manifest, members) = read_archive(&opts.input, opts.passphrase.as_deref())?;
-    let has_telemetry = members.contains_key(crate::backup::TELEMETRY_MEMBER);
+    if manifest.format_version > crate::manifest::FORMAT_VERSION {
+        return Err(Error::msg(format!(
+            "this backup was made by a newer Platform Manager (format {}); update the Platform Manager to restore it",
+            manifest.format_version
+        )));
+    }
+    let has_telemetry = !telemetry_members(&members).is_empty();
     let mut steps = Steps::new(sink.clone(), 7 + u32::from(has_telemetry));
     steps.step("Reading backup");
     let cleanup = || {
@@ -246,9 +252,13 @@ async fn restore_as_backed_up(
     restore_res?;
 
     // Telemetry (after post_restore: ts_kv is a live hypertable again).
-    if let Some(tmp) = members.get(crate::backup::TELEMETRY_MEMBER) {
+    let telemetry = telemetry_members(&members);
+    if !telemetry.is_empty() {
         steps.step("Restoring telemetry (COPY)");
-        let rows = db.copy_in_compressed("COPY ts_kv FROM STDIN WITH (FORMAT binary)", tmp).await?;
+        let mut rows = 0;
+        for tmp in telemetry {
+            rows += db.copy_in_compressed("COPY ts_kv FROM STDIN WITH (FORMAT binary)", tmp).await?;
+        }
         steps.log(format!("  {rows} telemetry rows"));
     }
 
@@ -323,7 +333,7 @@ async fn restore_converted(
     ))
     .await?;
     let mut loaded = 0u64;
-    if let Some(tmp) = members.get(crate::backup::TELEMETRY_MEMBER) {
+    for tmp in telemetry_members(members) {
         loaded += db.copy_in_compressed(&format!("COPY {STAGING} FROM STDIN WITH (FORMAT binary)"), tmp).await?;
     }
     if source == TelemetryStore::Clickhouse {
@@ -443,7 +453,7 @@ fn is_telemetry_store_entry(line: &str) -> bool {
 
 /// True if the archive is an age-encrypted (password-protected) file.
 pub fn is_encrypted(path: &Path) -> Result<bool> {
-    let mut f = File::open(path).map_err(|e| Error::msg(format!("opening backup: {e}")))?;
+    let (_, mut f) = crate::parts::open(path)?;
     let mut magic = [0u8; 22];
     let n = f.read(&mut magic).map_err(|e| Error::msg(e.to_string()))?;
     Ok(magic[..n].starts_with(b"age-encryption.org"))
@@ -451,8 +461,38 @@ pub fn is_encrypted(path: &Path) -> Result<bool> {
 
 /// Extract manifest.json + every `db/*`, `clickhouse/*` and `files/*` member to temp files.
 /// Transparently decrypts an age-encrypted archive when a passphrase is given.
+/// The manifest of a backup file without restoring or unpacking it (it is
+/// the archive's first member). An encrypted backup needs its passphrase.
+pub fn inspect(input: &Path, passphrase: Option<&str>) -> Result<Manifest> {
+    let (_, f) = crate::parts::open(input)?;
+    let reader: Box<dyn Read> = if is_encrypted(input)? {
+        let pw = passphrase.ok_or_else(|| Error::msg("this backup is encrypted: its passphrase is needed"))?;
+        let decryptor = match age::Decryptor::new(io::BufReader::new(f)).map_err(|e| Error::msg(format!("reading encrypted backup: {e}")))? {
+            age::Decryptor::Passphrase(d) => d,
+            _ => return Err(Error::msg("unsupported encryption type")),
+        };
+        Box::new(decryptor.decrypt(&age::secrecy::Secret::new(pw.to_owned()), None).map_err(|_| Error::msg("wrong passphrase, or the backup is damaged"))?)
+    } else {
+        Box::new(f)
+    };
+    let mut ar = tar::Archive::new(reader);
+    let mut entries = ar.entries().map_err(|e| Error::msg(e.to_string()))?;
+    let mut e = entries
+        .next()
+        .ok_or_else(|| Error::msg("this file is not a SENTIENT backup (it is empty)"))?
+        .map_err(|e| Error::msg(format!("this file is not a SENTIENT backup ({e})")))?;
+    let path = e.path().map_err(|e| Error::msg(e.to_string()))?.to_string_lossy().into_owned();
+    if path != "manifest.json" {
+        return Err(Error::msg("this file is not a SENTIENT backup (no manifest at its start)"));
+    }
+    let mut buf = String::new();
+    e.read_to_string(&mut buf).map_err(|e| Error::msg(e.to_string()))?;
+    serde_json::from_str(&buf).map_err(|e| Error::msg(format!("bad manifest: {e}")))
+}
+
 fn read_archive(input: &Path, passphrase: Option<&str>) -> Result<(Manifest, HashMap<String, PathBuf>)> {
-    let f = File::open(input).map_err(|e| Error::msg(format!("opening backup: {e}")))?;
+    let (base, f) = crate::parts::open(input)?;
+    let input = base.as_path();
     let reader: Box<dyn Read> = if is_encrypted(input)? {
         let pw = passphrase.ok_or_else(|| {
             Error::msg("this backup is password-protected — a password is required to restore")
@@ -507,6 +547,139 @@ fn verify_all(manifest: &Manifest, members: &HashMap<String, PathBuf>) -> Result
         }
     }
     Ok(())
+}
+
+/// The PostgreSQL telemetry members, oldest month first (format 2), or the
+/// one member of format 1.
+fn telemetry_members(members: &HashMap<String, PathBuf>) -> Vec<&PathBuf> {
+    let mut months: Vec<(&String, &PathBuf)> = members.iter().filter(|(k, _)| k.starts_with(crate::backup::TELEMETRY_MONTH_PREFIX)).collect();
+    months.sort_by(|a, b| a.0.cmp(b.0));
+    let mut out: Vec<&PathBuf> = months.into_iter().map(|(_, v)| v).collect();
+    if let Some(one) = members.get(crate::backup::TELEMETRY_MEMBER) {
+        out.push(one);
+    }
+    out
+}
+
+/// One part of a backup and whether it matches its checksum.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberCheck {
+    pub path: String,
+    /// "Platform data", "Telemetry history, Sep 2026", …
+    pub label: String,
+    pub bytes: u64,
+    pub ok: bool,
+}
+
+/// What [`check`] found.
+#[derive(Debug, Clone)]
+pub struct CheckReport {
+    pub manifest: Manifest,
+    pub members: Vec<MemberCheck>,
+    /// Parts listed in the manifest but not in the file.
+    pub missing: Vec<String>,
+    /// Each file against `<name>.sha256`, when there is one.
+    pub files: Option<Vec<(String, bool)>>,
+}
+
+impl CheckReport {
+    pub fn ok(&self) -> bool {
+        self.missing.is_empty() && self.members.iter().all(|m| m.ok) && self.files.as_ref().is_none_or(|f| f.iter().all(|(_, ok)| *ok))
+    }
+}
+
+/// A plain name for a member.
+pub fn member_label(path: &str) -> String {
+    let month = |p: &str| {
+        let ym = p.split('/').next_back().unwrap_or("").split('.').next().unwrap_or("");
+        let ym = ym.replace('-', "");
+        match (ym.get(..4).and_then(|y| y.parse::<i32>().ok()), ym.get(4..6).and_then(|m| m.parse::<u32>().ok())) {
+            (Some(y), Some(m)) => chrono::NaiveDate::from_ymd_opt(y, m, 1).map(|d| d.format("%b %Y").to_string()).unwrap_or_default(),
+            _ => String::new(),
+        }
+    };
+    if path == crate::backup::DUMP_MEMBER {
+        "Platform data".into()
+    } else if path == crate::backup::TELEMETRY_MEMBER {
+        "Telemetry history".into()
+    } else if path.starts_with(crate::backup::TELEMETRY_MONTH_PREFIX) || path.starts_with("clickhouse/ts_kv/") {
+        format!("Telemetry history, {}", month(path))
+    } else if path.starts_with("clickhouse/") {
+        "Latest values (ClickHouse)".into()
+    } else if let Some(store) = path.strip_prefix("files/") {
+        match store.split('.').next().unwrap_or("") {
+            "reports" => "Report files".into(),
+            "vc-repos" => "Version control".into(),
+            other => format!("Files: {other}"),
+        }
+    } else {
+        path.to_string()
+    }
+}
+
+/// Read the whole backup and compare every part with its checksum, without
+/// restoring or keeping anything. Blocking.
+pub fn check(input: &Path, passphrase: Option<&str>) -> Result<CheckReport> {
+    use sha2::{Digest, Sha256};
+    let files = crate::parts::check_sidecar(input)?;
+    let (base, f) = crate::parts::open(input)?;
+    let reader: Box<dyn Read> = if is_encrypted(&base)? {
+        let pw = passphrase.ok_or_else(|| Error::msg("this backup is encrypted: its passphrase is needed"))?;
+        let decryptor = match age::Decryptor::new(io::BufReader::new(f)).map_err(|e| Error::msg(format!("reading encrypted backup: {e}")))? {
+            age::Decryptor::Passphrase(d) => d,
+            _ => return Err(Error::msg("unsupported encryption type")),
+        };
+        Box::new(decryptor.decrypt(&age::secrecy::Secret::new(pw.to_owned()), None).map_err(|_| Error::msg("wrong passphrase, or the backup is damaged"))?)
+    } else {
+        Box::new(f)
+    };
+    let mut ar = tar::Archive::new(reader);
+    let mut manifest: Option<Manifest> = None;
+    let mut seen: HashMap<String, (String, u64)> = HashMap::new();
+    let entries = ar.entries().map_err(|e| Error::msg(e.to_string()))?;
+    for entry in entries {
+        // A file cut short or garbled ends the walk; what was not reached counts as missing.
+        let Ok(mut e) = entry else { break };
+        let Ok(path) = e.path().map(|p| p.to_string_lossy().into_owned()) else { break };
+        if path == "manifest.json" {
+            let mut buf = String::new();
+            e.read_to_string(&mut buf).map_err(|e| Error::msg(e.to_string()))?;
+            manifest = Some(serde_json::from_str(&buf).map_err(|e| Error::msg(format!("bad manifest: {e}")))?);
+            continue;
+        }
+        let mut h = Sha256::new();
+        let mut buf = vec![0u8; 1 << 20];
+        let mut bytes = 0u64;
+        let mut broken = false;
+        loop {
+            match e.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    h.update(&buf[..n]);
+                    bytes += n as u64;
+                }
+                Err(_) => {
+                    broken = true;
+                    break;
+                }
+            }
+        }
+        let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        seen.insert(path, (if broken { String::new() } else { hex }, bytes));
+        if broken {
+            break;
+        }
+    }
+    let manifest = manifest.ok_or_else(|| Error::msg("this file is not a SENTIENT backup (no manifest)"))?;
+    let mut members = Vec::new();
+    let mut missing = Vec::new();
+    for fe in &manifest.files {
+        match seen.get(&fe.path) {
+            Some((sha, bytes)) => members.push(MemberCheck { path: fe.path.clone(), label: member_label(&fe.path), bytes: *bytes, ok: *sha == fe.sha256 }),
+            None => missing.push(fe.path.clone()),
+        }
+    }
+    Ok(CheckReport { manifest, members, missing, files })
 }
 
 /// Decompress the dump to a file pg_restore can list, and list it.
@@ -649,5 +822,58 @@ mod tests {
         assert_eq!(source_store(&manifest, &toc(&[DROPPED[5]])), TelemetryStore::Hypertable);
         assert_eq!(source_store(&manifest, &toc(&[DROPPED[10]])), TelemetryStore::Partitioned);
         assert_eq!(source_store(&manifest, &toc(&[DROPPED[2]])), TelemetryStore::Plain);
+    }
+}
+
+#[cfg(test)]
+mod check_tests {
+    use super::*;
+
+    fn backup_with(dir: &Path, name: &str, data: &[u8], recorded_sha: &str) -> PathBuf {
+        let manifest = serde_json::json!({
+            "format_version": 2, "tool_version": "t", "created_at": "2026-11-15T00:00:00Z",
+            "source": {"database": "s", "postgres_version": "18", "timescaledb_version": null},
+            "components": [], "telemetry": {"mode": "all"},
+            "files": [
+                {"path": "db/dump.pgc.zst", "bytes": data.len(), "sha256": recorded_sha},
+                {"path": "db/telemetry/2026-09.copy.zst", "bytes": 3, "sha256": crate::util::hex(&<sha2::Sha256 as sha2::Digest>::digest(b"sep"))}
+            ],
+            "file_stores": [], "encryption": {"scheme": "none"}
+        });
+        let path = dir.join(name);
+        let mut tar = tar::Builder::new(File::create(&path).unwrap());
+        let mj = serde_json::to_vec(&manifest).unwrap();
+        for (n, bytes) in [("manifest.json", mj.as_slice()), ("db/dump.pgc.zst", data), ("db/telemetry/2026-09.copy.zst", b"sep".as_slice())] {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(bytes.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            tar.append_data(&mut h, n, bytes).unwrap();
+        }
+        tar.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn a_check_names_the_damaged_part_and_a_good_file_passes() {
+        let dir = std::env::temp_dir().join(format!("sbr-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let good_sha = crate::util::hex(&<sha2::Sha256 as sha2::Digest>::digest(b"dump"));
+        let good = backup_with(&dir, "good.sentient-backup", b"dump", &good_sha);
+        let r = check(&good, None).unwrap();
+        assert!(r.ok(), "{r:?}");
+        assert_eq!(r.members[1].label, "Telemetry history, Sep 2026");
+        let bad = backup_with(&dir, "bad.sentient-backup", b"dump", &"0".repeat(64));
+        let r = check(&bad, None).unwrap();
+        assert!(!r.ok());
+        assert_eq!(r.members.iter().filter(|m| !m.ok).map(|m| m.label.as_str()).collect::<Vec<_>>(), ["Platform data"]);
+        // Cut short: the last part is missing.
+        let len = std::fs::metadata(&good).unwrap().len();
+        let cut = dir.join("cut.sentient-backup");
+        std::fs::write(&cut, &std::fs::read(&good).unwrap()[..(len as usize / 2)]).unwrap();
+        let r = check(&cut, None).unwrap();
+        assert!(!r.ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

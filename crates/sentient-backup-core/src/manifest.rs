@@ -3,7 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const FORMAT_VERSION: u32 = 1;
+/// 2: PostgreSQL telemetry stored month by month (`db/telemetry/YYYY-MM.copy.zst`),
+/// so a damaged part costs one month; 1 had one telemetry member.
+pub const FORMAT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
@@ -41,6 +43,19 @@ pub struct SourceInfo {
     pub database: String,
     pub postgres_version: String,
     pub timescaledb_version: Option<String>,
+    /// Where the backup comes from, so a restore can say so (and refuse a
+    /// backup from a newer SENTIENT) before anything is restored. Absent in
+    /// backups made before these were recorded.
+    #[serde(default)]
+    pub sentient_version: Option<String>,
+    #[serde(default)]
+    pub schema_version: Option<i64>,
+    /// "PostgreSQL + ClickHouse", "PostgreSQL + TimescaleDB", "PostgreSQL".
+    #[serde(default)]
+    pub database_type: Option<String>,
+    /// The computer it was made on.
+    #[serde(default)]
+    pub host: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

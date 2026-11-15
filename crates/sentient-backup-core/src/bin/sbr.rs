@@ -259,6 +259,8 @@ async fn main() -> Result<()> {
                 zstd_level: a.level,
                 passphrase: a.encrypt_password.clone(),
                 clickhouse: a.ch.conn(),
+                origin: Default::default(),
+                part_size: None,
             };
             let s = backup::run(&ConnConfig::from(&a.conn), &opts, cli_sink()).await?;
             println!(
