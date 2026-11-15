@@ -360,15 +360,30 @@ impl RemotePages {
         let inst = self.inst.clone();
         self.job_label = Some(format!("{label} on {}", inst.name).into());
         let strip_label = format!("{label} on {}", inst.name);
+        let me = cx.entity().downgrade();
+        let (l2, a2) = (label.clone(), args.clone());
         self.job.update(cx, |job, cx| {
             job.set_label(strip_label);
+            job.set_retry(std::rc::Rc::new(move |cx: &mut App| {
+                let (l, a) = (l2.clone(), a2.clone());
+                me.update(cx, |p, cx| p.run_job(l, a, cx)).ok();
+            }));
             job.start(
                 move |sink| {
-                    remote::deploy(&inst, &sink)?;
+                    // The agent is brought up to date first; when that fails
+                    // the job still runs on the agent there, and only a job it
+                    // does not know says the agent could not be updated.
+                    let updated = remote::deploy(&inst, &sink);
+                    if let Err(e) = &updated {
+                        sink(sentient_installer_core::progress::Progress::Log { line: format!("The agent could not be updated: {}", remote::split_failure(e).0) });
+                    }
                     sink(sentient_installer_core::progress::Progress::Step { name: label.to_string() });
                     let a: Vec<&str> = args.iter().map(String::as_str).collect();
-                    let id = remote::start_job(&inst, &a)?;
-                    remote::follow(&inst, &id, &sink)
+                    let run = remote::start_job(&inst, &a).and_then(|id| remote::follow(&inst, &id, &sink));
+                    match (run, updated) {
+                        (Err(e), Err(u)) if e == remote::AGENT_OLD || e.contains("usage: --job") => Err(remote::failed("The agent on this server could not be updated, and the one there is too old for this.", &remote::split_failure(&u).1.unwrap_or(u.clone()))),
+                        (r, _) => r,
+                    }
                 },
                 cx,
             )

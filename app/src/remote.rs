@@ -427,20 +427,46 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
     // noexec, and the copy must run once before it replaces anything.
     let home = home(inst).unwrap_or_else(|_| "/tmp".into());
     let staging = format!("{}/.spm-upload-{}", home.trim_end_matches('/'), &want[..12]);
-    sftp_put(inst, &me, &staging)?;
-    let got = run(inst, &format!("sha256sum {staging} | cut -d' ' -f1"), None)?;
-    if got.trim() != want {
-        return Err("The copy on the server does not match (checksum); nothing was replaced. Try again.".into());
+    let clean = |inst: &Instance| {
+        let _ = run(inst, &format!("rm -f {staging}"), None);
+    };
+    // A staging file from an earlier attempt: the same file is used as it is;
+    // anything else (a partial or another build) goes, and the copy starts
+    // fresh. Resuming is only for a connection dropped during this copy.
+    let staged = run(inst, &format!("sha256sum {staging} 2>/dev/null | cut -d' ' -f1"), None).unwrap_or_default();
+    if staged.trim() != want {
+        clean(inst);
+        sftp_copy(inst, &me, &staging).map_err(|e| failed("The agent could not be copied to the server. Nothing on the server was changed.", &e))?;
+        let got = run(inst, &format!("sha256sum {staging} | cut -d' ' -f1"), None)?;
+        if got.trim() != want {
+            clean(inst);
+            return Err("The copy on the server does not match (checksum); nothing was replaced. Try again.".into());
+        }
     }
     let pw = secret(&inst.id);
     // It must start on the server before it replaces anything.
     if let Err(e) = run(inst, &format!("chmod +x {staging} && {staging} --job monitor-json"), None) {
-        let _ = run(inst, &format!("rm -f {staging}"), None);
+        clean(inst);
         return Err(failed(&format!("The Platform Manager agent does not start on {}. Nothing on the server was changed.", if det.os_name.is_empty() { inst.name.as_str() } else { det.os_name.as_str() }), &e));
     }
-    sudo_run(inst, &format!("install -D -m 0755 {staging} {REMOTE_SPM} && rm -f {staging} && mkdir -p {REMOTE_JOBS}"), pw.as_deref())?;
+    if let Err(e) = sudo_run(inst, &format!("install -D -m 0755 {staging} {REMOTE_SPM} && mkdir -p {REMOTE_JOBS}"), pw.as_deref()) {
+        clean(inst);
+        return Err(failed(&format!("The agent could not be put in place at {REMOTE_SPM} (as administrator). The agent there is unchanged."), &e));
+    }
+    clean(inst);
     ensure_sampler(inst, sink, true);
     Ok(())
+}
+
+/// Copy a file fresh; only a connection dropped during this copy resumes it.
+fn sftp_copy(inst: &Instance, local: &Path, remote: &str) -> Result<(), String> {
+    match sftp_batch(inst, &format!("put \"{}\" \"{remote}\"", local.display())) {
+        Ok(()) => Ok(()),
+        Err(e) if ["Connection closed", "Connection reset", "Broken pipe", "Connection lost", "timed out"].iter().any(|w| e.contains(w)) => {
+            sftp_batch(inst, &format!("reput \"{}\" \"{remote}\"", local.display()))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// The statistics sampler on the server (crate::stats): installed with the
@@ -855,7 +881,7 @@ fn spm_job(inst: &Instance, job: &str) -> Result<String, String> {
     // text goes to the activity log, the pages say the agent is out of date.
     r.map_err(|e| {
         if e.contains("usage: --job") || e.contains("Unknown job") {
-            crate::jobs::log_line(&format!("{}: the agent does not know \"{job}\" (out of date)", inst.name));
+            crate::maintenance_ops::log_line(&format!("{}: the agent does not know \"{job}\" (out of date)", inst.name));
             AGENT_OLD.to_string()
         } else {
             e
@@ -1010,12 +1036,18 @@ mod win {
         ps(inst, &format!("New-Item -ItemType Directory -Force '{JOBS}' | Out-Null"))?;
         let upload = format!("{DIR}\\upload.exe");
         let sftp_path = format!("/{}", upload.replace('\\', "/"));
-        sftp_put(inst, &file, &sftp_path)?;
+        // A leftover upload is used when it is this build, else replaced.
+        let staged = ps(inst, &format!("if (Test-Path '{upload}') {{ (Get-FileHash -Algorithm SHA256 '{upload}').Hash }}")).unwrap_or_default();
+        if !staged.trim().eq_ignore_ascii_case(&want) {
+            let _ = ps(inst, &format!("Remove-Item -Force -ErrorAction SilentlyContinue '{upload}'"));
+            super::sftp_copy(inst, &file, &sftp_path).map_err(|e| super::failed("The agent could not be copied to the server. Nothing on the server was changed.", &e))?;
+        }
         let got = ps(inst, &format!("(Get-FileHash -Algorithm SHA256 '{upload}').Hash"))?;
         if !got.trim().eq_ignore_ascii_case(&want) {
+            let _ = ps(inst, &format!("Remove-Item -Force -ErrorAction SilentlyContinue '{upload}'"));
             return Err("The copy on the server does not match (checksum); nothing was replaced. Try again.".into());
         }
-        ps(inst, &format!("Move-Item -Force '{upload}' '{EXE}'"))?;
+        ps(inst, &format!("Move-Item -Force '{upload}' '{EXE}'")).map_err(|e| super::failed("The agent could not be put in place. The agent there is unchanged.", &e))?;
         Ok(())
     }
 
@@ -1231,6 +1263,24 @@ mod tests {
         assert!(m.mem_total > 0);
         // Deploying again finds it up to date.
         deploy(&inst, &sink).unwrap();
+        // A staging file left by an earlier attempt never blocks a retry:
+        // the complete one is used, a partial one is replaced.
+        let me = agent_file(false, &sink).unwrap();
+        let want = sentient_installer_core::manifest::sha256_file(&me).unwrap();
+        let home = home(&inst).unwrap();
+        let staging = format!("{}/.spm-upload-{}", home.trim_end_matches('/'), &want[..12]);
+        for partial in [false, true] {
+            sftp_copy(&inst, &me, &staging).unwrap();
+            if partial {
+                run(&inst, &format!("truncate -s 100000 {staging}"), None).unwrap();
+            }
+            // An older agent in place, so the deploy has to copy.
+            sudo_run(&inst, &format!("sh -c 'printf old > {REMOTE_SPM}'"), None).unwrap();
+            deploy(&inst, &sink).unwrap_or_else(|e| panic!("retry with a {} staging file: {e}", if partial { "partial" } else { "complete" }));
+            let there = run(&inst, &format!("sha256sum {REMOTE_SPM} | cut -d' ' -f1"), None).unwrap();
+            assert_eq!(there.trim(), want);
+            assert!(run(&inst, &format!("test -e {staging} && echo left || echo gone"), None).unwrap().contains("gone"), "the staging file is removed");
+        }
         // Statistics: the sampler came with the agent; readings land in the
         // history and read back; a live reading answers.
         assert_eq!(run(&inst, "systemctl is-enabled sentient-pm-stats.timer", None).unwrap().trim(), "enabled");
