@@ -5,7 +5,6 @@
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex, v_flex,
     button::ButtonVariants as _,
-    progress::Progress,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -194,14 +193,6 @@ impl Render for MigrationPage {
         };
         let job = self.job.read(cx);
         let busy = job.is_running();
-        let step = job.step_with_time();
-        let percent = job.percent();
-        let outcome = match job.state() {
-            JobState::Done(m) => Some((Tone::Good, m.clone())),
-            JobState::Failed(m) => Some((Tone::Bad, m.clone())),
-            _ => None,
-        };
-        let log: Vec<SharedString> = job.log().iter().rev().take(12).rev().cloned().collect();
         let current = record.flavor();
         let targets = migration::targets(record);
         let unfinished = self.state.clone().filter(|s| !s.done);
@@ -346,16 +337,6 @@ impl Render for MigrationPage {
         })
         .child(main)
         .child(kept_panel)
-        .when(busy || outcome.is_some() || !log.is_empty(), |page| {
-            page.child(
-                ui::panel(&theme)
-                    .when(busy, |p| {
-                        p.child(div().text_sm().child(step.clone()))
-                            .when_some(percent, |p, v| p.child(Progress::new("migration-progress").value(v)))
-                    })
-                    .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
-                    .children(log.into_iter().map(|line| div().text_size(px(13.)).text_color(theme.muted_foreground).child(line))),
-            )
-        })
+        
     }
 }

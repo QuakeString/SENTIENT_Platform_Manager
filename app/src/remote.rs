@@ -419,6 +419,7 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
     let have = run(inst, &format!("sha256sum {REMOTE_SPM} 2>/dev/null | cut -d' ' -f1"), None).unwrap_or_default();
     if have.trim() == want {
         sink(Progress::Log { line: "The Platform Manager on the server is up to date.".into() });
+        ensure_sampler(inst, sink, false);
         return Ok(());
     }
     sink(Progress::Step { name: "Copying the Platform Manager to the server".into() });
@@ -435,7 +436,20 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
         return Err(failed(&format!("The Platform Manager agent does not start on {}. Nothing on the server was changed.", if det.os_name.is_empty() { inst.name.as_str() } else { det.os_name.as_str() }), &e));
     }
     sudo_run(inst, &format!("install -D -m 0755 {staging} {REMOTE_SPM} && rm -f {staging} && mkdir -p {REMOTE_JOBS}"), pw.as_deref())?;
+    ensure_sampler(inst, sink, true);
     Ok(())
+}
+
+/// The statistics sampler on the server (crate::stats): installed with the
+/// agent, or when an up-to-date agent has none yet. Never fails the deploy.
+fn ensure_sampler(inst: &Instance, sink: &ProgressFn, always: bool) {
+    if !always && run(inst, "test -e /etc/systemd/system/sentient-pm-stats.timer && echo yes || echo no", None).is_ok_and(|o| o.trim() == "yes") {
+        return;
+    }
+    match spm_job(inst, "stats-install") {
+        Ok(out) => sink(Progress::Log { line: out.trim().to_string() }),
+        Err(e) => sink(Progress::Log { line: format!("The statistics sampler was not installed: {e}") }),
+    }
 }
 
 /// Copy a file with sftp, resuming a part already there (a copy cut off
@@ -591,6 +605,9 @@ pub struct RemoteBackups {
     pub daily_at: Option<String>,
     pub keep: u32,
     pub list: Vec<crate::backups::Entry>,
+    /// What an automatic backup includes (an older agent sends none).
+    #[serde(default)]
+    pub preset: crate::backups::Preset,
 }
 
 /// Ask the server's Platform Manager for `job` (as administrator) and read
@@ -776,9 +793,27 @@ pub fn logs(inst: &Instance, lines: u32) -> Result<String, String> {
 pub fn logs_from(inst: &Instance, source: crate::logsource::Source, lines: u32, today: bool) -> Result<String, String> {
     #[cfg(debug_assertions)]
     if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_LOGS") {
-        return Ok(std::fs::read_to_string(std::path::Path::new(&t).join(format!("{}.log", source.key()))).unwrap_or_default());
+        return std::fs::read_to_string(std::path::Path::new(&t).join(format!("{}.log", source.key()))).map_err(|_| format!("Could not read the {} log.", source.label()));
     }
     spm_job(inst, &format!("logs {lines} --source {}{}", source.key(), if today { " --today" } else { "" }))
+}
+
+/// A live statistics reading of the server (crate::stats).
+pub fn stats_live(inst: &Instance) -> Result<crate::stats::Sample, String> {
+    #[cfg(debug_assertions)]
+    if let Some(d) = std::env::var_os("SPM_DEBUG_STATS") {
+        return crate::stats::debug_live(std::path::Path::new(&d));
+    }
+    read_json(inst, "stats-live")
+}
+
+/// The server's statistics history of the last `secs` seconds.
+pub fn stats_history(inst: &Instance, secs: i64) -> Result<Vec<crate::stats::Sample>, String> {
+    #[cfg(debug_assertions)]
+    if let Some(d) = std::env::var_os("SPM_DEBUG_STATS") {
+        return Ok(crate::stats::debug_history(std::path::Path::new(&d), secs));
+    }
+    read_json(inst, &format!("stats-history {secs}"))
 }
 
 /// The log sources the server has.
@@ -1179,6 +1214,17 @@ mod tests {
         assert!(m.mem_total > 0);
         // Deploying again finds it up to date.
         deploy(&inst, &sink).unwrap();
+        // Statistics: the sampler came with the agent; readings land in the
+        // history and read back; a live reading answers.
+        assert_eq!(run(&inst, "systemctl is-enabled sentient-pm-stats.timer", None).unwrap().trim(), "enabled");
+        spm_job(&inst, "stats-sample").unwrap();
+        spm_job(&inst, "stats-sample").unwrap();
+        let h = stats_history(&inst, 3600).unwrap();
+        assert!(h.len() >= 2, "{} readings", h.len());
+        assert!(h.iter().all(|s| s.mem_total > 0 && s.cores > 0), "{h:?}");
+        let live = stats_live(&inst).unwrap();
+        assert!(live.mem_total > 0 && live.boot > 0, "{live:?}");
+        eprintln!("stats: {} readings, live cpu {:.1} %, {} cores", h.len(), live.cpu, live.cores);
         // Opening a server with an older agent on it (crate::manager::
         // remote_pages::refresh_agent: ready, then deploy) replaces it.
         sudo_run(&inst, &format!("sh -c 'printf old-agent > {REMOTE_SPM}'"), None).unwrap();
@@ -1209,8 +1255,119 @@ mod tests {
         follow(&inst, &id, &collect).unwrap();
         let said = said.lock().unwrap().join(" ");
         eprintln!("add-if-one: {said}");
-        assert!(said.contains("No SENTIENT was found"), "{said}");
+        assert!(said.contains("No SENTIENT found"), "{said}");
+        backup_jobs_on_the_server(&inst, &sink);
         let _ = std::fs::remove_file(known_hosts());
+    }
+
+    /// A backup file the way sentient-backup-core writes one: a tar with a
+    /// manifest listing each part's SHA-256 (`recorded` wrong: damaged).
+    fn backup_file(path: &Path, damaged: bool) {
+        let data = b"dump";
+        let tmp = path.with_extension("part");
+        std::fs::write(&tmp, data).unwrap();
+        let sha = sentient_installer_core::manifest::sha256_file(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        let manifest = serde_json::json!({
+            "format_version": 2, "tool_version": "e2e", "created_at": "2026-11-15T00:00:00Z",
+            "source": {"database": "sentient", "postgres_version": "18", "timescaledb_version": null},
+            "components": [], "telemetry": {"mode": "none"},
+            "files": [{"path": "db/dump.pgc.zst", "bytes": data.len(), "sha256": if damaged { "0".repeat(64) } else { sha }}],
+            "file_stores": [], "encryption": {"scheme": "none"}
+        });
+        let mut tar = tar::Builder::new(std::fs::File::create(path).unwrap());
+        let mj = serde_json::to_vec(&manifest).unwrap();
+        for (n, bytes) in [("manifest.json", mj.as_slice()), ("db/dump.pgc.zst", data.as_slice())] {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(bytes.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            tar.append_data(&mut h, n, bytes).unwrap();
+        }
+        tar.finish().unwrap();
+    }
+
+    /// The Backup page's jobs against a server with an added SENTIENT (an
+    /// installation record; no running stack): the automatic backup's
+    /// schedule, Verify, Delete, and Restore reaching the restore.
+    fn backup_jobs_on_the_server(inst: &Instance, sink: &ProgressFn) {
+        let job = |args: &[&str]| -> Result<(), String> {
+            let id = start_job(inst, args)?;
+            follow(inst, &id, sink)
+        };
+        let record = crate::installation::InstallationRecord {
+            sentient_version: "4.4.0.1".into(),
+            manager_version: crate::updates::manager_version().into(),
+            engine: crate::installation::Engine::Docker,
+            install_dir: "/opt/sentient".into(),
+            pg_dir: "/opt/sentient".into(),
+            state_dir: "/opt/sentient".into(),
+            stack: Default::default(),
+            installed_at: "2026-11-15T00:00:00Z".into(),
+            kiosk: None,
+            changes_done: Vec::new(),
+        };
+        let dir = std::env::temp_dir().join(format!("spm-e2e-bk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("installation.json"), serde_json::to_string(&record).unwrap()).unwrap();
+        backup_file(&dir.join("good.sentient-backup"), false);
+        backup_file(&dir.join("bad.sentient-backup"), true);
+        for f in ["installation.json", "good.sentient-backup", "bad.sentient-backup"] {
+            sftp_put(inst, &dir.join(f), &format!("/tmp/{f}")).unwrap();
+        }
+        sudo_run(
+            inst,
+            "sh -c 'mkdir -p /var/lib/sentient-platform-manager /var/backups/sentient && mv /tmp/installation.json /var/lib/sentient-platform-manager/ && mv /tmp/good.sentient-backup /tmp/bad.sentient-backup /var/backups/sentient/'",
+            None,
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        // A log that cannot be read is an error for the page, never a line.
+        let e = logs_from(inst, crate::logsource::Source::Sentient, 10, false).unwrap_err();
+        assert!(e.contains("Could not read"), "{e}");
+        assert!(log_sources(inst).unwrap().contains(&crate::logsource::Source::Database));
+        let b = backups(inst).unwrap();
+        assert_eq!(b.list.len(), 2, "{:?}", b.list.iter().map(|e| &e.name).collect::<Vec<_>>());
+        assert!(b.daily_at.is_none());
+
+        // Schedule: saved, and the timer registered and enabled.
+        job(&["backup-auto", "02:30", "14", "configuration"]).unwrap();
+        let b = backups(inst).unwrap();
+        assert_eq!(b.daily_at.as_deref(), Some("02:30"));
+        assert_eq!(b.keep, 14);
+        assert_eq!(b.preset, crate::backups::Preset::Configuration);
+        let timer = sudo_run(inst, "cat /etc/systemd/system/sentient-backup.timer", None).unwrap();
+        assert!(timer.contains("OnCalendar=*-*-* 02:30:00"), "{timer}");
+        assert_eq!(sudo_run(inst, "systemctl is-enabled sentient-backup.timer", None).unwrap().trim(), "enabled");
+        assert!(job(&["backup-auto", "25:99", "14", "configuration"]).is_err());
+        // Off: the timer goes.
+        job(&["backup-auto", "off", "7", "everything"]).unwrap();
+        assert!(backups(inst).unwrap().daily_at.is_none());
+        assert!(sudo_run(inst, "test -e /etc/systemd/system/sentient-backup.timer && echo there || echo gone", None).unwrap().contains("gone"));
+
+        // Verify: the good file passes and is remembered; the damaged one fails.
+        job(&["backup-verify", "/var/backups/sentient/good.sentient-backup"]).unwrap();
+        let e = job(&["backup-verify", "/var/backups/sentient/bad.sentient-backup"]).unwrap_err();
+        assert!(e.contains("damaged"), "{e}");
+        let b = backups(inst).unwrap();
+        let state = |n: &str| b.list.iter().find(|e| e.name == n).and_then(|e| e.check.as_ref()).map(|c| c.ok);
+        assert_eq!(state("good"), Some(true));
+        assert_eq!(state("bad"), Some(false));
+        // Only files in the backup folder.
+        let e = job(&["backup-verify", "/etc/passwd"]).unwrap_err();
+        assert!(e.contains("is not a backup"), "{e}");
+
+        // Delete: the damaged one goes.
+        job(&["backup-delete", "/var/backups/sentient/bad.sentient-backup"]).unwrap();
+        assert_eq!(backups(inst).unwrap().list.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["good"]);
+        assert!(job(&["backup-delete", "/etc/passwd"]).is_err());
+
+        // Restore: the job reaches the restore and stops plainly where the
+        // server has no running stack to restore into.
+        let e = job(&["replace", "/var/backups/sentient/good.sentient-backup"]).unwrap_err();
+        eprintln!("restore without a running stack: {e}");
+        assert!(!e.is_empty());
+        sudo_run(inst, "rm -f /var/lib/sentient-platform-manager/installation.json", None).unwrap();
     }
 
     #[test]

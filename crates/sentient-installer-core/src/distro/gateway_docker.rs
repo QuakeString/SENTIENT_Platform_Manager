@@ -49,7 +49,13 @@ fn find() -> Option<(String, bool)> {
     if rows.iter().any(|(n, _)| n == CONTAINER) {
         return Some((CONTAINER.to_string(), true));
     }
-    rows.into_iter().find(|(_, image)| crate::gateway::is_gateway_image(image)).map(|(n, _)| (n, false))
+    // Any gateway image; else a container named like a gateway (an image
+    // built or retagged locally).
+    let named = |n: &str| ["st-gateway", "tb-gateway", "sentient_gateway", "thingsboard-gateway"].iter().any(|g| n.contains(g));
+    rows.iter()
+        .find(|(_, image)| crate::gateway::is_gateway_image(image))
+        .or_else(|| rows.iter().find(|(n, _)| named(n)))
+        .map(|(n, _)| (n.clone(), false))
 }
 
 pub fn status() -> Status {
@@ -88,6 +94,7 @@ pub fn status() -> Status {
         page_url,
         container: Some(name),
         managed,
+        ..Status::default()
     }
 }
 

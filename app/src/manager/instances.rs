@@ -79,8 +79,7 @@ pub struct InstancesPage {
     /// The add/edit dialog and the job dialog are open.
     form_dialog: bool,
     job_dialog: bool,
-    /// (instance id, text) of the log view.
-    logs: Option<(String, SharedString)>,
+    /// The instance whose removal is being confirmed.
     confirm_remove: Option<String>,
     /// The instance open in the whole Platform Manager (None: this computer).
     pub open: Option<String>,
@@ -123,7 +122,6 @@ impl InstancesPage {
             show_details: false,
             form_dialog: false,
             job_dialog: false,
-            logs: None,
             confirm_remove: None,
             open: None,
             _tasks: Vec::new(),
@@ -435,7 +433,6 @@ impl InstancesPage {
             return;
         }
         self.job_for = Some((id.to_string(), format!("{label} on {}", inst.name).into()));
-        self.logs = None;
         self.job.update(cx, |job, cx| {
             job.start(
                 move |sink| {
@@ -486,22 +483,12 @@ impl InstancesPage {
         cx.notify();
     }
 
-    fn show_logs(&mut self, id: &str, cx: &mut Context<Self>) {
+    /// The server's logs in a dialog: the same view as the Logs page.
+    fn show_logs(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(inst) = self.instance(id) else { return };
-        let id = id.to_string();
-        self.logs = Some((id.clone(), "Reading the log…".into()));
-        cx.notify();
-        let task = cx.spawn(async move |this, cx| {
-            let got = cx.background_executor().spawn(async move { remote::logs(&inst, 400) }).await;
-            this.update(cx, |page, cx| {
-                if page.logs.as_ref().is_some_and(|(i, _)| *i == id) {
-                    page.logs = Some((id, ui::strip_ansi(&got.unwrap_or_else(|e| e)).into()));
-                }
-                cx.notify();
-            })
-            .ok();
-        });
-        self._tasks.push(task);
+        let title = format!("Logs on {}", inst.name);
+        let view = cx.new(|cx| crate::manager::logs::LogView::remote(inst, window, cx));
+        crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 1000., on_close: None }, cx);
     }
 
     // -- rendering ----------------------------------------------------------
@@ -539,9 +526,9 @@ impl InstancesPage {
         let (tone, state) = state_of(status.as_ref(), self.refreshing.contains(LOCAL));
         let current = self.open.is_none();
         let open_btn: AnyElement = if current {
-            open_now_tag(&theme).into_any_element()
+            open_now_tag(remote::LOCAL_COLOR).into_any_element()
         } else {
-            crate::ui::button("open-local").primary().label("Open").on_click(cx.listener(|_, _, _, cx| cx.emit(OpenInstance(None)))).into_any_element()
+            colour_button("open-local".into(), "Open", remote::LOCAL_COLOR, cx.listener(|_, _, _, cx| cx.emit(OpenInstance(None)))).into_any_element()
         };
         let more = crate::ui::button("more-local").ghost().small().icon(IconName::Ellipsis).tooltip("More").dropdown_menu({
             let this = cx.entity().downgrade();
@@ -561,7 +548,7 @@ impl InstancesPage {
             current,
             (tone, state),
             quick_facts(&theme, status.as_ref(), None),
-            h_flex().gap_2().items_center().child(open_btn).child(div().flex_1()).child(more),
+            h_flex().gap(px(6.)).items_center().child(open_btn).child(div().flex_1().min_w_0()).child(div().flex_shrink_0().child(more)),
         )
         .into_any_element()
     }
@@ -598,7 +585,7 @@ impl InstancesPage {
                     .separator()
                     .item(item(Lucide::Download, "Update SENTIENT", can_work, Box::new(move |p, _, cx| p.run_job(&i1, "Updating SENTIENT", vec!["update", "--latest"], cx))))
                     .item(item(Lucide::Archive, "Back up now", can_work, Box::new(move |p, _, cx| p.run_job(&i2, "Backing up", vec!["backup-now"], cx))))
-                    .item(item(Lucide::ScrollText, "Logs", can_read, Box::new(move |p, _, cx| p.show_logs(&i3, cx))))
+                    .item(item(Lucide::ScrollText, "Logs", can_read, Box::new(move |p, window, cx| p.show_logs(&i3, window, cx))))
                     .separator()
                     .item(item(Lucide::RefreshCw, "Check again", true, Box::new(move |p, _, cx| p.refresh(&i4, cx))))
             }
@@ -606,40 +593,40 @@ impl InstancesPage {
         let unreachable = matches!(&status, Some(Err(e)) if e != remote::NOT_SET_UP && e != remote::FORGOTTEN && !e.contains("administrator rights"));
         let current = self.open.as_deref() == Some(id.as_str());
         let primary: AnyElement = if unreachable {
-            crate::ui::button(SharedString::from(format!("retry-{id}"))).primary().label("Try again").loading(refreshing).on_click(cx.listener({
+            crate::ui::button(SharedString::from(format!("retry-{id}"))).primary().h(px(28.)).label("Try again").loading(refreshing).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.refresh(&id, cx)
             })).into_any_element()
         } else if not_set_up {
-            crate::ui::button(SharedString::from(format!("setup-{id}"))).primary().label("Set up").disabled(busy).on_click(cx.listener({
+            crate::ui::button(SharedString::from(format!("setup-{id}"))).primary().h(px(28.)).label("Set up").disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.set_up(&id, cx)
             })).into_any_element()
         } else if current {
-            open_now_tag(&theme).into_any_element()
+            open_now_tag(&inst.color).into_any_element()
         } else {
-            crate::ui::button(SharedString::from(format!("open-{id}"))).primary().label("Open").on_click(cx.listener({
+            colour_button(SharedString::from(format!("open-{id}")), "Open", &inst.color, cx.listener({
                 let id = id.clone();
                 move |_, _, _, cx| cx.emit(OpenInstance(Some(id.clone())))
             })).into_any_element()
         };
         let footer = h_flex()
-            .gap_2()
+            .gap(px(6.))
             .items_center()
             .child(primary)
-            .child(crate::ui::button(SharedString::from(format!("edit-{id}"))).outline().label("Edit").disabled(busy).on_click(cx.listener({
+            .child(crate::ui::button(SharedString::from(format!("edit-{id}"))).outline().h(px(28.)).px(px(10.)).text_size(px(13.)).label("Edit").disabled(busy).on_click(cx.listener({
                 let inst = inst.clone();
                 move |this, _, window, cx| this.open_form(Some(inst.clone()), window, cx)
             })))
-            .child(crate::ui::button(SharedString::from(format!("remove-{id}"))).outline().label("Remove").disabled(busy).on_click(cx.listener({
+            .child(crate::ui::button(SharedString::from(format!("remove-{id}"))).outline().h(px(28.)).px(px(10.)).text_size(px(13.)).label("Remove").disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| {
                     this.confirm_remove = Some(id.clone());
                     cx.notify();
                 }
             })))
-            .child(div().flex_1())
-            .child(more);
+            .child(div().flex_1().min_w_0())
+            .child(div().flex_shrink_0().child(more));
         let mut sub = format!("{} over SSH", inst.host);
         if !det.os_name.is_empty() {
             sub.push_str(&format!(" · {}", det.os_name));
@@ -1102,42 +1089,6 @@ impl InstancesPage {
         )
     }
 
-    fn logs_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (id, text) = self.logs.clone()?;
-        let theme = cx.theme().clone();
-        let name = self.instance(&id).map(|i| i.name).unwrap_or_default();
-        Some(
-            ui::panel(&theme)
-                .gap_2()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(div().flex_1().font_weight(FontWeight::MEDIUM).child(format!("SENTIENT log on {name}")))
-                        .child(crate::ui::button("logs-again").ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener({
-                            let id = id.clone();
-                            move |this, _, _, cx| this.show_logs(&id, cx)
-                        })))
-                        .child(crate::ui::button("logs-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
-                            this.logs = None;
-                            cx.notify();
-                        }))),
-                )
-                .child(
-                    div()
-                        .id("remote-log")
-                        .max_h(px(360.))
-                        .overflow_y_scroll()
-                        .p_2()
-                        .rounded(theme.radius)
-                        .bg(theme.muted)
-                        .text_size(px(13.))
-                        .font_family(theme.mono_font_family.clone())
-                        .children(text.lines().map(|l| div().child(SharedString::from(l.to_string()))).collect::<Vec<_>>()),
-                )
-                .into_any_element(),
-        )
-    }
 }
 
 impl Render for InstancesPage {
@@ -1155,10 +1106,19 @@ impl Render for InstancesPage {
                 }
             }
         }
+        // Screens: an instance's logs dialog (SPM_DEBUG_INSTANCE_LOGS=<id>).
+        #[cfg(debug_assertions)]
+        {
+            static LOGS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if let Ok(id) = std::env::var("SPM_DEBUG_INSTANCE_LOGS") {
+                if !LOGS.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    self.show_logs(&id, window, cx);
+                }
+            }
+        }
         self.sync_dialogs(window, cx);
         let local = self.local_card(cx);
         let cards: Vec<AnyElement> = self.list.clone().iter().map(|i| self.remote_card(i, cx)).collect();
-        let logs = self.logs_panel(cx);
         let all: Vec<Option<&Result<RemoteStatus, String>>> = std::iter::once(self.statuses.get(LOCAL)).chain(self.list.iter().map(|i| self.statuses.get(&i.id))).collect();
         // Named states, in this order, each only when there is one.
         let mut named: Vec<(&str, usize)> = vec![("running", 0), ("stopped", 0), ("without SENTIENT", 0), ("not set up", 0), ("not reachable", 0), ("waiting for sign-in", 0), ("being checked", 0)];
@@ -1195,18 +1155,19 @@ impl Render for InstancesPage {
                         r.child(crate::ui::button("add").primary().icon(IconName::Plus).label("Add a remote instance").on_click(cx.listener(|this, _, window, cx| this.open_form(None, window, cx))))
                     }),
             )
-            .children(logs)
             .child({
                 // The cards fill the page: as many columns as fit (one on
                 // narrow windows), all the same width.
                 let width = f32::from(window.viewport_size().width);
                 let rail = width < crate::manager::RAIL_BELOW;
                 let inner = width - if rail { 64. } else { crate::manager::NAV_W } - 32.;
-                let cols = if rail { 1. } else { ((inner + 16.) / (CARD_MIN_W + 16.)).floor().max(1.) };
-                let card_w = ((inner - 16. * (cols - 1.)) / cols).floor();
+                let cols = ((inner + 12.) / (CARD_MIN_W + 12.)).floor().max(1.);
+                // Tiles keep their size (at most CARD_MAX_W) and the row
+                // starts at the left: two instances are two tiles, not halves.
+                let card_w = ((inner - 12. * (cols - 1.)) / cols).floor().min(CARD_MAX_W);
                 h_flex()
                     .flex_wrap()
-                    .gap_4()
+                    .gap(px(12.))
                     .items_stretch()
                     .children(std::iter::once(local).chain(cards).map(|c| v_flex().w(px(card_w)).flex_shrink_0().child(c)))
             })
@@ -1216,9 +1177,10 @@ impl Render for InstancesPage {
 /// The key for this computer's status.
 const LOCAL: &str = "@local";
 /// The narrowest a card gets before the grid drops a column.
-const CARD_MIN_W: f32 = 300.;
-/// Cards in a row stretch to the tallest; none is shorter than this.
-const CARD_MIN_H: f32 = 268.;
+const CARD_MIN_W: f32 = 250.;
+const CARD_MAX_W: f32 = 300.;
+/// "Open" and "Open now" share one width, so Edit and Remove stay put.
+const OPEN_W: f32 = 78.;
 
 /// The state label of a card.
 fn state_of(status: Option<&Result<RemoteStatus, String>>, refreshing: bool) -> (Tone, String) {
@@ -1240,8 +1202,8 @@ fn state_of(status: Option<&Result<RemoteStatus, String>>, refreshing: bool) -> 
 fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<RemoteStatus, String>>, det: Option<&Detected>) -> Div {
     let row = |label: &'static str, value: String, warn: bool| {
         h_flex()
-            .gap_3()
-            .text_sm()
+            .gap_0()
+            .text_size(px(13.))
             .items_start()
             .child(div().w(px(84.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
             // A value that needs attention is a pill, as in the mockup; long
@@ -1252,7 +1214,7 @@ fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<Remote
                 h_flex().flex_1().min_w_0().child(div().flex_1().min_w_0().child(value))
             })
     };
-    let mut col = v_flex().gap_1();
+    let mut col = v_flex().gap(px(5.));
     match status {
         Some(Ok(s)) if s.installed => {
             let db = match s.database_bytes {
@@ -1293,8 +1255,44 @@ fn uptime_label(secs: u64) -> String {
     format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
 }
 
-/// One instance as a card: its colour along the top, logo, name, state,
-/// the quick status and the actions.
+/// `a` mixed into `b`: `t` of `a` (CSS color-mix in sRGB).
+fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
+    Rgba { r: a.r * t + b.r * (1. - t), g: a.g * t + b.g * (1. - t), b: a.b * t + b.b * (1. - t), a: 1. }
+}
+
+/// Dark or white text on a colour, by its luminance.
+fn text_on(c: Rgba) -> Hsla {
+    let l = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+    if l > 0.6 { rgb(0x1c2326).into() } else { rgb(0xffffff).into() }
+}
+
+/// The Open button in the instance's own colour (the mockup's option C).
+fn colour_button(id: SharedString, label: &'static str, color: &str, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
+    let c = rgb(remote::parse_hex(color).unwrap_or(0x187074));
+    h_flex()
+        .id(id)
+        .min_w(px(OPEN_W))
+        .justify_center()
+        .h(px(28.))
+        .px(px(11.))
+        .rounded(px(8.))
+        .bg(c)
+        .text_color(text_on(c))
+        .text_size(px(13.))
+        .font_weight(FontWeight::MEDIUM)
+        .items_center()
+        .cursor_pointer()
+        .hover(|d| d.opacity(0.9))
+        .child(label)
+        .on_click(on_click)
+}
+
+/// One instance as a tile (the mockup's option C): one rounded box with a
+/// thin muted border; a header band tinted with the instance colour (logo
+/// tile in the full colour, name, address and system, state), then a body in
+/// a fainter tint with the facts and the actions. Each part rounds its own
+/// corners, so no colour reaches past the box's corners at any scale. The
+/// open instance's tile has a 2px border in its own colour.
 #[allow(clippy::too_many_arguments)]
 fn grid_card(
     theme: &gpui_kit::component::Theme,
@@ -1307,68 +1305,106 @@ fn grid_card(
     facts: Div,
     footer: Div,
 ) -> Div {
-    // One rounded box. Its own background is the instance colour, so the
-    // colour band's top corners are the card's corners (GPUI does not clip
-    // children to a radius); the white body sits below the band and rounds
-    // only its bottom corners, inside the border. The open card changes only
-    // the border's colour: same width, same box.
-    let inner = ui::PANEL_RADIUS - 1.;
+    let dark = theme.mode.is_dark();
+    let c = rgb(remote::parse_hex(color).unwrap_or(0x187074));
+    let card = theme.background.to_rgb();
+    let head = mix(c, card, if dark { 0.42 } else { 0.26 });
+    let body = mix(c, card, if dark { 0.13 } else { 0.07 });
+    let fg = theme.foreground.to_rgb();
+    // The state keeps its meaning (green, red, amber) but in the tile's
+    // softer form; a neutral state takes the instance colour.
+    let pill = match tone {
+        Tone::Neutral => {
+            let mut bg = c;
+            bg.a = 0.30;
+            h_flex()
+                .px(px(8.))
+                .py(px(2.))
+                .rounded_full()
+                .bg(bg)
+                .text_size(px(11.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(mix(c, fg, 0.35))
+                .whitespace_nowrap()
+                .child(state)
+        }
+        _ => ui::pill(theme, tone, state).text_size(px(11.5)).px(px(8.)).py(px(2.)),
+    };
+    let border_w = if current { 2. } else { 1. };
+    let inner = ui::PANEL_RADIUS - border_w;
     v_flex()
         .w_full()
         .flex_1()
-        .min_h(px(CARD_MIN_H))
         .rounded(px(ui::PANEL_RADIUS))
-        .bg(rgb(remote::parse_hex(color).unwrap_or(0x187074)))
-        .border_1()
-        // Opaque, so the colour under the border does not show through it.
-        .border_color(if current { theme.primary } else { theme.background.blend(theme.border) })
-        .pt(px(5.))
+        .bg(body)
+        .border(px(border_w))
+        .border_color(if current { Hsla::from(c) } else { theme.background.blend(theme.border) })
+        .shadow(vec![BoxShadow { color: hsla(0., 0., 0., if dark { 0.35 } else { 0.10 }), offset: point(px(0.), px(1.)), blur_radius: px(3.), spread_radius: px(0.), inset: false }])
+        .child(
+            h_flex()
+                .gap(px(9.))
+                .items_center()
+                .px(px(12.))
+                .py(px(9.))
+                .bg(head)
+                .rounded_t(px(inner))
+                .child(os_tile_in(det, 26., c))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().text_size(px(14.5)).font_weight(FontWeight::SEMIBOLD).whitespace_nowrap().overflow_hidden().text_ellipsis().child(name))
+                        .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).whitespace_nowrap().overflow_hidden().text_ellipsis().child(sub)),
+                )
+                .child(pill),
+        )
         .child(
             v_flex()
                 .flex_1()
-                .gap_3()
-                .p_4()
-                .bg(theme.background)
+                .gap(px(9.))
+                .px(px(12.))
+                .pt(px(10.))
+                .pb(px(12.))
                 .rounded_b(px(inner))
-                .child(
-                    h_flex()
-                        .gap_3()
-                        .items_start()
-                        .child(os_tile(det, 32.))
-                        // One line each, cut with an ellipsis (the mockup's K1).
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .child(div().font_weight(FontWeight::MEDIUM).whitespace_nowrap().overflow_hidden().text_ellipsis().child(name))
-                                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).whitespace_nowrap().overflow_hidden().text_ellipsis().child(sub)),
-                        )
-                        .child(ui::pill(theme, tone, state)),
-                )
                 .child(facts.flex_1())
                 .child(footer),
         )
 }
 
-/// On the open instance's card, in place of its Open button.
-fn open_now_tag(theme: &gpui_kit::component::Theme) -> Div {
-    // The mockup's quiet chip: an outlined, faded button shape.
+/// On the open instance's card, in place of its Open button: the same
+/// coloured button, not clickable (it is open already).
+fn open_now_tag(color: &str) -> Div {
+    let c = rgb(remote::parse_hex(color).unwrap_or(0x187074));
     h_flex()
+        .min_w(px(OPEN_W))
+        .justify_center()
         .items_center()
-        .px(px(11.))
+        .px(px(10.))
         .h(px(28.))
-        .rounded(theme.radius)
-        .border_1()
-        .border_color(theme.border)
+        .flex_shrink_0()
+        .rounded(px(8.))
+        .bg(c)
+        .text_color(text_on(c))
         .text_size(px(13.))
         .font_weight(FontWeight::MEDIUM)
-        .text_color(theme.muted_foreground.opacity(0.75))
         .child("Open now")
 }
 
-/// The system's logo on a tile.
-pub fn os_tile(d: &Detected, size: f32) -> impl IntoElement {
-    let (name, color, dark_tile) = match (d.os, d.distro.as_str()) {
+/// The system's logo, white, on a tile in the instance's colour.
+fn os_tile_in(d: &Detected, size: f32, c: Rgba) -> Div {
+    div()
+        .flex_shrink_0()
+        .size(px(size))
+        .rounded(px(7.))
+        .bg(c)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(ui::brand_mark(os_brand(d).0, text_on(c), size * 0.62))
+}
+
+fn os_brand(d: &Detected) -> (&'static str, u32, bool) {
+    match (d.os, d.distro.as_str()) {
         (Os::Windows, _) => ("windows", 0x0078d4, false),
         (_, "ubuntu") => ("ubuntu", 0xe95420, false),
         (_, "debian") => ("debian", 0xa81d33, false),
@@ -1381,17 +1417,9 @@ pub fn os_tile(d: &Detected, size: f32) -> impl IntoElement {
         (_, id) if id.starts_with("opensuse") => ("opensuse", 0x73ba25, false),
         (_, "raspbian") => ("raspberrypi", 0xa22846, false),
         _ => ("linux", 0xfcc624, true),
-    };
-    div()
-        .flex_shrink_0()
-        .size(px(size))
-        .rounded(px(8.))
-        .bg(if dark_tile { rgb(0x1f1f1f) } else { rgba(color << 8 | 0x1f) })
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(ui::brand_mark(name, rgb(color).into(), size * 0.6))
+    }
 }
+
 
 fn default_key() -> String {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(std::path::PathBuf::from).unwrap_or_default();

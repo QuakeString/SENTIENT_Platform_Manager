@@ -15,7 +15,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::dbstatus::{DbStatus, bytes_label};
-use crate::jobs::{Job, JobState};
+use crate::jobs::Job;
 use crate::remote::{self, Instance, RemoteBackups, RemoteService, RemoteStatus};
 use crate::ui::{self, Tone};
 
@@ -72,7 +72,6 @@ pub struct RemotePages {
     target: Option<usize>,
     /// Migration: Change was pressed; the confirmation shows.
     migrate_confirm: bool,
-    logs: Read<String>,
     /// The newest SENTIENT on the update channel (None: none newer).
     offer: Read<Option<crate::updates::Offer>>,
     /// The versions "Other version" lists.
@@ -129,7 +128,6 @@ impl RemotePages {
             gateway: Read::Loading,
             target: None,
             migrate_confirm: false,
-            logs: Read::Loading,
             offer: Read::Loading,
             versions: Read::Loading,
             pick: None,
@@ -156,7 +154,6 @@ impl RemotePages {
         }
         p.reload(cx);
         p.refresh_agent(cx);
-        p.start_log_follow(cx);
         p
     }
 
@@ -228,7 +225,7 @@ impl RemotePages {
                     self.fetch(cx, move || remote::dbstatus(&inst), |p, r| p.db = r);
                 }
             }
-            Kind::Logs => self.fetch(cx, move || remote::logs(&inst, 500).map(|t| ui::strip_ansi(&t)), |p, r| p.logs = r),
+            Kind::Logs => {}
             Kind::Update => {
                 let i2 = inst.clone();
                 self.fetch(cx, move || remote::status(&i2), |p, r| p.status = r);
@@ -290,29 +287,6 @@ impl RemotePages {
         self._tasks.push(task);
     }
 
-    /// The log page reads again every few seconds while it is shown and
-    /// "Follow" is on.
-    fn start_log_follow(&mut self, cx: &mut Context<Self>) {
-        let task = cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(std::time::Duration::from_secs(5)).await;
-            let alive = this
-                .update(cx, |p, cx| {
-                    if p.kind == Kind::Logs && p.follow && !matches!(p.logs, Read::Loading) {
-                        let inst = p.inst.clone();
-                        p.fetch(cx, move || remote::logs(&inst, 500).map(|t| ui::strip_ansi(&t)), |p, r| {
-                            p.logs = r;
-                            p.scroll.scroll_to_bottom();
-                        });
-                    }
-                })
-                .is_ok();
-            if !alive {
-                break;
-            }
-        });
-        self._tasks.push(task);
-    }
-
     fn run_job(&mut self, label: impl Into<String>, args: Vec<String>, cx: &mut Context<Self>) {
         let label: String = label.into();
         if self.job.read(cx).is_running() {
@@ -320,7 +294,9 @@ impl RemotePages {
         }
         let inst = self.inst.clone();
         self.job_label = Some(format!("{label} on {}", inst.name).into());
+        let strip_label = format!("{label} on {}", inst.name);
         self.job.update(cx, |job, cx| {
+            job.set_label(strip_label);
             job.start(
                 move |sink| {
                     remote::deploy(&inst, &sink)?;
@@ -343,41 +319,6 @@ impl RemotePages {
 
     fn loading(theme: &gpui_kit::component::Theme, what: &str) -> Div {
         ui::panel(theme).child(div().text_sm().text_color(theme.muted_foreground).child(format!("Reading {what} from the server…")))
-    }
-
-    fn job_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
-        let label = self.job_label.clone()?;
-        let theme = cx.theme().clone();
-        let job = self.job.read(cx);
-        let log: Vec<SharedString> = job.log().iter().rev().take(12).rev().cloned().collect();
-        let mut p = ui::panel(&theme).gap_2().child(div().font_weight(FontWeight::MEDIUM).child(label));
-        p = match job.state() {
-            JobState::Running => p.child(div().text_sm().child(job.step_with_time())),
-            JobState::Done(m) => p.child(ui::outcome(&theme, Tone::Good, m.clone())),
-            JobState::Failed(m) => {
-                let (headline, details) = remote::split_failure(m);
-                let shown = self.show_details;
-                p.child(ui::outcome(&theme, Tone::Bad, headline)).when_some(details, |p, d| {
-                    p.child(crate::ui::button("job-details").ghost().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
-                        this.show_details = !this.show_details;
-                        cx.notify();
-                    })))
-                    .when(shown, |p| p.child(div().p_2().rounded(theme.radius).bg(theme.muted).text_size(px(13.)).font_family(theme.mono_font_family.clone()).child(d)))
-                })
-            }
-            JobState::Idle => p,
-        };
-        let done = !job.is_running();
-        Some(
-            p.child(v_flex().p_2().rounded(theme.radius).bg(theme.muted).text_size(px(13.)).font_family(theme.mono_font_family.clone()).children(log.into_iter().map(|l| div().child(l))))
-                .when(done, |p| {
-                    p.child(h_flex().justify_end().child(crate::ui::button("job-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
-                        this.job_label = None;
-                        this.job.update(cx, |j, cx| j.reset(cx));
-                        cx.notify();
-                    }))))
-                }),
-        )
     }
 
     fn services_panel(&self, theme: &gpui_kit::component::Theme) -> Div {
@@ -411,6 +352,7 @@ impl RemotePages {
     }
 
     fn status_page(&self, cx: &mut Context<Self>) -> Div {
+        let busy = self.job.read(cx).is_running();
         let theme = cx.theme().clone();
         let mut col = v_flex().gap_4();
         match &self.status {
@@ -440,19 +382,20 @@ impl RemotePages {
                     ui::panel(&theme)
                         .child(
                             h_flex()
+                                .flex_wrap()
                                 .gap_3()
                                 .items_center()
                                 .child(ui::product_logo(ui::Product::Sentient, 30.))
                                 .child(ui::pill(&theme, tone, state))
                                 .child(div().flex_1())
-                                .when(s.installed, |r| r.child(crate::ui::button("r-open").primary().label("Open SENTIENT").on_click(move |_, _, cx| ui::open_url(&url, cx)))),
+                                .when(s.installed && !s.serving, |r| {
+                                    r.child(crate::ui::button("r-start").primary().label("Start").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Starting SENTIENT", vec!["control".into(), "start".into()], cx))))
+                                })
+                                .when(s.installed, |r| r.child(ui::open_sentient_button("r-open", s.serving, move |_, _, cx| ui::open_url(&url, cx)))),
                         )
                         .child(ui::fact(&theme, "SENTIENT version", s.sentient_version.clone()))
                         .child(ui::fact(&theme, "Database", s.database.clone()))
-                        .child(ui::fact(&theme, "Runs as", if det.install.is_empty() { "Not known".to_string() } else { det.install.clone() }))
-                        .children(s.vanished_files.first().map(|f| {
-                            div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!("This SENTIENT was started with an extra compose file that no longer exists: {f}"))
-                        }))
+                        .when(!det.install.is_empty(), |p| p.child(ui::fact(&theme, "Runs as", det.install.clone())))
                         .child(ui::fact(&theme, "Server", format!("{} · {} {}", self.inst.address(), det.os_name, det.arch)))
                         .child(
                             // A pill only while the update runs or when it failed;
@@ -722,6 +665,29 @@ impl RemotePages {
             ))
     }
 
+    fn confirm_restore(&mut self, path: String, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        let text = format!("Users, passwords, devices and dashboards on {} will be those of {name}. Everything there now is replaced. SENTIENT stops for about a minute while it switches.", self.inst.name);
+        crate::modal::alert(window, cx, move |d, _, _| {
+            let (this, path) = (this.clone(), path.clone());
+            d.title("Replace this server's data?").description(text.clone()).confirm().ok_text("Replace").on_ok(move |_, _, cx| {
+                this.update(cx, |p, cx| p.run_job("Restoring", vec!["replace".into(), path.clone()], cx)).ok();
+                true
+            })
+        });
+    }
+
+    fn confirm_delete(&mut self, path: String, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        crate::modal::alert(window, cx, move |d, _, _| {
+            let (this, path) = (this.clone(), path.clone());
+            d.title(format!("Delete {name}?")).description("The file is deleted from the server. This cannot be undone.").confirm().ok_text("Delete").on_ok(move |_, _, cx| {
+                this.update(cx, |p, cx| p.run_job("Deleting the backup", vec!["backup-delete".into(), path.clone()], cx)).ok();
+                true
+            })
+        });
+    }
+
     fn backup_page(&self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
@@ -738,11 +704,61 @@ impl RemotePages {
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Back up now"))
             .child(crate::manager::backup::brow_pub(&theme, "Save to", None, div().text_sm().child(b.folder.display().to_string())))
             .child(h_flex().pt_2().child(crate::ui::button("r-backup").primary().label("Back up now").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx)))));
+        // The same rows as this computer's; a change is saved on the server at once.
+        let on = b.daily_at.is_some();
+        let time = b.daily_at.clone().unwrap_or_else(|| "23:30".into());
+        let include = match b.preset {
+            crate::backups::Preset::Everything => "everything",
+            crate::backups::Preset::Configuration => "configuration",
+        };
+        let save = |at: String, keep: u32, include: &'static str| -> Vec<String> { vec!["backup-auto".into(), at, keep.to_string(), include.into()] };
+        let keep = b.keep;
+        let this = cx.entity().downgrade();
         let auto = ui::panel(&theme)
             .gap_0()
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Automatic backup"))
-            .child(crate::manager::backup::brow_pub(&theme, "Back up every day at", None, div().text_sm().child(b.daily_at.clone().unwrap_or_else(|| "No automatic backup".into()))))
-            .when(b.daily_at.is_some(), |p| p.child(crate::manager::backup::brow_pub(&theme, "Keep", None, div().text_sm().child(format!("{} backups", b.keep)))));
+            .child(crate::manager::backup::brow_pub(&theme, "Back up every day", Some("A backup every day at this time, on the server's clock."), {
+                let (t1, this1) = (time.clone(), this.clone());
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(gpui_kit::component::switch::Switch::new("r-auto-on").checked(on).disabled(busy).on_click(cx.listener(move |this, v: &bool, _, cx| {
+                        let at = if *v { t1.clone() } else { "off".into() };
+                        this.run_job("Saving the automatic backup", save(at, keep, include), cx);
+                    })))
+                    .child(crate::ui::button("r-auto-time").outline().disabled(!on || busy).label(time.clone()).icon(gpui_kit::component::IconName::ChevronDown).dropdown_menu(move |menu, _, _| {
+                        let mut menu = menu;
+                        for h in 0..24 {
+                            for m in [0, 30] {
+                                let t = format!("{h:02}:{m:02}");
+                                let (this, t2) = (this1.clone(), t.clone());
+                                menu = menu.item(PopupMenuItem::new(t).on_click(move |_, _, cx| {
+                                    this.update(cx, |p, cx| p.run_job("Saving the automatic backup", save(t2.clone(), keep, include), cx)).ok();
+                                }));
+                            }
+                        }
+                        menu
+                    }))
+            }))
+            .child(crate::manager::backup::brow_pub(&theme, "Keep", Some("Older automatic backups are deleted."), {
+                let (t1, this1) = (if on { time.clone() } else { "off".into() }, this.clone());
+                crate::manager::backup::keep_menu("r-auto-keep", keep, busy, move |k, _, cx| {
+                    this1.update(cx, |p, cx| p.run_job("Saving the automatic backup", save(t1.clone(), k, include), cx)).ok();
+                })
+            }))
+            .child(crate::manager::backup::brow_pub(&theme, "Include", Some("Everything: the whole database and its files. Configuration: devices, dashboards, users and settings, without telemetry history."), {
+                let at = if on { time.clone() } else { "off".into() };
+                let mut seg = ui::seg_track(&theme);
+                for (key, label) in [("everything", "Everything"), ("configuration", "Configuration only")] {
+                    let at = at.clone();
+                    seg = seg.child(ui::seg_item(&theme, SharedString::from(format!("r-inc-{key}")), label, include == key).on_click(cx.listener(move |this, _, _, cx| {
+                        if include != key && !this.job.read(cx).is_running() {
+                            this.run_job("Saving the automatic backup", save(at.clone(), keep, key), cx);
+                        }
+                    })));
+                }
+                seg
+            }));
         let total: u64 = b.list.iter().map(|e| e.bytes).sum();
         let mut list = ui::panel(&theme).gap_0().child(
             h_flex()
@@ -762,8 +778,20 @@ impl RemotePages {
             list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder."));
         }
         for (i, e) in b.list.iter().enumerate() {
-            // The server cannot run the integrity check yet: no pill to act on.
-            list = list.child(crate::manager::backup::entry_row_with(&theme, i, e, false));
+            let damaged = e.check.as_ref().is_some_and(|c| !c.ok);
+            let path = e.path.display().to_string();
+            let (p1, p2, p3, name) = (path.clone(), path.clone(), path, e.name.clone());
+            let name2 = name.clone();
+            list = list.child(
+                crate::manager::backup::entry_row_with(&theme, i, e, true)
+                    .when(!damaged, |r| {
+                        r.child(crate::ui::button(SharedString::from(format!("r-restore-{}", e.name))).outline().label("Restore…").disabled(busy).on_click(cx.listener(move |this, _, window, cx| this.confirm_restore(p1.clone(), name.clone(), window, cx))))
+                    })
+                    .child(crate::ui::button(SharedString::from(format!("r-verify-{}", e.name))).outline().label("Verify").disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
+                        this.run_job("Verifying the backup", vec!["backup-verify".into(), p2.clone()], cx);
+                    })))
+                    .child(crate::ui::button(SharedString::from(format!("r-delete-{}", e.name))).outline().text_color(theme.danger).label("Delete").disabled(busy).on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), name2.clone(), window, cx)))),
+            );
         }
         v_flex().gap_4().child(now).child(auto).child(list)
     }
@@ -839,8 +867,8 @@ impl RemotePages {
         }));
         let active = self.settings_tab;
         let all: Vec<crate::catalog::Setting> = groups.iter().flat_map(|g| g.settings.iter().cloned()).collect();
-        let field_of = |st: &crate::catalog::Setting, cx: &mut Context<Self>| -> AnyElement {
-            let Some((_, input)) = self.inputs.iter().find(|(e, _)| *e == st.env) else { return div().into_any_element() };
+        let parts_of = |st: &crate::catalog::Setting, table: bool, cx: &mut Context<Self>| -> (AnyElement, Option<AnyElement>) {
+            let Some((_, input)) = self.inputs.iter().find(|(e, _)| *e == st.env) else { return (div().into_any_element(), None) };
             let this = cx.entity().downgrade();
             let inp = input.clone();
             let set: crate::manager::setting_field::SetFn = std::rc::Rc::new(move |v, window, cx| {
@@ -854,19 +882,20 @@ impl RemotePages {
                 let env = env.clone();
                 this.update(cx, |p, cx| p.check_file(env, path, cx)).ok();
             });
-            h_flex()
-                .flex_1()
-                .min_w_0()
-                .gap_2()
-                .items_center()
-                .child(crate::manager::setting_field::field(st, input, set, crate::manager::setting_field::FileButton::Check(check), cx))
-                .children(self.file_checks.get(&st.env).map(|r| match r {
-                    Read::Loading => ui::pill(&theme, Tone::Neutral, "Checking…"),
-                    Read::Got(true) => ui::pill(&theme, Tone::Good, "Found on the server"),
-                    Read::Got(false) => ui::pill(&theme, Tone::Bad, "Not on the server"),
-                    Read::Failed(_) => ui::pill(&theme, Tone::Warn, "Could not check"),
-                }))
-                .into_any_element()
+            let (f, button) = crate::manager::setting_field::field_parts(st, input, set, crate::manager::setting_field::FileButton::Check(check), table, cx);
+            let checked = self.file_checks.get(&st.env).map(|r| match r {
+                Read::Loading => ui::pill(&theme, Tone::Neutral, "Checking…"),
+                Read::Got(true) => ui::pill(&theme, Tone::Good, "Found on the server"),
+                Read::Got(false) => ui::pill(&theme, Tone::Bad, "Not on the server"),
+                Read::Failed(_) => ui::pill(&theme, Tone::Warn, "Could not check"),
+            });
+            (h_flex().flex_1().min_w_0().gap_2().items_center().child(f).children(checked).into_any_element(), button)
+        };
+        let field_of = |st: &crate::catalog::Setting, cx: &mut Context<Self>| -> AnyElement {
+            match parts_of(st, false, cx) {
+                (f, Some(b)) => h_flex().flex_1().min_w_0().gap_2().items_center().child(f).child(b).into_any_element(),
+                (f, None) => f,
+            }
         };
         let help = |st: &crate::catalog::Setting| {
             let default = if st.default.is_empty() { "SENTIENT's own".to_string() } else { st.default.clone() };
@@ -881,15 +910,15 @@ impl RemotePages {
             }
             col = col.child(sec);
         } else {
-            let mut table = ui::panel(&theme).gap_0().child(local::table_header(&theme));
+            let mut table = ui::panel(&theme).gap_0().overflow_hidden().child(local::table_header(&theme));
             for st in &all {
-                let field = field_of(st, cx);
+                let (field, action) = parts_of(st, true, cx);
                 table = table.child(local::table_row(
                     &theme,
                     st.short_label(),
                     help(st),
                     changed.contains(&st.env),
-                    h_flex().gap_3().items_center().child(h_flex().w(px(local::VALUE_W)).flex_shrink_0().child(field)).child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(local::builtin_label(st))),
+                    local::table_cells(&theme, &st.env, field, action, local::builtin_label(st), None),
                 ));
             }
             col = col.child(table);
@@ -1050,20 +1079,50 @@ impl RemotePages {
         if !installed {
             return p.child(div().text_sm().text_color(theme.muted_foreground).child("No gateway on this server. Install it with the Platform Manager on the server itself, so its access token stays on the server."));
         }
+        let kind = get("kind");
+        let runs_as = match kind.as_str() {
+            "docker" => format!("Docker container {}", get("container")),
+            "service" => format!("Service {}", get("service")),
+            "process" => format!("A process ({}), started outside a service", get("process")),
+            "windows-service" => "Windows service".to_string(),
+            _ => "Not known".to_string(),
+        };
+        // A row only when it has a value.
+        let host = get("host");
+        let version = get("version");
+        let page = get("page");
         p = p
-            .child(ui::fact(&theme, "Version", get("version")))
-            .child(ui::fact(&theme, "Connects to", format!("{}:{}", get("host"), get("port"))))
-            .child(ui::fact(&theme, "Its page", get("page")));
+            .when(!version.is_empty(), |p| p.child(ui::fact(&theme, "Version", version.clone())))
+            .when(!kind.is_empty(), |p| p.child(ui::fact(&theme, "Runs as", runs_as.clone())))
+            .when(!host.is_empty(), |p| p.child(ui::fact(&theme, "Connects to", format!("{host}:{}", get("port")))))
+            .when(!page.is_empty(), |p| {
+                p.child(if page == "off" {
+                    ui::fact_help(&theme, "Web page", "Off", "The gateway's own web page is off. In a container it is turned on with ST_GW_UI=on.")
+                } else {
+                    ui::fact(&theme, "Web page", page.clone())
+                })
+            });
+        // A plain process has no service to start it again: no controls.
+        let controllable = kind != "process";
+        let updatable = (kind == "docker" && get("managed") == "true") || kind == "windows-service";
         let act = |id: &'static str, label: &'static str, action: &'static str| {
             crate::ui::button(id).outline().label(label).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.run_job("Gateway", vec!["gateway-control".into(), action.into()], cx)))
         };
         p.child(
             h_flex()
                 .gap_2()
-                .child(act("r-gw-start", "Start", "start"))
-                .child(act("r-gw-stop", "Stop", "stop"))
-                .child(act("r-gw-restart", "Restart", "restart"))
-                .child(crate::ui::button("r-gw-update").primary().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx)))),
+                .flex_wrap()
+                .when(controllable, |r| {
+                    r.when(!running, |r| r.child(act("r-gw-start", "Start", "start")))
+                        .when(running, |r| r.child(act("r-gw-stop", "Stop", "stop")).child(act("r-gw-restart", "Restart", "restart")))
+                })
+                .child(crate::ui::button("r-gw-logs").outline().label("Logs").on_click(|_, _, cx| {
+                    crate::logsource::request(crate::logsource::Source::Gateway);
+                    cx.refresh_windows();
+                }))
+                .when(updatable, |r| {
+                    r.child(crate::ui::button("r-gw-update").primary().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx))))
+                }),
         )
     }
 
@@ -1098,7 +1157,9 @@ impl RemotePages {
         }
         let inst = self.inst.clone();
         self.job_label = Some(format!("Setting up {}", inst.name).into());
+        let strip_label = format!("Setting up the server agent on {}", inst.name);
         self.job.update(cx, |job, cx| {
+            job.set_label(strip_label);
             job.start(
                 move |sink| {
                     remote::deploy(&inst, &sink)?;
@@ -1152,18 +1213,32 @@ impl Render for RemotePages {
             Kind::Control => self.control_page(cx),
             Kind::Logs => self.logs_page(window, cx),
             Kind::Update => self.update_page(cx),
-            Kind::Backup => self.backup_page(cx),
+            Kind::Backup => {
+                // Screens: a row's Restore or Delete confirmation open
+                // (SPM_DEBUG_BACKUP_DIALOG=restore|delete).
+                #[cfg(debug_assertions)]
+                {
+                    static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                    if let (Ok(which), Read::Got(b)) = (std::env::var("SPM_DEBUG_BACKUP_DIALOG"), &self.backups) {
+                        if let Some(e) = b.list.first().cloned() {
+                            if !SHOWN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                                let path = e.path.display().to_string();
+                                if which == "delete" { self.confirm_delete(path, e.name, window, cx) } else { self.confirm_restore(path, e.name, window, cx) }
+                            }
+                        }
+                    }
+                }
+                self.backup_page(cx)
+            }
             Kind::Settings => self.settings_page(window, cx),
             Kind::Migration => self.migration_page(cx),
             Kind::Repair => self.repair_page(cx),
             Kind::Gateway => self.gateway_page(cx),
         } };
-        let job = self.job_panel(cx);
-        // Which server this is about shows in the bar under the top bar
-        // (crate::manager), as in the mockup.
-        ui::page(&theme, title, summary)
-            .children(job)
-            .child(body)
+        // Which server this is shows in the top bar (its colour, the
+        // switcher with REMOTE); a job shows in the progress strip.
+        let reload = { use gpui_kit::component::Sizable as _; crate::ui::button("remote-reload").ghost().small().icon(gpui_kit::component::IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(|this, _, _, cx| this.reload(cx))) };
+        ui::page_with(&theme, title, summary, reload).child(body)
     }
 }
 

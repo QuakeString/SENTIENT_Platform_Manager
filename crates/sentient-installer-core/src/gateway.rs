@@ -41,6 +41,28 @@ pub struct Status {
     /// file is shown and controlled, and updated through its compose file.
     pub container: Option<String>,
     pub managed: bool,
+    /// Linux without Docker: the systemd unit it runs as, or the program of
+    /// a plain process no service started (crate::distro::gateway_native).
+    pub service: Option<String>,
+    pub process: Option<String>,
+}
+
+impl Status {
+    /// How it runs, in a word for the agent's key=value line: docker,
+    /// service, process, windows-service.
+    pub fn kind(&self) -> &'static str {
+        if self.container.is_some() {
+            "docker"
+        } else if self.service.is_some() {
+            "service"
+        } else if self.process.is_some() {
+            "process"
+        } else if self.installed {
+            "windows-service"
+        } else {
+            ""
+        }
+    }
 }
 
 /// The local page's address as the gateway resolves it
@@ -147,7 +169,9 @@ pub fn status() -> Status {
     }
     #[cfg(not(windows))]
     {
-        crate::distro::gateway_docker::status()
+        // A container first; else a service or a plain process.
+        let s = crate::distro::gateway_docker::status();
+        if s.installed { s } else { crate::distro::gateway_native::status() }
     }
 }
 
@@ -191,7 +215,11 @@ pub fn control(sink: &ProgressFn, action: &str) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        crate::distro::gateway_docker::control(sink, action)
+        if crate::distro::gateway_docker::status().installed {
+            crate::distro::gateway_docker::control(sink, action)
+        } else {
+            crate::distro::gateway_native::control(sink, action)
+        }
     }
 }
 
@@ -247,7 +275,7 @@ mod windows {
         // over the file, as it does in the gateway.
         let env = service_environment();
         let page_url = page_url(file.as_deref(), &|k| env.iter().find_map(|l| l.strip_prefix(&format!("{k}=")).map(str::to_string)), false);
-        Status { installed, version, running, host, port, page_url, container: None, managed: true }
+        Status { installed, version, running, host, port, page_url, container: None, managed: true, ..Status::default() }
     }
 
     /// The service's Environment (REG_MULTI_SZ), one `NAME=value` per entry.

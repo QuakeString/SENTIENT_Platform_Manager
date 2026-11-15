@@ -169,12 +169,34 @@ impl Render for AlertBody {
         let lower = self.a.ok.to_lowercase();
         let destructive = ["delete", "remove", "uninstall", "stop", "replace", "sign everyone out", "sign out"].iter().any(|w| lower.starts_with(w));
         let on_ok = self.a.on_ok.clone();
-        let ok = crate::ui::button("alert-ok").label(self.a.ok.clone()).on_click(move |e, window, cx| {
+        let click = move |e: &ClickEvent, window: &mut Window, cx: &mut App| {
             let close_it = on_ok.as_ref().is_none_or(|f| f(e, window, cx));
             if close_it {
                 close(cx);
             }
-        });
+        };
+        // The destructive action is the dialog's primary button: a solid red
+        // fill with white text, as tall as Cancel (the toolkit's danger
+        // variant is a pale tint that reads as disabled).
+        let ok: AnyElement = if destructive {
+            h_flex()
+                .id("alert-ok")
+                .h(px(32.))
+                .px_3()
+                .items_center()
+                .rounded(theme.radius)
+                .bg(theme.danger)
+                .text_color(gpui_kit::white())
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .hover(|d| d.opacity(0.9))
+                .child(self.a.ok.clone())
+                .on_click(click)
+                .into_any_element()
+        } else {
+            crate::ui::button("alert-ok").label(self.a.ok.clone()).primary().on_click(click).into_any_element()
+        };
         v_flex()
             .gap_4()
             .child(div().text_sm().text_color(theme.muted_foreground).child(self.a.text.clone()))
@@ -183,7 +205,7 @@ impl Render for AlertBody {
                     .gap_2()
                     .justify_end()
                     .child(crate::ui::button("alert-cancel").outline().label("Cancel").on_click(|_, _, cx| close(cx)))
-                    .child(if destructive { ok.danger() } else { ok.primary() }),
+                    .child(ok),
             )
     }
 }

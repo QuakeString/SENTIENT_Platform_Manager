@@ -359,14 +359,22 @@ pub fn run(record: InstallationRecord, target: Flavor, sink: ProgressFn) -> Resu
         },
     };
     if let Err(e) = new.deploy(&sink) {
+        // Whatever fails while putting it back, SENTIENT is started again as
+        // it was: a failed move never leaves the plant stopped.
         log(&sink, format!("SENTIENT did not start on the new type ({e}); putting it back"));
         let _ = old.stop(&sink);
-        let undo = block_on(undo_stores(&old, aside.as_deref()))?;
-        if let Err(u) = undo {
-            log(&sink, format!("could not put ts_kv back: {u}"));
+        match block_on(undo_stores(&old, aside.as_deref())) {
+            Ok(Ok(())) => {}
+            Ok(Err(u)) => log(&sink, format!("could not put ts_kv back: {u}")),
+            Err(u) => log(&sink, format!("could not put ts_kv back: {u}")),
         }
-        old.deploy(&sink)?;
-        return Err(format!("SENTIENT did not start on {}: {e}. It runs on {} again.", flavor_label(target), flavor_label(from)));
+        if let Err(d) = old.deploy(&sink) {
+            // An adopted stack is not rewritten (its own compose file): start
+            // its containers as they were.
+            log(&sink, format!("Starting SENTIENT as it was ({d})"));
+            old.restart_as_was(&sink);
+        }
+        return Err(format!("SENTIENT did not start on {}: {e}. It runs on {} again, as it was.", flavor_label(target), flavor_label(from)));
     }
     let mut record = record;
     record.stack.flavor = target;

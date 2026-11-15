@@ -10,7 +10,7 @@
 //! returns and drops the callback, so the drain loop ends on its own.
 
 use futures::StreamExt as _;
-use gpui_kit::{Context, SharedString, Task};
+use gpui_kit::{App, Context, SharedString, Task};
 use sentient_installer_core::progress::{Progress, ProgressFn};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +32,12 @@ pub struct Job {
     last_done: Option<SharedString>,
     /// When the current step began.
     step_started: Option<std::time::Instant>,
+    /// What the global progress strip calls it ("Stopping ClickHouse on
+    /// ST-DEV"); None: its current step.
+    label: Option<SharedString>,
+    /// What the strip's Details opens for this job (a page's own result
+    /// view); None: the job's steps and output.
+    details: Option<std::rc::Rc<dyn Fn(&mut App)>>,
     _task: Option<Task<()>>,
     /// Re-renders once a second while running, so the step's time moves.
     _ticker: Option<Task<()>>,
@@ -47,9 +53,25 @@ impl Job {
             steps: Vec::new(),
             last_done: None,
             step_started: None,
+            label: None,
+            details: None,
             _task: None,
             _ticker: None,
         }
+    }
+
+    /// Name the job for the progress strip (before `start`).
+    pub fn set_label(&mut self, label: impl Into<SharedString>) {
+        self.label = Some(label.into());
+    }
+
+    /// What the strip's Details opens (see `details`).
+    pub fn set_details(&mut self, open: std::rc::Rc<dyn Fn(&mut App)>) {
+        self.details = Some(open);
+    }
+
+    pub fn details(&self) -> Option<std::rc::Rc<dyn Fn(&mut App)>> {
+        self.details.clone()
     }
 
     pub fn state(&self) -> &JobState {
@@ -121,6 +143,13 @@ impl Job {
         self.last_done = None;
         self.step_started = Some(std::time::Instant::now());
         cx.notify();
+        // The global progress strip follows it (crate::manager::strip).
+        let me = cx.entity();
+        let label = self.label.take();
+        if let Some(l) = &label {
+            activity(l);
+        }
+        cx.defer(move |cx| crate::manager::strip::track(me, label, cx));
         self._ticker = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
@@ -171,7 +200,11 @@ impl Job {
                 self.percent = None;
                 self.step_started = Some(std::time::Instant::now());
             }
-            Progress::Log { line } => self.log.push(crate::ui::strip_ansi(&line).into()),
+            Progress::Log { line } => {
+                let line = crate::ui::strip_ansi(&line);
+                activity(&format!("  {line}"));
+                self.log.push(line.into());
+            }
             Progress::Percent { value } => self.percent = Some((value * 100.0).clamp(0.0, 100.0)),
             // Steps inside a job report their own completion ("SENTIENT is
             // serving…" from a deploy in the middle of a migration): the job

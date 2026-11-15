@@ -25,7 +25,6 @@ use gpui_kit::component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
     button::ButtonVariants as _,
     input::{Input, InputEvent, InputState},
-    progress::Progress,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -505,8 +504,11 @@ pub(crate) fn row(theme: &gpui_kit::component::Theme, label: impl Into<SharedStr
     // The mockup's setting row: the label on the left (primary when
     // changed), the control right-aligned in a fixed column.
     let label: SharedString = label.into();
+    // On a narrow window the control moves under the label, right-aligned.
     h_flex()
-        .gap_4()
+        .flex_wrap()
+        .gap_x_4()
+        .gap_y_1()
         .items_center()
         .py_2()
         .border_t_1()
@@ -522,7 +524,7 @@ pub(crate) fn row(theme: &gpui_kit::component::Theme, label: impl Into<SharedStr
                     r.child(crate::ui::button(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))
                 }),
         )
-        .child(h_flex().flex_shrink_0().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
+        .child(h_flex().flex_shrink_0().ml_auto().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
 }
 
 /// A setting row with its variable name muted beside the plain label (the
@@ -530,8 +532,11 @@ pub(crate) fn row(theme: &gpui_kit::component::Theme, label: impl Into<SharedStr
 pub(crate) fn row_with_var(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, var: &str, help: Option<String>, changed: bool, control: impl IntoElement) -> Div {
     let label: SharedString = label.into();
     let var = var.trim_start_matches("pg:").to_string();
+    // On a narrow window the control moves under the label, right-aligned.
     h_flex()
-        .gap_4()
+        .flex_wrap()
+        .gap_x_4()
+        .gap_y_1()
         .items_center()
         .py_2()
         .border_t_1()
@@ -550,7 +555,7 @@ pub(crate) fn row_with_var(theme: &gpui_kit::component::Theme, label: impl Into<
                 )
                 .child(div().text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(var)),
         )
-        .child(h_flex().flex_shrink_0().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
+        .child(h_flex().flex_shrink_0().ml_auto().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
 }
 
 /// A row of the All variables table: label column, then value and built-in
@@ -565,11 +570,12 @@ pub(crate) fn table_row(theme: &gpui_kit::component::Theme, label: impl Into<Sha
         .border_color(theme.border)
         .child(
             h_flex()
-                .w(px(250.))
-                .flex_shrink_0()
+                .w(px(LABEL_W))
+                .min_w(px(120.))
+                .flex_shrink(1.)
                 .gap_1()
                 .items_center()
-                .child(div().text_sm().when(changed, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.primary)).child(label.clone()))
+                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().when(changed, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.primary)).child(label.clone()))
                 .when_some(help, |r, h| {
                     r.child(crate::ui::button(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))
                 }),
@@ -646,8 +652,16 @@ impl SettingsPage {
 
     /// A catalog setting's field, by its kind (crate::manager::setting_field).
     fn field(&self, setting: &crate::catalog::Setting, cx: &mut Context<Self>) -> AnyElement {
+        match self.field_parts(setting, false, cx) {
+            (f, Some(b)) => h_flex().flex_1().min_w_0().gap_2().items_center().child(f).child(b).into_any_element(),
+            (f, None) => f,
+        }
+    }
+
+    /// The field and its file button apart (the All variables table).
+    fn field_parts(&self, setting: &crate::catalog::Setting, table: bool, cx: &mut Context<Self>) -> (AnyElement, Option<AnyElement>) {
         use crate::manager::setting_field::{self, FileButton};
-        let Some(input) = self.inputs.get(&setting.env) else { return div().into_any_element() };
+        let Some(input) = self.inputs.get(&setting.env) else { return (div().into_any_element(), None) };
         let this = cx.entity().downgrade();
         let key = setting.env.clone();
         let set: setting_field::SetFn = std::rc::Rc::new(move |v, window, cx| {
@@ -662,7 +676,7 @@ impl SettingsPage {
         let choose: setting_field::ActFn = std::rc::Rc::new(move |window, cx| {
             this.update(cx, |page, cx| page.choose_file(key.clone(), window, cx)).ok();
         });
-        setting_field::field(setting, input, set, FileButton::Choose(choose), cx)
+        setting_field::field_parts(setting, input, set, FileButton::Choose(choose), table, cx)
     }
 
     // ---- tabs --------------------------------------------------------------
@@ -700,7 +714,7 @@ impl SettingsPage {
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading the accounts…" } else { "Not read. Reading asks for the administrator password." }))
+                        .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading the accounts…" } else { "Not read. Reading asks for the administrator password." }))
                         .when(!self.reading_admin, |r| r.child(crate::ui::button("read-admins").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
                 );
             }
@@ -1048,7 +1062,7 @@ impl SettingsPage {
                         cx.notify();
                     }))
             }));
-        let mut table = ui::panel(theme).gap_0().flex_1().min_w_0().child(table_header(theme));
+        let mut table = ui::panel(theme).gap_0().flex_1().min_w_0().overflow_hidden().child(table_header(theme));
         let mut rows = 0;
         for g in self.groups.iter().filter(|g| self.group.as_ref().is_none_or(|n| n == &g.name)) {
             for s in &g.settings {
@@ -1063,23 +1077,29 @@ impl SettingsPage {
                 rows += 1;
                 let key = s.env.clone();
                 let label: SharedString = if self.show_names { s.env.clone().into() } else { s.short_label().into() };
-                let field = self.field(s, cx);
+                let (field, action) = self.field_parts(s, true, cx);
                 table = table.child(table_row(
                     theme,
                     label,
                     self.help(&s.env),
                     changed,
-                    h_flex()
-                        .gap_3()
-                        .items_center()
-                        .child(h_flex().w(px(VALUE_W)).flex_shrink_0().child(field))
-                        .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(builtin_label(s)))
-                        .when(set, |r| {
-                            r.child(crate::ui::button(SharedString::from(format!("reset-{}", s.env))).ghost().label("Reset").on_click(cx.listener(move |this, _, window, cx| {
-                                this.set(&key, "", window, cx);
-                                cx.notify();
-                            })))
+                    table_cells(
+                        theme,
+                        &s.env,
+                        field,
+                        action,
+                        builtin_label(s),
+                        set.then(|| {
+                            crate::ui::button(SharedString::from(format!("reset-{}", s.env)))
+                                .ghost()
+                                .label("Reset")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.set(&key, "", window, cx);
+                                    cx.notify();
+                                }))
+                                .into_any_element()
                         }),
+                    ),
                 ));
             }
         }
@@ -1152,14 +1172,6 @@ impl Render for SettingsPage {
         };
         let job = self.job.read(cx);
         let busy = job.is_running();
-        let step = job.step_with_time();
-        let percent = job.percent();
-        let outcome = match job.state() {
-            JobState::Done(m) => Some((Tone::Good, m.clone())),
-            JobState::Failed(m) => Some((Tone::Bad, m.clone())),
-            _ => None,
-        };
-        let log: Vec<SharedString> = job.log().iter().rev().take(8).rev().cloned().collect();
         let changed = self.changed(cx);
         let mut problems = crate::settings::check(&self.values(cx));
         for (n, _) in self.custom_values(cx) {
@@ -1220,14 +1232,7 @@ impl Render for SettingsPage {
             .gap(px(14.))
             .children(applybar)
             .children(problems.into_iter().map(|p| div().text_sm().text_color(theme.danger).child(p)))
-            .when(busy || outcome.is_some(), |page| {
-                page.child(
-                    ui::panel(&theme)
-                        .when(busy, |p| p.child(div().text_sm().child(step.clone())).when_some(percent, |p, v| p.child(Progress::new("settings-progress").value(v))))
-                        .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
-                        .children(log.into_iter().map(|line| div().text_size(px(13.)).text_color(theme.muted_foreground).child(line))),
-                )
-            })
+            
             .children(body))
     }
 }
@@ -1280,7 +1285,8 @@ pub(crate) const TAB_KEYS: [&[&str]; 4] = [
 pub(crate) fn tab_bar(theme: &gpui_kit::component::Theme, id: &str, active: usize, pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
     v_flex()
         .w(px(190.))
-        .flex_shrink_0()
+        .min_w(px(132.))
+        .flex_shrink(1.)
         .gap_0p5()
         .children(TAB_TITLES.iter().enumerate().map(|(i, title)| {
             let on = i == active;
@@ -1337,9 +1343,47 @@ pub(crate) fn table_header(theme: &gpui_kit::component::Theme) -> Div {
         .pb_1()
         .text_size(px(13.))
         .text_color(theme.muted_foreground)
-        .child(div().w(px(250.)).child("Setting"))
-        .child(div().w(px(VALUE_W)).child("Value"))
-        .child(div().flex_1().child("Built-in"))
+        .child(div().w(px(LABEL_W)).min_w(px(120.)).flex_shrink(1.).child("Setting"))
+        .child(div().flex_1().min_w(px(150.)).max_w(px(VALUE_W)).child("Value"))
+        .child(div().w(px(ACTION_W)).flex_shrink_0())
+        .child(div().flex_1())
+        .child(div().w(px(BUILTIN_W)).flex_shrink_0().text_right().child("Built-in"))
+}
+
+/// The table's label and built-in column widths; the value takes the rest
+/// up to VALUE_W, so nothing crosses the panel at any window width.
+const LABEL_W: f32 = 220.;
+const BUILTIN_W: f32 = 120.;
+const ACTION_W: f32 = 84.;
+
+/// A table row's value and built-in cells (with `extra`, such as Reset,
+/// after the value). Shared with a remote server's table.
+pub(crate) fn table_cells(theme: &gpui_kit::component::Theme, key: &str, field: impl IntoElement, action: Option<AnyElement>, builtin: String, extra: Option<AnyElement>) -> Div {
+    let tip: SharedString = builtin.clone().into();
+    h_flex()
+        .flex_1()
+        .min_w_0()
+        .gap_3()
+        .items_center()
+        // Every value field one width; a file's Check or Choose in a column
+        // of its own (empty where it does not apply).
+        .child(h_flex().flex_1().min_w(px(150.)).max_w(px(VALUE_W)).gap_2().items_center().child(h_flex().flex_1().min_w_0().child(field)).children(extra))
+        .child(h_flex().w(px(ACTION_W)).flex_shrink_0().children(action))
+        .child(div().flex_1())
+        .child(
+            div()
+                .id(SharedString::from(format!("builtin-{key}")))
+                .w(px(BUILTIN_W))
+                .flex_shrink_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_right()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(builtin)
+                .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx)),
+        )
 }
 
 /// A setting's built-in value, as the Advanced table shows it.

@@ -62,6 +62,7 @@ mod settings;
 #[cfg(feature = "gui")]
 mod standalone;
 mod support;
+mod stats;
 mod sysmon;
 #[cfg(feature = "gui")]
 mod theme;
@@ -153,7 +154,7 @@ fn gui_main(args: Vec<String>) {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(size, cx)),
             // Small enough for a half screen, large enough that nothing breaks.
-            window_min_size: Some(gpui_kit::size(px(680.), px(480.))),
+            window_min_size: Some(gpui_kit::size(px(560.), px(480.))),
             titlebar: Some(TitlebarOptions {
                 title: Some(mode.window_title().into()),
                 ..Default::default()

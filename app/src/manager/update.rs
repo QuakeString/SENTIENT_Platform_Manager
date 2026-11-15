@@ -764,14 +764,11 @@ impl Render for UpdatePage {
         let job = self.job.read(cx);
         let busy = job.is_running();
         let can_run = !busy && (!native || self.package.is_some());
-        let percent = job.percent();
-        let step = job.step_with_time();
         let outcome = match job.state() {
             JobState::Done(m) => Some((Tone::Good, m.clone())),
             JobState::Failed(m) => Some((Tone::Bad, m.clone())),
             _ => None,
         };
-        let log: Vec<SharedString> = job.log().to_vec();
 
         let show_other = self.show_other || busy || outcome.is_some() || self.package.is_some();
         page.when(show_other, |page| page.child(
@@ -908,19 +905,7 @@ impl Render for UpdatePage {
                     ),
                 )
         })
-        .when(busy || outcome.is_some() || !log.is_empty(), |page| {
-            page.child(
-                ui::panel(&theme)
-                    .when(busy, |p| {
-                        p.child(div().text_sm().child(step.clone()))
-                            .child(Progress::new("update-progress").value(percent.unwrap_or(0.0)))
-                    })
-                    .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
-                    .children(log.into_iter().map(|line| {
-                        div().text_size(px(13.)).text_color(theme.muted_foreground).child(line)
-                    })),
-            )
-        })
+        
     }
 }
 

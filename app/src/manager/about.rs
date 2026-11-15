@@ -190,12 +190,13 @@ impl Render for AboutPage {
         let place = |id: &'static str, label: &'static str, path: String| {
             let copy = path.clone();
             h_flex()
+                .max_w_full()
                 .gap_2()
                 .items_center()
                 .justify_center()
                 .text_size(px(13.))
                 .text_color(theme.muted_foreground)
-                .child(div().whitespace_nowrap().child(format!("{label} {}", ui::middle_ellipsis(&path, 64))))
+                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(format!("{label} {}", ui::middle_ellipsis(&path, 64))))
                 .child(crate::ui::button(id).ghost().xsmall().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
         };
         let footer = v_flex()
