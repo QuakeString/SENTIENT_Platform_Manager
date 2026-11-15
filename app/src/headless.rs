@@ -532,6 +532,25 @@ fn print_candidates(found: &[crate::adopt::Candidate]) {
     }
 }
 
+/// The SENTIENT version to show. A stack taken over from its own compose file
+/// may record an image tag such as "latest": then the running container's
+/// version label says which SENTIENT it is.
+fn shown_version(record: &InstallationRecord) -> String {
+    let recorded = record.sentient_version.clone();
+    let numbered = recorded.split('.').next().is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+    if numbered || record.engine != crate::installation::Engine::Docker {
+        return recorded;
+    }
+    let label = std::process::Command::new("docker")
+        .args(["inspect", "-f", "{{index .Config.Labels \"org.opencontainers.image.version\"}}", &record.stack.names().app])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|v| !v.is_empty() && v != "<no value>" && v != "dev");
+    label.unwrap_or_else(|| format!("version unknown (image tag {recorded})"))
+}
+
 /// This computer's state for the Platform Manager on another computer.
 pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote::RemoteStatus {
     let manager_version = env!("CARGO_PKG_VERSION").to_string();
@@ -548,7 +567,7 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
     crate::remote::RemoteStatus {
         installed: snap.installed,
         serving: snap.serving,
-        sentient_version: record.sentient_version.clone(),
+        sentient_version: shown_version(record),
         database: crate::installation::flavor_label(record.flavor()).to_string(),
         database_bytes,
         disk_free: (mon.disk_total > 0).then_some(mon.disk_free),

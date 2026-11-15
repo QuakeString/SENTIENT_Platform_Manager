@@ -655,6 +655,11 @@ pub fn home(inst: &Instance) -> Result<String, String> {
 }
 
 pub fn backups(inst: &Instance) -> Result<RemoteBackups, String> {
+    // Development aid: canned backups (screens).
+    #[cfg(debug_assertions)]
+    if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_BACKUPS") {
+        return serde_json::from_str(&t.to_string_lossy()).map_err(|e| e.to_string());
+    }
     read_json(inst, "backups-json")
 }
 

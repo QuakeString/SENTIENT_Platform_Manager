@@ -196,6 +196,12 @@ impl Manager {
             _tasks: Vec::new(),
         };
         manager.start_monitor(cx);
+        // Screenshots: `--instance <id>` opens a remote instance on `--page`.
+        #[cfg(debug_assertions)]
+        if let Some(id) = args.windows(2).find(|w| w[0] == "--instance").map(|w| w[1].clone()) {
+            manager.open_instance(Some(id), cx);
+            manager.page = page;
+        }
         manager
     }
 
@@ -800,7 +806,8 @@ impl Manager {
                         p.clone()
                     }
                     None => {
-                        let p = cx.new(|cx| remote_pages::RemotePages::new(r.clone(), kind, window, cx));
+                        let updates = self.updates.clone();
+                        let p = cx.new(|cx| remote_pages::RemotePages::new(r.clone(), kind, updates, window, cx));
                         self.remote_pages = Some(p.clone());
                         p
                     }

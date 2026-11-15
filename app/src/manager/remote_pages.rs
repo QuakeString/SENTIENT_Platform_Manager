@@ -9,6 +9,7 @@ use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
+    menu::{DropdownMenu as _, PopupMenuItem},
     input::{Input, InputEvent, InputState},
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -66,6 +67,12 @@ pub struct RemotePages {
     logs: Read<String>,
     /// The newest SENTIENT on the update channel (None: none newer).
     offer: Read<Option<crate::updates::Offer>>,
+    /// The versions "Other version" lists.
+    versions: Read<Vec<crate::online::Version>>,
+    /// A version picked under "Other version", waiting for its confirmation.
+    pick: Option<String>,
+    /// This Platform Manager's update channel (shared with the local Update).
+    updates: Entity<crate::updates::UpdateState>,
     filter: Entity<InputState>,
     follow: bool,
     job: Entity<Job>,
@@ -78,7 +85,7 @@ pub struct RemotePages {
 }
 
 impl RemotePages {
-    pub fn new(inst: Instance, kind: Kind, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(inst: Instance, kind: Kind, updates: Entity<crate::updates::UpdateState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let job = cx.new(|_| Job::new());
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter lines, e.g. ERROR"));
         let subs = vec![
@@ -108,6 +115,9 @@ impl RemotePages {
             target: 2,
             logs: Read::Loading,
             offer: Read::Loading,
+            versions: Read::Loading,
+            pick: None,
+            updates,
             filter,
             follow: true,
             job,
@@ -150,9 +160,26 @@ impl RemotePages {
                 let i2 = inst.clone();
                 self.fetch(cx, move || remote::status(&i2), |p, r| p.status = r);
                 let native = inst.detected.as_ref().is_some_and(|d| d.install != "Docker");
+                self.pick = None;
                 self.fetch(
                     cx,
                     move || {
+                        #[cfg(debug_assertions)]
+                        if std::env::var_os("SPM_DEBUG_REMOTE_OFFER").is_some() {
+                            let v = |version: &str, date: &str| crate::online::Version { version: version.into(), date: date.into(), summary: String::new() };
+                            return Ok(vec![v("4.4.0.2", "2026-11-14"), v("4.4.0.1", "2026-11-13"), v("4.3.0.58", "2026-11-02")]);
+                        }
+                        crate::online::versions(native)
+                    },
+                    |p, r| p.versions = r,
+                );
+                self.fetch(
+                    cx,
+                    move || {
+                        #[cfg(debug_assertions)]
+                        if std::env::var_os("SPM_DEBUG_REMOTE_OFFER").is_some() {
+                            return Ok(Some(canned_offer()));
+                        }
                         let installed = remote::status(&inst)?.sentient_version;
                         let channel = crate::updates::Prefs::load().channel;
                         crate::updates::check(channel, Some(installed), native).sentient
@@ -469,38 +496,129 @@ impl RemotePages {
             .child(body)
     }
 
+    /// The same layout as this computer's Update: the channel, then one
+    /// SENTIENT line with its buttons; the change log opens in a dialog.
     fn update_page(&self, cx: &mut Context<Self>) -> Div {
+        use crate::manager::update::{Offered, product_row, sentient_summary};
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
-        let installed = self.status.got().map(|s| s.sentient_version.clone());
-        let mut p = ui::panel(&theme)
-            .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Sentient, 24.)).child(div().font_weight(FontWeight::MEDIUM).child("SENTIENT")))
-            .child(ui::fact(&theme, "Installed there", installed.clone().unwrap_or_else(|| "reading…".into())))
-            .child(ui::fact(&theme, "Update channel", format!("{} (this Platform Manager's preference)", crate::updates::Prefs::load().channel.label())));
-        match &self.offer {
-            Read::Loading => p = p.child(div().text_sm().text_color(theme.muted_foreground).child("Looking for a newer SENTIENT…")),
-            Read::Failed(e) => p = p.child(ui::outcome(&theme, Tone::Bad, e.clone())),
-            Read::Got(None) => p = p.child(ui::outcome(&theme, Tone::Good, "SENTIENT is up to date on this server.")),
-            Read::Got(Some(o)) => {
-                let version = o.version.clone();
-                p = p
-                    .child(ui::outcome(&theme, Tone::Neutral, format!("SENTIENT {} is available{}.", o.version, if o.date.is_empty() { String::new() } else { format!(", released {}", o.date) })))
-                    .when(!o.between.is_empty(), |p| p.child(ui::release_notes(&theme, &o.between)))
-                    .child(
-                        h_flex().child(
-                            Button::new("r-update")
-                                .primary()
-                                .label(format!("Update to {}", o.version))
-                                .disabled(busy)
-                                .on_click(cx.listener(move |this, _, _, cx| this.run_job("Updating SENTIENT", vec!["update".into(), "--version".into(), version.clone()], cx))),
-                        ),
-                    )
-                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(
-                        "The update runs on the server by itself: a dropped connection does not stop it, and the previous version comes back if SENTIENT does not start.",
-                    ));
-            }
+        let installed = self.status.got().map(|s| s.sentient_version.clone()).unwrap_or_else(|| "Reading…".into());
+        let channel = self.updates.read(cx).prefs.channel;
+        let checking = matches!(self.offer, Read::Loading);
+        let channels = ui::seg_track(&theme).children(sentient_installer_core::releases::Channel::ALL.into_iter().map(|c| {
+            ui::seg_item(&theme, SharedString::from(format!("r-channel-{}", c.label())), c.label(), c == channel).on_click(cx.listener(move |this, _, _, cx| {
+                this.updates.update(cx, |u, cx| u.set_channel(c, cx));
+                this.reload(cx);
+            }))
+        }));
+        let offer = match &self.offer {
+            Read::Got(o) => o.clone(),
+            _ => None,
+        };
+        let state = match &self.offer {
+            Read::Loading => Offered::Checking,
+            Read::Failed(_) => Offered::NotChecked,
+            Read::Got(None) => Offered::UpToDate,
+            Read::Got(Some(o)) => Offered::Newer(o),
+        };
+        let (sub, pill) = sentient_summary(&installed, state, false);
+        let mut row = product_row(&theme, offer.is_some(), ui::Product::Sentient, "SENTIENT", sub);
+        if let Some((tone, text)) = pill {
+            row = row.child(ui::pill(&theme, tone, text));
         }
-        p
+        if let Some(o) = &offer {
+            let version = o.version.clone();
+            let (o2, inst_v) = (o.clone(), installed.clone());
+            row = row
+                .child(
+                    Button::new("r-update")
+                        .primary()
+                        .label(format!("Update to {}", o.version))
+                        .disabled(busy)
+                        .on_click(cx.listener(move |this, _, _, cx| this.run_job("Updating SENTIENT", vec!["update".into(), "--version".into(), version.clone()], cx))),
+                )
+                .child(Button::new("r-notes").outline().label("What's new").on_click(move |_, _, cx| crate::manager::update::open_notes("SENTIENT", &inst_v, &o2, cx)));
+        }
+        let versions: Vec<crate::online::Version> = match &self.versions {
+            Read::Got(v) => v.iter().filter(|v| v.version != installed).cloned().collect(),
+            _ => Vec::new(),
+        };
+        let this = cx.entity().downgrade();
+        row = row.child(
+            Button::new("r-other")
+                .outline()
+                .label("Other version")
+                .disabled(busy || versions.is_empty())
+                .dropdown_menu(move |menu, _, _| {
+                    let mut menu = menu;
+                    for v in &versions {
+                        let (t, ver) = (this.clone(), v.version.clone());
+                        menu = menu.item(PopupMenuItem::new(v.label()).on_click(move |_, _, cx| {
+                            t.update(cx, |p, cx| {
+                                p.pick = Some(ver.clone());
+                                cx.notify();
+                            })
+                            .ok();
+                        }));
+                    }
+                    menu
+                }),
+        );
+        let failed = match &self.offer {
+            Read::Failed(e) => Some(e.clone()),
+            _ => None,
+        };
+        let pick = self.pick.clone();
+        ui::panel(&theme)
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .flex_wrap()
+                    .child(div().text_sm().child("Channel"))
+                    .child(channels)
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("r-check")
+                            .outline()
+                            .label(if checking { "Checking…" } else { "Check for updates" })
+                            .disabled(checking)
+                            .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
+                    ),
+            )
+            .when_some(failed, |p, e| {
+                p.child(ui::outcome(
+                    &theme,
+                    Tone::Warn,
+                    if e.contains("limiting") { "GitHub is limiting requests from this network. Try again in an hour." } else { "The release page could not be reached. Nothing was changed." },
+                ))
+            })
+            .child(row)
+            .when_some(pick, |p, v| {
+                let v2 = v.clone();
+                p.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .flex_wrap()
+                        .px_3()
+                        .py_2()
+                        .rounded(theme.radius)
+                        .bg(theme.secondary)
+                        .child(div().flex_1().min_w(px(220.)).text_sm().child(format!("Install SENTIENT {v} on this server instead of {installed}?")))
+                        .child(Button::new("r-pick-go").primary().label(format!("Install {v}")).disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
+                            this.pick = None;
+                            this.run_job("Updating SENTIENT", vec!["update".into(), "--version".into(), v2.clone()], cx);
+                        })))
+                        .child(Button::new("r-pick-no").ghost().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                            this.pick = None;
+                            cx.notify();
+                        }))),
+                )
+            })
+            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(
+                "The update runs on the server by itself: a dropped connection does not stop it, and the previous version comes back if SENTIENT does not start.",
+            ))
     }
 
     fn backup_page(&self, cx: &mut Context<Self>) -> Div {
@@ -835,5 +953,33 @@ impl Render for RemotePages {
             )
             .children(job)
             .child(body)
+    }
+}
+
+/// Screens: a canned offer with two versions of notes.
+#[cfg(debug_assertions)]
+fn canned_offer() -> crate::updates::Offer {
+    let n = |version: &str, date: &str, summary: &str, sections: Vec<(&str, Vec<&str>)>| crate::notes::Notes {
+        version: version.into(),
+        date: date.into(),
+        summary: summary.into(),
+        sections: sections.into_iter().map(|(k, v)| (k.to_string(), v.into_iter().map(String::from).collect())).collect(),
+        database: None,
+    };
+    crate::updates::Offer {
+        version: "4.4.0.2".into(),
+        tag: "4.4.0.2".into(),
+        date: "2026-11-14".into(),
+        notes: String::new(),
+        page: String::new(),
+        installer: None,
+        sha256: None,
+        between: vec![
+            n("4.4.0.2", "2026-11-14", "Request a demo or buy a licence from inside SENTIENT, and editor fixes.", vec![
+                ("Added", vec!["Licence: Request demo licence and Buy licence open dialogs inside SENTIENT."]),
+                ("Fixed", vec!["The fullscreen buttons of the JSON editor no longer submit the form they sit in.", "The licence limits on telemetry and attribute keys count the customer's keys only."]),
+            ]),
+            n("4.4.0.1", "2026-11-13", "First release of the 4.4 line.", vec![("Added", vec!["CoAP and LwM2M devices (DTLS, OSCORE).", "18 new widgets."])]),
+        ],
     }
 }

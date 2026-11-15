@@ -51,7 +51,6 @@ pub struct UpdatePage {
     /// The operator chose "Later" for those changes.
     changes_later: bool,
     /// The release notes shown in place of the update rows ("What's new").
-    notes_for: Option<Product>,
     /// The version list and package choice ("Other version").
     show_other: bool,
     show_changes_log: bool,
@@ -117,7 +116,6 @@ impl UpdatePage {
             manager_job,
             changes_job,
             changes_later: false,
-            notes_for: None,
             show_other: false,
             show_changes_log: false,
             _observe,
@@ -388,15 +386,21 @@ impl UpdatePage {
     }
 
     /// Show the release notes of `product` ("What's new").
+    /// "What's new": the change log of every version between the installed
+    /// one and the offered one, in a dialog.
     pub fn show_notes(&mut self, product: Product, cx: &mut Context<Self>) {
-        self.notes_for = Some(product);
-        cx.notify();
+        let u = self.updates.read(cx);
+        let (offer, installed, name) = match product {
+            Product::Manager => (u.manager().cloned(), crate::updates::manager_version().to_string(), "Platform Manager"),
+            Product::Sentient => (u.sentient().cloned(), self.record.as_ref().map(|r| r.sentient_version.clone()).unwrap_or_default(), "SENTIENT"),
+        };
+        let Some(o) = offer else { return };
+        open_notes(name, &installed, &o, cx);
     }
 
     /// Download and install the offered Platform Manager (B1).
     pub fn start_manager_update(&mut self, cx: &mut Context<Self>) {
         let Some(offer) = self.updates.read(cx).manager().cloned() else { return };
-        self.notes_for = None;
         self.manager_job.update(cx, |job, cx| job.start(move |sink| crate::updates::install_manager(&offer, &sink).map(|_| ()), cx));
         cx.notify();
     }
@@ -405,7 +409,6 @@ impl UpdatePage {
     fn start_sentient_update(&mut self, cx: &mut Context<Self>) {
         let Some(o) = self.updates.read(cx).sentient().cloned() else { return };
         let docker = self.record.as_ref().is_some_and(|r| r.engine == Engine::Docker);
-        self.notes_for = None;
         if docker { self.run_docker_to(o.version, cx) } else { self.run_download(o.tag, cx) }
         cx.notify();
     }
@@ -535,23 +538,7 @@ impl UpdatePage {
     /// A product line: name, what is known, and its buttons on the right.
     fn row(theme: &gpui_kit::component::Theme, highlight: bool, title: &'static str, sub: String) -> Div {
         let logo = if title == "SENTIENT" { ui::Product::Sentient } else { ui::Product::Manager };
-        h_flex()
-            .gap_3()
-            .p_3()
-            .items_center()
-            .rounded(theme.radius)
-            .bg(theme.background)
-            .border_1()
-            .border_color(if highlight { theme.primary } else { theme.border })
-            .child(ui::product_logo(logo, 30.))
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap_0p5()
-                    .child(div().font_weight(FontWeight::MEDIUM).child(title))
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(sub)),
-            )
+        product_row(theme, highlight, logo, title, sub)
     }
 
     /// A1–A7 and B1–B2: the channel, both products and what each offers.
@@ -657,17 +644,14 @@ impl UpdatePage {
         let sentient_row = installed.as_ref().map(|inst| {
             let docker = self.record.as_ref().is_some_and(|r| r.engine == Engine::Docker);
             let busy = self.job.read(cx).is_running();
-            let (sub, pill): (String, Option<(Tone, &str)>) = match (&found, &sentient_offer) {
-                (None, _) if checking => (format!("{inst} installed. Checking…"), None),
-                (None, _) => (format!("{inst} installed. Not checked."), Some((Tone::Neutral, "Unknown"))),
-                (Some(f), _) if f.sentient.is_err() => (format!("{inst} installed. Not checked."), Some((Tone::Neutral, "Unknown"))),
-                (Some(_), None) => (format!("{inst} is up to date."), Some((Tone::Good, "Up to date"))),
-                (Some(_), Some(o)) if manager_offer.is_some() => (format!("{} is available (installed {inst}). Update the Platform Manager first.", o.version), None),
-                (Some(_), Some(o)) => (
-                    format!("{} is available (installed {inst}).{}", o.version, if o.notes.is_empty() { String::new() } else { format!(" {}", o.notes) }),
-                    None,
-                ),
+            let state = match (&found, &sentient_offer) {
+                (None, _) if checking => Offered::Checking,
+                (None, _) => Offered::NotChecked,
+                (Some(f), _) if f.sentient.is_err() => Offered::NotChecked,
+                (Some(_), None) => Offered::UpToDate,
+                (Some(_), Some(o)) => Offered::Newer(o),
             };
+            let (sub, pill) = sentient_summary(inst, state, manager_offer.is_some());
             let mut row = Self::row(theme, sentient_offer.is_some() && manager_offer.is_none(), "SENTIENT", sub);
             if let Some((tone, text)) = pill {
                 row = row.child(ui::pill(theme, tone, text));
@@ -757,114 +741,6 @@ impl UpdatePage {
             )
     }
 
-    /// E1–E4: the notes of every version between the installed one and the
-    /// offered one, and what updating does, with the Update button under them.
-    fn notes_view(&self, theme: &gpui_kit::component::Theme, product: Product, cx: &mut Context<Self>) -> Div {
-        let u = self.updates.read(cx);
-        let (offer, installed, title) = match product {
-            Product::Manager => (u.manager().cloned(), crate::updates::manager_version().to_string(), "What's new in the Platform Manager"),
-            Product::Sentient => (
-                u.sentient().cloned(),
-                self.record.as_ref().map(|r| r.sentient_version.clone()).unwrap_or_default(),
-                "What's new in SENTIENT",
-            ),
-        };
-        let manager_first = product == Product::Sentient && u.manager().is_some();
-        let back = Button::new("notes-back").outline().label("Not now").on_click(cx.listener(|this, _, _, cx| {
-            this.notes_for = None;
-            cx.notify();
-        }));
-        let Some(o) = offer else {
-            return ui::panel(theme)
-                .child(div().text_lg().child(title))
-                .child(div().text_sm().text_color(theme.muted_foreground).child(format!("You have {installed}. Nothing newer on this channel.")))
-                .child(h_flex().child(back));
-        };
-        let count = o.between.len();
-        let you_have = if count > 1 { format!("You have {installed}. {count} versions are newer.") } else { format!("You have {installed}.") };
-        let effect: String = match product {
-            Product::Manager => {
-                let changes = self.record.as_ref().map(|r| crate::changes::pending(r).len()).unwrap_or(0);
-                if changes > 0 {
-                    format!("Changes for this installation: {changes}. They are listed after the update and applied on your click. SENTIENT's version and data are not touched.")
-                } else {
-                    "SENTIENT keeps running. Its version and data are not touched.".into()
-                }
-            }
-            Product::Sentient => {
-                let docker = self.record.as_ref().is_some_and(|r| r.engine == Engine::Docker);
-                format!(
-                    "{} SENTIENT is stopped for about 2 minutes.{}",
-                    crate::notes::database_line(&o.between),
-                    if docker { "" } else { " The database is copied first." }
-                )
-            }
-        };
-        let page = o.page.clone();
-        let update: Button = match product {
-            Product::Manager => Button::new("notes-update")
-                .primary()
-                .label("Update and restart")
-                .disabled(o.installer.is_none())
-                .on_click(cx.listener(|this, _, _, cx| this.start_manager_update(cx))),
-            Product::Sentient => Button::new("notes-update")
-                .primary()
-                .label(format!("Update to {}", o.version))
-                .disabled(manager_first)
-                .on_click(cx.listener(|this, _, _, cx| this.start_sentient_update(cx))),
-        };
-        let product_name = if product == Product::Manager { "Platform Manager" } else { "SENTIENT" };
-        let notes: Vec<crate::notes::Notes> = o
-            .between
-            .iter()
-            .cloned()
-            .map(|mut n| {
-                n.version = format!("{product_name} {}", n.version);
-                n
-            })
-            .collect();
-        let loaded = notes.iter().any(|n| n.has_entries() || !n.summary.is_empty());
-        let logo = if product == Product::Manager { ui::Product::Manager } else { ui::Product::Sentient };
-        ui::panel(theme)
-            .child(h_flex().gap_2().items_center().child(ui::product_logo(logo, 26.)).child(div().text_lg().child(title)))
-            .child(div().text_sm().text_color(theme.muted_foreground).child(you_have))
-            .child(if loaded {
-                v_flex()
-                    .id("notes-scroll")
-                    .max_h(px(380.))
-                    .overflow_y_scroll()
-                    .p_3()
-                    .rounded(theme.radius)
-                    .border_1()
-                    .border_color(theme.border)
-                    .child(ui::release_notes(theme, &notes))
-                    .into_any_element()
-            } else {
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .px_3()
-                    .py_2()
-                    .rounded(theme.radius)
-                    .bg(theme.warning)
-                    .text_color(theme.warning_foreground)
-                    .child(div().flex_1().text_sm().child(format!(
-                        "The release notes could not be loaded.{}",
-                        if o.notes.is_empty() { String::new() } else { format!(" Short summary: {}", o.notes) }
-                    )))
-                    .child(Button::new("notes-retry").outline().label("Try again").on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))))
-                    .into_any_element()
-            })
-            .child(div().text_sm().child(effect))
-            .when(manager_first, |p| p.child(div().text_sm().text_color(theme.muted_foreground).child("Update the Platform Manager first, so SENTIENT is updated by the newest updater.")))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(update)
-                    .child(back)
-                    .when(!page.is_empty(), |r| r.child(Button::new("notes-page").ghost().label("Open release page").on_click(move |_, _, cx| ui::open_url(&page, cx)))),
-            )
-    }
 }
 
 impl Render for UpdatePage {
@@ -875,9 +751,6 @@ impl Render for UpdatePage {
             "Update",
             "Install a newer SENTIENT, with its database changes, and go back automatically if it fails.",
         );
-        if let Some(product) = self.notes_for {
-            return page.child(self.notes_view(&theme, product, cx));
-        }
         let page = page.children(self.changes_panel(&theme, cx)).child(self.updates_panel(&theme, cx));
         let Some(record) = &self.record else {
             return page.child(ui::not_installed(&theme));
@@ -1043,5 +916,92 @@ impl Render for UpdatePage {
                     })),
             )
         })
+    }
+}
+
+/// What the update channel says about SENTIENT, for its product line.
+pub(crate) enum Offered<'a> {
+    Checking,
+    NotChecked,
+    UpToDate,
+    Newer(&'a crate::updates::Offer),
+}
+
+/// The SENTIENT line's text and label: the same words for this computer and
+/// for a remote server.
+pub(crate) fn sentient_summary(installed: &str, state: Offered, manager_first: bool) -> (String, Option<(Tone, &'static str)>) {
+    match state {
+        Offered::Checking => (format!("{installed} installed. Checking…"), None),
+        Offered::NotChecked => (format!("{installed} installed. Not checked."), Some((Tone::Neutral, "Unknown"))),
+        Offered::UpToDate => (format!("{installed} is up to date."), Some((Tone::Good, "Up to date"))),
+        Offered::Newer(o) if manager_first => (format!("{} is available (installed {installed}). Update the Platform Manager first.", o.version), None),
+        Offered::Newer(o) => (
+            format!("{} is available (installed {installed}).{}", o.version, if o.notes.is_empty() { String::new() } else { format!(" {}", o.notes) }),
+            None,
+        ),
+    }
+}
+
+/// A product line: logo, name, what is known; the caller adds its label and
+/// buttons on the right. Shared by this computer's and a server's Update.
+pub(crate) fn product_row(theme: &gpui_kit::component::Theme, highlight: bool, logo: ui::Product, title: &'static str, sub: String) -> Div {
+    h_flex()
+        .flex_wrap()
+        .gap_3()
+        .p_3()
+        .items_center()
+        .rounded(theme.radius)
+        .bg(theme.background)
+        .border_1()
+        .border_color(if highlight { theme.primary } else { theme.border })
+        .child(ui::product_logo(logo, 30.))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w(px(220.))
+                .gap_0p5()
+                .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                .child(div().text_sm().text_color(theme.muted_foreground).child(sub)),
+        )
+}
+
+/// "What's new" in a dialog: every version between the installed one and the
+/// offered one. Nothing of it is printed on the page.
+pub(crate) fn open_notes(product_name: &'static str, installed: &str, offer: &crate::updates::Offer, cx: &mut App) {
+    let count = offer.between.len();
+    let intro = if count > 1 { format!("You have {installed}. {count} versions are newer.") } else { format!("You have {installed}.") };
+    let notes: Vec<crate::notes::Notes> = offer.between.clone();
+    let fallback = offer.notes.clone();
+    let view = cx.new(|_| NotesDialog { intro, notes, fallback });
+    crate::modal::open(
+        crate::modal::Modal { title: format!("What's new in {product_name} {}", offer.version).into(), body: view.into(), width: 680., on_close: None },
+        cx,
+    );
+}
+
+struct NotesDialog {
+    intro: String,
+    notes: Vec<crate::notes::Notes>,
+    /// The release's one-line summary, when its notes could not be read.
+    fallback: String,
+}
+
+impl Render for NotesDialog {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let loaded = self.notes.iter().any(|n| n.has_entries() || !n.summary.is_empty());
+        v_flex()
+            .gap_3()
+            .child(div().text_sm().text_color(theme.muted_foreground).child(self.intro.clone()))
+            .child(if loaded {
+                ui::release_notes(&theme, &self.notes).into_any_element()
+            } else {
+                ui::outcome(
+                    &theme,
+                    Tone::Warn,
+                    format!("The release notes could not be loaded.{}", if self.fallback.is_empty() { String::new() } else { format!(" Short summary: {}", self.fallback) }),
+                )
+                .into_any_element()
+            })
     }
 }
