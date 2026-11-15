@@ -148,7 +148,7 @@ impl Render for LogsPage {
                         .on_click(cx.listener(|this, _, _, cx| this.export(cx))),
                 )
                 .child(div().flex_1())
-                .child(div().text_xs().text_color(theme.muted_foreground).child(if shown == 1 { "1 line".to_string() } else { format!("{shown} lines") })),
+                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(if shown == 1 { "1 line".to_string() } else { format!("{shown} lines") })),
         )
         .children(self.status.clone().map(|s| div().text_sm().child(s)))
         .child(
@@ -159,7 +159,7 @@ impl Render for LogsPage {
                 .overflow_y_scroll()
                 .gap_0()
                 .font_family(theme.mono_font_family.clone())
-                .text_xs()
+                .text_size(px(13.))
                 // The page holds the last TAIL lines at most, and only the
                 // start of each is read for its level, so every line can be
                 // coloured without a virtual list (which would also stop long

@@ -684,7 +684,7 @@ impl InstancesPage {
                 )
                 .child(div().flex_1().min_w_0().child(control))
         };
-        let note = |text: String| h_flex().child(div().w(px(150.)).flex_shrink_0()).child(div().pl_3().text_xs().text_color(theme.muted_foreground).child(text));
+        let note = |text: String| h_flex().child(div().w(px(150.)).flex_shrink_0()).child(div().pl_3().text_size(px(13.)).text_color(theme.muted_foreground).child(text));
         let os_help = if f.os == Os::Windows {
             "Windows 10/11 or Windows Server 2019 and later, with OpenSSH Server turned on:\n1. Settings, System, Optional features, Add a feature: OpenSSH Server (or in PowerShell as administrator: Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0).\n2. Start it and start it with Windows: Start-Service sshd; Set-Service sshd -StartupType Automatic.\n3. Allow TCP port 22 in Windows Defender Firewall (the feature adds the rule).\n4. Sign in with an account in the Administrators group. For a key: put its public key in C:\\ProgramData\\ssh\\administrators_authorized_keys."
         } else {
@@ -956,7 +956,7 @@ impl InstancesPage {
                         this.show_details = !this.show_details;
                         cx.notify();
                     })))
-                    .when(shown, |p| p.child(div().p_2().rounded(theme.radius).bg(theme.muted).text_xs().font_family(theme.mono_font_family.clone()).child(d)))
+                    .when(shown, |p| p.child(div().p_2().rounded(theme.radius).bg(theme.muted).text_size(px(13.)).font_family(theme.mono_font_family.clone()).child(d)))
                 })
             }
             JobState::Idle => p,
@@ -970,7 +970,7 @@ impl InstancesPage {
                         .p_2()
                         .rounded(theme.radius)
                         .bg(theme.muted)
-                        .text_xs()
+                        .text_size(px(13.))
                         .font_family(theme.mono_font_family.clone())
                         .children(log.into_iter().map(|l| div().child(l))),
                 )
@@ -1030,7 +1030,7 @@ impl InstancesPage {
                         .p_2()
                         .rounded(theme.radius)
                         .bg(theme.muted)
-                        .text_xs()
+                        .text_size(px(13.))
                         .font_family(theme.mono_font_family.clone())
                         .children(text.lines().map(|l| div().child(SharedString::from(l.to_string()))).collect::<Vec<_>>()),
                 )
@@ -1200,7 +1200,7 @@ fn grid_card(
                                 .flex_1()
                                 .min_w_0()
                                 .child(div().font_weight(FontWeight::MEDIUM).text_ellipsis().child(name))
-                                .child(div().text_xs().text_color(theme.muted_foreground).text_ellipsis().child(sub)),
+                                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).text_ellipsis().child(sub)),
                         )
                         .child(ui::pill(theme, tone, state)),
                 )

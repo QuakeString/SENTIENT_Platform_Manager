@@ -411,7 +411,7 @@ impl EarlierPage {
         if (self.show_log || finished.is_none()) && !log.is_empty() {
             out.push(
                 ui::panel(theme)
-                    .text_xs()
+                    .text_size(px(13.))
                     .font_family(theme.mono_font_family.clone())
                     .text_color(theme.muted_foreground)
                     .children(log.into_iter().map(|l| div().child(l)))

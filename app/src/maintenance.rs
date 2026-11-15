@@ -30,8 +30,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use std::path::PathBuf;
 
-use sentient_installer_core::{distro, native, releases};
-use sentient_installer_core::progress::{Progress, ProgressFn};
+use sentient_installer_core::{native, releases};
+use sentient_installer_core::progress::Progress;
 
 use crate::installation::{Engine, InstallationRecord};
 use crate::jobs::{Job, JobState};
@@ -755,7 +755,7 @@ impl Maintenance {
         if (self.show_log || finished.is_none()) && !log.is_empty() {
             out.push(
                 ui::panel(theme)
-                    .text_xs()
+                    .text_size(px(13.))
                     .font_family(theme.mono_font_family.clone())
                     .text_color(theme.muted_foreground)
                     .children(log.into_iter().map(|l| div().child(l)))
@@ -812,7 +812,7 @@ impl Maintenance {
         out.extend(outcome.map(|(tone, text)| ui::outcome(theme, tone, text).into_any_element()));
         out.push(
             ui::panel(theme)
-                .text_xs()
+                .text_size(px(13.))
                 .font_family(theme.mono_font_family.clone())
                 .text_color(theme.muted_foreground)
                 .children(log.into_iter().map(|l| div().child(l)))

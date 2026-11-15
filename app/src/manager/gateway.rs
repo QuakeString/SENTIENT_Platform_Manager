@@ -232,7 +232,7 @@ impl Render for GatewayPage {
                                         )
                                     })),
                             )
-                            .when(!o.notes.is_empty(), |c| c.child(div().text_xs().text_color(theme.muted_foreground).child(o.notes.clone())))
+                            .when(!o.notes.is_empty(), |c| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(o.notes.clone())))
                             .into_any_element()
                     }
                     (None, Some(Err(e))) => div().text_sm().text_color(theme.muted_foreground).child(format!("Gateway updates: {e}")).into_any_element(),
@@ -245,7 +245,7 @@ impl Render for GatewayPage {
                 })
         } else {
             let field = |label: &'static str, input: Div| {
-                v_flex().gap_1p5().child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(label)).child(input)
+                v_flex().gap_1p5().child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(label)).child(input)
             };
             let o = offer.clone();
             ui::panel(&theme)
@@ -306,7 +306,7 @@ impl Render for GatewayPage {
                 ui::panel(&theme)
                     .when(busy, |p| p.child(div().text_sm().child(step.clone())).child(Progress::new("gw-progress").value(percent.unwrap_or(0.0))))
                     .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
-                    .children(log.into_iter().map(|line| div().text_xs().text_color(theme.muted_foreground).child(line))),
+                    .children(log.into_iter().map(|line| div().text_size(px(13.)).text_color(theme.muted_foreground).child(line))),
             )
         })
     }

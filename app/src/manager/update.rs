@@ -382,7 +382,7 @@ impl UpdatePage {
                         .child(action)
                         .child(div().min_w_0().text_sm().text_color(theme.muted_foreground).child(about)),
                 )
-                .when(!chosen.summary.is_empty(), |c| c.child(div().text_xs().text_color(theme.muted_foreground).child(chosen.summary.clone())))
+                .when(!chosen.summary.is_empty(), |c| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(chosen.summary.clone())))
                 .into_any_element(),
         )
     }
@@ -468,7 +468,7 @@ impl UpdatePage {
                 panel
                     .child(div().font_weight(FontWeight::MEDIUM).child(format!("Applying {} change{}", self.changes_planned_count(), if self.changes_planned_count() == 1 { "" } else { "s" })))
                     .child(ui::steps(theme, &marked))
-                    .child(div().text_xs().text_color(theme.muted_foreground).child("The database is not reinstalled or re-checked for these changes."))
+                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("The database is not reinstalled or re-checked for these changes."))
             }
             JobState::Done(_) if pending.is_empty() => {
                 let marked = ui::mark_steps(&self.changes_planned(), job.steps(), Some(true));
@@ -491,7 +491,7 @@ impl UpdatePage {
                                 cx.notify();
                             }))),
                     )
-                    .when(self.show_changes_log, |p| p.children(log.into_iter().map(|l| div().text_xs().text_color(theme.muted_foreground).child(l))))
+                    .when(self.show_changes_log, |p| p.children(log.into_iter().map(|l| div().text_size(px(13.)).text_color(theme.muted_foreground).child(l))))
             }
             _ => panel
                 .child(div().font_weight(FontWeight::MEDIUM).child(format!("{n} change{} for this installation", if n == 1 { "" } else { "s" })))
@@ -647,7 +647,7 @@ impl UpdatePage {
                         "Updating the Platform Manager: {this} to {}. SENTIENT keeps running.",
                         o.as_ref().map(|o| o.version.clone()).unwrap_or_default()
                     )))
-                    .when_some(mlog_last.clone(), |c, l| c.child(div().text_xs().text_color(theme.muted_foreground).child(l)))
+                    .when_some(mlog_last.clone(), |c, l| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(l)))
                     .when_some(mjob.percent(), |c, v| c.child(Progress::new("manager-progress").value(v)))
                 })
                 .child(ui::steps(theme, &marked))
@@ -744,7 +744,7 @@ impl UpdatePage {
             .children(manager_progress)
             .children(sentient_row)
             .when_some(hint, |p, h| p.child(div().px_3().py_2().rounded(theme.radius).bg(theme.accent).text_sm().child(h)))
-            .child(div().text_xs().text_color(theme.muted_foreground).child(format!("{} Last checked: {last}.", channel.about())))
+            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!("{} Last checked: {last}.", channel.about())))
             .child(
                 Checkbox::new("daily-check")
                     .label("Check once a day and show a notice when there is a newer version")
@@ -946,7 +946,7 @@ impl Render for UpdatePage {
                                         })),
                                 )
                                 .when(!o.notes.is_empty(), |c| {
-                                    c.child(div().text_xs().text_color(theme.muted_foreground).child(o.notes.clone()))
+                                    c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(o.notes.clone()))
                                 })
                                 .into_any_element()
                         }
@@ -1038,7 +1038,7 @@ impl Render for UpdatePage {
                     })
                     .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
                     .children(log.into_iter().map(|line| {
-                        div().text_xs().text_color(theme.muted_foreground).child(line)
+                        div().text_size(px(13.)).text_color(theme.muted_foreground).child(line)
                     })),
             )
         })

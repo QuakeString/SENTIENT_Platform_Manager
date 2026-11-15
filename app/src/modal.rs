@@ -100,7 +100,7 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
                     .flex()
                     .flex_col()
                     .justify_center()
-                    .child(panel.on_click(|_, _, cx| cx.stop_propagation())),
+                    .child(crate::ui::appear(panel.on_click(|_, _, cx| cx.stop_propagation()), "modal-appear", 160)),
             )
             .into_any_element(),
     )

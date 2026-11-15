@@ -786,7 +786,7 @@ impl BackupPage {
                         panel = panel.child(ProgressBar::new("replace-progress").value(p));
                     }
                     if let Some(l) = log.last() {
-                        panel = panel.child(div().text_xs().text_color(theme.muted_foreground).child(l.clone()));
+                        panel = panel.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(l.clone()));
                     }
                 }
                 if finished == Some(true) {
@@ -817,7 +817,7 @@ impl BackupPage {
                                     cx.notify();
                                 }))),
                         )
-                        .when(self.show_restore_log, |p| p.children(log.into_iter().map(|l| div().text_xs().text_color(theme.muted_foreground).child(l))));
+                        .when(self.show_restore_log, |p| p.children(log.into_iter().map(|l| div().text_size(px(13.)).text_color(theme.muted_foreground).child(l))));
                 }
             }
         }
@@ -842,7 +842,7 @@ impl BackupPage {
                 })
                 .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
                 .children(job.log().iter().rev().take(6).rev().map(|l| {
-                    div().text_xs().text_color(theme.muted_foreground).child(l.clone())
+                    div().text_size(px(13.)).text_color(theme.muted_foreground).child(l.clone())
                 })),
         )
     }
@@ -863,7 +863,7 @@ fn brow(theme: &gpui_kit::component::Theme, label: &'static str, help: Option<&'
                 .w(px(220.))
                 .flex_shrink_0()
                 .child(div().text_sm().child(label))
-                .when_some(help, |c, h| c.child(div().text_xs().text_color(theme.muted_foreground).child(h))),
+                .when_some(help, |c, h| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(h))),
         )
         .child(h_flex().flex_1().min_w_0().gap_2().items_center().child(control))
 }
@@ -978,9 +978,9 @@ impl BackupPage {
                 (None, _) => {
                     run = run
                         .child(div().font_weight(FontWeight::MEDIUM).child(format!("Backing up to {}", self.prefs.folder.display())))
-                        .when_some(job.log().last().cloned(), |c, l| c.child(div().text_xs().text_color(theme.muted_foreground).child(l)))
+                        .when_some(job.log().last().cloned(), |c, l| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(l)))
                         .when_some(job.percent(), |c, v| c.child(ProgressBar::new("backup-progress").value(v)))
-                        .child(div().text_xs().text_color(theme.muted_foreground).child("SENTIENT keeps running during a backup."));
+                        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("SENTIENT keeps running during a backup."));
                 }
                 (Some(true), Some(m)) => {
                     let name = m.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -1091,7 +1091,7 @@ impl BackupPage {
                             .flex_1()
                             .min_w_0()
                             .child(div().text_sm().child(e.name.clone()))
-                            .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
+                            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!(
                                 "{} · {}{}",
                                 e.made,
                                 if e.automatic { "automatic" } else { "by hand" },
@@ -1197,7 +1197,7 @@ impl Render for BackupPage {
                             v_flex()
                                 .gap_1p5()
                                 .w_64()
-                                .child(div().text_xs().text_color(theme.muted_foreground).child("Database password"))
+                                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Database password"))
                                 .child(Input::new(&self.password).mask_toggle()),
                         )
                         .when(clickhouse, |r| {
@@ -1205,7 +1205,7 @@ impl Render for BackupPage {
                                 v_flex()
                                     .gap_1p5()
                                     .w_64()
-                                    .child(div().text_xs().text_color(theme.muted_foreground).child("ClickHouse password"))
+                                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("ClickHouse password"))
                                     .child(Input::new(&self.ch_password).mask_toggle()),
                             )
                         })

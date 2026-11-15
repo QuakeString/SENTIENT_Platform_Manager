@@ -342,7 +342,7 @@ impl Render for ControlPage {
                                             v_flex()
                                                 .gap_1p5()
                                                 .w_64()
-                                                .child(div().text_xs().text_color(theme.muted_foreground).child("Operator account"))
+                                                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Operator account"))
                                                 .child(Input::new(&self.autologin_user)),
                                         )
                                         .when(cfg!(windows), |row| {
@@ -351,7 +351,7 @@ impl Render for ControlPage {
                                                 v_flex()
                                                     .gap_1p5()
                                                     .w_64()
-                                                    .child(div().text_xs().text_color(theme.muted_foreground).child(
+                                                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(
                                                         if found { "Password (only to change it)" } else { "Account password" },
                                                     ))
                                                     .child(Input::new(&self.autologin_password).mask_toggle()),

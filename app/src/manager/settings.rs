@@ -692,8 +692,8 @@ impl SettingsPage {
                     .child(
                         h_flex()
                             .gap_3()
-                            .child(v_flex().gap_1().w(px(240.)).child(div().text_xs().text_color(theme.muted_foreground).child("New password")).child(Input::new(&self.new_pw).mask_toggle()))
-                            .child(v_flex().gap_1().w(px(240.)).child(div().text_xs().text_color(theme.muted_foreground).child("Repeat it")).child(Input::new(&self.repeat_pw).mask_toggle())),
+                            .child(v_flex().gap_1().w(px(240.)).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("New password")).child(Input::new(&self.new_pw).mask_toggle()))
+                            .child(v_flex().gap_1().w(px(240.)).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Repeat it")).child(Input::new(&self.repeat_pw).mask_toggle())),
                     )
                     .when_some(problem.filter(|_| !pw.is_empty()), |c, p| c.child(div().text_sm().text_color(theme.danger).child(p)))
                     .child(
@@ -961,7 +961,7 @@ impl SettingsPage {
             h_flex()
                 .gap_3()
                 .pb_1()
-                .text_xs()
+                .text_size(px(13.))
                 .text_color(theme.muted_foreground)
                 .child(div().w(px(250.)).child("Setting"))
                 .child(div().w(px(200.)).child("Value"))
@@ -1149,7 +1149,7 @@ impl Render for SettingsPage {
                     ui::panel(&theme)
                         .when(busy, |p| p.child(div().text_sm().child(step.clone())).when_some(percent, |p, v| p.child(Progress::new("settings-progress").value(v))))
                         .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
-                        .children(log.into_iter().map(|line| div().text_xs().text_color(theme.muted_foreground).child(line))),
+                        .children(log.into_iter().map(|line| div().text_size(px(13.)).text_color(theme.muted_foreground).child(line))),
                 )
             })
             .children(body)

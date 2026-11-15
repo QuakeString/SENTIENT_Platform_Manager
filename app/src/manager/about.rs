@@ -66,7 +66,7 @@ fn tile(theme: &gpui_kit::component::Theme, id: &'static str, title: &'static st
         .cursor_pointer()
         .hover(|d| d.border_color(theme.primary))
         .child(div().font_weight(FontWeight::MEDIUM).child(title))
-        .child(div().text_xs().text_color(theme.muted_foreground).child(about.into()))
+        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(about.into()))
 }
 
 fn pref_row(theme: &gpui_kit::component::Theme, label: &'static str, about: Option<&'static str>, control: impl IntoElement) -> Div {
@@ -81,7 +81,7 @@ fn pref_row(theme: &gpui_kit::component::Theme, label: &'static str, about: Opti
                 .flex_1()
                 .min_w_0()
                 .child(div().text_sm().child(label))
-                .when_some(about, |c, a| c.child(div().text_xs().text_color(theme.muted_foreground).child(a))),
+                .when_some(about, |c, a| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(a))),
         )
         .child(control)
 }
@@ -167,7 +167,7 @@ impl Render for AboutPage {
             .gap_4()
             .flex_wrap()
             .justify_center()
-            .text_xs()
+            .text_size(px(13.))
             .text_color(theme.muted_foreground)
             .child(format!("Installed in {}", crate::self_install::manager_dir().display()))
             .child(format!("Data in {}", crate::updates::prefs_dir().display()));

@@ -945,7 +945,7 @@ impl Installer {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_xs()
+                .text_size(px(13.))
                 .map(|m| {
                     if current {
                         m.bg(theme.primary).text_color(theme.primary_foreground).child(format!("{}", n + 1))
@@ -984,7 +984,7 @@ impl Installer {
                     .px_4()
                     .pb_4()
                     .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(theme.primary).child("SENTIENT"))
-                    .child(div().text_xs().text_color(theme.muted_foreground).child(if self.manager_only {
+                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(if self.manager_only {
                         "Platform Manager"
                     } else if self.adding_sentient {
                         "Platform"
@@ -1016,7 +1016,7 @@ impl Installer {
             .bg(theme.background)
             .border_t_1()
             .border_color(theme.border)
-            .child(div().text_xs().text_color(theme.muted_foreground).child({
+            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child({
                 let shown = self.shown_steps();
                 let at = shown.iter().position(|s| *s == self.step).unwrap_or(0);
                 format!("Step {} of {}", at + 1, shown.len())

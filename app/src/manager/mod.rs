@@ -273,9 +273,9 @@ impl Manager {
                 .id(id)
                 .gap_1p5()
                 .items_center()
-                .text_xs()
+                .text_size(px(13.))
                 .text_color(if high { amber } else { fg })
-                .child(icon.size_3p5())
+                .child(icon.size_4())
                 .child(div().child(label))
                 .child(
                     div()
@@ -396,7 +396,7 @@ impl Manager {
                     }),
             )
             .when(remote.is_some(), |b| {
-                b.child(div().px_1p5().py_0p5().rounded(px(4.)).border_1().border_color(fg.opacity(0.6)).text_xs().font_weight(FontWeight::MEDIUM).child("Remote"))
+                b.child(div().px_1p5().py_0p5().rounded(px(4.)).border_1().border_color(fg.opacity(0.6)).text_size(px(13.)).font_weight(FontWeight::MEDIUM).child("Remote"))
             })
             .child(div().flex_1())
             .children(monitor)
@@ -651,7 +651,7 @@ impl Manager {
                     row.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground)
                 })
                 .when(!active, |row| row.hover(|row| row.bg(theme.list_hover)))
-                .child(page.icon())
+                .child(page.icon().size(px(20.)))
                 .when(!rail, |r| r.child(page.title()))
                 .when(rail, |r| r.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(page.title()).build(window, cx)))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -685,10 +685,10 @@ impl Manager {
                     .text_sm()
                     .when(active, |row| row.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground))
                     .when(!active, |row| row.hover(|row| row.bg(theme.list_hover)))
-                    .child(Page::Instances.icon())
+                    .child(Page::Instances.icon().size(px(20.)))
                     .when(!rail, |r| r.child(Page::Instances.title()))
                     .when(rail, |r| r.tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Instances").build(window, cx)))
-                    .when(!self.remotes.is_empty() && !rail, |r| r.child(div().flex_1()).child(div().text_xs().text_color(theme.muted_foreground).child((self.remotes.len() + 1).to_string())))
+                    .when(!self.remotes.is_empty() && !rail, |r| r.child(div().flex_1()).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child((self.remotes.len() + 1).to_string())))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.page = Page::Instances;
                         cx.notify();
@@ -707,7 +707,7 @@ impl Manager {
                     .when(!rail, |r| r.child(
                         div()
                             .flex_1()
-                            .text_xs()
+                            .text_size(px(13.))
                             .font_family(theme.mono_font_family.clone())
                             .text_color(theme.muted_foreground)
                             .child(format!("v{}", crate::updates::manager_version())),
@@ -941,7 +941,7 @@ impl Render for Manager {
                     .min_h_0()
                     .w_full()
                     .child(nav)
-                    .child(v_flex().flex_1().h_full().min_w_0().children(notices).child(h_flex().flex_1().min_h_0().w_full().child(content))),
+                    .child(v_flex().flex_1().h_full().min_w_0().children(notices).child(crate::ui::appear(h_flex().flex_1().min_h_0().w_full().child(content), SharedString::from(format!("page-{}", self.page.id())), 140))),
             )
             .children(layer)
     }

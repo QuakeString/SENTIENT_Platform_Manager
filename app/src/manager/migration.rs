@@ -295,7 +295,7 @@ impl Render for MigrationPage {
                                 .flex_1()
                                 .min_w_0()
                                 .child(div().font_weight(FontWeight::MEDIUM).child(item.name.clone()))
-                                .child(div().text_xs().text_color(theme.muted_foreground).child(item.detail.clone())),
+                                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(item.detail.clone())),
                         )
                         .child(div().text_color(theme.muted_foreground).child(kept::human(item.bytes)))
                         .child(
@@ -341,7 +341,7 @@ impl Render for MigrationPage {
                             .when_some(percent, |p, v| p.child(Progress::new("migration-progress").value(v)))
                     })
                     .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
-                    .children(log.into_iter().map(|line| div().text_xs().text_color(theme.muted_foreground).child(line))),
+                    .children(log.into_iter().map(|line| div().text_size(px(13.)).text_color(theme.muted_foreground).child(line))),
             )
         })
     }

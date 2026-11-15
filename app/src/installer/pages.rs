@@ -26,7 +26,7 @@ const LICENCE: &str = include_str!("../../assets/licence.txt");
 fn field(theme: &Theme, label: &'static str, state: &Entity<InputState>) -> Div {
     v_flex()
         .gap_1p5()
-        .child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(label))
+        .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(label))
         .child(Input::new(state))
 }
 
@@ -34,7 +34,7 @@ fn field(theme: &Theme, label: &'static str, state: &Entity<InputState>) -> Div 
 fn secret_field(theme: &Theme, label: &'static str, state: &Entity<InputState>) -> Div {
     v_flex()
         .gap_1p5()
-        .child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(label))
+        .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(label))
         .child(Input::new(state).mask_toggle())
 }
 
@@ -189,20 +189,20 @@ impl Installer {
             .child(
                 ui::box_row()
                     .child(ui::panel(&theme).flex_1().gap_1()
-                        .child(div().text_xs().text_color(theme.muted_foreground).child("SENTIENT"))
+                        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("SENTIENT"))
                         .child(match self.version_menu(cx) {
                             Some(menu) => h_flex().child(menu).into_any_element(),
                             None => div().font_weight(FontWeight::MEDIUM).child(self.sentient_version.clone()).into_any_element(),
                         }))
                     .child(ui::panel(&theme).flex_1().gap_1()
-                        .child(div().text_xs().text_color(theme.muted_foreground).child("Platform Manager"))
+                        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Platform Manager"))
                         .child(div().font_weight(FontWeight::MEDIUM).child(if self.adding_sentient {
                             format!("{}, installed", crate::updates::manager_version())
                         } else {
                             crate::updates::manager_version().to_string()
                         })))
                     .child(ui::panel(&theme).flex_1().min_w(px(300.)).gap_1()
-                        .child(div().text_xs().text_color(theme.muted_foreground).child("Package"))
+                        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Package"))
                         .child(div().w_full().whitespace_normal().text_sm().child(package))),
             )
             .child(
@@ -211,7 +211,7 @@ impl Installer {
                     .h(px(300.))
                     .overflow_y_scroll()
                     .gap_2()
-                    .text_xs()
+                    .text_size(px(13.))
                     .text_color(theme.muted_foreground)
                     // One block per paragraph or list item: line breaks
                     // inside a text run are not kept.
@@ -465,7 +465,7 @@ impl Installer {
                         )
                         .child(div().text_sm().text_color(theme.muted_foreground).child(desc)),
                 )
-                .child(div().text_xs().text_color(theme.muted_foreground).child(runs))
+                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(runs))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.flavor = Some(flavor);
                     this.problem = None;
@@ -739,7 +739,7 @@ impl Installer {
             .child(ui::fact(&theme, "Audit log kept", format!("{} days", get("AUDIT_LOG_TTL_DAYS"))))
             .child(ui::fact(&theme, "Notifications kept", format!("{} days", get("NOTIFICATIONS_TTL_DAYS"))))
             .child(ui::fact(&theme, "Everything else", "SENTIENT's tested defaults"))
-            .child(div().text_xs().text_color(theme.muted_foreground).child(
+            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(
                 "Choose Customize to see and change every setting. All of them can also be changed later in the Platform Manager.",
             ))
     }
@@ -766,7 +766,7 @@ impl Installer {
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .text_xs()
+                                .text_size(px(13.))
                                 .font_family(theme.mono_font_family.clone())
                                 .text_color(theme.muted_foreground)
                                 .child(s.env.clone()),
@@ -786,7 +786,7 @@ impl Installer {
                     .child(
                         div()
                             .py_1p5()
-                            .text_xs()
+                            .text_size(px(13.))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.muted_foreground)
                             .child(group.name.to_uppercase()),
@@ -797,7 +797,7 @@ impl Installer {
         v_flex()
             .gap_3()
             .child(Input::new(&self.fields.search))
-            .child(div().text_xs().text_color(theme.muted_foreground).child(format!(
+            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!(
                 "{total} settings. Empty fields keep the value shown in grey. Values are written to the SENTIENT service."
             )))
             .child(ui::panel(&theme).gap_2().children(groups))
@@ -1065,7 +1065,7 @@ impl Installer {
             .child(
                 ui::panel(&theme)
                     .gap_0p5()
-                    .text_xs()
+                    .text_size(px(13.))
                     .font_family(theme.mono_font_family.clone())
                     .text_color(theme.muted_foreground)
                     .children(log.into_iter().map(|line| div().child(line))),

@@ -203,7 +203,7 @@ impl Render for RepairPage {
                             .when_some(percent, |p, v| p.child(Progress::new("repair-progress").value(v)))
                     })
                     .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
-                    .children(log.into_iter().map(|line| div().text_xs().text_color(theme.muted_foreground).child(line)))
+                    .children(log.into_iter().map(|line| div().text_size(px(13.)).text_color(theme.muted_foreground).child(line)))
                     .when(uninstalled, |p| {
                         p.child(
                             h_flex().child(

@@ -128,7 +128,7 @@ pub fn pill(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div {
         .px_2p5()
         .py_0p5()
         .rounded_full()
-        .text_xs()
+        .text_size(px(13.))
         .font_weight(FontWeight::MEDIUM)
         .bg(bg)
         .text_color(fg)
@@ -276,14 +276,14 @@ pub fn release_notes(theme: &Theme, notes: &[crate::notes::Notes]) -> Div {
                     .gap_2()
                     .items_baseline()
                     .child(div().font_weight(FontWeight::MEDIUM).child(n.version.clone()))
-                    .when(!n.date.is_empty(), |r| r.child(div().text_xs().text_color(theme.muted_foreground).child(n.date.clone()))),
+                    .when(!n.date.is_empty(), |r| r.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(n.date.clone()))),
             )
             .when(!n.summary.is_empty(), |c| c.child(div().text_sm().text_color(theme.muted_foreground).child(n.summary.clone())))
             .children(n.sections.iter().map(|(name, entries)| {
                 v_flex()
                     .gap_0p5()
                     .pt_1()
-                    .child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(theme.primary).child(name.to_uppercase()))
+                    .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.primary).child(name.to_uppercase()))
                     .children(entries.iter().map(|e| {
                         gpui_kit::component::h_flex()
                             .gap_2()
@@ -403,4 +403,35 @@ pub fn seg_item(theme: &Theme, id: impl Into<ElementId>, label: impl Into<Shared
 /// aligned, wrapping on narrow windows. Use it for every row of boxes.
 pub fn box_row() -> Div {
     gpui_kit::component::h_flex().flex_wrap().gap_3().items_stretch()
+}
+
+/// Whether the desktop asks for less motion (KDE's animation speed at 0,
+/// GNOME's animations off, or SPM_REDUCE_MOTION=1). Read once.
+pub fn reduce_motion() -> bool {
+    static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *R.get_or_init(|| {
+        if std::env::var("SPM_REDUCE_MOTION").is_ok_and(|v| v == "1") {
+            return true;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let out = |cmd: &str, args: &[&str]| std::process::Command::new(cmd).args(args).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+            if out("kreadconfig6", &["--file", "kdeglobals", "--group", "KDE", "--key", "AnimationDurationFactor"]).is_some_and(|v| v == "0") {
+                return true;
+            }
+            if out("gsettings", &["get", "org.gnome.desktop.interface", "enable-animations"]).is_some_and(|v| v == "false") {
+                return true;
+            }
+        }
+        false
+    })
+}
+
+/// Fade (and rise a little) when shown; `key` restarts it when it changes.
+pub fn appear<E: IntoElement + Styled + 'static>(el: E, key: impl Into<ElementId>, ms: u64) -> AnyElement {
+    if reduce_motion() {
+        return el.into_any_element();
+    }
+    el.with_animation(key, Animation::new(std::time::Duration::from_millis(ms)).with_easing(ease_out_quint()), |el, d| el.opacity(d))
+        .into_any_element()
 }

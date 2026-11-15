@@ -264,14 +264,14 @@ impl RemotePages {
                         this.show_details = !this.show_details;
                         cx.notify();
                     })))
-                    .when(shown, |p| p.child(div().p_2().rounded(theme.radius).bg(theme.muted).text_xs().font_family(theme.mono_font_family.clone()).child(d)))
+                    .when(shown, |p| p.child(div().p_2().rounded(theme.radius).bg(theme.muted).text_size(px(13.)).font_family(theme.mono_font_family.clone()).child(d)))
                 })
             }
             JobState::Idle => p,
         };
         let done = !job.is_running();
         Some(
-            p.child(v_flex().p_2().rounded(theme.radius).bg(theme.muted).text_xs().font_family(theme.mono_font_family.clone()).children(log.into_iter().map(|l| div().child(l))))
+            p.child(v_flex().p_2().rounded(theme.radius).bg(theme.muted).text_size(px(13.)).font_family(theme.mono_font_family.clone()).children(log.into_iter().map(|l| div().child(l))))
                 .when(done, |p| {
                     p.child(h_flex().justify_end().child(Button::new("job-close").outline().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
                         this.job_label = None;
@@ -437,7 +437,7 @@ impl RemotePages {
                     .p_2()
                     .rounded(theme.radius)
                     .bg(theme.muted)
-                    .text_xs()
+                    .text_size(px(13.))
                     .font_family(theme.mono_font_family.clone())
                     .children(lines.into_iter().map(|l| div().child(l)))
                     .into_any_element()
@@ -491,7 +491,7 @@ impl RemotePages {
                                 .on_click(cx.listener(move |this, _, _, cx| this.run_job("Updating SENTIENT", vec!["update".into(), "--version".into(), version.clone()], cx))),
                         ),
                     )
-                    .child(div().text_xs().text_color(theme.muted_foreground).child(
+                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(
                         "The update runs on the server by itself: a dropped connection does not stop it, and the previous version comes back if SENTIENT does not start.",
                     ));
             }
@@ -536,7 +536,7 @@ impl RemotePages {
                             .py_1p5()
                             .border_t_1()
                             .border_color(theme.border)
-                            .child(v_flex().flex_1().min_w_0().child(div().text_sm().text_ellipsis().child(e.name.clone())).child(div().text_xs().text_color(theme.muted_foreground).child(format!("{} · {}", e.made, if e.automatic { "automatic" } else { "by hand" }))))
+                            .child(v_flex().flex_1().min_w_0().child(div().text_sm().text_ellipsis().child(e.name.clone())).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!("{} · {}", e.made, if e.automatic { "automatic" } else { "by hand" }))))
                             .child(div().text_sm().child(format!("{}{}", bytes_label(e.bytes), if e.parts > 1 { format!(" · {} parts", e.parts) } else { String::new() })))
                             .child(check),
                     );
@@ -698,7 +698,7 @@ impl RemotePages {
         ui::panel(&theme)
             .child(div().text_sm().child("Repair puts SENTIENT's services, files and settings on this server back as the Platform Manager installed them. The database and its data are kept."))
             .child(h_flex().child(Button::new("r-repair").primary().label("Repair").icon(Icon::new(Lucide::Wrench)).disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job("Repairing", vec!["repair".into()], cx)))))
-            .child(div().text_xs().text_color(theme.muted_foreground).child("Uninstalling SENTIENT is done on the server itself, not from another computer."))
+            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Uninstalling SENTIENT is done on the server itself, not from another computer."))
     }
 
     fn gateway_page(&self, cx: &mut Context<Self>) -> Div {

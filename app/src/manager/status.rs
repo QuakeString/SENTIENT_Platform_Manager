@@ -94,7 +94,7 @@ fn table_row(theme: &gpui_kit::component::Theme, name: String, hint: String, fra
                 .gap_1p5()
                 .items_baseline()
                 .child(div().child(name))
-                .when(!hint.is_empty(), |r| r.child(div().text_xs().text_color(theme.muted_foreground).child(hint))),
+                .when(!hint.is_empty(), |r| r.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(hint))),
         )
         .child(
             div()
@@ -214,7 +214,7 @@ impl StatusPage {
             .child(div().font_weight(FontWeight::MEDIUM).child("Database"))
             .child(div().flex_1())
             .children(self.db_read_at.clone().map(|t| {
-                div().text_xs().text_color(theme.muted_foreground).child(format!("read at {t}"))
+                div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!("read at {t}"))
             }))
             .child(
                 Button::new("db-read")
@@ -307,14 +307,14 @@ impl StatusPage {
             let legend = h_flex()
                 .gap_4()
                 .flex_wrap()
-                .text_xs()
+                .text_size(px(13.))
                 .text_color(theme.muted_foreground)
                 .children(segs.iter().map(|(c, b, name)| {
                     h_flex().gap_1p5().items_center().child(div().size(px(9.)).rounded_sm().bg(*c)).child(format!("{name} {}", bytes_label(*b)))
                 }))
                 .child(h_flex().gap_1p5().items_center().child(div().size(px(9.)).rounded_sm().bg(theme.secondary)).child(format!("Free {}", bytes_label(free))));
             panel = panel
-                .child(div().pt_1().text_xs().font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(format!("{} ({})", drive.to_uppercase(), bytes_label(total))))
+                .child(div().pt_1().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(format!("{} ({})", drive.to_uppercase(), bytes_label(total))))
                 .child(bar)
                 .child(legend);
         } else if let Some(f) = free {
@@ -340,7 +340,7 @@ impl StatusPage {
                                 .items_center()
                                 .child(ui::database_logo("postgresql", 16.))
                                 .when(pg.timescaledb.is_some(), |r| r.child(ui::database_logo("timescale", 16.)))
-                                .child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(match &pg.timescaledb {
+                                .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(match &pg.timescaledb {
                                     Some(ts) => format!("POSTGRESQL {} · TIMESCALEDB {ts}", pg.version),
                                     None => format!("POSTGRESQL {}", pg.version),
                                 })),
@@ -363,7 +363,7 @@ impl StatusPage {
                                 }))
                                 .child(Button::new("backup-now").outline().small().label("Back up now").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Backup)))),
                         )
-                        .child(div().pt_1().text_xs().text_color(theme.muted_foreground).child("Largest tables"));
+                        .child(div().pt_1().text_size(px(13.)).text_color(theme.muted_foreground).child("Largest tables"));
                     let shown: Vec<&crate::dbstatus::Table> = pg.tables.iter().filter(|t| t.bytes > 0).take(5).collect();
                     let max = shown.iter().map(|t| t.bytes).max().unwrap_or(1).max(1);
                     for t in &shown {
@@ -400,7 +400,7 @@ impl StatusPage {
                                 .gap_2()
                                 .items_center()
                                 .child(ui::database_logo("clickhouse", 14.))
-                                .child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(format!("CLICKHOUSE {}", ch.version))),
+                                .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(format!("CLICKHOUSE {}", ch.version))),
                         )
                         .child(small_fact(theme, "Size", if ch.uncompressed_bytes > ch.disk_bytes {
                             format!("{} on disk ({} before compression)", bytes_label(ch.disk_bytes), bytes_label(ch.uncompressed_bytes))
@@ -436,7 +436,7 @@ impl StatusPage {
                                 }),
                         );
                     if !ch.months.is_empty() {
-                        col = col.child(div().pt_1().text_xs().text_color(theme.muted_foreground).child("History by month"));
+                        col = col.child(div().pt_1().text_size(px(13.)).text_color(theme.muted_foreground).child("History by month"));
                         let max = ch.months.iter().map(|(_, b)| *b).max().unwrap_or(1).max(1);
                         let this_month = chrono::Local::now().format("%Y%m").to_string();
                         for (p, b) in ch.months.iter().take(3) {
@@ -531,7 +531,7 @@ impl StatusPage {
                     .border_color(theme.border)
                     .rounded(theme.radius)
                     .children(c.facts().into_iter().map(|(label, value)| ui::fact(theme, label, value)))
-                    .children(c.notes.iter().map(|n| div().text_xs().text_color(theme.muted_foreground).child(n.clone())))
+                    .children(c.notes.iter().map(|n| div().text_size(px(13.)).text_color(theme.muted_foreground).child(n.clone())))
                     .children(c.problem.clone().map(|p| ui::outcome(theme, Tone::Warn, format!("Cannot be added: {p}"))))
                     .child(
                         h_flex().mt_2().child(
