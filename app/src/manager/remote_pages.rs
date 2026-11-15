@@ -5,9 +5,8 @@
 //! and worked through detached jobs there. One view per open instance; the
 //! menu chooses which page it shows.
 
-use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     menu::{DropdownMenu as _, PopupMenuItem},
     input::{InputEvent, InputState},
@@ -15,7 +14,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::dbstatus::{DbStatus, bytes_label, count_label, day_label};
+use crate::dbstatus::{DbStatus, bytes_label};
 use crate::jobs::{Job, JobState};
 use crate::remote::{self, Instance, RemoteBackups, RemoteService, RemoteStatus};
 use crate::ui::{self, Tone};
@@ -627,48 +626,46 @@ impl RemotePages {
     fn backup_page(&self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
-        let mut p = ui::panel(&theme).gap_2();
-        match &self.backups {
-            Read::Loading => p = p.child(div().text_sm().text_color(theme.muted_foreground).child("Reading the backups…")),
-            Read::Failed(e) => p = p.child(ui::outcome(&theme, Tone::Bad, e.clone())),
-            Read::Got(b) => {
-                p = p
-                    .child(
-                        h_flex()
-                            .gap_3()
-                            .items_center()
-                            .child(div().flex_1().text_sm().child(format!(
-                                "On the server in {}. {}",
-                                b.folder.display(),
-                                match &b.daily_at {
-                                    Some(t) => format!("Every day at {t}, keeping {}.", b.keep),
-                                    None => "No daily backup.".into(),
-                                }
-                            )))
-                            .child(Button::new("r-backup").primary().label("Back up now").icon(Icon::new(Lucide::Archive)).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx)))),
-                    )
-                    .when(b.list.is_empty(), |p| p.child(div().text_sm().text_color(theme.muted_foreground).child("No backups on the server yet.")));
-                for (i, e) in b.list.iter().enumerate() {
-                    let check = match &e.check {
-                        Some(c) if c.ok => ui::pill(&theme, Tone::Good, format!("Checked {}", c.at.get(..10).unwrap_or(&c.at))),
-                        Some(_) => ui::pill(&theme, Tone::Bad, "Damaged"),
-                        None => ui::pill(&theme, Tone::Neutral, "Not checked"),
-                    };
-                    p = p.child(
-                        h_flex()
-                            .gap_3()
-                            .items_center()
-                            .py_1p5()
-                            .when(i > 0, |r| r.border_t_1())
-                            .border_color(theme.border)
-                            .child(v_flex().flex_1().min_w_0().child(div().text_sm().text_ellipsis().child(e.name.clone())).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!("{} · {}", e.made, if e.automatic { "automatic" } else { "by hand" }))))
-                            .child(div().text_sm().child(format!("{}{}", bytes_label(e.bytes), if e.parts > 1 { format!(" · {} parts", e.parts) } else { String::new() })))
-                            .child(check),
-                    );
-                }
-            }
+        // The same panels as this computer's Backup: "Back up now", the
+        // daily backup, then the list. Rows the server cannot change from
+        // here yet are left out.
+        let b = match &self.backups {
+            Read::Loading => return Self::loading(&theme, "the backups"),
+            Read::Failed(e) => return Self::failed(&theme, e),
+            Read::Got(b) => b.clone(),
+        };
+        let now = ui::panel(&theme)
+            .gap_0()
+            .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Back up now"))
+            .child(crate::manager::backup::brow_pub(&theme, "Save to", None, div().text_sm().child(b.folder.display().to_string())).border_t_0())
+            .child(h_flex().pt_2().child(Button::new("r-backup").primary().label("Back up now").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx)))));
+        let auto = ui::panel(&theme)
+            .gap_0()
+            .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Automatic backup"))
+            .child(crate::manager::backup::brow_pub(&theme, "Back up every day at", None, div().text_sm().child(b.daily_at.clone().unwrap_or_else(|| "No automatic backup".into()))).border_t_0())
+            .when(b.daily_at.is_some(), |p| p.child(crate::manager::backup::brow_pub(&theme, "Keep", None, div().text_sm().child(format!("{} backups", b.keep)))));
+        let total: u64 = b.list.iter().map(|e| e.bytes).sum();
+        let mut list = ui::panel(&theme).gap_0().child(
+            h_flex()
+                .gap_3()
+                .pb_1()
+                .items_center()
+                .child(div().font_weight(FontWeight::MEDIUM).child("Backups"))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().text_color(theme.muted_foreground).child(format!(
+                    "{} · {} file{}, {}",
+                    b.folder.display(),
+                    b.list.len(),
+                    if b.list.len() == 1 { "" } else { "s" },
+                    bytes_label(total)
+                ))),
+        );
+        if b.list.is_empty() {
+            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder yet."));
         }
-        p
+        for (i, e) in b.list.iter().enumerate() {
+            list = list.child(crate::manager::backup::entry_row(&theme, i, e));
+        }
+        v_flex().gap_4().child(now).child(auto).child(list)
     }
 
     // -- Settings, Migration, Repair, Gateway --------------------------------

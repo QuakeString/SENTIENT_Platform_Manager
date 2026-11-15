@@ -861,6 +861,11 @@ impl BackupPage {
 
 impl EventEmitter<Go> for BackupPage {}
 
+/// A row: label, then its control. Shared with a remote server's Backup.
+pub(crate) fn brow_pub(theme: &gpui_kit::component::Theme, label: &'static str, help: Option<&'static str>, control: impl IntoElement) -> Div {
+    brow(theme, label, help, control)
+}
+
 /// A row: label, then its control.
 fn brow(theme: &gpui_kit::component::Theme, label: &'static str, help: Option<&'static str>, control: impl IntoElement) -> Div {
     h_flex()
@@ -1083,34 +1088,10 @@ impl BackupPage {
             list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder yet."));
         }
         for (i, e) in self.list.iter().enumerate() {
-            let (pill_tone, pill_text) = match &e.check {
-                Some(c) if c.ok => (Tone::Good, format!("Checked {}", c.at.get(..10).unwrap_or(""))),
-                Some(_) => (Tone::Bad, "Damaged".to_string()),
-                None => (Tone::Neutral, "Not checked".to_string()),
-            };
             let damaged = e.check.as_ref().is_some_and(|c| !c.ok);
             let (p1, p2, p3) = (e.path.clone(), e.path.clone(), e.path.clone());
             list = list.child(
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .py_1p5()
-                    .when(i > 0, |r| r.border_t_1())
-                    .border_color(theme.border)
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().text_sm().child(e.name.clone()))
-                            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!(
-                                "{} · {}{}",
-                                e.made,
-                                if e.automatic { "automatic" } else { "by hand" },
-                                if e.parts > 1 { format!(" · {} parts", e.parts) } else { String::new() }
-                            ))),
-                    )
-                    .child(div().w(px(80.)).text_sm().text_right().child(bytes_label(e.bytes)))
-                    .child(div().w(px(120.)).child(ui::pill(theme, pill_tone, pill_text)))
+                entry_row(theme, i, e)
                     .when(!damaged, |r| {
                         r.child(Button::new(SharedString::from(format!("restore-{}", e.name))).outline().label("Restore…").on_click(cx.listener(move |this, _, _, cx| {
                             this.restore_input = Some(p1.clone());
@@ -1280,4 +1261,34 @@ impl Render for BackupPage {
         ))
         .child(replace_panel)
     }
+}
+
+/// One backup in a list: name, when and how it was made, size and its check.
+/// The caller adds its buttons. Shared with a remote server's Backup.
+pub(crate) fn entry_row(theme: &gpui_kit::component::Theme, i: usize, e: &crate::backups::Entry) -> Div {
+    let (tone, text) = match &e.check {
+        Some(c) if c.ok => (Tone::Good, format!("Checked {}", c.at.get(..10).unwrap_or(""))),
+        Some(_) => (Tone::Bad, "Damaged".to_string()),
+        None => (Tone::Neutral, "Not checked".to_string()),
+    };
+    h_flex()
+        .gap_3()
+        .items_center()
+        .py_1p5()
+        .when(i > 0, |r| r.border_t_1())
+        .border_color(theme.border)
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .child(div().text_sm().text_ellipsis().child(e.name.clone()))
+                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!(
+                    "{} · {}{}",
+                    e.made,
+                    if e.automatic { "automatic" } else { "by hand" },
+                    if e.parts > 1 { format!(" · {} parts", e.parts) } else { String::new() }
+                ))),
+        )
+        .child(div().w(px(80.)).flex_shrink_0().text_sm().text_right().child(crate::dbstatus::bytes_label(e.bytes)))
+        .child(h_flex().w(px(150.)).flex_shrink_0().child(ui::pill(theme, tone, text)))
 }

@@ -5,7 +5,7 @@
 //! its own view, created the first time it is opened.
 
 mod about;
-mod backup;
+pub(crate) mod backup;
 pub(crate) mod control;
 mod gateway;
 mod instances;
