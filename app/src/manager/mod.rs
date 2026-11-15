@@ -155,6 +155,10 @@ pub struct Manager {
     switcher_open: bool,
     /// The notifications panel is open.
     bell_open: bool,
+    /// The bell's conditions: when each was first seen (its time), and the
+    /// ones cleared with their × (until they change or go and come back).
+    cond_since: std::cell::RefCell<std::collections::HashMap<String, i64>>,
+    cond_cleared: std::cell::RefCell<std::collections::HashSet<String>>,
     /// The window's height (the bell panel's maximum).
     window_h: std::cell::Cell<f32>,
     /// The global progress strip (strip.rs), under the top bar.
@@ -212,7 +216,11 @@ impl Manager {
             .detach();
         // The progress line under the top bar follows the strip.
         let strip = strip::install(cx);
-        let subscriptions = vec![cx.observe(&updates, |_, _, cx| cx.notify()), cx.observe(&strip, |_, _, cx| cx.notify())];
+        let subscriptions = vec![
+            cx.observe(&updates, |_, _, cx| cx.notify()),
+            cx.observe(&strip, |_, _, cx| cx.notify()),
+            cx.subscribe(&strip, |this, _, e: &strip::JobEnded, cx| this.after_job(e.instance.clone(), cx)),
+        ];
         let updated_from = args.windows(2).find(|w| w[0] == "--updated-from").map(|w| w[1].clone());
         let found_notice = record.is_some() && crate::updates::take_found_installation();
         let mut manager = Self {
@@ -238,6 +246,8 @@ impl Manager {
             strip: strip.clone(),
             switcher_open: false,
             bell_open: false,
+            cond_since: Default::default(),
+            cond_cleared: Default::default(),
             window_h: std::cell::Cell::new(720.),
             _debug_job: None,
             theme_open: cfg!(debug_assertions) && std::env::var_os("SPM_THEME_OPEN").is_some(),
@@ -458,9 +468,30 @@ impl Manager {
         out
     }
 
+    /// The conditions the bell shows: not cleared, each with its key and
+    /// the time it was first seen. One gone is forgotten, so coming back is
+    /// news again.
+    fn bell_conditions(&self, cx: &App) -> Vec<(String, i64, (String, String, Page, Option<String>, String, String))> {
+        let now = chrono::Utc::now().timestamp();
+        let all = self.conditions(cx);
+        let keys: Vec<String> = all.iter().map(|c| cond_key(&c.3, &c.0)).collect();
+        let mut since = self.cond_since.borrow_mut();
+        since.retain(|k, _| keys.contains(k));
+        self.cond_cleared.borrow_mut().retain(|k| keys.contains(k));
+        let cleared = self.cond_cleared.borrow();
+        all.into_iter()
+            .zip(keys)
+            .filter(|(_, k)| !cleared.contains(k))
+            .map(|(c, k)| {
+                let at = *since.entry(k.clone()).or_insert(now);
+                (k, at, c)
+            })
+            .collect()
+    }
+
     /// The bell's panel: Notifications, Mark all as read / Clear all, the
     /// events and conditions with their instance, or an empty state.
-    fn notifications_panel(&self, conditions: Vec<(String, String, Page, Option<String>, String, String)>, width: f32, cx: &mut Context<Self>) -> AnyElement {
+    fn notifications_panel(&self, conditions: Vec<(String, i64, (String, String, Page, Option<String>, String, String))>, width: f32, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let events = self.strip.read(cx).events.clone();
         let (unread, _) = self.strip.read(cx).unread();
@@ -472,7 +503,7 @@ impl Manager {
         };
         let strip = self.strip.clone();
         let this = cx.entity().downgrade();
-        let row = |key: SharedString, icon: IconName, icon_color: Hsla, title: String, detail: String, meta: String, color: &str, unread: bool, clear: Option<AnyElement>| {
+        let row = |key: SharedString, icon: IconName, icon_color: Hsla, title: String, detail: String, meta: String, color: &str, unread: bool, clear: AnyElement| {
             let c = crate::remote::parse_hex(color).unwrap_or(0x187074);
             h_flex()
                 .id(key.clone())
@@ -494,7 +525,15 @@ impl Manager {
                     v_flex()
                         .flex_1()
                         .min_w_0()
-                        .child(div().text_sm().font_weight(if unread { FontWeight::SEMIBOLD } else { FontWeight::NORMAL }).overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
+                        .child(
+                            h_flex()
+                                .gap(px(6.))
+                                .items_center()
+                                .min_w_0()
+                                // Unread: a dot before the title, away from the ×.
+                                .when(unread, |c| c.child(div().flex_shrink_0().size(px(7.)).rounded_full().bg(theme.danger)))
+                                .child(div().min_w_0().text_sm().font_weight(if unread { FontWeight::SEMIBOLD } else { FontWeight::NORMAL }).overflow_hidden().whitespace_nowrap().text_ellipsis().child(title)),
+                        )
                         .child(div().text_size(px(12.5)).text_color(theme.muted_foreground).overflow_hidden().whitespace_nowrap().text_ellipsis().child(detail))
                         .child(
                             h_flex()
@@ -504,23 +543,49 @@ impl Manager {
                                 .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(meta)),
                         ),
                 )
-                // Right: the unread dot, then the row's own clear (×), always
-                // shown so one line can be cleared without hunting for it.
-                .child(
-                    h_flex()
-                        .flex_shrink_0()
-                        .items_center()
-                        .gap(px(6.))
-                        .when(unread, |c| c.child(div().size(px(7.)).rounded_full().bg(theme.danger)))
-                        .children(clear),
-                )
+                // Right: the row's own clear (×), always shown so one line
+                // can be cleared without hunting for it.
+                .child(div().flex_shrink_0().child(clear))
         };
-        let mut list = v_flex().gap_px();
-        for (i, (title, detail, page, inst, name, color)) in conditions.into_iter().enumerate() {
-            let t = this.clone();
+        // One × for every row: an event is cleared, a condition hidden
+        // until it changes.
+        let clear_button = |id: SharedString, on: Box<dyn Fn(&mut App)>| {
+            div()
+                .id(id)
+                .size(px(22.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(5.))
+                .hover(|d| d.bg(theme.danger.opacity(0.12)))
+                .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Clear").build(w, cx))
+                .child(Icon::new(IconName::Close).size(px(13.)).text_color(theme.muted_foreground))
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    on(cx);
+                })
+                .into_any_element()
+        };
+        // Events and conditions together, newest first.
+        let mut rows: Vec<(i64, Stateful<Div>)> = Vec::new();
+        let cond_keys: Vec<String> = conditions.iter().map(|c| c.0.clone()).collect();
+        for (i, (key, at, (title, detail, page, inst, name, color))) in conditions.into_iter().enumerate() {
+            let (t, t2) = (this.clone(), this.clone());
             let icon = if title.contains("available") || title.contains("waiting") { (IconName::ArrowUp, theme.primary) } else { (IconName::TriangleAlert, rgb(0xd97706).into()) };
-            list = list.child(
-                row(SharedString::from(format!("cond-{i}")), icon.0, icon.1, title, detail, format!("{name}"), &color, false, None).on_click(move |_, _, cx| {
+            let clear = clear_button(
+                SharedString::from(format!("cond-clear-{i}")),
+                Box::new(move |cx| {
+                    let key = key.clone();
+                    t2.update(cx, |m, cx| {
+                        m.cond_cleared.borrow_mut().insert(key);
+                        cx.notify();
+                    })
+                    .ok();
+                }),
+            );
+            rows.push((
+                at,
+                row(SharedString::from(format!("cond-{i}")), icon.0, icon.1, title, detail, format!("{name} · {}", ago(at)), &color, false, clear).on_click(move |_, _, cx| {
                     let (inst, page) = (inst.clone(), page);
                     t.update(cx, |m, cx| {
                         m.bell_open = false;
@@ -532,29 +597,16 @@ impl Manager {
                     })
                     .ok();
                 }),
-            );
+            ));
         }
         for e in events.iter() {
             let (id, inst) = (e.id, e.instance.clone());
             let (s1, s2, t) = (strip.clone(), strip.clone(), this.clone());
             let icon = if e.failed { (IconName::CircleX, theme.danger) } else { (IconName::CircleCheck, theme.primary) };
-            let clear = div()
-                .id(SharedString::from(format!("clear-{id}")))
-                .size(px(22.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(5.))
-                .hover(|d| d.bg(theme.danger.opacity(0.12)))
-                .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Clear").build(w, cx))
-                .child(Icon::new(IconName::Close).size(px(13.)).text_color(theme.muted_foreground))
-                .on_click(move |_, _, cx| {
-                    cx.stop_propagation();
-                    s1.update(cx, |s, cx| s.clear(Some(id), cx));
-                })
-                .into_any_element();
-            list = list.child(
-                row(SharedString::from(format!("ev-{id}")), icon.0, icon.1, e.title.clone(), e.detail.clone(), format!("{} · {}", e.instance_name, ago(e.at)), &e.color, !e.read, Some(clear)).on_click(move |_, _, cx| {
+            let clear = clear_button(SharedString::from(format!("clear-{id}")), Box::new(move |cx| s1.update(cx, |s, cx| s.clear(Some(id), cx))));
+            rows.push((
+                e.at,
+                row(SharedString::from(format!("ev-{id}")), icon.0, icon.1, e.title.clone(), e.detail.clone(), format!("{} · {}", e.instance_name, ago(e.at)), &e.color, !e.read, clear).on_click(move |_, _, cx| {
                     let inst = inst.clone();
                     t.update(cx, |m, cx| {
                         m.bell_open = false;
@@ -565,9 +617,11 @@ impl Manager {
                     .ok();
                     s2.update(cx, |s, cx| s.open_event(id, cx));
                 }),
-            );
+            ));
         }
-        let empty = list_is_empty(&events, self.conditions(cx).len());
+        rows.sort_by(|a, b| b.0.cmp(&a.0));
+        let empty = rows.is_empty();
+        let list = v_flex().gap_px().children(rows.into_iter().map(|(_, r)| r));
         let (s3, s4, close) = (strip.clone(), strip.clone(), this.clone());
         let header = h_flex()
             .px_2()
@@ -577,7 +631,19 @@ impl Manager {
             .items_center()
             .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("Notifications"))
             .when(unread > 0, |h| h.child(crate::ui::button("bell-read").ghost().xsmall().label("Mark all as read").on_click(move |_, _, cx| s3.update(cx, |s, cx| s.mark_all_read(cx)))))
-            .when(!events.is_empty(), |h| h.child(crate::ui::button("bell-clear").ghost().xsmall().label("Clear all").on_click(move |_, _, cx| s4.update(cx, |s, cx| s.clear(None, cx)))));
+            .when(!empty, |h| {
+                let close2 = close.clone();
+                h.child(crate::ui::button("bell-clear").ghost().xsmall().label("Clear all").on_click(move |_, _, cx| {
+                    s4.update(cx, |s, cx| s.clear(None, cx));
+                    let keys = cond_keys.clone();
+                    close2
+                        .update(cx, |m, cx| {
+                            m.cond_cleared.borrow_mut().extend(keys);
+                            cx.notify();
+                        })
+                        .ok();
+                }))
+            });
         let max_h = (f32::from(self.window_h.get()) * 0.6).max(260.);
         deferred(
             div().absolute().top(px(30. + 9.)).right(px(-6.)).child(
@@ -651,10 +717,21 @@ impl Manager {
         // Light bar (dark text): a fainter inset.
         let light_bar = fg.l < 0.5;
         let inset: Hsla = black().opacity(if light_bar { 0.10 } else { 0.22 });
-        // The open instance's state: green when its reading came back,
-        // amber while it is being read.
+        // The open instance's state: green when SENTIENT runs, red when it
+        // is stopped (the page's last reading, else the checker's), amber
+        // while the server is being read or does not answer.
         let status_green: Hsla = rgb(0x3ddc84).into();
-        let state_dot: Hsla = if remote.is_some() && self.remote_monitor.is_none() { rgb(0xf3b744).into() } else { status_green };
+        let serving = match &remote {
+            Some(r) => self.remote_pages.as_ref().and_then(|p| p.read(cx).serving()).or_else(|| crate::bg_app::serving(Some(&r.id), cx)),
+            None => crate::bg_app::serving(None, cx),
+        };
+        let state_dot: Hsla = if remote.is_some() && self.remote_monitor.is_none() {
+            rgb(0xf3b744).into()
+        } else if serving == Some(false) {
+            rgb(0xef4444).into()
+        } else {
+            status_green
+        };
         self.strip.read(cx).light_bar.set(light_bar);
         self.strip.read(cx).window_w.set(width);
         // The mockup's top bar: above 900 px the product name and the
@@ -784,7 +861,7 @@ impl Manager {
         });
         // The bell: events (clearable, kept across restarts) and conditions
         // (they stay while they hold). Every entry names its instance.
-        let conditions = self.conditions(cx);
+        let conditions = self.bell_conditions(cx);
         let (unread, unread_failed) = self.strip.read(cx).unread();
         let count = unread + conditions.len();
         let bell_open = self.bell_open;
@@ -1193,8 +1270,11 @@ impl Manager {
         let was_installed = self.record.is_some();
         self.record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
         if !was_installed {
-            // Adopted: every screen was showing "not installed".
-            self.migration = None;
+            // Adopted: every screen was showing "not installed" (Migration
+            // stays while it shows the job that just ran; Back reloads it).
+            if !self.migration.as_ref().is_some_and(|m| m.read(cx).showing_job()) {
+                self.migration = None;
+            }
             self.settings = None;
         }
         self.status = None;
@@ -1205,6 +1285,36 @@ impl Manager {
         self.repair = None;
         // Migration and Settings reload their own record and keep showing
         // the result of what just ran.
+        cx.notify();
+    }
+
+    /// A job ended on `instance` (None: this computer): what shows its state
+    /// is read again (Status, Update, Migration, the instance cards, the open
+    /// server's pages); a page showing that job's result keeps it.
+    fn after_job(&mut self, instance: Option<String>, cx: &mut Context<Self>) {
+        if let Some(page) = &self.instances {
+            let id = instance.clone();
+            page.update(cx, |p, cx| p.after_job(id.as_deref(), cx));
+        }
+        match instance {
+            None => {
+                self.record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
+                self.status = None;
+                for page in self.update.clone() {
+                    page.update(cx, |p, cx| p.refresh_record(cx));
+                }
+                for page in self.migration.clone() {
+                    page.update(cx, |p, cx| p.refresh_record(cx));
+                }
+            }
+            Some(id) => {
+                if self.open_remote.as_ref() == Some(&id) {
+                    for page in self.remote_pages.clone() {
+                        page.update(cx, |p, cx| p.after_job(cx));
+                    }
+                }
+            }
+        }
         cx.notify();
     }
 
@@ -1708,6 +1818,8 @@ fn dated(date: &str) -> String {
     if date.is_empty() { String::new() } else { format!(", released {date}") }
 }
 
-fn list_is_empty(events: &[strip::Event], conditions: usize) -> bool {
-    events.is_empty() && conditions == 0
+/// A condition's key: its instance and title (a new version is news).
+fn cond_key(inst: &Option<String>, title: &str) -> String {
+    format!("{}|{title}", inst.as_deref().unwrap_or(""))
 }
+

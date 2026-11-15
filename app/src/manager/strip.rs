@@ -86,6 +86,14 @@ pub struct Strip {
     _hide: Option<Task<()>>,
 }
 
+/// A job ended (done or failed) on this instance (None: this computer):
+/// every page that shows its state reads it again.
+pub struct JobEnded {
+    pub instance: Option<String>,
+}
+
+impl EventEmitter<JobEnded> for Strip {}
+
 struct StripSlot(Entity<Strip>);
 impl Global for StripSlot {}
 
@@ -151,9 +159,11 @@ impl Strip {
                 }
                 let label = self.label.clone().unwrap_or_else(|| "A job".into());
                 let id = self.push_event(j.instance(), true, format!("{label} failed"), crate::remote::split_failure(&m).0, text);
-                if let Some(r) = j.retry() {
+                let (retry, ended) = (j.retry(), j.instance().map(|i| i.0));
+                if let Some(r) = retry {
                     self.retries.insert(id, r);
                 }
+                cx.emit(JobEnded { instance: ended });
                 self.job = None;
                 self._observe = None;
                 // Its page shows the result; else the details open once.
@@ -164,6 +174,7 @@ impl Strip {
             }
             JobState::Done(m) if self.finished_at.is_none() => {
                 crate::bg_app::request_check();
+                cx.emit(JobEnded { instance: job.read(cx).instance().map(|i| i.0) });
                 self.finished_at = Some(Instant::now());
                 // Backups, restores, updates and takeovers that finish are
                 // worth a line in the bell; a start or stop is not.

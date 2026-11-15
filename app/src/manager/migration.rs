@@ -31,6 +31,9 @@ pub struct MigrationPage {
     kept_asked: bool,
     /// crate::migration::preflight, checked before the confirmation.
     preflight: crate::manager::remote_pages::Preflight,
+    /// The job followed on this page in place of the form (its title), until
+    /// "Back to Migration" (crate::manager::jobview).
+    shown: Option<String>,
     _observe: Subscription,
     _tasks: Vec<Task<()>>,
 }
@@ -88,8 +91,15 @@ impl MigrationPage {
             cx.notify();
         });
         let state = record.as_ref().and_then(migration::load_state);
-        let mut page = Self { record, state, target: None, confirm: false, job, kept: None, kept_asked: false, preflight: std::env::var("SPM_DEBUG_PREFLIGHT").ok().filter(|_| cfg!(debug_assertions)).map(crate::manager::remote_pages::Preflight::Failed).unwrap_or(crate::manager::remote_pages::Preflight::Idle), _observe, _tasks: Vec::new() };
+        let mut page = Self { record, state, target: None, confirm: false, job, kept: None, kept_asked: false, preflight: std::env::var("SPM_DEBUG_PREFLIGHT").ok().filter(|_| cfg!(debug_assertions)).map(crate::manager::remote_pages::Preflight::Failed).unwrap_or(crate::manager::remote_pages::Preflight::Idle), shown: None, _observe, _tasks: Vec::new() };
         page.refresh_kept(cx);
+        // Screens: the job view with a scripted migration (running, failed
+        // or done), where a real one would change this computer's database.
+        #[cfg(debug_assertions)]
+        if let Some(mode) = std::env::var("SPM_DEBUG_MIGRATION_JOB").ok().filter(|_| !DEBUG_JOB_RAN.swap(true, std::sync::atomic::Ordering::Relaxed)) {
+            let again: std::rc::Rc<dyn Fn(&mut Self, &mut Context<Self>)> = std::rc::Rc::new(|_, _| {});
+            page.run_on_page("Changing the database to PostgreSQL + ClickHouse".into(), move |sink| debug_migration(&mode, &sink), Some(again), cx);
+        }
         page
     }
 
@@ -155,20 +165,65 @@ impl MigrationPage {
         });
     }
 
+    /// A long job on this page: shown in place of the form, with Try again
+    /// running `again` when it fails.
+    fn run_on_page(
+        &mut self,
+        title: String,
+        work: impl FnOnce(sentient_installer_core::progress::ProgressFn) -> Result<(), String> + Send + 'static,
+        again: Option<std::rc::Rc<dyn Fn(&mut Self, &mut Context<Self>)>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.shown = Some(title.clone());
+        let me = cx.entity().downgrade();
+        self.job.update(cx, |job, cx| {
+            job.set_label(title);
+            job.set_on_page(true);
+            if let Some(again) = again {
+                job.set_retry(std::rc::Rc::new(move |cx: &mut App| {
+                    let again = again.clone();
+                    me.update(cx, |p, cx| again(p, cx)).ok();
+                }));
+            }
+            job.start(work, cx)
+        });
+        cx.notify();
+    }
+
+    /// Read the record again (another page's job may have changed it); the
+    /// form only, a job's view stays.
+    pub fn refresh_record(&mut self, cx: &mut Context<Self>) {
+        if self.job.read(cx).is_running() {
+            return;
+        }
+        self.record = InstallationRecord::load();
+        self.state = self.record.as_ref().and_then(migration::load_state);
+        cx.notify();
+    }
+
+    /// A job's view is on the page (kept when the manager reloads).
+    pub fn showing_job(&self) -> bool {
+        self.shown.is_some()
+    }
+
     fn targets(&self) -> Vec<Flavor> {
         self.record.as_ref().and_then(|r| migration::targets(r).ok()).unwrap_or_default()
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
-        let (Some(record), Some(target)) = (self.record.clone(), self.target.and_then(|i| self.targets().get(i).copied()))
-        else {
-            return;
-        };
+        let Some(target) = self.target.and_then(|i| self.targets().get(i).copied()) else { return };
+        self.migrate_to(target, cx);
+    }
+
+    fn migrate_to(&mut self, target: Flavor, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        let title = format!("Changing the database to {}", flavor_label(target));
+        let again: std::rc::Rc<dyn Fn(&mut Self, &mut Context<Self>)> = std::rc::Rc::new(move |p, cx| p.migrate_to(target, cx));
         if crate::rootjob::needed(&record) {
             let args = vec!["migrate".to_string(), target.as_str().to_string()];
-            self.job.update(cx, |job, cx| job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
+            self.run_on_page(title, move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), Some(again), cx);
         } else {
-            self.job.update(cx, |job, cx| job.start(move |sink| migration::run(record, target, sink).map(|_| ()), cx));
+            self.run_on_page(title, move |sink| migration::run(record, target, sink).map(|_| ()), Some(again), cx);
         }
     }
 
@@ -214,7 +269,7 @@ impl MigrationPage {
                 this.update(cx, |page, cx| {
                     let Some(record) = page.record.clone() else { return };
                     page.preflight = crate::manager::remote_pages::Preflight::Idle;
-                    page.job.update(cx, |job, cx| job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), creds.db.as_deref(), creds.ch.as_deref(), sink).map(|_| ()), cx));
+                    page.run_on_page("Taking over the compose file".into(), move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), creds.db.as_deref(), creds.ch.as_deref(), sink).map(|_| ()), None, cx);
                 })
                 .ok();
             }),
@@ -225,12 +280,80 @@ impl MigrationPage {
 
     fn resume(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
+        let title = "Copying the history from before the switch".to_string();
+        let again: std::rc::Rc<dyn Fn(&mut Self, &mut Context<Self>)> = std::rc::Rc::new(|p, cx| p.resume(cx));
         if crate::rootjob::needed(&record) {
             let args = vec!["resume-migration".to_string()];
-            self.job.update(cx, |job, cx| job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
+            self.run_on_page(title, move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), Some(again), cx);
         } else {
-            self.job.update(cx, |job, cx| job.start(move |sink| migration::resume(record, sink), cx));
+            self.run_on_page(title, move |sink| migration::resume(record, sink), Some(again), cx);
         }
+    }
+}
+
+/// The scripted job runs once (the page is made again after a job ends
+/// with no installation).
+#[cfg(debug_assertions)]
+static DEBUG_JOB_RAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(debug_assertions)]
+fn debug_migration(mode: &str, sink: &sentient_installer_core::progress::ProgressFn) -> Result<(), String> {
+    use sentient_installer_core::progress::Progress;
+    let pause = || std::thread::sleep(std::time::Duration::from_millis(400));
+    let log = |l: &str| sink(Progress::Log { line: l.into() });
+    sink(Progress::Step { name: "Backing up everything first".into() });
+    log("pg_dump: dumping contents of table \"public.ts_kv\"");
+    log("Backup written to /opt/sentient/backups/sentient-2026-11-16.tar.zst and checked");
+    pause();
+    sink(Progress::Step { name: "Preparing ClickHouse".into() });
+    log("ClickHouse 24.8 is up");
+    pause();
+    sink(Progress::Step { name: "Starting SENTIENT on PostgreSQL + ClickHouse".into() });
+    log("SENTIENT answers on port 8080");
+    pause();
+    sink(Progress::Step { name: "Copying the history from before the switch".into() });
+    for m in ["2026-08", "2026-09", "2026-10"] {
+        log(&format!("{m}: copied and checked"));
+    }
+    match mode {
+        "running" => {
+            sink(Progress::Percent { value: 62.0 });
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+            Ok(())
+        }
+        "failed" => Err("Copying the history stopped: ClickHouse did not answer on port 9000.".into()),
+        _ => {
+            log("2026-11: copied and checked");
+            sink(Progress::Done { message: "SENTIENT runs on PostgreSQL + ClickHouse with its full history.".into() });
+            Ok(())
+        }
+    }
+}
+
+impl MigrationPage {
+    /// The job started here, in place of the form: running, or ended and not
+    /// yet left with "Back to Migration".
+    fn job_view(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let title = self.shown.clone()?;
+        let job = self.job.read(cx);
+        if matches!(job.state(), JobState::Idle) {
+            return None;
+        }
+        let this = cx.entity().downgrade();
+        let back = crate::manager::jobview::back_button("mig-job-back", "Migration", move |_, cx| {
+            this.update(cx, |p, cx| {
+                p.shown = None;
+                p.job.update(cx, |j, cx| j.reset(cx));
+                cx.notify();
+            })
+            .ok();
+        });
+        let retry = match job.state() {
+            JobState::Failed(_) => job.retry().map(|r| crate::ui::button("mig-job-retry").primary().label("Try again").on_click(move |_, _, cx| r(cx)).into_any_element()),
+            _ => None,
+        };
+        let stages: &[crate::manager::jobview::Stage] = if title.starts_with("Changing the database") { crate::manager::jobview::MIGRATION } else { &[] };
+        Some(crate::manager::jobview::view("mjob", title, stages, job, Some(back), retry, cx))
     }
 }
 
@@ -242,6 +365,9 @@ impl Render for MigrationPage {
             "Migration",
             "Change the database type. Every row of history is copied and checked; nothing is deleted.",
         );
+        if let Some(view) = self.job_view(cx) {
+            return page.child(view);
+        }
         let Some(record) = &self.record else {
             return page.child(ui::not_installed(&theme));
         };
