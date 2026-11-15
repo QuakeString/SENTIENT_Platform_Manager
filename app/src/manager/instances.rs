@@ -948,7 +948,7 @@ impl InstancesPage {
                 crate::modal::Modal {
                     title: title.into(),
                     body: slot.into(),
-                    width: 620.,
+                    width: 540.,
                     on_close: Some(std::rc::Rc::new(move |_, cx| {
                         p2.update(cx, |p, cx| {
                             p.form = None;
