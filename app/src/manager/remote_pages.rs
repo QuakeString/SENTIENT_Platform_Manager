@@ -51,6 +51,8 @@ impl<T> Read<T> {
 pub struct RemotePages {
     inst: Instance,
     pub kind: Kind,
+    /// The server answers and has the Platform Manager.
+    ready: Read<()>,
     status: Read<RemoteStatus>,
     services: Read<Vec<RemoteService>>,
     db: Read<DbStatus>,
@@ -93,6 +95,7 @@ impl RemotePages {
         let mut p = Self {
             inst,
             kind,
+            ready: Read::Loading,
             status: Read::Loading,
             services: Read::Loading,
             db: Read::Loading,
@@ -126,6 +129,8 @@ impl RemotePages {
 
     /// Read what the page shows (in the background).
     fn reload(&mut self, cx: &mut Context<Self>) {
+        let inst = self.inst.clone();
+        self.fetch(cx, move || remote::ready(&inst), |p, r| p.ready = r);
         let inst = self.inst.clone();
         match self.kind {
             Kind::Status | Kind::Control => {
@@ -252,7 +257,7 @@ impl RemotePages {
         Some(
             p.child(v_flex().p_2().rounded(theme.radius).bg(theme.muted).text_xs().font_family(theme.mono_font_family.clone()).children(log.into_iter().map(|l| div().child(l))))
                 .when(done, |p| {
-                    p.child(h_flex().child(Button::new("job-close").ghost().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                    p.child(h_flex().justify_end().child(Button::new("job-close").outline().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
                         this.job_label = None;
                         this.job.update(cx, |j, cx| j.reset(cx));
                         cx.notify();
@@ -699,6 +704,50 @@ impl RemotePages {
                 .child(Button::new("r-gw-update").primary().small().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx)))),
         )
     }
+
+    /// One calm panel for a server that is not set up or cannot be reached:
+    /// what is the matter and the one thing that solves it.
+    fn gate_panel(&self, e: String, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+        let busy = self.job.read(cx).is_running();
+        let not_set_up = e == remote::NOT_SET_UP;
+        ui::panel(&theme)
+            .child(div().font_weight(FontWeight::MEDIUM).child(if not_set_up { "Not set up yet" } else { "The server does not answer" }))
+            .child(div().text_sm().text_color(theme.muted_foreground).child(if not_set_up {
+                "The Platform Manager works on a server through its own copy there. Set up copies the matching build over SSH and checks it; nothing else on the server changes.".to_string()
+            } else {
+                e.clone()
+            }))
+            .child(
+                h_flex().gap_2().child(if not_set_up {
+                    Button::new("r-setup").primary().label("Set up").loading(busy).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.set_up(cx)))
+                } else {
+                    Button::new("r-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
+                        this.ready = Read::Loading;
+                        this.reload(cx);
+                    }))
+                }),
+            )
+    }
+
+    fn set_up(&mut self, cx: &mut Context<Self>) {
+        if self.job.read(cx).is_running() {
+            return;
+        }
+        let inst = self.inst.clone();
+        self.job_label = Some(format!("Setting up {}", inst.name).into());
+        self.job.update(cx, |job, cx| {
+            job.start(
+                move |sink| {
+                    remote::deploy(&inst, &sink)?;
+                    sink(sentient_installer_core::progress::Progress::Done { message: format!("The Platform Manager is set up on {}.", inst.name) });
+                    Ok(())
+                },
+                cx,
+            )
+        });
+        cx.notify();
+    }
 }
 
 impl Render for RemotePages {
@@ -715,7 +764,14 @@ impl Render for RemotePages {
             Kind::Repair => ("Repair", "Put SENTIENT's services and files on this server back in order."),
             Kind::Gateway => ("Gateway", "The Sentient Gateway on this server."),
         };
-        let body = match self.kind {
+        let gate: Option<Div> = match &self.ready {
+            Read::Loading => Some(Self::loading(&theme, "the server's state")),
+            // While Set up runs or shows its result, only its panel.
+            Read::Failed(_) if self.job_label.is_some() => Some(div()),
+            Read::Failed(e) => Some(self.gate_panel(e.clone(), cx)),
+            Read::Got(()) => None,
+        };
+        let body = if let Some(g) = gate { g } else { match self.kind {
             Kind::Status => self.status_page(cx),
             Kind::Control => self.control_page(cx),
             Kind::Logs => self.logs_page(cx),
@@ -725,7 +781,7 @@ impl Render for RemotePages {
             Kind::Migration => self.migration_page(cx),
             Kind::Repair => self.repair_page(cx),
             Kind::Gateway => self.gateway_page(cx),
-        };
+        } };
         let job = self.job_panel(cx);
         ui::page(&theme, title, summary)
             .child(

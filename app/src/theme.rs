@@ -26,6 +26,66 @@ pub fn init(mode: ThemeMode, cx: &mut App) {
         theme.dark_theme = dark;
     });
     Theme::change(mode, None, cx);
+    use_desktop_font(cx);
+}
+
+/// Linux: draw the UI in the desktop's own font (KDE's general font, GNOME's
+/// interface font, else fontconfig's sans-serif). GPUI maps its system font
+/// to a fixed family on Linux, which most desktops do not have, so the text
+/// otherwise falls back to whatever GPUI finds first. Windows and macOS
+/// already use the system font.
+fn use_desktop_font(cx: &mut App) {
+    #[cfg(target_os = "linux")]
+    {
+        let installed = cx.text_system().all_font_names();
+        // The desktop's choice, else what fontconfig gives for sans-serif.
+        if let Some(family) = desktop_font_families().into_iter().find_map(|want| installed.iter().find(|f| f.eq_ignore_ascii_case(&want)).cloned()) {
+            Theme::global_mut(cx).font_family = family.into();
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = cx;
+}
+
+#[cfg(target_os = "linux")]
+fn desktop_font_families() -> Vec<String> {
+    let mut v: Vec<String> = desktop_font_family().into_iter().collect();
+    if let Some(f) = std::process::Command::new("fc-match").args(["-f", "%{family[0]}", "sans-serif"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty()) {
+        v.push(f);
+    }
+    v
+}
+
+#[cfg(target_os = "linux")]
+fn desktop_font_family() -> Option<String> {
+    use std::process::Command;
+    let out = |cmd: &str, args: &[&str]| {
+        Command::new(cmd).args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty())
+    };
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_uppercase();
+    // KDE: kdeglobals [General] font=Noto Sans,10,-1,5,400,…
+    if desktop.contains("KDE") {
+        for tool in ["kreadconfig6", "kreadconfig5"] {
+            if let Some(v) = out(tool, &["--file", "kdeglobals", "--group", "General", "--key", "font"]) {
+                return v.split(',').next().map(str::to_string);
+            }
+        }
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
+        if let Ok(text) = std::fs::read_to_string(home.join(".config/kdeglobals")) {
+            if let Some(v) = text.lines().find_map(|l| l.strip_prefix("font=")) {
+                return v.split(',').next().map(str::to_string);
+            }
+        }
+    }
+    // GNOME and others with GSettings: 'Cantarell 11'
+    if let Some(v) = out("gsettings", &["get", "org.gnome.desktop.interface", "font-name"]) {
+        let v = v.trim_matches('\'');
+        let name = v.rsplit_once(' ').filter(|(_, size)| size.parse::<f32>().is_ok()).map(|(n, _)| n).unwrap_or(v);
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
 }
 
 /// Flip between light and dark.

@@ -13,6 +13,8 @@ use gpui_kit::component::{
     input::{Input, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
     radio::RadioGroup,
+    color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
+    WindowExt as _,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -21,6 +23,12 @@ use crate::installation::InstallationRecord;
 use crate::jobs::{Job, JobState};
 use crate::remote::{self, Auth, Detected, Instance, Os, RemoteStatus};
 use crate::ui::{self, Tone};
+
+#[derive(Clone)]
+enum Retry {
+    SetUp(String),
+    Job(String, &'static str, Vec<&'static str>),
+}
 
 /// Open an instance (None: this computer).
 pub struct OpenInstance(pub Option<String>);
@@ -46,7 +54,7 @@ struct Form {
     secret: Entity<InputState>,
     /// sudo's password, for a key sign-in that is not root.
     sudo_secret: Entity<InputState>,
-    custom_color: Entity<InputState>,
+    color_picker: Entity<ColorPickerState>,
     auth: Auth,
     /// Linux or Windows: what the help shows; connecting checks it.
     os: Os,
@@ -64,6 +72,11 @@ pub struct InstancesPage {
     job: Entity<Job>,
     /// (instance id, what runs) of the job shown.
     job_for: Option<(String, SharedString)>,
+    /// What "Try again" repeats after a job failed.
+    retry: Option<Retry>,
+    /// The add/edit dialog and the job dialog are open.
+    form_dialog: bool,
+    job_dialog: bool,
     /// (instance id, text) of the log view.
     logs: Option<(String, SharedString)>,
     confirm_remove: Option<String>,
@@ -96,6 +109,9 @@ impl InstancesPage {
             form: None,
             job,
             job_for: None,
+            retry: None,
+            form_dialog: false,
+            job_dialog: false,
             logs: None,
             confirm_remove: None,
             open: None,
@@ -189,7 +205,18 @@ impl InstancesPage {
                     .masked(true)
                     .placeholder(if editing.is_some() { "Leave empty to keep the saved one" } else { "Only when sudo asks for one" })
             }),
-            custom_color: input(cx, window, color.clone(), "#6b4fa0"),
+            color_picker: {
+                let start = remote::parse_hex(&color).unwrap_or(0x6b4fa0);
+                let picker = cx.new(|cx| ColorPickerState::new(window, cx).default_value(rgb(start)));
+                self._subscriptions.push(cx.subscribe(&picker, |this, _, e: &ColorPickerEvent, cx| {
+                    let ColorPickerEvent::Change(Some(c)) = e else { return };
+                    if let Some(f) = &mut this.form {
+                        f.color = hex_of(*c);
+                    }
+                    cx.notify();
+                }));
+                picker
+            },
             auth: e.as_ref().map(|i| i.auth).unwrap_or_default(),
             os: e.as_ref().map(|i| i.os).unwrap_or_default(),
             color,
@@ -354,6 +381,7 @@ impl InstancesPage {
     // -- work on a server ---------------------------------------------------
 
     fn run_job(&mut self, id: &str, label: &'static str, args: Vec<&'static str>, cx: &mut Context<Self>) {
+        self.retry = Some(Retry::Job(id.to_string(), label, args.clone()));
         let Some(inst) = self.instance(id) else { return };
         if self.job.read(cx).is_running() {
             return;
@@ -376,6 +404,7 @@ impl InstancesPage {
 
     /// Copy the Platform Manager to the server (the first time).
     fn set_up(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.retry = Some(Retry::SetUp(id.to_string()));
         let Some(inst) = self.instance(id) else { return };
         if self.job.read(cx).is_running() {
             return;
@@ -459,7 +488,7 @@ impl InstancesPage {
         let (tone, state) = state_of(status.as_ref(), self.refreshing.contains(LOCAL));
         let current = self.open.is_none();
         let open_btn: AnyElement = if current {
-            ui::pill(&theme, Tone::Neutral, "Open now").into_any_element()
+            Button::new("open-local").primary().small().label("Open").disabled(true).tooltip("This instance is open").into_any_element()
         } else {
             Button::new("open-local").primary().small().label("Open").on_click(cx.listener(|_, _, _, cx| cx.emit(OpenInstance(None)))).into_any_element()
         };
@@ -536,7 +565,7 @@ impl InstancesPage {
                 move |this, _, _, cx| this.set_up(&id, cx)
             })).into_any_element()
         } else if current {
-            ui::pill(&theme, Tone::Neutral, "Open now").into_any_element()
+            Button::new(SharedString::from(format!("open-{id}"))).primary().small().label("Open").disabled(true).tooltip("This instance is open").into_any_element()
         } else {
             Button::new(SharedString::from(format!("open-{id}"))).primary().small().label("Open").on_click(cx.listener({
                 let id = id.clone();
@@ -633,16 +662,14 @@ impl InstancesPage {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if let Some(f) = &mut this.form {
                         f.color = hex.clone();
-                        f.custom_color.update(cx, |s, cx| s.set_value(hex.clone(), window, cx));
+                        let c = rgb(remote::parse_hex(&hex).unwrap_or(0));
+                        f.color_picker.update(cx, |s, cx| s.set_value(c, window, cx));
                     }
                     cx.notify();
                 }))
         }));
-        let custom = f.custom_color.read(cx).value().to_string();
-        let custom_ok = remote::parse_hex(&custom).is_some();
-        let mut panel = ui::panel(&theme)
+        let mut panel = v_flex()
             .gap_2()
-            .child(div().text_lg().child(if f.editing.is_some() { "Edit instance" } else { "Add an instance" }))
             .child(div().text_sm().text_color(theme.muted_foreground).child("A computer running SENTIENT that this Platform Manager reaches over SSH."))
             .child(field("Name", Input::new(&f.name).into_any_element()))
             .child(field(
@@ -701,7 +728,16 @@ impl InstancesPage {
                     }))
                     .into_any_element(),
             ))
-            .when(f.auth == Auth::Key, |p| p.child(field("Key file", Input::new(&f.key_file).into_any_element())))
+            .when(f.auth == Auth::Key, |p| {
+                p.child(field(
+                    "Key file",
+                    h_flex()
+                        .gap_2()
+                        .child(div().flex_1().min_w_0().child(Input::new(&f.key_file)))
+                        .child(Button::new("key-choose").outline().label("Choose…").on_click(cx.listener(|this, _, _, cx| this.choose_key(cx))))
+                        .into_any_element(),
+                ))
+            })
             .child(field(
                 if f.auth == Auth::Key { "Key passphrase" } else { "Password" },
                 h_flex()
@@ -728,8 +764,8 @@ impl InstancesPage {
                     .gap_3()
                     .items_center()
                     .child(swatches)
-                    .child(div().w_24().child(Input::new(&f.custom_color).small()))
-                    .child(div().size(px(22.)).rounded(px(4.)).bg(rgb(remote::parse_hex(&custom).unwrap_or(0x888888))))
+                    .child(div().w(px(1.)).h(px(20.)).bg(theme.border))
+                    .child(ColorPicker::new(&f.color_picker).featured_colors(remote::PALETTE.iter().map(|c| rgb(remote::parse_hex(c).unwrap_or(0)).into()).collect()))
                     .child(help("help-colour", "The top bar takes this colour while the instance is open, so it is clear which computer you are working on. This computer is always SENTIENT teal."))
                     .into_any_element(),
             ))
@@ -762,36 +798,101 @@ impl InstancesPage {
         }
         panel = panel.child(
             h_flex()
+                .pt_2()
                 .gap_2()
+                .items_center()
+                .child(div().flex_1().text_sm().text_color(theme.muted_foreground).child(match f.stage {
+                    Stage::Checking => "Asking the server for its key…",
+                    Stage::Connecting => "Signing in and looking at the system…",
+                    _ => "",
+                }))
+                .child(Button::new("cancel").outline().label("Cancel").disabled(busy).on_click(cx.listener(|this, _, _, cx| {
+                    this.form = None;
+                    cx.notify();
+                })))
                 .when(!matches!(f.stage, Stage::Fingerprint { .. }), |r| {
                     r.child(
                         Button::new("check")
                             .primary()
                             .label(if f.editing.is_some() { "Save and connect" } else { "Connect" })
                             .loading(busy)
-                            .disabled(busy || !custom_ok)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(f) = &mut this.form {
-                                    let c = f.custom_color.read(cx).value().trim().to_string();
-                                    if remote::parse_hex(&c).is_some() {
-                                        f.color = if c.starts_with('#') { c } else { format!("#{c}") };
-                                    }
-                                }
-                                this.check(cx)
-                            })),
+                            .disabled(busy)
+                            .on_click(cx.listener(|this, _, _, cx| this.check(cx))),
                     )
                 })
-                .child(Button::new("cancel").ghost().label("Cancel").disabled(busy).on_click(cx.listener(|this, _, _, cx| {
-                    this.form = None;
-                    cx.notify();
-                })))
-                .child(div().text_sm().text_color(theme.muted_foreground).child(match f.stage {
-                    Stage::Checking => "Asking the server for its key…",
-                    Stage::Connecting => "Signing in and looking at the system…",
-                    _ => "",
-                })),
         );
         Some(panel.into_any_element())
+    }
+
+    /// Pick the key file with the system's file chooser.
+    fn choose_key(&mut self, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use this key".into()) });
+        let task = cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let _ = cx.update(|cx| {
+                if let Some(window) = cx.active_window() {
+                    let _ = window.update(cx, |_, window, cx| {
+                        this.update(cx, |p, cx| {
+                            if let Some(f) = &p.form {
+                                f.key_file.update(cx, |s, cx| s.set_value(path.display().to_string(), window, cx));
+                            }
+                            cx.notify();
+                        })
+                        .ok();
+                    });
+                }
+            });
+        });
+        self._tasks.push(task);
+    }
+
+    /// The add/edit form and a job's progress show as dialogs over the
+    /// page, opened and closed with their state.
+    fn sync_dialogs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let page = cx.entity();
+        if self.form.is_some() && !self.form_dialog && !self.job_dialog {
+            self.form_dialog = true;
+            let title = if self.form.as_ref().is_some_and(|f| f.editing.is_some()) { "Edit instance" } else { "Add a remote instance" };
+            let slot = cx.new(|cx| Slot::new(page.clone(), SlotKind::Form, cx));
+            let p2 = page.clone();
+            window.open_dialog(cx, move |d, _, _| {
+                let p3 = p2.clone();
+                d.title(title).w(px(700.)).child(slot.clone()).on_close(move |_, _, cx| {
+                    p3.update(cx, |p, cx| {
+                        p.form = None;
+                        p.form_dialog = false;
+                        cx.notify();
+                    });
+                })
+            });
+        } else if self.form.is_none() && self.form_dialog {
+            self.form_dialog = false;
+            window.close_dialog(cx);
+        }
+        if let Some((_, label)) = self.job_for.clone() {
+            if !self.job_dialog && !self.form_dialog {
+                self.job_dialog = true;
+                let slot = cx.new(|cx| Slot::new(page.clone(), SlotKind::Job, cx));
+                let p2 = page.clone();
+                window.open_dialog(cx, move |d, _, _| {
+                    let p3 = p2.clone();
+                    d.title(label.clone()).w(px(620.)).child(slot.clone()).on_close(move |_, _, cx| {
+                        p3.update(cx, |p, cx| {
+                            p.job_dialog = false;
+                            if !p.job.read(cx).is_running() {
+                                p.job_for = None;
+                                p.job.update(cx, |j, cx| j.reset(cx));
+                            }
+                            cx.notify();
+                        });
+                    })
+                });
+            }
+        } else if self.job_dialog {
+            self.job_dialog = false;
+            window.close_dialog(cx);
+        }
     }
 
     fn job_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -799,7 +900,8 @@ impl InstancesPage {
         let theme = cx.theme().clone();
         let job = self.job.read(cx);
         let log: Vec<SharedString> = job.log().iter().rev().take(14).rev().cloned().collect();
-        let mut p = ui::panel(&theme).gap_2().child(div().font_weight(FontWeight::MEDIUM).child(label));
+        let _ = &label;
+        let mut p = v_flex().gap_3();
         p = match job.state() {
             JobState::Running => p.child(div().text_sm().child(job.step_with_time())),
             JobState::Done(m) => p.child(ui::outcome(&theme, Tone::Good, m.clone())),
@@ -807,22 +909,40 @@ impl InstancesPage {
             JobState::Idle => p,
         };
         let done = !job.is_running();
+        let failed = matches!(job.state(), JobState::Failed(_));
         Some(
-            p.child(
-                v_flex()
-                    .p_2()
-                    .rounded(theme.radius)
-                    .bg(theme.muted)
-                    .text_xs()
-                    .font_family(theme.mono_font_family.clone())
-                    .children(log.into_iter().map(|l| div().child(l))),
-            )
+            p.when(!log.is_empty(), |p| {
+                p.child(
+                    v_flex()
+                        .p_2()
+                        .rounded(theme.radius)
+                        .bg(theme.muted)
+                        .text_xs()
+                        .font_family(theme.mono_font_family.clone())
+                        .children(log.into_iter().map(|l| div().child(l))),
+                )
+            })
             .when(done, |p| {
-                p.child(Button::new("job-close").ghost().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
-                    this.job_for = None;
-                    this.job.update(cx, |j, cx| j.reset(cx));
-                    cx.notify();
-                })))
+                p.child(
+                    h_flex()
+                        .gap_2()
+                        .justify_end()
+                        .when(failed && self.retry.is_some(), |r| {
+                            r.child(Button::new("job-retry").primary().small().label("Try again").on_click(cx.listener(|this, _, _, cx| {
+                                this.job.update(cx, |j, cx| j.reset(cx));
+                                match this.retry.clone() {
+                                    Some(Retry::SetUp(id)) => this.set_up(&id, cx),
+                                    Some(Retry::Job(id, label, args)) => this.run_job(&id, label, args, cx),
+                                    None => {}
+                                }
+                            })))
+                        })
+                        .child(Button::new("job-close").outline().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                            this.job_for = None;
+                            this.job.update(cx, |j, cx| j.reset(cx));
+                            cx.notify();
+                        }))),
+                )
             })
             .into_any_element(),
         )
@@ -867,33 +987,28 @@ impl InstancesPage {
 }
 
 impl Render for InstancesPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        self.sync_dialogs(window, cx);
         let local = self.local_card(cx);
         let cards: Vec<AnyElement> = self.list.clone().iter().map(|i| self.remote_card(i, cx)).collect();
-        let form = self.form_panel(cx);
-        let job = self.job_panel(cx);
         let logs = self.logs_panel(cx);
-        let mut counts = (0, 0, 0, 0); // running, stopped, not reachable, other
         let all: Vec<Option<&Result<RemoteStatus, String>>> = std::iter::once(self.statuses.get(LOCAL)).chain(self.list.iter().map(|i| self.statuses.get(&i.id))).collect();
+        // Named states, in this order, each only when there is one.
+        let mut named: Vec<(&str, usize)> = vec![("running", 0), ("stopped", 0), ("without SENTIENT", 0), ("not set up", 0), ("not reachable", 0), ("waiting for sign-in", 0), ("being checked", 0)];
         for st in &all {
-            match st {
-                Some(Ok(s)) if s.installed && s.serving => counts.0 += 1,
-                Some(Ok(s)) if s.installed => counts.1 += 1,
-                Some(Err(e)) if e != remote::NOT_SET_UP && e != remote::FORGOTTEN && !e.contains("administrator rights") => counts.2 += 1,
-                _ => counts.3 += 1,
-            }
+            let k = match st {
+                Some(Ok(s)) if s.installed && s.serving => 0,
+                Some(Ok(s)) if s.installed => 1,
+                Some(Ok(_)) => 2,
+                Some(Err(e)) if e == remote::NOT_SET_UP => 3,
+                Some(Err(e)) if e == remote::FORGOTTEN || e.contains("administrator rights") => 5,
+                Some(Err(_)) => 4,
+                None => 6,
+            };
+            named[k].1 += 1;
         }
-        let mut parts = vec![format!("{} running", counts.0)];
-        if counts.1 > 0 {
-            parts.push(format!("{} stopped", counts.1));
-        }
-        if counts.2 > 0 {
-            parts.push(format!("{} not reachable", counts.2));
-        }
-        if counts.3 > 0 {
-            parts.push(format!("{} other", counts.3));
-        }
+        let parts: Vec<String> = named.iter().filter(|(_, c)| *c > 0).map(|(l, c)| format!("{c} {l}")).collect();
         let n = all.len();
         let summary = format!("Every SENTIENT this program looks after. {n} instance{}: {}.", if n == 1 { "" } else { "s" }, parts.join(", "));
         v_flex()
@@ -914,10 +1029,8 @@ impl Render for InstancesPage {
                         r.child(Button::new("add").primary().icon(IconName::Plus).label("Add a remote instance").on_click(cx.listener(|this, _, window, cx| this.open_form(None, window, cx))))
                     }),
             )
-            .children(job)
             .children(logs)
-            .child(h_flex().flex_wrap().gap_4().items_start().child(local).children(cards))
-            .children(form)
+            .child(h_flex().flex_wrap().gap_4().items_stretch().child(local).children(cards))
     }
 }
 
@@ -925,6 +1038,8 @@ impl Render for InstancesPage {
 const LOCAL: &str = "@local";
 /// A card's width in the grid.
 const CARD_W: f32 = 330.;
+/// Cards in a row stretch to the tallest; none is shorter than this.
+const CARD_MIN_H: f32 = 268.;
 
 /// The state label of a card.
 fn state_of(status: Option<&Result<RemoteStatus, String>>, refreshing: bool) -> (Tone, String) {
@@ -1009,14 +1124,17 @@ fn grid_card(
     v_flex()
         .w(px(CARD_W))
         .flex_shrink_0()
+        .min_h(px(CARD_MIN_H))
         .rounded(theme.radius)
-        .overflow_hidden()
         .bg(theme.background)
         .border_1()
         .border_color(if current { theme.primary } else { theme.border })
-        .child(div().h(px(4.)).w_full().bg(rgb(remote::parse_hex(color).unwrap_or(0x187074))))
+        // The colour strip follows the card's rounded top corners (GPUI
+        // does not clip children to a radius).
+        .child(div().h(px(5.)).w_full().rounded_t(theme.radius - px(1.)).bg(rgb(remote::parse_hex(color).unwrap_or(0x187074))))
         .child(
             v_flex()
+                .flex_1()
                 .gap_3()
                 .p_4()
                 .child(
@@ -1033,7 +1151,7 @@ fn grid_card(
                         )
                         .child(ui::pill(theme, tone, state)),
                 )
-                .child(facts)
+                .child(facts.flex_1())
                 .child(div().h(px(1.)).bg(theme.border))
                 .child(footer),
         )
@@ -1081,4 +1199,45 @@ fn expand_home(path: &str) -> std::path::PathBuf {
         Some(rest) => std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(std::path::PathBuf::from).unwrap_or_default().join(rest),
         None => std::path::PathBuf::from(path),
     }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum SlotKind {
+    Form,
+    Job,
+}
+
+/// A dialog's content: one part of the Instances page, drawn with the page's
+/// own state and handlers, redrawn whenever the page changes.
+struct Slot {
+    page: Entity<InstancesPage>,
+    kind: SlotKind,
+    _sub: Subscription,
+}
+
+impl Slot {
+    fn new(page: Entity<InstancesPage>, kind: SlotKind, cx: &mut Context<Self>) -> Self {
+        let _sub = cx.observe(&page, |_, _, cx| cx.notify());
+        Self { page, kind, _sub }
+    }
+}
+
+impl Render for Slot {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let kind = self.kind;
+        let body = self.page.update(cx, |p, cx| match kind {
+            SlotKind::Form => p.form_panel(cx),
+            SlotKind::Job => p.job_panel(cx),
+        });
+        // Scrolls inside when the window is short.
+        let max_h = (window.viewport_size().height - px(200.)).max(px(220.));
+        div().id("slot").max_h(max_h).overflow_y_scroll().children(body)
+    }
+}
+
+/// "#rrggbb" of a colour.
+fn hex_of(c: Hsla) -> String {
+    let r: Rgba = c.into();
+    let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", b(r.r), b(r.g), b(r.b))
 }
