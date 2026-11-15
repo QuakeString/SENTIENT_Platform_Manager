@@ -480,28 +480,78 @@ pub fn radio_card(theme: &Theme, id: impl Into<ElementId>, title: impl Into<Shar
         )
 }
 
-/// The Services panel's rows: state, name and detail in fixed columns.
+/// A service's plain name: SENTIENT, Database (PostgreSQL), ClickHouse,
+/// Gateway; None for one not recognised.
+pub fn service_label(name: &str) -> Option<&'static str> {
+    let n = name.to_lowercase();
+    if n.contains("postgres") {
+        Some("Database (PostgreSQL)")
+    } else if n.contains("clickhouse") {
+        Some("ClickHouse")
+    } else if n.contains("gateway") {
+        Some("Gateway")
+    } else if n.starts_with("sentient") || n.contains("sentientserver") {
+        Some("SENTIENT")
+    } else {
+        None
+    }
+}
+
+/// Per-row actions on the Control page: (service name, action) and
+/// (service name) for its log.
+pub type ServiceAct = std::rc::Rc<dyn Fn(&str, &'static str, &mut Window, &mut App)>;
+pub type ServiceLog = std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)>;
+
+/// The Services panel's rows: state, plain name with the raw name muted, the
+/// detail faint; on Control also Start, Stop, Restart and Logs per row.
 /// The same on this computer and on a remote server.
-pub fn service_rows(theme: &Theme, services: impl IntoIterator<Item = (SharedString, bool, bool, SharedString)>) -> Vec<Div> {
+pub fn service_rows(
+    theme: &Theme,
+    services: impl IntoIterator<Item = (SharedString, bool, bool, SharedString)>,
+    actions: Option<(ServiceAct, ServiceLog, Option<String>)>,
+) -> Vec<Div> {
     services
         .into_iter()
         .map(|(name, running, starting, detail)| {
             let (tone, label) = if running { (Tone::Good, "Running") } else if starting { (Tone::Warn, "Starting") } else { (Tone::Bad, "Stopped") };
-            // The mockup's row: the state in the label column, then the name
-            // with its detail faint after it.
+            let plain = service_label(&name);
+            let busy = actions.as_ref().and_then(|a| a.2.as_ref()).is_some_and(|b| *b == *name);
+            let any_busy = actions.as_ref().is_some_and(|a| a.2.is_some());
             gpui_kit::component::h_flex()
                 .gap_4()
                 .text_sm()
                 .items_center()
-                .child(gpui_kit::component::h_flex().w(px(168.)).flex_shrink_0().child(pill(theme, tone, label)))
+                .child(gpui_kit::component::h_flex().w(px(168.)).flex_shrink_0().child(if busy { pill(theme, Tone::Neutral, "Working…") } else { pill(theme, tone, label) }))
                 .child(
                     gpui_kit::component::h_flex()
                         .flex_1()
                         .min_w_0()
-                        .gap_1()
-                        .child(div().flex_shrink_0().child(name))
+                        .gap_2()
+                        .child(div().flex_shrink_0().child(SharedString::from(plain.unwrap_or(&name).to_string())))
+                        .when(plain.is_some(), |r| r.child(div().flex_shrink_0().text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(name.clone())))
                         .when(!detail.is_empty(), |r| r.child(div().min_w_0().text_ellipsis().text_color(theme.muted_foreground).child(SharedString::from(format!("· {detail}"))))),
                 )
+                .when_some(actions.clone(), |r, (act, log, _)| {
+                    let icon = |id: &str, icon: gpui_kit::assets::IconName, tip: &'static str, enabled: bool, action: &'static str| {
+                        let (act, n) = (act.clone(), name.to_string());
+                        button(SharedString::from(format!("svc-{action}-{id}")))
+                            .ghost()
+                            .icon(gpui_kit::component::Icon::new(icon))
+                            .tooltip(tip)
+                            .when(!enabled || any_busy, |b| gpui_kit::component::Disableable::disabled(b, true))
+                            .on_click(move |_, window, cx| act(&n, action, window, cx))
+                    };
+                    let n = name.to_string();
+                    r.child(
+                        gpui_kit::component::h_flex()
+                            .gap_1()
+                            .flex_shrink_0()
+                            .child(icon(&name, gpui_kit::assets::IconName::Play, "Start", !running, "start"))
+                            .child(icon(&name, gpui_kit::assets::IconName::Square, "Stop", running, "stop"))
+                            .child(icon(&name, gpui_kit::assets::IconName::RotateCw, "Restart", running, "restart"))
+                            .child(button(SharedString::from(format!("svc-log-{name}"))).ghost().label("Logs").on_click(move |_, window, cx| log(&n, window, cx))),
+                    )
+                })
         })
         .collect()
 }

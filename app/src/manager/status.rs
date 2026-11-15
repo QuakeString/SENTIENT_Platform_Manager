@@ -468,7 +468,7 @@ impl Render for StatusPage {
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Services"))
                 .gap_2()
-                .children(ui::service_rows(&theme, services.into_iter().map(|svc| (svc.name.into(), svc.running, svc.starting, svc.detail.into())))),
+                .children(ui::service_rows(&theme, services.into_iter().map(|svc| (svc.name.into(), svc.running, svc.starting, svc.detail.into())), None)),
         )
         .child(self.db_panel(&theme, record, cx))
         .child(self.gateway_card(&theme, cx))

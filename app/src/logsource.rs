@@ -283,3 +283,39 @@ mod tests {
         assert_eq!(m, vec!["b1", "a2", "b3"]);
     }
 }
+
+/// "Logs" on a Control row: the source the Logs page opens on next, and
+/// that the page should open.
+static PICK: std::sync::Mutex<Option<Source>> = std::sync::Mutex::new(None);
+static GO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn request(source: Source) {
+    if let Ok(mut p) = PICK.lock() {
+        *p = Some(source);
+    }
+    GO.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The source asked for, once.
+pub fn take_pick() -> Option<Source> {
+    PICK.lock().ok().and_then(|mut p| p.take())
+}
+
+/// Whether the Logs page was asked for, once.
+pub fn take_go() -> bool {
+    GO.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// The log source of a service, from its name.
+pub fn of_service(name: &str) -> Source {
+    let n = name.to_lowercase();
+    if n.contains("postgres") {
+        Source::Database
+    } else if n.contains("clickhouse") {
+        Source::ClickHouse
+    } else if n.contains("gateway") {
+        Source::Gateway
+    } else {
+        Source::Sentient
+    }
+}

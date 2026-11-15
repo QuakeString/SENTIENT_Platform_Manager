@@ -1106,6 +1106,10 @@ impl Render for Manager {
         // The layout follows the window: an icon rail below RAIL_BELOW px,
         // fewer monitors in the top bar as it narrows.
         let width = f32::from(window.viewport_size().width);
+        // A Control row's "Logs" asked for the Logs page.
+        if crate::logsource::take_go() {
+            self.page = Page::Logs;
+        }
         let top = self.top_bar(width, cx);
         let nav = self.nav(width < RAIL_BELOW, cx);
         let notices = self.notices(cx);

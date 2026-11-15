@@ -283,6 +283,18 @@ impl Platform {
         }
     }
 
+    /// Start, stop or restart one of the install's own services, by the
+    /// name the snapshot lists (anything else is refused).
+    pub fn service_control(&self, sink: ProgressFn, name: &str, action: &str) -> Result<(), String> {
+        if !self.snapshot().services.iter().any(|s| s.name == name) {
+            return Err(format!("{name} is not one of this installation's services."));
+        }
+        match self {
+            Platform::Native(_) => native::service_control(sink, name, action),
+            Platform::Docker(_) => distro::service_control(sink, name, action),
+        }
+    }
+
     pub fn logs(&self, tail: u32) -> String {
         match self {
             Platform::Native(cfg) => native::logs(cfg, tail),

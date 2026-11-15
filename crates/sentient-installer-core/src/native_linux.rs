@@ -826,6 +826,18 @@ pub fn control(sink: ProgressFn, _cfg: &NativeConfig, action: &str) -> Result<()
     Ok(())
 }
 
+/// Start, stop or restart one systemd unit of the install (the caller checks
+/// it is one of the install's own).
+pub fn service_control(sink: ProgressFn, unit: &str, action: &str) -> Result<(), String> {
+    if !matches!(action, "start" | "stop" | "restart") {
+        return Err(format!("unknown action: {action}"));
+    }
+    step(&sink, &format!("{action} {unit}"));
+    exec::run_privileged(&sink, &format!("systemctl {action} {}", shq(unit)))?;
+    sink(Progress::Done { message: format!("{unit}: {action} done.") });
+    Ok(())
+}
+
 /// The service log — the file the unit appends to, or the journal when the
 /// file is not readable from this account.
 pub fn logs(_cfg: &NativeConfig, tail: u32) -> String {

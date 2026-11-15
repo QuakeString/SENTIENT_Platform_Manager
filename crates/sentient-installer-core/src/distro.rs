@@ -1104,6 +1104,18 @@ pub fn control(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Result<(),
     Ok(())
 }
 
+/// Start, stop or restart one container of the stack. `container` must come
+/// from the stack's own list (the caller checks it).
+pub fn service_control(sink: ProgressFn, container: &str, action: &str) -> Result<(), String> {
+    if !matches!(action, "start" | "stop" | "restart") {
+        return Err(format!("unknown action: {action}"));
+    }
+    sink(Progress::Step { name: format!("{action} {container}") });
+    run_stream(&sink, &format!("docker {action} {}", shell_quote(container)))?;
+    sink(Progress::Done { message: format!("{container}: {action} done.") });
+    Ok(())
+}
+
 /// The last `tail` lines of the combined container logs.
 pub fn logs(cfg: &DeployConfig, tail: u32) -> String {
     run_output(&cfg.compose_cmd(&format!("logs --no-color --tail {tail} 2>&1")))

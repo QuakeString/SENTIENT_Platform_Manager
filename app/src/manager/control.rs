@@ -21,6 +21,11 @@ use crate::ui::{self, Tone};
 
 pub struct ControlPage {
     record: Option<InstallationRecord>,
+    /// The services, as last read.
+    services: Vec<crate::installation::Service>,
+    serving: bool,
+    /// The service whose own action runs now.
+    svc_busy: Option<String>,
     job: Entity<Job>,
     _observe: Subscription,
     /// Opening at sign-in, as found: 0 off, 1 full screen, 2 window; None
@@ -57,7 +62,13 @@ fn signin_index(mode: Option<bool>) -> usize {
 impl ControlPage {
     pub fn new(record: Option<InstallationRecord>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let job = cx.new(|_| Job::new());
-        let _observe = cx.observe(&job, |_, _, cx| cx.notify());
+        let _observe = cx.observe(&job, |page: &mut Self, job, cx| {
+            if !job.read(cx).is_running() && page.svc_busy.is_some() {
+                page.svc_busy = None;
+                page.read_services(cx);
+            }
+            cx.notify();
+        });
         let signin_job = cx.new(|_| Job::new());
         let _signin_observe = cx.observe(&signin_job, |page: &mut Self, job, cx| {
             if matches!(job.read(cx).state(), JobState::Done(_) | JobState::Failed(_)) {
@@ -92,8 +103,21 @@ impl ControlPage {
             start_job,
             _start_observe,
             _tasks: Vec::new(),
+            services: Vec::new(),
+            serving: false,
+            svc_busy: None,
         };
         page.load_signin(cx);
+        // The services, read now and every few seconds.
+        if page.record.is_some() {
+            let poll = cx.spawn(async move |this, cx| loop {
+                if this.update(cx, |p, cx| p.read_services(cx)).is_err() {
+                    break;
+                }
+                cx.background_executor().timer(std::time::Duration::from_secs(5)).await;
+            });
+            page._tasks.push(poll);
+        }
         page.load_start(cx);
         page
     }
@@ -221,6 +245,29 @@ impl ControlPage {
         });
     }
 
+    fn read_services(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        cx.spawn(async move |this, cx| {
+            let snap = cx.background_executor().spawn(async move { record.platform().snapshot() }).await;
+            this.update(cx, |p, cx| {
+                p.services = snap.services;
+                p.serving = snap.serving;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// One service's own start, stop or restart.
+    fn run_service(&mut self, name: String, action: &'static str, cx: &mut Context<Self>) {
+        let Some(record) = &self.record else { return };
+        let platform = record.platform();
+        self.svc_busy = Some(name.clone());
+        self.job.update(cx, |job, cx| job.start(move |sink| platform.service_control(sink, &name, action), cx));
+        cx.notify();
+    }
+
     /// Stopping takes every device connection down, so it is confirmed.
     fn confirm_stop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
@@ -274,6 +321,46 @@ impl Render for ControlPage {
                     div().text_sm().text_color(theme.muted_foreground).child(line)
                 })),
         )
+        .child({
+            // Each service on its own (shared rows with a remote server's).
+            let this = cx.entity().downgrade();
+            let serving = self.serving;
+            let act: ui::ServiceAct = std::rc::Rc::new(move |name, action, window, cx| {
+                let name = name.to_string();
+                let plain = ui::service_label(&name).unwrap_or(&name).to_string();
+                let go: std::rc::Rc<dyn Fn(&mut App)> = std::rc::Rc::new({
+                    let (this, name) = (this.clone(), name.clone());
+                    move |cx| {
+                        this.update(cx, |p, cx| p.run_service(name.clone(), action, cx)).ok();
+                    }
+                });
+                let n = name.to_lowercase();
+                if (n.contains("postgres") || n.contains("clickhouse")) && serving && action != "start" {
+                    let title = format!("{} {plain}?", if action == "stop" { "Stop" } else { "Restart" });
+                    crate::modal::alert(window, cx, move |d, _, _| {
+                        let go = go.clone();
+                        d.title(title.clone())
+                            .description("SENTIENT loses its database until it is back: devices and dashboards stop updating meanwhile.")
+                            .confirm()
+                            .ok_text(if action == "stop" { "Stop" } else { "Restart" })
+                            .on_ok(move |_, _, cx| {
+                                go(cx);
+                                true
+                            })
+                    });
+                } else {
+                    go(cx);
+                }
+            });
+            let log: ui::ServiceLog = std::rc::Rc::new(|name, _, cx| {
+                crate::logsource::request(crate::logsource::of_service(name));
+                cx.refresh_windows();
+            });
+            ui::panel(&theme)
+                .gap_2()
+                .child(div().font_weight(FontWeight::MEDIUM).child("Services"))
+                .children(ui::service_rows(&theme, self.services.iter().map(|s| (s.name.clone().into(), s.running, s.starting, s.detail.clone().into())), Some((act, log, self.svc_busy.clone()))))
+        })
         .child({
             let sjob = self.signin_job.read(cx);
             let sbusy = sjob.is_running();

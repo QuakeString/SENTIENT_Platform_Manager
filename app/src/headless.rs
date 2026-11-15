@@ -39,7 +39,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
+use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
 
 /// A console for the output: release builds on Windows have none of their
@@ -447,6 +447,12 @@ pub fn run(args: &[String]) -> i32 {
         // Start, stop or restart SENTIENT (a remote instance's Control).
         "control" => match args.get(1).map(String::as_str) {
             Some(a @ ("start" | "stop" | "restart")) => record.platform().control(sink.clone(), a),
+            _ => Err(USAGE.into()),
+        },
+        // service <start|stop|restart> <name>: one of the install's own
+        // services, by the name its own list gives (anything else refused).
+        "service" => match (args.get(1).map(String::as_str), args.get(2)) {
+            (Some(a @ ("start" | "stop" | "restart")), Some(name)) => record.platform().service_control(sink.clone(), name, a),
             _ => Err(USAGE.into()),
         },
         "uninstall" => {

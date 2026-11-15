@@ -74,6 +74,8 @@ pub struct RemotePages {
     auto_add_tried: bool,
     /// Platform settings: the open tab (crate::manager::settings::TAB_TITLES).
     settings_tab: usize,
+    /// Control: the service whose own action runs now.
+    svc_busy: Option<String>,
     /// Logs: the shared view, made when the page first shows.
     log_view: Option<Entity<crate::manager::logs::LogView>>,
 
@@ -99,6 +101,7 @@ impl RemotePages {
         let subs = vec![
             cx.observe(&job, |this, job, cx| {
                 if !job.read(cx).is_running() {
+                    this.svc_busy = None;
                     this.reload(cx);
                 }
                 cx.notify();
@@ -123,6 +126,7 @@ impl RemotePages {
             pick: None,
             file_checks: Default::default(),
             log_view: None,
+            svc_busy: None,
             settings_tab: 0,
             auto_add_tried: false,
             updates,
@@ -258,7 +262,8 @@ impl RemotePages {
         self._tasks.push(task);
     }
 
-    fn run_job(&mut self, label: &'static str, args: Vec<String>, cx: &mut Context<Self>) {
+    fn run_job(&mut self, label: impl Into<String>, args: Vec<String>, cx: &mut Context<Self>) {
+        let label: String = label.into();
         if self.job.read(cx).is_running() {
             return;
         }
@@ -330,7 +335,7 @@ impl RemotePages {
             Read::Loading => p = p.child(div().text_sm().text_color(theme.muted_foreground).child("Reading…")),
             Read::Failed(e) => p = p.child(ui::outcome(theme, Tone::Bad, e.clone())),
             Read::Got(list) => {
-                p = p.children(ui::service_rows(theme, list.iter().map(|s| (s.name.clone().into(), s.running, s.starting, s.detail.clone().into()))));
+                p = p.children(ui::service_rows(theme, list.iter().map(|s| (s.name.clone().into(), s.running, s.starting, s.detail.clone().into())), None));
             }
         }
         p
@@ -464,7 +469,65 @@ impl RemotePages {
         v_flex()
             .gap_4()
             .child(ui::panel(&theme).child(row))
-            .child(self.services_panel(&theme))
+            .child(self.services_panel_with_actions(cx))
+    }
+
+    /// Control's Services: each row with Start, Stop, Restart and Logs. The
+    /// database's own stop or restart asks first while SENTIENT runs.
+    fn services_panel_with_actions(&self, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+        let mut p = ui::panel(&theme).gap_2().child(div().font_weight(FontWeight::MEDIUM).child("Services"));
+        let serving = self.status.got().is_some_and(|s| s.serving);
+        let this = cx.entity().downgrade();
+        let act: ui::ServiceAct = std::rc::Rc::new(move |name, action, window, cx| {
+            let name = name.to_string();
+            let plain = ui::service_label(&name).unwrap_or(&name).to_string();
+            let verb = match action {
+                "start" => "Starting",
+                "stop" => "Stopping",
+                _ => "Restarting",
+            };
+            let go: std::rc::Rc<dyn Fn(&mut App)> = std::rc::Rc::new({
+                let (this, name, label) = (this.clone(), name.clone(), format!("{verb} {plain}"));
+                move |cx| {
+                    this.update(cx, |p, cx| {
+                        p.svc_busy = Some(name.clone());
+                        p.run_job(label.clone(), vec!["service".into(), action.into(), name.clone()], cx);
+                    })
+                    .ok();
+                }
+            });
+            let n = name.to_lowercase();
+            let database = n.contains("postgres") || n.contains("clickhouse");
+            if database && serving && action != "start" {
+                let title = format!("{} {plain}?", if action == "stop" { "Stop" } else { "Restart" });
+                crate::modal::alert(window, cx, move |d, _, _| {
+                    let go = go.clone();
+                    d.title(title.clone())
+                        .description("SENTIENT loses its database until it is back: devices and dashboards stop updating meanwhile.")
+                        .confirm()
+                        .ok_text(if action == "stop" { "Stop" } else { "Restart" })
+                        .on_ok(move |_, _, cx| {
+                            go(cx);
+                            true
+                        })
+                });
+            } else {
+                go(cx);
+            }
+        });
+        let log: ui::ServiceLog = std::rc::Rc::new(|name, _, cx| {
+            crate::logsource::request(crate::logsource::of_service(name));
+            cx.refresh_windows();
+        });
+        match &self.services {
+            Read::Loading => p = p.child(div().text_sm().text_color(theme.muted_foreground).child("Reading…")),
+            Read::Failed(e) => p = p.child(ui::outcome(&theme, Tone::Bad, e.clone())),
+            Read::Got(list) => {
+                p = p.children(ui::service_rows(&theme, list.iter().map(|s| (s.name.clone().into(), s.running, s.starting, s.detail.clone().into())), Some((act, log, self.svc_busy.clone()))));
+            }
+        }
+        p
     }
 
     /// The same Logs view as this computer's, reading through the agent.

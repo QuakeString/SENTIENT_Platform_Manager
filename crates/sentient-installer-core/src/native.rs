@@ -1552,6 +1552,33 @@ pub fn stop_server(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> 
     }
 }
 
+/// Start, stop or restart one service of the install (the caller checks it
+/// is one of the install's own).
+pub fn service_control(sink: ProgressFn, name: &str, action: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::native_linux::service_control(sink, name, action);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        match action {
+            "start" | "stop" => {
+                step(&sink, &format!("{action} {name}"));
+                let _ = sc(&[action, name]);
+            }
+            "restart" => {
+                step(&sink, &format!("restart {name}"));
+                let _ = sc(&["stop", name]);
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let _ = sc(&["start", name]);
+            }
+            other => return Err(format!("unknown action: {other}")),
+        }
+        sink(Progress::Done { message: format!("{name}: {action} done.") });
+        Ok(())
+    }
+}
+
 pub fn control(sink: ProgressFn, cfg: &NativeConfig, action: &str) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
