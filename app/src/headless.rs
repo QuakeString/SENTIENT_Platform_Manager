@@ -619,5 +619,6 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
         manager_version,
         running_job: None,
         http_port: Some(record.stack.http_port),
+        vanished_files: record.stack.vanished_files(),
     }
 }

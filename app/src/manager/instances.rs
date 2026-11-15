@@ -1024,10 +1024,7 @@ impl InstancesPage {
             JobState::Running => p.child(div().text_sm().child(job.step_with_time())),
             JobState::Done(m) => p.child(ui::outcome(&theme, Tone::Good, m.clone())),
             JobState::Failed(m) => {
-                let (headline, details) = match m.split_once(remote::DETAILS) {
-                    Some((h, d)) => (h.to_string(), Some(d.to_string())),
-                    None => (m.to_string(), None),
-                };
+                let (headline, details) = remote::split_failure(m);
                 let shown = self.show_details;
                 p.child(ui::outcome(&theme, Tone::Bad, headline)).when_some(details, |p, d| {
                     p.child(crate::ui::button("job-details").ghost().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {

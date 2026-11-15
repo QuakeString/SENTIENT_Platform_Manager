@@ -454,6 +454,9 @@ impl Render for StatusPage {
                         st.http_port, st.mqtt_port, st.mqtts_port, st.coap_port, st.coaps_port, st.pg_port
                     ),
                 ))
+                .children(st.vanished_files().first().map(|f| {
+                    div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!("This SENTIENT was started with an extra compose file that no longer exists: {f}"))
+                }))
                 .child(match &st.external {
                     Some(ext) => ui::fact(&theme, "Runs from", format!("its own compose file ({})", ext.files.join(", "))),
                     None => ui::fact(&theme, "Installed in", record.install_dir.display().to_string()),

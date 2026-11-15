@@ -570,6 +570,9 @@ pub struct RemoteStatus {
     /// SENTIENT's web port there (Open SENTIENT).
     #[serde(default)]
     pub http_port: Option<u16>,
+    /// Compose files the stack was started with that are gone since.
+    #[serde(default)]
+    pub vanished_files: Vec<String>,
 }
 
 /// One service or container on the server (Status and Control).
@@ -823,6 +826,27 @@ pub fn remove_file(inst: &Instance, path: &str) {
 
 /// An error in two parts: a plain headline, and the technical details the
 /// screen shows behind "Show details" (crate::manager::instances).
+/// A job's failure as a plain headline and its technical details: split at
+/// DETAILS, or, for a raw command error, a plain headline with the raw text
+/// as the details.
+pub fn split_failure(m: &str) -> (String, Option<String>) {
+    if let Some((h, d)) = m.split_once(DETAILS) {
+        return (h.to_string(), Some(d.to_string()));
+    }
+    let raw = m.contains("docker ") || m.contains("exit status") || m.contains("exited") || m.lines().count() > 2 || m.len() > 200;
+    if !raw {
+        return (m.to_string(), None);
+    }
+    let headline = if m.contains("no such file") || m.contains("not found") && m.contains(".yml") {
+        "A compose file SENTIENT's stack needs is missing."
+    } else if m.contains("permission denied") || m.contains("Permission denied") {
+        "The server refused the action: not enough rights."
+    } else {
+        "The action did not finish on the server."
+    };
+    (headline.to_string(), Some(m.to_string()))
+}
+
 pub fn failed(headline: &str, details: &str) -> String {
     if details.trim().is_empty() { headline.to_string() } else { format!("{headline}{DETAILS}{}", details.trim()) }
 }

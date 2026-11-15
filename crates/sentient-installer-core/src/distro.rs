@@ -245,11 +245,29 @@ impl DeployConfig {
     fn compose_cmd(&self, sub: &str) -> String {
         match &self.external {
             Some(ext) => {
-                let files: String = ext.files.iter().map(|f| format!(" -f {}", shell_quote(f))).collect();
+                // A file the stack was started with that is gone since (a
+                // temporary override) is left out: compose refuses a missing
+                // -f, and the project name finds the containers anyway.
+                let files: String = ext.files.iter().filter(|f| host_file_exists(f)).map(|f| format!(" -f {}", shell_quote(f))).collect();
                 let dir = if ext.working_dir.is_empty() { String::new() } else { format!(" --project-directory {}", shell_quote(&ext.working_dir)) };
                 format!("docker compose -p {}{dir}{files} {sub}", shell_quote(&ext.project))
             }
             None => format!("docker compose -f {} {sub}", self.compose_path()),
+        }
+    }
+
+    /// Compose files the adopted stack was started with that no longer
+    /// exist (Status says so quietly).
+    pub fn vanished_files(&self) -> Vec<String> {
+        self.external.as_ref().map(|e| e.files.iter().filter(|f| !host_file_exists(f)).cloned().collect()).unwrap_or_default()
+    }
+
+    /// `start`, `stop` or `restart` without the compose files: by project
+    /// name for an adopted stack, so a vanished file cannot stop it.
+    fn control_cmd(&self, sub: &str) -> String {
+        match &self.external {
+            Some(ext) => format!("docker compose -p {} {sub}", shell_quote(&ext.project)),
+            None => self.compose_cmd(sub),
         }
     }
 
@@ -1070,14 +1088,18 @@ fn shell_quote(s: &str) -> String {
 
 /// Start / stop / restart the deployed stack.
 pub fn control(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Result<(), String> {
+    let external = cfg.external.is_some();
     let (label, sub) = match action {
+        // An adopted stack starts its own containers again; SPM's own stack
+        // is brought up from its file.
+        "start" if external => ("Starting SENTIENT", "start"),
         "start" => ("Starting SENTIENT", "up -d"),
         "stop" => ("Stopping SENTIENT", "stop"),
         "restart" => ("Restarting SENTIENT", "restart"),
         _ => return Err(format!("unknown action: {action}")),
     };
     sink(Progress::Step { name: label.into() });
-    run_stream(&sink, &cfg.compose_cmd(sub))?;
+    run_stream(&sink, &cfg.control_cmd(sub))?;
     sink(Progress::Done { message: format!("{label}: done.") });
     Ok(())
 }
@@ -1334,6 +1356,26 @@ fn _uses(_: &EnvVar) {}
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_vanished_override_does_not_stop_control() {
+        let dir = std::env::temp_dir().join(format!("spm-vanished-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("docker-compose.yml");
+        std::fs::write(&main, "services: {}\n").unwrap();
+        let gone = dir.join("override.yml");
+        let cfg = DeployConfig {
+            external: Some(ExternalCompose { project: "sentient".into(), files: vec![main.display().to_string(), gone.display().to_string()], working_dir: String::new() }),
+            ..Default::default()
+        };
+        let up = cfg.compose_cmd("up -d");
+        assert!(up.contains(&main.display().to_string()) && !up.contains("override.yml"), "{up}");
+        assert_eq!(cfg.control_cmd("stop"), "docker compose -p 'sentient' stop".replace('\'', if cfg.control_cmd("stop").contains('\'') { "'" } else { "" }));
+        assert_eq!(cfg.vanished_files(), vec![gone.display().to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     #[test]
