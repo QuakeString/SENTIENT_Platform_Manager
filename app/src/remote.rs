@@ -839,6 +839,17 @@ pub fn logs_from(inst: &Instance, source: crate::logsource::Source, lines: u32, 
     spm_job(inst, &format!("logs {lines} --source {}{}", source.key(), if today { " --today" } else { "" }))
 }
 
+/// ClickHouse parts set aside on the server.
+pub fn ch_detached(inst: &Instance) -> Result<Vec<crate::dbstatus::DetachedPart>, String> {
+    read_json(inst, "ch-detached")
+}
+
+/// Restore (attach) or delete parts set aside: the agent's lines, one per part.
+pub fn ch_parts(inst: &Instance, attach: bool, parts: &[(String, String)]) -> Result<String, String> {
+    let args: Vec<String> = parts.iter().flat_map(|(t, p)| [t.clone(), p.clone()]).collect();
+    spm_job(inst, &format!("{} {}", if attach { "ch-attach" } else { "ch-drop" }, args.join(" ")))
+}
+
 /// A live statistics reading of the server (crate::stats).
 pub fn stats_live(inst: &Instance) -> Result<crate::stats::Sample, String> {
     #[cfg(debug_assertions)]

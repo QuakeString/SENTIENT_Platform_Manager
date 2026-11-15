@@ -434,6 +434,72 @@ pub fn needs_admin(record: &InstallationRecord) -> bool {
 }
 
 /// Read everything, within [`LIMIT`]. Blocking: run it in the background.
+/// A ClickHouse part set aside as broken or unexpected (system.detached_parts).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DetachedPart {
+    pub table: String,
+    /// The month it holds (partition id "202611").
+    pub partition: String,
+    pub name: String,
+    pub reason: String,
+    pub bytes: u64,
+}
+
+fn ch_conn(record: &InstallationRecord) -> Result<ChConn, String> {
+    let (_, password) = passwords(record)?;
+    let st = &record.stack;
+    Ok(ChConn { url: format!("http://127.0.0.1:{}", st.ch_http_port), database: st.ch_db.clone(), user: st.ch_user.clone(), password })
+}
+
+/// A table or part name as ClickHouse prints them (no quoting needed).
+fn plain_name(s: &str) -> Result<&str, String> {
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') {
+        Ok(s)
+    } else {
+        Err(format!("Not a ClickHouse name: {s}"))
+    }
+}
+
+/// The parts ClickHouse set aside as broken or unexpected.
+pub fn detached_parts(record: &InstallationRecord) -> Result<Vec<DetachedPart>, String> {
+    let ch = ch_conn(record)?;
+    let base = "SELECT table, partition_id, name, reason{} FROM system.detached_parts WHERE database = currentDatabase() AND (startsWith(reason, 'broken') OR startsWith(reason, 'unexpected')) ORDER BY table, partition_id, name FORMAT TSV";
+    let tsv = ch.text(&base.replace("{}", ", bytes_on_disk")).or_else(|_| ch.text(&base.replace("{}", ", 0"))).map_err(|e| e.to_string())?;
+    Ok(tsv
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            Some(DetachedPart { table: f.first()?.to_string(), partition: f.get(1)?.to_string(), name: f.get(2)?.to_string(), reason: f.get(3)?.to_string(), bytes: f.get(4).and_then(|b| b.parse().ok()).unwrap_or(0) })
+        })
+        .collect())
+}
+
+/// Try to bring parts back (ATTACH PART); one line per part with what happened.
+pub fn attach_parts(record: &InstallationRecord, parts: &[(String, String)]) -> Result<Vec<(String, Result<(), String>)>, String> {
+    let ch = ch_conn(record)?;
+    Ok(parts
+        .iter()
+        .map(|(t, p)| {
+            let r = plain_name(t).and_then(|t| plain_name(p).map(|p| (t, p))).and_then(|(t, p)| ch.text(&format!("ALTER TABLE `{t}` ATTACH PART '{p}'")).map(|_| ()).map_err(|e| e.to_string()));
+            (p.clone(), r)
+        })
+        .collect())
+}
+
+/// Delete parts set aside (DROP DETACHED PART): their readings are gone.
+pub fn drop_parts(record: &InstallationRecord, parts: &[(String, String)]) -> Result<Vec<(String, Result<(), String>)>, String> {
+    let ch = ch_conn(record)?;
+    Ok(parts
+        .iter()
+        .map(|(t, p)| {
+            let r = plain_name(t)
+                .and_then(|t| plain_name(p).map(|p| (t, p)))
+                .and_then(|(t, p)| ch.text(&format!("ALTER TABLE `{t}` DROP DETACHED PART '{p}' SETTINGS allow_drop_detached = 1")).map(|_| ()).map_err(|e| e.to_string()));
+            (p.clone(), r)
+        })
+        .collect())
+}
+
 pub fn read(record: &InstallationRecord) -> DbStatus {
     // Development aid: a reading from a file (screens).
     #[cfg(debug_assertions)]

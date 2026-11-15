@@ -287,6 +287,46 @@ pub fn run(args: &[String]) -> i32 {
     // Statistics (crate::stats): a live reading with the database numbers,
     // one reading for the history (the sampler's timer), the history of the
     // last <seconds>, and installing the sampler.
+    // ClickHouse parts set aside: ch-detached (JSON), ch-attach / ch-drop
+    // <table> <part> [<table> <part> ...] (one line per part: ok or why not).
+    if job == "ch-detached" || job == "ch-attach" || job == "ch-drop" {
+        let Some(record) = InstallationRecord::load() else {
+            println!("null");
+            return 0;
+        };
+        if job == "ch-detached" {
+            return match crate::dbstatus::detached_parts(&record) {
+                Ok(list) => {
+                    println!("{}", serde_json::to_string(&list).unwrap_or_default());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    1
+                }
+            };
+        }
+        let parts: Vec<(String, String)> = args[1..].chunks(2).filter(|c| c.len() == 2).map(|c| (c[0].clone(), c[1].clone())).collect();
+        let r = if job == "ch-attach" { crate::dbstatus::attach_parts(&record, &parts) } else { crate::dbstatus::drop_parts(&record, &parts) };
+        return match r {
+            Ok(results) => {
+                let failed = results.iter().filter(|(_, r)| r.is_err()).count();
+                for (p, r) in results {
+                    match r {
+                        Ok(()) => println!("ok {p}"),
+                        Err(e) => println!("failed {p}: {}", e.lines().next().unwrap_or("")),
+                    }
+                }
+                // Per-part results are on the lines; the job itself answered.
+                let _ = failed;
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+    }
     if job == "stats-live" {
         let record = InstallationRecord::load();
         println!("{}", serde_json::to_string(&crate::stats::read(record.as_ref(), std::time::Duration::from_secs(1), true)).unwrap_or_default());

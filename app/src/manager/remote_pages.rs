@@ -591,7 +591,22 @@ impl RemotePages {
                     "The server's database disk",
                     None,
                     last,
-                    crate::manager::status::DbActions { set_limit: None, remove_kept: None, back_up: Some(back_up) },
+                    crate::manager::status::DbActions {
+                        set_limit: None,
+                        remove_kept: None,
+                        back_up: Some(back_up),
+                        broken_parts: Some({
+                            let inst = self.inst.clone();
+                            std::rc::Rc::new(move |cx: &mut App| {
+                                let (i1, i2) = (inst.clone(), inst.clone());
+                                crate::manager::status::BrokenParts::open(
+                                    std::sync::Arc::new(move || remote::ch_detached(&i1)),
+                                    std::sync::Arc::new(move |attach, parts| remote::ch_parts(&i2, attach, &parts)),
+                                    cx,
+                                )
+                            })
+                        }),
+                    },
                     crate::theme::is_dark(cx),
                 )
             }
