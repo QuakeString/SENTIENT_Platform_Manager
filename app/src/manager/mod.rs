@@ -16,6 +16,7 @@ mod repair;
 pub(crate) mod settings;
 pub(crate) mod setting_field;
 pub(crate) mod status;
+pub(crate) mod strip;
 pub(crate) mod update;
 
 use gpui_kit::assets::IconName as Lucide;
@@ -140,6 +141,8 @@ pub struct Manager {
     remote_pages: Option<Entity<remote_pages::RemotePages>>,
     /// Takes the keyboard while a dialog is open (Escape closes it).
     modal_focus: FocusHandle,
+    /// The global progress strip (strip.rs), under the top bar.
+    strip: Entity<strip::Strip>,
     /// The theme popover in the menu's bottom group is open.
     theme_open: bool,
     /// The open instance's processor, memory and disk (top bar).
@@ -190,6 +193,7 @@ impl Manager {
             remote_monitor: None,
             remote_pages: None,
             modal_focus: cx.focus_handle(),
+            strip: strip::install(cx),
             theme_open: cfg!(debug_assertions) && std::env::var_os("SPM_THEME_OPEN").is_some(),
             monitor: None,
             updates,
@@ -423,7 +427,7 @@ impl Manager {
                         let open = self.open_remote.clone();
                         move |menu, _, _| {
                             let t = this.clone();
-                            let mut menu = menu.item(PopupMenuItem::new("This computer").when(open.is_some(), |i| i.icon(Lucide::Monitor)).checked(open.is_none()).on_click(move |_, _, cx| {
+                            let mut menu = menu.item(PopupMenuItem::new(if open.is_some() { "Back to this computer" } else { "This computer" }).when(open.is_some(), |i| i.icon(Lucide::Monitor)).checked(open.is_none()).on_click(move |_, _, cx| {
                                 t.update(cx, |m, cx| m.open_instance(None, cx)).ok();
                             }));
                             if !remotes.is_empty() {
@@ -531,35 +535,6 @@ impl Manager {
     /// The notices above every screen: what this run follows (a self-update,
     /// a Setup that found SENTIENT) and a newer SENTIENT, Platform Manager
     /// or gateway on the update channel (crate::updates).
-    /// On a remote instance: a bar saying every page acts on that server,
-    /// with Read again and the way back (the mockup's K4).
-    fn remote_bar(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let r = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned()?;
-        let theme = cx.theme().clone();
-        let info: Hsla = if theme::is_dark(cx) { rgb(0x27403f).into() } else { rgb(0xe6f1f1).into() };
-        Some(
-            h_flex()
-                .gap_3()
-                .px_4()
-                .py(px(7.))
-                .items_center()
-                .flex_wrap()
-                .bg(info)
-                .border_b_1()
-                .border_color(theme.border)
-                .text_sm()
-                .child(div().size(px(9.)).rounded_full().bg(rgb(crate::remote::parse_hex(&r.color).unwrap_or(0x187074))))
-                .child(div().flex_1().min_w(px(200.)).child(format!("Remote: {} ({}). Everything on these pages acts on that server.", r.name, r.host)))
-                .child(crate::ui::button("remote-reload").ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(|this, _, _, cx| {
-                    if let Some(p) = this.remote_pages.clone() {
-                        p.update(cx, |p, cx| p.reload(cx));
-                    }
-                })))
-                .child(crate::ui::button("remote-back").outline().label("Back to this computer").on_click(cx.listener(|this, _, _, cx| this.open_instance(None, cx))))
-                .into_any_element(),
-        )
-    }
-
     fn notices(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let theme = cx.theme().clone();
         let (sentient, manager) = self.updates.read(cx).notices();
@@ -977,7 +952,7 @@ impl Manager {
                                         this.page = Page::Instances;
                                         cx.notify();
                                     })))
-                                    .child(crate::ui::button("to-local").ghost().label("Back to this computer").on_click(cx.listener(|this, _, _, cx| this.open_instance(None, cx)))),
+,
                             ),
                     )
                     .into_any_element();
@@ -1113,7 +1088,6 @@ impl Render for Manager {
         let top = self.top_bar(width, cx);
         let nav = self.nav(width < RAIL_BELOW, cx);
         let notices = self.notices(cx);
-        let remote_bar = self.remote_bar(cx);
         let content = self.content(window, cx);
         let rail = width < RAIL_BELOW;
         let layer = crate::modal::layer(window, cx, if rail { 64. } else { NAV_W }, 42.);
@@ -1139,7 +1113,17 @@ impl Render for Manager {
                     .min_h_0()
                     .w_full()
                     .child(nav)
-                    .child(v_flex().flex_1().h_full().min_w_0().children(remote_bar).children(notices).child(crate::ui::appear(h_flex().flex_1().min_h_0().w_full().child(content), SharedString::from(format!("page-{}", self.page.id())), 140))),
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .h_full()
+                            .min_w_0()
+                            .relative()
+                            .children(notices)
+                            .child(crate::ui::appear(h_flex().flex_1().min_h_0().w_full().child(content), SharedString::from(format!("page-{}", self.page.id())), 140))
+                            // Over the page, directly under the top bar: nothing moves.
+                            .child(self.strip.clone()),
+                    ),
             )
             .children(layer)
     }

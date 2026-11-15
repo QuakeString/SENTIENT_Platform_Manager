@@ -25,7 +25,6 @@ use gpui_kit::component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
     button::ButtonVariants as _,
     input::{Input, InputEvent, InputState},
-    progress::Progress,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -1158,14 +1157,6 @@ impl Render for SettingsPage {
         };
         let job = self.job.read(cx);
         let busy = job.is_running();
-        let step = job.step_with_time();
-        let percent = job.percent();
-        let outcome = match job.state() {
-            JobState::Done(m) => Some((Tone::Good, m.clone())),
-            JobState::Failed(m) => Some((Tone::Bad, m.clone())),
-            _ => None,
-        };
-        let log: Vec<SharedString> = job.log().iter().rev().take(8).rev().cloned().collect();
         let changed = self.changed(cx);
         let mut problems = crate::settings::check(&self.values(cx));
         for (n, _) in self.custom_values(cx) {
@@ -1226,14 +1217,7 @@ impl Render for SettingsPage {
             .gap(px(14.))
             .children(applybar)
             .children(problems.into_iter().map(|p| div().text_sm().text_color(theme.danger).child(p)))
-            .when(busy || outcome.is_some(), |page| {
-                page.child(
-                    ui::panel(&theme)
-                        .when(busy, |p| p.child(div().text_sm().child(step.clone())).when_some(percent, |p, v| p.child(Progress::new("settings-progress").value(v))))
-                        .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
-                        .children(log.into_iter().map(|line| div().text_size(px(13.)).text_color(theme.muted_foreground).child(line))),
-                )
-            })
+            
             .children(body))
     }
 }

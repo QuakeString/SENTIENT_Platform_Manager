@@ -79,7 +79,7 @@ pub struct InstancesPage {
     /// The add/edit dialog and the job dialog are open.
     form_dialog: bool,
     job_dialog: bool,
-    /// (instance id, text) of the log view.
+    /// The instance whose removal is being confirmed.
     confirm_remove: Option<String>,
     /// The instance open in the whole Platform Manager (None: this computer).
     pub open: Option<String>,

@@ -114,7 +114,26 @@ pub fn page(theme: &Theme, title: &'static str, summary: &'static str) -> Statef
         )
 }
 
-#[derive(Clone, Copy)]
+/// A page whose title row ends with an action (the remote pages' Read
+/// again), in the same place on every page.
+pub fn page_with(theme: &Theme, title: &'static str, summary: &'static str, action: impl IntoElement) -> Stateful<Div> {
+    v_flex().id("page").flex_1().min_w_0().h_full().overflow_y_scroll().p_4().gap(px(14.)).bg(theme.muted).child(
+        h_flex()
+            .gap_3()
+            .items_start()
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_0p5()
+                    .child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(title))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(summary)),
+            )
+            .child(action),
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Good,
     Warn,
@@ -531,7 +550,7 @@ pub fn service_rows(
                 .gap_4()
                 .text_sm()
                 .items_center()
-                .child(gpui_kit::component::h_flex().w(px(168.)).flex_shrink_0().child(if busy { pill(theme, Tone::Neutral, "Working…") } else { pill(theme, tone, label) }))
+                .child(gpui_kit::component::h_flex().w(px(168.)).flex_shrink_0().child(if busy { pill(theme, Tone::Warn, "Working…") } else { pill(theme, tone, label) }))
                 .child(
                     gpui_kit::component::h_flex()
                         .flex_1()
@@ -604,4 +623,20 @@ pub fn middle_ellipsis(s: &str, max: usize) -> String {
     let head = keep / 2;
     let tail = keep - head;
     format!("{}…{}", chars[..head].iter().collect::<String>(), chars[chars.len() - tail..].iter().collect::<String>())
+}
+
+/// "Open SENTIENT": the primary action while SENTIENT serves; disabled with
+/// the reason in a tooltip while it is stopped (Start is the action then).
+pub fn open_sentient_button(id: &'static str, serving: bool, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> AnyElement {
+    use gpui_kit::component::button::ButtonVariants as _;
+    use gpui_kit::component::Disableable as _;
+    if serving {
+        button(id).primary().label("Open SENTIENT").on_click(on_click).into_any_element()
+    } else {
+        div()
+            .id(SharedString::from(format!("{id}-why")))
+            .child(button(id).outline().label("Open SENTIENT").disabled(true))
+            .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("SENTIENT is stopped. Start it first.").build(w, cx))
+            .into_any_element()
+    }
 }

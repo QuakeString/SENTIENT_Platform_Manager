@@ -15,7 +15,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::dbstatus::{DbStatus, bytes_label};
-use crate::jobs::{Job, JobState};
+use crate::jobs::Job;
 use crate::remote::{self, Instance, RemoteBackups, RemoteService, RemoteStatus};
 use crate::ui::{self, Tone};
 
@@ -294,7 +294,9 @@ impl RemotePages {
         }
         let inst = self.inst.clone();
         self.job_label = Some(format!("{label} on {}", inst.name).into());
+        let strip_label = format!("{label} on {}", inst.name);
         self.job.update(cx, |job, cx| {
+            job.set_label(strip_label);
             job.start(
                 move |sink| {
                     remote::deploy(&inst, &sink)?;
@@ -317,41 +319,6 @@ impl RemotePages {
 
     fn loading(theme: &gpui_kit::component::Theme, what: &str) -> Div {
         ui::panel(theme).child(div().text_sm().text_color(theme.muted_foreground).child(format!("Reading {what} from the server…")))
-    }
-
-    fn job_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
-        let label = self.job_label.clone()?;
-        let theme = cx.theme().clone();
-        let job = self.job.read(cx);
-        let log: Vec<SharedString> = job.log().iter().rev().take(12).rev().cloned().collect();
-        let mut p = ui::panel(&theme).gap_2().child(div().font_weight(FontWeight::MEDIUM).child(label));
-        p = match job.state() {
-            JobState::Running => p.child(div().text_sm().child(job.step_with_time())),
-            JobState::Done(m) => p.child(ui::outcome(&theme, Tone::Good, m.clone())),
-            JobState::Failed(m) => {
-                let (headline, details) = remote::split_failure(m);
-                let shown = self.show_details;
-                p.child(ui::outcome(&theme, Tone::Bad, headline)).when_some(details, |p, d| {
-                    p.child(crate::ui::button("job-details").ghost().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
-                        this.show_details = !this.show_details;
-                        cx.notify();
-                    })))
-                    .when(shown, |p| p.child(div().p_2().rounded(theme.radius).bg(theme.muted).text_size(px(13.)).font_family(theme.mono_font_family.clone()).child(d)))
-                })
-            }
-            JobState::Idle => p,
-        };
-        let done = !job.is_running();
-        Some(
-            p.child(v_flex().p_2().rounded(theme.radius).bg(theme.muted).text_size(px(13.)).font_family(theme.mono_font_family.clone()).children(log.into_iter().map(|l| div().child(l))))
-                .when(done, |p| {
-                    p.child(h_flex().justify_end().child(crate::ui::button("job-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
-                        this.job_label = None;
-                        this.job.update(cx, |j, cx| j.reset(cx));
-                        cx.notify();
-                    }))))
-                }),
-        )
     }
 
     fn services_panel(&self, theme: &gpui_kit::component::Theme) -> Div {
@@ -385,6 +352,7 @@ impl RemotePages {
     }
 
     fn status_page(&self, cx: &mut Context<Self>) -> Div {
+        let busy = self.job.read(cx).is_running();
         let theme = cx.theme().clone();
         let mut col = v_flex().gap_4();
         match &self.status {
@@ -419,14 +387,14 @@ impl RemotePages {
                                 .child(ui::product_logo(ui::Product::Sentient, 30.))
                                 .child(ui::pill(&theme, tone, state))
                                 .child(div().flex_1())
-                                .when(s.installed, |r| r.child(crate::ui::button("r-open").primary().label("Open SENTIENT").on_click(move |_, _, cx| ui::open_url(&url, cx)))),
+                                .when(s.installed && !s.serving, |r| {
+                                    r.child(crate::ui::button("r-start").primary().label("Start").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Starting SENTIENT", vec!["control".into(), "start".into()], cx))))
+                                })
+                                .when(s.installed, |r| r.child(ui::open_sentient_button("r-open", s.serving, move |_, _, cx| ui::open_url(&url, cx)))),
                         )
                         .child(ui::fact(&theme, "SENTIENT version", s.sentient_version.clone()))
                         .child(ui::fact(&theme, "Database", s.database.clone()))
                         .child(ui::fact(&theme, "Runs as", if det.install.is_empty() { "Not known".to_string() } else { det.install.clone() }))
-                        .children(s.vanished_files.first().map(|f| {
-                            div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!("This SENTIENT was started with an extra compose file that no longer exists: {f}"))
-                        }))
                         .child(ui::fact(&theme, "Server", format!("{} · {} {}", self.inst.address(), det.os_name, det.arch)))
                         .child(
                             // A pill only while the update runs or when it failed;
@@ -1185,7 +1153,9 @@ impl RemotePages {
         }
         let inst = self.inst.clone();
         self.job_label = Some(format!("Setting up {}", inst.name).into());
+        let strip_label = format!("Setting up the server agent on {}", inst.name);
         self.job.update(cx, |job, cx| {
+            job.set_label(strip_label);
             job.start(
                 move |sink| {
                     remote::deploy(&inst, &sink)?;
@@ -1245,12 +1215,10 @@ impl Render for RemotePages {
             Kind::Repair => self.repair_page(cx),
             Kind::Gateway => self.gateway_page(cx),
         } };
-        let job = self.job_panel(cx);
-        // Which server this is about shows in the bar under the top bar
-        // (crate::manager), as in the mockup.
-        ui::page(&theme, title, summary)
-            .children(job)
-            .child(body)
+        // Which server this is shows in the top bar (its colour, the
+        // switcher with REMOTE); a job shows in the progress strip.
+        let reload = { use gpui_kit::component::Sizable as _; crate::ui::button("remote-reload").ghost().small().icon(gpui_kit::component::IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(|this, _, _, cx| this.reload(cx))) };
+        ui::page_with(&theme, title, summary, reload).child(body)
     }
 }
 

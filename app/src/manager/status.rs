@@ -31,6 +31,8 @@ pub struct StatusPage {
     /// looking.
     found: Option<Vec<Candidate>>,
     adopt_job: Entity<Job>,
+    /// Start, offered here while SENTIENT is stopped.
+    start_job: Entity<Job>,
     /// The gateway on this computer (None while looking).
     gateway: Option<sentient_installer_core::gateway::Status>,
     updates: Entity<crate::updates::UpdateState>,
@@ -147,6 +149,7 @@ impl StatusPage {
             }
             cx.notify();
         });
+        let start_job = cx.new(|_| Job::new());
         let gateway_poll = cx.spawn(async move |this, cx| loop {
             let status = cx.background_executor().spawn(async { sentient_installer_core::gateway::status() }).await;
             if this.update(cx, |p, cx| { p.gateway = Some(status); cx.notify(); }).is_err() {
@@ -159,6 +162,7 @@ impl StatusPage {
             snapshot: None,
             found: None,
             adopt_job,
+            start_job,
             gateway: None,
             updates,
             db: None,
@@ -187,6 +191,17 @@ impl StatusPage {
             page._tasks.push(db_poll);
         }
         page
+    }
+
+    /// Start SENTIENT (offered while it is stopped).
+    fn start(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = &self.record else { return };
+        let platform = record.platform();
+        self.start_job.update(cx, |job, cx| {
+            job.set_label("Starting SENTIENT");
+            job.start(move |sink| platform.control(sink, "start"), cx)
+        });
+        cx.notify();
     }
 
     /// Read the databases' details in the background.
@@ -373,6 +388,7 @@ impl Render for StatusPage {
             Some(s) if s.services.iter().any(|svc| svc.starting) => ("SENTIENT is starting with Windows", Tone::Warn),
             Some(_) => ("SENTIENT is stopped", Tone::Bad),
         };
+        let stopped = self.snapshot.as_ref().is_some_and(|s| !s.serving);
         let services = self.snapshot.as_ref().map(|s| s.services.clone()).unwrap_or_default();
         let st = &record.stack;
         // The newest backup in the backup folder failed its check.
@@ -430,16 +446,15 @@ impl Render for StatusPage {
                         .child(ui::product_logo(ui::Product::Sentient, 30.))
                         .child(ui::pill(&theme, tone, overall))
                         .child(div().flex_1())
-                        .child(
-                            crate::ui::button("open")
-                                .primary()
-                                .label("Open SENTIENT")
-                                .on_click({
-                                    let record = record.clone();
-                                    // Asked on click: whether the kiosk shortcut is there reads the disk.
-                                    move |_, _, cx| ui::open_sentient(record.stack.http_port, record.opens_as_kiosk(), cx)
-                                }),
-                        ),
+                        .when(stopped, |r| {
+                            let starting = self.start_job.read(cx).is_running();
+                            r.child(crate::ui::button("status-start").primary().label("Start").loading(starting).disabled(starting).on_click(cx.listener(|this, _, _, cx| this.start(cx))))
+                        })
+                        .child(ui::open_sentient_button("open", !stopped, {
+                            let record = record.clone();
+                            // Asked on click: whether the kiosk shortcut is there reads the disk.
+                            move |_, _, cx| ui::open_sentient(record.stack.http_port, record.opens_as_kiosk(), cx)
+                        })),
                 )
                 .child(ui::fact(&theme, "SENTIENT version", record.sentient_version.clone()))
                 .child(ui::fact(&theme, "Database", flavor_label(record.flavor())))
@@ -461,11 +476,13 @@ impl Render for StatusPage {
                         st.http_port, st.mqtt_port, st.mqtts_port, st.coap_port, st.coaps_port, st.pg_port
                     ),
                 ))
-                .children(st.vanished_files().first().map(|f| {
-                    div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!("This SENTIENT was started with an extra compose file that no longer exists: {f}"))
-                }))
                 .child(match &st.external {
-                    Some(ext) => ui::fact(&theme, "Runs from", format!("its own compose file ({})", ext.files.join(", "))),
+                    // A temporary override that is gone since is left out: nothing needs it.
+                    Some(ext) => {
+                        let gone = st.vanished_files();
+                        let files: Vec<&String> = ext.files.iter().filter(|f| !gone.contains(f)).collect();
+                        ui::fact(&theme, "Runs from", format!("its own compose file ({})", files.iter().map(|f| f.as_str()).collect::<Vec<_>>().join(", ")))
+                    }
                     None => ui::fact(&theme, "Installed in", record.install_dir.display().to_string()),
                 }),
         )

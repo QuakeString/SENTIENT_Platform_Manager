@@ -8,7 +8,6 @@ use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex,
     button::ButtonVariants as _,
     checkbox::Checkbox,
-    progress::Progress,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -122,15 +121,12 @@ impl Render for RepairPage {
         }
         let job = self.job.read(cx);
         let busy = job.is_running();
-        let step = job.step_with_time();
-        let percent = job.percent();
         let uninstalled = self.running == Some(Action::Uninstall) && matches!(job.state(), JobState::Done(_));
         let outcome = match job.state() {
             JobState::Done(m) => Some((Tone::Good, m.clone())),
             JobState::Failed(m) => Some((Tone::Bad, m.clone())),
             _ => None,
         };
-        let log: Vec<SharedString> = job.log().iter().rev().take(8).rev().cloned().collect();
         let done = busy || uninstalled;
         let external = self.record.as_ref().and_then(|r| r.stack.external.clone()).filter(|_| self.record.as_ref().is_some_and(|r| r.engine == crate::installation::Engine::Docker));
 
@@ -195,25 +191,11 @@ impl Render for RepairPage {
                     ),
                 ),
         )
-        .when(busy || outcome.is_some(), |page| {
+        .when(uninstalled, |page| {
             page.child(
                 ui::panel(&theme)
-                    .when(busy, |p| {
-                        p.child(div().text_sm().child(step.clone()))
-                            .when_some(percent, |p, v| p.child(Progress::new("repair-progress").value(v)))
-                    })
                     .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
-                    .children(log.into_iter().map(|line| div().text_size(px(13.)).text_color(theme.muted_foreground).child(line)))
-                    .when(uninstalled, |p| {
-                        p.child(
-                            h_flex().child(
-                                crate::ui::button("close")
-                                    .primary()
-                                    .label("Close")
-                                    .on_click(|_, window, _| window.remove_window()),
-                            ),
-                        )
-                    }),
+                    .child(h_flex().child(crate::ui::button("close").primary().label("Close").on_click(|_, window, _| window.remove_window()))),
             )
         })
     }

@@ -241,6 +241,11 @@ impl ControlPage {
         let Some(record) = &self.record else { return };
         let platform = record.platform();
         self.job.update(cx, |job, cx| {
+            job.set_label(match action {
+                "start" => "Starting SENTIENT",
+                "stop" => "Stopping SENTIENT",
+                _ => "Restarting SENTIENT",
+            });
             job.start(move |sink| platform.control(sink, action), cx)
         });
     }
@@ -264,7 +269,16 @@ impl ControlPage {
         let Some(record) = &self.record else { return };
         let platform = record.platform();
         self.svc_busy = Some(name.clone());
-        self.job.update(cx, |job, cx| job.start(move |sink| platform.service_control(sink, &name, action), cx));
+        let plain = ui::service_label(&name).unwrap_or(&name).to_string();
+        let label = format!("{} {plain}", match action {
+            "start" => "Starting",
+            "stop" => "Stopping",
+            _ => "Restarting",
+        });
+        self.job.update(cx, |job, cx| {
+            job.set_label(label);
+            job.start(move |sink| platform.service_control(sink, &name, action), cx)
+        });
         cx.notify();
     }
 
@@ -290,13 +304,6 @@ impl Render for ControlPage {
         }
         let job = self.job.read(cx);
         let busy = job.is_running();
-        let outcome = match job.state() {
-            JobState::Idle => None,
-            JobState::Running => Some((Tone::Neutral, format!("{}…", job.step()))),
-            JobState::Done(m) => Some((Tone::Good, m.to_string())),
-            JobState::Failed(m) => Some((Tone::Bad, m.to_string())),
-        };
-        let log: Vec<SharedString> = job.log().to_vec();
         page.child(
             ui::panel(&theme)
                 .child({
@@ -318,10 +325,6 @@ impl Render for ControlPage {
                         }),
                     )
                 })
-                .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
-                .children(log.into_iter().map(|line| {
-                    div().text_sm().text_color(theme.muted_foreground).child(line)
-                })),
         )
         .child({
             // Each service on its own (shared rows with a remote server's).
