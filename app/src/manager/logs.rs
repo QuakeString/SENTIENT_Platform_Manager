@@ -87,7 +87,7 @@ impl LogsPage {
             .or_else(|| std::env::var_os("HOME"))
             .map(std::path::PathBuf::from)
             .unwrap_or_default();
-        let rx = cx.prompt_for_new_path(&home, Some("sentient.log"));
+        let rx = crate::chooser::save(cx, "Save the log as", &home, Some("sentient.log"));
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
             let result = std::fs::write(&path, text);
@@ -193,7 +193,7 @@ pub(crate) fn log_box(theme: &gpui_kit::component::Theme, id: &'static str, scro
 /// Save log text to a file the user picks; `done` gets what happened.
 pub(crate) fn export_text(text: String, cx: &mut App, done: impl FnOnce(String, &mut App) + 'static) {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(std::path::PathBuf::from).unwrap_or_default();
-    let rx = cx.prompt_for_new_path(&home, Some("sentient.log"));
+    let rx = crate::chooser::save(cx, "Save the log as", &home, Some("sentient.log"));
     cx.spawn(async move |cx| {
         let Ok(Ok(Some(path))) = rx.await else { return };
         let message = match std::fs::write(&path, text) {

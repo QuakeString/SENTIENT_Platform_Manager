@@ -292,9 +292,9 @@ impl BackupPage {
     }
 
     fn choose_output(&mut self, cx: &mut Context<Self>) {
-        let dir = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
+        let dir = if self.prefs.folder.is_dir() { self.prefs.folder.clone() } else { std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from).unwrap_or_default() };
         let name = format!("sentient-{}.sentient-backup", chrono::Local::now().format("%Y%m%d-%H%M"));
-        let rx = cx.prompt_for_new_path(&dir, Some(&name));
+        let rx = crate::chooser::save(cx, "Save the backup as", &dir, Some(&name));
         let task = cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(mut path))) = rx.await else { return };
             // The Windows dialog drops an extension it does not know.
@@ -374,12 +374,12 @@ impl BackupPage {
     }
 
     fn choose_restore_input(&mut self, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some("Restore this backup".into()),
-        });
+        let start = Some(self.prefs.folder.clone()).filter(|d| d.is_dir());
+        let rx = crate::chooser::open(
+            cx,
+            crate::chooser::Ask { title: "Choose the backup to restore", start: start.as_deref(), directory: false },
+            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Restore this backup".into()) },
+        );
         let task = cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
             this.update(cx, |page, cx| {
@@ -495,7 +495,13 @@ impl BackupPage {
     }
 
     fn choose_folder(&mut self, second: bool, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Use this folder".into()) });
+        let now = if second { self.prefs.copy_to.clone() } else { Some(self.prefs.folder.clone()) };
+        let start = now.filter(|d| d.is_dir());
+        let rx = crate::chooser::open(
+            cx,
+            crate::chooser::Ask { title: if second { "Choose where to copy backups" } else { "Choose the backup folder" }, start: start.as_deref(), directory: true },
+            PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Use this folder".into()) },
+        );
         let task = cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
             let Some(dir) = paths.into_iter().next() else { return };
@@ -510,7 +516,12 @@ impl BackupPage {
     }
 
     fn add_backup_file(&mut self, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Add this backup".into()) });
+        let start = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from);
+        let rx = crate::chooser::open(
+            cx,
+            crate::chooser::Ask { title: "Choose a backup file to add", start: start.as_deref(), directory: false },
+            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Add this backup".into()) },
+        );
         let folder = self.prefs.folder.clone();
         let task = cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };

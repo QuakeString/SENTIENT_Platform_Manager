@@ -41,6 +41,8 @@ mod maintenance;
 mod manager;
 #[cfg(feature = "gui")]
 mod modal;
+#[cfg(feature = "gui")]
+mod chooser;
 mod maintenance_ops;
 mod migration;
 mod mode;

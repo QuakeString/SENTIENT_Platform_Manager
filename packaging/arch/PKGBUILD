@@ -16,7 +16,8 @@ depends=('glibc' 'gcc-libs' 'fontconfig' 'freetype2' 'libxcb' 'libxkbcommon' 'li
 makedepends=('rust' 'rust-musl' 'musl' 'clang' 'cmake' 'pkgconf')
 optdepends=('docker: run SENTIENT and PostgreSQL as containers'
             'docker-compose: the compose stack the manager drives'
-            'postgresql: native installs use the distribution PostgreSQL')
+            'postgresql: native installs use the distribution PostgreSQL'
+            'kdialog: KDE Plasma file choosers (the portal may answer with the GTK one)')
 # makepkg's LTO and debug defaults break or bloat the Rust build.
 options=(!lto !debug)
 

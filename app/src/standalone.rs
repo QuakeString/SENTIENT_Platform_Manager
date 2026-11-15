@@ -30,12 +30,12 @@ pub fn install_sentient(window: &mut Window, cx: &mut App) {
 /// Ask for an unpacked SENTIENT package and start its Setup (no internet).
 pub fn install_sentient_from_package(window: &mut Window, cx: &mut App) {
     let handle = window.window_handle();
-    let rx = cx.prompt_for_paths(PathPromptOptions {
-        files: false,
-        directories: true,
-        multiple: false,
-        prompt: Some("Choose the SENTIENT package folder".into()),
-    });
+    let start = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from);
+    let rx = crate::chooser::open(
+        cx,
+        crate::chooser::Ask { title: "Choose the SENTIENT package folder", start: start.as_deref(), directory: true },
+        PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Choose the SENTIENT package folder".into()) },
+    );
     cx.spawn(async move |cx| {
         let Ok(Ok(Some(paths))) = rx.await else { return };
         let Some(dir) = paths.into_iter().next() else { return };

@@ -265,12 +265,12 @@ impl UpdatePage {
     }
 
     fn choose_package(&mut self, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Use this package".into()),
-        });
+        let start = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from);
+        let rx = crate::chooser::open(
+            cx,
+            crate::chooser::Ask { title: "Choose the SENTIENT package folder", start: start.as_deref(), directory: true },
+            PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Use this package".into()) },
+        );
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
             this.update(cx, |page, cx| {
@@ -427,7 +427,12 @@ impl UpdatePage {
     /// "Update from a file…": a Setup program (started, and this window
     /// closes) or a SENTIENT package folder (updated from).
     fn update_from_file(&mut self, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: true, multiple: false, prompt: Some("Update from this".into()) });
+        let start = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from);
+        let rx = crate::chooser::open(
+            cx,
+            crate::chooser::Ask { title: "Choose a Setup program or a package folder", start: start.as_deref(), directory: false },
+            PathPromptOptions { files: true, directories: true, multiple: false, prompt: Some("Update from this".into()) },
+        );
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
             let Some(path) = paths.into_iter().next() else { return };

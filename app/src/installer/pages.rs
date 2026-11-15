@@ -346,12 +346,12 @@ impl Installer {
     }
 
     fn browse(&mut self, field: Entity<InputState>, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Choose".into()),
-        });
+        let start = crate::chooser::start_for(&field.read(cx).value().to_string(), None);
+        let rx = crate::chooser::open(
+            cx,
+            crate::chooser::Ask { title: "Choose a folder", start: start.as_deref(), directory: true },
+            PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Choose".into()) },
+        );
         cx.spawn_in(window, async move |_, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
             let Some(path) = paths.into_iter().next() else { return };

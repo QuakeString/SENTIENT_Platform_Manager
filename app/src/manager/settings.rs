@@ -433,7 +433,12 @@ impl SettingsPage {
 
     fn choose_file(&mut self, key: impl Into<String>, window: &mut Window, cx: &mut Context<Self>) {
         let key: String = key.into();
-        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use this file".into()) });
+        let start = crate::chooser::start_for(&self.value(&key, cx), None);
+        let rx = crate::chooser::open(
+            cx,
+            crate::chooser::Ask { title: "Choose the file", start: start.as_deref(), directory: false },
+            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use this file".into()) },
+        );
         let handle = window.window_handle();
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };

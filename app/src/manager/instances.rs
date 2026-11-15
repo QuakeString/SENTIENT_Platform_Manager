@@ -856,7 +856,15 @@ impl InstancesPage {
 
     /// Pick the key file with the system's file chooser.
     fn choose_key(&mut self, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use this key".into()) });
+        // Opens where the key in the field is, else in ~/.ssh.
+        let now = self.form.as_ref().map(|f| f.key_file.read(cx).value().to_string()).unwrap_or_default();
+        let ssh = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from).map(|h| h.join(".ssh"));
+        let start = crate::chooser::start_for(&expand_home(&now).display().to_string(), ssh);
+        let rx = crate::chooser::open(
+            cx,
+            crate::chooser::Ask { title: "Choose the SSH key file", start: start.as_deref(), directory: false },
+            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use this key".into()) },
+        );
         let task = cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
             let Some(path) = paths.into_iter().next() else { return };
