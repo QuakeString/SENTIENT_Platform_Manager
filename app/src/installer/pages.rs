@@ -710,33 +710,15 @@ impl Installer {
 
     fn configuration(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
-        let toggle = h_flex()
-            .gap_1()
-            .p_0p5()
-            .rounded_full()
-            .bg(theme.background)
-            .border_1()
-            .border_color(theme.input)
-            .child(
-                Button::new("recommended")
-                    .label("Recommended")
-                    .when(!self.customize, |b| b.primary())
-                    .when(self.customize, |b| b.ghost())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.customize = false;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("customize")
-                    .label("Customize")
-                    .when(self.customize, |b| b.primary())
-                    .when(!self.customize, |b| b.ghost())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.customize = true;
-                        cx.notify();
-                    })),
-            );
+        let toggle = crate::ui::seg_track(&theme)
+            .child(crate::ui::seg_item(&theme, "recommended", "Recommended", !self.customize).on_click(cx.listener(|this, _, _, cx| {
+                this.customize = false;
+                cx.notify();
+            })))
+            .child(crate::ui::seg_item(&theme, "customize", "Customize", self.customize).on_click(cx.listener(|this, _, _, cx| {
+                this.customize = true;
+                cx.notify();
+            })));
         let body = if self.customize { self.customize_panel(cx) } else { self.recommended_panel(cx) };
         v_flex().gap_4().child(h_flex().child(toggle)).child(body)
     }

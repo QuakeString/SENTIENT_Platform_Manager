@@ -165,6 +165,20 @@ refreshes that repository's Downloads table.
   of "Installing the SENTIENT schema (one-time)".
 
 ### Fixed
+- Setting up a remote server: the first copy of the Platform Manager
+  failed ("stat remote: No such file or directory"), and a key with a
+  passphrase or a password sign-in could not copy at all. A Linux server
+  now gets the released Linux build (it runs on every supported
+  distribution); the copy is checked to start there before it replaces
+  anything.
+- A remote server that is not set up shows one "Not set up yet" panel
+  with Set up on every page, not shell errors.
+- Instance cards: same height in a row, rounded corners all round, one
+  Open button style; the summary names each state.
+- Add and Edit instance open as a dialog, with a file chooser for the key
+  and a colour picker; Setting up shows in a dialog with Try again.
+- Linux: the window uses the desktop's font (KDE, GNOME, else fontconfig's
+  sans-serif) instead of a fixed family the desktop may not have.
 - Removing an earlier install also removes a PostgreSQL folder left by an
   install that stopped before its database was created.
 - "Check for updates" finds new Platform Manager versions. It asked the

@@ -380,3 +380,36 @@ pub fn flavor_logos(flavor: sentient_installer_core::stack::Flavor, size: f32) -
     }
     row
 }
+
+/// A segmented choice: one track with the theme's radius and a 1px border,
+/// and segments inside it with equal padding. The chosen segment is filled
+/// with the primary colour. The same height as a standard button.
+pub fn seg_track(theme: &Theme) -> Div {
+    gpui_kit::component::h_flex()
+        .flex_none()
+        .items_center()
+        .gap(px(2.))
+        .p(px(2.))
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.background)
+}
+
+/// One segment of a [`seg_track`]; give it `.on_click(...)`.
+pub fn seg_item(theme: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, on: bool) -> Stateful<Div> {
+    let radius = if theme.radius > px(3.) { theme.radius - px(2.) } else { theme.radius };
+    div()
+        .id(id)
+        .h(px(26.))
+        .px_3()
+        .flex()
+        .items_center()
+        .rounded(radius)
+        .text_sm()
+        .whitespace_nowrap()
+        .cursor_pointer()
+        .when(on, |d| d.bg(theme.primary).text_color(theme.primary_foreground).font_weight(FontWeight::MEDIUM))
+        .when(!on, |d| d.text_color(theme.foreground).hover(|d| d.bg(theme.list_hover)))
+        .child(label.into())
+}

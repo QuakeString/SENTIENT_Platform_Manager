@@ -414,12 +414,20 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
     let local_arch = std::env::consts::ARCH;
     // This very program when the systems match, else the released build
     // of this version for the server.
-    let me = if cfg!(target_os = "linux") && det.arch == local_arch {
-        std::env::current_exe().map_err(|e| e.to_string())?
-    } else if det.arch == "x86_64" {
-        released_build(false, sink)?
-    } else {
+    // The released Linux build of this version runs on every supported
+    // distribution (it is built against an old C library); this very
+    // program only when no release of it exists, and only if it runs there.
+    let (me, own) = if det.arch != "x86_64" {
         return Err(format!("There is no Platform Manager build for Linux {} yet.", det.arch));
+    } else {
+        match released_build(false, sink) {
+            Ok(f) => (f, false),
+            Err(e) if cfg!(target_os = "linux") && det.arch == local_arch => {
+                sink(Progress::Log { line: format!("{e} Copying this Platform Manager instead.") });
+                (std::env::current_exe().map_err(|e| e.to_string())?, true)
+            }
+            Err(e) => return Err(e),
+        }
     };
     let want = sentient_installer_core::manifest::sha256_file(&me)?;
     let have = run(inst, &format!("sha256sum {REMOTE_SPM} 2>/dev/null | cut -d' ' -f1"), None).unwrap_or_default();
@@ -435,14 +443,38 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
         return Err("The copy on the server does not match (checksum); nothing was replaced. Try again.".into());
     }
     let pw = secret(&inst.id);
+    // It must start on the server before it replaces anything.
+    if let Err(e) = run(inst, &format!("chmod +x {staging} && {staging} --job monitor-json"), None) {
+        let _ = run(inst, &format!("rm -f {staging}"), None);
+        return Err(if e.contains("GLIBC") {
+            if own {
+                format!("This Platform Manager was built on a newer Linux than {} (its C library is older), so it cannot run there. The released build runs on every supported Linux: it is used once Platform Manager {} is published.", det.os_name, crate::updates::manager_version())
+            } else {
+                format!("The Platform Manager build does not run on {}: {e}", det.os_name)
+            }
+        } else {
+            format!("The Platform Manager copied to the server does not start there: {e}")
+        });
+    }
     sudo_run(inst, &format!("install -D -m 0755 {staging} {REMOTE_SPM} && rm -f {staging} && mkdir -p {REMOTE_JOBS}"), pw.as_deref())?;
     Ok(())
 }
 
-/// Copy a file with sftp, resuming a part already there.
+/// Copy a file with sftp, resuming a part already there (a copy cut off
+/// earlier), else from the start.
 fn sftp_put(inst: &Instance, local: &Path, remote: &str) -> Result<(), String> {
+    match sftp_batch(inst, &format!("reput \"{}\" \"{remote}\"", local.display())) {
+        Ok(()) => Ok(()),
+        // Nothing there yet to resume.
+        Err(e) if e.contains("No such file") || e.contains("stat remote") => sftp_batch(inst, &format!("put \"{}\" \"{remote}\"", local.display())),
+        Err(e) => Err(e),
+    }
+}
+
+fn sftp_batch(inst: &Instance, command: &str) -> Result<(), String> {
     let mut c = Command::new("sftp");
-    c.args(["-P", &inst.port.to_string(), "-b", "-"])
+    // BatchMode=no before -b: batch mode would otherwise refuse the passphrase or password prompt.
+    c.args(["-o", "BatchMode=no", "-P", &inst.port.to_string(), "-b", "-"])
         .args(["-o", &format!("UserKnownHostsFile={}", known_hosts().display()), "-o", "StrictHostKeyChecking=yes", "-o", "ServerAliveInterval=15"]);
     if let (Auth::Key, Some(k)) = (inst.auth, &inst.key_file) {
         c.args(["-i", &k.display().to_string()]);
@@ -453,7 +485,7 @@ fn sftp_put(inst: &Instance, local: &Path, remote: &str) -> Result<(), String> {
     let mut child = c.spawn().map_err(|e| format!("start sftp: {e}"))?;
     if let Some(mut s) = child.stdin.take() {
         use std::io::Write as _;
-        let _ = writeln!(s, "reput \"{}\" \"{remote}\"", local.display());
+        let _ = writeln!(s, "{command}");
     }
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
     if out.status.success() {
@@ -490,6 +522,21 @@ fn sudo_run(inst: &Instance, cmd: &str, _login: Option<&str>) -> Result<String, 
         });
     }
     Err(explain(&err).unwrap_or(err))
+}
+
+/// Whether the server answers and has the Platform Manager (Err:
+/// [`NOT_SET_UP`], or why it cannot be reached).
+pub fn ready(inst: &Instance) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("SPM_DEBUG_REMOTE_STATUS").is_some() {
+        return status(inst).map(|_| ());
+    }
+    let there = if is_windows(inst) {
+        win::ps(inst, &format!("Test-Path '{}'", win::EXE))?.trim() == "True"
+    } else {
+        run(inst, &format!("test -x {REMOTE_SPM} && echo yes || echo no"), None)?.trim() == "yes"
+    };
+    if there { Ok(()) } else { Err(NOT_SET_UP.into()) }
 }
 
 /// What [`status`] says before the Platform Manager is on the server.
@@ -984,6 +1031,21 @@ mod tests {
         assert_eq!(d.os, Os::Linux);
         assert!(!d.arch.is_empty() && !d.os_name.is_empty(), "{d:?}");
         eprintln!("{d:?}");
+        // Copying: a first copy, then a copy cut off halfway and resumed.
+        set_secret(&inst.id, v[4]);
+        let dir = std::env::temp_dir().join(format!("spm-sftp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("big.bin");
+        let data: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&src, &data).unwrap();
+        let dst = dir.join("copy.bin");
+        let _ = std::fs::remove_file(&dst);
+        sftp_put(&inst, &src, &dst.display().to_string()).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), data);
+        std::fs::write(&dst, &data[..1_000_000]).unwrap();
+        sftp_put(&inst, &src, &dst.display().to_string()).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), data);
+        let _ = std::fs::remove_dir_all(&dir);
         // A changed key afterwards is refused.
         std::fs::write(known_hosts(), keys.replace("AAAA", "AAAB")).unwrap();
         assert!(run(&inst, "true", Some(v[4])).unwrap_err().contains("not the one accepted"));
