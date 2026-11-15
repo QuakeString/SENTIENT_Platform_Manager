@@ -301,6 +301,25 @@ impl RemotePages {
         match &self.status {
             Read::Loading => col = col.child(Self::loading(&theme, "the state")),
             Read::Failed(e) => col = col.child(Self::failed(&theme, e)),
+            Read::Got(s) if !s.installed => {
+                // SENTIENT may run there already, started some other way
+                // (Docker compose, an older installer): the Platform Manager
+                // there finds it and takes it over without changing it.
+                let busy = self.job.read(cx).is_running();
+                let det = self.inst.detected.clone().unwrap_or_default();
+                col = col.child(
+                    ui::panel(&theme)
+                        .child(div().font_weight(FontWeight::MEDIUM).child("The Platform Manager does not look after a SENTIENT here yet"))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(if det.install.is_empty() {
+                            "If SENTIENT already runs on this server (in Docker, or installed some other way), Add existing finds it and takes it over: its data, settings and containers stay as they are.".to_string()
+                        } else {
+                            format!("SENTIENT was found on this server ({}). Add existing takes it over: its data, settings and containers stay as they are.", det.install)
+                        }))
+                        .child(h_flex().gap_2().child(
+                            Button::new("r-adopt").primary().label("Add existing SENTIENT").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Adding the existing SENTIENT", vec!["add-existing".into()], cx))),
+                        )),
+                );
+            }
             Read::Got(s) => {
                 let det = self.inst.detected.clone().unwrap_or_default();
                 let (tone, state) = if !s.installed {
