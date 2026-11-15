@@ -37,9 +37,9 @@ use sentient_installer_core::native::safe_update::RollbackPoint;
 
 use crate::installation::InstallationRecord;
 
-const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
+const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|configuration> | backup-verify <backup> | backup-delete <backup> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
+use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] | takeover-plan [--compose <file>] | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|configuration> | backup-verify <backup> | backup-delete <backup> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
 
 /// A console for the output: release builds on Windows have none of their
@@ -284,9 +284,43 @@ pub fn run(args: &[String]) -> i32 {
         println!("{}", line.unwrap_or_default());
         return 0;
     }
-    // Statistics (crate::stats): a live reading with the database numbers,
-    // one reading for the history (the sampler's timer), the history of the
-    // last <seconds>, and installing the sampler.
+    // Whether a migration could start now (crate::migration::preflight):
+    // "ok", or why not (exit 1). Nothing is changed.
+    if job == "migrate-preflight" {
+        let Some(record) = InstallationRecord::load() else {
+            eprintln!("No SENTIENT is added on this server.");
+            return 1;
+        };
+        return match crate::migration::preflight(&record) {
+            Ok(()) => {
+                println!("ok");
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+    }
+    // What taking this installation over would do (one JSON line):
+    // takeover-plan [--compose <file>].
+    if job == "takeover-plan" {
+        let Some(record) = InstallationRecord::load() else {
+            println!("null");
+            return 0;
+        };
+        let compose = args.windows(2).find(|w| w[0] == "--compose").map(|w| w[1].clone());
+        return match crate::adopt::take_over_plan(&record, compose.as_deref()) {
+            Ok(p) => {
+                println!("{}", serde_json::to_string(&p).unwrap_or_default());
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+    }
     // ClickHouse parts set aside: ch-detached (JSON), ch-attach / ch-drop
     // <table> <part> [<table> <part> ...] (one line per part: ok or why not).
     if job == "ch-detached" || job == "ch-attach" || job == "ch-drop" {
@@ -327,6 +361,9 @@ pub fn run(args: &[String]) -> i32 {
             }
         };
     }
+    // Statistics (crate::stats): a live reading with the database numbers,
+    // one reading for the history (the sampler's timer), the history of the
+    // last <seconds>, and installing the sampler.
     if job == "stats-live" {
         let record = InstallationRecord::load();
         println!("{}", serde_json::to_string(&crate::stats::read(record.as_ref(), std::time::Duration::from_secs(1), true)).unwrap_or_default());
@@ -523,7 +560,11 @@ pub fn run(args: &[String]) -> i32 {
             }
             None => Err(USAGE.into()),
         },
-        "take-over-compose" => crate::adopt::take_over_compose(record, sink.clone()).map(|_| ()),
+        // take-over-compose [--compose <file on this machine>]
+        "take-over-compose" => {
+            let compose = args.windows(2).find(|w| w[0] == "--compose").map(|w| w[1].clone());
+            crate::adopt::take_over_compose(record, compose.as_deref(), sink.clone()).map(|_| ())
+        }
         "repair" => crate::maintenance_ops::run_repair(record, sink.clone()),
         // Start, stop or restart SENTIENT (a remote instance's Control).
         "control" => match args.get(1).map(String::as_str) {
@@ -760,6 +801,7 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
         running_job: None,
         http_port: Some(record.stack.http_port),
         vanished_files: record.stack.vanished_files(),
+        external_compose: record.engine == crate::installation::Engine::Docker && record.stack.external.is_some(),
     }
 }
 

@@ -97,6 +97,17 @@ pub struct DeployConfig {
     /// follow the stack name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub names: Option<Names>,
+    /// PostgreSQL / ClickHouse published on 127.0.0.1 only: a stack taken
+    /// over whose database was not published at all gets a port the
+    /// Platform Manager can reach and nobody else.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub db_loopback: bool,
+    /// Where PostgreSQL keeps its cluster inside the volume, when not the
+    /// Platform Manager's `/var/lib/postgresql/data` (an adopted stack on the
+    /// postgres image's own default, `/var/lib/postgresql/18/docker`): the
+    /// same cluster must start after a takeover, never a new empty one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pgdata: Option<String>,
 }
 
 /// The compose project an adopted stack was started from, as Docker labels
@@ -144,6 +155,8 @@ impl Default for DeployConfig {
             keep_timescale_image: false,
             external: None,
             names: None,
+            db_loopback: false,
+            pgdata: None,
         }
     }
 }
@@ -290,6 +303,9 @@ fn stack_base_dir() -> String {
     "/opt/sentient".into()
 }
 
+/// The Platform Manager's own PostgreSQL cluster directory (in its volume).
+pub const PGDATA: &str = "/var/lib/postgresql/data";
+
 #[cfg(not(windows))]
 fn stack_base_dir() -> String {
     let opt = Path::new("/opt/sentient");
@@ -369,7 +385,8 @@ fn clickhouse_service(cfg: &DeployConfig) -> String {
         "    volumes:\n      - clickhouse_data:/var/lib/clickhouse\n      - {}\n",
         yq(&format!("{}:/etc/clickhouse-server/config.d/sentient.xml:ro", cfg.ch_config_path()))
     ));
-    y.push_str(&format!("    ports:\n      - \"{}:8123\"\n      - \"{}:9000\"\n", cfg.ch_http_port, cfg.ch_native_port));
+    let bind = if cfg.db_loopback { "127.0.0.1:" } else { "" };
+    y.push_str(&format!("    ports:\n      - \"{bind}{}:8123\"\n      - \"{bind}{}:9000\"\n", cfg.ch_http_port, cfg.ch_native_port));
     y.push_str("    healthcheck:\n      test: [\"CMD-SHELL\", \"wget -qO- http://127.0.0.1:8123/ping || exit 1\"]\n      interval: 10s\n      timeout: 5s\n      retries: 12\n\n");
     y
 }
@@ -406,11 +423,11 @@ pub fn compose(cfg: &DeployConfig) -> String {
         y.push_str(&format!("      - \"-c\"\n      - {}\n", yq(&format!("{k}={v}"))));
     }
     y.push_str(&format!(
-        "    environment:\n      POSTGRES_DB: {}\n      POSTGRES_USER: {}\n      POSTGRES_PASSWORD: {}\n      PGDATA: /var/lib/postgresql/data\n",
-        yq(&cfg.db_name), yq(&cfg.db_user), yq(&cfg.db_password)
+        "    environment:\n      POSTGRES_DB: {}\n      POSTGRES_USER: {}\n      POSTGRES_PASSWORD: {}\n      PGDATA: {}\n",
+        yq(&cfg.db_name), yq(&cfg.db_user), yq(&cfg.db_password), yq(cfg.pgdata.as_deref().unwrap_or(PGDATA))
     ));
     y.push_str("    volumes:\n      - postgres_data:/var/lib/postgresql\n");
-    y.push_str(&format!("    ports:\n      - \"{}:5432\"\n", cfg.pg_port));
+    y.push_str(&format!("    ports:\n      - \"{}{}:5432\"\n", if cfg.db_loopback { "127.0.0.1:" } else { "" }, cfg.pg_port));
     y.push_str(&format!(
         "    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U {} -d {}\"]\n      interval: 10s\n      timeout: 5s\n      retries: 12\n\n",
         cfg.db_user, cfg.db_name

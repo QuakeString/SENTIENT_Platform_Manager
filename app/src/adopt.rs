@@ -375,12 +375,12 @@ fn adopt_native(pg_admin: Option<String>, sink: &ProgressFn) -> Result<Candidate
 
 /// An adopted Docker stack: let the Platform Manager's own compose file run
 /// it from now on (needed before settings or the database type change).
-pub fn take_over_compose(record: InstallationRecord, sink: ProgressFn) -> Result<InstallationRecord, String> {
+pub fn take_over_compose(record: InstallationRecord, compose: Option<&str>, sink: ProgressFn) -> Result<InstallationRecord, String> {
     if record.engine != Engine::Docker || record.stack.external.is_none() {
         return Err("This installation already runs from the Platform Manager's compose file.".into());
     }
-    let full = distro::docker_ops::with_secrets(&record.stack)?;
-    let own = distro::adopt::take_over(sink, &full)?;
+    let full = distro::docker_ops::with_secrets(&record.stack).map_err(|e| format!("{e} Nothing was changed."))?;
+    let own = distro::adopt::take_over(sink, &full, compose)?;
     let mut updated = record;
     updated.stack = own;
     updated.stack.db_password.clear();
@@ -388,6 +388,19 @@ pub fn take_over_compose(record: InstallationRecord, sink: ProgressFn) -> Result
     let json = serde_json::to_string_pretty(&updated).map_err(|e| e.to_string())?;
     crate::self_install::write_record(&crate::installation::record_path(), &json)?;
     Ok(updated)
+}
+
+/// What taking this installation over will do (crate::manager::repair's
+/// confirmation): the compose file and env files found, what is kept.
+pub fn take_over_plan(record: &InstallationRecord, compose: Option<&str>) -> Result<distro::adopt::TakeOverPlan, String> {
+    if record.engine != Engine::Docker || record.stack.external.is_none() {
+        return Err("This installation already runs from the Platform Manager's compose file.".into());
+    }
+    let mut plan = distro::adopt::take_over_plan(&record.stack, compose).0;
+    if let Err(e) = distro::docker_ops::with_secrets(&record.stack) {
+        plan.problems.push(e);
+    }
+    Ok(plan)
 }
 
 /// One candidate as a line, for the root job's output (crate::rootjob).

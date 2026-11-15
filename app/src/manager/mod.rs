@@ -13,6 +13,7 @@ pub(crate) mod logs;
 pub(crate) mod migration;
 mod remote_pages;
 mod repair;
+mod takeover;
 pub(crate) mod settings;
 pub(crate) mod setting_field;
 pub(crate) mod status;
@@ -51,7 +52,7 @@ enum Page {
     /// About and preferences of the Platform Manager (the (i) at the
     /// bottom of the menu, not a menu entry).
     About,
-    /// Statistics: in the menu under Status, and opened from the top bar's monitors.
+    /// Statistics: in the menu after Status, and opened from the top bar's monitors.
     Statistics,
 }
 
@@ -278,6 +279,36 @@ impl Manager {
                 }
                 let view = cx.new(|_| Sheet);
                 crate::modal::open(crate::modal::Modal { title: "Switches".into(), body: view.into(), width: 360., on_close: None }, cx);
+            }
+            // Screens: the takeover dialog with a canned plan.
+            if let Ok(kind) = std::env::var("SPM_DEBUG_TAKEOVER") {
+                use sentient_installer_core::distro::adopt::TakeOverPlan;
+                let plan = move |compose: Option<String>| -> Result<TakeOverPlan, String> {
+                    let mut p = TakeOverPlan {
+                        project: "sentient-prod".into(),
+                        files: vec![("/home/ops/deploy/sentient/docker-compose.yml".into(), kind != "missing"), ("/home/ops/deploy/sentient/docker-compose.override.yml".into(), kind != "missing")],
+                        env_files: vec![("/home/ops/deploy/sentient/.env".into(), true), ("/home/ops/deploy/sentient/sentient.env".into(), kind != "missing")],
+                        containers: vec!["sentient".into(), "sentient-postgres".into(), "sentient-clickhouse".into()],
+                        image: "quakestring/sentient:4.4.0.1".into(),
+                        volumes: vec!["sentient_data".into(), "sentient_pg".into(), "sentient_ch".into()],
+                        ports: vec!["8080 web".into(), "1883 MQTT".into(), "8883 MQTTS".into(), "5683 CoAP".into(), "5684 CoAPS".into()],
+                        extra_env: vec!["SENTIENT_LICENSE_MODE".into(), "RUST_LOG".into()],
+                        loopback_port: (kind == "missing").then_some(15432),
+                        problems: Vec::new(),
+                        new_file: "/var/lib/sentient-platform-manager/stack/docker-compose.yml".into(),
+                    };
+                    if let Some(c) = compose {
+                        p.files = vec![(c, true)];
+                    }
+                    match kind.as_str() {
+                        "blocked" => p.problems.push("The container sentient-clickhouse is not there.".into()),
+                        "failed" => return Err("ssh: connect to host 10.0.4.12 port 22: Connection timed out".into()),
+                        "loading" => std::thread::sleep(std::time::Duration::from_secs(60)),
+                        _ => {}
+                    }
+                    Ok(p)
+                };
+                cx.defer(move |cx| takeover::open(std::env::var_os("SPM_DEBUG_TAKEOVER_LOCAL").is_some(), std::sync::Arc::new(plan), std::rc::Rc::new(|_, _: &mut App| {}), cx));
             }
             if std::env::var_os("SPM_DEBUG_SUDO_PROMPT").is_some() {
                 if let Some(inst) = crate::remote::load().into_iter().next() {

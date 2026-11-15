@@ -356,6 +356,13 @@ fn describe(app: &Value, all: &[Value]) -> FoundStack {
     }
     if let Some(p) = pg {
         cfg.pg = pg_tuning(p);
+        // Its cluster's place in the volume (the image's own default unless
+        // the compose file set PGDATA): kept, so a takeover starts the same
+        // cluster.
+        let pg_env = env(p);
+        if let Some(d) = env_get(&pg_env, "PGDATA").filter(|d| *d != super::PGDATA) {
+            cfg.pgdata = Some(d.to_string());
+        }
     }
     let log = &app["HostConfig"]["LogConfig"]["Config"];
     if let Some(v) = log["max-size"].as_str() {
@@ -455,31 +462,227 @@ pub fn verify(found: &FoundStack) -> Result<(), String> {
     Ok(())
 }
 
-/// Let the Platform Manager's own compose file run an adopted stack: the
-/// old project's containers are removed (its volumes stay), the same
-/// containers come up from the Platform Manager's file on the same volumes,
-/// and if SENTIENT does not answer the old project is started again.
-/// Returns the configuration without `external`. `cfg` must carry the
-/// passwords.
-pub fn take_over(sink: ProgressFn, cfg: &DeployConfig) -> Result<DeployConfig, String> {
-    let old = cfg.clone();
-    if old.external.is_none() {
-        return Ok(old);
+/// What taking a stack over will do, shown for confirmation before anything
+/// changes (and checked again when it runs).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct TakeOverPlan {
+    /// The compose project the containers were started from.
+    pub project: String,
+    /// Its compose files: (path, found on this machine).
+    pub files: Vec<(String, bool)>,
+    /// The `.env` beside them and every `env_file` they name: (path, found).
+    pub env_files: Vec<(String, bool)>,
+    /// The containers that are stopped and kept until the new ones answer.
+    pub containers: Vec<String>,
+    pub image: String,
+    /// The data volumes the new containers use, unchanged.
+    pub volumes: Vec<String>,
+    /// "8080 web", "1883 MQTT", ...
+    pub ports: Vec<String>,
+    /// SENTIENT settings carried over beyond the built-in ones (names only).
+    pub extra_env: Vec<String>,
+    /// PostgreSQL (and ClickHouse) were not published: the port they get on
+    /// 127.0.0.1 only.
+    pub loopback_port: Option<u16>,
+    /// Why it cannot be taken over (nothing is changed then).
+    pub problems: Vec<String>,
+    /// Where the Platform Manager's compose file will be.
+    pub new_file: String,
+}
+
+/// `env_file` entries in a compose file: `env_file: x` or a `- x` list.
+pub fn env_files_of(compose: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_list: Option<usize> = None;
+    for line in compose.lines() {
+        let indent = line.len() - line.trim_start().len();
+        let t = line.trim();
+        if let Some(at) = in_list {
+            if let Some(item) = t.strip_prefix("- ") {
+                if indent >= at {
+                    // `- path: x` (long form) or `- x`.
+                    let v = item.strip_prefix("path:").unwrap_or(item);
+                    out.push(v.trim().trim_matches(['"', '\'']).to_string());
+                    continue;
+                }
+            }
+            if !t.is_empty() {
+                in_list = None;
+            }
+        }
+        if let Some(rest) = t.strip_prefix("env_file:") {
+            let rest = rest.trim();
+            if rest.is_empty() {
+                in_list = Some(indent);
+            } else if let Some(list) = rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+                out.extend(list.split(',').map(|v| v.trim().trim_matches(['"', '\'']).to_string()).filter(|v| !v.is_empty()));
+            } else {
+                out.push(rest.trim_matches(['"', '\'']).to_string());
+            }
+        }
     }
-    if old.pg_port == 0 || (old.flavor.uses_clickhouse() && old.ch_http_port == 0) {
-        return Err("Its PostgreSQL or ClickHouse is not published on this machine. Publish their ports in its compose file, then add the instance again before taking it over.".into());
-    }
+    out.dedup();
+    out
+}
+
+fn resolve(dir: &str, path: &str) -> String {
+    if path.starts_with('/') || dir.is_empty() { path.to_string() } else { format!("{}/{}", dir.trim_end_matches('/'), path.trim_start_matches("./")) }
+}
+
+fn read_host_file(path: &str) -> Option<String> {
+    run_output(&format!("cat {} 2>/dev/null", shell_quote(path))).filter(|(ok, _)| *ok).map(|(_, t)| t)
+}
+
+/// A free TCP port on 127.0.0.1 from `from` up.
+fn free_loopback_port(from: u16) -> u16 {
+    (from..from.saturating_add(200)).find(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok()).unwrap_or(from)
+}
+
+/// The plan for taking `cfg` over; `compose` overrides the compose file the
+/// labels name (one picked on the server when that one is gone).
+pub fn take_over_plan(cfg: &DeployConfig, compose: Option<&str>) -> (TakeOverPlan, DeployConfig) {
+    let mut plan = TakeOverPlan::default();
     let mut own = cfg.clone();
+    let Some(ext) = cfg.external.clone() else {
+        plan.problems.push("It already runs from the Platform Manager's compose file.".into());
+        return (plan, own);
+    };
     own.external = None;
-    own.validate()?;
-    sink(Progress::Step { name: "Stopping SENTIENT and removing its containers (the data volumes stay)".into() });
-    run_stream(&sink, &old.compose_cmd("down"))?;
+    plan.project = ext.project.clone();
+    let files: Vec<String> = match compose {
+        Some(c) if !c.trim().is_empty() => vec![c.trim().to_string()],
+        _ => ext.files.clone(),
+    };
+    plan.files = files.iter().map(|f| (f.clone(), super::host_file_exists(f))).collect();
+    // The .env beside the (first) compose file, and every env_file named.
+    let dir = files.first().and_then(|f| f.rsplit_once('/').map(|(d, _)| d.to_string())).filter(|d| !d.is_empty()).unwrap_or(ext.working_dir.clone());
+    let mut envs: Vec<String> = Vec::new();
+    let dot_env = resolve(&dir, ".env");
+    if super::host_file_exists(&dot_env) {
+        envs.push(dot_env);
+    }
+    for f in files.iter().filter(|f| super::host_file_exists(f)) {
+        if let Some(text) = read_host_file(f) {
+            envs.extend(env_files_of(&text).into_iter().map(|e| resolve(&dir, &e)));
+        }
+    }
+    envs.dedup();
+    plan.env_files = envs.iter().map(|e| (e.clone(), super::host_file_exists(e))).collect();
+
+    let n = cfg.names();
+    plan.containers = std::iter::once(n.app.clone()).chain(std::iter::once(n.pg.clone())).chain(cfg.flavor.uses_clickhouse().then(|| n.ch.clone())).collect();
+    plan.image = cfg.image.clone();
+    plan.volumes = std::iter::once(n.vol_data.clone()).chain(std::iter::once(n.vol_pg.clone())).chain(cfg.flavor.uses_clickhouse().then(|| n.vol_ch.clone())).collect();
+    plan.ports = vec![
+        format!("{} web", cfg.http_port),
+        format!("{} MQTT", cfg.mqtt_port),
+        format!("{} MQTTS", cfg.mqtts_port),
+        format!("{} CoAP", cfg.coap_port),
+        format!("{} CoAPS", cfg.coaps_port),
+    ];
+    plan.extra_env = cfg.tuning.extra_env.iter().map(|e| e.name.clone()).collect();
+    // A database that was not published gets a port on 127.0.0.1 only.
+    if cfg.pg_port == 0 || (cfg.flavor.uses_clickhouse() && cfg.ch_http_port == 0) {
+        own.db_loopback = true;
+        if cfg.pg_port == 0 {
+            own.pg_port = free_loopback_port(15432);
+            plan.loopback_port = Some(own.pg_port);
+        }
+        if cfg.flavor.uses_clickhouse() && cfg.ch_http_port == 0 {
+            own.ch_http_port = free_loopback_port(18123);
+            own.ch_native_port = free_loopback_port(19000);
+        }
+    } else {
+        plan.ports.push(format!("{} PostgreSQL", cfg.pg_port));
+    }
+    if let Err(e) = own.validate() {
+        plan.problems.push(e);
+    }
+    for c in &plan.containers {
+        if !container_exists(c) {
+            plan.problems.push(format!("The container {c} is not there."));
+        }
+    }
+    plan.new_file = own.compose_path();
+    (plan, own)
+}
+
+fn container_exists(name: &str) -> bool {
+    run_output(&format!("docker inspect -f '{{{{.Id}}}}' {} 2>/dev/null", shell_quote(name))).is_some_and(|(ok, _)| ok)
+}
+
+/// The name an old container is kept under while the new one starts.
+fn kept_name(name: &str) -> String {
+    format!("{name}-before-takeover")
+}
+
+/// Let the Platform Manager's own compose file run an adopted stack, on the
+/// same volumes. Nothing is removed until the new containers answer:
+///
+/// 1. the Platform Manager's compose file is written (nothing stopped yet);
+/// 2. the old containers are stopped and renamed (`<name>-before-takeover`);
+/// 3. the new ones start from the new file and must answer within 3 minutes;
+/// 4. then the old ones are removed. On any failure the new ones are removed,
+///    the old ones get their names back and start again, exactly as they
+///    were, without needing the original compose file.
+///
+/// `compose`: a compose file picked on the server in place of the one the
+/// labels name. Returns the configuration without `external`. `cfg` must
+/// carry the passwords.
+pub fn take_over(sink: ProgressFn, cfg: &DeployConfig, compose: Option<&str>) -> Result<DeployConfig, String> {
+    if cfg.external.is_none() {
+        return Ok(cfg.clone());
+    }
+    let (plan, own) = take_over_plan(cfg, compose);
+    if !plan.problems.is_empty() {
+        return Err(format!("{} Nothing was changed.", plan.problems.join(" ")));
+    }
+    if let Some(p) = plan.loopback_port {
+        sink(Progress::Log { line: format!("PostgreSQL was not published: it gets port {p} on 127.0.0.1 only.") });
+    }
+    // 1. The new file first: if it cannot be written, nothing has stopped.
     sink(Progress::Step { name: format!("Writing the Platform Manager's compose file ({})", own.compose_path()) });
-    let started = write_stack_files(&sink, &own).and_then(|_| {
-        sink(Progress::Step { name: "Starting SENTIENT from it".into() });
-        run_stream(&sink, &own.compose_cmd("up -d"))
-    });
-    let up = started.and_then(|_| {
+    // The old file at the same place is kept, never overwritten.
+    if plan.files.iter().any(|(f, found)| *found && *f == own.compose_path()) {
+        let _ = run_output(&format!("cp -p {} {}", shell_quote(&own.compose_path()), shell_quote(&format!("{}.before-takeover", own.compose_path()))));
+    }
+    write_stack_files(&sink, &own).map_err(|e| format!("{e}. Nothing was changed."))?;
+    for (f, found) in &plan.env_files {
+        if *found {
+            // Kept beside the new file for reference; their values are in
+            // effect already (they came with the containers' environment).
+            let dest = format!("{}/{}", own.stack_dir(), f.rsplit('/').next().unwrap_or(".env"));
+            let _ = run_output(&format!("cp -p {} {}", shell_quote(f), shell_quote(&format!("{dest}.from-{}", plan.project))));
+        }
+    }
+    // 2. Stop the old containers and keep them under another name.
+    sink(Progress::Step { name: "Stopping SENTIENT and keeping its containers until the new ones answer".into() });
+    let mut kept: Vec<String> = Vec::new();
+    let restore = |sink: &ProgressFn, kept: &[String]| {
+        let _ = run_stream(sink, &own.compose_cmd("down"));
+        // The database first, SENTIENT last.
+        for c in kept.iter().rev() {
+            let _ = run_output(&format!("docker rename {} {}", shell_quote(&kept_name(c)), shell_quote(c)));
+        }
+        for c in kept.iter().rev() {
+            let _ = run_output(&format!("docker start {}", shell_quote(c)));
+        }
+    };
+    for c in &plan.containers {
+        let ok = run_output(&format!("docker stop {} && docker rename {} {}", shell_quote(c), shell_quote(c), shell_quote(&kept_name(c)))).is_some_and(|(ok, _)| ok);
+        if !ok {
+            restore(&sink, &kept);
+            let _ = run_output(&format!("docker start {}", shell_quote(c)));
+            return Err(format!("The container {c} could not be stopped and kept. SENTIENT runs as before; nothing was changed."));
+        }
+        kept.push(c.clone());
+    }
+    // 3. The new containers, on the same volumes.
+    sink(Progress::Step { name: "Starting SENTIENT from the Platform Manager's compose file".into() });
+    let up = run_stream(&sink, &own.compose_cmd("up -d")).and_then(|_| {
+        if std::env::var_os("SPM_TEST_TAKEOVER_FAIL").is_some() {
+            return Err("test: the new containers are made to fail".to_string());
+        }
         for _ in 0..90 {
             if is_running(own.http_port) {
                 return Ok(());
@@ -489,10 +692,19 @@ pub fn take_over(sink: ProgressFn, cfg: &DeployConfig) -> Result<DeployConfig, S
         Err("SENTIENT did not answer within 3 minutes".to_string())
     });
     if let Err(e) = up {
-        sink(Progress::Step { name: "Starting SENTIENT from its own compose file again".into() });
-        let _ = run_stream(&sink, &own.compose_cmd("down"));
-        let _ = run_stream(&sink, &old.compose_cmd("up -d"));
-        return Err(format!("{e}. SENTIENT was started from its own compose file again; nothing was taken over."));
+        sink(Progress::Step { name: "Starting the previous containers again".into() });
+        restore(&sink, &kept);
+        for _ in 0..60 {
+            if is_running(cfg.http_port) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        return Err(format!("{e}. The previous containers run again as they were; nothing was taken over."));
+    }
+    // 4. Only now the old containers go (their volumes are the new ones').
+    for c in &kept {
+        let _ = run_output(&format!("docker rm {}", shell_quote(&kept_name(c))));
     }
     sink(Progress::Done {
         message: format!(
@@ -506,6 +718,215 @@ pub fn take_over(sink: ProgressFn, cfg: &DeployConfig) -> Result<DeployConfig, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Takeover against throwaway compose projects on this machine's Docker
+    /// (`spmtest/sentient:fake` answering on 8080, postgres:18-alpine), each
+    /// on its own names, ports and volumes. XDG_DATA_HOME points the new
+    /// compose files at a scratch folder. Run one at a time:
+    /// `cargo test -p sentient-installer-core takeover_e2e -- --ignored --test-threads=1`.
+    mod takeover_e2e {
+        use super::super::*;
+        use std::process::Command;
+
+        fn sh(cmd: &str) -> (bool, String) {
+            let o = Command::new("sh").args(["-c", cmd]).output().unwrap();
+            (o.status.success(), format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+        }
+
+        struct Case {
+            n: u16,
+            dir: std::path::PathBuf,
+        }
+
+        impl Case {
+            fn p(&self) -> String {
+                format!("spmft{}", self.n)
+            }
+            fn app(&self) -> String {
+                format!("spmft{}-sentient", self.n)
+            }
+            fn pg(&self) -> String {
+                format!("spmft{}-postgres", self.n)
+            }
+            fn http(&self) -> u16 {
+                18080 + self.n
+            }
+
+            /// A compose project like a customer's: own names, an env_file and
+            /// a .env, PostgreSQL published or not.
+            fn up(n: u16, pg_published: bool) -> Case {
+                let dir = std::env::temp_dir().join(format!("spm-takeover-{n}-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                let c = Case { n, dir };
+                c.down();
+                std::fs::write(c.dir.join(".env"), format!("HTTP_PORT={}\n", c.http())).unwrap();
+                std::fs::write(c.dir.join("sentient.env"), "MY_EXTRA_SETTING=kept\n").unwrap();
+                let pg_ports = if pg_published { format!("    ports:\n      - \"{}:5432\"\n", 25480 + n) } else { String::new() };
+                let y = format!(
+                    "services:\n  sentient:\n    image: spmtest/sentient:fake\n    container_name: {app}\n    env_file: ./sentient.env\n    environment:\n      DATABASE_URL: postgresql://sentient:pw{n}@postgres:5432/sentient\n    ports:\n      - \"${{HTTP_PORT}}:8080\"\n      - \"{m}:1883\"\n      - \"{ms}:8883\"\n      - \"{c}:5683/udp\"\n      - \"{cs}:5684/udp\"\n    volumes:\n      - data:/var/lib/sentient\n  postgres:\n    image: postgres:18-alpine\n    container_name: {pg}\n    environment:\n      POSTGRES_DB: sentient\n      POSTGRES_USER: sentient\n      POSTGRES_PASSWORD: pw{n}\n{pg_ports}    volumes:\n      - pg:/var/lib/postgresql\nvolumes:\n  data:\n    name: spmft{n}-data\n  pg:\n    name: spmft{n}-pg\n",
+                    app = c.app(),
+                    pg = c.pg(),
+                    m = 21880 + n,
+                    ms = 22880 + n,
+                    c = 23680 + n,
+                    cs = 24680 + n,
+                );
+                std::fs::write(c.dir.join("compose.yml"), y).unwrap();
+                let (ok, out) = sh(&format!("cd {} && docker compose -p {} -f compose.yml up -d", c.dir.display(), c.p()));
+                assert!(ok, "{out}");
+                // A row in the database: it must survive the takeover.
+                for _ in 0..60 {
+                    if sh(&format!("docker exec {} psql -U sentient -d sentient -c \"CREATE TABLE IF NOT EXISTS marker(v text); INSERT INTO marker VALUES ('before')\"", c.pg())).0 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                c
+            }
+
+            fn found(&self) -> DeployConfig {
+                find().into_iter().find(|f| f.cfg.names().app == self.app()).expect("the stack is found").cfg
+            }
+
+            fn marker(&self) -> String {
+                sh(&format!("docker exec {} psql -U sentient -d sentient -tAc 'SELECT v FROM marker'", self.pg())).1.trim().to_string()
+            }
+
+            fn running(&self, name: &str) -> bool {
+                sh(&format!("docker inspect -f '{{{{.State.Running}}}}' {name}")).1.trim() == "true"
+            }
+
+            fn project_of(&self, name: &str) -> String {
+                sh(&format!("docker inspect -f '{{{{index .Config.Labels \"com.docker.compose.project.config_files\"}}}}' {name}")).1.trim().to_string()
+            }
+
+            fn down(&self) {
+                for c in [self.app(), self.pg(), format!("{}-before-takeover", self.app()), format!("{}-before-takeover", self.pg())] {
+                    let _ = sh(&format!("docker rm -f {c}"));
+                }
+                let _ = sh(&format!("docker network rm {}_default spmft{}_sentient_default {}_sentient 2>/dev/null; docker volume rm spmft{n}-data spmft{n}-pg", self.p(), self.n, self.p(), n = self.n));
+            }
+        }
+
+        fn sink() -> ProgressFn {
+            std::sync::Arc::new(|p| eprintln!("  {p:?}"))
+        }
+
+        fn scratch() {
+            let d = std::env::temp_dir().join(format!("spm-takeover-xdg-{}", std::process::id()));
+            std::fs::create_dir_all(&d).unwrap();
+            // SAFETY: tests run one at a time (--test-threads=1).
+            unsafe { std::env::set_var("XDG_DATA_HOME", &d) };
+        }
+
+        fn taken_over(c: &Case, own: &DeployConfig) {
+            assert!(own.external.is_none());
+            assert!(c.running(&c.app()) && c.running(&c.pg()));
+            assert_eq!(c.project_of(&c.app()), own.compose_path(), "runs from the Platform Manager's file");
+            assert_eq!(c.marker(), "before", "the data stayed");
+            assert!(sh(&format!("docker inspect {}-before-takeover", c.app())).0 == false, "the old container is gone");
+            let env = sh(&format!("docker inspect -f '{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}' {}", c.app())).1;
+            assert!(env.contains("MY_EXTRA_SETTING=kept"), "the env_file's value is carried over: {env}");
+            assert!(is_running(c.http()));
+        }
+
+        #[test]
+        #[ignore]
+        fn with_its_compose_file_env_and_env_file() {
+            scratch();
+            let c = Case::up(1, true);
+            let cfg = c.found();
+            let (plan, _) = take_over_plan(&cfg, None);
+            assert!(plan.problems.is_empty(), "{:?}", plan.problems);
+            assert!(plan.files.iter().all(|(_, f)| *f), "{:?}", plan.files);
+            assert_eq!(plan.env_files.iter().filter(|(_, f)| *f).count(), 2, "{:?}", plan.env_files);
+            assert!(plan.extra_env.iter().any(|e| e == "MY_EXTRA_SETTING"), "{:?}", plan.extra_env);
+            let own = take_over(sink(), &cfg, None).unwrap();
+            taken_over(&c, &own);
+            let _ = sh(&format!("docker compose -f {} down -v", own.compose_path()));
+            c.down();
+        }
+
+        #[test]
+        #[ignore]
+        fn file_gone_then_picked_on_the_server() {
+            scratch();
+            let c = Case::up(2, true);
+            let moved = c.dir.join("elsewhere.yml");
+            std::fs::rename(c.dir.join("compose.yml"), &moved).unwrap();
+            let cfg = c.found();
+            let (plan, _) = take_over_plan(&cfg, None);
+            assert!(plan.files.iter().all(|(_, f)| !*f), "the labels' file is gone: {:?}", plan.files);
+            let (plan, _) = take_over_plan(&cfg, Some(&moved.display().to_string()));
+            assert!(plan.files.iter().all(|(_, f)| *f), "{:?}", plan.files);
+            assert!(plan.env_files.iter().any(|(p, f)| p.ends_with("sentient.env") && *f), "{:?}", plan.env_files);
+            let own = take_over(sink(), &cfg, Some(&moved.display().to_string())).unwrap();
+            taken_over(&c, &own);
+            let _ = sh(&format!("docker compose -f {} down -v", own.compose_path()));
+            c.down();
+        }
+
+        #[test]
+        #[ignore]
+        fn no_compose_file_at_all() {
+            scratch();
+            let c = Case::up(3, true);
+            std::fs::remove_dir_all(&c.dir).unwrap();
+            let cfg = c.found();
+            let (plan, _) = take_over_plan(&cfg, None);
+            assert!(plan.problems.is_empty(), "rebuilt from the containers: {:?}", plan.problems);
+            let own = take_over(sink(), &cfg, None).unwrap();
+            taken_over(&c, &own);
+            let _ = sh(&format!("docker compose -f {} down -v", own.compose_path()));
+            c.down();
+        }
+
+        #[test]
+        #[ignore]
+        fn postgres_not_published() {
+            scratch();
+            let c = Case::up(4, false);
+            let cfg = c.found();
+            assert_eq!(cfg.pg_port, 0);
+            let (plan, _) = take_over_plan(&cfg, None);
+            assert!(plan.problems.is_empty(), "{:?}", plan.problems);
+            let port = plan.loopback_port.expect("a loopback port");
+            let own = take_over(sink(), &cfg, None).unwrap();
+            taken_over(&c, &own);
+            let bound = sh(&format!("docker port {} 5432", c.pg())).1;
+            assert!(bound.trim() == format!("127.0.0.1:{port}"), "PostgreSQL on 127.0.0.1 only: {bound}");
+            let _ = sh(&format!("docker compose -f {} down -v", own.compose_path()));
+            c.down();
+        }
+
+        #[test]
+        #[ignore]
+        fn a_failure_after_the_switch_starts_the_old_containers_again() {
+            scratch();
+            let c = Case::up(5, true);
+            let cfg = c.found();
+            // SAFETY: tests run one at a time (--test-threads=1).
+            unsafe { std::env::set_var("SPM_TEST_TAKEOVER_FAIL", "1") };
+            let e = take_over(sink(), &cfg, None).unwrap_err();
+            unsafe { std::env::remove_var("SPM_TEST_TAKEOVER_FAIL") };
+            eprintln!("failure: {e}");
+            assert!(e.contains("previous containers run again"), "{e}");
+            assert!(c.running(&c.app()) && c.running(&c.pg()), "the old containers run again under their names");
+            assert!(c.project_of(&c.app()).ends_with("compose.yml") && !c.project_of(&c.app()).contains("docker-compose"), "still the customer's containers");
+            assert_eq!(c.marker(), "before");
+            assert!(is_running(c.http()));
+            c.down();
+        }
+    }
+
+    #[test]
+    fn env_files_are_read_from_every_form() {
+        let y = "services:\n  sentient:\n    image: x\n    env_file: ./sentient.env\n  postgres:\n    env_file:\n      - db.env\n      - path: ./opt.env\n        required: false\n    environment:\n      A: b\n  ch:\n    env_file: [a.env, \"b.env\"]\n";
+        assert_eq!(env_files_of(y), vec!["./sentient.env", "db.env", "./opt.env", "a.env", "b.env"]);
+        assert_eq!(resolve("/srv/st", "./x.env"), "/srv/st/x.env");
+        assert_eq!(resolve("/srv/st", "/etc/y.env"), "/etc/y.env");
+    }
 
     #[test]
     fn connection_strings_are_read_with_escapes() {

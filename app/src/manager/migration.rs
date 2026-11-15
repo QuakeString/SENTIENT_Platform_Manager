@@ -29,6 +29,8 @@ pub struct MigrationPage {
     kept: Option<Result<Vec<Kept>, String>>,
     /// Native Linux: the operator asked to see it (it needs the password).
     kept_asked: bool,
+    /// crate::migration::preflight, checked before the confirmation.
+    preflight: crate::manager::remote_pages::Preflight,
     _observe: Subscription,
     _tasks: Vec<Task<()>>,
 }
@@ -79,13 +81,14 @@ impl MigrationPage {
                 page.state = page.record.as_ref().and_then(migration::load_state);
                 page.target = None;
                 page.confirm = false;
+                page.preflight = crate::manager::remote_pages::Preflight::Idle;
                 cx.emit(RecordChanged);
                 page.refresh_kept(cx);
             }
             cx.notify();
         });
         let state = record.as_ref().and_then(migration::load_state);
-        let mut page = Self { record, state, target: None, confirm: false, job, kept: None, kept_asked: false, _observe, _tasks: Vec::new() };
+        let mut page = Self { record, state, target: None, confirm: false, job, kept: None, kept_asked: false, preflight: std::env::var("SPM_DEBUG_PREFLIGHT").ok().filter(|_| cfg!(debug_assertions)).map(crate::manager::remote_pages::Preflight::Failed).unwrap_or(crate::manager::remote_pages::Preflight::Idle), _observe, _tasks: Vec::new() };
         page.refresh_kept(cx);
         page
     }
@@ -169,6 +172,52 @@ impl MigrationPage {
         }
     }
 
+    /// The preflight, then the confirmation. As administrator the migration
+    /// job checks it itself (and changes nothing when it fails).
+    fn check(&mut self, cx: &mut Context<Self>) {
+        use crate::manager::remote_pages::Preflight;
+        let Some(record) = self.record.clone() else { return };
+        if crate::rootjob::needed(&record) {
+            self.confirm = true;
+            cx.notify();
+            return;
+        }
+        self.preflight = Preflight::Checking;
+        self._tasks.push(cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { migration::preflight(&record) }).await;
+            let _ = this.update(cx, |p, cx| {
+                match r {
+                    Ok(()) => {
+                        p.preflight = Preflight::Idle;
+                        p.confirm = true;
+                    }
+                    Err(e) => p.preflight = Preflight::Failed(e),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    /// The compose-file takeover from here (the preflight's reason).
+    fn open_take_over(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        let this = cx.entity().downgrade();
+        crate::manager::takeover::open(
+            true,
+            std::sync::Arc::new(move |compose: Option<String>| crate::adopt::take_over_plan(&record, compose.as_deref())),
+            std::rc::Rc::new(move |compose: Option<String>, cx: &mut App| {
+                this.update(cx, |page, cx| {
+                    let Some(record) = page.record.clone() else { return };
+                    page.preflight = crate::manager::remote_pages::Preflight::Idle;
+                    page.job.update(cx, |job, cx| job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), sink).map(|_| ()), cx));
+                })
+                .ok();
+            }),
+            cx,
+        );
+    }
+
     fn resume(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         if crate::rootjob::needed(&record) {
@@ -213,6 +262,7 @@ impl Render for MigrationPage {
                             this.update(cx, |this, cx| {
                                 this.target = Some(i);
                                 this.confirm = false;
+                                this.preflight = crate::manager::remote_pages::Preflight::Idle;
                                 cx.notify();
                             })
                             .ok();
@@ -228,11 +278,9 @@ impl Render for MigrationPage {
                                 crate::ui::button("migrate")
                                     .primary()
                                     .label(chosen.map(|f| format!("Change to {}", flavor_label(f))).unwrap_or_else(|| "Change database".into()))
-                                    .disabled(busy || chosen.is_none() || unfinished.is_some())
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.confirm = true;
-                                        cx.notify();
-                                    })),
+                                    .disabled(busy || chosen.is_none() || unfinished.is_some() || self.preflight == crate::manager::remote_pages::Preflight::Checking)
+                                    .loading(self.preflight == crate::manager::remote_pages::Preflight::Checking)
+                                    .on_click(cx.listener(|this, _, _, cx| this.check(cx))),
                             )
                         })
                         .when(self.confirm, |r| {
@@ -257,6 +305,10 @@ impl Render for MigrationPage {
                 ),
         };
 
+        let preflight_failed = match &self.preflight {
+            crate::manager::remote_pages::Preflight::Failed(why) => Some((why.clone(), record.engine == crate::installation::Engine::Docker && record.stack.external.is_some())),
+            _ => None,
+        };
         let root_only = crate::rootjob::needed(record) && !self.kept_asked;
         let kept_panel = match &self.kept {
             None => ui::panel(&theme)
@@ -334,6 +386,13 @@ impl Render for MigrationPage {
                         ),
                     ),
             )
+        })
+        .when_some(preflight_failed, |page, (why, external)| {
+            page.child(crate::manager::remote_pages::preflight_notice(
+                &theme,
+                &why,
+                external.then(|| crate::ui::button("mig-take-over").outline().label("Take over the compose file…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element()),
+            ))
         })
         .child(main)
         .child(kept_panel)

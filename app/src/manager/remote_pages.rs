@@ -83,7 +83,7 @@ pub(crate) fn ask_sudo_password(inst: Instance, then: std::rc::Rc<dyn Fn(&mut Ap
                         .justify_end()
                         // An account without sudo: the agent goes in its home
                         // folder (crate::remote::choose_user_install).
-                        .child(crate::ui::button("sudo-none").ghost().label("This account has no sudo").on_click(cx.listener(|p, _, _, cx| {
+                        .child(crate::ui::button("sudo-none").label("This account has no sudo").on_click(cx.listener(|p, _, _, cx| {
                             let inst = p.inst.clone();
                             let then = p.then.clone();
                             crate::modal::close(cx);
@@ -118,6 +118,26 @@ pub(crate) fn ask_sudo_password(inst: Instance, then: std::rc::Rc<dyn Fn(&mut Ap
     });
 }
 
+/// A migration's preflight, local or on a server (crate::manager::migration too).
+#[derive(Clone, PartialEq)]
+pub(crate) enum Preflight {
+    Idle,
+    Checking,
+    Failed(String),
+}
+
+/// Why a migration cannot start now, in the page, with "Take over the
+/// compose file…" when that is the reason.
+pub(crate) fn preflight_notice(theme: &gpui_kit::component::Theme, why: &str, take_over: Option<AnyElement>) -> Div {
+    // With the button beside it, the way there needs no words.
+    let why = if take_over.is_some() && why.contains("own compose file") {
+        "SENTIENT runs from a compose file the Platform Manager did not write.\nLet the Platform Manager take it over first; the data stays."
+    } else {
+        why
+    };
+    ui::notice_with(theme, Tone::Warn, format!("The database type cannot be changed now.\n{why}"), take_over)
+}
+
 /// How long a reading may take before the page says the server does not answer.
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -145,6 +165,9 @@ pub struct RemotePages {
     target: Option<usize>,
     /// Migration: Change was pressed; the confirmation shows.
     migrate_confirm: bool,
+    /// The migration's preflight (crate::migration::preflight on the server):
+    /// checked before the confirmation.
+    preflight: Preflight,
     /// The newest SENTIENT on the update channel (None: none newer).
     offer: Read<Option<crate::updates::Offer>>,
     /// The versions "Other version" lists.
@@ -221,6 +244,8 @@ impl RemotePages {
             gateway: Read::Loading,
             target: None,
             migrate_confirm: false,
+            // Screens: a canned preflight failure.
+            preflight: std::env::var("SPM_DEBUG_PREFLIGHT").ok().filter(|_| cfg!(debug_assertions)).map(Preflight::Failed).unwrap_or(Preflight::Idle),
             offer: Read::Loading,
             versions: Read::Loading,
             pick: None,
@@ -1258,7 +1283,13 @@ impl RemotePages {
         let targets: Vec<Flavor> = all.into_iter().filter(|f| Some(*f) != now).collect();
         let chosen = self.target.and_then(|i| targets.get(i).copied());
         let this = cx.entity().downgrade();
-        ui::panel(&theme)
+        // Why it cannot start now: a page notice above the card.
+        let external = self.status.got().is_some_and(|s| s.external_compose);
+        let notice = match &self.preflight {
+            Preflight::Failed(why) => Some(preflight_notice(&theme, why, external.then(|| self.take_over_button("r-mig-take-over", busy, cx)))),
+            _ => None,
+        };
+        v_flex().gap_4().children(notice).child(ui::panel(&theme)
             .child(ui::fact(&theme, "Database now", if current.is_empty() { "Reading…".to_string() } else { current.clone() }))
             .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Change to"))
             .child(crate::manager::migration::target_cards(&theme, "r-", &targets, self.target, crate::remote::is_windows(&self.inst), std::rc::Rc::new(move |i, cx| {
@@ -1266,6 +1297,7 @@ impl RemotePages {
                     if !p.job.read(cx).is_running() {
                         p.target = Some(i);
                         p.migrate_confirm = false;
+                        p.preflight = Preflight::Idle;
                         cx.notify();
                     }
                 })
@@ -1280,11 +1312,9 @@ impl RemotePages {
                             crate::ui::button("r-migrate")
                                 .primary()
                                 .label(chosen.map(|f| format!("Change to {}", crate::installation::flavor_label(f))).unwrap_or_else(|| "Change database".into()))
-                                .disabled(busy || chosen.is_none() || now.is_none())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.migrate_confirm = true;
-                                    cx.notify();
-                                })),
+                                .disabled(busy || chosen.is_none() || now.is_none() || self.preflight == Preflight::Checking)
+                                .loading(self.preflight == Preflight::Checking)
+                                .on_click(cx.listener(|this, _, _, cx| this.check_migration(cx))),
                         )
                     })
                     .when_some(chosen.filter(|_| self.migrate_confirm), |r, f| {
@@ -1303,21 +1333,84 @@ impl RemotePages {
                             cx.notify();
                         })))
                     }),
-            )
+            ))
+    }
+
+    /// The preflight on the server, then the confirmation.
+    fn check_migration(&mut self, cx: &mut Context<Self>) {
+        self.preflight = Preflight::Checking;
+        self.migrate_confirm = false;
+        let inst = self.inst.clone();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { remote::migrate_preflight(&inst) }).await;
+            let _ = this.update(cx, |p, cx| {
+                match r {
+                    Ok(()) => {
+                        p.preflight = Preflight::Idle;
+                        p.migrate_confirm = true;
+                    }
+                    Err(e) => p.preflight = Preflight::Failed(e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Take the server's compose-file SENTIENT over: the plan from its agent
+    /// for confirmation (crate::manager::takeover), then the job there.
+    fn open_take_over(&mut self, cx: &mut Context<Self>) {
+        let inst = self.inst.clone();
+        let this = cx.entity().downgrade();
+        crate::manager::takeover::open(
+            false,
+            std::sync::Arc::new(move |compose: Option<String>| remote::takeover_plan(&inst, compose.as_deref())),
+            std::rc::Rc::new(move |compose: Option<String>, cx: &mut App| {
+                this.update(cx, |p, cx| {
+                    let mut args = vec!["take-over-compose".to_string()];
+                    if let Some(c) = compose {
+                        args.push("--compose".into());
+                        args.push(c);
+                    }
+                    p.preflight = Preflight::Idle;
+                    p.run_job("Taking over the compose file", args, cx);
+                })
+                .ok();
+            }),
+            cx,
+        );
+    }
+
+    fn take_over_button(&self, id: &'static str, busy: bool, cx: &mut Context<Self>) -> AnyElement {
+        crate::ui::button(id).outline().label("Take over the compose file…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element()
     }
 
     fn repair_page(&self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
         let installed = self.status.got().is_some_and(|s| s.installed);
-        // The same panel as this computer's Repair. Uninstalling is done on
+        let external = self.status.got().is_some_and(|s| s.external_compose);
+        // The same panels as this computer's Repair. Uninstalling is done on
         // the server itself, so that panel is left out here.
-        ui::panel(&theme)
+        let take_over = external.then(|| {
+            ui::panel(&theme)
+                .child(div().font_weight(FontWeight::MEDIUM).child("Take over the compose file"))
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().text_sm().text_color(theme.muted_foreground).child("SENTIENT runs from a compose file the Platform Manager did not write."))
+                        .child(ui::info("r-take-over-help".into(), "The Platform Manager does not change that file. Changing settings or the database type needs the Platform Manager's own compose file: the same containers on the same data.".into())),
+                )
+                .child(h_flex().child(self.take_over_button("r-take-over", busy, cx)))
+        });
+        v_flex().gap_4().children(take_over).child(ui::panel(&theme)
             .child(div().font_weight(FontWeight::MEDIUM).child("Repair"))
             .child(div().text_sm().text_color(theme.muted_foreground).child(
                 "For a SENTIENT that does not start or a service that went missing: the services and their configuration are written again from this installation's record, and SENTIENT is started. Data and settings are kept.",
             ))
-            .child(h_flex().child(crate::ui::button("r-repair").outline().label("Repair").disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job("Repairing", vec!["repair".into()], cx)))))
+            .child(h_flex().child(crate::ui::button("r-repair").outline().label("Repair").disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job("Repairing", vec!["repair".into()], cx))))))
     }
 
     fn gateway_page(&self, cx: &mut Context<Self>) -> Div {
