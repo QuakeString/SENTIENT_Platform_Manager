@@ -37,6 +37,48 @@ struct Bg {
 
 impl Global for Bg {}
 
+/// What the background checks see now, per instance (None: this computer):
+/// name, colour, and the problem while there is one. The bell and the tray
+/// list problems as conditions (not clearable; gone when it runs again).
+#[derive(Default)]
+struct Health(HashMap<Option<String>, (String, String, Seen)>);
+
+impl Global for Health {}
+
+/// A problem the checks found: instance, its name and colour, and whether
+/// the server does not answer (else SENTIENT is stopped).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Problem {
+    pub instance: Option<String>,
+    pub name: String,
+    pub color: String,
+    pub no_answer: bool,
+}
+
+impl Problem {
+    pub fn title(&self) -> &'static str {
+        if self.no_answer { "The server does not answer" } else { "SENTIENT stopped" }
+    }
+
+    pub fn detail(&self) -> String {
+        let on = if self.instance.is_none() { "this computer".to_string() } else { self.name.clone() };
+        if self.no_answer { format!("{} could not be reached over SSH.", self.name) } else { format!("SENTIENT on {on} does not answer on its web port.") }
+    }
+}
+
+/// The problems now, this computer first.
+pub fn problems(cx: &App) -> Vec<Problem> {
+    let Some(h) = cx.try_global::<Health>() else { return Vec::new() };
+    let mut v: Vec<Problem> = h
+        .0
+        .iter()
+        .filter(|(_, (_, _, s))| *s != Seen::Running)
+        .map(|(id, (name, color, s))| Problem { instance: id.clone(), name: name.clone(), color: color.clone(), no_answer: *s == Seen::NoAnswer })
+        .collect();
+    v.sort_by(|a, b| a.instance.is_some().cmp(&b.instance.is_some()).then(a.name.cmp(&b.name)));
+    v
+}
+
 /// The background part runs (the tray is up and closing does not quit).
 fn keeps_running(cx: &App) -> bool {
     cx.try_global::<Bg>().is_some_and(|b| b.tray.is_some() && !b.prefs.close_quits)
@@ -57,6 +99,14 @@ pub fn start(options: fn(&mut App) -> WindowOptions, open_window: bool, request:
     cx.set_global(Bg { prefs, tray, tx, manager: None, window: None, options });
     // The bell's strip lives as long as the app (jobs survive a closed window).
     crate::manager::strip::install(cx);
+    // Screens: problems as the checks would find them.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("SPM_DEBUG_PROBLEMS").is_some() {
+        let mut h = HashMap::new();
+        h.insert(Some("plantb".to_string()), ("Plant B server".to_string(), "#6b4fa0".to_string(), Seen::NoAnswer));
+        h.insert(None, ("This computer".to_string(), crate::remote::LOCAL_COLOR.to_string(), Seen::Stopped));
+        cx.set_global(Health(h));
+    }
 
     cx.spawn(async move |cx| {
         while let Some(cmd) = rx.next().await {
@@ -194,9 +244,10 @@ fn local_state() -> Option<bool> {
 fn refresh_tray(cx: &mut App) {
     cx.spawn(async move |cx| {
         loop {
-            let model = cx.background_executor().spawn(async { crate::tray::Model::read(local_state()) }).await;
+            let mut model = cx.background_executor().spawn(async { crate::tray::Model::read(local_state()) }).await;
             let alive = cx.update(|cx| match cx.try_global::<Bg>().and_then(|b| b.tray.as_ref()) {
                 Some(t) => {
+                    model.conditions = problems(cx).into_iter().map(|p| (p.instance.clone().unwrap_or_default(), format!("{}: {}", p.name, p.title()))).collect();
                     t.update(model);
                     true
                 }
@@ -251,22 +302,36 @@ fn check_instances(cx: &mut App) {
                 if !keeps_running(cx) {
                     return false;
                 }
+                let mut health = HashMap::new();
                 for (inst, seen) in found {
                     let key = inst.as_ref().map(|i| i.0.clone());
+                    let name = inst.as_ref().map(|i| i.1.clone()).unwrap_or_else(|| "This computer".into());
+                    let color = inst.as_ref().map(|i| i.2.clone()).unwrap_or_else(|| crate::remote::LOCAL_COLOR.into());
+                    health.insert(key.clone(), (name.clone(), color, seen));
                     let before = last.insert(key, seen);
                     let Some(before) = before.filter(|b| *b != seen) else { continue };
-                    let name = inst.as_ref().map(|i| i.1.clone()).unwrap_or_else(|| "This computer".into());
-                    let (failed, title, detail) = match seen {
-                        Seen::Stopped => (true, "SENTIENT stopped".to_string(), format!("SENTIENT on {name} does not answer on its web port.")),
-                        Seen::NoAnswer => (true, "The server does not answer".to_string(), format!("{name} could not be reached over SSH.")),
-                        Seen::Running if before == Seen::NoAnswer => (false, "The server answers again".to_string(), format!("{name} is reachable again; SENTIENT runs.")),
-                        Seen::Running => (false, "SENTIENT runs again".to_string(), format!("SENTIENT on {name} answers again.")),
-                    };
-                    if cx.global::<Bg>().window.is_none() {
-                        desktop_notification(&format!("{name}: {title}"), &detail);
+                    match seen {
+                        // A problem is a condition (the bell, the tray), and
+                        // a desktop notification while no window is open.
+                        Seen::Stopped | Seen::NoAnswer => {
+                            if cx.global::<Bg>().window.is_none() {
+                                let p = Problem { instance: None, name: name.clone(), color: String::new(), no_answer: seen == Seen::NoAnswer };
+                                desktop_notification(&format!("{name}: {}", p.title()), &p.detail());
+                            }
+                        }
+                        // Running again: a line in the bell that can be cleared.
+                        Seen::Running => {
+                            let (title, detail) = if before == Seen::NoAnswer {
+                                ("The server answers again".to_string(), format!("{name} is reachable again; SENTIENT runs."))
+                            } else {
+                                ("SENTIENT runs again".to_string(), format!("SENTIENT on {name} answers again."))
+                            };
+                            crate::manager::strip::push_condition(inst, false, title, detail, cx);
+                        }
                     }
-                    crate::manager::strip::push_condition(inst, failed, title, detail, cx);
                 }
+                cx.set_global(Health(health));
+                cx.refresh_windows();
                 true
             });
             if !alive {

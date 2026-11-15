@@ -25,6 +25,9 @@ pub struct Model {
     /// This computer's SENTIENT: None when it is not installed here, else
     /// whether it is running.
     pub local: Option<bool>,
+    /// Conditions (crate::bg_app::problems): instance id ("" for this
+    /// computer) and the line to show. Not clearable.
+    pub conditions: Vec<(String, String)>,
 }
 
 impl Model {
@@ -37,11 +40,12 @@ impl Model {
             unread,
             instances: crate::remote::load().into_iter().map(|i| (i.id, i.name)).collect(),
             local,
+            conditions: Vec::new(),
         }
     }
 
     pub fn tooltip(&self) -> String {
-        match self.unread {
+        match self.unread + self.conditions.len() {
             0 => "SENTIENT Platform Manager".into(),
             1 => "SENTIENT Platform Manager · 1 new notification".into(),
             n => format!("SENTIENT Platform Manager · {n} new notifications"),
@@ -52,14 +56,15 @@ impl Model {
 /// One menu entry, drawn by each platform.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
-    /// `error`: drawn with an error mark (a failed notification).
-    Action { label: String, cmd: Command, enabled: bool, error: bool },
+    /// `error`: drawn with an error mark (a failed notification); `warn`:
+    /// with a warning mark (a condition that stays while it lasts).
+    Action { label: String, cmd: Command, enabled: bool, error: bool, warn: bool },
     Separator,
     Sub { label: String, items: Vec<Item> },
 }
 
 fn act(label: impl Into<String>, cmd: Command) -> Item {
-    Item::Action { label: label.into(), cmd, enabled: true, error: false }
+    Item::Action { label: label.into(), cmd, enabled: true, error: false, warn: false }
 }
 
 /// The menu for `m`.
@@ -69,14 +74,24 @@ pub fn items(m: &Model) -> Vec<Item> {
     let mut notes: Vec<Item> = m
         .notifications
         .iter()
-        .map(|(id, title, inst, failed, _read)| Item::Action { label: format!("{inst}: {title}"), cmd: Command::Action(format!("notification:{id}")), enabled: true, error: *failed })
+        .map(|(id, title, inst, failed, _read)| Item::Action { label: format!("{inst}: {title}"), cmd: Command::Action(format!("notification:{id}")), enabled: true, error: *failed, warn: false })
         .collect();
+    // Conditions first: they stay until what causes them is gone.
+    let conds: Vec<Item> = m
+        .conditions
+        .iter()
+        .map(|(id, label)| Item::Action { label: label.clone(), cmd: Command::Action(format!("instance:{id}")), enabled: true, error: false, warn: true })
+        .collect();
+    if !conds.is_empty() {
+        notes.splice(0..0, conds.into_iter().chain(std::iter::once(Item::Separator)));
+    }
     if notes.is_empty() {
-        notes.push(Item::Action { label: "No notifications".into(), cmd: Command::Show, enabled: false, error: false });
+        notes.push(Item::Action { label: "No notifications".into(), cmd: Command::Show, enabled: false, error: false, warn: false });
     }
     notes.push(Item::Separator);
     notes.push(act("Show all notifications", Command::Action("notifications".into())));
-    v.push(Item::Sub { label: if m.unread > 0 { format!("Notifications ({})", m.unread) } else { "Notifications".into() }, items: notes });
+    let n = m.unread + m.conditions.len();
+    v.push(Item::Sub { label: if n > 0 { format!("Notifications ({n})") } else { "Notifications".into() }, items: notes });
     // Instances.
     let mut inst = vec![act("This computer", Command::Action("instance:".into()))];
     inst.extend(m.instances.iter().map(|(id, name)| act(name.clone(), Command::Action(format!("instance:{id}")))));
@@ -86,9 +101,9 @@ pub fn items(m: &Model) -> Vec<Item> {
         v.push(Item::Sub {
             label: "SENTIENT on this computer".into(),
             items: vec![
-                Item::Action { label: "Start".into(), cmd: Command::Action("control:start".into()), enabled: !running, error: false },
-                Item::Action { label: "Stop".into(), cmd: Command::Action("control:stop".into()), enabled: running, error: false },
-                Item::Action { label: "Restart".into(), cmd: Command::Action("control:restart".into()), enabled: running, error: false },
+                Item::Action { label: "Start".into(), cmd: Command::Action("control:start".into()), enabled: !running, error: false, warn: false },
+                Item::Action { label: "Stop".into(), cmd: Command::Action("control:stop".into()), enabled: running, error: false, warn: false },
+                Item::Action { label: "Restart".into(), cmd: Command::Action("control:restart".into()), enabled: running, error: false, warn: false },
             ],
         });
         v.push(act("Back up this computer now", Command::Action("backup".into())));
@@ -147,10 +162,10 @@ mod imp {
             .into_iter()
             .map(|i| match i {
                 Item::Separator => ksni::MenuItem::Separator,
-                Item::Action { label, cmd, enabled, error } => ksni::menu::StandardItem {
+                Item::Action { label, cmd, enabled, error, warn } => ksni::menu::StandardItem {
                     label: label.replace('_', "__"),
                     enabled,
-                    icon_name: if error { "dialog-error".into() } else { String::new() },
+                    icon_name: if error { "dialog-error".into() } else if warn { "dialog-warning".into() } else { String::new() },
                     activate: Box::new(move |t: &mut Sni| {
                         let _ = t.tx.unbounded_send(cmd.clone());
                     }),
@@ -258,12 +273,13 @@ mod imp {
             .into_iter()
             .map(|i| match i {
                 Item::Separator => Built::Sep(PredefinedMenuItem::separator()),
-                Item::Action { label, cmd, enabled, error } => {
+                Item::Action { label, cmd, enabled, error, warn } => {
                     *n += 1;
                     let id = format!("spm-{n}");
                     ids.insert(id.clone(), cmd);
-                    if error {
-                        Built::Icon(IconMenuItem::with_id(id, label.replace('&', "&&"), enabled, red_dot(), None))
+                    if error || warn {
+                        let dot = if error { dot([0xd3, 0x2f, 0x2f]) } else { dot([0xe0, 0x9a, 0x1a]) };
+                        Built::Icon(IconMenuItem::with_id(id, label.replace('&', "&&"), enabled, dot, None))
                     } else {
                         Built::Item(MenuItem::with_id(id, label.replace('&', "&&"), enabled, None))
                     }
@@ -279,15 +295,16 @@ mod imp {
             .collect()
     }
 
-    /// A failed notification's mark: a red dot, 16 × 16.
-    fn red_dot() -> Option<tray_icon::menu::Icon> {
+    /// A mark for a menu entry: a dot of `rgb`, 16 × 16 (red: failed,
+    /// amber: a condition).
+    fn dot(rgb: [u8; 3]) -> Option<tray_icon::menu::Icon> {
         let mut px = vec![0u8; 16 * 16 * 4];
         for y in 0..16 {
             for x in 0..16 {
                 let (dx, dy) = (x as f32 - 7.5, y as f32 - 7.5);
                 let a = (5.5 - (dx * dx + dy * dy).sqrt()).clamp(0., 1.);
                 let i = (y * 16 + x) * 4;
-                px[i..i + 4].copy_from_slice(&[0xd3, 0x2f, 0x2f, (a * 255.) as u8]);
+                px[i..i + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], (a * 255.) as u8]);
             }
         }
         tray_icon::menu::Icon::from_rgba(px, 16, 16).ok()
@@ -395,6 +412,13 @@ mod tests {
         assert!(matches!(&control[1], Item::Action { enabled: true, .. }));
         let Some(Item::Sub { items: notes, .. }) = it.iter().find(|i| matches!(i, Item::Sub { label, .. } if label.starts_with("Notifications"))) else { panic!() };
         assert!(matches!(&notes[0], Item::Action { cmd: Command::Action(a), error: true, label, .. } if a == "notification:7" && label == "This computer: Backing up failed"));
+        // A condition comes first, marked, and counts.
+        m.conditions = vec![("bsmpl".into(), "BSMPL: SENTIENT stopped".into())];
+        let it = items(&m);
+        let Some(Item::Sub { label, items: notes }) = it.iter().find(|i| matches!(i, Item::Sub { label, .. } if label.starts_with("Notifications"))) else { panic!() };
+        assert_eq!(label, "Notifications (3)");
+        assert!(matches!(&notes[0], Item::Action { warn: true, cmd: Command::Action(a), .. } if a == "instance:bsmpl"));
+        assert!(matches!(&notes[1], Item::Separator));
     }
 
     #[test]

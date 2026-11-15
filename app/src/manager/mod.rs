@@ -437,6 +437,11 @@ impl Manager {
         if let Some(m) = self.monitor.filter(|m| m.disk_low()) {
             out.push(local("Disk almost full".into(), format!("{} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status));
         }
+        // SENTIENT stopped or a server not answering (crate::bg_app's checks):
+        // they stay while it lasts.
+        for p in crate::bg_app::problems(cx).into_iter().rev() {
+            out.insert(0, (p.title().to_string(), p.detail(), Page::Status, p.instance.clone(), p.name.clone(), p.color.clone()));
+        }
         if let (Some(id), Some(m)) = (&self.open_remote, self.remote_monitor.filter(|m| m.disk_low())) {
             if let Some(r) = self.remotes.iter().find(|r| &r.id == id) {
                 out.push(("Disk almost full".into(), format!("{} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status, Some(r.id.clone()), r.name.clone(), r.color.clone()));
