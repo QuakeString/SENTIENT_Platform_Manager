@@ -279,6 +279,48 @@ fn write_record(record: &InstallationRecord) -> Result<(), String> {
 // The migration
 // ---------------------------------------------------------------------------
 
+/// Everything a migration needs, checked before anything starts (the backup
+/// included): the Platform Manager writes the stack's configuration (an
+/// adopted stack from someone else's compose file is taken over first), the
+/// database is reachable from here, and the backup fits on the disk.
+pub fn preflight(record: &InstallationRecord) -> Result<(), String> {
+    if record.engine == Engine::Docker {
+        if record.stack.external.is_some() {
+            return Err("This SENTIENT runs from its own compose file, which the Platform Manager does not rewrite. Let the Platform Manager take it over first (Repair and uninstall → Take over the compose file); its data stays.".into());
+        }
+        if record.stack.pg_port == 0 {
+            return Err("PostgreSQL is not published on this machine, so it cannot be backed up from here.".into());
+        }
+    }
+    let old = Setup::current(record)?;
+    // The backup's room: the database's size and a margin.
+    let dir = work_dir(record);
+    let db = crate::dbstatus::read(record);
+    if let (Some(pg), Some(free)) = (db.pg.as_ref(), free_space(&dir)) {
+        let need = pg.db_bytes + db.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0);
+        if free < need + need / 5 + (1 << 30) {
+            return Err(format!(
+                "The backup needs about {} at {}, and {} is free there.",
+                crate::dbstatus::bytes_label(need + need / 5),
+                dir.display(),
+                crate::dbstatus::bytes_label(free)
+            ));
+        }
+    }
+    let _ = old;
+    Ok(())
+}
+
+/// Free bytes on the disk holding `dir` (its nearest existing parent).
+fn free_space(dir: &std::path::Path) -> Option<u64> {
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let mut p = dir.to_path_buf();
+    while !p.exists() {
+        p = p.parent()?.to_path_buf();
+    }
+    disks.list().iter().filter(|d| p.starts_with(d.mount_point())).max_by_key(|d| d.mount_point().as_os_str().len()).map(|d| d.available_space())
+}
+
 /// Run a migration of `record` to `target`. Returns the updated record.
 pub fn run(record: InstallationRecord, target: Flavor, sink: ProgressFn) -> Result<InstallationRecord, String> {
     if let Err(why) = targets(&record) {
@@ -291,6 +333,7 @@ pub fn run(record: InstallationRecord, target: Flavor, sink: ProgressFn) -> Resu
     if load_state(&record).is_some_and(|s| !s.done) {
         return Err("A previous migration has history left to copy; continue it first.".into());
     }
+    preflight(&record).map_err(|e| format!("{e} Nothing was changed: no backup was made and SENTIENT keeps running."))?;
     let old = Setup::current(&record)?;
     let mut new = old.with_flavor(target);
 

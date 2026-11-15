@@ -53,7 +53,7 @@ impl RepairPage {
         self.running = Some(action);
         self.job.update(cx, |job, cx| {
             if action == Action::TakeOver {
-                return job.start(move |sink| crate::adopt::take_over_compose(record, sink).map(|_| ()), cx);
+                return job.start(move |sink| crate::adopt::take_over_compose(record, None, sink).map(|_| ()), cx);
             }
             if crate::rootjob::needed(&record) {
                 let mut args = vec![match action {
