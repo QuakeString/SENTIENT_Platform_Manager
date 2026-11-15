@@ -526,7 +526,7 @@ impl InstancesPage {
         let (tone, state) = state_of(status.as_ref(), self.refreshing.contains(LOCAL));
         let current = self.open.is_none();
         let open_btn: AnyElement = if current {
-            open_now_tag(&theme).into_any_element()
+            open_now_tag(remote::LOCAL_COLOR).into_any_element()
         } else {
             colour_button("open-local".into(), "Open", remote::LOCAL_COLOR, cx.listener(|_, _, _, cx| cx.emit(OpenInstance(None)))).into_any_element()
         };
@@ -548,7 +548,7 @@ impl InstancesPage {
             current,
             (tone, state),
             quick_facts(&theme, status.as_ref(), None),
-            h_flex().gap_2().items_center().child(open_btn).child(div().flex_1()).child(more),
+            h_flex().gap(px(6.)).items_center().child(open_btn).child(div().flex_1().min_w_0()).child(div().flex_shrink_0().child(more)),
         )
         .into_any_element()
     }
@@ -603,7 +603,7 @@ impl InstancesPage {
                 move |this, _, _, cx| this.set_up(&id, cx)
             })).into_any_element()
         } else if current {
-            open_now_tag(&theme).into_any_element()
+            open_now_tag(&inst.color).into_any_element()
         } else {
             colour_button(SharedString::from(format!("open-{id}")), "Open", &inst.color, cx.listener({
                 let id = id.clone();
@@ -611,22 +611,22 @@ impl InstancesPage {
             })).into_any_element()
         };
         let footer = h_flex()
-            .gap_2()
+            .gap(px(6.))
             .items_center()
             .child(primary)
-            .child(crate::ui::button(SharedString::from(format!("edit-{id}"))).outline().h(px(28.)).label("Edit").disabled(busy).on_click(cx.listener({
+            .child(crate::ui::button(SharedString::from(format!("edit-{id}"))).outline().h(px(28.)).px(px(10.)).text_size(px(13.)).label("Edit").disabled(busy).on_click(cx.listener({
                 let inst = inst.clone();
                 move |this, _, window, cx| this.open_form(Some(inst.clone()), window, cx)
             })))
-            .child(crate::ui::button(SharedString::from(format!("remove-{id}"))).outline().h(px(28.)).label("Remove").disabled(busy).on_click(cx.listener({
+            .child(crate::ui::button(SharedString::from(format!("remove-{id}"))).outline().h(px(28.)).px(px(10.)).text_size(px(13.)).label("Remove").disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| {
                     this.confirm_remove = Some(id.clone());
                     cx.notify();
                 }
             })))
-            .child(div().flex_1())
-            .child(more);
+            .child(div().flex_1().min_w_0())
+            .child(div().flex_shrink_0().child(more));
         let mut sub = format!("{} over SSH", inst.host);
         if !det.os_name.is_empty() {
             sub.push_str(&format!(" · {}", det.os_name));
@@ -1175,7 +1175,7 @@ impl Render for InstancesPage {
 /// The key for this computer's status.
 const LOCAL: &str = "@local";
 /// The narrowest a card gets before the grid drops a column.
-const CARD_MIN_W: f32 = 230.;
+const CARD_MIN_W: f32 = 250.;
 
 /// The state label of a card.
 fn state_of(status: Option<&Result<RemoteStatus, String>>, refreshing: bool) -> (Tone, String) {
@@ -1364,19 +1364,20 @@ fn grid_card(
         )
 }
 
-/// On the open instance's card, in place of its Open button.
-fn open_now_tag(theme: &gpui_kit::component::Theme) -> Div {
-    // The mockup's quiet chip: an outlined, faded button shape.
+/// On the open instance's card, in place of its Open button: the same
+/// coloured button, not clickable (it is open already).
+fn open_now_tag(color: &str) -> Div {
+    let c = rgb(remote::parse_hex(color).unwrap_or(0x187074));
     h_flex()
         .items_center()
-        .px(px(11.))
+        .px(px(10.))
         .h(px(28.))
+        .flex_shrink_0()
         .rounded(px(8.))
-        .border_1()
-        .border_color(theme.border)
+        .bg(c)
+        .text_color(text_on(c))
         .text_size(px(13.))
         .font_weight(FontWeight::MEDIUM)
-        .text_color(theme.muted_foreground.opacity(0.75))
         .child("Open now")
 }
 
