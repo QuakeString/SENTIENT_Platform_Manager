@@ -85,6 +85,11 @@ impl LogView {
             _poll: None,
             _subscriptions,
         };
+        // Screens: open on a given source ("all" for All).
+        #[cfg(debug_assertions)]
+        if let Ok(k) = std::env::var("SPM_LOG_SOURCE") {
+            v.pick = if k == "all" { None } else { Source::from_key(&k) };
+        }
         v.read_sources(cx);
         v.start(cx);
         v

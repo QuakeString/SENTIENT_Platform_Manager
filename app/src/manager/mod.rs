@@ -306,7 +306,7 @@ impl Manager {
         // What fits: a rough width per piece (about 7 px a character at
         // 12.5-14 px), kept in this order: CPU, memory, disk.
         let text_w = |s: &str| s.chars().count() as f32 * 7.2;
-        let mut room = width - 20. - (20. + 12.) - (text_w(&instance) + 60. + 12.) - if remote.is_some() { 64. } else { 0. } - 40. - 12. - if width > 900. { 190. } else { 0. };
+        let mut room = width - 20. - (20. + 12.) - (text_w(&instance) + 60. + 12.) - if remote.is_some() { 64. } else { 0. } - 40. - 12.;
         let mut fits = |need: f32| {
             let ok = room >= need;
             if ok {
@@ -393,7 +393,7 @@ impl Manager {
             .bg(bg)
             .text_color(fg)
             .child(ui::product_logo(ui::Product::Manager, 20.))
-            .when(wide, |b| b.child(div().text_size(px(13.5)).text_color(fg.opacity(0.85)).whitespace_nowrap().child("SENTIENT Platform Manager")))
+            // No product name here: the window's own title carries it.
             .child(
                 // The mockup's switcher: a framed chip with a status dot, the
                 // name, the address faint, a chevron; a remote one is framed
