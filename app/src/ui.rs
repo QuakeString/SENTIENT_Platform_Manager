@@ -316,7 +316,9 @@ struct InfoTip(SharedString);
 impl Render for InfoTip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dark = cx.theme().mode.is_dark();
-        let (bg, fg, border) = if dark { (rgb(0x3a4a52), rgb(0xf1f5f7), rgb(0x56676f)) } else { (rgb(0x1f2a30), rgb(0xffffff), rgb(0x1f2a30)) };
+        // Inverted against the window, so it never reads as one more panel:
+        // light on the dark theme, dark on the light one.
+        let (bg, fg, border) = if dark { (rgb(0xeef3f5), rgb(0x16211f), rgb(0xffffff)) } else { (rgb(0x1f2a30), rgb(0xffffff), rgb(0x1f2a30)) };
         // Laid out at its smallest size, so the width is set: the longest
         // line's length, at most 360 px.
         let longest = self.0.lines().map(|l| l.chars().count()).max().unwrap_or(0) as f32;
