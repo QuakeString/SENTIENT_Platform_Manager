@@ -1024,20 +1024,42 @@ impl RemotePages {
         if !installed {
             return p.child(div().text_sm().text_color(theme.muted_foreground).child("No gateway on this server. Install it with the Platform Manager on the server itself, so its access token stays on the server."));
         }
+        let kind = get("kind");
+        let runs_as = match kind.as_str() {
+            "docker" => format!("Docker container {}", get("container")),
+            "service" => format!("Service {}", get("service")),
+            "process" => format!("A process ({}), started outside a service", get("process")),
+            "windows-service" => "Windows service".to_string(),
+            _ => "Not known".to_string(),
+        };
+        let or_dash = |v: String| if v.is_empty() || v == ":" { "Not known".to_string() } else { v };
+        let host = get("host");
         p = p
-            .child(ui::fact(&theme, "Version", get("version")))
-            .child(ui::fact(&theme, "Connects to", format!("{}:{}", get("host"), get("port"))))
+            .child(ui::fact(&theme, "Version", or_dash(get("version"))))
+            .child(ui::fact(&theme, "Runs as", runs_as))
+            .child(ui::fact(&theme, "Connects to", if host.is_empty() { "Not known".to_string() } else { format!("{host}:{}", get("port")) }))
             .child(ui::fact(&theme, "Its page", get("page")));
+        // A plain process has no service to start it again: no controls.
+        let controllable = kind != "process";
+        let updatable = (kind == "docker" && get("managed") == "true") || kind == "windows-service";
         let act = |id: &'static str, label: &'static str, action: &'static str| {
             crate::ui::button(id).outline().label(label).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.run_job("Gateway", vec!["gateway-control".into(), action.into()], cx)))
         };
         p.child(
             h_flex()
                 .gap_2()
-                .child(act("r-gw-start", "Start", "start"))
-                .child(act("r-gw-stop", "Stop", "stop"))
-                .child(act("r-gw-restart", "Restart", "restart"))
-                .child(crate::ui::button("r-gw-update").primary().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx)))),
+                .flex_wrap()
+                .when(controllable, |r| {
+                    r.when(!running, |r| r.child(act("r-gw-start", "Start", "start")))
+                        .when(running, |r| r.child(act("r-gw-stop", "Stop", "stop")).child(act("r-gw-restart", "Restart", "restart")))
+                })
+                .child(crate::ui::button("r-gw-logs").outline().label("Logs").on_click(|_, _, cx| {
+                    crate::logsource::request(crate::logsource::Source::Gateway);
+                    cx.refresh_windows();
+                }))
+                .when(updatable, |r| {
+                    r.child(crate::ui::button("r-gw-update").primary().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx))))
+                }),
         )
     }
 

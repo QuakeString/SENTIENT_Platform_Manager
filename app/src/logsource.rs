@@ -59,8 +59,27 @@ impl Source {
 
 /// The gateway's container on this computer, when it runs in Docker.
 fn gateway_container() -> Option<String> {
-    let out = Command::new("docker").args(["ps", "-a", "--format", "{{.Names}}"]).output().ok()?;
-    String::from_utf8_lossy(&out.stdout).lines().map(str::trim).find(|n| *n == "sentient-gateway" || *n == "st-gateway").map(str::to_string)
+    let out = Command::new("docker").args(["ps", "-a", "--format", "{{.Names}}\t{{.Image}}"]).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let rows: Vec<(&str, &str)> = text.lines().filter_map(|l| l.split_once('\t')).map(|(n, i)| (n.trim(), i.trim())).collect();
+    let named = |n: &str| ["sentient-gateway", "st-gateway", "tb-gateway", "thingsboard-gateway"].iter().any(|g| n.contains(g));
+    rows.iter()
+        .find(|(n, _)| *n == "sentient-gateway")
+        .or_else(|| rows.iter().find(|(_, i)| sentient_installer_core::gateway::is_gateway_image(i)))
+        .or_else(|| rows.iter().find(|(n, _)| named(n)))
+        .map(|(n, _)| n.to_string())
+}
+
+/// A gateway that runs as a systemd service (no Docker).
+fn gateway_unit() -> Option<String> {
+    #[cfg(not(windows))]
+    {
+        sentient_installer_core::distro::gateway_native::unit()
+    }
+    #[cfg(windows)]
+    {
+        None
+    }
 }
 
 /// The sources this installation has.
@@ -69,7 +88,7 @@ pub fn available(record: &InstallationRecord) -> Vec<Source> {
     if record.flavor().uses_clickhouse() && !cfg!(windows) {
         v.push(Source::ClickHouse);
     }
-    if !cfg!(windows) && gateway_container().is_some() {
+    if !cfg!(windows) && (gateway_container().is_some() || gateway_unit().is_some()) {
         v.push(Source::Gateway);
     }
     v
@@ -130,7 +149,11 @@ pub fn read(record: &InstallationRecord, source: Source, tail: u32, today: bool)
         (Engine::Docker, Source::Sentient) => docker(&names.app),
         (Engine::Docker, Source::Database) => docker(&names.pg),
         (Engine::Docker, Source::ClickHouse) => docker(&names.ch),
-        (_, Source::Gateway) => gateway_container().map(|c| docker(&c)).unwrap_or_else(|| "No gateway container on this computer.".into()),
+        (_, Source::Gateway) => match (gateway_container(), gateway_unit()) {
+            (Some(c), _) => docker(&c),
+            (None, Some(u)) => journal(&u).unwrap_or_else(|| "Could not read the gateway's journal.".into()),
+            _ => "No gateway on this computer.".into(),
+        },
         (Engine::Native, Source::Sentient) => record.platform().logs(tail),
         (Engine::Native, Source::Database) if cfg!(windows) => newest(&record.pg_dir.join("log"), ".log")
             .and_then(|p| tail_file(&p, tail))

@@ -116,16 +116,20 @@ pub fn run(args: &[String]) -> i32 {
         let result = match job {
             "gateway-status" => {
                 let s = gateway::status();
+                let kind = s.kind();
                 println!(
-                    "installed={} version={} running={} host={} port={} page={} container={} managed={}",
+                    "installed={} version={} running={} host={} port={} page={} container={} managed={} kind={} service={} process={}",
                     s.installed,
                     s.version.unwrap_or_default(),
                     s.running,
                     s.host.unwrap_or_default(),
                     s.port.map(|p| p.to_string()).unwrap_or_default(),
                     s.page_url.unwrap_or_else(|| "off".into()),
-                    s.container.unwrap_or_default(),
-                    s.managed
+                    s.container.clone().unwrap_or_default(),
+                    s.managed,
+                    kind,
+                    s.service.clone().unwrap_or_default(),
+                    s.process.clone().unwrap_or_default().replace(' ', "")
                 );
                 Ok(())
             }
