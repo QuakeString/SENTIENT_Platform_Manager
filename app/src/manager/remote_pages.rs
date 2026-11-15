@@ -1220,7 +1220,8 @@ impl RemotePages {
         let value_of = |env: &str, cx: &App| self.inputs.iter().find(|(e, _)| e == env).map(|(_, i)| i.read(cx).value().trim().to_string()).unwrap_or_default();
         let changed: Vec<String> = self.inputs.iter().filter(|(e, i)| values.get(e).cloned().unwrap_or_default() != i.read(cx).value().trim()).map(|(e, _)| e.clone()).collect();
         let mut col = v_flex().gap_4();
-        // Someone else's compose file: the notice, and Apply stays off.
+        // Someone else's compose file: the notice, and Apply stays off (also
+        // while the status, which says so, is still being read).
         let external = self.status.got().is_some_and(|s| s.external_compose);
         if external {
             col = col.child(foreign_compose_notice(&theme, "The settings cannot be changed now.", self.take_over_button("r-set-take-over", busy, cx)));
@@ -1250,7 +1251,7 @@ impl RemotePages {
                         this.inputs.clear();
                         cx.notify();
                     })))
-                    .child(crate::ui::button("r-set-apply").primary().label("Apply").disabled(busy || external).on_click(cx.listener(move |this, _, _, cx| this.apply_settings(all.clone(), cx)))),
+                    .child(crate::ui::button("r-set-apply").primary().label("Apply").disabled(busy || external || self.status.got().is_none()).on_click(cx.listener(move |this, _, _, cx| this.apply_settings(all.clone(), cx)))),
             );
         }
         // The same tabs, rows and Advanced table as this computer's
