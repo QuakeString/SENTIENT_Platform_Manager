@@ -48,6 +48,8 @@ struct Form {
     sudo_secret: Entity<InputState>,
     custom_color: Entity<InputState>,
     auth: Auth,
+    /// Linux or Windows: what the help shows; connecting checks it.
+    os: Os,
     color: String,
     stage: Stage,
     error: Option<SharedString>,
@@ -189,6 +191,7 @@ impl InstancesPage {
             }),
             custom_color: input(cx, window, color.clone(), "#6b4fa0"),
             auth: e.as_ref().map(|i| i.auth).unwrap_or_default(),
+            os: e.as_ref().map(|i| i.os).unwrap_or_default(),
             color,
             stage: Stage::Edit,
             error: None,
@@ -216,7 +219,7 @@ impl InstancesPage {
             id: f.editing.clone().unwrap_or_else(remote::new_id),
             name,
             color: f.color.clone(),
-            os: old.as_ref().map(|o| o.os).unwrap_or_default(),
+            os: f.os,
             host,
             port,
             user,
@@ -646,6 +649,44 @@ impl InstancesPage {
                 "Address",
                 h_flex().gap_2().child(div().flex_1().child(Input::new(&f.host))).child(div().text_sm().child("Port")).child(div().w_20().child(Input::new(&f.port))).into_any_element(),
             ))
+            .child(field(
+                "System",
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div().flex_none().child(RadioGroup::horizontal("os")
+                            .children(["Linux", "Windows"])
+                            .selected_index(Some(if f.os == Os::Windows { 1 } else { 0 }))
+                            .on_change(cx.listener(|this, v: &usize, _, cx| {
+                                if let Some(f) = &mut this.form {
+                                    f.os = if *v == 1 { Os::Windows } else { Os::Linux };
+                                }
+                                cx.notify();
+                            }))),
+                    )
+                    .child(help(
+                        "help-os",
+                        if f.os == Os::Windows {
+                            "Windows 10/11 or Windows Server 2019 and later, with OpenSSH Server turned on:\n1. Settings, System, Optional features, Add a feature: OpenSSH Server (or in PowerShell as administrator: Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0).\n2. Start it and start it with Windows: Start-Service sshd; Set-Service sshd -StartupType Automatic.\n3. Allow TCP port 22 in Windows Defender Firewall (the feature adds the rule).\n4. Sign in with an account in the Administrators group. For a key: put its public key in C:\\ProgramData\\ssh\\administrators_authorized_keys."
+                        } else {
+                            "Ubuntu, Debian, Red Hat, Rocky, Alma, Fedora, openSUSE and others, with an SSH server (openssh-server):\n1. Install it if missing: sudo apt install openssh-server (Debian, Ubuntu) or sudo dnf install openssh-server (Red Hat family).\n2. Start it with the system: sudo systemctl enable --now ssh (sshd on Red Hat).\n3. Allow TCP port 22 in the firewall if one is on.\n4. Sign in as root or a user that may use sudo. For a key: add its public key to ~/.ssh/authorized_keys of that user."
+                        },
+                    ))
+                    .child(Button::new("os-guide").ghost().small().label("Setup guide").icon(IconName::ExternalLink).on_click({
+                        let anchor = if f.os == Os::Windows { "windows-servers" } else { "linux-servers" };
+                        move |_, _, cx| ui::open_url(&format!("https://sentient.invenia.in/docs/installation/remote-instances/#{anchor}"), cx)
+                    }))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(
+                        f.editing
+                            .as_ref()
+                            .and_then(|id| self.instance(id))
+                            .and_then(|i| i.detected)
+                            .map(|d| format!("Found: {} {}", d.os_name, d.arch))
+                            .unwrap_or_else(|| "Checked when connecting".into()),
+                    ))
+                    .into_any_element(),
+            ))
             .child(field("User", h_flex().gap_1().items_center().child(div().flex_1().child(Input::new(&f.user))).child(help("help-user", "An account on the server that may use sudo, or root. The Platform Manager runs its work there as an administrator.")).into_any_element()))
             .child(field(
                 "Sign in with",
@@ -670,7 +711,7 @@ impl InstancesPage {
                     .child(help("help-secret", "Kept in this computer's secret store (Windows: sealed to this computer; Linux: the desktop keyring, else until the Platform Manager closes). It is never written to the instance list."))
                     .into_any_element(),
             ))
-            .when(f.auth == Auth::Key, |p| {
+            .when(f.auth == Auth::Key && f.os == Os::Linux, |p| {
                 p.child(field(
                     "sudo password",
                     h_flex()
@@ -692,17 +733,7 @@ impl InstancesPage {
                     .child(help("help-colour", "The top bar takes this colour while the instance is open, so it is clear which computer you are working on. This computer is always SENTIENT teal."))
                     .into_any_element(),
             ))
-            .child(field(
-                "System",
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(
-                        f.editing.as_ref().and_then(|id| self.instance(id)).and_then(|i| i.detected).map(|d| format!("{} {}", d.os_name, d.arch)).unwrap_or_else(|| "Found out when connecting".into()),
-                    ))
-                    .child(help("help-os", "Linux (Ubuntu, Debian, Red Hat and others) and Windows servers with OpenSSH Server. The account needs administrator rights there (root or sudo on Linux; the Administrators group on Windows). The Platform Manager puts its own matching build on the server."))
-                    .into_any_element(),
-            ));
+;
         if let Some(e) = &f.error {
             panel = panel.child(ui::outcome(&theme, Tone::Bad, e.clone()));
         }
