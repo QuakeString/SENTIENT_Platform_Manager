@@ -568,6 +568,10 @@ pub const NOT_SET_UP: &str = "The server agent is not set up on this server. Set
 
 /// The server's state, from its own Platform Manager (`--job status-json`).
 pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {
+    #[cfg(debug_assertions)]
+    if let Some(secs) = std::env::var("SPM_DEBUG_REMOTE_SLOW").ok().and_then(|s| s.parse::<u64>().ok()) {
+        std::thread::sleep(std::time::Duration::from_secs(secs));
+    }
     if is_windows(inst) {
         #[cfg(debug_assertions)]
         if std::env::var_os("SPM_DEBUG_REMOTE_STATUS").is_none() {
@@ -653,6 +657,10 @@ fn read_json<T: serde::de::DeserializeOwned>(inst: &Instance, job: &str) -> Resu
 
 pub fn services(inst: &Instance) -> Result<Vec<RemoteService>, String> {
     #[cfg(debug_assertions)]
+    if let Some(secs) = std::env::var("SPM_DEBUG_REMOTE_SLOW").ok().and_then(|s| s.parse::<u64>().ok()) {
+        std::thread::sleep(std::time::Duration::from_secs(secs));
+    }
+    #[cfg(debug_assertions)]
     if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_SERVICES") {
         return serde_json::from_str(&t.to_string_lossy()).map_err(|e| e.to_string());
     }
@@ -660,6 +668,10 @@ pub fn services(inst: &Instance) -> Result<Vec<RemoteService>, String> {
 }
 
 pub fn dbstatus(inst: &Instance) -> Result<crate::dbstatus::DbStatus, String> {
+    #[cfg(debug_assertions)]
+    if let Some(secs) = std::env::var("SPM_DEBUG_REMOTE_SLOW").ok().and_then(|s| s.parse::<u64>().ok()) {
+        std::thread::sleep(std::time::Duration::from_secs(secs));
+    }
     #[cfg(debug_assertions)]
     if let Some(p) = std::env::var_os("SPM_DEBUG_DBSTATUS") {
         return std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()));

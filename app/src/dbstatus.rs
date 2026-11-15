@@ -723,7 +723,20 @@ pub fn record_backup(file: &std::path::Path) {
     }
 }
 
+/// The newest backup: the backup folder is the one source (backups made
+/// here, automatic ones and ones added by hand alike), so Status, the
+/// instance tiles and Statistics always agree. The note of the last backup
+/// made here is used only when the folder cannot be read.
 pub fn last_backup() -> Option<LastBackup> {
+    let prefs = crate::backups::BackupPrefs::load();
+    if let Some(e) = crate::backups::list(&prefs.folder).into_iter().next() {
+        let at = chrono::NaiveDateTime::parse_from_str(&e.made, "%Y-%m-%d %H:%M")
+            .ok()
+            .and_then(|t| t.and_local_timezone(chrono::Local).single())
+            .map(|t| t.to_rfc3339())
+            .unwrap_or(e.made.clone());
+        return Some(LastBackup { at, file: e.path.display().to_string(), bytes: Some(e.bytes) });
+    }
     serde_json::from_str(&std::fs::read_to_string(last_backup_path()).ok()?).ok()
 }
 

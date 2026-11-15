@@ -85,6 +85,19 @@ fn small_fact(theme: &gpui_kit::component::Theme, label: &'static str, value: im
         .child(div().flex_1().min_w_0().child(value.into()))
 }
 
+/// The history's period: a start before 2000 (a reading stored with time 0,
+/// 1970, when a device sent no time) is not shown as the date; the (i) says
+/// such readings exist.
+fn period_fact(theme: &gpui_kit::component::Theme, key: &'static str, first: i64, last: i64) -> Div {
+    if first >= crate::dbstatus::VALID_FROM_MS {
+        return small_fact(theme, "Period", format!("{} to {}", crate::dbstatus::day_label(first), crate::dbstatus::day_label(last)));
+    }
+    small_fact(theme, "Period", format!("up to {}", crate::dbstatus::day_label(last))).child(ui::info(
+        SharedString::from(format!("period-{key}")),
+        "Some readings carry a time before 2000, most likely 1970: a device sent its data without a time. They are kept, but the period's start is not shown from them.".into(),
+    ))
+}
+
 /// "Audit log  who did what  [bar]  255 MB"
 fn table_row(theme: &gpui_kit::component::Theme, name: String, hint: String, fraction: f32, size: String) -> Div {
     h_flex()
@@ -567,7 +580,7 @@ pub(crate) fn db_details(
     actions: DbActions,
     dark: bool,
 ) -> Div {
-    use crate::dbstatus::{CRITICAL_DISK, LOW_DISK, bytes_label, count_label, day_label, month_label, plain_table};
+    use crate::dbstatus::{CRITICAL_DISK, LOW_DISK, bytes_label, count_label, month_label, plain_table};
     let mut panel = panel;
         let pg_bytes = db.pg.as_ref().map(|p| p.db_bytes).unwrap_or(0);
     let ch_bytes = db.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0);
@@ -648,7 +661,14 @@ pub(crate) fn db_details(
             }))
             .child(h_flex().gap_1p5().items_center().child(div().size(px(9.)).rounded_sm().bg(theme.secondary)).child(format!("Free {}", bytes_label(free))));
         panel = panel
-            .child(div().pt_1().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(format!("{} ({})", drive.to_uppercase(), bytes_label(total))))
+            .child(div().pt_1().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child({
+                // Sentence case, like "Largest tables".
+                let mut d = drive.to_string();
+                if let Some(f) = d.get(..1) {
+                    d = format!("{}{}", f.to_uppercase(), &d[1..]);
+                }
+                format!("{d} ({})", bytes_label(total))
+            }))
             .child(bar)
             .child(legend);
     } else if let Some(f) = free {
@@ -675,8 +695,8 @@ pub(crate) fn db_details(
                             .child(ui::database_logo("postgresql", 16.))
                             .when(pg.timescaledb.is_some(), |r| r.child(ui::database_logo("timescale", 16.)))
                             .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(match &pg.timescaledb {
-                                Some(ts) => format!("POSTGRESQL {} · TIMESCALEDB {ts}", pg.version),
-                                None => format!("POSTGRESQL {}", pg.version),
+                                Some(ts) => format!("PostgreSQL {} · TimescaleDB {ts}", pg.version),
+                                None => format!("PostgreSQL {}", pg.version),
                             })),
                     )
                     .child(small_fact(theme, "Size", bytes_label(pg.db_bytes)))
@@ -693,7 +713,7 @@ pub(crate) fn db_details(
                                 (None, None) => String::new(),
                             }))
                         })
-                        .when_some(pg.ts_first_ms.zip(pg.ts_last_ms), |c, (a, b)| c.child(small_fact(theme, "Period", format!("{} to {}", day_label(a), day_label(b)))))
+                        .when_some(pg.ts_first_ms.zip(pg.ts_last_ms), |c, (a, b)| c.child(period_fact(theme, "pg", a, b)))
                     })
                     .child(
                         h_flex()
@@ -741,7 +761,7 @@ pub(crate) fn db_details(
                             .gap_2()
                             .items_center()
                             .child(ui::database_logo("clickhouse", 14.))
-                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(format!("CLICKHOUSE {}", ch.version))),
+                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(format!("ClickHouse {}", ch.version))),
                     )
                     .child(small_fact(theme, "Size", if ch.uncompressed_bytes > ch.disk_bytes {
                         format!("{} on disk ({} before compression)", bytes_label(ch.disk_bytes), bytes_label(ch.uncompressed_bytes))
@@ -750,7 +770,7 @@ pub(crate) fn db_details(
                     }))
                     .child(small_fact(theme, "Telemetry history", format!("{} values, {}", count_label(ch.rows), bytes_label(ch.disk_bytes))))
                     .children(match (ch.first_ms, ch.last_ms) {
-                        (Some(a), Some(b)) => Some(small_fact(theme, "Period", format!("{} to {}", day_label(a), day_label(b)))),
+                        (Some(a), Some(b)) => Some(period_fact(theme, "ch", a, b)),
                         _ => None,
                     })
                     .when(ch.invalid_rows > 0, |c| {

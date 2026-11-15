@@ -253,6 +253,18 @@ impl Manager {
             }
             manager.bell_open = std::env::var_os("SPM_DEBUG_BELL").is_some();
             manager.switcher_open = std::env::var_os("SPM_DEBUG_SWITCHER").is_some();
+            if std::env::var_os("SPM_DEBUG_ERROR_DIALOG").is_some() {
+                crate::ui::show_error_with(
+                    "The server agent could not be updated",
+                    crate::remote::failed("The agent could not be put in place at /opt/sentient-platform-manager (as administrator). The agent there is unchanged.", "sudo: a password is required"),
+                    Some(std::rc::Rc::new(|_: &mut App| {})),
+                    cx,
+                );
+            }
+            if std::env::var_os("SPM_DEBUG_LOG_DIALOG").is_some() {
+                let view = cx.new(|cx| logs::LogView::file(crate::jobs::activity_log(), _window, cx));
+                crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., on_close: None }, cx);
+            }
         }
         // Screens: a job in the progress strip (SPM_DEBUG_STRIP=running|failed|done).
         #[cfg(debug_assertions)]

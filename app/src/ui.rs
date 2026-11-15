@@ -934,7 +934,13 @@ pub fn layout_probe(name: &'static str) -> impl IntoElement {
         d.child(
             canvas(
                 move |bounds, _, _| {
-                    eprintln!("LAYOUT {name} {:.0} {:.0}", f32::from(bounds.origin.x), f32::from(bounds.origin.x + bounds.size.width));
+                    eprintln!(
+                        "LAYOUT {name} {:.0} {:.0} {:.0} {:.0}",
+                        f32::from(bounds.origin.x),
+                        f32::from(bounds.origin.x + bounds.size.width),
+                        f32::from(bounds.origin.y),
+                        f32::from(bounds.origin.y + bounds.size.height)
+                    );
                 },
                 |_, _, _, _| {},
             )

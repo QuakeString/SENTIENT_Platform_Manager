@@ -566,9 +566,20 @@ impl RemotePages {
         let db = ui::panel(&theme).child(div().font_weight(FontWeight::MEDIUM).child("Database"));
         let db = match &self.db {
             Read::Loading => db.child(ui::skeleton_line(&theme, "db-disk", 220.)).child(ui::skeleton_block(&theme, "db-bar", relative(1.).into(), 10.)).child(ui::skeleton_line(&theme, "db-legend", 420.)),
-            Read::Failed(e) => db.child(ui::outcome(&theme, Tone::Warn, format!("The database's size and state could not be read.\n{e}"))),
+            // A notice in the page in place of the card, with Retry.
+            Read::Failed(e) => ui::notice_with(
+                &theme,
+                Tone::Warn,
+                format!("The database's size and state could not be read.\n{e}"),
+                Some(crate::ui::button("db-retry").outline().label("Retry").on_click(cx.listener(|p, _, _, cx| p.reload(cx))).into_any_element()),
+            ),
             Read::Got(d) => {
-                let last = self.status.got().and_then(|s| s.last_backup.clone()).unwrap_or_else(|| "None".into());
+                // From the server's status (the same as its tile); "None" only
+                // once the status says so, never while it is being read.
+                let last = match &self.status {
+                    Read::Got(s) => s.last_backup.clone().unwrap_or_else(|| "None".into()),
+                    _ => String::new(),
+                };
                 let this = cx.entity().downgrade();
                 let back_up: std::rc::Rc<dyn Fn(&mut App)> = std::rc::Rc::new(move |cx| {
                     this.update(cx, |p, cx| p.run_job("Backing up", vec!["backup-now".into()], cx)).ok();
