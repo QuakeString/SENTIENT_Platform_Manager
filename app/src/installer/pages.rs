@@ -163,6 +163,7 @@ impl Installer {
                 }))
         };
         v_flex()
+            .flex_1()
             .gap_4()
             .child(lead(
                 &theme,
@@ -207,7 +208,9 @@ impl Installer {
             .child(
                 ui::panel(&theme)
                     .id("licence")
-                    .h(px(300.))
+                    // Fills what is left of the window; scrolls inside.
+                    .flex_1()
+                    .min_h(px(140.))
                     .overflow_y_scroll()
                     .gap_2()
                     .text_size(px(13.))
@@ -317,17 +320,19 @@ impl Installer {
             .child(lead(&theme, "What SENTIENT needs on this computer. Items marked “Will be installed” are handled by setup."))
             .child(match rows {
                 None => ui::panel(&theme).child(div().text_sm().child("Checking this computer…")),
-                Some(rows) => ui::panel(&theme).gap_0().children(rows.into_iter().map(|row| {
+                Some(rows) => ui::panel(&theme).gap_0().children(rows.into_iter().enumerate().map(|(i, row)| {
                     let (tone, text) = check_tone(row.status);
                     h_flex()
                         .gap_3()
                         .py_2()
-                        .border_b_1()
+                        .items_start()
+                        .when(i > 0, |r| r.border_t_1())
                         .border_color(theme.border)
                         .text_sm()
-                        .child(div().w_32().flex_shrink_0().child(ui::pill(&theme, tone, text)))
-                        .child(div().w_40().flex_shrink_0().font_weight(FontWeight::MEDIUM).child(row.label))
-                        .child(div().min_w_0().text_color(theme.muted_foreground).child(row.detail))
+                        // The label keeps its own width in a fixed column.
+                        .child(h_flex().w(px(136.)).flex_shrink_0().child(ui::pill(&theme, tone, text)))
+                        .child(div().w(px(150.)).flex_shrink_0().font_weight(FontWeight::MEDIUM).child(row.label))
+                        .child(div().flex_1().min_w_0().text_color(theme.muted_foreground).child(row.detail))
                 })),
             })
             .child(
@@ -694,11 +699,15 @@ impl Installer {
         let f = &self.fields;
         v_flex()
             .gap_4()
-            .max_w(px(480.))
             .child(lead(&theme, "The first SENTIENT sign-in, with full system rights. More users can be added in SENTIENT."))
-            .child(field(&theme, "E-mail", &f.admin_email))
-            .child(secret_field(&theme, "Password (at least 8 characters)", &f.admin_password))
-            .child(secret_field(&theme, "Confirm password", &f.admin_confirm))
+            .child(
+                ui::panel(&theme)
+                    .gap_4()
+                    .max_w(px(520.))
+                    .child(field(&theme, "E-mail", &f.admin_email))
+                    .child(secret_field(&theme, "Password (at least 8 characters)", &f.admin_password))
+                    .child(secret_field(&theme, "Confirm password", &f.admin_confirm)),
+            )
             .child(
                 Checkbox::new("demo")
                     .label("Load demo devices and dashboards")
@@ -833,12 +842,17 @@ impl Installer {
                 ("open-at-signin", "Open SENTIENT full screen when the computer starts (operator screens)", self.open_at_signin),
             ]
         };
-        let note = (!cfg!(windows) && !self.manager_only).then(|| {
+        let note = {
             let theme = cx.theme().clone();
-            div().text_sm().text_color(theme.muted_foreground).child(
-                "SENTIENT starts with the computer: as a systemd service, or through Docker's restart policy.",
+            lead(
+                &theme,
+                if !cfg!(windows) && !self.manager_only {
+                    "Where to find SENTIENT. It starts with the computer: as a systemd service, or through Docker's restart policy."
+                } else {
+                    "Where to find SENTIENT and how it starts."
+                },
             )
-        });
+        };
         let theme = cx.theme().clone();
         // How long SENTIENT waits after Windows starts (crate::ui::start_delay_row).
         let mut start_delay = (cfg!(windows) && !self.manager_only && (self.autostart || self.open_at_signin))
@@ -879,7 +893,7 @@ impl Installer {
         });
         v_flex()
             .gap_3()
-            .children(note)
+            .child(note)
             .children(options.into_iter().flat_map(|(id, label, checked)| {
                 let delay_here = id == "autostart";
                 let checkbox = Checkbox::new(id)
@@ -988,15 +1002,21 @@ impl Installer {
                 rows.push(("Operator screen", screen, 8));
             }
         }
-        ui::panel(&theme).gap_0().children(rows.into_iter().map(|(label, value, step)| {
+        ui::panel(&theme).gap_0().children(rows.into_iter().enumerate().map(|(i, (label, value, step))| {
+            let empty = value.trim().is_empty();
             h_flex()
                 .gap_3()
-                .py_2()
-                .border_b_1()
+                .py_1p5()
+                .items_center()
+                .when(i > 0, |r| r.border_t_1())
                 .border_color(theme.border)
                 .text_sm()
                 .child(div().w_40().flex_shrink_0().text_color(theme.muted_foreground).child(label))
-                .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child(value))
+                .child(if empty {
+                    div().flex_1().min_w_0().text_color(theme.muted_foreground).child("Not entered yet")
+                } else {
+                    div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child(value)
+                })
                 .child(
                     Button::new(SharedString::from(format!("change-{step}-{label}")))
                         .ghost()
@@ -1117,7 +1137,7 @@ impl Installer {
                 ui::panel(&theme)
                     .max_w(px(620.))
                     .child(ui::fact(&theme, "Address", url))
-                    .child(ui::fact(&theme, "Sign in as", email))
+                    .child(ui::fact(&theme, "Sign in as", if email.trim().is_empty() { "The e-mail entered under Administrator".to_string() } else { email }))
                     .child(ui::fact(
                         &theme,
                         "Managed by",

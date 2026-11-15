@@ -960,8 +960,10 @@ impl Installer {
             h_flex()
                 .id(("step", i))
                 .gap_3()
-                .px_4()
-                .py_1p5()
+                .mx_3()
+                .px_3()
+                .py_2()
+                .rounded(theme.radius)
                 .text_sm()
                 .when(current, |r| r.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground))
                 .when(!current && !done, |r| r.text_color(theme.muted_foreground))
@@ -983,13 +985,13 @@ impl Installer {
                 v_flex()
                     .px_4()
                     .pb_4()
-                    .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(theme.primary).child("SENTIENT"))
-                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(if self.manager_only {
+                    .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(theme.primary).whitespace_nowrap().child("SENTIENT Setup"))
+                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).whitespace_nowrap().text_ellipsis().child(if self.manager_only {
                         "Platform Manager"
                     } else if self.adding_sentient {
                         "Platform"
                     } else {
-                        "Platform + Platform Manager"
+                        "Platform and Manager"
                     })),
             )
             .children(rows)
@@ -1022,18 +1024,17 @@ impl Installer {
                 format!("Step {} of {}", at + 1, shown.len())
             }))
             .map(|bar| match (self.problem.clone(), blocked.clone()) {
-                (Some(problem), _) => bar.child(div().ml_4().min_w_0().text_sm().text_color(theme.danger).child(problem)),
+                (Some(problem), _) => bar.child(div().ml_4().flex_1().min_w_0().text_sm().line_clamp(2).text_color(theme.danger).child(problem)),
                 (None, Some(reason)) => bar.child(
                     h_flex()
                         .ml_4()
                         .flex_1()
                         .min_w_0()
-                        .overflow_hidden()
                         .gap_1p5()
                         .text_sm()
                         .text_color(theme.muted_foreground)
-                        .child(Icon::new(IconName::Info).small())
-                        .child(div().min_w_0().truncate().child(reason)),
+                        .child(Icon::new(IconName::Info).small().flex_shrink_0())
+                        .child(div().flex_1().min_w_0().line_clamp(2).child(reason)),
                 ),
                 (None, None) => bar,
             })
@@ -1090,10 +1091,17 @@ impl Render for Installer {
                             .min_h_0()
                             .overflow_y_scroll()
                             .p_8()
-                            .gap_4()
                             .bg(theme.muted)
-                            .child(div().text_2xl().child(self.title(self.step)))
-                            .child(page),
+                            // One content column on every step.
+                            .child(
+                                v_flex()
+                                    .w_full()
+                                    .max_w(px(820.))
+                                    .flex_1()
+                                    .gap_4()
+                                    .child(div().text_2xl().child(self.title(self.step)))
+                                    .child(page),
+                            ),
                     )
                     .child(footer),
             )
