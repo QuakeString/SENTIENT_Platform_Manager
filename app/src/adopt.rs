@@ -377,7 +377,7 @@ fn adopt_native(pg_admin: Option<String>, sink: &ProgressFn) -> Result<Candidate
 /// it from now on (needed before settings or the database type change).
 /// `password`: the database password the operator gave (the dialog checked
 /// it); else it is found in the containers and compose files (or not needed).
-pub fn take_over_compose(record: InstallationRecord, compose: Option<&str>, password: Option<&str>, sink: ProgressFn) -> Result<InstallationRecord, String> {
+pub fn take_over_compose(record: InstallationRecord, compose: Option<&str>, password: Option<&str>, ch_password: Option<&str>, sink: ProgressFn) -> Result<InstallationRecord, String> {
     if record.engine != Engine::Docker || record.stack.external.is_none() {
         return Err("This installation already runs from the Platform Manager's compose file.".into());
     }
@@ -392,6 +392,10 @@ pub fn take_over_compose(record: InstallationRecord, compose: Option<&str>, pass
             full.db_password = s.db_password;
         }
         full.ch_password = s.ch_password;
+    }
+    if let Some(p) = ch_password {
+        distro::docker_ops::check_ch_password(&full, p).map_err(|e| format!("{e} Nothing was changed."))?;
+        full.ch_password = p.to_string();
     }
     let own = distro::adopt::take_over(sink, &full, compose)?;
     let mut updated = record;
@@ -415,9 +419,10 @@ pub fn take_over_plan(record: &InstallationRecord, compose: Option<&str>) -> Res
     Ok(plan)
 }
 
-/// Whether PostgreSQL takes `password` (the takeover dialog's Check).
-pub fn check_takeover_password(record: &InstallationRecord, password: &str) -> Result<(), String> {
-    distro::adopt::check_db_password(&record.stack, password)
+/// Whether PostgreSQL (or ClickHouse, `ch`) takes `password` (the takeover
+/// dialog's Check).
+pub fn check_takeover_password(record: &InstallationRecord, ch: bool, password: &str) -> Result<(), String> {
+    if ch { distro::docker_ops::check_ch_password(&record.stack, password) } else { distro::adopt::check_db_password(&record.stack, password) }
 }
 
 /// One candidate as a line, for the root job's output (crate::rootjob).

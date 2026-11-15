@@ -186,6 +186,12 @@ pub struct RemotePages {
     /// The migration's preflight (crate::migration::preflight on the server):
     /// checked before the confirmation.
     preflight: Preflight,
+    /// The page a long job was started from: it shows the job (progress,
+    /// log, result) in place of its form until "Back to …".
+    shown_job: Option<Kind>,
+    /// A takeover started for a migration: the migration to this type runs
+    /// by itself once the takeover succeeded.
+    pending_migrate: Option<String>,
     /// The newest SENTIENT on the update channel (None: none newer).
     offer: Read<Option<crate::updates::Offer>>,
     /// The versions "Other version" lists.
@@ -244,6 +250,20 @@ impl RemotePages {
                     } else if !job.read(cx).is_running() {
                         this.sudo_asked = false;
                     }
+                    // A takeover for a migration: the migration carries on.
+                    match job.read(cx).state() {
+                        JobState::Done(_) => {
+                            if let Some(f) = this.pending_migrate.take() {
+                                let target = f.clone();
+                                let me = cx.entity().downgrade();
+                                cx.defer(move |cx| {
+                                    me.update(cx, |p, cx| p.run_job("Moving the database", vec!["migrate".into(), target], cx)).ok();
+                                });
+                            }
+                        }
+                        JobState::Failed(_) => this.pending_migrate = None,
+                        _ => {}
+                    }
                     this.reload(cx);
                 }
                 cx.notify();
@@ -263,6 +283,8 @@ impl RemotePages {
             target: None,
             migrate_confirm: false,
             // Screens: a canned preflight failure.
+            shown_job: None,
+            pending_migrate: None,
             preflight: std::env::var("SPM_DEBUG_PREFLIGHT").ok().filter(|_| cfg!(debug_assertions)).map(Preflight::Failed).unwrap_or(Preflight::Idle),
             offer: Read::Loading,
             versions: Read::Loading,
@@ -482,16 +504,25 @@ impl RemotePages {
 
     fn run_job(&mut self, label: impl Into<String>, args: Vec<String>, cx: &mut Context<Self>) {
         let label: String = label.into();
+        // Never silently: another job still runs here.
         if self.job.read(cx).is_running() {
+            let other = self.job_label.clone().map(|l| l.to_string()).unwrap_or_else(|| "another job".into());
+            ui::show_error(format!("{label} cannot start yet"), format!("{other} is still running on {}. It starts once that has finished; try again then.", self.inst.name), cx);
             return;
+        }
+        // Long actions show on their page (crate::manager::jobview).
+        if matches!(self.kind, Kind::Migration | Kind::Update | Kind::Backup | Kind::Repair | Kind::Settings) {
+            self.shown_job = Some(self.kind);
         }
         let inst = self.inst.clone();
         self.job_label = Some(format!("{label} on {}", inst.name).into());
         let strip_label = format!("{label} on {}", inst.name);
         let me = cx.entity().downgrade();
         let (l2, a2) = (label.clone(), args.clone());
+        let on_page = self.shown_job == Some(self.kind);
         self.job.update(cx, |job, cx| {
             job.set_label(strip_label);
+            job.set_on_page(on_page);
             job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
             job.set_retry(std::rc::Rc::new(move |cx: &mut App| {
                 let (l, a) = (l2.clone(), a2.clone());
@@ -521,6 +552,44 @@ impl RemotePages {
     }
 
     // -- rendering ----------------------------------------------------------
+
+    /// The long job started from this page, in place of its form: running,
+    /// or ended and not yet left with "Back to …".
+    fn job_view(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if self.shown_job != Some(self.kind) {
+            return None;
+        }
+        let job = self.job.read(cx);
+        if matches!(job.state(), JobState::Idle) {
+            return None;
+        }
+        let label = self.job_label.clone().map(|l| l.to_string()).unwrap_or_default();
+        let migrating = label.starts_with("Moving the database") || self.pending_migrate.is_some();
+        let page = match self.kind {
+            Kind::Migration => "Migration",
+            Kind::Update => "Update",
+            Kind::Backup => "Backup and restore",
+            Kind::Repair => "Repair and uninstall",
+            Kind::Settings => "Platform settings",
+            _ => "the page",
+        };
+        let title = if self.pending_migrate.is_some() { format!("{label} (the migration follows)") } else { label };
+        let this = cx.entity().downgrade();
+        let back = crate::manager::jobview::back_button("job-back", page, move |_, cx| {
+            this.update(cx, |p, cx| {
+                p.shown_job = None;
+                p.job.update(cx, |j, cx| j.reset(cx));
+                p.reload(cx);
+            })
+            .ok();
+        });
+        let retry = match job.state() {
+            JobState::Failed(_) => job.retry().map(|r| crate::ui::button("job-retry").primary().label("Try again").on_click(move |_, _, cx| r(cx)).into_any_element()),
+            _ => None,
+        };
+        let stages: &[crate::manager::jobview::Stage] = if migrating && self.pending_migrate.is_none() { crate::manager::jobview::MIGRATION } else { &[] };
+        Some(crate::manager::jobview::view("rjob", title, stages, job, Some(back), retry, cx))
+    }
 
     fn failed(theme: &gpui_kit::component::Theme, e: &str) -> Div {
         ui::notice(theme, Tone::Bad, e.to_string())
@@ -1269,7 +1338,7 @@ impl RemotePages {
         cx.notify();
     }
 
-    fn take_over_with_password(&mut self, mut args: Vec<String>, password: String, cx: &mut Context<Self>) {
+    fn take_over_with_password(&mut self, mut args: Vec<String>, creds: crate::manager::takeover::Creds, cx: &mut Context<Self>) {
         if self.job.read(cx).is_running() {
             return;
         }
@@ -1279,12 +1348,20 @@ impl RemotePages {
             job.start(
                 move |sink| {
                     remote::deploy(&inst, &sink)?;
-                    let file = remote::put_secret_file(&inst, &password)?;
-                    args.push("--db-password-file".into());
-                    args.push(file.clone());
+                    let mut files = Vec::new();
+                    for (flag, pw) in [("--db-password-file", &creds.db), ("--ch-password-file", &creds.ch)] {
+                        if let Some(pw) = pw {
+                            let file = remote::put_secret_file(&inst, pw)?;
+                            args.push(flag.into());
+                            args.push(file.clone());
+                            files.push(file);
+                        }
+                    }
                     let a: Vec<&str> = args.iter().map(String::as_str).collect();
                     let r = remote::start_job(&inst, &a).and_then(|id| remote::follow(&inst, &id, &sink));
-                    remote::remove_file(&inst, &file);
+                    for f in files {
+                        remote::remove_file(&inst, &f);
+                    }
                     r
                 },
                 cx,
@@ -1409,6 +1486,17 @@ impl RemotePages {
     /// Take the server's compose-file SENTIENT over: the plan from its agent
     /// for confirmation (crate::manager::takeover), then the job there.
     fn open_take_over(&mut self, cx: &mut Context<Self>) {
+        // From Migration with a type chosen: the migration follows the takeover.
+        if self.kind == Kind::Migration {
+            use sentient_installer_core::stack::Flavor;
+            let current = self.status.got().map(|s| s.database.clone()).unwrap_or_default();
+            let all = [Flavor::Stock, Flavor::Timescaledb, Flavor::Clickhouse];
+            let now = all.into_iter().find(|f| crate::installation::flavor_label(*f) == current);
+            let targets: Vec<Flavor> = all.into_iter().filter(|f| Some(*f) != now).collect();
+            self.pending_migrate = self.target.and_then(|i| targets.get(i)).map(|f| f.as_str().to_string());
+        } else {
+            self.pending_migrate = None;
+        }
         let inst = self.inst.clone();
         let this = cx.entity().downgrade();
         crate::manager::takeover::open(
@@ -1421,9 +1509,9 @@ impl RemotePages {
             }),
             std::sync::Arc::new({
                 let inst = inst.clone();
-                move |pw: String| remote::check_takeover_password(&inst, &pw)
+                move |ch: bool, pw: String| remote::check_takeover_password(&inst, ch, &pw)
             }),
-            std::rc::Rc::new(move |compose: Option<String>, password: Option<String>, cx: &mut App| {
+            std::rc::Rc::new(move |compose: Option<String>, creds: crate::manager::takeover::Creds, cx: &mut App| {
                 this.update(cx, |p, cx| {
                     let mut args = vec!["take-over-compose".to_string()];
                     if let Some(c) = compose {
@@ -1431,11 +1519,12 @@ impl RemotePages {
                         args.push(c);
                     }
                     p.preflight = Preflight::Idle;
-                    match password {
-                        None => p.run_job("Taking over the compose file", args, cx),
-                        // The password goes in a file only the account reads,
-                        // which the agent removes when it read it.
-                        Some(pw) => p.take_over_with_password(args, pw, cx),
+                    if creds.db.is_none() && creds.ch.is_none() {
+                        p.run_job("Taking over the compose file", args, cx);
+                    } else {
+                        // Passwords go in files only the account reads, which
+                        // the agent removes when it read them.
+                        p.take_over_with_password(args, creds, cx);
                     }
                 })
                 .ok();
@@ -1643,7 +1732,7 @@ impl Render for RemotePages {
             }
             Read::Got(()) => None,
         };
-        let body = if let Some(g) = gate { g } else { match self.kind {
+        let body = if let Some(v) = self.job_view(cx) { v } else if let Some(g) = gate { g } else { match self.kind {
             Kind::Status => self.status_page(cx),
             Kind::Control => self.control_page(cx),
             Kind::Logs => self.logs_page(window, cx),

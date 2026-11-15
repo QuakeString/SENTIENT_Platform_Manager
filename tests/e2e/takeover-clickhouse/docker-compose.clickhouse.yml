@@ -1,0 +1,335 @@
+# Copyright © 2016-2026 The SENTIENT Authors
+#
+# SENTIENT IIoT Platform — PostgreSQL + ClickHouse (hybrid) flavor.
+#
+# History timeseries live in ClickHouse; PostgreSQL keeps entities, attributes
+# and everything else (ts_kv stays a plain empty table on stock PostgreSQL —
+# no TimescaleDB anywhere). Pick this for high telemetry volume. The flavor is
+# chosen AT INSTALL TIME (CLICKHOUSE_URL below is what makes the install
+# hybrid) and cannot be changed in place:
+#
+#   docker-compose.yml             → stock PostgreSQL
+#   docker-compose.timescaledb.yml → PostgreSQL + TimescaleDB
+#   docker-compose.clickhouse.yml  → PostgreSQL + ClickHouse   (this file)
+#
+# Usage (from the repo root):
+#   docker compose -f docker/docker-compose.clickhouse.yml pull
+#   docker compose -f docker/docker-compose.clickhouse.yml up -d postgres clickhouse
+#   docker compose -f docker/docker-compose.clickhouse.yml run --rm -e INSTALL_SENTIENT=true sentient
+#   docker compose -f docker/docker-compose.clickhouse.yml up -d
+#
+# Routine update: pull + up -d. The container applies pending schema
+# migrations automatically at startup (SENTIENT_AUTO_UPGRADE=false disables).
+#
+# A FRESH INSTALL IS NOT USABLE UNTIL A LICENSE IS ACTIVATED: every API call
+# returns HTTP 402 until the sys admin activates one (UI on :8080, or POST
+# /api/license/activate). Activation contacts LICENSE_SERVER_URL.
+#
+# Requires Docker Compose v2.23+ for inline `configs` content.
+
+name: sentient
+
+services:
+
+  # ── PostgreSQL: entities, attributes, dashboards. No timeseries. ──────────
+  #
+  # Stock postgres, NOT timescale/timescaledb. In hybrid mode ts_kv is empty
+  # because history lives in ClickHouse, so hypertables, chunk compression and
+  # drop_chunks retention would be managing a table nobody writes.
+  #
+  # The -alpine variant matters if you ever migrate a database between the two:
+  # collation here is libc-backed, and musl and glibc order text differently.
+  # Staying on one libc keeps text indexes valid.
+  postgres:
+    image: "postgres:18-alpine"
+    container_name: sentient-postgres
+    restart: always
+    command:
+      - "postgres"
+      # Empty on purpose. Harmless on a fresh install; it also means a data
+      # directory carried over from the timescale image still starts, because
+      # that image records the preload in the data dir's own postgresql.conf
+      # and the official image never rewrites an existing config.
+      - "-c"
+      - "shared_preload_libraries="
+      # PG 18 async I/O. The io_uring method needs Docker's default seccomp
+      # profile relaxed, so use the portable worker method.
+      - "-c"
+      - "io_method=worker"
+      - "-c"
+      - "io_workers=3"
+      # The image default of 25 is smaller than sentient's own pool, which
+      # produces "too many clients already" before anything else goes wrong.
+      - "-c"
+      - "max_connections=100"
+      - "-c"
+      - "shared_buffers=128MB"
+      - "-c"
+      - "work_mem=2MB"
+      - "-c"
+      - "effective_cache_size=384MB"
+    environment:
+      POSTGRES_DB: sentient
+      POSTGRES_USER: sentient
+      POSTGRES_PASSWORD: sentient
+      PGDATA: /var/lib/postgresql/data
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentient -d sentient"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── ClickHouse: all timeseries, both history and latest values ────────────
+  clickhouse:
+    image: "clickhouse/clickhouse-server:24.8-alpine"
+    container_name: sentient-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: sentient
+      CLICKHOUSE_USER: sentient
+      CLICKHOUSE_PASSWORD: sentient
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - sentient-clickhouse:/var/lib/clickhouse
+    configs:
+      - source: clickhouse_tuning
+        target: /etc/clickhouse-server/config.d/sentient.xml
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── SENTIENT application ──────────────────────────────────────────────────
+  sentient:
+    image: "spmtest/sentient:fake"
+    container_name: sentient
+    restart: always
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      # --- identity: CHANGE THESE PER MACHINE -----------------------------
+      # Two nodes reporting the same service id will be treated as one.
+      SENTIENT_INSTANCE_ID: sentient-docker-01
+      SENTIENT_SERVICE_ID: st-node-1
+
+      # --- storage ---------------------------------------------------------
+      DATABASE_URL: postgresql://sentient:sentient@postgres:5432/sentient
+      POSTGRES_DB: sentient
+      POSTGRES_USER: sentient
+      POSTGRES_PASSWORD: sentient
+
+      # Presence of CLICKHOUSE_URL is what makes the install hybrid.
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DATABASE: sentient
+      CLICKHOUSE_USER: sentient
+      CLICKHOUSE_PASSWORD: sentient
+
+      # History and latest values both in ClickHouse, latest reads served from
+      # an in-process cache. TTL 0 = entries live until evicted by size.
+      TS_TYPE: clickhouse
+      TS_LATEST_TYPE: clickhouse
+      TS_LATEST_CACHE: inprocess
+      TS_LATEST_CACHE_MAX_ENTRIES: 1000000
+      TS_LATEST_CACHE_TTL_SECS: 0
+
+      # --- server ----------------------------------------------------------
+      HOST: 0.0.0.0
+      PORT: 8080
+      RUST_LOG: info,sentient_api=info
+      RUST_BACKTRACE: 1
+      LICENSE_SERVER_URL: https://license.invenia.in
+      # Default address of the offline translator engine (translate service).
+      SENTIENT_TRANSLATE_URL: "http://translate:5100"
+      ANALYTICS_ENABLED: true
+      REPORT_OUTPUT_DIR: /var/lib/sentient/reports
+      VC_REPOS_PATH: /var/lib/sentient/vc-repos
+      # Secrets store master key (generated on first start; BACK IT UP with the data volume)
+      SECRETS_KEY_FILE: /var/lib/sentient/secrets.key
+      # Most dashboards a user may keep in memory (Profile page); 0 = no limit.
+      # DASHBOARD_KEEP_ALIVE_MAX: "10"
+
+      # --- connection pools ------------------------------------------------
+      DB_POOL_PRIMARY_MIN: 16
+      DB_POOL_PRIMARY_MAX: 48
+      DATABASE_POOL_MIN: 8
+      DATABASE_POOL_MAX: 24
+
+      # --- write batching --------------------------------------------------
+      SQL_TS_BATCH_SIZE: 8000
+      SQL_TS_BATCH_THREADS: 5
+      SQL_TS_BATCH_MAX_DELAY_MS: 100
+      SQL_TS_LATEST_BATCH_SIZE: 4000
+      SQL_TS_LATEST_BATCH_THREADS: 5
+      SQL_TS_LATEST_BATCH_MAX_DELAY_MS: 50
+      SQL_ATTRIBUTES_BATCH_SIZE: 4000
+      SQL_ATTRIBUTES_BATCH_THREADS: 5
+      SQL_ATTRIBUTES_BATCH_MAX_DELAY_MS: 50
+
+      # --- entity caches ---------------------------------------------------
+      CACHE_SPECS_DEVICES_MAX_SIZE: 100000
+      CACHE_SPECS_DEVICES_TTL: 1440
+      CACHE_SPECS_DEVICES_NULL_TTL: 5
+      CACHE_SPECS_DEVICE_PROFILES_MAX_SIZE: 10000
+      CACHE_SPECS_DEVICE_PROFILES_TTL: 1440
+      CACHE_SPECS_ASSET_PROFILES_MAX_SIZE: 10000
+      CACHE_SPECS_ASSET_PROFILES_TTL: 1440
+
+      # --- retention: 0 = keep forever -------------------------------------
+      AUDIT_LOG_TTL_DAYS: 0
+      NOTIFICATIONS_TTL_DAYS: 0
+      SENTIENT__EVENT_CLEANUP__ENABLED: true
+      SENTIENT__EVENT_CLEANUP__CLEANUP_INTERVAL_SECS: 3600
+      SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS: 0
+      SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS: 604800
+
+      # --- CoAPS (optional, off unless certs are supplied) ------------------
+      # The DTLS listener starts only when the `coaps` connectivity setting is
+      # enabled AND both of these point at readable files. Plain CoAP on 5683
+      # is unaffected. To enable: create a certs volume or bind mount, put
+      # coap-server.crt / coap-server-pkcs8.key in it, and uncomment.
+      # COAP_SSL_PEM_CERT: /etc/sentient/certs/coap-server.crt
+      # COAP_SSL_PEM_KEY: /etc/sentient/certs/coap-server-pkcs8.key
+    volumes:
+      - sentient_data:/var/lib/sentient
+      # LINUX HOSTS ONLY - do not enable on Windows or macOS.
+      # Feeds fp_machine_id, one of six components in the license hardware
+      # fingerprint. Without it the collector uses the remaining five, which is
+      # a supported fallback. On Docker Desktop this path resolves inside the
+      # Linux VM rather than the real host, so the value it would bind is the
+      # VM's and changes whenever Docker Desktop is reset - worse than omitting
+      # it, because the fingerprint would then move on its own.
+      # - /etc/machine-id:/etc/machine-id:ro
+    ports:
+      - "8080:8080"     # HTTP / REST / WebSocket
+      - "1883:1883"     # MQTT
+      - "8883:8883"     # MQTTS
+      - "5683:5683/udp" # CoAP
+      - "5684:5684/udp" # CoAPS
+      - "5685:5685/udp" # LwM2M
+      - "5686:5686/udp" # LwM2M over DTLS
+      - "5687:5687/udp" # LwM2M bootstrap
+      - "5688:5688/udp" # LwM2M bootstrap over DTLS
+
+  # ── Optional offline translator ──
+  # Not started by default. Enable with:
+  #   docker compose -f docker/<this file> --profile translate up -d
+  # then install language packs into the st-translate volume
+  # (sentient-translate packs install / accept) and add the
+  # "SENTIENT offline translator" engine under Settings › Translations.
+  translate:
+    image: "quakestring/sentient-translate:latest"
+    build:
+      context: ../translate-service
+      dockerfile: Dockerfile
+    container_name: sentient-translate
+    restart: always
+    profiles: ["translate"]
+    environment:
+      # Unload the model after this many idle seconds (frees its RAM).
+      SENTIENT_TRANSLATE_IDLE_SECS: "120"
+      # CPU threads for inference, 0 = all cores.
+      SENTIENT_TRANSLATE_THREADS: "0"
+    volumes:
+      - st-translate:/var/lib/sentient-translate
+
+configs:
+  # Inlined so this file stands alone. ClickHouse defaults assume a dedicated
+  # analytics server; SENTIENT often runs the whole stack on one modest box.
+  clickhouse_tuning:
+    content: |
+      <?xml version="1.0"?>
+      <clickhouse>
+          <!-- Recomputing several hundred async metrics every second walks
+               every table, part and disk: 8-12% of a core while fully idle. -->
+          <asynchronous_metrics_update_period_s>60</asynchronous_metrics_update_period_s>
+
+          <!-- Defaults are 5 GiB mark + 8 GiB uncompressed, which is the whole
+               machine on an 8 GB box. Telemetry reads are mostly recent ranges. -->
+          <mark_cache_size>268435456</mark_cache_size>
+          <uncompressed_cache_size>134217728</uncompressed_cache_size>
+
+          <!-- ClickHouse logs about itself continuously whether or not anyone
+               queries it - measured at 410 rows/min into asynchronous_metric_log
+               alone, each an INSERT producing parts that then need merging.
+               These are diagnostics for tuning ClickHouse itself. On a plant
+               box the system database outgrew the telemetry it stores
+               (saf: 1.4 GB of logs next to 0.6 GB of data), so every log is
+               either removed or capped by TTL. query_log (7 days) is what
+               you need to debug a slow dashboard, part_log (7 days) explains
+               merge behaviour, error_log (30 days) is tiny. -->
+          <metric_log remove="1"/>
+          <asynchronous_metric_log remove="1"/>
+          <trace_log remove="1"/>
+          <text_log remove="1"/>
+          <processors_profile_log remove="1"/>
+          <query_views_log remove="1"/>
+          <query_thread_log remove="1"/>
+          <session_log remove="1"/>
+          <opentelemetry_span_log remove="1"/>
+          <zookeeper_log remove="1"/>
+          <transactions_info_log remove="1"/>
+          <filesystem_cache_log remove="1"/>
+          <s3queue_log remove="1"/>
+          <blob_storage_log remove="1"/>
+          <backup_log remove="1"/>
+          <asynchronous_insert_log remove="1"/>
+
+          <query_log replace="1">
+              <database>system</database>
+              <table>query_log</table>
+              <engine>ENGINE = MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY (event_date, event_time) TTL event_date + INTERVAL 7 DAY DELETE</engine>
+              <flush_interval_milliseconds>30000</flush_interval_milliseconds>
+          </query_log>
+          <part_log replace="1">
+              <database>system</database>
+              <table>part_log</table>
+              <engine>ENGINE = MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY (event_date, event_time) TTL event_date + INTERVAL 7 DAY DELETE</engine>
+              <flush_interval_milliseconds>30000</flush_interval_milliseconds>
+          </part_log>
+          <error_log replace="1">
+              <database>system</database>
+              <table>error_log</table>
+              <engine>ENGINE = MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY (event_date, event_time) TTL event_date + INTERVAL 30 DAY DELETE</engine>
+              <flush_interval_milliseconds>30000</flush_interval_milliseconds>
+          </error_log>
+      </clickhouse>
+
+# Volume names are pinned EXPLICITLY so every compose invocation — any flavor
+# file, any working directory, `compose run` — attaches the SAME data. Bare
+# names get a project prefix, and a differently-invoked command then silently
+# creates fresh empty volumes next to the real ones (bit us on a production
+# update 2026-09-01). Existing deployments: run docker/migrate-volumes.sh once.
+volumes:
+  postgres_data:
+    name: st-pg-data
+  sentient-clickhouse:
+    name: st-ch-data
+  sentient_data:
+    name: st-data
+  st-translate:
+    name: st-translate

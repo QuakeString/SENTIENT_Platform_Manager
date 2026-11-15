@@ -14,6 +14,7 @@ pub(crate) mod migration;
 pub(crate) mod remote_pages;
 mod repair;
 mod takeover;
+pub(crate) mod jobview;
 pub(crate) mod settings;
 pub(crate) mod setting_field;
 pub(crate) mod status;
@@ -315,6 +316,13 @@ impl Manager {
                         "password" => {
                             p.needs_password = true;
                             p.db_user = "sentient".into();
+                            p.password_why = "It is not in the containers or the compose file.".into();
+                        }
+                        "chpassword" => {
+                            p.needs_ch_password = true;
+                            p.ch_user = "sentient".into();
+                            p.ch_password_why = "None of the passwords in the containers or the compose file (nor an empty one) is accepted by ClickHouse.".into();
+                            p.password_from = "SENTIENT's DATABASE_URL".into();
                         }
                         "failed" => return Err("ssh: connect to host 10.0.4.12 port 22: Connection timed out".into()),
                         "loading" => std::thread::sleep(std::time::Duration::from_secs(60)),
@@ -322,7 +330,7 @@ impl Manager {
                     }
                     Ok(p)
                 };
-                cx.defer(move |cx| takeover::open(std::env::var_os("SPM_DEBUG_TAKEOVER_LOCAL").is_some(), std::sync::Arc::new(plan), std::sync::Arc::new(|pw: String| if pw == "right" { Ok(()) } else { Err("PostgreSQL refused this password for the user sentient.".into()) }), std::rc::Rc::new(|_, _, _: &mut App| {}), None, cx));
+                cx.defer(move |cx| takeover::open(std::env::var_os("SPM_DEBUG_TAKEOVER_LOCAL").is_some(), std::sync::Arc::new(plan), std::sync::Arc::new(|ch: bool, pw: String| if pw == "right" { Ok(()) } else { Err(format!("{} refused this password for the user sentient.", if ch { "ClickHouse" } else { "PostgreSQL" })) }), std::rc::Rc::new(|_, _, _: &mut App| {}), None, cx));
             }
             if std::env::var_os("SPM_DEBUG_SUDO_PROMPT").is_some() {
                 if let Some(inst) = crate::remote::load().into_iter().next() {
@@ -442,11 +450,6 @@ impl Manager {
         if let Some(m) = self.monitor.filter(|m| m.disk_low()) {
             out.push(local("Disk almost full".into(), format!("{} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status));
         }
-        // SENTIENT stopped or a server not answering (crate::bg_app's checks):
-        // they stay while it lasts.
-        for p in crate::bg_app::problems(cx).into_iter().rev() {
-            out.insert(0, (p.title().to_string(), p.detail(), Page::Status, p.instance.clone(), p.name.clone(), p.color.clone()));
-        }
         if let (Some(id), Some(m)) = (&self.open_remote, self.remote_monitor.filter(|m| m.disk_low())) {
             if let Some(r) = self.remotes.iter().find(|r| &r.id == id) {
                 out.push(("Disk almost full".into(), format!("{} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status, Some(r.id.clone()), r.name.clone(), r.color.clone()));
@@ -483,8 +486,9 @@ impl Manager {
                 .rounded(px(6.))
                 .cursor_pointer()
                 .hover(|r| r.bg(theme.list_hover))
-                // The instance's colour along the left.
-                .child(div().absolute().left(px(2.)).top(px(6.)).bottom(px(6.)).w(px(3.)).rounded(px(2.)).bg(rgb(c)))
+                // Along the left, the colour of what happened (the icon's);
+                // the instance's own colour is the dot by its name.
+                .child(div().absolute().left(px(2.)).top(px(6.)).bottom(px(6.)).w(px(3.)).rounded(px(2.)).bg(icon_color))
                 .child(Icon::new(icon).size_4().text_color(icon_color).mt(px(2.)))
                 .child(
                     v_flex()
@@ -492,7 +496,13 @@ impl Manager {
                         .min_w_0()
                         .child(div().text_sm().font_weight(if unread { FontWeight::SEMIBOLD } else { FontWeight::NORMAL }).overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
                         .child(div().text_size(px(12.5)).text_color(theme.muted_foreground).overflow_hidden().whitespace_nowrap().text_ellipsis().child(detail))
-                        .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(meta)),
+                        .child(
+                            h_flex()
+                                .gap(px(5.))
+                                .items_center()
+                                .child(div().size(px(7.)).rounded_full().bg(rgb(c)))
+                                .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(meta)),
+                        ),
                 )
                 // Right: the unread dot, then the row's own clear (×), always
                 // shown so one line can be cleared without hunting for it.

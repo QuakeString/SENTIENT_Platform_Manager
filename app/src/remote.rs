@@ -1174,9 +1174,9 @@ pub fn put_secret_file(inst: &Instance, text: &str) -> Result<String, String> {
 }
 
 /// Whether the server's PostgreSQL takes `password` (the takeover dialog).
-pub fn check_takeover_password(inst: &Instance, password: &str) -> Result<(), String> {
+pub fn check_takeover_password(inst: &Instance, ch: bool, password: &str) -> Result<(), String> {
     let file = put_secret_file(inst, password)?;
-    let r = spm_job(inst, &format!("takeover-check-password --db-password-file '{}'", file.replace('\'', ""))).map(|_| ());
+    let r = spm_job(inst, &format!("takeover-check-password{} --db-password-file '{}'", if ch { " --clickhouse" } else { "" }, file.replace('\'', ""))).map(|_| ());
     remove_file(inst, &file);
     r
 }

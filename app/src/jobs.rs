@@ -42,6 +42,9 @@ pub struct Job {
     retry: Option<std::rc::Rc<dyn Fn(&mut App)>>,
     /// The remote instance it works on (id, name, colour); None: this computer.
     instance: Option<(String, String, String)>,
+    /// Followed on its own page (crate::manager::jobview): its result shows
+    /// there, so no dialog opens when it fails.
+    on_page: bool,
     _task: Option<Task<()>>,
     /// Re-renders once a second while running, so the step's time moves.
     _ticker: Option<Task<()>>,
@@ -61,6 +64,7 @@ impl Job {
             details: None,
             retry: None,
             instance: None,
+            on_page: false,
             _task: None,
             _ticker: None,
         }
@@ -69,6 +73,15 @@ impl Job {
     /// Name the job for the progress strip (before `start`).
     pub fn set_label(&mut self, label: impl Into<SharedString>) {
         self.label = Some(label.into());
+    }
+
+    /// Shown on its page (see `on_page`).
+    pub fn set_on_page(&mut self, on: bool) {
+        self.on_page = on;
+    }
+
+    pub fn on_page(&self) -> bool {
+        self.on_page
     }
 
     /// What the strip's Details opens (see `details`).

@@ -25,6 +25,8 @@ use crate::manager::Manager;
 const TRAY_EVERY: Duration = Duration::from_secs(15);
 /// How often the instances are checked for the bell.
 const CHECK_EVERY: Duration = Duration::from_secs(300);
+/// …and while one of them has a problem, to see it end soon.
+const PROBLEM_CHECK_EVERY: Duration = Duration::from_secs(60);
 
 struct Bg {
     prefs: Prefs,
@@ -314,25 +316,14 @@ fn check_instances(cx: &mut App) {
                     let color = inst.as_ref().map(|i| i.2.clone()).unwrap_or_else(|| crate::remote::LOCAL_COLOR.into());
                     health.insert(key.clone(), (name.clone(), color, seen));
                     let before = last.insert(key, seen);
-                    let Some(before) = before.filter(|b| *b != seen) else { continue };
-                    match seen {
-                        // A problem is a condition (the bell, the tray), and
-                        // a desktop notification while no window is open.
-                        Seen::Stopped | Seen::NoAnswer => {
-                            if cx.global::<Bg>().window.is_none() {
-                                let p = Problem { instance: None, name: name.clone(), color: String::new(), no_answer: seen == Seen::NoAnswer };
-                                desktop_notification(&format!("{name}: {}", p.title()), &p.detail());
-                            }
+                    // Once when a problem starts, once when it ends: plain
+                    // lines in the bell (clearing one does not bring it back);
+                    // the live state is the tray's and the pages'.
+                    if let Some(note) = transition(before, seen, &name) {
+                        if note.failed && cx.global::<Bg>().window.is_none() {
+                            desktop_notification(&format!("{name}: {}", note.title), &note.detail);
                         }
-                        // Running again: a line in the bell that can be cleared.
-                        Seen::Running => {
-                            let (title, detail) = if before == Seen::NoAnswer {
-                                ("The server answers again".to_string(), format!("{name} is reachable again; SENTIENT runs."))
-                            } else {
-                                ("SENTIENT runs again".to_string(), format!("SENTIENT on {name} answers again."))
-                            };
-                            crate::manager::strip::push_condition(inst, false, title, detail, cx);
-                        }
+                        crate::manager::strip::push_condition(inst, note.failed, note.title, note.detail, cx);
                     }
                 }
                 cx.set_global(Health(health));
@@ -342,10 +333,65 @@ fn check_instances(cx: &mut App) {
             if !alive {
                 break;
             }
-            cx.background_executor().timer(CHECK_EVERY).await;
+            // Every minute while something is wrong, else every five; at once
+            // when a job ended (request_check).
+            let wait = if last.values().any(|s| *s != Seen::Running) { PROBLEM_CHECK_EVERY } else { CHECK_EVERY };
+            let mut waited = Duration::ZERO;
+            while waited < wait && !RECHECK.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                cx.background_executor().timer(Duration::from_secs(2)).await;
+                waited += Duration::from_secs(2);
+            }
         }
     })
     .detach();
+}
+
+/// Check the instances again now (a job ended: a migration, an update, a
+/// takeover may have changed what runs where).
+pub fn request_check() {
+    RECHECK.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+static RECHECK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What the bell says when an instance's state changes: nothing for the
+/// first reading or no change.
+#[derive(Debug, PartialEq)]
+struct Note {
+    failed: bool,
+    title: String,
+    detail: String,
+}
+
+fn transition(before: Option<Seen>, now: Seen, name: &str) -> Option<Note> {
+    let before = before.filter(|b| *b != now)?;
+    let on = if name == "This computer" { "this computer".to_string() } else { name.to_string() };
+    Some(match now {
+        Seen::Stopped => Note { failed: true, title: "SENTIENT stopped".into(), detail: format!("SENTIENT on {on} does not answer on its web port.") },
+        Seen::NoAnswer => Note { failed: true, title: "The server does not answer".into(), detail: format!("{name} could not be reached over SSH.") },
+        Seen::Running if before == Seen::NoAnswer => Note { failed: false, title: "The server answers again".into(), detail: format!("{name} is reachable again; SENTIENT runs.") },
+        Seen::Running => Note { failed: false, title: "SENTIENT answers again".into(), detail: format!("SENTIENT on {on} answers again.") },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
+    use super::{Seen, transition};
+
+    /// A problem is raised once and cleared once; a first reading or the
+    /// same state again says nothing.
+    #[test]
+    fn a_problem_is_raised_and_cleared() {
+        assert_eq!(transition(None, Seen::Stopped, "SUNOIL"), None);
+        let raised = transition(Some(Seen::Running), Seen::Stopped, "SUNOIL").unwrap();
+        assert!(raised.failed && raised.title == "SENTIENT stopped");
+        assert_eq!(transition(Some(Seen::Stopped), Seen::Stopped, "SUNOIL"), None);
+        let cleared = transition(Some(Seen::Stopped), Seen::Running, "SUNOIL").unwrap();
+        assert!(!cleared.failed && cleared.title == "SENTIENT answers again");
+        assert_eq!(transition(Some(Seen::NoAnswer), Seen::Running, "SUNOIL").unwrap().title, "The server answers again");
+        assert!(transition(Some(Seen::Running), Seen::Stopped, "This computer").unwrap().detail.contains("on this computer"));
+    }
 }
 
 fn desktop_notification(summary: &str, body: &str) {

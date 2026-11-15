@@ -57,19 +57,19 @@ impl RepairPage {
                 let record = record.clone();
                 move |compose: Option<String>| crate::adopt::take_over_plan(&record, compose.as_deref())
             }),
-            std::sync::Arc::new(move |pw: String| crate::adopt::check_takeover_password(&record, &pw)),
-            std::rc::Rc::new(move |compose, password, cx: &mut App| {
-                this.update(cx, |page, cx| page.take_over(compose, password, cx)).ok();
+            std::sync::Arc::new(move |ch: bool, pw: String| crate::adopt::check_takeover_password(&record, ch, &pw)),
+            std::rc::Rc::new(move |compose, creds, cx: &mut App| {
+                this.update(cx, |page, cx| page.take_over(compose, creds, cx)).ok();
             }),
             None,
             cx,
         );
     }
 
-    fn take_over(&mut self, compose: Option<String>, password: Option<String>, cx: &mut Context<Self>) {
+    fn take_over(&mut self, compose: Option<String>, creds: crate::manager::takeover::Creds, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         self.running = Some(Action::TakeOver);
-        self.job.update(cx, |job, cx| job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), password.as_deref(), sink).map(|_| ()), cx));
+        self.job.update(cx, |job, cx| job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), creds.db.as_deref(), creds.ch.as_deref(), sink).map(|_| ()), cx));
     }
 
     fn start(&mut self, action: Action, cx: &mut Context<Self>) {

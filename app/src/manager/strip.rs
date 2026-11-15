@@ -138,6 +138,7 @@ impl Strip {
         match state {
             JobState::Running => {}
             JobState::Failed(m) if !self.opened_for_failure => {
+                crate::bg_app::request_check();
                 // The chip goes; the details open once, and the failure stays
                 // in the bell (red count) until its entry is opened.
                 self.opened_for_failure = true;
@@ -155,10 +156,14 @@ impl Strip {
                 }
                 self.job = None;
                 self._observe = None;
-                let lbl = Some(label);
-                cx.defer(move |cx| open_details(job, lbl, cx));
+                // Its page shows the result; else the details open once.
+                if !job.read(cx).on_page() {
+                    let lbl = Some(label);
+                    cx.defer(move |cx| open_details(job, lbl, cx));
+                }
             }
             JobState::Done(m) if self.finished_at.is_none() => {
+                crate::bg_app::request_check();
                 self.finished_at = Some(Instant::now());
                 // Backups, restores, updates and takeovers that finish are
                 // worth a line in the bell; a start or stop is not.
@@ -225,10 +230,12 @@ impl Strip {
     pub fn open_event(&mut self, id: u64, cx: &mut Context<Self>) {
         let Some(e) = self.events.iter_mut().find(|e| e.id == id) else { return };
         e.read = true;
-        let (title, text) = (e.title.clone(), e.text.clone());
+        let (title, text, failed) = (e.title.clone(), e.text.clone(), e.failed);
         let retry = self.retries.get(&id).cloned();
         self.save();
-        cx.defer(move |cx| crate::ui::show_error_with(title, text, retry, cx));
+        // A failure in the error dialog (details, Copy, Retry); anything
+        // else as what it is: a note, never "did not finish".
+        cx.defer(move |cx| if failed { crate::ui::show_error_with(title, text, retry, cx) } else { crate::ui::show_info(title, text, cx) });
         cx.notify();
     }
 

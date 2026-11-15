@@ -107,6 +107,35 @@ pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedStr
     crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 560., on_close: None }, cx);
 }
 
+/// What finished, in the shared dialog: the message as plain lines (a
+/// success is never read as an error, however long it is), and Close.
+pub fn show_info(title: impl Into<SharedString>, text: impl Into<SharedString>, cx: &mut App) {
+    struct InfoBody(SharedString);
+    impl Render for InfoBody {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            use gpui_kit::component::button::ButtonVariants as _;
+            let theme = cx.theme().clone();
+            gpui_kit::component::v_flex()
+                .gap_3()
+                .child(outcome(&theme, Tone::Good, info_lines(&self.0).0))
+                .children(info_lines(&self.0).1.map(|rest| div().text_sm().child(rest)))
+                .child(gpui_kit::component::h_flex().justify_end().child(button("info-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx))))
+        }
+    }
+    let view = cx.new(|_| InfoBody(text.into()));
+    crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 560., on_close: None }, cx);
+}
+
+/// A success message as a first sentence and the rest (a note to read),
+/// never split as an error's headline and raw details.
+pub fn info_lines(text: &str) -> (String, Option<String>) {
+    let t = text.trim();
+    match t.find(". ").filter(|i| *i + 2 < t.len()) {
+        Some(i) => (t[..=i].to_string(), Some(t[i + 2..].trim().to_string())),
+        None => (t.to_string(), None),
+    }
+}
+
 /// Open SENTIENT on `port`: full screen like the kiosk shortcut when the
 /// install chose it (`kiosk`: the same `--open-sentient --kiosk` command,
 /// starting page included), else in the default browser.
@@ -1110,4 +1139,23 @@ pub fn skeleton_service_rows(theme: &Theme, key: &'static str, n: usize) -> Vec<
                 .child(skeleton_line(theme, format!("{key}-n{i}"), [260., 300., 240.][i % 3]))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod info_tests {
+    use super::info_lines;
+
+    /// A remote job that ends with a long note (SUNOIL's takeover): read as
+    /// a done message, its first sentence and the rest, never as an error.
+    #[test]
+    fn a_long_success_note_stays_a_note() {
+        let m = "SENTIENT now runs from /opt/sentient/docker-compose.yml. Start and stop it with the Platform Manager (or docker compose -f that file) from now on: the old compose file would bring back the old settings.";
+        assert!(m.len() > 200);
+        let (head, rest) = info_lines(m);
+        assert_eq!(head, "SENTIENT now runs from /opt/sentient/docker-compose.yml.");
+        assert!(rest.unwrap().starts_with("Start and stop it"));
+        // The error reading of the same text is what the dialog showed before.
+        assert_eq!(crate::remote::split_failure(m).0, "The action did not finish on the server.");
+        assert_eq!(info_lines("Backup finished."), ("Backup finished.".to_string(), None));
+    }
 }
