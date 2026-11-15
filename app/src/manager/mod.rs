@@ -24,7 +24,6 @@ use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, h_flex, v_flex,
     button::ButtonVariants as _,
-    menu::{DropdownMenu as _, PopupMenuItem},
 };
 use gpui_kit::component::Sizable as _;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -152,6 +151,10 @@ pub struct Manager {
     modal_focus: FocusHandle,
     /// The instance switcher's menu is open.
     switcher_open: bool,
+    /// The notifications panel is open.
+    bell_open: bool,
+    /// The window's height (the bell panel's maximum).
+    window_h: std::cell::Cell<f32>,
     /// The global progress strip (strip.rs), under the top bar.
     strip: Entity<strip::Strip>,
     /// Screens: the canned job the strip follows.
@@ -224,6 +227,8 @@ impl Manager {
             modal_focus: cx.focus_handle(),
             strip: strip.clone(),
             switcher_open: false,
+            bell_open: false,
+            window_h: std::cell::Cell::new(720.),
             _debug_job: None,
             theme_open: cfg!(debug_assertions) && std::env::var_os("SPM_THEME_OPEN").is_some(),
             monitor: None,
@@ -239,6 +244,15 @@ impl Manager {
         if let Some(id) = args.windows(2).find(|w| w[0] == "--instance").map(|w| w[1].clone()) {
             manager.open_instance(Some(id), cx);
             manager.page = page;
+        }
+        // Screens: the bell with canned events, the bell or switcher open.
+        #[cfg(debug_assertions)]
+        {
+            if let Some(n) = std::env::var("SPM_DEBUG_EVENTS").ok().and_then(|n| n.parse().ok()) {
+                manager.strip.update(cx, |s, _| s.debug_events(n));
+            }
+            manager.bell_open = std::env::var_os("SPM_DEBUG_BELL").is_some();
+            manager.switcher_open = std::env::var_os("SPM_DEBUG_SWITCHER").is_some();
         }
         // Screens: a job in the progress strip (SPM_DEBUG_STRIP=running|failed|done).
         #[cfg(debug_assertions)]
@@ -314,6 +328,194 @@ impl Manager {
             items.push((format!("Disk almost full: {} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status));
         }
         items
+    }
+
+    /// What needs attention now, for the bell: (title, detail, page, instance
+    /// id, its name, its colour). They go away by themselves.
+    fn conditions(&self, cx: &App) -> Vec<(String, String, Page, Option<String>, String, String)> {
+        let local = |t: String, d: String, p: Page| (t, d, p, None, "This computer".to_string(), crate::remote::LOCAL_COLOR.to_string());
+        let mut out: Vec<_> = Vec::new();
+        let (sentient, manager) = self.updates.read(cx).notices();
+        if let Some(o) = manager {
+            out.push(local(format!("Platform Manager {} is available", o.version), "Update and restart from the Update page.".into(), Page::Update));
+        }
+        if let Some(o) = sentient {
+            out.push(local(format!("SENTIENT {} is available", o.version), "Update from the Update page.".into(), Page::Update));
+        }
+        if let Some(o) = self.updates.read(cx).gateway_notice() {
+            out.push(local(format!("Sentient Gateway {} is available", o.version), "Update from the Gateway page.".into(), Page::Gateway));
+        }
+        let pending = self.record.as_ref().map(|r| crate::changes::pending(r).len()).unwrap_or(0);
+        if pending > 0 {
+            out.push(local(format!("{pending} change{} waiting", if pending == 1 { "" } else { "s" }), "For this installation, on the Update page.".into(), Page::Update));
+        }
+        if let Some(m) = self.monitor.filter(|m| m.disk_low()) {
+            out.push(local("Disk almost full".into(), format!("{} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status));
+        }
+        if let (Some(id), Some(m)) = (&self.open_remote, self.remote_monitor.filter(|m| m.disk_low())) {
+            if let Some(r) = self.remotes.iter().find(|r| &r.id == id) {
+                out.push(("Disk almost full".into(), format!("{} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status, Some(r.id.clone()), r.name.clone(), r.color.clone()));
+            }
+        }
+        out
+    }
+
+    /// The bell's panel: Notifications, Mark all as read / Clear all, the
+    /// events and conditions with their instance, or an empty state.
+    fn notifications_panel(&self, conditions: Vec<(String, String, Page, Option<String>, String, String)>, width: f32, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let events = self.strip.read(cx).events.clone();
+        let (unread, _) = self.strip.read(cx).unread();
+        let w = (width - 24.).min(360.);
+        let now = chrono::Utc::now().timestamp();
+        let ago = |at: i64| {
+            let m = (now - at).max(0) / 60;
+            if m < 1 { "just now".to_string() } else if m < 60 { format!("{m} min ago") } else if m < 24 * 60 { format!("{} h ago", m / 60) } else { format!("{} d ago", m / (24 * 60)) }
+        };
+        let strip = self.strip.clone();
+        let this = cx.entity().downgrade();
+        let row = |key: SharedString, icon: IconName, icon_color: Hsla, title: String, detail: String, meta: String, color: &str, unread: bool, clear: Option<AnyElement>| {
+            let c = crate::remote::parse_hex(color).unwrap_or(0x187074);
+            h_flex()
+                .id(key.clone())
+                .group(key)
+                .relative()
+                .gap_2()
+                .items_start()
+                .pl(px(10.))
+                .pr_2()
+                .py(px(7.))
+                .rounded(px(6.))
+                .cursor_pointer()
+                .hover(|r| r.bg(theme.list_hover))
+                // The instance's colour along the left.
+                .child(div().absolute().left(px(2.)).top(px(6.)).bottom(px(6.)).w(px(3.)).rounded(px(2.)).bg(rgb(c)))
+                .child(Icon::new(icon).size_4().text_color(icon_color).mt(px(2.)))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().text_sm().font_weight(if unread { FontWeight::SEMIBOLD } else { FontWeight::NORMAL }).overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
+                        .child(div().text_size(px(12.5)).text_color(theme.muted_foreground).overflow_hidden().whitespace_nowrap().text_ellipsis().child(detail))
+                        .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(meta)),
+                )
+                .child(
+                    v_flex()
+                        .w(px(20.))
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap_1()
+                        .when(unread, |c| c.child(div().mt(px(5.)).size(px(7.)).rounded_full().bg(theme.danger)))
+                        .children(clear),
+                )
+        };
+        let mut list = v_flex().gap_px();
+        for (i, (title, detail, page, inst, name, color)) in conditions.into_iter().enumerate() {
+            let t = this.clone();
+            let icon = if title.contains("available") || title.contains("waiting") { (IconName::ArrowUp, theme.primary) } else { (IconName::TriangleAlert, rgb(0xd97706).into()) };
+            list = list.child(
+                row(SharedString::from(format!("cond-{i}")), icon.0, icon.1, title, detail, format!("{name}"), &color, false, None).on_click(move |_, _, cx| {
+                    let (inst, page) = (inst.clone(), page);
+                    t.update(cx, |m, cx| {
+                        m.bell_open = false;
+                        if m.open_remote != inst {
+                            m.open_instance(inst, cx);
+                        }
+                        m.page = page;
+                        cx.notify();
+                    })
+                    .ok();
+                }),
+            );
+        }
+        for e in events.iter() {
+            let (id, inst) = (e.id, e.instance.clone());
+            let (s1, s2, t) = (strip.clone(), strip.clone(), this.clone());
+            let icon = if e.failed { (IconName::CircleX, theme.danger) } else { (IconName::CircleCheck, theme.primary) };
+            let clear = div()
+                .id(SharedString::from(format!("clear-{id}")))
+                .invisible()
+                .group_hover(SharedString::from(format!("ev-{id}")), |d| d.visible())
+                .p(px(2.))
+                .rounded(px(4.))
+                .hover(|d| d.bg(theme.list_hover))
+                .child(Icon::new(IconName::Close).size_3().text_color(theme.muted_foreground))
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    s1.update(cx, |s, cx| s.clear(Some(id), cx));
+                })
+                .into_any_element();
+            list = list.child(
+                row(SharedString::from(format!("ev-{id}")), icon.0, icon.1, e.title.clone(), e.detail.clone(), format!("{} · {}", e.instance_name, ago(e.at)), &e.color, !e.read, Some(clear)).on_click(move |_, _, cx| {
+                    let inst = inst.clone();
+                    t.update(cx, |m, cx| {
+                        m.bell_open = false;
+                        if m.open_remote != inst {
+                            m.open_instance(inst, cx);
+                        }
+                    })
+                    .ok();
+                    s2.update(cx, |s, cx| s.open_event(id, cx));
+                }),
+            );
+        }
+        let empty = list_is_empty(&events, self.conditions(cx).len());
+        let (s3, s4, close) = (strip.clone(), strip.clone(), this.clone());
+        let header = h_flex()
+            .px_2()
+            .pt_1()
+            .pb_2()
+            .gap_2()
+            .items_center()
+            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("Notifications"))
+            .when(unread > 0, |h| h.child(crate::ui::button("bell-read").ghost().xsmall().label("Mark all as read").on_click(move |_, _, cx| s3.update(cx, |s, cx| s.mark_all_read(cx)))))
+            .when(!events.is_empty(), |h| h.child(crate::ui::button("bell-clear").ghost().xsmall().label("Clear all").on_click(move |_, _, cx| s4.update(cx, |s, cx| s.clear(None, cx)))));
+        let max_h = (f32::from(self.window_h.get()) * 0.6).max(260.);
+        deferred(
+            div().absolute().top(px(30. + 9.)).right(px(-6.)).child(
+                div()
+                    .relative()
+                    .w(px(w))
+                    .child(
+                        v_flex()
+                            .id("bell-panel")
+                            .occlude()
+                            .p_2()
+                            .min_h(px(240.))
+                            .max_h(px(max_h))
+                            .rounded(px(ui::PANEL_RADIUS))
+                            .bg(theme.popover)
+                            .text_color(theme.popover_foreground)
+                            .border_1()
+                            .border_color(theme.border)
+                            .shadow_lg()
+                            .child(header)
+                            .child(if empty {
+                                v_flex()
+                                    .flex_1()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap_2()
+                                    .py_8()
+                                    .child(Icon::new(IconName::Bell).size_6().text_color(theme.muted_foreground.opacity(0.6)))
+                                    .child(div().text_sm().text_color(theme.muted_foreground).child("No new notifications"))
+                                    .into_any_element()
+                            } else {
+                                div().id("bell-list").flex_1().min_h_0().overflow_y_scroll().child(list).into_any_element()
+                            })
+                            .on_mouse_down_out(move |_, _, cx| {
+                                close.update(cx, |m, cx| {
+                                    m.bell_open = false;
+                                    cx.notify();
+                                })
+                                .ok();
+                            }),
+                    )
+                    .child(ui::pointer_up(theme.popover, theme.border, px(w - 26.))),
+            ),
+        )
+        .with_priority(1)
+        .into_any_element()
     }
 
     /// The top bar: the Platform Manager's icon, the instance that is
@@ -472,47 +674,29 @@ impl Manager {
                     cx.notify();
                 }))
         });
-        let items = self.attention(cx);
-        // Failed jobs come first, until their details are opened (red count).
-        let failures: Vec<(usize, String, bool)> = self.strip.read(cx).failures.iter().enumerate().map(|(i, f)| (i, format!("{} failed", f.label), f.seen)).collect();
-        let unseen = failures.iter().filter(|(_, _, seen)| !seen).count();
-        let count = items.len() + unseen;
-        let strip_e = self.strip.clone();
-        let bell = crate::ui::button("bell")
-            .ghost()
-            .icon(Icon::new(IconName::Bell).text_color(fg))
-            .text_color(fg)
-            .tooltip(if count == 0 { "Nothing needs attention" } else { "Needs attention" })
-            .dropdown_menu({
-                let this = cx.entity().downgrade();
-                move |menu, _, _| {
-                    let mut menu = menu;
-                    for (i, text, seen) in &failures {
-                        let (strip, i) = (strip_e.clone(), *i);
-                        menu = menu.item(PopupMenuItem::new(text.clone()).icon(if *seen { Lucide::CircleX } else { Lucide::CircleAlert }).on_click(move |_, _, cx| {
-                            strip.update(cx, |s, cx| s.open_failure(i, cx));
-                        }));
-                    }
-                    if !failures.is_empty() && !items.is_empty() {
-                        menu = menu.separator();
-                    }
-                    if items.is_empty() && failures.is_empty() {
-                        menu = menu.item(PopupMenuItem::new("Nothing needs attention").disabled(true));
-                    }
-                    for (text, page) in &items {
-                        let this = this.clone();
-                        let page = *page;
-                        menu = menu.item(PopupMenuItem::new(text.clone()).on_click(move |_, _, cx| {
-                            this.update(cx, |m, cx| {
-                                m.page = page;
-                                cx.notify();
-                            })
-                            .ok();
-                        }));
-                    }
-                    menu
-                }
-            });
+        // The bell: events (clearable, kept across restarts) and conditions
+        // (they stay while they hold). Every entry names its instance.
+        let conditions = self.conditions(cx);
+        let (unread, unread_failed) = self.strip.read(cx).unread();
+        let count = unread + conditions.len();
+        let bell_open = self.bell_open;
+        let bell = div()
+            .id("bell")
+            .size(px(30.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(theme_radius)
+            .cursor_pointer()
+            .when(bell_open, |b| b.bg(black().opacity(if light_bar { 0.16 } else { 0.30 })))
+            .hover(move |b| b.bg(black().opacity(if light_bar { 0.16 } else { 0.30 })))
+            .child(Icon::new(IconName::Bell).text_color(fg).size_4())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.bell_open = !this.bell_open;
+                cx.notify();
+            }));
+        let bell_panel = bell_open.then(|| self.notifications_panel(conditions, width, cx));
+        let unseen = if unread_failed { 1 } else { 0 };
         let line = self.strip.read(cx).line(cx);
         h_flex()
             .id("top-bar")
@@ -630,7 +814,7 @@ impl Manager {
             .children(monitor_loading)
             .child(
                 // The bell with an amber count, as in the mockup.
-                div().relative().child(bell).when(count > 0, |b| {
+                div().relative().child(bell).children(bell_panel).when(count > 0, |b| {
                     b.child(
                         div()
                             .absolute()
@@ -1290,6 +1474,7 @@ impl Render for Manager {
         // fewer monitors in the top bar as it narrows.
         let width = f32::from(window.viewport_size().width);
         crate::ui::set_narrow(width < 760.);
+        self.window_h.set(f32::from(window.viewport_size().height));
         stats::set_open(self.page == Page::Statistics);
         // A Control row's "Logs" asked for the Logs page.
         if crate::logsource::take_go() {
@@ -1346,4 +1531,8 @@ pub(crate) const NAV_W: f32 = 210.;
 /// ", released 2026-10-24", or nothing.
 fn dated(date: &str) -> String {
     if date.is_empty() { String::new() } else { format!(", released {date}") }
+}
+
+fn list_is_empty(events: &[strip::Event], conditions: usize) -> bool {
+    events.is_empty() && conditions == 0
 }

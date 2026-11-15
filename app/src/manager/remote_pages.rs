@@ -239,6 +239,7 @@ impl RemotePages {
         self.agent_refresh = AgentRefresh::Running;
         self.job.update(cx, |job, cx| {
             job.set_label(format!("Updating the server agent on {}", inst.name));
+            job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
             job.set_retry(std::rc::Rc::new(move |cx: &mut App| {
                 me.update(cx, |p, cx| p.update_agent(cx)).ok();
             }));
@@ -364,6 +365,7 @@ impl RemotePages {
         let (l2, a2) = (label.clone(), args.clone());
         self.job.update(cx, |job, cx| {
             job.set_label(strip_label);
+            job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
             job.set_retry(std::rc::Rc::new(move |cx: &mut App| {
                 let (l, a) = (l2.clone(), a2.clone());
                 me.update(cx, |p, cx| p.run_job(l, a, cx)).ok();

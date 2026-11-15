@@ -1201,7 +1201,7 @@ fn state_of(status: Option<&Result<RemoteStatus, String>>, refreshing: bool) -> 
 }
 
 /// The quick status: SENTIENT, database, size, disk, last backup.
-fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<RemoteStatus, String>>, det: Option<&Detected>) -> Div {
+fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<RemoteStatus, String>>, _det: Option<&Detected>) -> Div {
     let row = |label: &'static str, value: String, warn: bool| {
         h_flex()
             .gap_0()
@@ -1241,11 +1241,16 @@ fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<Remote
                 .when_some(s.disk_free, |c, d| c.child(row("Disk", format!("{} free", crate::dbstatus::bytes_label(d)), false)));
         }
         Some(Err(e)) => col = col.child(div().text_sm().text_color(if e == remote::NOT_SET_UP || e == remote::FORGOTTEN { theme.foreground } else { theme.danger }).child(e.clone())),
+        // Still reading: the rows it will show, values as placeholders.
         None => {
-            col = col.child(div().text_sm().text_color(theme.muted_foreground).child(match det {
-                Some(d) if !d.arch.is_empty() => format!("{} · {}", d.arch, if d.install.is_empty() { "install not found".to_string() } else { d.install.clone() }),
-                _ => "Reading its state…".to_string(),
-            }))
+            for (i, label) in ["SENTIENT", "Database", "Disk", "Last backup", "Up for"].into_iter().enumerate() {
+                col = col.child(
+                    h_flex()
+                        .text_size(px(13.))
+                        .child(div().w(px(84.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
+                        .child(ui::skeleton_line(theme, format!("tile-{label}"), [70., 150., 90., 110., 60.][i])),
+                );
+            }
         }
     }
     col

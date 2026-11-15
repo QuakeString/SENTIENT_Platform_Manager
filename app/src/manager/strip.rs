@@ -33,18 +33,42 @@ const WITH_NAME: f32 = 300.;
 /// Details shows from this much.
 const WITH_DETAILS: f32 = 190.;
 
-/// A job that failed: kept for the bell until its details are opened.
-pub struct Failure {
-    pub label: SharedString,
-    /// The error and every output line, as the details dialog shows them.
+/// Something that happened, for the bell: a job that failed, a backup or
+/// update that finished. Kept across restarts until cleared.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct Event {
+    pub id: u64,
+    pub failed: bool,
+    pub title: String,
+    /// One line under the title.
+    pub detail: String,
+    /// The full text the details dialog shows (error and output lines).
     pub text: String,
-    pub retry: Option<Rc<dyn Fn(&mut App)>>,
-    pub seen: bool,
+    /// Unix seconds.
+    pub at: i64,
+    pub read: bool,
+    /// The instance it belongs to (None: this computer), its name and colour.
+    #[serde(default)]
+    pub instance: Option<String>,
+    #[serde(default)]
+    pub instance_name: String,
+    #[serde(default)]
+    pub color: String,
+}
+
+fn events_path() -> std::path::PathBuf {
+    crate::updates::prefs_dir().join("notifications.json")
+}
+
+fn load_events() -> Vec<Event> {
+    std::fs::read_to_string(events_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
 pub struct Strip {
-    /// Failed jobs for the bell, newest first.
-    pub failures: Vec<Failure>,
+    /// The bell's events, newest first (saved).
+    pub events: Vec<Event>,
+    /// Retry for events of this run (not kept across restarts).
+    retries: std::collections::HashMap<u64, Rc<dyn Fn(&mut App)>>,
     /// The top bar is light (dark text): the chip's inset is fainter.
     pub light_bar: std::cell::Cell<bool>,
     /// The window's width: below 900 the chip shows only its spinner, time
@@ -67,7 +91,7 @@ impl Global for StripSlot {}
 
 /// The strip for this window (the manager makes it once).
 pub fn install(cx: &mut App) -> Entity<Strip> {
-    let strip = cx.new(|_| Strip { failures: Vec::new(), light_bar: std::cell::Cell::new(false), window_w: std::cell::Cell::new(1100.), slot_w: std::cell::Cell::new(400.), job: None, label: None, finished_at: None, opened_for_failure: false, _observe: None, _hide: None });
+    let strip = cx.new(|_| Strip { events: load_events(), retries: Default::default(), light_bar: std::cell::Cell::new(false), window_w: std::cell::Cell::new(1100.), slot_w: std::cell::Cell::new(400.), job: None, label: None, finished_at: None, opened_for_failure: false, _observe: None, _hide: None });
     cx.set_global(StripSlot(strip.clone()));
     strip
 }
@@ -106,15 +130,23 @@ impl Strip {
                     text = format!("{text}{}{}", crate::remote::DETAILS, lines.join("\n"));
                 }
                 let label = self.label.clone().unwrap_or_else(|| "A job".into());
-                self.failures.insert(0, Failure { label: label.clone(), text, retry: j.retry(), seen: false });
-                self.failures.truncate(20);
+                let id = self.push_event(j.instance(), true, format!("{label} failed"), crate::remote::split_failure(&m).0, text);
+                if let Some(r) = j.retry() {
+                    self.retries.insert(id, r);
+                }
                 self.job = None;
                 self._observe = None;
                 let lbl = Some(label);
                 cx.defer(move |cx| open_details(job, lbl, cx));
             }
-            JobState::Done(_) if self.finished_at.is_none() => {
+            JobState::Done(m) if self.finished_at.is_none() => {
                 self.finished_at = Some(Instant::now());
+                // Backups, restores, updates and takeovers that finish are
+                // worth a line in the bell; a start or stop is not.
+                if let Some(l) = self.label.clone().filter(|l| ["Backing up", "Restoring", "Updating", "Taking over", "Moving", "Changing the database"].iter().any(|w| l.starts_with(w))) {
+                    let inst = job.read(cx).instance();
+                    self.push_event(inst, false, format!("{l}: done"), m.to_string(), m.to_string());
+                }
                 self._hide = Some(cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(SHOW_DONE).await;
                     // ("Done" for a few seconds, then the chip goes.)
@@ -145,18 +177,75 @@ fn open_details(job: Entity<Job>, label: Option<SharedString>, cx: &mut App) {
 }
 
 impl Strip {
-    /// Failures whose details were not opened since (the bell's red count).
-    pub fn unseen(&self) -> usize {
-        self.failures.iter().filter(|f| !f.seen).count()
+    fn push_event(&mut self, inst: Option<(String, String, String)>, failed: bool, title: String, detail: String, text: String) -> u64 {
+        let id = self.events.iter().map(|e| e.id).max().unwrap_or(0) + 1;
+        let (instance, instance_name, color) = match inst {
+            Some((i, n, c)) => (Some(i), n, c),
+            None => (None, "This computer".into(), crate::remote::LOCAL_COLOR.into()),
+        };
+        self.events.insert(0, Event { id, failed, title, detail: detail.lines().next().unwrap_or("").to_string(), text, at: chrono::Utc::now().timestamp(), read: false, instance, instance_name, color });
+        self.events.truncate(50);
+        self.save();
+        id
     }
 
-    /// Open a failure's details (from the bell) and count it as seen.
-    pub fn open_failure(&mut self, i: usize, cx: &mut Context<Self>) {
-        let Some(f) = self.failures.get_mut(i) else { return };
-        f.seen = true;
-        let (title, text, retry) = (format!("{} failed", f.label), f.text.clone(), f.retry.clone());
+    fn save(&self) {
+        if let Some(dir) = events_path().parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(events_path(), serde_json::to_string_pretty(&self.events).unwrap_or_default());
+    }
+
+    /// Unread events (the bell's count; red when one is a failure).
+    pub fn unread(&self) -> (usize, bool) {
+        let u: Vec<&Event> = self.events.iter().filter(|e| !e.read).collect();
+        (u.len(), u.iter().any(|e| e.failed))
+    }
+
+    /// Open an event's details and mark it read.
+    pub fn open_event(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(e) = self.events.iter_mut().find(|e| e.id == id) else { return };
+        e.read = true;
+        let (title, text) = (e.title.clone(), e.text.clone());
+        let retry = self.retries.get(&id).cloned();
+        self.save();
         cx.defer(move |cx| crate::ui::show_error_with(title, text, retry, cx));
         cx.notify();
+    }
+
+    pub fn mark_all_read(&mut self, cx: &mut Context<Self>) {
+        for e in &mut self.events {
+            e.read = true;
+        }
+        self.save();
+        cx.notify();
+    }
+
+    pub fn clear(&mut self, id: Option<u64>, cx: &mut Context<Self>) {
+        match id {
+            Some(id) => self.events.retain(|e| e.id != id),
+            None => self.events.clear(),
+        }
+        self.save();
+        cx.notify();
+    }
+
+    /// Screens: canned events (SPM_DEBUG_EVENTS=n).
+    #[cfg(debug_assertions)]
+    pub fn debug_events(&mut self, n: usize) {
+        let now = chrono::Utc::now().timestamp();
+        let samples = [
+            (true, "Stopping ClickHouse failed", "ClickHouse did not stop within 30 seconds.", Some("plantb"), "Plant B server", "#6b4fa0"),
+            (false, "Backing up: done", "Backup finished and checked: sentient-2026-11-15-0200, 5.0 GB.", None, "This computer", "#187074"),
+            (true, "Updating the server agent failed", "The agent could not be put in place at /opt/sentient-platform-manager (as administrator).", Some("iiot"), "INVENIA IIoT", "#1f9d4d"),
+            (false, "Updating SENTIENT: done", "SENTIENT 4.4.0.2 is running.", Some("plantb"), "Plant B server", "#6b4fa0"),
+        ];
+        self.events = (0..n)
+            .map(|i| {
+                let (failed, t, d, inst, name, color) = samples[i % samples.len()];
+                Event { id: i as u64 + 1, failed, title: t.into(), detail: d.into(), text: d.into(), at: now - (i as i64) * 1900 - 60, read: i >= 2, instance: inst.map(String::from), instance_name: name.into(), color: color.into() }
+            })
+            .collect();
     }
 
     /// A job is shown in the top bar.

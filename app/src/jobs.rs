@@ -40,6 +40,8 @@ pub struct Job {
     details: Option<std::rc::Rc<dyn Fn(&mut App)>>,
     /// Run it again from its failure dialog (crate::manager::strip).
     retry: Option<std::rc::Rc<dyn Fn(&mut App)>>,
+    /// The remote instance it works on (id, name, colour); None: this computer.
+    instance: Option<(String, String, String)>,
     _task: Option<Task<()>>,
     /// Re-renders once a second while running, so the step's time moves.
     _ticker: Option<Task<()>>,
@@ -58,6 +60,7 @@ impl Job {
             label: None,
             details: None,
             retry: None,
+            instance: None,
             _task: None,
             _ticker: None,
         }
@@ -75,6 +78,15 @@ impl Job {
 
     pub fn details(&self) -> Option<std::rc::Rc<dyn Fn(&mut App)>> {
         self.details.clone()
+    }
+
+    /// The remote instance this job works on (the bell names it).
+    pub fn set_instance(&mut self, id: String, name: String, color: String) {
+        self.instance = Some((id, name, color));
+    }
+
+    pub fn instance(&self) -> Option<(String, String, String)> {
+        self.instance.clone()
     }
 
     /// What Retry in its failure dialog runs.
