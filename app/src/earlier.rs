@@ -132,7 +132,7 @@ fn remove_fresh(found: Found, backup: bool, sink: ProgressFn) -> Result<(), Stri
     }
     sink(Progress::Step { name: REMOVE.into() });
     match &found.record {
-        Some(r) => crate::maintenance::run_uninstall(r.clone(), false, nested(&sink))?,
+        Some(r) => crate::maintenance_ops::run_uninstall(r.clone(), false, nested(&sink))?,
         None => crate::leftovers::remove(found.pg_dir.clone(), nested(&sink))?,
     }
     let check = ports_line();
@@ -162,13 +162,13 @@ fn repair(found: Found, sink: ProgressFn) -> Result<(), String> {
         }
     };
     sink(Progress::Step { name: REPAIR.into() });
-    crate::maintenance::run_repair(record, nested(&sink))
+    crate::maintenance_ops::run_repair(record, nested(&sink))
 }
 
 fn keep_database(found: Found, sink: ProgressFn) -> Result<(), String> {
     if let Some(r) = found.record {
         sink(Progress::Step { name: KEEP.into() });
-        crate::maintenance::run_uninstall(r, true, nested(&sink))?;
+        crate::maintenance_ops::run_uninstall(r, true, nested(&sink))?;
     }
     sink(Progress::Step { name: CONTINUE.into() });
     Ok(())

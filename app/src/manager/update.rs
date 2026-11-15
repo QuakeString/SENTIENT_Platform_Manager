@@ -303,14 +303,7 @@ impl UpdatePage {
     }
 }
 
-/// `image` at tag `version`: `quakestring/sentient:latest` → `…:4.3.0.50`.
-pub(crate) fn retag(image: &str, version: &str) -> String {
-    let repo = match image.rsplit_once(':') {
-        Some((repo, tag)) if !tag.contains('/') => repo,
-        _ => image,
-    };
-    format!("{repo}:{version}")
-}
+pub(crate) use crate::maintenance_ops::retag;
 
 impl UpdatePage {
     /// Whether the version list was read and has entries; otherwise the

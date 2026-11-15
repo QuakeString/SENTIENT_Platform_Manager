@@ -16,6 +16,10 @@ refreshes that repository's Downloads table.
 ## [Unreleased]
 
 ### Added
+- The server agent: the Platform Manager's job code without the window,
+  built static for Linux (musl) and for Windows. Every package carries it,
+  and Set up copies it to a server: it needs no desktop libraries and no
+  particular C library there, and no published release to download.
 - Every page works on a remote instance: with a server open, Status,
   Control, Logs, Update, Backup and restore, Platform settings, Migration,
   Repair and Gateway show and change that server. "Open" on an instance

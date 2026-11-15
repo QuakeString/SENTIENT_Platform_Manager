@@ -65,7 +65,7 @@ pub fn remove_manager(window: &mut Window, cx: &mut App) {
             .on_ok(|_, _, cx| {
                 cx.spawn(async move |cx| {
                     let sink = sentient_installer_core::progress::noop();
-                    let _ = cx.background_spawn(async move { crate::maintenance::run_remove_manager(sink) }).await;
+                    let _ = cx.background_spawn(async move { crate::maintenance_ops::run_remove_manager(sink) }).await;
                     let _ = cx.update(|cx| cx.quit());
                 })
                 .detach();

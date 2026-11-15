@@ -411,24 +411,10 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
     if det.os == Os::Windows {
         return win::deploy(inst, sink);
     }
-    let local_arch = std::env::consts::ARCH;
-    // This very program when the systems match, else the released build
-    // of this version for the server.
-    // The released Linux build of this version runs on every supported
-    // distribution (it is built against an old C library); this very
-    // program only when no release of it exists, and only if it runs there.
-    let (me, own) = if det.arch != "x86_64" {
-        return Err(format!("There is no Platform Manager build for Linux {} yet.", det.arch));
-    } else {
-        match released_build(false, sink) {
-            Ok(f) => (f, false),
-            Err(e) if cfg!(target_os = "linux") && det.arch == local_arch => {
-                sink(Progress::Log { line: format!("{e} Copying this Platform Manager instead.") });
-                (std::env::current_exe().map_err(|e| e.to_string())?, true)
-            }
-            Err(e) => return Err(e),
-        }
-    };
+    if det.arch != "x86_64" {
+        return Err(failed(&format!("There is no Platform Manager agent for Linux on {} processors yet.", det.arch), ""));
+    }
+    let me = agent_file(false, sink)?;
     let want = sentient_installer_core::manifest::sha256_file(&me)?;
     let have = run(inst, &format!("sha256sum {REMOTE_SPM} 2>/dev/null | cut -d' ' -f1"), None).unwrap_or_default();
     if have.trim() == want {
@@ -446,15 +432,7 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
     // It must start on the server before it replaces anything.
     if let Err(e) = run(inst, &format!("chmod +x {staging} && {staging} --job monitor-json"), None) {
         let _ = run(inst, &format!("rm -f {staging}"), None);
-        return Err(if e.contains("GLIBC") {
-            if own {
-                format!("This Platform Manager was built on a newer Linux than {} (its C library is older), so it cannot run there. The released build runs on every supported Linux: it is used once Platform Manager {} is published.", det.os_name, crate::updates::manager_version())
-            } else {
-                format!("The Platform Manager build does not run on {}: {e}", det.os_name)
-            }
-        } else {
-            format!("The Platform Manager copied to the server does not start there: {e}")
-        });
+        return Err(failed(&format!("The Platform Manager agent does not start on {}. Nothing on the server was changed.", if det.os_name.is_empty() { inst.name.as_str() } else { det.os_name.as_str() }), &e));
     }
     sudo_run(inst, &format!("install -D -m 0755 {staging} {REMOTE_SPM} && rm -f {staging} && mkdir -p {REMOTE_JOBS}"), pw.as_deref())?;
     Ok(())
@@ -801,43 +779,87 @@ pub fn remove_file(inst: &Instance, path: &str) {
     };
 }
 
-/// The released build of this Platform Manager's version for a server
-/// (Windows .exe, or Linux x86_64), downloaded once and checked against its
-/// published SHA-256.
-fn released_build(windows: bool, sink: &ProgressFn) -> Result<PathBuf, String> {
+/// An error in two parts: a plain headline, and the technical details the
+/// screen shows behind "Show details" (crate::manager::instances).
+pub fn failed(headline: &str, details: &str) -> String {
+    if details.trim().is_empty() { headline.to_string() } else { format!("{headline}{DETAILS}{}", details.trim()) }
+}
+
+/// Where [`failed`] splits the headline from the details.
+pub const DETAILS: &str = "\n\nDetails: ";
+
+/// The agent's file name for a server's system.
+pub fn agent_name(windows: bool) -> &'static str {
+    if windows { "sentient-platform-manager-agent-windows-x86_64.exe" } else { "sentient-platform-manager-agent-linux-x86_64" }
+}
+
+/// The server agent for Linux (static, no desktop libraries) or Windows:
+/// the one this package carries beside the program (`agents/`), else the
+/// one published with this version, checked against its SHA-256.
+fn agent_file(windows: bool, sink: &ProgressFn) -> Result<PathBuf, String> {
+    let name = agent_name(windows);
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(d) = std::env::var_os("SPM_AGENT_DIR") {
+        dirs.push(PathBuf::from(d));
+    }
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) {
+        dirs.push(dir.join("agents"));
+        dirs.push(dir.join("..").join("lib").join("sentient-platform-manager").join("agents"));
+    }
+    if let Some(found) = dirs.into_iter().map(|d| d.join(name)).find(|p| p.is_file()) {
+        return Ok(found);
+    }
+    // Carried inside this program: written out once per version.
+    if let Some(bytes) = if windows { embedded::WINDOWS } else { embedded::LINUX } {
+        let dir = crate::updates::prefs_dir().join("remote-builds");
+        let file = dir.join(format!("{}-{name}", crate::updates::manager_version()));
+        if std::fs::metadata(&file).map(|m| m.len() as usize) .ok() != Some(bytes.len()) {
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            std::fs::write(&file, bytes).map_err(|e| format!("write {}: {e}", file.display()))?;
+        }
+        return Ok(file);
+    }
+    released_agent(name, sink).map_err(|e| {
+        failed(
+            "This Platform Manager package does not carry the server agent, and none could be downloaded for its version.",
+            &e,
+        )
+    })
+}
+
+/// The agents this build carries (build.rs).
+mod embedded {
+    include!(concat!(env!("OUT_DIR"), "/agents.rs"));
+}
+
+/// The agent published with this Platform Manager's version.
+fn released_agent(name: &str, sink: &ProgressFn) -> Result<PathBuf, String> {
     use sentient_installer_core::releases;
     let version = crate::updates::manager_version().to_string();
     let dir = crate::updates::prefs_dir().join("remote-builds");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    sink(Progress::Step { name: format!("Getting Platform Manager {version} for the server") });
+    sink(Progress::Step { name: format!("Getting the server agent of Platform Manager {version}") });
     let all = releases::fetch(releases::MANAGER_REPO)?;
     let r = all
         .iter()
         .find(|r| releases::is_manager(r) && releases::manager_version_of(r) == version)
-        .ok_or_else(|| format!("Platform Manager {version} is not a published release, so there is no build of it for the server. Use a released Platform Manager."))?;
-    let asset = r
-        .assets
-        .iter()
-        .find(|a| a.name.starts_with("SENTIENT-Setup-manager") && if windows { a.name.ends_with(".exe") } else { a.name.ends_with("-linux-x86_64") })
-        .ok_or_else(|| format!("Platform Manager {version} has no {} build.", if windows { "Windows" } else { "Linux" }))?;
-    let sha = crate::updates::published_sha256(r, asset).ok_or("The build has no published checksum, so it cannot be checked.")?;
-    let file = dir.join(&asset.name);
+        .ok_or_else(|| format!("Platform Manager {version} is not published"))?;
+    let asset = r.assets.iter().find(|a| a.name == name).ok_or_else(|| format!("release {version} has no {name}"))?;
+    let sha = crate::updates::published_sha256(r, asset).ok_or("no published checksum")?;
+    let file = dir.join(format!("{version}-{name}"));
     let ok = |f: &Path| sentient_installer_core::manifest::sha256_file(f).is_ok_and(|h| h.eq_ignore_ascii_case(&sha));
     if !ok(&file) {
-        let resp = sentient_installer_core::net::agent()
-            .get(&asset.browser_download_url)
-            .set("User-Agent", "SENTIENT-Platform-Manager")
-            .call()
-            .map_err(|e| format!("download {}: {e}", asset.name))?;
+        let resp = sentient_installer_core::net::agent().get(&asset.browser_download_url).set("User-Agent", "SENTIENT-Platform-Manager").call().map_err(|e| format!("download {name}: {e}"))?;
         let mut out = std::fs::File::create(&file).map_err(|e| e.to_string())?;
-        std::io::copy(&mut resp.into_reader(), &mut out).map_err(|e| format!("download {}: {e}", asset.name))?;
+        std::io::copy(&mut resp.into_reader(), &mut out).map_err(|e| format!("download {name}: {e}"))?;
         if !ok(&file) {
             let _ = std::fs::remove_file(&file);
-            return Err(format!("The download of {} does not match its published checksum.", asset.name));
+            return Err(format!("{name} does not match its published checksum"));
         }
     }
     Ok(file)
 }
+
 
 /// Windows servers: OpenSSH Server, commands in PowerShell, the Platform
 /// Manager under ProgramData, jobs as scheduled tasks running as SYSTEM
@@ -859,7 +881,7 @@ mod win {
     }
 
     pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
-        let file = released_build(true, sink)?;
+        let file = agent_file(true, sink)?;
         let want = sentient_installer_core::manifest::sha256_file(&file)?;
         let have = ps(inst, &format!("if (Test-Path '{EXE}') {{ (Get-FileHash -Algorithm SHA256 '{EXE}').Hash }}")).unwrap_or_default();
         if have.trim().eq_ignore_ascii_case(&want) {
@@ -1050,6 +1072,54 @@ mod tests {
         std::fs::write(known_hosts(), keys.replace("AAAA", "AAAB")).unwrap();
         assert!(run(&inst, "true", Some(v[4])).unwrap_err().contains("not the one accepted"));
         untrust(v[0], port);
+    }
+
+    /// End to end against a bare server: SPM_E2E="port", SPM_E2E_KEY,
+    /// SPM_E2E_SUDO, SPM_AGENT_DIR (the static agent), XDG_CONFIG_HOME scratch.
+    #[test]
+    #[ignore]
+    fn sets_up_a_bare_server_and_runs_a_job() {
+        let port: u16 = std::env::var("SPM_E2E").expect("SPM_E2E").parse().unwrap();
+        let _ = std::fs::remove_file(known_hosts());
+        let mut inst = Instance {
+            id: format!("e2e{port}"),
+            name: format!("e2e {port}"),
+            color: PALETTE[0].into(),
+            os: Os::Linux,
+            host: "127.0.0.1".into(),
+            port,
+            user: "ops".into(),
+            auth: Auth::Key,
+            key_file: Some(std::env::var("SPM_E2E_KEY").unwrap().into()),
+            key_has_passphrase: false,
+            host_key: None,
+            detected: None,
+        };
+        let (keys, fp) = scan("127.0.0.1", port).unwrap();
+        trust(&keys).unwrap();
+        inst.host_key = Some(fp);
+        let d = detect(&inst, None).unwrap();
+        eprintln!("detected: {d:?}");
+        inst.detected = Some(d);
+        assert_eq!(ready(&inst).unwrap_err(), NOT_SET_UP);
+        set_secret(&sudo_key(&inst.id), &std::env::var("SPM_E2E_SUDO").unwrap());
+        let sink: ProgressFn = std::sync::Arc::new(|p| eprintln!("  {p:?}"));
+        deploy(&inst, &sink).unwrap();
+        ready(&inst).unwrap();
+        let st = status(&inst).unwrap();
+        eprintln!("status: {st:?}");
+        assert!(!st.installed);
+        let m = monitor(&inst).unwrap();
+        assert!(m.mem_total > 0);
+        // Deploying again finds it up to date.
+        deploy(&inst, &sink).unwrap();
+        // A detached job, followed to its end.
+        let id = start_job(&inst, &["find-existing"]).unwrap();
+        follow(&inst, &id, &sink).unwrap();
+        assert!(running_job(&inst).is_none());
+        let e = logs(&inst, 10).unwrap_err();
+        eprintln!("logs without SENTIENT: {e}");
+        let _ = std::fs::remove_file(known_hosts());
     }
 
     #[test]

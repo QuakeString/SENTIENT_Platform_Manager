@@ -13,7 +13,7 @@ url="https://github.com/QuakeString/SENTIENT_Platform_Manager"
 license=('LicenseRef-SENTIENT-EULA')
 depends=('glibc' 'gcc-libs' 'fontconfig' 'freetype2' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11'
          'wayland' 'vulkan-icd-loader' 'vulkan-driver' 'alsa-lib' 'polkit' 'hicolor-icon-theme')
-makedepends=('rust' 'clang' 'cmake' 'pkgconf')
+makedepends=('rust' 'rust-musl' 'musl' 'clang' 'cmake' 'pkgconf')
 optdepends=('docker: run SENTIENT and PostgreSQL as containers'
             'docker-compose: the compose stack the manager drives'
             'postgresql: native installs use the distribution PostgreSQL')
@@ -27,6 +27,12 @@ build() {
   export CARGO_TARGET_DIR="$srcdir/target"
   export RUSTUP_TOOLCHAIN=stable
   unset CARGO_ENCODED_RUSTFLAGS LDFLAGS CFLAGS CXXFLAGS
+  # The server agent first: the same job code without the window, static
+  # (musl), so it runs on any Linux server without desktop libraries. The
+  # program carries it (build.rs) and copies it to servers it manages.
+  CC_x86_64_unknown_linux_musl=musl-gcc \
+    cargo build --release --locked --no-default-features --target x86_64-unknown-linux-musl
+  export SPM_LINUX_AGENT="$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/release/sentient-platform-manager"
   cargo build --release --locked
 }
 

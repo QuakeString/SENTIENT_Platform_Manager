@@ -67,8 +67,8 @@ impl RepairPage {
                 job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx)
             } else {
                 match action {
-                    Action::Repair => job.start(move |sink| crate::maintenance::run_repair(record, sink), cx),
-                    _ => job.start(move |sink| crate::maintenance::run_uninstall(record, keep, sink), cx),
+                    Action::Repair => job.start(move |sink| crate::maintenance_ops::run_repair(record, sink), cx),
+                    _ => job.start(move |sink| crate::maintenance_ops::run_uninstall(record, keep, sink), cx),
                 }
             }
         });
