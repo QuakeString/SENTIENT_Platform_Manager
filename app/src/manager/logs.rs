@@ -313,6 +313,15 @@ impl LogView {
     }
 }
 
+/// The message as shown: without the level column, a level taken off its
+/// front goes back in front of it.
+fn shown_message(l: &logsource::Line, level_w: f32) -> String {
+    if level_w > 0. || l.level == Level::Plain || l.message.starts_with("Failed:") || l.message.contains(" Failed: ") {
+        return l.message.clone();
+    }
+    format!("{} {}", level_word(l.level), l.message)
+}
+
 fn level_word(l: Level) -> &'static str {
     match l {
         Level::Error => "ERROR",
@@ -421,7 +430,11 @@ impl Render for LogView {
         // The level column only when the log has levels (SENTIENT's and the
         // services' do; the Platform Manager's activity log does not: its
         // failures are in the error colour instead).
-        let level_w = if self.lines.iter().any(|l| matches!(l.level, Level::Info | Level::Warn | Level::Debug)) { 52. } else { 0. };
+        // A log is levelled when most of its lines are: the activity log
+        // quotes tool output now and then ("WARNING:" from PostgreSQL), and
+        // a few such lines must not open an empty column beside every other.
+        let levelled = self.lines.iter().filter(|l| l.level != Level::Plain).count();
+        let level_w = if levelled * 2 >= self.lines.len() && self.lines.iter().any(|l| matches!(l.level, Level::Info | Level::Warn | Level::Debug)) { 52. } else { 0. };
         let rows = shown.into_iter().enumerate().map(|(i, l)| {
             let sel = self.selected.contains(&i);
             // Narrow: time, source and level on one line, the message under
@@ -434,7 +447,7 @@ impl Render for LogView {
                     r.child(h_flex().w(px(84.)).flex_shrink_0().child(div().px(px(6.)).rounded(px(4.)).bg(c.opacity(0.14)).text_color(c).text_size(px(11.5)).font_weight(FontWeight::MEDIUM).child(l.source.label())))
                 })
                 .when(level_w > 0., |r| r.child(div().w(px(level_w)).flex_shrink_0().font_weight(FontWeight::MEDIUM).text_color(colour(l.level)).child(level_word(l.level))));
-            let message = div().flex_1().min_w_0().text_color(if l.level == Level::Error { theme.danger } else if l.level == Level::Debug { muted } else { theme.foreground }).child(l.message.clone());
+            let message = div().flex_1().min_w_0().text_color(if l.level == Level::Error { theme.danger } else if l.level == Level::Debug { muted } else { theme.foreground }).child(shown_message(&l, level_w));
             if narrow {
                 return v_flex()
                     .id(("log-line", i))
@@ -475,7 +488,7 @@ impl Render for LogView {
                 })
                 .when(level_w > 0., |r| r.child(div().w(px(level_w)).flex_shrink_0().font_weight(FontWeight::MEDIUM).text_color(colour(l.level)).child(level_word(l.level))))
                 // Wrapped lines stay in the message column.
-                .child(div().flex_1().min_w_0().text_color(if l.level == Level::Error { theme.danger } else if l.level == Level::Debug { muted } else { theme.foreground }).child(l.message.clone()))
+                .child(div().flex_1().min_w_0().text_color(if l.level == Level::Error { theme.danger } else if l.level == Level::Debug { muted } else { theme.foreground }).child(shown_message(&l, level_w)))
                 .on_click(cx.listener(move |v, e: &ClickEvent, window, cx| {
                     window.focus(&v.focus, cx);
                     let m = e.modifiers();
