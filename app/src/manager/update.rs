@@ -590,8 +590,8 @@ impl UpdatePage {
         let manager_row = {
             let (sub, pill): (String, Option<(Tone, &str)>) = match (&found, &manager_offer) {
                 (None, _) if checking => (format!("{this} installed. Checking…"), None),
-                (None, _) => (format!("{this} installed. Not checked."), Some((Tone::Neutral, "Unknown"))),
-                (Some(f), _) if f.manager.is_err() => (format!("{this} installed. Not checked."), Some((Tone::Neutral, "Unknown"))),
+                (None, _) => (format!("{this} installed."), Some((Tone::Neutral, "Not checked"))),
+                (Some(f), _) if f.manager.is_err() => (format!("{this} installed."), Some((Tone::Neutral, "Not checked"))),
                 (Some(_), None) => (format!("{this} is up to date."), Some((Tone::Good, "Up to date"))),
                 (Some(_), Some(o)) => (
                     format!("{} is available (this is {this}).{}", o.version, if o.notes.is_empty() { String::new() } else { format!(" {}", o.notes) }),
@@ -937,7 +937,7 @@ pub(crate) enum Offered<'a> {
 pub(crate) fn sentient_summary(installed: &str, state: Offered, manager_first: bool) -> (String, Option<(Tone, &'static str)>) {
     match state {
         Offered::Checking => (format!("{installed} installed. Checking…"), None),
-        Offered::NotChecked => (format!("{installed} installed. Not checked."), Some((Tone::Neutral, "Unknown"))),
+        Offered::NotChecked => (format!("{installed} installed."), Some((Tone::Neutral, "Not checked"))),
         Offered::UpToDate => (format!("{installed} is up to date."), Some((Tone::Good, "Up to date"))),
         Offered::Newer(o) if manager_first => (format!("{} is available (installed {installed}). Update the Platform Manager first.", o.version), None),
         Offered::Newer(o) => (

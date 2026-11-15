@@ -19,10 +19,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
     button::ButtonVariants as _,
     checkbox::Checkbox,
     input::{Input, InputState},
+    menu::{DropdownMenu as _, PopupMenuItem},
     progress::Progress as ProgressBar,
     radio::RadioGroup,
 };
@@ -85,6 +86,8 @@ pub struct BackupPage {
     /// Sizes for the estimate: (database, ClickHouse, telemetry history in PostgreSQL), and free disk.
     sizes: Option<(u64, u64, u64, Option<u64>)>,
     schedule_time: Entity<InputState>,
+    /// Automatic backup is on (its switch).
+    auto_on: bool,
     keep: Entity<InputState>,
     part_gb: Entity<InputState>,
     schedule_note: Option<(Tone, String)>,
@@ -199,6 +202,7 @@ impl BackupPage {
             planned: Vec::new(),
             show_restore_log: false,
             list: crate::backups::list(&prefs.folder),
+            auto_on: prefs.daily_at.is_some(),
             prefs,
             choose: false,
             made: None,
@@ -545,7 +549,8 @@ impl BackupPage {
     fn save_prefs(&mut self, schedule: bool, cx: &mut Context<Self>) {
         if schedule {
             let t = self.schedule_time.read(cx).value().trim().to_string();
-            self.prefs.daily_at = (!t.is_empty()).then_some(t);
+            let t = if t.is_empty() { "23:30".to_string() } else { t };
+            self.prefs.daily_at = self.auto_on.then_some(t);
             self.prefs.keep = self.keep.read(cx).value().trim().parse().unwrap_or(7).max(1);
             self.prefs.part_gb = self.part_gb.read(cx).value().trim().parse().unwrap_or(4);
         }
@@ -877,11 +882,14 @@ fn brow(theme: &gpui_kit::component::Theme, label: &'static str, help: Option<&'
         // The mockup's row: label and its line on the left, the control
         // right-aligned.
         .child(
-            v_flex()
+            // Help as an (i) tooltip beside the label, never an inline line.
+            h_flex()
                 .flex_1()
                 .min_w(px(180.))
+                .gap_1()
+                .items_center()
                 .child(div().text_sm().child(label))
-                .when_some(help, |c, h| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(h))),
+                .when_some(help, |c, h| c.child(crate::ui::button(SharedString::from(format!("bhelp-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))),
         )
         .child(h_flex().flex_shrink_0().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
 }
@@ -1048,7 +1056,43 @@ impl BackupPage {
         let auto = ui::panel(theme)
             .gap_0()
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Automatic backup"))
-            .child(brow(theme, "Back up every day at", Some("Empty: no automatic backup. 24-hour time, this computer's clock."), div().w(px(120.)).child(Input::new(&self.schedule_time))))
+            // The mockup's control: a switch, then the time as a choice.
+            .child(brow(theme, "Back up every", Some("A backup every day at this time, on this computer's clock."), {
+                let on = self.auto_on;
+                let time = { let t = self.schedule_time.read(cx).value().trim().to_string(); if t.is_empty() { "23:30".to_string() } else { t } };
+                let this = cx.entity().downgrade();
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(gpui_kit::component::switch::Switch::new("auto-on").checked(on).on_click(cx.listener(|this, v: &bool, _, cx| {
+                        this.auto_on = *v;
+                        cx.notify();
+                    })))
+                    .child(
+                        crate::ui::button("auto-time")
+                            .outline()
+                            .disabled(!on)
+                            .label(format!("day at {time}"))
+                            .dropdown_menu(move |menu, _, _| {
+                                let mut menu = menu;
+                                for h in 0..24 {
+                                    for m in [0, 30] {
+                                        let t = format!("{h:02}:{m:02}");
+                                        let (this, t2) = (this.clone(), t.clone());
+                                        menu = menu.item(PopupMenuItem::new(t).on_click(move |_, window, cx| {
+                                            let t3 = t2.clone();
+                                            this.update(cx, |p, cx| {
+                                                p.schedule_time.update(cx, |s, cx| s.set_value(t3, window, cx));
+                                                cx.notify();
+                                            })
+                                            .ok();
+                                        }));
+                                    }
+                                }
+                                menu
+                            }),
+                    )
+            }))
             .child(brow(theme, "Keep", Some("Older automatic backups are deleted."), h_flex().gap_2().child(div().w(px(100.)).child(Input::new(&self.keep))).child(div().text_sm().child("backups"))))
             .child(brow(
                 theme,

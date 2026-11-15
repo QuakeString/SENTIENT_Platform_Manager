@@ -1036,9 +1036,8 @@ impl Installer {
                         .child(Icon::new(IconName::Info).small().flex_shrink_0())
                         .child(div().flex_1().min_w_0().line_clamp(2).child(reason)),
                 ),
-                (None, None) => bar,
+                (None, None) => bar.child(div().flex_1()),
             })
-            .child(div().flex_1())
             .when(self.step < FINISH, |bar| {
                 bar.child(
                     crate::ui::button("cancel")

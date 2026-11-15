@@ -526,6 +526,30 @@ pub(crate) fn row(theme: &gpui_kit::component::Theme, label: impl Into<SharedStr
         .child(h_flex().flex_shrink_0().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
 }
 
+/// A setting row with its variable name muted beside the plain label (the
+/// exact numbers under Custom).
+pub(crate) fn row_with_var(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, var: &str, help: Option<String>, changed: bool, control: impl IntoElement) -> Div {
+    let label: SharedString = label.into();
+    let var = var.trim_start_matches("pg:").to_string();
+    h_flex()
+        .gap_4()
+        .items_center()
+        .py_2()
+        .border_t_1()
+        .border_color(theme.border)
+        .child(
+            h_flex()
+                .flex_1()
+                .min_w(px(160.))
+                .gap_2()
+                .items_center()
+                .child(div().text_sm().when(changed, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.primary)).child(label.clone()))
+                .child(div().text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(var))
+                .when_some(help, |r, h| r.child(crate::ui::button(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))),
+        )
+        .child(h_flex().flex_shrink_0().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
+}
+
 /// A row of the All variables table: label column, then value and built-in
 /// columns (crate::manager::settings::table_header).
 pub(crate) fn table_row(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, help: Option<String>, changed: bool, control: impl IntoElement) -> Div {
@@ -803,11 +827,18 @@ impl SettingsPage {
                 "DB_POOL_REPORT_MIN",
                 "DB_MAX_CONNECTIONS",
             ] {
-                pg = pg.child(self.catalog_row(theme, k, 160., cx));
+                pg = pg.child(match self.find(k).cloned() {
+                    Some(st) => {
+                        let changed = self.is_changed(k, cx);
+                        let field = self.field(&st, cx);
+                        row_with_var(theme, st.short_label(), k, self.help(k), changed, field)
+                    }
+                    None => self.catalog_row(theme, k, 160., cx),
+                });
             }
         } else {
             pg = pg
-                .child(row(theme, "Memory for the database", self.help("pg:shared_buffers"), self.is_changed("pg:shared_buffers", cx), div().text_sm().child(shown("pg:shared_buffers"))))
+                .child(row(theme, "Memory for PostgreSQL", self.help("pg:shared_buffers"), self.is_changed("pg:shared_buffers", cx), div().text_sm().child(shown("pg:shared_buffers"))))
                 .child(row(theme, "Memory per query", self.help("pg:work_mem"), self.is_changed("pg:work_mem", cx), div().text_sm().child(shown("pg:work_mem"))))
                 .child(row(theme, "Connections allowed", self.help("pg:max_connections"), self.is_changed("pg:max_connections", cx), div().text_sm().child(shown("pg:max_connections"))))
                 .child(row(theme, "SENTIENT's connection pool", self.help("DATABASE_POOL_MAX"), self.is_changed("DATABASE_POOL_MAX", cx), div().text_sm().child(shown("DATABASE_POOL_MAX"))));

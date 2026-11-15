@@ -170,7 +170,9 @@ impl StatusPage {
         // The databases are read now and every few minutes, not every few
         // seconds: their sizes change slowly. Where reading asks for the
         // administrator password (native Linux) only when asked.
-        if page.record.as_ref().is_some_and(|r| !crate::dbstatus::needs_admin(r)) {
+        // Screens: a canned reading needs no password.
+        let canned = cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_DBSTATUS").is_some();
+        if page.record.as_ref().is_some_and(|r| canned || !crate::dbstatus::needs_admin(r)) {
             let db_poll = cx.spawn(async move |this, cx| loop {
                 if this.update(cx, |p, cx| p.read_db(cx)).is_err() {
                     break;

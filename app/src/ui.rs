@@ -532,3 +532,16 @@ pub fn pointer_down(fill: Hsla, border: Hsla, x: Pixels) -> impl IntoElement {
 pub fn button(id: impl Into<gpui_kit::ElementId>) -> gpui_kit::component::button::Button {
     gpui_kit::component::button::Button::new(id).font_weight(FontWeight::MEDIUM)
 }
+
+/// `/home/mz/…/sentient-platform-manager`: a long text cut in the middle to
+/// `max` characters, keeping both ends.
+pub fn middle_ellipsis(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max || max < 8 {
+        return s.to_string();
+    }
+    let keep = max - 1;
+    let head = keep / 2;
+    let tail = keep - head;
+    format!("{}…{}", chars[..head].iter().collect::<String>(), chars[chars.len() - tail..].iter().collect::<String>())
+}

@@ -739,7 +739,6 @@ impl InstancesPage {
                 )
                 .child(h_flex().w(px(290.)).flex_shrink_0().justify_end().child(div().w_full().child(control)))
         };
-        let note = |text: String| h_flex().justify_end().child(div().w(px(290.)).text_size(px(13.)).text_color(theme.muted_foreground).child(text));
         let os_help = if f.os == Os::Windows {
             "Windows 10/11 or Windows Server 2019 and later, with OpenSSH Server turned on:\n1. Settings, System, Optional features, Add a feature: OpenSSH Server (or in PowerShell as administrator: Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0).\n2. Start it and start it with Windows: Start-Service sshd; Set-Service sshd -StartupType Automatic.\n3. Allow TCP port 22 in Windows Defender Firewall (the feature adds the rule).\n4. Sign in with an account in the Administrators group. For a key: put its public key in C:\\ProgramData\\ssh\\administrators_authorized_keys."
         } else {
@@ -765,11 +764,11 @@ impl InstancesPage {
                     .items_center()
                     .child(swatches)
                     .child(div().w(px(1.)).h(px(22.)).bg(theme.border))
-                    .child(ColorPicker::new(&f.color_picker).featured_colors(remote::PALETTE.iter().map(|c| rgb(remote::parse_hex(c).unwrap_or(0)).into()).collect()))
+                    .child(ColorPicker::new(&f.color_picker).icon(IconName::Plus).featured_colors(remote::PALETTE.iter().map(|c| rgb(remote::parse_hex(c).unwrap_or(0)).into()).collect()))
                     .into_any_element(),
             ))
 
-            .child(row(
+            .child(v_flex().child(row(
                 "System",
                 "help-os",
                 Some(os_help),
@@ -796,8 +795,11 @@ impl InstancesPage {
                         move |_, _, cx| ui::open_url(&format!("https://sentient.invenia.in/docs/installation/remote-instances/#{anchor}"), cx)
                     }))
                     .into_any_element(),
+            )).child(
+                // What connecting found (or will check) sits inside the
+                // System row, under its control.
+                h_flex().justify_end().pb_1().child(div().w(px(290.)).text_size(px(13.)).text_color(theme.muted_foreground).child(found)),
             ))
-            .child(note(found))
             .child(row(
                 "Address",
                 "",
@@ -1187,7 +1189,7 @@ impl Render for InstancesPage {
 /// The key for this computer's status.
 const LOCAL: &str = "@local";
 /// The narrowest a card gets before the grid drops a column.
-const CARD_MIN_W: f32 = 260.;
+const CARD_MIN_W: f32 = 300.;
 /// Cards in a row stretch to the tallest; none is shorter than this.
 const CARD_MIN_H: f32 = 268.;
 
@@ -1305,13 +1307,14 @@ fn grid_card(
                     h_flex()
                         .gap_3()
                         .items_start()
-                        .child(os_tile(det, 36.))
+                        .child(os_tile(det, 32.))
+                        // One line each, cut with an ellipsis (the mockup's K1).
                         .child(
                             v_flex()
                                 .flex_1()
                                 .min_w_0()
-                                .child(div().font_weight(FontWeight::MEDIUM).child(name))
-                                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(sub)),
+                                .child(div().font_weight(FontWeight::MEDIUM).whitespace_nowrap().overflow_hidden().text_ellipsis().child(name))
+                                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).whitespace_nowrap().overflow_hidden().text_ellipsis().child(sub)),
                         )
                         .child(ui::pill(theme, tone, state)),
                 )

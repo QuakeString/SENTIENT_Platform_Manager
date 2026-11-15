@@ -6,7 +6,7 @@
 //! then preferences and support, and where it lives as a quiet footer.
 
 use gpui_kit::component::{
-    ActiveTheme, Icon, IconName, Disableable as _, h_flex, v_flex,
+    ActiveTheme, Icon, IconName, Disableable as _, Sizable as _, h_flex, v_flex, button::ButtonVariants as _,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -84,11 +84,13 @@ fn pref_row(theme: &gpui_kit::component::Theme, label: &'static str, about: Opti
         .border_t_1()
         .border_color(theme.border)
         .child(
-            v_flex()
+            h_flex()
                 .flex_1()
                 .min_w_0()
+                .gap_1()
+                .items_center()
                 .child(div().text_sm().child(label))
-                .when_some(about, |c, a| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(a))),
+                .when_some(about, |c, a| c.child(crate::ui::button(SharedString::from(format!("ahelp-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(a))),
         )
         .child(control)
 }
@@ -176,15 +178,22 @@ impl Render for AboutPage {
                 Err(e) => ui::outcome(&theme, Tone::Bad, format!("The support file could not be made: {e}")).into_any_element(),
             }));
         let caption = |t: &'static str| div().px_0p5().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(t.to_uppercase());
-        let footer = h_flex()
-            .gap_x_5()
-            .gap_y_1()
-            .flex_wrap()
-            .justify_center()
-            .text_size(px(13.))
-            .text_color(theme.muted_foreground)
-            .child(div().min_w_0().child(format!("Installed in {}", crate::self_install::manager_dir().display())))
-            .child(div().min_w_0().child(format!("Data in {}", crate::updates::prefs_dir().display())));
+        // The paths: one line each, the middle cut when long, and Copy.
+        let place = |id: &'static str, label: &'static str, path: String| {
+            let copy = path.clone();
+            h_flex()
+                .gap_2()
+                .items_center()
+                .justify_center()
+                .text_size(px(13.))
+                .text_color(theme.muted_foreground)
+                .child(div().whitespace_nowrap().child(format!("{label} {}", ui::middle_ellipsis(&path, 64))))
+                .child(crate::ui::button(id).ghost().xsmall().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+        };
+        let footer = v_flex()
+            .gap_0p5()
+            .child(place("copy-installed", "Installed in", crate::self_install::manager_dir().display().to_string()))
+            .child(place("copy-data", "Data in", crate::updates::prefs_dir().display().to_string()));
         v_flex()
             .id("about")
             .flex_1()
