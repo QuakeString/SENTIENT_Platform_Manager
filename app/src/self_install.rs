@@ -104,11 +104,13 @@ mod imp {
              $s.TargetPath = '{}'; \
              $s.Arguments = '{}'; \
              $s.WorkingDirectory = '{}'; \
+             $s.IconLocation = '{},1'; \
              $s.Save()",
             esc(&lnk),
             esc(&target.display().to_string()),
             esc(args),
             esc(&target.parent().unwrap_or(Path::new("")).display().to_string()),
+            esc(&target.display().to_string()),
         );
         let ok = quiet("powershell.exe")
             .args(["-NoProfile", "-Command", &script])
@@ -278,8 +280,20 @@ mod imp {
     const DIR: &str = "/opt/sentient-platform-manager";
     const BIN: &str = "/usr/local/bin/sentient-platform-manager";
     const APPS: &str = "/usr/share/applications";
-    const ICON: &str = "/usr/share/icons/hicolor/256x256/apps/sentient-platform-manager.png";
-    const ICON_PNG: &[u8] = include_bytes!("../assets/icon-256.png");
+    const HICOLOR: &str = "/usr/share/icons/hicolor";
+    /// The icon in each size the desktop picks from, and as SVG.
+    const ICONS: [(&str, &[u8]); 10] = [
+        ("16x16", include_bytes!("../assets/app-icon/16.png")),
+        ("22x22", include_bytes!("../assets/app-icon/22.png")),
+        ("24x24", include_bytes!("../assets/app-icon/24.png")),
+        ("32x32", include_bytes!("../assets/app-icon/32.png")),
+        ("48x48", include_bytes!("../assets/app-icon/48.png")),
+        ("64x64", include_bytes!("../assets/app-icon/64.png")),
+        ("128x128", include_bytes!("../assets/app-icon/128.png")),
+        ("256x256", include_bytes!("../assets/app-icon/256.png")),
+        ("512x512", include_bytes!("../assets/app-icon/512.png")),
+        ("scalable", include_bytes!("../assets/app-icon/spm-app-icon.svg")),
+    ];
 
     pub fn manager_dir() -> PathBuf {
         PathBuf::from(DIR)
@@ -296,19 +310,26 @@ mod imp {
         if me == target {
             return Ok(target);
         }
-        let icon = std::env::temp_dir().join("sentient-platform-manager.png");
-        std::fs::write(&icon, ICON_PNG).map_err(|e| format!("write icon: {e}"))?;
+        let icons = std::env::temp_dir().join("sentient-platform-manager-icons");
+        let _ = std::fs::create_dir_all(&icons);
+        let mut install_icons = String::new();
+        for (size, bytes) in ICONS {
+            let ext = if size == "scalable" { "svg" } else { "png" };
+            let file = icons.join(format!("{size}.{ext}"));
+            std::fs::write(&file, bytes).map_err(|e| format!("write icon: {e}"))?;
+            install_icons.push_str(&format!("install -Dm644 {} {HICOLOR}/{size}/apps/sentient-platform-manager.{ext}\n", q(&file.display().to_string())));
+        }
         let script = format!(
             "set -e\n\
              install -Dm755 {me} {target}\n\
              ln -sf {target} {BIN}\n\
-             install -Dm644 {icon} {ICON}\n",
+             {install_icons}\
+             gtk-update-icon-cache -q -t {HICOLOR} 2>/dev/null || true\n",
             me = q(&me.display().to_string()),
             target = q(&target.display().to_string()),
-            icon = q(&icon.display().to_string()),
         );
         run(&noop(), &script)?;
-        let _ = std::fs::remove_file(&icon);
+        let _ = std::fs::remove_dir_all(&icons);
         Ok(target)
     }
 
@@ -392,7 +413,7 @@ mod imp {
         let files = if pacman_package().is_some() {
             format!("{APPS}/sentient.desktop {BIN}")
         } else {
-            format!("{APPS}/sentient-platform-manager.desktop {APPS}/sentient.desktop {ICON} {BIN}")
+            format!("{APPS}/sentient-platform-manager.desktop {APPS}/sentient.desktop {HICOLOR}/*/apps/sentient-platform-manager.png {HICOLOR}/scalable/apps/sentient-platform-manager.svg {BIN}")
         };
         let _ = run(&noop(), &format!("rm -f {files}"));
     }

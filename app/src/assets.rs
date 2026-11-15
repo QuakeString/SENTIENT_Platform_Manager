@@ -43,7 +43,10 @@ const EXTRA: &[(&str, &[u8])] = &[
     ("logos/timescale.svg", include_bytes!("../assets/logos/timescale.svg")),
     ("logos/ubuntu.svg", include_bytes!("../assets/logos/ubuntu.svg")),
     ("logos/windows.svg", include_bytes!("../assets/logos/windows.svg")),
-    ("logos/spm.png", include_bytes!("../assets/icon-256.png")),
+    // The Platform Manager's icon (assets/app-icon): the full design, and the
+    // simplified one for small sizes (crate::ui::product_logo).
+    ("logos/spm.png", include_bytes!("../assets/app-icon/128.png")),
+    ("logos/spm-small.png", include_bytes!("../assets/app-icon/small-64.png")),
 ];
 
 pub struct AppAssets;

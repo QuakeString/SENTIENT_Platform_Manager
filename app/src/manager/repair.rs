@@ -117,7 +117,20 @@ impl Render for RepairPage {
             "Write the services and their configuration again, or remove SENTIENT from this computer.",
         );
         if self.record.is_none() {
-            return page.child(ui::not_installed(&theme));
+            // Without SENTIENT, Repair keeps one thing: removing the
+            // Platform Manager itself.
+            return page.child(ui::not_installed(&theme)).child(
+                ui::panel(&theme)
+                    .child(div().font_weight(FontWeight::MEDIUM).child("Remove the Platform Manager"))
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(div().text_sm().text_color(theme.muted_foreground).child("Removes this program from this computer."))
+                            .child(ui::info("remove-manager-help".into(), "Its settings, saved servers and logs go too. SENTIENT, its database and backups are not touched.".into())),
+                    )
+                    .child(ui::button_row(vec![crate::ui::button("remove-manager").outline().label("Remove the Platform Manager…").on_click(|_, window, cx| crate::standalone::remove_manager(window, cx)).into_any_element()])),
+            );
         }
         let job = self.job.read(cx);
         let busy = job.is_running();

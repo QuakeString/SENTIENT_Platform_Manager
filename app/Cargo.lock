@@ -6405,6 +6405,7 @@ dependencies = [
  "chrono",
  "futures",
  "gpui-kit",
+ "raw-window-handle",
  "sentient-backup-core",
  "sentient-installer-core",
  "serde",

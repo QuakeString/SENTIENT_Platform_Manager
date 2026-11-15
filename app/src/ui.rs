@@ -33,12 +33,78 @@ const ORIGINAL_WAYLAND: &str = "SPM_ORIGINAL_WAYLAND_DISPLAY";
 
 /// Open `url` in the browser, on the desktop's own display server.
 pub fn open_url(url: &str, cx: &mut App) {
+    // Linux: xdg-open, and its answer is checked: a link or folder that
+    // cannot be opened says so instead of doing nothing.
     #[cfg(target_os = "linux")]
-    if let Some(wayland) = std::env::var_os(ORIGINAL_WAYLAND) {
-        let _ = std::process::Command::new("xdg-open").arg(url).env("WAYLAND_DISPLAY", wayland).spawn();
-        return;
+    {
+        let url = url.to_string();
+        cx.spawn(async move |cx| {
+            let u = url.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut c = std::process::Command::new("xdg-open");
+                    c.arg(&u);
+                    if let Some(wayland) = std::env::var_os(ORIGINAL_WAYLAND) {
+                        c.env("WAYLAND_DISPLAY", wayland);
+                    }
+                    match c.output() {
+                        Ok(o) if o.status.success() => Ok(()),
+                        Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+                        Err(e) => Err(format!("xdg-open: {e}")),
+                    }
+                })
+                .await;
+            if let Err(e) = result {
+                cx.update(|cx| show_error("Could not open it", format!("{url} could not be opened.{}", if e.is_empty() { String::new() } else { format!("\n{e}") }), cx));
+            }
+        })
+        .detach();
     }
+    #[cfg(not(target_os = "linux"))]
     cx.open_url(url);
+}
+
+/// A short error in the shared dialog, with Close (no window needed).
+pub fn show_error(title: impl Into<SharedString>, text: impl Into<SharedString>, cx: &mut App) {
+    show_error_with(title, text, None, cx)
+}
+
+/// An error in the shared dialog: the headline, the details (the step that
+/// failed and what it printed) to read and Copy, and Retry when given.
+pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedString>, retry: Option<std::rc::Rc<dyn Fn(&mut App)>>, cx: &mut App) {
+    struct ErrorBody(SharedString, Option<std::rc::Rc<dyn Fn(&mut App)>>);
+    impl Render for ErrorBody {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            use gpui_kit::component::ActiveTheme as _;
+            use gpui_kit::component::button::ButtonVariants as _;
+            let theme = cx.theme().clone();
+            let (head, detail) = crate::remote::split_failure(&self.0);
+            let copy = self.0.to_string();
+            gpui_kit::component::v_flex()
+                .gap_3()
+                .child(div().text_sm().child(head))
+                .when_some(detail.filter(|d| !d.trim().is_empty()), |c, d| {
+                    c.child(div().id("error-detail").max_h(px(300.)).overflow_y_scroll().p_2().rounded(theme.radius).bg(theme.muted).font_family(theme.mono_font_family.clone()).text_size(px(12.5)).child(d.trim().to_string()))
+                })
+                .child(
+                    gpui_kit::component::h_flex()
+                        .gap_2()
+                        .justify_end()
+                        .child(button("error-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+                        .when_some(self.1.clone(), |r, retry| {
+                            r.child(button("error-retry").outline().label("Retry").on_click(move |_, _, cx| {
+                                crate::modal::close(cx);
+                                retry(cx);
+                            }))
+                        })
+                        .child(button("error-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx))),
+                )
+        }
+    }
+    let text = text.into();
+    let view = cx.new(|_| ErrorBody(text, retry));
+    crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 560., on_close: None }, cx);
 }
 
 /// Open SENTIENT on `port`: full screen like the kiosk shortcut when the
@@ -85,12 +151,15 @@ pub const PANEL_RADIUS: f32 = 12.;
 /// A content panel: surface colour, hairline border, panel radius.
 pub fn panel(theme: &Theme) -> Div {
     v_flex()
+        .relative()
         .gap_3()
         .p_4()
         .rounded(px(PANEL_RADIUS))
         .bg(theme.background)
         .border_1()
         .border_color(theme.border)
+        // Layout tests: every card reports its bounds (debug builds only).
+        .child(layout_probe("panel"))
 }
 
 /// The scrolling page area to the right of the navigation.
@@ -191,33 +260,76 @@ pub fn info(id: SharedString, help: SharedString) -> impl IntoElement {
 
 /// Shown on every manager screen when this computer has no installation.
 pub fn not_installed(theme: &Theme) -> Div {
+    // One short line; the how-to behind the (i). The buttons wrap on a
+    // narrow window. Removing the Platform Manager lives in Repair.
     panel(theme)
         .child(div().font_weight(FontWeight::MEDIUM).child("SENTIENT isn't installed on this computer"))
-        .child(div().text_sm().text_color(theme.muted_foreground).child(
-            "Download and install SENTIENT: Setup downloads the version you choose from GitHub. Without internet, install from local files: the unpacked SENTIENT package folder (with SENTIENT-Setup and payload).",
-        ))
         .child(
-            h_flex()
-                .gap_2()
-                .child(
-                    crate::ui::button("install-sentient")
-                        .primary()
-                        .label("Download and install SENTIENT")
-                        .on_click(|_, window, cx| crate::standalone::install_sentient(window, cx)),
-                )
-                .child(
-                    crate::ui::button("install-sentient-package")
-                        .outline()
-                        .label("Install from local files…")
-                        .on_click(|_, window, cx| crate::standalone::install_sentient_from_package(window, cx)),
-                )
-                .child(
-                    crate::ui::button("remove-manager")
-                        .outline()
-                        .label("Remove the Platform Manager")
-                        .on_click(|_, window, cx| crate::standalone::remove_manager(window, cx)),
-                ),
+            gpui_kit::component::h_flex()
+                .gap_1()
+                .items_center()
+                .child(div().text_sm().text_color(theme.muted_foreground).child("Install it from the internet or from a SENTIENT package folder."))
+                .child(info(
+                    "install-help".into(),
+                    "Download and install: Setup downloads the version you choose from GitHub.\n\nInstall from local files: without internet, choose the unpacked SENTIENT package folder (the one with SENTIENT-Setup and payload).".into(),
+                )),
         )
+        .child(button_row(vec![
+            {
+                crate::ui::button("install-sentient").primary().label("Download and install SENTIENT").on_click(|_, window, cx| crate::standalone::install_sentient(window, cx)).into_any_element()
+            },
+            {
+                crate::ui::button("install-sentient-package").outline().label("Install from local files…").on_click(|_, window, cx| crate::standalone::install_sentient_from_package(window, cx)).into_any_element()
+            },
+        ]))
+}
+
+/// A row of buttons that wraps on a narrow window: a button never shrinks
+/// below its label or runs out of its card (each reports its bounds to the
+/// layout probe).
+pub fn button_row(buttons: Vec<AnyElement>) -> Div {
+    gpui_kit::component::h_flex()
+        .flex_wrap()
+        .gap_2()
+        .children(buttons.into_iter().map(|b| div().relative().flex_shrink_0().child(b).child(layout_probe("button"))))
+}
+
+/// A page's own notice, directly in the page (never inside a card): an
+/// icon, a headline, the rest of the text, and an optional action.
+pub fn notice(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div {
+    notice_with(theme, tone, text, None)
+}
+
+pub fn notice_with(theme: &Theme, tone: Tone, text: impl Into<SharedString>, action: Option<AnyElement>) -> Div {
+    let (bg, fg, icon) = match tone {
+        Tone::Good => (theme.success, theme.success_foreground, gpui_kit::component::IconName::CircleCheck),
+        Tone::Warn => (theme.warning, theme.warning_foreground, gpui_kit::component::IconName::TriangleAlert),
+        Tone::Bad => (theme.danger.opacity(0.12), theme.danger, gpui_kit::component::IconName::CircleX),
+        Tone::Neutral => (theme.secondary, theme.secondary_foreground, gpui_kit::component::IconName::Info),
+    };
+    let text: SharedString = text.into();
+    let mut lines = text.lines().map(String::from);
+    let head = lines.next().unwrap_or_default();
+    let rest: Vec<String> = lines.collect();
+    gpui_kit::component::h_flex()
+        .gap_3()
+        .items_start()
+        .px_4()
+        .py_3()
+        .rounded(px(PANEL_RADIUS))
+        .bg(bg)
+        .text_color(fg)
+        .child(gpui_kit::component::Icon::new(icon).text_color(fg).mt(px(2.)))
+        .child(
+            gpui_kit::component::v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .text_sm()
+                .child(div().font_weight(FontWeight::MEDIUM).child(head))
+                .children(rest.into_iter().map(|l| div().child(l))),
+        )
+        .children(action)
 }
 
 /// The result of a job: like a pill in colour, but a block that wraps, one
@@ -369,6 +481,7 @@ pub enum Product {
 
 pub fn product_logo(p: Product, size: f32) -> impl IntoElement {
     let path = match p {
+        Product::Manager if size <= 24. => "logos/spm-small.png",
         Product::Manager => "logos/spm.png",
         Product::Sentient => "logos/sentient-mark.svg",
         Product::Gateway => "logos/gateway.svg",
@@ -645,6 +758,97 @@ pub fn pointer_down(fill: Hsla, border: Hsla, x: Pixels) -> impl IntoElement {
     )
 }
 
+/// A popover's pointer above it (the popover hangs below its anchor).
+pub fn pointer_up(fill: Hsla, border: Hsla, x: Pixels) -> impl IntoElement {
+    div().absolute().left(x).top(px(-7.)).w(px(14.)).h(px(8.)).child(
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                let o = bounds.origin;
+                let tri = |inset: f32| {
+                    let mut p = gpui_kit::Path::new(point(o.x + px(inset), o.y + px(8.)));
+                    p.line_to(point(o.x + px(14. - inset), o.y + px(8.)));
+                    p.line_to(point(o.x + px(7.), o.y + px(inset)));
+                    p
+                };
+                window.paint_path(tri(0.), border);
+                window.paint_path(tri(1.4), fill);
+            },
+        )
+        .size_full(),
+    )
+}
+
+/// One row of a popover menu.
+pub enum MenuRow {
+    Item {
+        id: SharedString,
+        icon: Option<AnyElement>,
+        label: SharedString,
+        /// A second, quieter text after the label (an address).
+        secondary: Option<SharedString>,
+        /// The chosen one: tinted, with a check at the right.
+        on: bool,
+        click: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+    },
+    Divider,
+}
+
+/// The app's popover menu (the theme menu, the instance switcher): a
+/// 12 px panel with tinted chosen row and a check at the right, and its
+/// pointer toward the anchor at `pointer_x`, above (`up`) or below it. The
+/// caller places it (deferred, absolute) and closes it on `on_close`.
+pub fn popover_menu(theme: &Theme, id: &'static str, width: f32, rows: Vec<MenuRow>, up: bool, pointer_x: Pixels, on_close: impl Fn(&mut Window, &mut App) + 'static) -> Div {
+    use gpui_kit::component::{h_flex, v_flex};
+    let rows = rows.into_iter().map(|r| match r {
+        MenuRow::Divider => div().my_1().mx_1().h(px(1.)).bg(theme.border).into_any_element(),
+        MenuRow::Item { id, icon, label, secondary, on, click } => h_flex()
+            .id(id)
+            .gap_2()
+            .items_center()
+            .px_2()
+            .py(px(6.))
+            .rounded(px(6.))
+            .cursor_pointer()
+            .text_sm()
+            .when(on, |r| r.bg(theme.primary.opacity(0.10)).text_color(theme.primary).font_weight(FontWeight::MEDIUM))
+            .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))
+            .children(icon)
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_2()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(div().flex_shrink_0().child(label))
+                    .when_some(secondary, |r, s| r.child(div().min_w_0().overflow_hidden().text_ellipsis().font_weight(FontWeight::NORMAL).text_color(theme.muted_foreground).child(s))),
+            )
+            .when(on, |r| r.child(gpui_kit::component::Icon::new(gpui_kit::component::IconName::Check).size_4()))
+            .on_click(move |_, window, cx| click(window, cx))
+            .into_any_element(),
+    });
+    div()
+        .relative()
+        .w(px(width))
+        .child(
+            v_flex()
+                .id(id)
+                .occlude()
+                .p_1()
+                .gap_px()
+                .rounded(px(PANEL_RADIUS))
+                .bg(theme.popover)
+                .text_color(theme.popover_foreground)
+                .border_1()
+                .border_color(theme.border)
+                .shadow_lg()
+                .children(rows)
+                .on_mouse_down_out(move |_, window, cx| on_close(window, cx)),
+        )
+        .map(|d| if up { d.child(pointer_up(theme.popover, theme.border, pointer_x)) } else { d.child(pointer_down(theme.popover, theme.border, pointer_x)) })
+}
+
 /// Every button: the toolkit's, with the mockup's medium-weight label.
 pub fn button(id: impl Into<gpui_kit::ElementId>) -> gpui_kit::component::button::Button {
     gpui_kit::component::button::Button::new(id).font_weight(FontWeight::MEDIUM)
@@ -731,11 +935,97 @@ pub fn layout_probe(name: &'static str) -> impl IntoElement {
         d.child(
             canvas(
                 move |bounds, _, _| {
-                    eprintln!("LAYOUT {name} {:.0} {:.0}", f32::from(bounds.origin.x), f32::from(bounds.origin.x + bounds.size.width));
+                    eprintln!(
+                        "LAYOUT {name} {:.0} {:.0} {:.0} {:.0}",
+                        f32::from(bounds.origin.x),
+                        f32::from(bounds.origin.x + bounds.size.width),
+                        f32::from(bounds.origin.y),
+                        f32::from(bounds.origin.y + bounds.size.height)
+                    );
                 },
                 |_, _, _, _| {},
             )
             .size_full(),
         )
     })
+}
+
+// ---------------------------------------------------------------------------
+// Skeletons: a page's final layout while its data loads
+// ---------------------------------------------------------------------------
+
+/// Motion off: static placeholders (SPM_REDUCED_MOTION, or GNOME/KDE's
+/// "reduce animations" when it can be read).
+fn reduced_motion() -> bool {
+    static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *R.get_or_init(|| {
+        std::env::var_os("SPM_REDUCED_MOTION").is_some()
+            || std::process::Command::new("gsettings")
+                .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+                .output()
+                .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "false")
+    })
+}
+
+/// A placeholder block of `w` × `h` in the muted surface tint, with a slow
+/// shimmer (a faint lighter band sweeping left to right, 1.4 s). `key`
+/// names it among its siblings.
+pub fn skeleton_block(theme: &Theme, key: impl Into<SharedString>, w: Length, h: f32) -> Div {
+    let key: SharedString = key.into();
+    let dark = theme.mode.is_dark();
+    let base = if dark { theme.foreground.opacity(0.08) } else { theme.foreground.opacity(0.07) };
+    let band = if dark { gpui_kit::white().opacity(0.06) } else { gpui_kit::white().opacity(0.55) };
+    div().relative().overflow_hidden().w(w).h(px(h)).flex_shrink_0().rounded(px((h / 2.).min(6.))).bg(base).when(!reduced_motion(), |d| {
+        d.child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .w(relative(0.4))
+                .bg(band)
+                .with_animation(SharedString::from(format!("shimmer-{key}")), Animation::new(std::time::Duration::from_millis(1400)).repeat(), |d, t| d.left(relative(-0.4 + t * 1.4))),
+        )
+    })
+}
+
+/// A text-line placeholder (one line of 14 px text: 12 px high in a 20 px row).
+pub fn skeleton_line(theme: &Theme, key: impl Into<SharedString>, w: f32) -> Div {
+    // A 14 px line's own height (its line-height), so a loaded row is as tall.
+    div().h(rems(0.875 * 1.4)).flex().items_center().child(skeleton_block(theme, key, px(w).into(), 12.))
+}
+
+/// A fact row whose value is still loading: the label as it will be, the
+/// value a placeholder (same height as the loaded row).
+pub fn fact_loading(theme: &Theme, label: &'static str, w: f32) -> Div {
+    gpui_kit::component::h_flex()
+        .gap_4()
+        .text_sm()
+        .child(div().w(px(168.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
+        .child(skeleton_line(theme, label, w))
+}
+
+/// A card while it loads: its title and `rows` placeholder rows.
+pub fn skeleton_card(theme: &Theme, key: &'static str, title: Option<&'static str>, labels: &[&'static str]) -> Div {
+    let mut p = panel(theme);
+    if let Some(t) = title {
+        p = p.child(div().font_weight(FontWeight::MEDIUM).child(t));
+    }
+    for (i, l) in labels.iter().enumerate() {
+        let w = [180., 140., 220., 120., 160.][i % 5];
+        p = p.child(if l.is_empty() { skeleton_line(theme, format!("{key}-{i}"), w + 120.) } else { fact_loading(theme, l, w) });
+    }
+    p
+}
+
+/// Service rows while they load: the state pill and the name as placeholders.
+pub fn skeleton_service_rows(theme: &Theme, key: &'static str, n: usize) -> Vec<Div> {
+    (0..n)
+        .map(|i| {
+            gpui_kit::component::h_flex()
+                .gap_4()
+                .items_center()
+                .child(gpui_kit::component::h_flex().w(px(168.)).flex_shrink_0().child(skeleton_block(theme, format!("{key}-p{i}"), px(86.).into(), 25.)))
+                .child(skeleton_line(theme, format!("{key}-n{i}"), [260., 300., 240.][i % 3]))
+        })
+        .collect()
 }

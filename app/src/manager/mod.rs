@@ -24,7 +24,6 @@ use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, h_flex, v_flex,
     button::ButtonVariants as _,
-    menu::{DropdownMenu as _, PopupMenuItem},
 };
 use gpui_kit::component::Sizable as _;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -52,14 +51,15 @@ enum Page {
     /// About and preferences of the Platform Manager (the (i) at the
     /// bottom of the menu, not a menu entry).
     About,
-    /// Statistics: opened from the top bar's monitors, not a menu entry.
+    /// Statistics: in the menu under Status, and opened from the top bar's monitors.
     Statistics,
 }
 
 impl Page {
     /// The menu, in its order: Platform settings last.
-    const ALL: [Page; 9] = [
+    const ALL: [Page; 10] = [
         Page::Status,
+        Page::Statistics,
         Page::Control,
         Page::Logs,
         Page::Update,
@@ -149,6 +149,12 @@ pub struct Manager {
     stats: Option<(Option<String>, Entity<stats::StatsPage>)>,
     /// Takes the keyboard while a dialog is open (Escape closes it).
     modal_focus: FocusHandle,
+    /// The instance switcher's menu is open.
+    switcher_open: bool,
+    /// The notifications panel is open.
+    bell_open: bool,
+    /// The window's height (the bell panel's maximum).
+    window_h: std::cell::Cell<f32>,
     /// The global progress strip (strip.rs), under the top bar.
     strip: Entity<strip::Strip>,
     /// Screens: the canned job the strip follows.
@@ -175,7 +181,7 @@ impl Manager {
         let page = args
             .windows(2)
             .find(|w| w[0] == "--page")
-            .and_then(|w| Page::ALL.into_iter().chain([Page::Instances, Page::About, Page::Statistics]).find(|p| p.id() == w[1]))
+            .and_then(|w| Page::ALL.into_iter().chain([Page::Instances, Page::About]).find(|p| p.id() == w[1]))
             .unwrap_or(Page::Status);
         let record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
         let installed = record.as_ref().map(|r| r.sentient_version.clone());
@@ -220,6 +226,9 @@ impl Manager {
             stats: None,
             modal_focus: cx.focus_handle(),
             strip: strip.clone(),
+            switcher_open: false,
+            bell_open: false,
+            window_h: std::cell::Cell::new(720.),
             _debug_job: None,
             theme_open: cfg!(debug_assertions) && std::env::var_os("SPM_THEME_OPEN").is_some(),
             monitor: None,
@@ -235,6 +244,60 @@ impl Manager {
         if let Some(id) = args.windows(2).find(|w| w[0] == "--instance").map(|w| w[1].clone()) {
             manager.open_instance(Some(id), cx);
             manager.page = page;
+        }
+        // Screens: the bell with canned events, the bell or switcher open.
+        #[cfg(debug_assertions)]
+        {
+            if let Some(n) = std::env::var("SPM_DEBUG_EVENTS").ok().and_then(|n| n.parse().ok()) {
+                manager.strip.update(cx, |s, _| s.debug_events(n));
+            }
+            manager.bell_open = std::env::var_os("SPM_DEBUG_BELL").is_some();
+            manager.switcher_open = std::env::var_os("SPM_DEBUG_SWITCHER").is_some();
+            if std::env::var_os("SPM_DEBUG_ERROR_DIALOG").is_some() {
+                crate::ui::show_error_with(
+                    "The server agent could not be updated",
+                    crate::remote::failed("The agent could not be put in place at /opt/sentient-platform-manager (as administrator). The agent there is unchanged.", "sudo: a password is required"),
+                    Some(std::rc::Rc::new(|_: &mut App| {})),
+                    cx,
+                );
+            }
+            // Screens: every switch state on the page's colours.
+            if std::env::var_os("SPM_DEBUG_SWITCH_SHEET").is_some() {
+                struct Sheet;
+                impl Render for Sheet {
+                    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+                        use gpui_kit::component::{switch::Switch, Disableable as _};
+                        let row = |label: &'static str, sw: Switch| h_flex().gap_3().items_center().child(div().w(px(200.)).text_sm().child(label)).child(sw);
+                        v_flex()
+                            .gap_3()
+                            .child(row("Off", Switch::new("s1").checked(false)))
+                            .child(row("On", Switch::new("s2").checked(true)))
+                            .child(row("Off, disabled", Switch::new("s3").checked(false).disabled(true)))
+                            .child(row("On, disabled", Switch::new("s4").checked(true).disabled(true)))
+                    }
+                }
+                let view = cx.new(|_| Sheet);
+                crate::modal::open(crate::modal::Modal { title: "Switches".into(), body: view.into(), width: 360., on_close: None }, cx);
+            }
+            if std::env::var_os("SPM_DEBUG_SUDO_PROMPT").is_some() {
+                if let Some(inst) = crate::remote::load().into_iter().next() {
+                    cx.defer(move |cx| remote_pages::ask_sudo_password(inst, std::rc::Rc::new(|_: &mut App| {}), cx));
+                }
+            }
+            if std::env::var_os("SPM_DEBUG_PARTS_DIALOG").is_some() {
+                let part = |t: &str, m: &str, n: &str, b: u64| crate::dbstatus::DetachedPart { table: t.into(), partition: m.into(), name: n.into(), reason: "broken-on-start".into(), bytes: b };
+                let list = vec![
+                    part("ts_kv", "202611", "202611_1_8_1", 48_000_000),
+                    part("ts_kv", "202611", "202611_9_9_0", 2_100_000),
+                    part("ts_kv", "202610", "202610_33_40_2", 61_000_000),
+                    part("ts_kv_dictionary", "tuple()", "all_3_3_0", 12_000),
+                ];
+                status::BrokenParts::open(std::sync::Arc::new(move || Ok(list.clone())), std::sync::Arc::new(|_, _| Ok("ok a\nfailed b: Code: 232. Part b is broken".into())), cx);
+            }
+            if std::env::var_os("SPM_DEBUG_LOG_DIALOG").is_some() {
+                let view = cx.new(|cx| logs::LogView::file(crate::jobs::activity_log(), _window, cx));
+                crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., on_close: None }, cx);
+            }
         }
         // Screens: a job in the progress strip (SPM_DEBUG_STRIP=running|failed|done).
         #[cfg(debug_assertions)]
@@ -312,11 +375,201 @@ impl Manager {
         items
     }
 
+    /// What needs attention now, for the bell: (title, detail, page, instance
+    /// id, its name, its colour). They go away by themselves.
+    fn conditions(&self, cx: &App) -> Vec<(String, String, Page, Option<String>, String, String)> {
+        let local = |t: String, d: String, p: Page| (t, d, p, None, "This computer".to_string(), crate::remote::LOCAL_COLOR.to_string());
+        let mut out: Vec<_> = Vec::new();
+        let (sentient, manager) = self.updates.read(cx).notices();
+        if let Some(o) = manager {
+            out.push(local(format!("Platform Manager {} is available", o.version), "Update and restart from the Update page.".into(), Page::Update));
+        }
+        if let Some(o) = sentient {
+            out.push(local(format!("SENTIENT {} is available", o.version), "Update from the Update page.".into(), Page::Update));
+        }
+        if let Some(o) = self.updates.read(cx).gateway_notice() {
+            out.push(local(format!("Sentient Gateway {} is available", o.version), "Update from the Gateway page.".into(), Page::Gateway));
+        }
+        let pending = self.record.as_ref().map(|r| crate::changes::pending(r).len()).unwrap_or(0);
+        if pending > 0 {
+            out.push(local(format!("{pending} change{} waiting", if pending == 1 { "" } else { "s" }), "For this installation, on the Update page.".into(), Page::Update));
+        }
+        if let Some(m) = self.monitor.filter(|m| m.disk_low()) {
+            out.push(local("Disk almost full".into(), format!("{} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status));
+        }
+        if let (Some(id), Some(m)) = (&self.open_remote, self.remote_monitor.filter(|m| m.disk_low())) {
+            if let Some(r) = self.remotes.iter().find(|r| &r.id == id) {
+                out.push(("Disk almost full".into(), format!("{} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status, Some(r.id.clone()), r.name.clone(), r.color.clone()));
+            }
+        }
+        out
+    }
+
+    /// The bell's panel: Notifications, Mark all as read / Clear all, the
+    /// events and conditions with their instance, or an empty state.
+    fn notifications_panel(&self, conditions: Vec<(String, String, Page, Option<String>, String, String)>, width: f32, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let events = self.strip.read(cx).events.clone();
+        let (unread, _) = self.strip.read(cx).unread();
+        let w = (width - 24.).min(360.);
+        let now = chrono::Utc::now().timestamp();
+        let ago = |at: i64| {
+            let m = (now - at).max(0) / 60;
+            if m < 1 { "just now".to_string() } else if m < 60 { format!("{m} min ago") } else if m < 24 * 60 { format!("{} h ago", m / 60) } else { format!("{} d ago", m / (24 * 60)) }
+        };
+        let strip = self.strip.clone();
+        let this = cx.entity().downgrade();
+        let row = |key: SharedString, icon: IconName, icon_color: Hsla, title: String, detail: String, meta: String, color: &str, unread: bool, clear: Option<AnyElement>| {
+            let c = crate::remote::parse_hex(color).unwrap_or(0x187074);
+            h_flex()
+                .id(key.clone())
+                .group(key)
+                .relative()
+                .gap_2()
+                .items_start()
+                .pl(px(10.))
+                .pr_2()
+                .py(px(7.))
+                .rounded(px(6.))
+                .cursor_pointer()
+                .hover(|r| r.bg(theme.list_hover))
+                // The instance's colour along the left.
+                .child(div().absolute().left(px(2.)).top(px(6.)).bottom(px(6.)).w(px(3.)).rounded(px(2.)).bg(rgb(c)))
+                .child(Icon::new(icon).size_4().text_color(icon_color).mt(px(2.)))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().text_sm().font_weight(if unread { FontWeight::SEMIBOLD } else { FontWeight::NORMAL }).overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
+                        .child(div().text_size(px(12.5)).text_color(theme.muted_foreground).overflow_hidden().whitespace_nowrap().text_ellipsis().child(detail))
+                        .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(meta)),
+                )
+                .child(
+                    v_flex()
+                        .w(px(20.))
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap_1()
+                        .when(unread, |c| c.child(div().mt(px(5.)).size(px(7.)).rounded_full().bg(theme.danger)))
+                        .children(clear),
+                )
+        };
+        let mut list = v_flex().gap_px();
+        for (i, (title, detail, page, inst, name, color)) in conditions.into_iter().enumerate() {
+            let t = this.clone();
+            let icon = if title.contains("available") || title.contains("waiting") { (IconName::ArrowUp, theme.primary) } else { (IconName::TriangleAlert, rgb(0xd97706).into()) };
+            list = list.child(
+                row(SharedString::from(format!("cond-{i}")), icon.0, icon.1, title, detail, format!("{name}"), &color, false, None).on_click(move |_, _, cx| {
+                    let (inst, page) = (inst.clone(), page);
+                    t.update(cx, |m, cx| {
+                        m.bell_open = false;
+                        if m.open_remote != inst {
+                            m.open_instance(inst, cx);
+                        }
+                        m.page = page;
+                        cx.notify();
+                    })
+                    .ok();
+                }),
+            );
+        }
+        for e in events.iter() {
+            let (id, inst) = (e.id, e.instance.clone());
+            let (s1, s2, t) = (strip.clone(), strip.clone(), this.clone());
+            let icon = if e.failed { (IconName::CircleX, theme.danger) } else { (IconName::CircleCheck, theme.primary) };
+            let clear = div()
+                .id(SharedString::from(format!("clear-{id}")))
+                .invisible()
+                .group_hover(SharedString::from(format!("ev-{id}")), |d| d.visible())
+                .p(px(2.))
+                .rounded(px(4.))
+                .hover(|d| d.bg(theme.list_hover))
+                .child(Icon::new(IconName::Close).size_3().text_color(theme.muted_foreground))
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    s1.update(cx, |s, cx| s.clear(Some(id), cx));
+                })
+                .into_any_element();
+            list = list.child(
+                row(SharedString::from(format!("ev-{id}")), icon.0, icon.1, e.title.clone(), e.detail.clone(), format!("{} · {}", e.instance_name, ago(e.at)), &e.color, !e.read, Some(clear)).on_click(move |_, _, cx| {
+                    let inst = inst.clone();
+                    t.update(cx, |m, cx| {
+                        m.bell_open = false;
+                        if m.open_remote != inst {
+                            m.open_instance(inst, cx);
+                        }
+                    })
+                    .ok();
+                    s2.update(cx, |s, cx| s.open_event(id, cx));
+                }),
+            );
+        }
+        let empty = list_is_empty(&events, self.conditions(cx).len());
+        let (s3, s4, close) = (strip.clone(), strip.clone(), this.clone());
+        let header = h_flex()
+            .px_2()
+            .pt_1()
+            .pb_2()
+            .gap_2()
+            .items_center()
+            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("Notifications"))
+            .when(unread > 0, |h| h.child(crate::ui::button("bell-read").ghost().xsmall().label("Mark all as read").on_click(move |_, _, cx| s3.update(cx, |s, cx| s.mark_all_read(cx)))))
+            .when(!events.is_empty(), |h| h.child(crate::ui::button("bell-clear").ghost().xsmall().label("Clear all").on_click(move |_, _, cx| s4.update(cx, |s, cx| s.clear(None, cx)))));
+        let max_h = (f32::from(self.window_h.get()) * 0.6).max(260.);
+        deferred(
+            div().absolute().top(px(30. + 9.)).right(px(-6.)).child(
+                div()
+                    .relative()
+                    .w(px(w))
+                    .child(
+                        v_flex()
+                            .id("bell-panel")
+                            .occlude()
+                            .p_2()
+                            .min_h(px(240.))
+                            .max_h(px(max_h))
+                            .rounded(px(ui::PANEL_RADIUS))
+                            .bg(theme.popover)
+                            .text_color(theme.popover_foreground)
+                            .border_1()
+                            .border_color(theme.border)
+                            .shadow_lg()
+                            .child(header)
+                            .child(if empty {
+                                v_flex()
+                                    .flex_1()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap_2()
+                                    .py_8()
+                                    .child(Icon::new(IconName::Bell).size_6().text_color(theme.muted_foreground.opacity(0.6)))
+                                    .child(div().text_sm().text_color(theme.muted_foreground).child("No new notifications"))
+                                    .into_any_element()
+                            } else {
+                                div().id("bell-list").flex_1().min_h_0().overflow_y_scroll().child(list).into_any_element()
+                            })
+                            .on_mouse_down_out(move |_, _, cx| {
+                                close.update(cx, |m, cx| {
+                                    m.bell_open = false;
+                                    cx.notify();
+                                })
+                                .ok();
+                            }),
+                    )
+                    .child(ui::pointer_up(theme.popover, theme.border, px(w - 26.))),
+            ),
+        )
+        .with_priority(1)
+        .into_any_element()
+    }
+
     /// The top bar: the Platform Manager's icon, the instance that is
     /// open, its processor / memory / disk, and what needs attention. It
     /// takes the open instance's colour (SENTIENT teal for this computer).
     fn top_bar(&self, width: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let dark = theme::is_dark(cx);
+        let menu_theme = cx.theme().clone();
+        let theme_radius = menu_theme.radius;
         let remote = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned();
         let (bg, fg): (Hsla, Hsla) = match &remote {
             Some(r) => {
@@ -389,28 +642,48 @@ impl Manager {
         // every digit an 8 (tabular figures share one width).
         let eights = |s: String| s.chars().map(|c| if c.is_ascii_digit() { '8' } else { c }).collect::<String>();
         let gbf = |b: u64| b as f64 / (1u64 << 30) as f64;
-        let mem_widest = shown.map(|m| eights(format!("{:.1} / {:.0} GB", gbf(m.mem_total), gbf(m.mem_total)))).unwrap_or_default();
+        // (Before the first reading: typical widths, so the placeholders take
+        // the room the values will.)
+        let mem_widest = shown.map(|m| eights(format!("{:.1} / {:.0} GB", gbf(m.mem_total), gbf(m.mem_total)))).unwrap_or_else(|| "88.8 / 88 GB".into());
         // On a disk of a terabyte or more, less than a terabyte free reads in GB.
         let disk_widest = shown
             .map(|m| {
                 let total = eights(format!("{} free", crate::dbstatus::bytes_label(m.disk_total)));
                 if m.disk_total >= 1 << 40 && total.len() < "8888.8 GB free".len() { "8888.8 GB free".to_string() } else { total }
             })
-            .unwrap_or_default();
-        let (show_cpu, show_mem, show_disk) = match shown {
-            Some(_) => {
-                let bar = if wide { 48. } else { 0. };
-                let slot = |w: &str| f32::from(ui::slot_width(w, 12.5));
-                let cpu = fits(16. + 6. + 26. + slot("100%") + bar);
-                let mem = cpu && fits(16. + 6. + 52. + slot(&mem_widest) + bar);
-                let disk = mem && fits(16. + 6. + 30. + slot(&disk_widest) + bar);
-                (cpu, mem, disk)
-            }
-            None => (false, false, false),
+            .unwrap_or_else(|| "888.8 GB free".into());
+        // The same room with and without a reading (placeholders before it).
+        let (show_cpu, show_mem, show_disk) = {
+            let bar = if wide { 48. } else { 0. };
+            let slot = |w: &str| f32::from(ui::slot_width(w, 12.5));
+            let cpu = fits(16. + 6. + 26. + slot("100%") + bar);
+            let mem = cpu && fits(16. + 6. + 52. + slot(&mem_widest) + bar);
+            let disk = mem && fits(16. + 6. + 30. + slot(&disk_widest) + bar);
+            (cpu, mem, disk)
         };
         // What the monitors leave between the switcher and themselves: the
         // progress chip's slot.
         self.strip.read(cx).slot_w.set(room.max(0.) + strip::CHIP_MIN);
+        // Before the first reading: the monitors as placeholders in their
+        // slots, so nothing moves when the values come.
+        let monitor_loading = shown.is_none().then(|| {
+            let slot = |label: &'static str, widest: &str| {
+                h_flex()
+                    .gap(px(6.))
+                    .items_center()
+                    .text_size(px(12.5))
+                    .child(div().text_color(fg.opacity(0.65)).child(label))
+                    .when(wide, |r| r.child(div().w(px(42.)).h(px(5.)).rounded_full().bg(fg.opacity(0.2))))
+                    .child(div().w(ui::slot_width(widest, 12.5)).flex().items_center().child(div().w(relative(0.75)).h(px(10.)).rounded(px(5.)).bg(fg.opacity(0.22))))
+            };
+            h_flex()
+                .gap(px(16.))
+                .px_2()
+                .py_1()
+                .when(show_cpu, |r| r.child(slot("CPU", "100%")))
+                .when(show_mem, |r| r.child(slot("Memory", &mem_widest)))
+                .when(show_disk, |r| r.child(slot("Disk", &disk_widest)))
+        });
         let monitor = shown.map(|m| {
             let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
             h_flex()
@@ -446,34 +719,29 @@ impl Manager {
                     cx.notify();
                 }))
         });
-        let items = self.attention(cx);
-        let count = items.len();
-        let bell = crate::ui::button("bell")
-            .ghost()
-            .icon(Icon::new(IconName::Bell).text_color(fg))
-            .text_color(fg)
-            .tooltip(if count == 0 { "Nothing needs attention" } else { "Needs attention" })
-            .dropdown_menu({
-                let this = cx.entity().downgrade();
-                move |menu, _, _| {
-                    let mut menu = menu;
-                    if items.is_empty() {
-                        menu = menu.item(PopupMenuItem::new("Nothing needs attention").disabled(true));
-                    }
-                    for (text, page) in &items {
-                        let this = this.clone();
-                        let page = *page;
-                        menu = menu.item(PopupMenuItem::new(text.clone()).on_click(move |_, _, cx| {
-                            this.update(cx, |m, cx| {
-                                m.page = page;
-                                cx.notify();
-                            })
-                            .ok();
-                        }));
-                    }
-                    menu
-                }
-            });
+        // The bell: events (clearable, kept across restarts) and conditions
+        // (they stay while they hold). Every entry names its instance.
+        let conditions = self.conditions(cx);
+        let (unread, unread_failed) = self.strip.read(cx).unread();
+        let count = unread + conditions.len();
+        let bell_open = self.bell_open;
+        let bell = div()
+            .id("bell")
+            .size(px(30.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(theme_radius)
+            .cursor_pointer()
+            .when(bell_open, |b| b.bg(black().opacity(if light_bar { 0.16 } else { 0.30 })))
+            .hover(move |b| b.bg(black().opacity(if light_bar { 0.16 } else { 0.30 })))
+            .child(Icon::new(IconName::Bell).text_color(fg).size_4())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.bell_open = !this.bell_open;
+                cx.notify();
+            }));
+        let bell_panel = bell_open.then(|| self.notifications_panel(conditions, width, cx));
+        let unseen = if unread_failed { 1 } else { 0 };
         let line = self.strip.read(cx).line(cx);
         h_flex()
             .id("top-bar")
@@ -488,16 +756,23 @@ impl Manager {
             .text_color(fg)
             .child(ui::product_logo(ui::Product::Manager, 20.))
             // No product name here: the window's own title carries it.
-            .child(
-                // The mockup's switcher: a framed chip with a status dot, the
-                // name, the address faint, a chevron; a remote one is framed
-                // in amber and carries a REMOTE tag.
+            .child({
                 // The mockup's option B: a darker inset of the bar itself, no
-                // border; nothing on it but the bar colour and its text colour.
-                crate::ui::button("switcher")
-                    .ghost()
+                // border; hover one step darker (the text keeps its contrast).
+                // Its menu is the app's popover, like the theme menu.
+                let open = self.switcher_open;
+                let hover_inset: Hsla = black().opacity(if light_bar { 0.16 } else { 0.30 });
+                let chip = div()
+                    .id("switcher")
+                    .flex()
+                    .items_center()
+                    .h(px(30.))
+                    .px(px(10.))
+                    .rounded(theme_radius)
+                    .cursor_pointer()
                     .text_color(fg)
-                    .bg(inset)
+                    .bg(if open { hover_inset } else { inset })
+                    .hover(move |d| d.bg(hover_inset))
                     .child(
                         h_flex()
                             .gap(px(7.))
@@ -512,41 +787,79 @@ impl Manager {
                                 r.child(div().px(px(6.)).py(px(1.)).rounded(px(4.)).bg(fg).text_color(bg).text_size(px(10.5)).font_weight(FontWeight::SEMIBOLD).child("REMOTE"))
                             }),
                     )
-                    .dropdown_menu({
-                        let this = cx.entity().downgrade();
-                        let remotes = self.remotes.clone();
-                        let open = self.open_remote.clone();
-                        move |menu, _, _| {
-                            let t = this.clone();
-                            let mut menu = menu.item(PopupMenuItem::new(if open.is_some() { "Back to this computer" } else { "This computer" }).when(open.is_some(), |i| i.icon(Lucide::Monitor)).checked(open.is_none()).on_click(move |_, _, cx| {
-                                t.update(cx, |m, cx| m.open_instance(None, cx)).ok();
-                            }));
-                            if !remotes.is_empty() {
-                                menu = menu.separator();
-                            }
-                            for r in &remotes {
-                                let (t, id) = (this.clone(), r.id.clone());
-                                menu = menu.item(PopupMenuItem::new(format!("{} · {}", r.name, r.host)).when(open.as_deref() != Some(r.id.as_str()), |i| i.icon(Lucide::Server)).checked(open.as_deref() == Some(r.id.as_str())).on_click(move |_, _, cx| {
-                                    t.update(cx, |m, cx| m.open_instance(Some(id.clone()), cx)).ok();
-                                }));
-                            }
-                            let t = this.clone();
-                            menu.separator().item(PopupMenuItem::new("Manage instances…").icon(Lucide::Settings).on_click(move |_, _, cx| {
-                                t.update(cx, |m, cx| {
-                                    m.page = Page::Instances;
-                                    cx.notify();
-                                })
-                                .ok();
-                            }))
-                        }
-                    }),
-            )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.switcher_open = !this.switcher_open;
+                        cx.notify();
+                    }));
+                let popover = open.then(|| {
+                    let this = cx.entity().downgrade();
+                    let go = |t: WeakEntity<Manager>, id: Option<String>| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
+                        std::rc::Rc::new(move |_, cx| {
+                            t.update(cx, |m, cx| {
+                                m.switcher_open = false;
+                                m.open_instance(id.clone(), cx);
+                            })
+                            .ok();
+                        })
+                    };
+                    let mut rows = vec![ui::MenuRow::Item {
+                        id: "switch-local".into(),
+                        icon: Some(Icon::new(Lucide::Monitor).size_4().into_any_element()),
+                        label: if self.open_remote.is_some() { "Back to this computer".into() } else { "This computer".into() },
+                        secondary: None,
+                        on: self.open_remote.is_none(),
+                        click: go(this.clone(), None),
+                    }];
+                    if !self.remotes.is_empty() {
+                        rows.push(ui::MenuRow::Divider);
+                    }
+                    for r in &self.remotes {
+                        let c = crate::remote::parse_hex(&r.color).unwrap_or(0x187074);
+                        rows.push(ui::MenuRow::Item {
+                            id: SharedString::from(format!("switch-{}", r.id)),
+                            icon: Some(div().size(px(10.)).mx(px(3.)).rounded_full().bg(rgb(c)).into_any_element()),
+                            label: r.name.clone().into(),
+                            secondary: Some(format!("{} over SSH", r.host).into()),
+                            on: self.open_remote.as_deref() == Some(r.id.as_str()),
+                            click: go(this.clone(), Some(r.id.clone())),
+                        });
+                    }
+                    rows.push(ui::MenuRow::Divider);
+                    let t = this.clone();
+                    rows.push(ui::MenuRow::Item {
+                        id: "switch-manage".into(),
+                        icon: Some(Icon::new(Lucide::Settings).size_4().into_any_element()),
+                        label: "Manage instances…".into(),
+                        secondary: None,
+                        on: false,
+                        click: std::rc::Rc::new(move |_, cx| {
+                            t.update(cx, |m, cx| {
+                                m.switcher_open = false;
+                                m.page = Page::Instances;
+                                cx.notify();
+                            })
+                            .ok();
+                        }),
+                    });
+                    let close = this.clone();
+                    deferred(div().absolute().top(px(30. + 9.)).left_0().child(ui::popover_menu(&menu_theme, "switcher-popover", 320., rows, true, px(24.), move |_, cx| {
+                        close.update(cx, |m, cx| {
+                            m.switcher_open = false;
+                            cx.notify();
+                        })
+                        .ok();
+                    })))
+                    .with_priority(1)
+                });
+                div().relative().child(chip).children(popover)
+            })
             // A running job: its chip in the middle of the bar.
             .child(h_flex().flex_1().min_w_0().overflow_hidden().justify_center().child(self.strip.clone()))
             .children(monitor)
+            .children(monitor_loading)
             .child(
                 // The bell with an amber count, as in the mockup.
-                div().relative().child(bell).when(count > 0, |b| {
+                div().relative().child(bell).children(bell_panel).when(count > 0, |b| {
                     b.child(
                         div()
                             .absolute()
@@ -556,8 +869,9 @@ impl Manager {
                             .h(px(15.))
                             .px(px(3.))
                             .rounded_full()
-                            .bg(rgb(0xf59e0b))
-                            .text_color(rgb(0x1c1917))
+                            // Red while a failed job is unread, else amber.
+                            .bg(if unseen > 0 { rgb(0xdc2626) } else { rgb(0xf59e0b) })
+                            .text_color(if unseen > 0 { rgb(0xffffff) } else { rgb(0x1c1917) })
                             .text_size(px(10.))
                             .font_weight(FontWeight::BOLD)
                             .flex()
@@ -972,57 +1286,46 @@ impl Manager {
                 cx.notify();
             }));
         let popover = open.then(|| {
-            let rows = theme::Choice::ALL.into_iter().map(|c| {
-                let on = c == choice;
-                h_flex()
-                    .id(SharedString::from(format!("theme-{}", c.label())))
-                    .gap_2()
-                    .items_center()
-                    .px_2()
-                    .py(px(6.))
-                    .rounded(px(6.))
-                    .cursor_pointer()
-                    .text_sm()
-                    .when(on, |r| r.bg(theme.primary.opacity(0.10)).text_color(theme.primary).font_weight(FontWeight::MEDIUM))
-                    .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))
-                    .child(icon_of(c).size_4())
-                    .child(div().flex_1().child(c.label()))
-                    .when(on, |r| r.child(Icon::new(IconName::Check).size_4()))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        theme::choose(c, Some(window), cx);
-                        this.theme_open = false;
-                        cx.notify();
-                    }))
-            });
-            // The pointer: a small square turned 45 degrees is not possible
-            // here, so a bordered triangle is drawn from two stacked borders.
-            let pointer_x = if rail { px(9.) } else { px(162. - 24.) };
-            deferred(
-                div()
-                    .absolute()
-                    .bottom(px(30. + 9.))
-                    .when(rail, |d| d.left(px(-2.)))
-                    .when(!rail, |d| d.right(px(-6.)))
-                    .w(px(162.))
-                    .child(
-                        v_flex()
-                            .id("theme-popover")
-                            .occlude()
-                            .p_1()
-                            .gap_px()
-                            .rounded(px(ui::PANEL_RADIUS))
-                            .bg(theme.popover)
-                            .text_color(theme.popover_foreground)
-                            .border_1()
-                            .border_color(theme.border)
-                            .shadow_lg()
-                            .children(rows)
-                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                this.theme_open = false;
+            let this = cx.entity().downgrade();
+            let rows = theme::Choice::ALL
+                .into_iter()
+                .map(|c| {
+                    let this = this.clone();
+                    ui::MenuRow::Item {
+                        id: SharedString::from(format!("theme-{}", c.label())),
+                        icon: Some(icon_of(c).size_4().into_any_element()),
+                        label: c.label().into(),
+                        secondary: None,
+                        on: c == choice,
+                        click: std::rc::Rc::new(move |window, cx| {
+                            theme::choose(c, Some(window), cx);
+                            this.update(cx, |m, cx| {
+                                m.theme_open = false;
                                 cx.notify();
-                            })),
-                    )
-                    .child(ui::pointer_down(theme.popover, theme.border, pointer_x)),
+                            })
+                            .ok();
+                        }),
+                    }
+                })
+                .collect();
+            let pointer_x = if rail { px(9.) } else { px(162. - 24.) };
+            let close = cx.entity().downgrade();
+            deferred(
+                div().absolute().bottom(px(30. + 9.)).when(rail, |d| d.left(px(-2.))).when(!rail, |d| d.right(px(-6.))).child(ui::popover_menu(
+                    &theme,
+                    "theme-popover",
+                    162.,
+                    rows,
+                    false,
+                    pointer_x,
+                    move |_, cx| {
+                        close.update(cx, |m, cx| {
+                            m.theme_open = false;
+                            cx.notify();
+                        })
+                        .ok();
+                    },
+                )),
             )
             .with_priority(1)
         });
@@ -1216,6 +1519,7 @@ impl Render for Manager {
         // fewer monitors in the top bar as it narrows.
         let width = f32::from(window.viewport_size().width);
         crate::ui::set_narrow(width < 760.);
+        self.window_h.set(f32::from(window.viewport_size().height));
         stats::set_open(self.page == Page::Statistics);
         // A Control row's "Logs" asked for the Logs page.
         if crate::logsource::take_go() {
@@ -1272,4 +1576,8 @@ pub(crate) const NAV_W: f32 = 210.;
 /// ", released 2026-10-24", or nothing.
 fn dated(date: &str) -> String {
     if date.is_empty() { String::new() } else { format!(", released {date}") }
+}
+
+fn list_is_empty(events: &[strip::Event], conditions: usize) -> bool {
+    events.is_empty() && conditions == 0
 }

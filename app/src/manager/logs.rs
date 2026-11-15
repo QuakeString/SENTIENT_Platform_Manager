@@ -52,6 +52,8 @@ pub struct LogView {
     status: Option<SharedString>,
     /// A read that failed: the page shows it with Try again, never as a line.
     error: Option<String>,
+    /// One file (the Platform Manager's own log): no source choice.
+    single: bool,
     scroll: ScrollHandle,
     /// Selected lines, as indices into the shown list.
     selected: BTreeSet<usize>,
@@ -81,6 +83,7 @@ impl LogView {
             follow: true,
             status: None,
             error: None,
+            single: false,
             scroll: ScrollHandle::new(),
             selected: BTreeSet::new(),
             anchor: None,
@@ -104,6 +107,25 @@ impl LogView {
         let load: LoadFn = Arc::new(move |s, n, today| Ok(logsource::read(&r1, s, n, today)));
         let sources: SourcesFn = Arc::new(move || Ok(logsource::available(&record)));
         Self::new(load, sources, window, cx)
+    }
+
+    /// One log file (the Platform Manager's own log, About → Open the log).
+    pub fn file(path: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let load: LoadFn = Arc::new(move |_, n, today| {
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().collect();
+            let from = if today {
+                let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+                lines.iter().position(|l| l.starts_with(&day)).unwrap_or(lines.len())
+            } else {
+                lines.len().saturating_sub(n as usize)
+            };
+            Ok(lines[from..].join("\n"))
+        });
+        let sources: SourcesFn = Arc::new(|| Ok(vec![Source::Sentient]));
+        let mut v = Self::new(load, sources, window, cx);
+        v.single = true;
+        v
     }
 
     /// A remote server's logs, read through its agent.
@@ -370,7 +392,7 @@ impl Render for LogView {
         let selected_n = self.selected.len();
         let toolbar = v_flex()
             .gap_2()
-            .child(h_flex().gap_3().flex_wrap().items_center().child(sources).child(levels))
+            .child(h_flex().gap_3().flex_wrap().items_center().when(!self.single, |r| r.child(sources)).child(levels))
             .child(
                 h_flex()
                     .gap_3()

@@ -33,6 +33,8 @@ pub struct StatusPage {
     adopt_job: Entity<Job>,
     /// Start, offered here while SENTIENT is stopped.
     start_job: Entity<Job>,
+    /// SENTIENT's version as shown ("4.4.0.2 (image tag latest)").
+    shown_version: Option<String>,
     /// The gateway on this computer (None while looking).
     gateway: Option<sentient_installer_core::gateway::Status>,
     updates: Entity<crate::updates::UpdateState>,
@@ -83,6 +85,19 @@ fn small_fact(theme: &gpui_kit::component::Theme, label: &'static str, value: im
         .child(div().flex_1().min_w_0().child(value.into()))
 }
 
+/// The history's period: a start before 2000 (a reading stored with time 0,
+/// 1970, when a device sent no time) is not shown as the date; the (i) says
+/// such readings exist.
+fn period_fact(theme: &gpui_kit::component::Theme, key: &'static str, first: i64, last: i64) -> Div {
+    if first >= crate::dbstatus::VALID_FROM_MS {
+        return small_fact(theme, "Period", format!("{} to {}", crate::dbstatus::day_label(first), crate::dbstatus::day_label(last)));
+    }
+    small_fact(theme, "Period", format!("up to {}", crate::dbstatus::day_label(last))).child(ui::info(
+        SharedString::from(format!("period-{key}")),
+        "Some readings carry a time before 2000, most likely 1970: a device sent its data without a time. They are kept, but the period's start is not shown from them.".into(),
+    ))
+}
+
 /// "Audit log  who did what  [bar]  255 MB"
 fn table_row(theme: &gpui_kit::component::Theme, name: String, hint: String, fraction: f32, size: String) -> Div {
     h_flex()
@@ -119,16 +134,19 @@ impl StatusPage {
     pub fn new(record: Option<InstallationRecord>, updates: Entity<crate::updates::UpdateState>, cx: &mut Context<Self>) -> Self {
         let poll = record.as_ref().map(|record| {
             let platform = record.platform();
+            let rec = record.clone();
             cx.spawn(async move |this, cx| {
                 loop {
                     let platform = platform.clone();
-                    let snapshot = cx
+                    let rec = rec.clone();
+                    let (snapshot, version) = cx
                         .background_executor()
-                        .spawn(async move { platform.snapshot() })
+                        .spawn(async move { (platform.snapshot(), crate::headless::shown_version(&rec)) })
                         .await;
                     let alive = this
                         .update(cx, |page, cx| {
                             page.snapshot = Some(snapshot);
+                            page.shown_version = Some(version);
                             cx.notify();
                         })
                         .is_ok();
@@ -163,6 +181,7 @@ impl StatusPage {
             found: None,
             adopt_job,
             start_job,
+            shown_version: None,
             gateway: None,
             updates,
             db: None,
@@ -264,7 +283,7 @@ impl StatusPage {
         };
         let last_backup = match &self.last_backup {
             Some(b) => format!("{}{}", crate::dbstatus::ago_label(&b.at, chrono::Local::now()), b.bytes.map(|n| format!(", {}", bytes_label(n))).unwrap_or_default()),
-            None => "none from the Platform Manager".to_string(),
+            None => "None".to_string(),
         };
         db_details(
             theme,
@@ -273,7 +292,28 @@ impl StatusPage {
             &disk_name(record),
             Some(crate::dbstatus::growth_per_day()),
             last_backup,
-            DbActions { set_limit: Some(go(Go::Settings)), remove_kept: Some(go(Go::Migration)), back_up: Some(go(Go::Backup)) },
+            DbActions {
+                set_limit: Some(go(Go::Settings)),
+                remove_kept: Some(go(Go::Migration)),
+                back_up: Some(go(Go::Backup)),
+                broken_parts: Some({
+                    let r = record.clone();
+                    std::rc::Rc::new(move |cx: &mut App| {
+                        let (r1, r2) = (r.clone(), r.clone());
+                        BrokenParts::open(
+                            std::sync::Arc::new(move || crate::dbstatus::detached_parts(&r1)),
+                            std::sync::Arc::new(move |attach, parts| {
+                                let res = if attach { crate::dbstatus::attach_parts(&r2, &parts) } else { crate::dbstatus::drop_parts(&r2, &parts) }?;
+                                Ok(res.into_iter().map(|(p, r)| match r {
+                                    Ok(()) => format!("ok {p}"),
+                                    Err(e) => format!("failed {p}: {}", e.lines().next().unwrap_or("")),
+                                }).collect::<Vec<_>>().join("\n"))
+                            }),
+                            cx,
+                        )
+                    })
+                }),
+            },
             crate::theme::is_dark(cx),
         )
     }
@@ -336,13 +376,24 @@ impl StatusPage {
             ));
         }
         panel = panel
-            .child(div().text_sm().text_color(theme.muted_foreground).child(
-                "SENTIENT instances already on this computer. Add one and the Platform Manager manages it as it is, without reinstalling anything.",
-            ))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .child(div().text_sm().text_color(theme.muted_foreground).child("Found on this computer."))
+                    .child(ui::info("existing-help".into(), "Add one and the Platform Manager manages it as it is, without reinstalling anything.".into())),
+            )
             .when(busy, |p| p.child(div().text_sm().child(step)))
             .children(failed.map(|m| ui::outcome(theme, Tone::Bad, m)));
         for (i, c) in found.iter().enumerate() {
             let candidate = c.clone();
+            let from = c.facts().into_iter().find(|(l, _)| *l == "From").map(|(_, v)| v).unwrap_or_default();
+            let mut help = format!("Started from: {from}");
+            for n in &c.notes {
+                help.push_str("\n\n");
+                help.push_str(n);
+            }
+            let missing = c.notes.iter().any(|n| n.contains("no longer at"));
             panel = panel.child(
                 div()
                     .mt_2()
@@ -350,17 +401,24 @@ impl StatusPage {
                     .border_1()
                     .border_color(theme.border)
                     .rounded(theme.radius)
-                    .children(c.facts().into_iter().map(|(label, value)| ui::fact(theme, label, value)))
-                    .children(c.notes.iter().map(|n| div().text_size(px(13.)).text_color(theme.muted_foreground).child(n.clone())))
+                    // The essentials; where it came from and the notes behind an
+                    // (i); a short amber line only when its compose file is gone.
+                    .children(c.facts().into_iter().filter(|(l, _)| ["Runs as", "Version", "Database type", "State", "Web port"].contains(l)).map(|(label, value)| ui::fact(theme, label, value)))
+                    .when(missing, |d| d.child(div().mt_1().text_sm().text_color(if theme.mode.is_dark() { theme.warning_foreground } else { gpui::rgb(0xb45309).into() }).child("Compose file missing")))
                     .children(c.problem.clone().map(|p| ui::outcome(theme, Tone::Warn, format!("Cannot be added: {p}"))))
                     .child(
-                        h_flex().mt_2().child(
-                            crate::ui::button(("adopt", i))
-                                .primary()
-                                .label("Add this instance…")
-                                .disabled(busy || c.problem.is_some())
-                                .on_click(cx.listener(move |this, _, window, cx| this.confirm_adopt(candidate.clone(), window, cx))),
-                        ),
+                        h_flex()
+                            .mt_2()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                crate::ui::button(("adopt", i))
+                                    .primary()
+                                    .label("Add this instance…")
+                                    .disabled(busy || c.problem.is_some())
+                                    .on_click(cx.listener(move |this, _, window, cx| this.confirm_adopt(candidate.clone(), window, cx))),
+                            )
+                            .child(ui::info(SharedString::from(format!("existing-{i}")), help.into())),
                     ),
             );
         }
@@ -373,9 +431,11 @@ impl Render for StatusPage {
         let theme = cx.theme().clone();
         let page = ui::page(&theme, "Status", "Services, version, database type and ports.");
         let Some(record) = &self.record else {
-            let existing = self.existing(&theme, cx);
+            // "Add existing instance" only when one was found, with its Add
+            // button; nothing while looking or when there is none.
+            let existing = self.found.as_ref().is_some_and(|f| !f.is_empty()).then(|| self.existing(&theme, cx));
             let gw = self.gateway_card(&theme, cx);
-            return page.child(ui::not_installed(&theme)).child(existing).child(gw);
+            return page.child(ui::not_installed(&theme)).children(existing).child(gw);
         };
 
         let (overall, tone) = match &self.snapshot {
@@ -458,7 +518,7 @@ impl Render for StatusPage {
                             move |_, _, cx| ui::open_sentient(record.stack.http_port, record.opens_as_kiosk(), cx)
                         }))),
                 )
-                .child(ui::fact(&theme, "SENTIENT version", record.sentient_version.clone()))
+                .child(ui::fact(&theme, "SENTIENT version", self.shown_version.clone().unwrap_or_else(|| record.sentient_version.clone())))
                 .child(ui::fact(&theme, "Database", flavor_label(record.flavor())))
                 .child(ui::fact(
                     &theme,
@@ -543,6 +603,169 @@ pub(crate) struct DbActions {
     pub set_limit: Option<std::rc::Rc<dyn Fn(&mut App)>>,
     pub remove_kept: Option<std::rc::Rc<dyn Fn(&mut App)>>,
     pub back_up: Option<std::rc::Rc<dyn Fn(&mut App)>>,
+    /// Open the list of ClickHouse parts set aside.
+    pub broken_parts: Option<std::rc::Rc<dyn Fn(&mut App)>>,
+}
+
+/// Reads the parts set aside; restores (true) or deletes them.
+pub(crate) type PartsLoad = std::sync::Arc<dyn Fn() -> Result<Vec<crate::dbstatus::DetachedPart>, String> + Send + Sync>;
+pub(crate) type PartsAct = std::sync::Arc<dyn Fn(bool, Vec<(String, String)>) -> Result<String, String> + Send + Sync>;
+
+/// ClickHouse's parts set aside: grouped by table and month, with Try to
+/// restore and Delete (confirmed). The same here and on a server.
+pub(crate) struct BrokenParts {
+    load: PartsLoad,
+    act: PartsAct,
+    list: Option<Result<Vec<crate::dbstatus::DetachedPart>, String>>,
+    result: Option<(bool, String)>,
+    busy: bool,
+    confirm_delete: bool,
+}
+
+impl BrokenParts {
+    pub(crate) fn open(load: PartsLoad, act: PartsAct, cx: &mut App) {
+        let view = cx.new(|cx| {
+            let mut v = BrokenParts { load, act, list: None, result: None, busy: false, confirm_delete: false };
+            v.reload(cx);
+            v
+        });
+        crate::modal::open(crate::modal::Modal { title: "ClickHouse parts set aside".into(), body: view.into(), width: 640., on_close: None }, cx);
+    }
+
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        let load = self.load.clone();
+        cx.spawn(async move |this, cx| {
+            let got = cx.background_executor().spawn(async move { load() }).await;
+            this.update(cx, |v, cx| {
+                v.list = Some(got);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn run(&mut self, attach: bool, cx: &mut Context<Self>) {
+        let Some(Ok(list)) = &self.list else { return };
+        let parts: Vec<(String, String)> = list.iter().map(|p| (p.table.clone(), p.name.clone())).collect();
+        let act = self.act.clone();
+        self.busy = true;
+        self.confirm_delete = false;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { act(attach, parts) }).await;
+            this.update(cx, |v, cx| {
+                v.busy = false;
+                v.result = Some(match r {
+                    Ok(out) => (true, summarize(&out, attach)),
+                    Err(e) => (false, summarize(&e, attach)),
+                });
+                v.reload(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+/// The agent's per-part lines ("ok x" / "failed x: why") as a short report.
+fn summarize(out: &str, attach: bool) -> String {
+    let ok = out.lines().filter(|l| l.starts_with("ok ")).count();
+    let failed: Vec<&str> = out.lines().filter(|l| l.starts_with("failed ")).collect();
+    let verb = if attach { "restored" } else { "deleted" };
+    let mut s = format!("{ok} part{} {verb}.", if ok == 1 { "" } else { "s" });
+    if !failed.is_empty() {
+        s.push_str(&format!(" {} could not be {verb}:\n{}", failed.len(), failed.iter().map(|l| l.trim_start_matches("failed ")).collect::<Vec<_>>().join("\n")));
+    } else if ok == 0 && !out.trim().is_empty() {
+        s = out.trim().to_string();
+    }
+    s
+}
+
+impl Render for BrokenParts {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let mut col = v_flex().gap_3().child(div().text_sm().text_color(theme.muted_foreground).child(
+            "Parts of the telemetry history ClickHouse set aside after an unclean stop. Their readings are missing from the history. Try to restore brings back the ones it can read; Delete removes them for good.",
+        ));
+        match &self.list {
+            None => col = col.child(ui::skeleton_card(&theme, "parts", None, &["", ""])),
+            Some(Err(e)) => col = col.child(ui::notice(&theme, Tone::Bad, format!("The list could not be read.\n{e}"))),
+            Some(Ok(list)) if list.is_empty() => col = col.child(ui::notice(&theme, Tone::Good, "No parts are set aside.")),
+            Some(Ok(list)) => {
+                // Grouped by table and month.
+                let mut groups: Vec<(String, String, usize, u64)> = Vec::new();
+                for p in list {
+                    match groups.iter_mut().find(|g| g.0 == p.table && g.1 == p.partition) {
+                        Some(g) => {
+                            g.2 += 1;
+                            g.3 += p.bytes;
+                        }
+                        None => groups.push((p.table.clone(), p.partition.clone(), 1, p.bytes)),
+                    }
+                }
+                let mut t = v_flex().gap_0();
+                for (i, (table, part, n, bytes)) in groups.into_iter().enumerate() {
+                    let month = if part == "tuple()" { "whole table".to_string() } else if part.len() == 6 { format!("{}-{}", &part[..4], &part[4..]) } else { part };
+                    t = t.child(
+                        h_flex()
+                            .gap_3()
+                            .py(px(6.))
+                            .when(i > 0, |r| r.border_t_1())
+                            .border_color(theme.border)
+                            .text_sm()
+                            .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().child(table))
+                            .child(div().w(px(80.)).child(month))
+                            .child(div().w(px(80.)).text_right().child(format!("{n} part{}", if n == 1 { "" } else { "s" })))
+                            .child(div().w(px(80.)).text_right().child(crate::dbstatus::bytes_label(bytes))),
+                    );
+                }
+                col = col.child(t);
+            }
+        }
+        if let Some((ok, text)) = &self.result {
+            col = col.child(ui::notice(&theme, if *ok { Tone::Good } else { Tone::Warn }, text.clone()));
+        }
+        let has = matches!(&self.list, Some(Ok(l)) if !l.is_empty());
+        let busy = self.busy;
+        col.child(
+            h_flex()
+                .gap_2()
+                .justify_end()
+                .when(self.confirm_delete, |r| {
+                    r.child(div().flex_1().text_sm().text_color(theme.danger).child("Delete them for good? Their readings cannot come back."))
+                        .child(crate::ui::button("parts-delete-no").outline().label("Cancel").on_click(cx.listener(|v, _, _, cx| {
+                            v.confirm_delete = false;
+                            cx.notify();
+                        })))
+                        .child(
+                            div()
+                                .id("parts-delete-yes")
+                                .h(px(32.))
+                                .px_3()
+                                .flex()
+                                .items_center()
+                                .rounded(theme.radius)
+                                .bg(theme.danger)
+                                .text_color(gpui_kit::white())
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .cursor_pointer()
+                                .child("Delete")
+                                .on_click(cx.listener(|v, _, _, cx| v.run(false, cx))),
+                        )
+                })
+                .when(!self.confirm_delete, |r| {
+                    r.child(crate::ui::button("parts-delete").outline().text_color(theme.danger).label("Delete…").disabled(!has || busy).on_click(cx.listener(|v, _, _, cx| {
+                        v.confirm_delete = true;
+                        cx.notify();
+                    })))
+                    .child(crate::ui::button("parts-restore").primary().label("Try to restore").loading(busy).disabled(!has || busy).on_click(cx.listener(|v, _, _, cx| v.run(true, cx))))
+                    .child(crate::ui::button("parts-close").outline().label("Close").on_click(|_, _, cx| crate::modal::close(cx)))
+                }),
+        )
+    }
 }
 
 /// The Database panel's body: the disk, growth, PostgreSQL and ClickHouse.
@@ -559,7 +782,7 @@ pub(crate) fn db_details(
     actions: DbActions,
     dark: bool,
 ) -> Div {
-    use crate::dbstatus::{CRITICAL_DISK, LOW_DISK, bytes_label, count_label, day_label, month_label, plain_table};
+    use crate::dbstatus::{CRITICAL_DISK, LOW_DISK, bytes_label, count_label, month_label, plain_table};
     let mut panel = panel;
         let pg_bytes = db.pg.as_ref().map(|p| p.db_bytes).unwrap_or(0);
     let ch_bytes = db.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0);
@@ -640,7 +863,14 @@ pub(crate) fn db_details(
             }))
             .child(h_flex().gap_1p5().items_center().child(div().size(px(9.)).rounded_sm().bg(theme.secondary)).child(format!("Free {}", bytes_label(free))));
         panel = panel
-            .child(div().pt_1().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(format!("{} ({})", drive.to_uppercase(), bytes_label(total))))
+            .child(div().pt_1().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child({
+                // Sentence case, like "Largest tables".
+                let mut d = drive.to_string();
+                if let Some(f) = d.get(..1) {
+                    d = format!("{}{}", f.to_uppercase(), &d[1..]);
+                }
+                format!("{d} ({})", bytes_label(total))
+            }))
             .child(bar)
             .child(legend);
     } else if let Some(f) = free {
@@ -667,8 +897,8 @@ pub(crate) fn db_details(
                             .child(ui::database_logo("postgresql", 16.))
                             .when(pg.timescaledb.is_some(), |r| r.child(ui::database_logo("timescale", 16.)))
                             .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(match &pg.timescaledb {
-                                Some(ts) => format!("POSTGRESQL {} · TIMESCALEDB {ts}", pg.version),
-                                None => format!("POSTGRESQL {}", pg.version),
+                                Some(ts) => format!("PostgreSQL {} · TimescaleDB {ts}", pg.version),
+                                None => format!("PostgreSQL {}", pg.version),
                             })),
                     )
                     .child(small_fact(theme, "Size", bytes_label(pg.db_bytes)))
@@ -685,7 +915,7 @@ pub(crate) fn db_details(
                                 (None, None) => String::new(),
                             }))
                         })
-                        .when_some(pg.ts_first_ms.zip(pg.ts_last_ms), |c, (a, b)| c.child(small_fact(theme, "Period", format!("{} to {}", day_label(a), day_label(b)))))
+                        .when_some(pg.ts_first_ms.zip(pg.ts_last_ms), |c, (a, b)| c.child(period_fact(theme, "pg", a, b)))
                     })
                     .child(
                         h_flex()
@@ -722,18 +952,16 @@ pub(crate) fn db_details(
         let mut col = v_flex().flex_1().min_w(px(280.)).gap_2();
         match (&db.ch, &db.ch_error) {
             (Some(ch), _) => {
-                let health = match ch.broken_parts {
-                    Some(0) => ("No broken parts".to_string(), None),
-                    Some(n) => (format!("{n} broken part{} set aside", if n == 1 { "" } else { "s" }), Some(Tone::Warn)),
-                    None => ("Not checked".to_string(), None),
-                };
+                // Healthy (or not readable): no row at all. Parts set aside: a
+                // pill that opens the list, with an (i) saying what they are.
+                let broken = ch.broken_parts.filter(|n| *n > 0);
                 col = col
                     .child(
                         h_flex()
                             .gap_2()
                             .items_center()
                             .child(ui::database_logo("clickhouse", 14.))
-                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(format!("CLICKHOUSE {}", ch.version))),
+                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(format!("ClickHouse {}", ch.version))),
                     )
                     .child(small_fact(theme, "Size", if ch.uncompressed_bytes > ch.disk_bytes {
                         format!("{} on disk ({} before compression)", bytes_label(ch.disk_bytes), bytes_label(ch.uncompressed_bytes))
@@ -742,7 +970,7 @@ pub(crate) fn db_details(
                     }))
                     .child(small_fact(theme, "Telemetry history", format!("{} values, {}", count_label(ch.rows), bytes_label(ch.disk_bytes))))
                     .children(match (ch.first_ms, ch.last_ms) {
-                        (Some(a), Some(b)) => Some(small_fact(theme, "Period", format!("{} to {}", day_label(a), day_label(b)))),
+                        (Some(a), Some(b)) => Some(period_fact(theme, "ch", a, b)),
                         _ => None,
                     })
                     .when(ch.invalid_rows > 0, |c| {
@@ -760,17 +988,27 @@ pub(crate) fn db_details(
                             }))
                             .when_some(actions.set_limit.clone(), |r, f| r.child(crate::ui::button("history-limit").outline().label("Set a limit…").on_click(move |_, _, cx| f(cx)))),
                     )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .text_sm()
-                            .child(div().w_32().flex_shrink_0().text_color(theme.muted_foreground).child("Health"))
-                            .child(match health.1 {
-                                Some(tone) => ui::pill(theme, tone, health.0),
-                                None => div().child(health.0),
-                            }),
-                    );
+                    .when_some(broken, |c, n| {
+                        let open = actions.broken_parts.clone();
+                        c.child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .text_sm()
+                                .child(div().w_32().flex_shrink_0().text_color(theme.muted_foreground).child("Health"))
+                                .child(
+                                    div()
+                                        .id("broken-parts")
+                                        .when(open.is_some(), |d| d.cursor_pointer())
+                                        .child(ui::pill(theme, Tone::Warn, format!("{n} damaged part{} set aside ›", if n == 1 { "" } else { "s" })))
+                                        .when_some(open, |d, f| d.on_click(move |_, _, cx| f(cx))),
+                                )
+                                .child(ui::info(
+                                    "broken-help".into(),
+                                    "After an unclean stop (a power cut, a full disk) ClickHouse moves parts of the history it cannot read aside. They are kept, not deleted, but their readings are missing from the history until restored. Open the list to try to restore them or delete them.".into(),
+                                )),
+                        )
+                    });
                 if !ch.months.is_empty() {
                     col = col.child(div().pt_1().text_size(px(13.)).text_color(theme.muted_foreground).child("History by month"));
                     let max = ch.months.iter().map(|(_, b)| *b).max().unwrap_or(1).max(1);

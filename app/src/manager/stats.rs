@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use gpui_kit::component::{ActiveTheme, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -112,6 +112,9 @@ pub struct StatsPage {
     hover: Option<(usize, usize)>,
     /// Each chart's plot bounds, for the pointer.
     plots: Vec<Rc<Cell<Bounds<Pixels>>>>,
+    /// Update agent (a server whose agent is too old for these readings).
+    job: Entity<crate::jobs::Job>,
+    _watch: Option<Subscription>,
     _poll: Option<Task<()>>,
     _tasks: Vec<Task<()>>,
 }
@@ -138,6 +141,8 @@ impl StatsPage {
             live_err: None,
             hover: None,
             plots: (0..6).map(|_| Rc::new(Cell::new(Bounds::default()))).collect(),
+            job: cx.new(|_| crate::jobs::Job::new()),
+            _watch: None,
             _poll: None,
             _tasks: Vec::new(),
         };
@@ -153,6 +158,18 @@ impl StatsPage {
         if range != Range::Live {
             self.hist = None;
         }
+        // 20 seconds without a first reading: say so, with Retry.
+        let timeout = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(20)).await;
+            this.update(cx, |p, cx| {
+                if p.live.is_empty() && p.live_err.is_none() {
+                    p.live_err = Some("The server did not answer within 20 seconds.".into());
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
+        self._tasks.push(timeout);
         self._poll = Some(cx.spawn(async move |this, cx| {
             let mut first = true;
             loop {
@@ -206,6 +223,32 @@ impl StatsPage {
         }));
     }
 
+    /// Update the server's agent (the progress chip; Retry on failure),
+    /// then read again.
+    fn update_agent(&mut self, cx: &mut Context<Self>) {
+        let Source::Remote(inst) = self.src.clone() else { return };
+        let me = cx.entity().downgrade();
+        let me2 = me.clone();
+        self.job.update(cx, |job, cx| {
+            job.set_label(format!("Updating the server agent on {}", inst.name));
+            job.set_retry(Rc::new(move |cx: &mut App| {
+                me.update(cx, |p, cx| p.update_agent(cx)).ok();
+            }));
+            job.start(move |sink| crate::remote::deploy(&inst, &sink), cx)
+        });
+        let watch = cx.observe(&self.job, move |p, job, cx| {
+            if matches!(job.read(cx).state(), crate::jobs::JobState::Done(_)) {
+                p.live_err = None;
+                p.start(cx);
+                p.read_day(cx);
+            }
+            cx.notify();
+        });
+        let _ = me2;
+        self._watch = Some(watch);
+        cx.notify();
+    }
+
     fn read_day(&mut self, cx: &mut Context<Self>) {
         let src = self.src.clone();
         let task = cx.spawn(async move |this, cx| {
@@ -252,12 +295,37 @@ struct Chart {
 }
 
 /// A round top for a chart's scale: 1, 2 or 5 times a power of ten.
+/// A chart's top: the smallest of 1, 2, 4, 5 × 10^n at or above `v`, so
+/// its half (the middle grid line) is round too (0.5, 1, 2, 2.5).
 fn nice(v: f32) -> f32 {
     if v <= 0. {
         return 1.;
     }
     let p = 10f32.powf(v.log10().floor());
-    [1., 2., 5., 10.].iter().map(|m| m * p).find(|c| *c >= v).unwrap_or(10. * p)
+    [1., 2., 4., 5., 10.].iter().map(|m| m * p).find(|c| *c >= v * 0.9999).unwrap_or(10. * p)
+}
+
+/// Memory's top: the total rounded up to a power of two (31 GB → 32, 7 → 8).
+fn nice_memory(total: f32) -> f32 {
+    let mut t = 1.;
+    while t < total * 0.999 {
+        t *= 2.;
+    }
+    t
+}
+
+/// A scale label: as many decimals as the middle line needs, so the three
+/// labels are always distinct (0, 0.25, 0.5; 0, 1, 2).
+pub(crate) fn tick(v: f32, max: f32) -> String {
+    if v == 0. {
+        return "0".into();
+    }
+    let mid = max / 2.;
+    let decimals = (0..=2).find(|d| {
+        let f = 10f32.powi(*d);
+        ((mid * f).round() - mid * f).abs() < 1e-3
+    });
+    format!("{v:.*}", decimals.unwrap_or(2) as usize)
 }
 
 fn mb(v: f64) -> f32 {
@@ -278,13 +346,14 @@ fn charts(points: &[Sample]) -> Vec<Chart> {
     let rx = col(&|s| mb(s.rx));
     let tx = col(&|s| mb(s.tx));
     let io = col(&|s| mb(s.io.unwrap_or(0.)));
+    // Rates keep a floor of 1 MB/s, so a quiet line is not stretched.
     let io_max = nice(peak(&io).max(1.));
     vec![
         Chart { title: "Processor", values: col(&|s| s.cpu), max: 100., fmt: |v| format!("{v:.0} %"), axis: |v| format!("{v:.0}"), high: last.is_some_and(|s| s.cpu_high()) },
-        Chart { title: "Memory", values: col(&|s| gb(s.mem_used)), max: mem_total, fmt: |v| format!("{v:.1} GB"), axis: |v| if v.fract() == 0. { format!("{v:.0}") } else { format!("{v:.1}") }, high: last.is_some_and(|s| s.mem_high()) },
+        Chart { title: "Memory", values: col(&|s| gb(s.mem_used)), max: nice_memory(mem_total), fmt: |v| format!("{v:.1} GB"), axis: |v| format!("{v}"), high: last.is_some_and(|s| s.mem_high()) },
         Chart { title: "Processor load", max: nice(peak(&load).max(cores)), values: load, fmt: |v| format!("{v:.2}"), axis: |v| if v.fract() == 0. { format!("{v:.0}") } else { format!("{v:.1}") }, high: last.is_some_and(|s| s.load.unwrap_or(0.) > s.cores as f32) },
-        Chart { title: "Network received", max: nice(peak(&rx).max(0.1)), values: rx, fmt: |v| format!("{v:.1} MB/s"), axis: |v| if v == 0. || (v >= 1. && v.fract() == 0.) { format!("{v:.0}") } else { format!("{v:.1}") }, high: false },
-        Chart { title: "Network sent", max: nice(peak(&tx).max(0.1)), values: tx, fmt: |v| format!("{v:.1} MB/s"), axis: |v| if v == 0. || (v >= 1. && v.fract() == 0.) { format!("{v:.0}") } else { format!("{v:.1}") }, high: false },
+        Chart { title: "Network received", max: nice(peak(&rx).max(1.)), values: rx, fmt: |v| format!("{v:.1} MB/s"), axis: |v| if v == 0. || (v >= 1. && v.fract() == 0.) { format!("{v:.0}") } else { format!("{v:.1}") }, high: false },
+        Chart { title: "Network sent", max: nice(peak(&tx).max(1.)), values: tx, fmt: |v| format!("{v:.1} MB/s"), axis: |v| if v == 0. || (v >= 1. && v.fract() == 0.) { format!("{v:.0}") } else { format!("{v:.1}") }, high: false },
         // Disk activity is high when it runs near its own peak for the
         // range and that peak is real work (over 50 MB/s).
         Chart { title: "Disk activity", high: io.last().is_some_and(|v| *v >= 50. && *v >= io_max * 0.8), max: io_max, values: io, fmt: |v| format!("{v:.0} MB/s"), axis: |v| format!("{v:.0}") },
@@ -355,7 +424,7 @@ impl StatsPage {
             },
         )
         .size_full();
-        let axis = |f: f32| div().text_size(px(10.5)).text_color(theme.muted_foreground).font_features(ui::tabular()).child((c.axis)(c.max * f));
+        let axis = |f: f32| div().text_size(px(10.5)).text_color(theme.muted_foreground).font_features(ui::tabular()).child(tick(c.max * f, c.max));
         let tip = hover.map(|k| {
             let at = if self.range == Range::Live {
                 let ago = times.last().copied().unwrap_or(0) - times.get(k).copied().unwrap_or(0);
@@ -382,6 +451,7 @@ impl StatsPage {
         let empty = n < 2;
         let plot_bounds = bounds;
         ui::panel(&theme)
+            .flex_1()
             .gap_1()
             .min_w_0()
             .child(
@@ -518,12 +588,64 @@ impl Render for StatsPage {
 
         let latest = self.live.last().cloned().or_else(|| self.points().last().cloned());
         let mut col = v_flex().gap(px(10.)).child(header);
-        if let (Some(e), true) = (&self.live_err, self.live.is_empty()) {
-            col = col.child(ui::panel(&theme).child(ui::outcome(&theme, ui::Tone::Warn, format!("The statistics could not be read.\n{e}"))));
+        let page = |col: Div| v_flex().id("stats-page").flex_1().min_w_0().h_full().overflow_y_scroll().p_4().bg(theme.muted).child(col);
+        // Nothing read: one notice in the page and nothing else (no empty
+        // boxes, no endless "Reading…").
+        if latest.is_none() {
+            let busy = self.job.read(cx).is_running();
+            col = col.child(match &self.live_err {
+                Some(e) if e == crate::remote::AGENT_OLD => ui::notice_with(
+                    &theme,
+                    ui::Tone::Warn,
+                    "The agent on this server is out of date.\nUpdate it to read the server's statistics. Nothing else on the server changes.",
+                    Some(crate::ui::button("stats-agent-update").primary().label("Update agent").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.update_agent(cx))).into_any_element()),
+                ),
+                Some(e) => ui::notice_with(
+                    &theme,
+                    ui::Tone::Bad,
+                    format!("The statistics could not be read.\n{e}"),
+                    Some(crate::ui::button("stats-retry").outline().label("Retry").on_click(cx.listener(|p, _, _, cx| {
+                        p.live_err = None;
+                        p.start(cx);
+                        p.read_day(cx);
+                        cx.notify();
+                    })).into_any_element()),
+                ),
+                // Loading: the page's final layout with placeholders.
+                None => {
+                    let fig = |i: usize, name: &'static str| {
+                        ui::panel(&theme)
+                            .flex_1()
+                            .gap_0()
+                            .child(div().text_sm().text_color(theme.muted_foreground).child(name))
+                            .child(div().h(px(30.)).flex().items_center().child(ui::skeleton_block(&theme, format!("fig-{i}"), px(70.).into(), 18.)))
+                            .child(div().mt(px(7.)).child(ui::skeleton_block(&theme, format!("figbar-{i}"), relative(1.).into(), 5.)))
+                            .child(div().mt(px(5.)).child(ui::skeleton_line(&theme, format!("figline-{i}"), 110.)))
+                            .into_any_element()
+                    };
+                    let figs = ["Processor", "Memory", "Disk", "Running for"].into_iter().enumerate().map(|(i, n)| fig(i, n)).collect();
+                    let chart = |i: usize, title: &'static str| {
+                        ui::panel(&theme)
+                            .flex_1()
+                            .gap_1()
+                            .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                            .child(ui::skeleton_block(&theme, format!("plot-{i}"), relative(1.).into(), 96.))
+                            .child(div().h(px(15.)))
+                            .into_any_element()
+                    };
+                    let charts = ["Processor", "Memory", "Processor load", "Network received", "Network sent", "Disk activity"].into_iter().enumerate().map(|(i, t)| chart(i, t)).collect();
+                    v_flex()
+                        .gap(px(10.))
+                        .child(grid(fig_cols, figs))
+                        .child(grid(chart_cols, charts))
+                        .child(ui::skeleton_card(&theme, "stats-svc", Some("Services"), &["", "", ""]))
+                }
+            });
+            return page(col);
         }
         if let Some(Err(e)) = &self.hist {
             if self.range != Range::Live {
-                col = col.child(ui::panel(&theme).child(ui::outcome(&theme, ui::Tone::Warn, format!("The history could not be read.\n{e}"))));
+                col = col.child(ui::notice(&theme, ui::Tone::Warn, format!("The history could not be read.\n{e}")));
             }
         }
 
@@ -562,16 +684,23 @@ impl Render for StatsPage {
         let charts: Vec<AnyElement> = charts(&points).into_iter().enumerate().map(|(i, c)| self.chart(i, c, &times, cx)).collect();
         col = col.child(grid(chart_cols, charts));
 
-        // Services and Database.
-        let services = latest.as_ref().map(|s| services_panel(&theme, s)).unwrap_or_else(|| ui::panel(&theme));
-        let db = database_panel(&theme, latest.as_ref(), &self.day);
-        col = col.child(if side_by_side {
-            h_flex().gap(px(10.)).items_start().child(div().flex_grow(1.6).flex_basis(px(0.)).min_w_0().child(services)).child(div().flex_grow(1.).flex_basis(px(0.)).min_w_0().child(db)).into_any_element()
-        } else {
-            v_flex().gap(px(10.)).child(services).child(db).into_any_element()
+        // Services and Database: each only with something in it.
+        let services = latest.as_ref().filter(|s| !s.services.is_empty()).map(|s| services_panel(&theme, s));
+        let db = latest.as_ref().filter(|s| s.db.is_some()).map(|_| database_panel(&theme, latest.as_ref(), &self.day));
+        col = col.child(match (services, db) {
+            (Some(services), Some(db)) if side_by_side => {
+            // Siblings in a row share its height.
+            h_flex()
+                .gap(px(10.))
+                .items_stretch()
+                .child(div().flex_grow(1.6).flex_basis(px(0.)).min_w_0().flex().flex_col().child(services.flex_1()))
+                .child(div().flex_grow(1.).flex_basis(px(0.)).min_w_0().flex().flex_col().child(db.flex_1()))
+                .into_any_element()
+            }
+            (services, db) => v_flex().gap(px(10.)).children(services).children(db).into_any_element(),
         });
 
-        v_flex().id("stats-page").flex_1().min_w_0().h_full().overflow_y_scroll().p_4().bg(theme.muted).child(col)
+        page(col)
     }
 }
 
@@ -687,4 +816,24 @@ fn database_panel(theme: &gpui_kit::component::Theme, latest: Option<&Sample>, d
         None => "None".into(),
     };
     p.child(fact("Last backup", last))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{nice, nice_memory, tick};
+
+    #[test]
+    fn scales_are_round_and_labels_distinct() {
+        assert_eq!(nice_memory(31.), 32.);
+        assert_eq!(nice_memory(7.), 8.);
+        assert_eq!(nice(0.3), 0.4);
+        assert_eq!(nice(1.), 1.);
+        assert_eq!(nice(130.), 200.);
+        let labels = |max: f32| [tick(0., max), tick(max / 2., max), tick(max, max)];
+        assert_eq!(labels(1.), ["0", "0.5", "1.0"]);
+        assert_eq!(labels(32.), ["0", "16", "32"]);
+        assert_eq!(labels(5.), ["0", "2.5", "5.0"]);
+        assert_eq!(labels(0.4), ["0", "0.2", "0.4"]);
+        assert_eq!(labels(100.), ["0", "50", "100"]);
+    }
 }

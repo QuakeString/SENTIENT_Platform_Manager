@@ -12,6 +12,7 @@
 //! fails; a job that succeeds shows its last message in the strip for a few
 //! seconds, then the strip goes.
 
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::{ActiveTheme, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex};
@@ -21,8 +22,8 @@ use gpui_kit::*;
 use crate::jobs::{Job, JobState};
 use crate::ui::{self, Tone};
 
-/// How long a finished job's message stays in the strip.
-const SHOW_DONE: Duration = Duration::from_secs(5);
+/// How long "Done" stays in the strip.
+const SHOW_DONE: Duration = Duration::from_secs(4);
 
 /// The chip's smallest form: spinner and time, kept free in the top bar
 /// whether or not a job runs.
@@ -32,7 +33,42 @@ const WITH_NAME: f32 = 300.;
 /// Details shows from this much.
 const WITH_DETAILS: f32 = 190.;
 
+/// Something that happened, for the bell: a job that failed, a backup or
+/// update that finished. Kept across restarts until cleared.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct Event {
+    pub id: u64,
+    pub failed: bool,
+    pub title: String,
+    /// One line under the title.
+    pub detail: String,
+    /// The full text the details dialog shows (error and output lines).
+    pub text: String,
+    /// Unix seconds.
+    pub at: i64,
+    pub read: bool,
+    /// The instance it belongs to (None: this computer), its name and colour.
+    #[serde(default)]
+    pub instance: Option<String>,
+    #[serde(default)]
+    pub instance_name: String,
+    #[serde(default)]
+    pub color: String,
+}
+
+fn events_path() -> std::path::PathBuf {
+    crate::updates::prefs_dir().join("notifications.json")
+}
+
+fn load_events() -> Vec<Event> {
+    std::fs::read_to_string(events_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
 pub struct Strip {
+    /// The bell's events, newest first (saved).
+    pub events: Vec<Event>,
+    /// Retry for events of this run (not kept across restarts).
+    retries: std::collections::HashMap<u64, Rc<dyn Fn(&mut App)>>,
     /// The top bar is light (dark text): the chip's inset is fainter.
     pub light_bar: std::cell::Cell<bool>,
     /// The window's width: below 900 the chip shows only its spinner, time
@@ -55,7 +91,7 @@ impl Global for StripSlot {}
 
 /// The strip for this window (the manager makes it once).
 pub fn install(cx: &mut App) -> Entity<Strip> {
-    let strip = cx.new(|_| Strip { light_bar: std::cell::Cell::new(false), window_w: std::cell::Cell::new(1100.), slot_w: std::cell::Cell::new(400.), job: None, label: None, finished_at: None, opened_for_failure: false, _observe: None, _hide: None });
+    let strip = cx.new(|_| Strip { events: load_events(), retries: Default::default(), light_bar: std::cell::Cell::new(false), window_w: std::cell::Cell::new(1100.), slot_w: std::cell::Cell::new(400.), job: None, label: None, finished_at: None, opened_for_failure: false, _observe: None, _hide: None });
     cx.set_global(StripSlot(strip.clone()));
     strip
 }
@@ -82,16 +118,38 @@ impl Strip {
         let state = job.read(cx).state().clone();
         match state {
             JobState::Running => {}
-            JobState::Failed(_) if !self.opened_for_failure => {
+            JobState::Failed(m) if !self.opened_for_failure => {
+                // The chip goes; the details open once, and the failure stays
+                // in the bell (red count) until its entry is opened.
                 self.opened_for_failure = true;
                 self.finished_at = Some(Instant::now());
-                let label = self.label.clone();
-                cx.defer(move |cx| open_details(job, label, cx));
+                let j = job.read(cx);
+                let mut text = m.to_string();
+                let lines: Vec<String> = j.steps().iter().map(|s| format!("▸ {s}")).chain(j.log().iter().map(|l| l.to_string())).collect();
+                if !lines.is_empty() && !text.contains(crate::remote::DETAILS) {
+                    text = format!("{text}{}{}", crate::remote::DETAILS, lines.join("\n"));
+                }
+                let label = self.label.clone().unwrap_or_else(|| "A job".into());
+                let id = self.push_event(j.instance(), true, format!("{label} failed"), crate::remote::split_failure(&m).0, text);
+                if let Some(r) = j.retry() {
+                    self.retries.insert(id, r);
+                }
+                self.job = None;
+                self._observe = None;
+                let lbl = Some(label);
+                cx.defer(move |cx| open_details(job, lbl, cx));
             }
-            JobState::Done(_) if self.finished_at.is_none() => {
+            JobState::Done(m) if self.finished_at.is_none() => {
                 self.finished_at = Some(Instant::now());
+                // Backups, restores, updates and takeovers that finish are
+                // worth a line in the bell; a start or stop is not.
+                if let Some(l) = self.label.clone().filter(|l| ["Backing up", "Restoring", "Updating", "Taking over", "Moving", "Changing the database"].iter().any(|w| l.starts_with(w))) {
+                    let inst = job.read(cx).instance();
+                    self.push_event(inst, false, format!("{l}: done"), m.to_string(), m.to_string());
+                }
                 self._hide = Some(cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(SHOW_DONE).await;
+                    // ("Done" for a few seconds, then the chip goes.)
                     this.update(cx, |s, cx| {
                         if s.job.as_ref().is_some_and(|j| matches!(j.read(cx).state(), JobState::Done(_))) {
                             s.job = None;
@@ -119,6 +177,77 @@ fn open_details(job: Entity<Job>, label: Option<SharedString>, cx: &mut App) {
 }
 
 impl Strip {
+    fn push_event(&mut self, inst: Option<(String, String, String)>, failed: bool, title: String, detail: String, text: String) -> u64 {
+        let id = self.events.iter().map(|e| e.id).max().unwrap_or(0) + 1;
+        let (instance, instance_name, color) = match inst {
+            Some((i, n, c)) => (Some(i), n, c),
+            None => (None, "This computer".into(), crate::remote::LOCAL_COLOR.into()),
+        };
+        self.events.insert(0, Event { id, failed, title, detail: detail.lines().next().unwrap_or("").to_string(), text, at: chrono::Utc::now().timestamp(), read: false, instance, instance_name, color });
+        self.events.truncate(50);
+        self.save();
+        id
+    }
+
+    fn save(&self) {
+        if let Some(dir) = events_path().parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(events_path(), serde_json::to_string_pretty(&self.events).unwrap_or_default());
+    }
+
+    /// Unread events (the bell's count; red when one is a failure).
+    pub fn unread(&self) -> (usize, bool) {
+        let u: Vec<&Event> = self.events.iter().filter(|e| !e.read).collect();
+        (u.len(), u.iter().any(|e| e.failed))
+    }
+
+    /// Open an event's details and mark it read.
+    pub fn open_event(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(e) = self.events.iter_mut().find(|e| e.id == id) else { return };
+        e.read = true;
+        let (title, text) = (e.title.clone(), e.text.clone());
+        let retry = self.retries.get(&id).cloned();
+        self.save();
+        cx.defer(move |cx| crate::ui::show_error_with(title, text, retry, cx));
+        cx.notify();
+    }
+
+    pub fn mark_all_read(&mut self, cx: &mut Context<Self>) {
+        for e in &mut self.events {
+            e.read = true;
+        }
+        self.save();
+        cx.notify();
+    }
+
+    pub fn clear(&mut self, id: Option<u64>, cx: &mut Context<Self>) {
+        match id {
+            Some(id) => self.events.retain(|e| e.id != id),
+            None => self.events.clear(),
+        }
+        self.save();
+        cx.notify();
+    }
+
+    /// Screens: canned events (SPM_DEBUG_EVENTS=n).
+    #[cfg(debug_assertions)]
+    pub fn debug_events(&mut self, n: usize) {
+        let now = chrono::Utc::now().timestamp();
+        let samples = [
+            (true, "Stopping ClickHouse failed", "ClickHouse did not stop within 30 seconds.", Some("plantb"), "Plant B server", "#6b4fa0"),
+            (false, "Backing up: done", "Backup finished and checked: sentient-2026-11-15-0200, 5.0 GB.", None, "This computer", "#187074"),
+            (true, "Updating the server agent failed", "The agent could not be put in place at /opt/sentient-platform-manager (as administrator).", Some("iiot"), "INVENIA IIoT", "#1f9d4d"),
+            (false, "Updating SENTIENT: done", "SENTIENT 4.4.0.2 is running.", Some("plantb"), "Plant B server", "#6b4fa0"),
+        ];
+        self.events = (0..n)
+            .map(|i| {
+                let (failed, t, d, inst, name, color) = samples[i % samples.len()];
+                Event { id: i as u64 + 1, failed, title: t.into(), detail: d.into(), text: d.into(), at: now - (i as i64) * 1900 - 60, read: i >= 2, instance: inst.map(String::from), instance_name: name.into(), color: color.into() }
+            })
+            .collect();
+    }
+
     /// A job is shown in the top bar.
     pub fn active(&self) -> bool {
         self.job.is_some()
@@ -178,7 +307,7 @@ impl Render for Strip {
                 };
                 (Tone::Neutral, name, true)
             }
-            JobState::Done(m) => (Tone::Good, m.to_string(), false),
+            JobState::Done(_) => (Tone::Good, "Done".to_string(), false),
             JobState::Failed(m) => (Tone::Bad, crate::remote::split_failure(m).0, false),
             JobState::Idle => return div().into_any_element(),
         };
@@ -260,7 +389,8 @@ impl Render for Strip {
     }
 }
 
-/// What a job did: its state, its steps and every output line, to copy.
+/// What a job did: its state, its steps and every output line, to copy;
+/// Retry when it failed and can run again.
 pub struct JobDetails {
     job: Entity<Job>,
     _observe: Subscription,
@@ -289,6 +419,7 @@ impl Render for JobDetails {
             }
             JobState::Idle => div(),
         };
+        let retry = matches!(job.state(), JobState::Failed(_)).then(|| job.retry()).flatten();
         let lines: Vec<SharedString> = job.steps().iter().map(|s| SharedString::from(format!("▸ {s}"))).chain(job.log().iter().cloned()).collect();
         let text = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         v_flex()
@@ -312,6 +443,12 @@ impl Render for JobDetails {
                     .gap_2()
                     .justify_end()
                     .child(crate::ui::button("job-details-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))))
+                    .when_some(retry.clone(), |r, retry| {
+                        r.child(crate::ui::button("job-details-retry").outline().label("Retry").on_click(move |_, _, cx| {
+                            crate::modal::close(cx);
+                            retry(cx);
+                        }))
+                    })
                     .child(crate::ui::button("job-details-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx))),
             )
     }
