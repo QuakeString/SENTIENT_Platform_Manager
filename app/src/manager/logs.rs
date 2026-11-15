@@ -3,6 +3,7 @@
 //! Logs: the tail of the platform's log, refreshed while "Follow" is on,
 //! filtered by a search term, and exportable to a file.
 
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::component::{
@@ -117,56 +118,91 @@ impl Render for LogsPage {
             .filter(|line| needle.is_empty() || line.to_lowercase().contains(&needle))
             .map(|line| SharedString::from(line.to_string()))
             .collect();
-        let shown = lines.len();
-        page.child(
-            h_flex()
-                .gap_3()
-                .items_center()
-                .child(div().w_80().child(Input::new(&self.filter)))
-                .child(
-                    Checkbox::new("follow")
-                        .label("Follow")
-                        .checked(self.follow)
-                        .on_change(cx.listener(|this, value: &bool, _, cx| {
-                            this.follow = *value;
-                            if this.follow {
-                                this.start_polling(cx);
-                            }
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("refresh")
-                        .outline()
-                        .label("Refresh")
-                        .on_click(cx.listener(|this, _, _, cx| this.start_polling(cx))),
-                )
-                .child(
-                    Button::new("export")
-                        .outline()
-                        .label("Export…")
-                        .on_click(cx.listener(|this, _, _, cx| this.export(cx))),
-                )
-                .child(div().flex_1())
-                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(if shown == 1 { "1 line".to_string() } else { format!("{shown} lines") })),
-        )
+        let this = cx.entity().downgrade();
+        let (t1, t2, t3) = (this.clone(), this.clone(), this);
+        page.child(toolbar(
+            &theme,
+            "",
+            &self.filter,
+            self.follow,
+            lines.len(),
+            Rc::new(move |on, _, cx| {
+                t1.update(cx, |this, cx| {
+                    this.follow = on;
+                    if on {
+                        this.start_polling(cx);
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }),
+            Rc::new(move |_, cx| {
+                t2.update(cx, |this, cx| this.start_polling(cx)).ok();
+            }),
+            Rc::new(move |_, cx| {
+                t3.update(cx, |this, cx| this.export(cx)).ok();
+            }),
+        ))
         .children(self.status.clone().map(|s| div().text_sm().child(s)))
-        .child(
-            ui::panel(&theme)
-                .id("log-lines")
-                .h(px(460.))
-                .track_scroll(&self.scroll)
-                .overflow_y_scroll()
-                .gap_0()
-                .font_family(theme.mono_font_family.clone())
-                .text_size(px(13.))
-                // The page holds the last TAIL lines at most, and only the
-                // start of each is read for its level, so every line can be
-                // coloured without a virtual list (which would also stop long
-                // lines from wrapping). Export saves the plain text.
-                .children(lines.into_iter().map(|line| coloured_line(&theme, line))),
-        )
+        .child(log_box(&theme, "log-lines", &self.scroll, lines))
     }
+}
+
+/// The log toolbar: filter, Follow, Refresh, Export and the line count.
+/// The same on this computer and on a remote server (`id` keeps their ids apart).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn toolbar(
+    theme: &gpui_kit::component::Theme,
+    id: &str,
+    filter: &Entity<InputState>,
+    follow: bool,
+    shown: usize,
+    on_follow: Rc<dyn Fn(bool, &mut Window, &mut App)>,
+    on_refresh: Rc<dyn Fn(&mut Window, &mut App)>,
+    on_export: Rc<dyn Fn(&mut Window, &mut App)>,
+) -> Div {
+    h_flex()
+        .gap_3()
+        .items_center()
+        .flex_wrap()
+        .child(div().w_80().child(Input::new(filter)))
+        .child(Checkbox::new(SharedString::from(format!("{id}follow"))).label("Follow").checked(follow).on_change(move |value: &bool, window, cx| on_follow(*value, window, cx)))
+        .child(Button::new(SharedString::from(format!("{id}refresh"))).outline().label("Refresh").on_click(move |_, window, cx| on_refresh(window, cx)))
+        .child(Button::new(SharedString::from(format!("{id}export"))).outline().label("Export…").on_click(move |_, window, cx| on_export(window, cx)))
+        .child(div().flex_1())
+        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(if shown == 1 { "1 line".to_string() } else { format!("{shown} lines") }))
+}
+
+/// The log lines in a scrolling panel, each coloured by its level.
+pub(crate) fn log_box(theme: &gpui_kit::component::Theme, id: &'static str, scroll: &ScrollHandle, lines: Vec<SharedString>) -> Stateful<Div> {
+    ui::panel(theme)
+        .id(id)
+        .h(px(460.))
+        .track_scroll(scroll)
+        .overflow_y_scroll()
+        .gap_0()
+        .font_family(theme.mono_font_family.clone())
+        .text_size(px(13.))
+        // The page holds the last TAIL lines at most, and only the start of
+        // each is read for its level, so every line can be coloured without
+        // a virtual list (which would also stop long lines from wrapping).
+        // Export saves the plain text.
+        .children(lines.into_iter().map(|line| coloured_line(theme, line)))
+}
+
+/// Save log text to a file the user picks; `done` gets what happened.
+pub(crate) fn export_text(text: String, cx: &mut App, done: impl FnOnce(String, &mut App) + 'static) {
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(std::path::PathBuf::from).unwrap_or_default();
+    let rx = cx.prompt_for_new_path(&home, Some("sentient.log"));
+    cx.spawn(async move |cx| {
+        let Ok(Ok(Some(path))) = rx.await else { return };
+        let message = match std::fs::write(&path, text) {
+            Ok(()) => format!("Saved to {}", path.display()),
+            Err(e) => format!("Could not save: {e}"),
+        };
+        cx.update(|cx| done(message, cx));
+    })
+    .detach();
 }
 
 /// One log line: the timestamp muted, the rest by its level (ERROR red, WARN

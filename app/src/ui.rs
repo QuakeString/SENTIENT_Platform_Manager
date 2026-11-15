@@ -474,3 +474,21 @@ pub fn radio_card(theme: &Theme, id: impl Into<ElementId>, title: impl Into<Shar
                 .child(div().text_sm().text_color(theme.muted_foreground).child(desc.into())),
         )
 }
+
+/// The Services panel's rows: state, name and detail in fixed columns.
+/// The same on this computer and on a remote server.
+pub fn service_rows(theme: &Theme, services: impl IntoIterator<Item = (SharedString, bool, bool, SharedString)>) -> Vec<Div> {
+    services
+        .into_iter()
+        .map(|(name, running, starting, detail)| {
+            let (tone, label) = if running { (Tone::Good, "Running") } else if starting { (Tone::Warn, "Starting") } else { (Tone::Bad, "Stopped") };
+            gpui_kit::component::h_flex()
+                .gap_3()
+                .text_sm()
+                .items_center()
+                .child(gpui_kit::component::h_flex().w(px(96.)).flex_shrink_0().child(pill(theme, tone, label)))
+                .child(div().w(px(220.)).flex_shrink_0().text_ellipsis().child(name))
+                .child(div().flex_1().min_w_0().text_ellipsis().text_color(theme.muted_foreground).child(detail))
+        })
+        .collect()
+}

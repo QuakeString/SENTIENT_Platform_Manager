@@ -10,7 +10,7 @@ use gpui_kit::component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     menu::{DropdownMenu as _, PopupMenuItem},
-    input::{Input, InputEvent, InputState},
+    input::{InputEvent, InputState},
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -69,6 +69,8 @@ pub struct RemotePages {
     offer: Read<Option<crate::updates::Offer>>,
     /// The versions "Other version" lists.
     versions: Read<Vec<crate::online::Version>>,
+    /// Logs: where Export saved the text, or why it could not.
+    log_note: Option<SharedString>,
     /// Platform settings: what "Check" found for a file path on the server.
     file_checks: std::collections::HashMap<String, Read<bool>>,
     /// A version picked under "Other version", waiting for its confirmation.
@@ -120,6 +122,7 @@ impl RemotePages {
             versions: Read::Loading,
             pick: None,
             file_checks: Default::default(),
+            log_note: None,
             updates,
             filter,
             follow: true,
@@ -318,24 +321,7 @@ impl RemotePages {
             Read::Loading => p = p.child(div().text_sm().text_color(theme.muted_foreground).child("Reading…")),
             Read::Failed(e) => p = p.child(ui::outcome(theme, Tone::Bad, e.clone())),
             Read::Got(list) => {
-                for s in list {
-                    let (tone, label) = if s.running {
-                        (Tone::Good, "Running")
-                    } else if s.starting {
-                        (Tone::Warn, "Starting")
-                    } else {
-                        (Tone::Bad, "Stopped")
-                    };
-                    p = p.child(
-                        h_flex()
-                            .gap_3()
-                            .text_sm()
-                            .items_center()
-                            .child(h_flex().w(px(90.)).child(ui::pill(theme, tone, label)))
-                            .child(div().w(px(220.)).child(s.name.clone()))
-                            .child(div().flex_1().min_w_0().text_ellipsis().text_color(theme.muted_foreground).child(s.detail.clone())),
-                    );
-                }
+                p = p.children(ui::service_rows(theme, list.iter().map(|s| (s.name.clone().into(), s.running, s.starting, s.detail.clone().into()))));
             }
         }
         p
@@ -456,47 +442,57 @@ impl RemotePages {
             .child(self.services_panel(&theme))
     }
 
+    /// The same toolbar and log box as this computer's Logs.
     fn logs_page(&self, cx: &mut Context<Self>) -> Div {
+        use std::rc::Rc;
         let theme = cx.theme().clone();
         let needle = self.filter.read(cx).value().to_lowercase();
-        let body: AnyElement = match &self.logs {
-            Read::Loading => div().text_sm().text_color(theme.muted_foreground).child("Reading the log…").into_any_element(),
-            Read::Failed(e) => ui::outcome(&theme, Tone::Bad, e.clone()).into_any_element(),
-            Read::Got(t) => {
-                let lines: Vec<SharedString> = t.lines().filter(|l| needle.is_empty() || l.to_lowercase().contains(&needle)).map(|l| SharedString::from(l.to_string())).collect();
-                div()
-                    .id("remote-log")
-                    .track_scroll(&self.scroll)
-                    .h(px(460.))
-                    .overflow_y_scroll()
-                    .p_2()
-                    .rounded(theme.radius)
-                    .bg(theme.muted)
-                    .text_size(px(13.))
-                    .font_family(theme.mono_font_family.clone())
-                    .children(lines.into_iter().map(|l| div().child(l)))
-                    .into_any_element()
-            }
+        let lines: Vec<SharedString> = match &self.logs {
+            Read::Got(t) => t.lines().filter(|l| needle.is_empty() || l.to_lowercase().contains(&needle)).map(|l| SharedString::from(l.to_string())).collect(),
+            _ => Vec::new(),
         };
-        ui::panel(&theme)
-            .child(
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(div().w_80().child(Input::new(&self.filter)))
-                    .child(
-                        Button::new("r-follow")
-                            .label(if self.follow { "Following" } else { "Follow" })
-                            .when(self.follow, |b| b.primary())
-                            .when(!self.follow, |b| b.outline())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.follow = !this.follow;
-                                cx.notify();
-                            })),
-                    )
-                    .child(Button::new("r-logs-again").ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(|this, _, _, cx| this.reload(cx)))),
-            )
-            .child(body)
+        let this = cx.entity().downgrade();
+        let (t1, t2, t3) = (this.clone(), this.clone(), this);
+        let text = match &self.logs {
+            Read::Got(t) => t.clone(),
+            _ => String::new(),
+        };
+        let toolbar = crate::manager::logs::toolbar(
+            &theme,
+            "r-",
+            &self.filter,
+            self.follow,
+            lines.len(),
+            Rc::new(move |on, _, cx| {
+                t1.update(cx, |p, cx| {
+                    p.follow = on;
+                    cx.notify();
+                })
+                .ok();
+            }),
+            Rc::new(move |_, cx| {
+                t2.update(cx, |p, cx| p.reload(cx)).ok();
+            }),
+            Rc::new(move |_, cx| {
+                let t3 = t3.clone();
+                crate::manager::logs::export_text(text.clone(), cx, move |message, cx| {
+                    t3.update(cx, |p, cx| {
+                        p.log_note = Some(message.into());
+                        cx.notify();
+                    })
+                    .ok();
+                });
+            }),
+        );
+        v_flex()
+            .gap_4()
+            .child(toolbar)
+            .children(self.log_note.clone().map(|s| div().text_sm().child(s)))
+            .child(match &self.logs {
+                Read::Loading => ui::panel(&theme).child(div().text_sm().text_color(theme.muted_foreground).child("Reading the log…")).into_any_element(),
+                Read::Failed(e) => ui::outcome(&theme, Tone::Bad, e.clone()).into_any_element(),
+                Read::Got(_) => crate::manager::logs::log_box(&theme, "remote-log", &self.scroll, lines).into_any_element(),
+            })
     }
 
     /// The same layout as this computer's Update: the channel, then one

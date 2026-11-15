@@ -9,7 +9,7 @@ mod backup;
 mod control;
 mod gateway;
 mod instances;
-mod logs;
+pub(crate) mod logs;
 pub(crate) mod migration;
 mod remote_pages;
 mod repair;

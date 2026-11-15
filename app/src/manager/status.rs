@@ -663,18 +663,8 @@ impl Render for StatusPage {
         .child(
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Services"))
-                .children(services.into_iter().map(|svc| {
-                    h_flex()
-                        .gap_3()
-                        .text_sm()
-                        .child(ui::pill(
-                            &theme,
-                            if svc.running { Tone::Good } else if svc.starting { Tone::Warn } else { Tone::Bad },
-                            if svc.running { "Running" } else if svc.starting { "Starting" } else { "Stopped" },
-                        ))
-                        .child(div().w_48().child(svc.name))
-                        .child(div().text_color(theme.muted_foreground).child(svc.detail))
-                })),
+                .gap_2()
+                .children(ui::service_rows(&theme, services.into_iter().map(|svc| (svc.name.into(), svc.running, svc.starting, svc.detail.into())))),
         )
         .child(self.db_panel(&theme, record, cx))
         .child(self.gateway_card(&theme, cx))

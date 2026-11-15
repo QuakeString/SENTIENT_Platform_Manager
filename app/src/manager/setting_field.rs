@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use gpui_kit::component::{
     ActiveTheme, h_flex,
-    button::{Button, ButtonVariants as _},
+    button::Button,
     input::{Input, InputState},
 };
 use gpui_kit::prelude::FluentBuilder as _;
