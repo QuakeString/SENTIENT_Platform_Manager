@@ -337,7 +337,7 @@ impl StatusPage {
             "The Platform Manager checks it can reach this instance's databases, then manages it from now on: status, start and stop, logs, updates, backups and the rest. \
              Nothing is reinstalled, moved or restarted. {}",
             if candidate.record.stack.external.is_some() {
-                "It keeps running from its own compose file."
+                "It runs from a compose file the Platform Manager did not write."
             } else if candidate.sets_admin_password {
                 "The Platform Manager does not know the PostgreSQL admin (postgres) password, which updates need: it sets a new one and keeps it in its secret store. Anything else that signs in to PostgreSQL as postgres will need the new password."
             } else {
@@ -543,7 +543,7 @@ impl Render for StatusPage {
                     Some(ext) => {
                         let gone = st.vanished_files();
                         let files: Vec<&String> = ext.files.iter().filter(|f| !gone.contains(f)).collect();
-                        ui::fact(&theme, "Runs from", format!("its own compose file ({})", files.iter().map(|f| f.as_str()).collect::<Vec<_>>().join(", ")))
+                        ui::fact(&theme, "Runs from", format!("a compose file the Platform Manager did not write ({})", files.iter().map(|f| f.as_str()).collect::<Vec<_>>().join(", ")))
                     }
                     None => ui::fact(&theme, "Installed in", record.install_dir.display().to_string()),
                 }),

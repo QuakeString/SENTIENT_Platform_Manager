@@ -50,13 +50,19 @@ impl<T> Read<T> {
 
 /// sudo on the server wants a password the Platform Manager does not have
 /// (or refused the one it has).
-fn needs_sudo_password(e: &str) -> bool {
+pub(crate) fn needs_sudo_password(e: &str) -> bool {
     e.contains("needs administrator rights") || e.contains("sudo refused") || e.contains("a password is required")
 }
 
 /// Ask for the server's sudo password, keep it like the instance form does
 /// (the secret store, never a log), then run `then`.
+/// Deferred: from a click the window is mid-update, and updating it again
+/// there fails without a word (crate::manager::takeover::open, the same).
 pub(crate) fn ask_sudo_password(inst: Instance, then: std::rc::Rc<dyn Fn(&mut App)>, cx: &mut App) {
+    cx.defer(move |cx| ask_sudo_password_now(inst, then, cx));
+}
+
+fn ask_sudo_password_now(inst: Instance, then: std::rc::Rc<dyn Fn(&mut App)>, cx: &mut App) {
     struct SudoPrompt {
         inst: Instance,
         input: Entity<InputState>,
@@ -128,9 +134,21 @@ pub(crate) enum Preflight {
 
 /// Why a migration cannot start now, in the page, with "Take over the
 /// compose file…" when that is the reason.
+/// A page whose action needs the Platform Manager's own compose file, on a
+/// SENTIENT that runs from someone else's: the same notice as Migration's,
+/// with "Take over the compose file…".
+pub(crate) fn foreign_compose_notice(theme: &gpui_kit::component::Theme, headline: &str, take_over: AnyElement) -> Div {
+    ui::notice_with(
+        theme,
+        Tone::Warn,
+        format!("{headline}\nSENTIENT runs from a compose file the Platform Manager did not write.\nLet the Platform Manager take it over first; the data stays."),
+        Some(take_over),
+    )
+}
+
 pub(crate) fn preflight_notice(theme: &gpui_kit::component::Theme, why: &str, take_over: Option<AnyElement>) -> Div {
     // With the button beside it, the way there needs no words.
-    let why = if take_over.is_some() && why.contains("own compose file") {
+    let why = if take_over.is_some() && (why.contains("did not write") || why.contains("own compose file")) {
         "SENTIENT runs from a compose file the Platform Manager did not write.\nLet the Platform Manager take it over first; the data stays."
     } else {
         why
@@ -1113,6 +1131,11 @@ impl RemotePages {
         let value_of = |env: &str, cx: &App| self.inputs.iter().find(|(e, _)| e == env).map(|(_, i)| i.read(cx).value().trim().to_string()).unwrap_or_default();
         let changed: Vec<String> = self.inputs.iter().filter(|(e, i)| values.get(e).cloned().unwrap_or_default() != i.read(cx).value().trim()).map(|(e, _)| e.clone()).collect();
         let mut col = v_flex().gap_4();
+        // Someone else's compose file: the notice, and Apply stays off.
+        let external = self.status.got().is_some_and(|s| s.external_compose);
+        if external {
+            col = col.child(foreign_compose_notice(&theme, "The settings cannot be changed now.", self.take_over_button("r-set-take-over", busy, cx)));
+        }
         if !changed.is_empty() {
             let mut all = values.clone();
             for (e, _) in &self.inputs {
@@ -1138,7 +1161,7 @@ impl RemotePages {
                         this.inputs.clear();
                         cx.notify();
                     })))
-                    .child(crate::ui::button("r-set-apply").primary().label("Apply").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.apply_settings(all.clone(), cx)))),
+                    .child(crate::ui::button("r-set-apply").primary().label("Apply").disabled(busy || external).on_click(cx.listener(move |this, _, _, cx| this.apply_settings(all.clone(), cx)))),
             );
         }
         // The same tabs, rows and Advanced table as this computer's
@@ -1312,7 +1335,8 @@ impl RemotePages {
                             crate::ui::button("r-migrate")
                                 .primary()
                                 .label(chosen.map(|f| format!("Change to {}", crate::installation::flavor_label(f))).unwrap_or_else(|| "Change database".into()))
-                                .disabled(busy || chosen.is_none() || now.is_none() || self.preflight == Preflight::Checking)
+                                // Off while the preflight says the change cannot be made.
+                                .disabled(busy || chosen.is_none() || now.is_none() || self.preflight != Preflight::Idle)
                                 .loading(self.preflight == Preflight::Checking)
                                 .on_click(cx.listener(|this, _, _, cx| this.check_migration(cx))),
                         )
@@ -1365,7 +1389,9 @@ impl RemotePages {
         let this = cx.entity().downgrade();
         crate::manager::takeover::open(
             false,
-            std::sync::Arc::new(move |compose: Option<String>| remote::takeover_plan(&inst, compose.as_deref())),
+            // An agent too old for the plan is updated first (sudo's
+            // password, when it asks, from the dialog), then asked again.
+            std::sync::Arc::new(move |compose: Option<String>| remote::takeover_plan_updating(&inst, compose.as_deref())),
             std::rc::Rc::new(move |compose: Option<String>, cx: &mut App| {
                 this.update(cx, |p, cx| {
                     let mut args = vec!["take-over-compose".to_string()];
@@ -1378,6 +1404,7 @@ impl RemotePages {
                 })
                 .ok();
             }),
+            Some(self.inst.clone()),
             cx,
         );
     }
