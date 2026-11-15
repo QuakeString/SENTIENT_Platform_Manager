@@ -767,6 +767,10 @@ pub struct RemoteStatus {
     /// Compose files the stack was started with that are gone since.
     #[serde(default)]
     pub vanished_files: Vec<String>,
+    /// It runs from its own compose file (adopted): settings and the
+    /// database type need the takeover first.
+    #[serde(default)]
+    pub external_compose: bool,
 }
 
 /// One service or container on the server (Status and Control).
@@ -1076,6 +1080,31 @@ fn spm_job(inst: &Instance, job: &str) -> Result<String, String> {
             e
         }
     })
+}
+
+/// What taking the server's SENTIENT over would do (crate::manager::takeover),
+/// with a compose file picked on the server.
+pub fn takeover_plan(inst: &Instance, compose: Option<&str>) -> Result<sentient_installer_core::distro::adopt::TakeOverPlan, String> {
+    let job = match compose {
+        Some(c) => format!("takeover-plan --compose '{}'", c.replace('\'', "")),
+        None => "takeover-plan".into(),
+    };
+    let out = spm_job(inst, &job)?;
+    if out.lines().any(|l| l.trim() == "null") {
+        return Err(NOT_ADDED.into());
+    }
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's Platform Manager gave no plan.")?;
+    serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
+}
+
+/// Whether a migration could start on the server now (crate::migration::
+/// preflight). An older agent checks this itself when the migration starts.
+pub fn migrate_preflight(inst: &Instance) -> Result<(), String> {
+    match spm_job(inst, "migrate-preflight") {
+        Ok(_) => Ok(()),
+        Err(e) if e == AGENT_OLD => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /// The agent on the server answered a job it does not know: it is older

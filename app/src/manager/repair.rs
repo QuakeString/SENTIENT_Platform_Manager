@@ -47,14 +47,30 @@ impl RepairPage {
         Self { record, keep_data: true, running: None, job, _observe }
     }
 
+    /// The plan for confirmation (crate::manager::takeover), then the takeover.
+    pub(crate) fn open_take_over(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        let this = cx.entity().downgrade();
+        crate::manager::takeover::open(
+            std::sync::Arc::new(move |compose: Option<String>| crate::adopt::take_over_plan(&record, compose.as_deref())),
+            std::rc::Rc::new(move |compose, cx: &mut App| {
+                this.update(cx, |page, cx| page.take_over(compose, cx)).ok();
+            }),
+            cx,
+        );
+    }
+
+    fn take_over(&mut self, compose: Option<String>, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        self.running = Some(Action::TakeOver);
+        self.job.update(cx, |job, cx| job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), sink).map(|_| ()), cx));
+    }
+
     fn start(&mut self, action: Action, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         let keep = self.keep_data;
         self.running = Some(action);
         self.job.update(cx, |job, cx| {
-            if action == Action::TakeOver {
-                return job.start(move |sink| crate::adopt::take_over_compose(record, None, sink).map(|_| ()), cx);
-            }
             if crate::rootjob::needed(&record) {
                 let mut args = vec![match action {
                     Action::Repair => "repair".to_string(),
@@ -87,11 +103,8 @@ impl RepairPage {
                 "SENTIENT and the Platform Manager are removed. The database is kept and can be used by a new install.",
                 "Uninstall",
             ),
-            Action::TakeOver => (
-                "Take over the compose file?",
-                "SENTIENT stops for about a minute: its containers are removed (the data volumes stay) and started again, the same, from the Platform Manager's compose file. If SENTIENT does not answer, it is started from its own compose file again. Afterwards start and stop it with the Platform Manager, not with the old compose file.",
-                "Take over",
-            ),
+            // Confirmed in its own dialog (open_take_over).
+            Action::TakeOver => return,
             Action::Uninstall => (
                 "Uninstall SENTIENT and delete its data?",
                 "SENTIENT, the Platform Manager, the databases and everything kept are removed. This can't be undone.",
@@ -147,17 +160,27 @@ impl Render for RepairPage {
             page.child(
                 ui::panel(&theme)
                     .child(div().font_weight(FontWeight::MEDIUM).child("Take over the compose file"))
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(format!(
-                        "SENTIENT runs from its own compose file ({}), which the Platform Manager does not change. Changing settings or the database type needs the Platform Manager's own compose file: the same containers on the same data.",
-                        ext.files.join(", ")
-                    )))
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(div().text_sm().text_color(theme.muted_foreground).child("SENTIENT runs from its own compose file."))
+                            .child(ui::info(
+                                "take-over-help".into(),
+                                format!(
+                                    "Its compose file ({}) is not changed by the Platform Manager. Changing settings or the database type needs the Platform Manager's own compose file: the same containers on the same data.",
+                                    ext.files.join(", ")
+                                )
+                                .into(),
+                            )),
+                    )
                     .child(
                         h_flex().child(
                             crate::ui::button("take-over")
                                 .outline()
                                 .label("Take over the compose file…")
                                 .disabled(done)
-                                .on_click(cx.listener(|this, _, window, cx| this.confirm(Action::TakeOver, window, cx))),
+                                .on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))),
                         ),
                     ),
             )

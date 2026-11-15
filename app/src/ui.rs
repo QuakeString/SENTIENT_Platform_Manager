@@ -300,7 +300,7 @@ pub fn notice(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div {
     notice_with(theme, tone, text, None)
 }
 
-pub fn notice_with(theme: &Theme, tone: Tone, text: impl Into<SharedString>, action: Option<AnyElement>) -> Div {
+pub fn notice_with(theme: &Theme, tone: Tone, text: impl Into<SharedString>, mut action: Option<AnyElement>) -> Div {
     let (bg, fg, icon) = match tone {
         Tone::Good => (theme.success, theme.success_foreground, gpui_kit::component::IconName::CircleCheck),
         Tone::Warn => (theme.warning, theme.warning_foreground, gpui_kit::component::IconName::TriangleAlert),
@@ -327,7 +327,9 @@ pub fn notice_with(theme: &Theme, tone: Tone, text: impl Into<SharedString>, act
                 .gap_0p5()
                 .text_sm()
                 .child(div().font_weight(FontWeight::MEDIUM).child(head))
-                .children(rest.into_iter().map(|l| div().child(l))),
+                .children(rest.into_iter().map(|l| div().child(l)))
+                // Narrow: the action goes under the text, not beside it.
+                .when(narrow() && action.is_some(), |c| c.child(gpui_kit::component::h_flex().mt_2().children(action.take()))),
         )
         .children(action)
 }

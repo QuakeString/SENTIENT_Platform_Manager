@@ -37,7 +37,7 @@ use sentient_installer_core::native::safe_update::RollbackPoint;
 
 use crate::installation::InstallationRecord;
 
-const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
+const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
 use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] | takeover-plan [--compose <file>] | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|configuration> | backup-verify <backup> | backup-delete <backup> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
@@ -283,6 +283,24 @@ pub fn run(args: &[String]) -> i32 {
         };
         println!("{}", line.unwrap_or_default());
         return 0;
+    }
+    // Whether a migration could start now (crate::migration::preflight):
+    // "ok", or why not (exit 1). Nothing is changed.
+    if job == "migrate-preflight" {
+        let Some(record) = InstallationRecord::load() else {
+            eprintln!("No SENTIENT is added on this server.");
+            return 1;
+        };
+        return match crate::migration::preflight(&record) {
+            Ok(()) => {
+                println!("ok");
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
     }
     // What taking this installation over would do (one JSON line):
     // takeover-plan [--compose <file>].
@@ -783,6 +801,7 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
         running_job: None,
         http_port: Some(record.stack.http_port),
         vanished_files: record.stack.vanished_files(),
+        external_compose: record.engine == crate::installation::Engine::Docker && record.stack.external.is_some(),
     }
 }
 
