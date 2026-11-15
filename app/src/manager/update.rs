@@ -586,15 +586,11 @@ impl UpdatePage {
         let msteps: Vec<String> = crate::updates::SELF_UPDATE_STEPS.iter().map(|s| s.to_string()).collect();
         let marked = ui::mark_steps(&msteps, mjob.steps(), mfinished);
 
-        let channels = h_flex().gap_2().children(Channel::ALL.into_iter().map(|c| {
-            let b = Button::new(SharedString::from(format!("channel-{}", c.label())))
-                .small()
-                .label(c.label())
-                .tooltip(c.about())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.updates.update(cx, |u, cx| u.set_channel(c, cx));
-                }));
-            if c == channel { b.primary() } else { b.outline() }
+        let seg_theme = cx.theme().clone();
+        let channels = crate::ui::seg_track(&seg_theme).children(Channel::ALL.into_iter().map(|c| {
+            crate::ui::seg_item(&seg_theme, SharedString::from(format!("channel-{}", c.label())), c.label(), c == channel).on_click(cx.listener(move |this, _, _, cx| {
+                this.updates.update(cx, |u, cx| u.set_channel(c, cx));
+            }))
         }));
 
         // A6/A7: neither product could be checked.

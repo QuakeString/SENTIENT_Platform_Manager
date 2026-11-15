@@ -7,7 +7,7 @@
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, Sizable as _, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::Button,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -127,24 +127,13 @@ impl Render for AboutPage {
                     .disabled(checking)
                     .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))),
             );
-        let channels = h_flex().gap_1().children(Channel::ALL.into_iter().map(|c| {
-            let b = Button::new(SharedString::from(format!("about-channel-{}", c.label())))
-                .small()
-                .label(c.label())
-                .tooltip(c.about())
-                .on_click(cx.listener(move |this, _, _, cx| this.updates.update(cx, |u, cx| u.set_channel(c, cx))));
-            if c == channel { b.primary() } else { b.outline() }
+        let channels = ui::seg_track(&theme).children(Channel::ALL.into_iter().map(|c| {
+            ui::seg_item(&theme, SharedString::from(format!("about-channel-{}", c.label())), c.label(), c == channel)
+                .on_click(cx.listener(move |this, _, _, cx| this.updates.update(cx, |u, cx| u.set_channel(c, cx))))
         }));
-        let checks = h_flex()
-            .gap_1()
-            .child({
-                let b = Button::new("about-daily").small().label("Once a day").on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.set_daily(true, cx))));
-                if daily { b.primary() } else { b.outline() }
-            })
-            .child({
-                let b = Button::new("about-by-hand").small().label("Only when I ask").on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.set_daily(false, cx))));
-                if daily { b.outline() } else { b.primary() }
-            });
+        let checks = ui::seg_track(&theme)
+            .child(ui::seg_item(&theme, "about-daily", "Once a day", daily).on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.set_daily(true, cx)))))
+            .child(ui::seg_item(&theme, "about-by-hand", "Only when I ask", !daily).on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.set_daily(false, cx)))));
         let prefs = ui::panel(&theme)
             .gap_0()
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Preferences"))

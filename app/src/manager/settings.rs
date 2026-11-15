@@ -559,19 +559,16 @@ impl SettingsPage {
         let any = selected_at.is_some();
         let now = if now.is_empty() { builtin } else { now };
         let muted = cx.theme().muted_foreground;
+        let theme = cx.theme().clone();
         h_flex()
-            .gap_1()
+            .gap_2()
             .flex_wrap()
-            .children(choices.iter().map(|(label, value)| {
-                let b = Button::new(SharedString::from(format!("{key}-{value}")))
-                    .small()
-                    .label(*label)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.set(key, value, window, cx);
-                        cx.notify();
-                    }));
-                if selected(value) { b.primary() } else { b.outline() }
-            }))
+            .child(ui::seg_track(&theme).children(choices.iter().map(|(label, value)| {
+                ui::seg_item(&theme, SharedString::from(format!("{key}-{value}")), *label, selected(value)).on_click(cx.listener(move |this, _, window, cx| {
+                    this.set(key, value, window, cx);
+                    cx.notify();
+                }))
+            })))
             .when(!any, |r| r.child(div().text_sm().text_color(muted).child(format!("Custom: {now}"))))
     }
 
@@ -722,23 +719,15 @@ impl SettingsPage {
     fn database(&self, theme: &gpui_kit::component::Theme, record: &InstallationRecord, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let current = self.preset(cx);
         let open_custom = self.custom_db || current.is_none();
-        let presets = h_flex()
-            .gap_1()
-            .flex_wrap()
+        let presets = ui::seg_track(theme)
             .children(Preset::ALL.into_iter().map(|p| {
-                let b = Button::new(SharedString::from(format!("preset-{p:?}")))
-                    .small()
-                    .label(p.label())
-                    .on_click(cx.listener(move |this, _, window, cx| this.apply_preset(p, window, cx)));
-                if current == Some(p) && !self.custom_db { b.primary() } else { b.outline() }
+                ui::seg_item(theme, SharedString::from(format!("preset-{p:?}")), p.label(), current == Some(p) && !self.custom_db)
+                    .on_click(cx.listener(move |this, _, window, cx| this.apply_preset(p, window, cx)))
             }))
-            .child({
-                let b = Button::new("preset-custom").small().label("Custom").on_click(cx.listener(|this, _, _, cx| {
-                    this.custom_db = true;
-                    cx.notify();
-                }));
-                if open_custom { b.primary() } else { b.outline() }
-            });
+            .child(ui::seg_item(theme, "preset-custom", "Custom", open_custom).on_click(cx.listener(|this, _, _, cx| {
+                this.custom_db = true;
+                cx.notify();
+            })));
         let shown = |key: &str| {
             let v = self.value(key, cx);
             if v.is_empty() {

@@ -898,12 +898,9 @@ impl BackupPage {
 
         // Back up now.
         let p = &self.prefs;
-        let seg = |id: &'static str, label: &'static str, on: bool| {
-            let b = Button::new(id).small().label(label);
-            if on { b.primary() } else { b.outline() }
-        };
-        let presets = h_flex()
-            .gap_1()
+        let seg_theme = cx.theme().clone();
+        let seg = |id: &'static str, label: &'static str, on: bool| ui::seg_item(&seg_theme, id, label, on);
+        let presets = ui::seg_track(&seg_theme)
             .child(seg("preset-everything", "Everything", p.preset == Preset::Everything && !self.choose).on_click(cx.listener(|this, _, _, cx| {
                 this.prefs.preset = Preset::Everything;
                 this.choose = false;
@@ -921,8 +918,7 @@ impl BackupPage {
                 }
                 cx.notify();
             })));
-        let history = h_flex()
-            .gap_1()
+        let history = ui::seg_track(&seg_theme)
             .child(seg("hist-all", "All", p.history == History::All).on_click(cx.listener(|this, _, _, cx| {
                 this.prefs.history = History::All;
                 this.save_prefs(false, cx);
