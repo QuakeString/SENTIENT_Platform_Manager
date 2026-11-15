@@ -70,6 +70,8 @@ pub struct RemotePages {
     offer: Read<Option<crate::updates::Offer>>,
     /// The versions "Other version" lists.
     versions: Read<Vec<crate::online::Version>>,
+    /// Platform settings: the open tab (crate::manager::settings::TAB_TITLES).
+    settings_tab: usize,
     /// Logs: where Export saved the text, or why it could not.
     log_note: Option<SharedString>,
     /// Platform settings: what "Check" found for a file path on the server.
@@ -125,6 +127,7 @@ impl RemotePages {
             pick: None,
             file_checks: Default::default(),
             log_note: None,
+            settings_tab: 0,
             updates,
             filter,
             follow: true,
@@ -135,6 +138,12 @@ impl RemotePages {
             _tasks: Vec::new(),
             _subscriptions: subs,
         };
+        // Development aid: open Platform settings on a tab (screens).
+        #[cfg(debug_assertions)]
+        if let Ok(t) = std::env::var("SPM_SETTINGS_TAB") {
+            let names = ["platform", "database", "network", "retention", "advanced"];
+            p.settings_tab = names.iter().position(|n| n.eq_ignore_ascii_case(&t)).unwrap_or(0);
+        }
         p.reload(cx);
         p.start_log_follow(cx);
         p
@@ -725,58 +734,74 @@ impl RemotePages {
                     .child(Button::new("r-set-apply").primary().label("Apply").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.apply_settings(all.clone(), cx)))),
             );
         }
-        for g in groups {
-            let mut panel = ui::panel(&theme).gap_1().child(div().font_weight(FontWeight::MEDIUM).child(g.name.clone()));
+        // The same tabs, rows and Advanced table as this computer's
+        // Platform settings. Rows that need this computer (presets from its
+        // memory, administrator accounts) are left out.
+        use crate::manager::settings as local;
+        let this = cx.entity().downgrade();
+        col = col.child(local::tab_bar(&theme, "r-", self.settings_tab, std::rc::Rc::new(move |i, cx| {
+            this.update(cx, |p, cx| {
+                p.settings_tab = i;
+                cx.notify();
+            })
+            .ok();
+        })));
+        let all: Vec<crate::catalog::Setting> = groups.iter().flat_map(|g| g.settings.iter().cloned()).collect();
+        let field_of = |st: &crate::catalog::Setting, cx: &mut Context<Self>| -> AnyElement {
+            let Some((_, input)) = self.inputs.iter().find(|(e, _)| *e == st.env) else { return div().into_any_element() };
+            let this = cx.entity().downgrade();
+            let inp = input.clone();
+            let set: crate::manager::setting_field::SetFn = std::rc::Rc::new(move |v, window, cx| {
+                inp.update(cx, |s, cx| s.set_value(v.to_string(), window, cx));
+                this.update(cx, |_, cx| cx.notify()).ok();
+            });
+            let this = cx.entity().downgrade();
+            let (env, inp) = (st.env.clone(), input.clone());
+            let check: crate::manager::setting_field::ActFn = std::rc::Rc::new(move |_, cx| {
+                let path = inp.read(cx).value().trim().to_string();
+                let env = env.clone();
+                this.update(cx, |p, cx| p.check_file(env, path, cx)).ok();
+            });
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_2()
+                .items_center()
+                .child(crate::manager::setting_field::field(st, input, set, crate::manager::setting_field::FileButton::Check(check), cx))
+                .children(self.file_checks.get(&st.env).map(|r| match r {
+                    Read::Loading => ui::pill(&theme, Tone::Neutral, "Checking…"),
+                    Read::Got(true) => ui::pill(&theme, Tone::Good, "Found on the server"),
+                    Read::Got(false) => ui::pill(&theme, Tone::Bad, "Not on the server"),
+                    Read::Failed(_) => ui::pill(&theme, Tone::Warn, "Could not check"),
+                }))
+                .into_any_element()
+        };
+        let help = |st: &crate::catalog::Setting| {
+            let default = if st.default.is_empty() { "SENTIENT's own".to_string() } else { st.default.clone() };
+            Some(format!("{}\n\nVariable: {}. Built-in value: {default}.", st.help, st.env))
+        };
+        if self.settings_tab < 4 {
+            let mut sec = local::section(&theme, local::TAB_TITLES[self.settings_tab], None);
             let mut first = true;
-            for st in g.settings {
-                let Some((_, input)) = self.inputs.iter().find(|(e, _)| *e == st.env) else { continue };
-                let is_changed = changed.contains(&st.env);
-                panel = panel.child(
-                    h_flex()
-                        .gap_3()
-                        .items_center()
-                        .py_1()
-                        .when(!std::mem::take(&mut first), |r| r.border_t_1())
-                        .border_color(theme.border)
-                        .child(
-                            h_flex()
-                                .w(px(260.))
-                                .flex_shrink_0()
-                                .gap_1()
-                                .items_center()
-                                .child(div().text_sm().when(is_changed, |d| d.text_color(theme.primary).font_weight(FontWeight::MEDIUM)).child(st.short_label()))
-                                .child(Button::new(SharedString::from(format!("r-help-{}", st.env))).ghost().xsmall().icon(IconName::Info).tooltip(st.help.clone())),
-                        )
-                        .child({
-                            let this = cx.entity().downgrade();
-                            let inp = input.clone();
-                            let set: crate::manager::setting_field::SetFn = std::rc::Rc::new(move |v, window, cx| {
-                                inp.update(cx, |s, cx| s.set_value(v.to_string(), window, cx));
-                                this.update(cx, |_, cx| cx.notify()).ok();
-                            });
-                            let this = cx.entity().downgrade();
-                            let (env, inp) = (st.env.clone(), input.clone());
-                            let check: crate::manager::setting_field::ActFn = std::rc::Rc::new(move |_, cx| {
-                                let path = inp.read(cx).value().trim().to_string();
-                                let env = env.clone();
-                                this.update(cx, |p, cx| p.check_file(env, path, cx)).ok();
-                            });
-                            h_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_2()
-                                .items_center()
-                                .child(crate::manager::setting_field::field(&st, input, set, crate::manager::setting_field::FileButton::Check(check), cx))
-                                .children(self.file_checks.get(&st.env).map(|r| match r {
-                                    Read::Loading => ui::pill(&theme, Tone::Neutral, "Checking…"),
-                                    Read::Got(true) => ui::pill(&theme, Tone::Good, "Found on the server"),
-                                    Read::Got(false) => ui::pill(&theme, Tone::Bad, "Not on the server"),
-                                    Read::Failed(_) => ui::pill(&theme, Tone::Warn, "Could not check"),
-                                }))
-                        }),
-                );
+            for key in local::TAB_KEYS[self.settings_tab] {
+                let Some(st) = all.iter().find(|s| s.env == *key) else { continue };
+                let field = field_of(st, cx);
+                sec = sec.child(local::row(&theme, st.short_label(), help(st), changed.contains(&st.env), field).when(std::mem::take(&mut first), |r| r.border_t_0()));
             }
-            col = col.child(panel);
+            col = col.child(sec);
+        } else {
+            let mut table = ui::panel(&theme).gap_0().child(local::table_header(&theme));
+            for st in &all {
+                let field = field_of(st, cx);
+                table = table.child(local::row(
+                    &theme,
+                    st.short_label(),
+                    help(st),
+                    changed.contains(&st.env),
+                    h_flex().gap_3().items_center().child(h_flex().w(px(local::VALUE_W)).flex_shrink_0().child(field)).child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(local::builtin_label(st))),
+                ));
+            }
+            col = col.child(table);
         }
         col
     }

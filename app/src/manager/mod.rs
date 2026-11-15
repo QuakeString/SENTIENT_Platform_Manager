@@ -13,7 +13,7 @@ pub(crate) mod logs;
 pub(crate) mod migration;
 mod remote_pages;
 mod repair;
-mod settings;
+pub(crate) mod settings;
 pub(crate) mod setting_field;
 pub(crate) mod status;
 pub(crate) mod update;

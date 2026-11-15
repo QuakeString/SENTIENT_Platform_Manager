@@ -26,9 +26,34 @@ pub enum FileButton {
     Check(ActFn),
 }
 
+/// Settings offered as a few named values: (label, value). An empty value
+/// is SENTIENT's own.
+pub fn choices_for(env: &str) -> Option<&'static [(&'static str, &'static str)]> {
+    match env {
+        "RUST_LOG" => Some(&[("Errors only", "error"), ("Normal", "info"), ("Detailed", "debug")]),
+        "AUDIT_LOG_TTL_DAYS" | "NOTIFICATIONS_TTL_DAYS" => Some(&[("Forever", "0"), ("30 days", "30"), ("90 days", "90"), ("1 year", "365")]),
+        "SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS" => Some(&[("Built-in", ""), ("7 days", "604800"), ("30 days", "2592000"), ("90 days", "7776000")]),
+        "SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS" => Some(&[("Built-in", ""), ("1 day", "86400"), ("7 days", "604800"), ("30 days", "2592000")]),
+        _ => None,
+    }
+}
+
 pub fn field(setting: &Setting, input: &Entity<InputState>, set: SetFn, file: FileButton, cx: &App) -> AnyElement {
     let theme = cx.theme().clone();
     let env = setting.env.clone();
+    if let Some(choices) = choices_for(&env) {
+        let now = input.read(cx).value().trim().to_string();
+        let effective = if now.is_empty() { setting.default.clone() } else { now.clone() };
+        // A log filter ("info,sqlx=warn") counts by its overall level.
+        let level = effective.split(',').next().unwrap_or("").trim().to_string();
+        let at = choices.iter().position(|(_, v)| !v.is_empty() && (*v == effective || *v == level)).or_else(|| if now.is_empty() { choices.iter().position(|(_, v)| v.is_empty()) } else { None });
+        return ui::seg_track(&theme)
+            .children(choices.iter().enumerate().map(|(i, (label, value))| {
+                let set = set.clone();
+                ui::seg_item(&theme, SharedString::from(format!("{env}-c{i}")), *label, at == Some(i)).on_click(move |_, window, cx| set(value, window, cx))
+            }))
+            .into_any_element();
+    }
     match setting.kind() {
         ValueKind::Switch => {
             let now = input.read(cx).value().trim().to_string();

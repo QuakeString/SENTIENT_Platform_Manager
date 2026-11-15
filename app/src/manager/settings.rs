@@ -113,7 +113,7 @@ fn preset_values(p: Preset, groups: &[Group], ram_mb: u64) -> HashMap<&'static s
 type Choices = &'static [(&'static str, &'static str)];
 
 /// The Value column of Advanced: every field starts and ends at the same place.
-const VALUE_W: f32 = 340.;
+pub(crate) const VALUE_W: f32 = 340.;
 
 const LOG_LEVELS: Choices = &[("Errors only", "error"), ("Normal", "info"), ("Detailed", "debug")];
 const ON_OFF: Choices = &[("On", "true"), ("Off", "false")];
@@ -512,7 +512,7 @@ impl SettingsPage {
 // ---------------------------------------------------------------------------
 
 /// A row: label (and its help), then the control.
-fn row(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, help: Option<String>, changed: bool, control: impl IntoElement) -> Div {
+pub(crate) fn row(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, help: Option<String>, changed: bool, control: impl IntoElement) -> Div {
     let label: SharedString = label.into();
     h_flex()
         .gap_3()
@@ -534,7 +534,7 @@ fn row(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, help:
         .child(h_flex().flex_1().min_w_0().gap_2().items_center().child(control))
 }
 
-fn section(theme: &gpui_kit::component::Theme, title: &'static str, about: Option<&'static str>) -> Div {
+pub(crate) fn section(theme: &gpui_kit::component::Theme, title: &'static str, about: Option<&'static str>) -> Div {
     ui::panel(theme)
         .gap_1()
         .child(div().font_weight(FontWeight::MEDIUM).child(title))
@@ -989,16 +989,7 @@ impl SettingsPage {
                         cx.notify();
                     }))
             }));
-        let mut table = ui::panel(theme).gap_0().flex_1().min_w_0().child(
-            h_flex()
-                .gap_3()
-                .pb_1()
-                .text_size(px(13.))
-                .text_color(theme.muted_foreground)
-                .child(div().w(px(250.)).child("Setting"))
-                .child(div().w(px(VALUE_W)).child("Value"))
-                .child(div().flex_1().child("Built-in")),
-        );
+        let mut table = ui::panel(theme).gap_0().flex_1().min_w_0().child(table_header(theme));
         let mut rows = 0;
         for g in self.groups.iter().filter(|g| self.group.as_ref().is_none_or(|n| n == &g.name)) {
             for s in &g.settings {
@@ -1023,13 +1014,7 @@ impl SettingsPage {
                         .gap_3()
                         .items_center()
                         .child(h_flex().w(px(VALUE_W)).flex_shrink_0().child(field))
-                        .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(match (s.kind(), s.default.as_str()) {
-                            (_, "") => "SENTIENT's own".to_string(),
-                            (crate::catalog::ValueKind::Switch, "true") => "On".to_string(),
-                            (crate::catalog::ValueKind::Switch, "false") => "Off".to_string(),
-                            (crate::catalog::ValueKind::Number(Some(u)), d) => format!("{d} {u}"),
-                            (_, d) => d.to_string(),
-                        }))
+                        .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(builtin_label(s)))
                         .when(set, |r| {
                             r.child(Button::new(SharedString::from(format!("reset-{}", s.env))).ghost().label("Reset").on_click(cx.listener(move |this, _, window, cx| {
                                 this.set(&key, "", window, cx);
@@ -1124,22 +1109,13 @@ impl Render for SettingsPage {
             }
         }
 
-        let tabs = h_flex().gap_1().border_b_1().border_color(theme.border).children(Tab::ALL.into_iter().map(|t| {
-            let active = t == self.tab;
-            div()
-                .id(SharedString::from(format!("tab-{t:?}")))
-                .px_4()
-                .py_2()
-                .text_sm()
-                .cursor_pointer()
-                .border_b_2()
-                .border_color(if active { theme.primary } else { theme.transparent })
-                .text_color(if active { theme.primary } else { theme.muted_foreground })
-                .child(t.title())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.tab = t;
-                    cx.notify();
-                }))
+        let this = cx.entity().downgrade();
+        let tabs = tab_bar(&theme, "", Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0), std::rc::Rc::new(move |i, cx| {
+            this.update(cx, |p, cx| {
+                p.tab = Tab::ALL[i];
+                cx.notify();
+            })
+            .ok();
         }));
 
         let applybar = (!changed.is_empty()).then(|| {
@@ -1213,5 +1189,59 @@ mod tests {
         let medium = preset_values(Preset::Medium, &groups, 16384);
         assert_eq!(medium["pg:shared_buffers"], "4096MB");
         assert_eq!(medium["DATABASE_POOL_MAX"], "");
+    }
+}
+
+/// The tab titles of Platform settings, in order.
+pub(crate) const TAB_TITLES: [&str; 5] = ["Platform", "Database", "Network and certificates", "Data retention", "Advanced"];
+
+/// The catalog settings each of the first four tabs shows on a remote
+/// server (this computer's tabs add what only it can do).
+pub(crate) const TAB_KEYS: [&[&str]; 4] = [
+    &["RUST_LOG", "ANALYTICS_ENABLED", "LICENSE_SERVER_URL", "LICENSE_HEARTBEAT_INTERVAL_SECS"],
+    &["DATABASE_POOL_MAX", "DATABASE_POOL_MIN", "DB_POOL_PRIMARY_MAX", "DB_POOL_PRIMARY_MIN", "DB_POOL_REPORT_MAX", "DB_POOL_REPORT_MIN", "DB_MAX_CONNECTIONS", "CLICKHOUSE_TS_BATCH_SIZE", "CLICKHOUSE_TS_BATCH_MAX_DELAY_MS", "CLICKHOUSE_TS_BATCH_THREADS", "SENTIENT_TS_KV_CHUNK_DAYS", "SENTIENT_TS_KV_COMPRESS_AFTER_DAYS"],
+    &["EDGE_GRPC_PORT", "SSL_PEM_CERT", "SSL_PEM_KEY", "MQTT_SSL_PEM_CERT", "MQTT_SSL_PEM_KEY", "MQTT_SSL_PEM_CA", "COAP_SSL_PEM_CERT", "COAP_SSL_PEM_KEY", "SENTIENT_CORS_ALLOWED_ORIGINS", "SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT"],
+    &["AUDIT_LOG_TTL_DAYS", "NOTIFICATIONS_TTL_DAYS", "SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS", "SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS", "AUDIT_LOG_CLEANUP_ENABLED", "SENTIENT__EVENT_CLEANUP__ENABLED"],
+];
+
+/// The tab bar of Platform settings. Shared with a remote server's.
+pub(crate) fn tab_bar(theme: &gpui_kit::component::Theme, id: &str, active: usize, pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
+    h_flex().gap_1().border_b_1().border_color(theme.border).children(TAB_TITLES.iter().enumerate().map(|(i, title)| {
+        let on = i == active;
+        let pick = pick.clone();
+        div()
+            .id(SharedString::from(format!("{id}tab-{i}")))
+            .px_4()
+            .py_2()
+            .text_sm()
+            .cursor_pointer()
+            .border_b_2()
+            .border_color(if on { theme.primary } else { theme.transparent })
+            .text_color(if on { theme.primary } else { theme.muted_foreground })
+            .child(*title)
+            .on_click(move |_, _, cx| pick(i, cx))
+    }))
+}
+
+/// The Advanced table's header row. Shared with a remote server's.
+pub(crate) fn table_header(theme: &gpui_kit::component::Theme) -> Div {
+    h_flex()
+        .gap_3()
+        .pb_1()
+        .text_size(px(13.))
+        .text_color(theme.muted_foreground)
+        .child(div().w(px(250.)).child("Setting"))
+        .child(div().w(px(VALUE_W)).child("Value"))
+        .child(div().flex_1().child("Built-in"))
+}
+
+/// A setting's built-in value, as the Advanced table shows it.
+pub(crate) fn builtin_label(s: &crate::catalog::Setting) -> String {
+    match (s.kind(), s.default.as_str()) {
+        (_, "") => "SENTIENT's own".to_string(),
+        (crate::catalog::ValueKind::Switch, "true") => "On".to_string(),
+        (crate::catalog::ValueKind::Switch, "false") => "Off".to_string(),
+        (crate::catalog::ValueKind::Number(Some(u)), d) => format!("{d} {u}"),
+        (_, d) => d.to_string(),
     }
 }
