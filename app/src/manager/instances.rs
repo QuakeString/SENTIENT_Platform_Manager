@@ -136,6 +136,36 @@ impl InstancesPage {
         if page.local.is_some() {
             page.refresh_local(cx);
         }
+        // Screens: the job dialog running, finished or failed on the first
+        // remote instance (SPM_DEBUG_JOB=running|done|failed).
+        #[cfg(debug_assertions)]
+        if let (Ok(kind), Some(inst)) = (std::env::var("SPM_DEBUG_JOB"), page.list.first().cloned()) {
+            use sentient_installer_core::progress::Progress;
+            page.job_for = Some((inst.id.clone(), format!("Setting up {}", inst.name).into()));
+            page.retry = Some(Retry::SetUp(inst.id.clone()));
+            let name = inst.name.clone();
+            page.job.update(cx, |job, cx| {
+                job.start(
+                    move |sink| {
+                        sink(Progress::Step { name: "Copying the Platform Manager to the server".into() });
+                        sink(Progress::Log { line: "sentient-platform-manager-agent-linux-x86_64: 11.3 MB".into() });
+                        match kind.as_str() {
+                            "running" => {
+                                std::thread::sleep(std::time::Duration::from_secs(120));
+                                Ok(())
+                            }
+                            "failed" => Err(remote::failed("The server refused the administrator password.", "sudo: 1 incorrect password attempt")),
+                            _ => {
+                                sink(Progress::Step { name: "Looking for SENTIENT on the server".into() });
+                                sink(Progress::Done { message: format!("The Platform Manager is set up on {name}. SENTIENT 4.4.0.2 (Docker) was found and added. Nothing on it was changed.") });
+                                Ok(())
+                            }
+                        }
+                    },
+                    cx,
+                )
+            });
+        }
         // The cards refresh every minute.
         let tick = cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(std::time::Duration::from_secs(60)).await;

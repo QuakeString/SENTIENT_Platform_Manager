@@ -1033,6 +1033,10 @@ impl Render for RemotePages {
         // Set up earlier but nothing added: add a lone SENTIENT found there,
         // once (it changes nothing on the server; the agent asks when the
         // choice is real).
+        #[cfg(debug_assertions)]
+        if std::env::var_os("SPM_DEBUG_REMOTE_STATUS").is_some() {
+            self.auto_add_tried = true; // canned screens: no server to add on
+        }
         if !self.auto_add_tried && matches!(&self.ready, Read::Got(())) && matches!(&self.status, Read::Got(s) if !s.installed) && !self.job.read(cx).is_running() {
             self.auto_add_tried = true;
             self.run_job("Looking for SENTIENT on the server", vec!["add-if-one".into()], cx);
