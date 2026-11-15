@@ -33,23 +33,25 @@
     "label": "Notifications (3)",
     "children": [
      {
-      "label": "! Updating the server agent failed — BSMPL SENTIENT",
+      "icon-name": "dialog-error",
+      "label": "BSMPL SENTIENT: Updating the server agent failed",
       "children": []
      },
      {
-      "label": "• Backing up: done — This computer",
+      "label": "This computer: Backing up: done",
       "children": []
      },
      {
-      "label": "! The server does not answer — INVENIA IIoT",
+      "icon-name": "dialog-error",
+      "label": "INVENIA IIoT: The server does not answer",
       "children": []
      },
      {
-      "label": "SENTIENT runs again — Plant B server",
+      "label": "Plant B server: SENTIENT runs again",
       "children": []
      },
      {
-      "label": "Updating SENTIENT: done — ST-DEV",
+      "label": "ST-DEV: Updating SENTIENT: done",
       "children": []
      },
      {

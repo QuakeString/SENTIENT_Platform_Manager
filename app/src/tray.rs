@@ -52,13 +52,14 @@ impl Model {
 /// One menu entry, drawn by each platform.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
-    Action { label: String, cmd: Command, enabled: bool },
+    /// `error`: drawn with an error mark (a failed notification).
+    Action { label: String, cmd: Command, enabled: bool, error: bool },
     Separator,
     Sub { label: String, items: Vec<Item> },
 }
 
 fn act(label: impl Into<String>, cmd: Command) -> Item {
-    Item::Action { label: label.into(), cmd, enabled: true }
+    Item::Action { label: label.into(), cmd, enabled: true, error: false }
 }
 
 /// The menu for `m`.
@@ -68,13 +69,10 @@ pub fn items(m: &Model) -> Vec<Item> {
     let mut notes: Vec<Item> = m
         .notifications
         .iter()
-        .map(|(id, title, inst, failed, read)| {
-            let mark = if *failed { "! " } else if !*read { "• " } else { "" };
-            act(format!("{mark}{title} — {inst}"), Command::Action(format!("notification:{id}")))
-        })
+        .map(|(id, title, inst, failed, _read)| Item::Action { label: format!("{inst}: {title}"), cmd: Command::Action(format!("notification:{id}")), enabled: true, error: *failed })
         .collect();
     if notes.is_empty() {
-        notes.push(Item::Action { label: "No notifications".into(), cmd: Command::Show, enabled: false });
+        notes.push(Item::Action { label: "No notifications".into(), cmd: Command::Show, enabled: false, error: false });
     }
     notes.push(Item::Separator);
     notes.push(act("Show all notifications", Command::Action("notifications".into())));
@@ -88,9 +86,9 @@ pub fn items(m: &Model) -> Vec<Item> {
         v.push(Item::Sub {
             label: "SENTIENT on this computer".into(),
             items: vec![
-                Item::Action { label: "Start".into(), cmd: Command::Action("control:start".into()), enabled: !running },
-                Item::Action { label: "Stop".into(), cmd: Command::Action("control:stop".into()), enabled: running },
-                Item::Action { label: "Restart".into(), cmd: Command::Action("control:restart".into()), enabled: running },
+                Item::Action { label: "Start".into(), cmd: Command::Action("control:start".into()), enabled: !running, error: false },
+                Item::Action { label: "Stop".into(), cmd: Command::Action("control:stop".into()), enabled: running, error: false },
+                Item::Action { label: "Restart".into(), cmd: Command::Action("control:restart".into()), enabled: running, error: false },
             ],
         });
         v.push(act("Back up this computer now", Command::Action("backup".into())));
@@ -149,9 +147,10 @@ mod imp {
             .into_iter()
             .map(|i| match i {
                 Item::Separator => ksni::MenuItem::Separator,
-                Item::Action { label, cmd, enabled } => ksni::menu::StandardItem {
+                Item::Action { label, cmd, enabled, error } => ksni::menu::StandardItem {
                     label: label.replace('_', "__"),
                     enabled,
+                    icon_name: if error { "dialog-error".into() } else { String::new() },
                     activate: Box::new(move |t: &mut Sni| {
                         let _ = t.tx.unbounded_send(cmd.clone());
                     }),
@@ -224,7 +223,7 @@ mod imp {
     use super::*;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
-    use tray_icon::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+    use tray_icon::menu::{IconMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
     use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
     /// Menu item id → what it does (rebuilt with the menu).
@@ -238,6 +237,7 @@ mod imp {
 
     enum Built {
         Item(MenuItem),
+        Icon(IconMenuItem),
         Sep(PredefinedMenuItem),
         Sub(Submenu),
     }
@@ -246,6 +246,7 @@ mod imp {
         fn as_item(&self) -> &dyn IsMenuItem {
             match self {
                 Built::Item(i) => i,
+                Built::Icon(i) => i,
                 Built::Sep(s) => s,
                 Built::Sub(s) => s,
             }
@@ -257,11 +258,15 @@ mod imp {
             .into_iter()
             .map(|i| match i {
                 Item::Separator => Built::Sep(PredefinedMenuItem::separator()),
-                Item::Action { label, cmd, enabled } => {
+                Item::Action { label, cmd, enabled, error } => {
                     *n += 1;
                     let id = format!("spm-{n}");
                     ids.insert(id.clone(), cmd);
-                    Built::Item(MenuItem::with_id(id, label.replace('&', "&&"), enabled, None))
+                    if error {
+                        Built::Icon(IconMenuItem::with_id(id, label.replace('&', "&&"), enabled, red_dot(), None))
+                    } else {
+                        Built::Item(MenuItem::with_id(id, label.replace('&', "&&"), enabled, None))
+                    }
                 }
                 Item::Sub { label, items } => {
                     let sub = Submenu::new(label.replace('&', "&&"), true);
@@ -272,6 +277,20 @@ mod imp {
                 }
             })
             .collect()
+    }
+
+    /// A failed notification's mark: a red dot, 16 × 16.
+    fn red_dot() -> Option<tray_icon::menu::Icon> {
+        let mut px = vec![0u8; 16 * 16 * 4];
+        for y in 0..16 {
+            for x in 0..16 {
+                let (dx, dy) = (x as f32 - 7.5, y as f32 - 7.5);
+                let a = (5.5 - (dx * dx + dy * dy).sqrt()).clamp(0., 1.);
+                let i = (y * 16 + x) * 4;
+                px[i..i + 4].copy_from_slice(&[0xd3, 0x2f, 0x2f, (a * 255.) as u8]);
+            }
+        }
+        tray_icon::menu::Icon::from_rgba(px, 16, 16).ok()
     }
 
     fn menu(model: &Model, ids: &Ids) -> Menu {
@@ -375,7 +394,7 @@ mod tests {
         assert!(matches!(&control[0], Item::Action { enabled: false, .. }));
         assert!(matches!(&control[1], Item::Action { enabled: true, .. }));
         let Some(Item::Sub { items: notes, .. }) = it.iter().find(|i| matches!(i, Item::Sub { label, .. } if label.starts_with("Notifications"))) else { panic!() };
-        assert!(matches!(&notes[0], Item::Action { cmd: Command::Action(a), .. } if a == "notification:7"));
+        assert!(matches!(&notes[0], Item::Action { cmd: Command::Action(a), error: true, label, .. } if a == "notification:7" && label == "This computer: Backing up failed"));
     }
 
     #[test]

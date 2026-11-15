@@ -126,6 +126,9 @@ fn pref_row(theme: &gpui_kit::component::Theme, label: &'static str, about: Opti
     h_flex()
         .gap_3()
         .items_center()
+        // Every row as tall as one with a segmented control, so switch
+        // rows and choice rows line up.
+        .min_h(px(51.))
         .py_2p5()
         .border_t_1()
         .border_color(theme.border)
