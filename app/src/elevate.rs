@@ -7,6 +7,7 @@
 
 #[cfg(windows)]
 mod imp {
+    #[cfg(feature = "gui")]
     use std::os::windows::ffi::OsStrExt;
 
     #[link(name = "shell32")]
@@ -22,6 +23,7 @@ mod imp {
         ) -> isize;
     }
 
+    #[cfg(feature = "gui")]
     fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
         s.encode_wide().chain(std::iter::once(0)).collect()
     }
@@ -33,6 +35,7 @@ mod imp {
 
     /// True when this process may continue; false when it has handed over
     /// to an elevated copy (or the operator declined) and should exit.
+    #[cfg(feature = "gui")]
     pub fn ensure_admin() -> bool {
         // SAFETY: no arguments; reads the process token.
         if unsafe { IsUserAnAdmin() } != 0 {
@@ -56,7 +59,10 @@ mod imp {
 }
 
 #[cfg(windows)]
-pub use imp::{ensure_admin, is_admin};
+pub use imp::is_admin;
+// Only the window asks to be elevated; the server agent does not.
+#[cfg(all(windows, feature = "gui"))]
+pub use imp::ensure_admin;
 
 #[cfg(not(windows))]
 pub fn ensure_admin() -> bool {

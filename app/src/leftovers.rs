@@ -10,6 +10,8 @@
 //! account, a WSL machine and folders by hand.
 
 use sentient_installer_core::progress::ProgressFn;
+#[cfg(windows)]
+use sentient_installer_core::progress::Progress;
 
 /// Descriptions of what is left, empty when nothing is. Blocking.
 #[cfg(windows)]
