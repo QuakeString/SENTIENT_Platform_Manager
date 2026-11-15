@@ -41,7 +41,7 @@ build() {
 
 package() {
   local opt="$pkgdir/opt/sentient-platform-manager"
-  install -Dm755 "$srcdir/target/release/sentient-platform-manager" "$opt/sentient-platform-manager"
+  install -Dm755 "${SPM_CARGO_TARGET_DIR:-$srcdir/target}/release/sentient-platform-manager" "$opt/sentient-platform-manager"
   install -dm755 "$pkgdir/usr/bin"
   ln -s /opt/sentient-platform-manager/sentient-platform-manager "$pkgdir/usr/bin/sentient-platform-manager"
   install -Dm644 "$startdir/sentient-platform-manager.desktop" \
