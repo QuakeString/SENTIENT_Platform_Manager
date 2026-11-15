@@ -156,8 +156,11 @@ impl Strip {
                 }
                 self.job = None;
                 self._observe = None;
-                let lbl = Some(label);
-                cx.defer(move |cx| open_details(job, lbl, cx));
+                // Its page shows the result; else the details open once.
+                if !job.read(cx).on_page() {
+                    let lbl = Some(label);
+                    cx.defer(move |cx| open_details(job, lbl, cx));
+                }
             }
             JobState::Done(m) if self.finished_at.is_none() => {
                 crate::bg_app::request_check();

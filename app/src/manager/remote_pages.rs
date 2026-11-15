@@ -519,8 +519,10 @@ impl RemotePages {
         let strip_label = format!("{label} on {}", inst.name);
         let me = cx.entity().downgrade();
         let (l2, a2) = (label.clone(), args.clone());
+        let on_page = self.shown_job == Some(self.kind);
         self.job.update(cx, |job, cx| {
             job.set_label(strip_label);
+            job.set_on_page(on_page);
             job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
             job.set_retry(std::rc::Rc::new(move |cx: &mut App| {
                 let (l, a) = (l2.clone(), a2.clone());
