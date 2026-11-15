@@ -39,7 +39,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
+use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
 
 /// A console for the output: release builds on Windows have none of their
@@ -186,6 +186,32 @@ pub fn run(args: &[String]) -> i32 {
             }
         };
     }
+    // After Set up: add the SENTIENT found here when there is exactly one
+    // and adding changes nothing on it (only the Platform Manager's own
+    // record is written). Otherwise leave the choice to the operator.
+    // Always ends with one Done line saying what happened.
+    if job == "add-if-one" {
+        let sink = if json { json_printer() } else { printer() };
+        let found = crate::adopt::find();
+        let message = match found.as_slice() {
+            [] => "No SENTIENT found on this server.".to_string(),
+            [c] if c.problem.is_none() && !c.sets_admin_password => match crate::adopt::adopt_as_needed(c, None, sink.clone()) {
+                Ok(()) => format!(
+                    "SENTIENT {}{} was found and added. Nothing on it was changed.",
+                    c.record.sentient_version,
+                    if c.kind.is_empty() { String::new() } else { format!(" ({})", c.kind) }
+                ),
+                Err(e) => {
+                    sink(Progress::Error { message: format!("SENTIENT was found but could not be added: {e}") });
+                    return 1;
+                }
+            },
+            [_] => "SENTIENT was found on this server. Adding it needs your choice: open Status to see it.".to_string(),
+            many => format!("{} SENTIENT instances were found on this server. Open Status to choose one.", many.len()),
+        };
+        sink(Progress::Done { message });
+        return 0;
+    }
     if job == "find-existing" || job == "add-existing" {
         let sink = if json { json_printer() } else { printer() };
         let found = crate::adopt::find();
@@ -269,7 +295,23 @@ pub fn run(args: &[String]) -> i32 {
             return 2;
         };
         let n = args.get(1).and_then(|n| n.parse().ok()).unwrap_or(300);
-        println!("{}", record.platform().logs(n));
+        // --sources: which logs this install has (JSON); --source <key>:
+        // one of them, by its key from that list only; --today: since midnight.
+        if args.iter().any(|a| a == "--sources") {
+            println!("{}", serde_json::to_string(&crate::logsource::available(&record)).unwrap_or_default());
+            return 0;
+        }
+        let today = args.iter().any(|a| a == "--today");
+        match args.windows(2).find(|w| w[0] == "--source").map(|w| w[1].as_str()) {
+            Some(key) => match crate::logsource::Source::from_key(key).filter(|s| crate::logsource::available(&record).contains(s)) {
+                Some(src) => println!("{}", crate::logsource::read(&record, src, n, today)),
+                None => {
+                    eprintln!("No such log here: {key}");
+                    return 2;
+                }
+            },
+            None => println!("{}", record.platform().logs(n)),
+        }
         return 0;
     }
     let Some(record) = InstallationRecord::load() else {
@@ -407,6 +449,12 @@ pub fn run(args: &[String]) -> i32 {
             Some(a @ ("start" | "stop" | "restart")) => record.platform().control(sink.clone(), a),
             _ => Err(USAGE.into()),
         },
+        // service <start|stop|restart> <name>: one of the install's own
+        // services, by the name its own list gives (anything else refused).
+        "service" => match (args.get(1).map(String::as_str), args.get(2)) {
+            (Some(a @ ("start" | "stop" | "restart")), Some(name)) => record.platform().service_control(sink.clone(), name, a),
+            _ => Err(USAGE.into()),
+        },
         "uninstall" => {
             let keep = !args.iter().any(|a| a == "--delete-data");
             crate::maintenance_ops::run_uninstall(record, keep, sink.clone())
@@ -532,9 +580,29 @@ fn print_candidates(found: &[crate::adopt::Candidate]) {
     }
 }
 
+/// The SENTIENT version to show. A stack taken over from its own compose file
+/// may record an image tag such as "latest": then the running container's
+/// version label says which SENTIENT it is.
+fn shown_version(record: &InstallationRecord) -> String {
+    let recorded = record.sentient_version.clone();
+    let numbered = recorded.split('.').next().is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+    if numbered || record.engine != crate::installation::Engine::Docker {
+        return recorded;
+    }
+    let label = std::process::Command::new("docker")
+        .args(["inspect", "-f", "{{index .Config.Labels \"org.opencontainers.image.version\"}}", &record.stack.names().app])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|v| !v.is_empty() && v != "<no value>" && v != "dev");
+    label.unwrap_or_else(|| format!("version unknown (image tag {recorded})"))
+}
+
 /// This computer's state for the Platform Manager on another computer.
 pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote::RemoteStatus {
-    let manager_version = env!("CARGO_PKG_VERSION").to_string();
+    // The full version, as the window shows it (0.8.0-rc12).
+    let manager_version = crate::updates::manager_version().to_string();
     let Some(record) = record else { return crate::remote::RemoteStatus { manager_version, ..Default::default() } };
     let snap = record.platform().snapshot();
     // Without administrator rights the database's size needs a password
@@ -548,7 +616,7 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
     crate::remote::RemoteStatus {
         installed: snap.installed,
         serving: snap.serving,
-        sentient_version: record.sentient_version.clone(),
+        sentient_version: shown_version(record),
         database: crate::installation::flavor_label(record.flavor()).to_string(),
         database_bytes,
         disk_free: (mon.disk_total > 0).then_some(mon.disk_free),
@@ -556,5 +624,7 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
         uptime_secs: Some(uptime),
         manager_version,
         running_job: None,
+        http_port: Some(record.stack.http_port),
+        vanished_files: record.stack.vanished_files(),
     }
 }

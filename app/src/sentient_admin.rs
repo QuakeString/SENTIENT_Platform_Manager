@@ -19,7 +19,7 @@ use serde::Deserialize;
 use crate::installation::{Engine, InstallationRecord};
 
 /// What the command says when the installed SENTIENT does not have it.
-pub const MISSING: &str = "This SENTIENT has no administration command yet (sentient-admin comes with SENTIENT 4.4.0.3). Update SENTIENT first.";
+pub const MISSING: &str = "This SENTIENT version has no administration command (sentient-admin comes with SENTIENT 4.4.0.3). Update SENTIENT first.";
 
 /// A system administrator account, as `list-admins --json` reports it.
 #[derive(Debug, Clone, Deserialize, PartialEq)]

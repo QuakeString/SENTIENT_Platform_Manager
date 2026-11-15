@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     input::{Input, InputEvent, InputState},
     progress::Progress,
 };
@@ -136,8 +136,7 @@ impl Render for GatewayPage {
             &theme,
             "Gateway",
             "The Sentient Gateway on this computer: it collects data from the plant's devices and sends it to SENTIENT.",
-        )
-        .child(h_flex().gap_2().items_center().child(ui::product_logo(ui::Product::Gateway, 28.)).child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway")));
+        );
         let u = self.updates.read(cx);
         let newest = u.found.as_ref().map(|f| f.gateway.clone());
         let channel = u.prefs.channel;
@@ -170,10 +169,12 @@ impl Render for GatewayPage {
                     h_flex()
                         .gap_3()
                         .items_center()
+                        .child(ui::product_logo(ui::Product::Gateway, 28.))
+                        .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
                         .child(ui::pill(&theme, tone, pill))
                         .child(div().flex_1())
                         .when_some(status.page_url.clone(), |r, url| {
-                            r.child(Button::new("gw-page").outline().label("Open local page").on_click(move |_, _, cx| ui::open_url(&url, cx)))
+                            r.child(crate::ui::button("gw-page").outline().label("Open local page").on_click(move |_, _, cx| ui::open_url(&url, cx)))
                         }),
                 )
                 .child(ui::fact(&theme, "Version", status.version.clone().unwrap_or_else(|| "unknown".into())))
@@ -183,7 +184,7 @@ impl Render for GatewayPage {
                     match (&status.host, status.port) {
                         (Some(h), Some(p)) => format!("{h}:{p}"),
                         (Some(h), None) => h.clone(),
-                        _ => "nowhere yet: not commissioned (set the platform on its local page)".into(),
+                        _ => "Not commissioned (set the platform on its local page)".into(),
                     },
                 ))
                 .child(ui::fact(
@@ -203,9 +204,9 @@ impl Render for GatewayPage {
                 .child(
                     h_flex()
                         .gap_2()
-                        .child(Button::new("gw-start").outline().label("Start").disabled(busy || status.running).on_click(cx.listener(|p, _, _, cx| p.control("start", cx))))
-                        .child(Button::new("gw-stop").outline().label("Stop").disabled(busy || !status.running).on_click(cx.listener(|p, _, _, cx| p.control("stop", cx))))
-                        .child(Button::new("gw-restart").outline().label("Restart").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.control("restart", cx)))),
+                        .child(crate::ui::button("gw-start").outline().label("Start").disabled(busy || status.running).on_click(cx.listener(|p, _, _, cx| p.control("start", cx))))
+                        .child(crate::ui::button("gw-stop").outline().label("Stop").disabled(busy || !status.running).on_click(cx.listener(|p, _, _, cx| p.control("stop", cx))))
+                        .child(crate::ui::button("gw-restart").outline().label("Restart").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.control("restart", cx)))),
                 )
                 .child(match (&newer, &newest) {
                     (Some(o), _) => {
@@ -217,7 +218,7 @@ impl Render for GatewayPage {
                                     .gap_3()
                                     .items_center()
                                     .child(
-                                        Button::new("gw-update")
+                                        crate::ui::button("gw-update")
                                             .primary()
                                             .label(format!("Update to {}", o.version))
                                             .disabled(busy || !status.managed || (status.container.is_none() && o.installer.is_none()))
@@ -227,12 +228,12 @@ impl Render for GatewayPage {
                                         format!("released {}; the configuration and the local page's password are kept", o.date)
                                     } else {
                                         format!(
-                                            "released {}; this container comes from a compose file: set its image to quakestring/sentient-gateway-rs:{} there and run docker compose up -d",
+                                            "released {}; this container comes from a compose file: set its image to quakestring/sentient-gateway-rs:{} in that file and run docker compose up -d",
                                             o.date, o.version
                                         )
                                     })),
                             )
-                            .when(!o.notes.is_empty(), |c| c.child(div().text_xs().text_color(theme.muted_foreground).child(o.notes.clone())))
+                            .when(!o.notes.is_empty(), |c| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(o.notes.clone())))
                             .into_any_element()
                     }
                     (None, Some(Err(e))) => div().text_sm().text_color(theme.muted_foreground).child(format!("Gateway updates: {e}")).into_any_element(),
@@ -245,13 +246,13 @@ impl Render for GatewayPage {
                 })
         } else {
             let field = |label: &'static str, input: Div| {
-                v_flex().gap_1p5().child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(label)).child(input)
+                v_flex().gap_1p5().child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(label)).child(input)
             };
             let o = offer.clone();
             ui::panel(&theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child("No gateway on this computer"))
+                .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Gateway, 28.)).child(div().font_weight(FontWeight::MEDIUM).child("No gateway on this computer")))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
-                    "Install one here to read devices next to this computer. In SENTIENT, add a gateway device and copy its access token (Manage credentials).",
+                    "The gateway reads devices next to this computer. In SENTIENT, add a gateway device and copy its access token (Manage credentials).",
                 ))
                 .child(
                     h_flex()
@@ -276,7 +277,7 @@ impl Render for GatewayPage {
                             .gap_3()
                             .items_center()
                             .child(
-                                Button::new("gw-install")
+                                crate::ui::button("gw-install")
                                     .primary()
                                     .label(label)
                                     .disabled(busy || (cfg!(windows) && o.installer.is_none()))
@@ -306,7 +307,7 @@ impl Render for GatewayPage {
                 ui::panel(&theme)
                     .when(busy, |p| p.child(div().text_sm().child(step.clone())).child(Progress::new("gw-progress").value(percent.unwrap_or(0.0))))
                     .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
-                    .children(log.into_iter().map(|line| div().text_xs().text_color(theme.muted_foreground).child(line))),
+                    .children(log.into_iter().map(|line| div().text_size(px(13.)).text_color(theme.muted_foreground).child(line))),
             )
         })
     }

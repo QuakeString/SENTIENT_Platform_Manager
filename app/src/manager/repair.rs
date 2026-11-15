@@ -5,8 +5,8 @@
 //! from its own compose file can be taken over here (crate::adopt).
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, WindowExt as _, h_flex,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme, Disableable as _, h_flex,
+    button::ButtonVariants as _,
     checkbox::Checkbox,
     progress::Progress,
 };
@@ -99,7 +99,7 @@ impl RepairPage {
                 "Delete everything",
             ),
         };
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             dialog.title(title).description(text).confirm().ok_text(ok).on_ok(move |_, _, cx| {
                 this.update(cx, |page, cx| page.start(action, cx)).ok();
@@ -144,7 +144,7 @@ impl Render for RepairPage {
                     )))
                     .child(
                         h_flex().child(
-                            Button::new("take-over")
+                            crate::ui::button("take-over")
                                 .outline()
                                 .label("Take over the compose file…")
                                 .disabled(done)
@@ -161,7 +161,7 @@ impl Render for RepairPage {
                 ))
                 .child(
                     h_flex().child(
-                        Button::new("repair")
+                        crate::ui::button("repair")
                             .outline()
                             .label("Repair")
                             .disabled(done)
@@ -187,7 +187,7 @@ impl Render for RepairPage {
                 )
                 .child(
                     h_flex().child(
-                        Button::new("uninstall")
+                        crate::ui::button("uninstall")
                             .danger()
                             .label(if self.keep_data { "Uninstall" } else { "Uninstall and delete the data" })
                             .disabled(done)
@@ -203,11 +203,11 @@ impl Render for RepairPage {
                             .when_some(percent, |p, v| p.child(Progress::new("repair-progress").value(v)))
                     })
                     .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
-                    .children(log.into_iter().map(|line| div().text_xs().text_color(theme.muted_foreground).child(line)))
+                    .children(log.into_iter().map(|line| div().text_size(px(13.)).text_color(theme.muted_foreground).child(line)))
                     .when(uninstalled, |p| {
                         p.child(
                             h_flex().child(
-                                Button::new("close")
+                                crate::ui::button("close")
                                     .primary()
                                     .label("Close")
                                     .on_click(|_, window, _| window.remove_window()),

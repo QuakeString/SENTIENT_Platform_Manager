@@ -10,7 +10,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let offline = args.iter().any(|a| a == "--offline");
     let mode = args.iter().find(|a| !a.starts_with("--")).cloned();
-    println!("SENTIENT installer — preflight checks{}\n", mode.as_deref().map(|m| format!(" ({m})")).unwrap_or_default());
+    println!("SENTIENT installer: preflight checks{}\n", mode.as_deref().map(|m| format!(" ({m})")).unwrap_or_default());
     let list = match mode { Some(m) => run_for(&m, offline, None), None => run_all() };
     for c in list {
         let icon = match c.status {

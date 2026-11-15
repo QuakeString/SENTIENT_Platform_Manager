@@ -5,26 +5,26 @@
 //! its own view, created the first time it is opened.
 
 mod about;
-mod backup;
-mod control;
+pub(crate) mod backup;
+pub(crate) mod control;
 mod gateway;
 mod instances;
-mod logs;
+pub(crate) mod logs;
 pub(crate) mod migration;
 mod remote_pages;
 mod repair;
-mod settings;
-mod status;
+pub(crate) mod settings;
+pub(crate) mod setting_field;
+pub(crate) mod status;
 pub(crate) mod update;
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     menu::{DropdownMenu as _, PopupMenuItem},
 };
 use gpui_kit::component::Sizable as _;
-use gpui_kit::component::Selectable as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -138,6 +138,10 @@ pub struct Manager {
     remote_monitor: Option<Monitor>,
     /// The pages of the open remote instance.
     remote_pages: Option<Entity<remote_pages::RemotePages>>,
+    /// Takes the keyboard while a dialog is open (Escape closes it).
+    modal_focus: FocusHandle,
+    /// The theme popover in the menu's bottom group is open.
+    theme_open: bool,
     /// The open instance's processor, memory and disk (top bar).
     monitor: Option<Monitor>,
     updates: Entity<UpdateState>,
@@ -185,6 +189,8 @@ impl Manager {
             open_remote: None,
             remote_monitor: None,
             remote_pages: None,
+            modal_focus: cx.focus_handle(),
+            theme_open: cfg!(debug_assertions) && std::env::var_os("SPM_THEME_OPEN").is_some(),
             monitor: None,
             updates,
             updated_from,
@@ -193,6 +199,12 @@ impl Manager {
             _tasks: Vec::new(),
         };
         manager.start_monitor(cx);
+        // Screenshots: `--instance <id>` opens a remote instance on `--page`.
+        #[cfg(debug_assertions)]
+        if let Some(id) = args.windows(2).find(|w| w[0] == "--instance").map(|w| w[1].clone()) {
+            manager.open_instance(Some(id), cx);
+            manager.page = page;
+        }
         manager
     }
 
@@ -247,7 +259,7 @@ impl Manager {
     /// The top bar: the Platform Manager's icon, the instance that is
     /// open, its processor / memory / disk, and what needs attention. It
     /// takes the open instance's colour (SENTIENT teal for this computer).
-    fn top_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn top_bar(&self, width: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let dark = theme::is_dark(cx);
         let remote = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned();
         let (bg, fg): (Hsla, Hsla) = match &remote {
@@ -259,56 +271,85 @@ impl Manager {
             None => (if dark { rgb(0x155e61).into() } else { rgb(0x187074).into() }, rgb(0xffffff).into()),
         };
         let dim = fg.opacity(0.75);
-        let amber: Hsla = rgb(0xfbbf24).into();
-        let instance = match (&remote, &self.record) {
-            (Some(r), _) => format!("{} · {}", r.name, r.host),
-            (None, Some(r)) => format!("This computer · SENTIENT {}", r.sentient_version),
-            (None, None) => "This computer".to_string(),
+        let (name, address): (String, Option<String>) = match (&remote, &self.record) {
+            (Some(r), _) => (r.name.clone(), Some(format!("{} over SSH", r.host))),
+            (None, Some(r)) => ("This computer".into(), Some(format!("SENTIENT {}", r.sentient_version))),
+            (None, None) => ("This computer".into(), None),
         };
-        let meter = |id: &'static str, icon: Icon, label: String, fraction: f32, high: bool| {
+        let instance = format!("{name} {}", address.clone().unwrap_or_default());
+        let remote_amber: Hsla = rgb(0xf0b24a).into();
+        let status_green: Hsla = rgb(0x6ee7b7).into();
+        // The mockup's top bar: above 900 px the product name and the
+        // monitors' bars show; below, only the switcher and the values.
+        let wide = width > 900.;
+        let warn_fill: Hsla = rgb(0xf59e0b).into();
+        let warn_text: Hsla = rgb(0xfcd34d).into();
+        let meter = |id: &'static str, label: &'static str, value: String, fraction: f32, high: bool| {
             h_flex()
                 .id(id)
-                .gap_1p5()
+                .gap(px(6.))
                 .items_center()
-                .text_xs()
-                .text_color(if high { amber } else { fg })
-                .child(icon.size_3p5())
-                .child(div().child(label))
-                .child(
-                    div()
-                        .w(px(36.))
-                        .h(px(5.))
-                        .rounded_full()
-                        .bg(fg.opacity(0.25))
-                        .child(div().h_full().rounded_full().w(relative(fraction.clamp(0.0, 1.0))).bg(if high { amber } else { fg })),
-                )
+                .text_size(px(12.5))
+                .child(div().text_color(fg.opacity(0.65)).child(label))
+                .when(wide, |r| {
+                    r.child(
+                        div()
+                            .w(px(42.))
+                            .h(px(5.))
+                            .rounded_full()
+                            .bg(fg.opacity(0.2))
+                            .child(div().h_full().rounded_full().w(relative(fraction.clamp(0.0, 1.0))).bg(if high { warn_fill } else { fg })),
+                    )
+                })
+                .child(div().whitespace_nowrap().text_color(if high { warn_text } else { fg }).child(value))
+        };
+        // What fits: a rough width per piece (about 7 px a character at
+        // 12.5-14 px), kept in this order: CPU, memory, disk.
+        let text_w = |s: &str| s.chars().count() as f32 * 7.2;
+        let mut room = width - 20. - (20. + 12.) - (text_w(&instance) + 60. + 12.) - if remote.is_some() { 64. } else { 0. } - 40. - 12.;
+        let mut fits = |need: f32| {
+            let ok = room >= need;
+            if ok {
+                room -= need;
+            }
+            ok
         };
         let shown = if remote.is_some() { self.remote_monitor } else { self.monitor };
+        let (show_cpu, show_mem, show_disk) = match shown {
+            Some(_) => {
+                let bar = if wide { 48. } else { 0. };
+                let cpu = fits(16. + 70. + bar);
+                let mem = cpu && fits(16. + 140. + bar);
+                let disk = mem && fits(16. + 120. + bar);
+                (cpu, mem, disk)
+            }
+            None => (false, false, false),
+        };
         let monitor = shown.map(|m| {
             let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
             h_flex()
                 .id("monitor")
-                .gap_4()
+                .gap(px(16.))
                 .px_2()
                 .py_1()
                 .rounded(px(6.))
                 .cursor_pointer()
                 .hover(|d| d.bg(fg.opacity(0.1)))
-                .child(meter("m-cpu", Icon::new(IconName::Cpu), format!("CPU {:.0}%", m.cpu), m.cpu / 100.0, m.cpu_high()))
-                .child(meter(
+                .when(show_cpu, |r| r.child(meter("m-cpu", "CPU", format!("{:.0}%", m.cpu), m.cpu / 100.0, m.cpu_high())))
+                .when(show_mem, |r| r.child(meter(
                     "m-mem",
-                    Icon::new(IconName::MemoryStick),
-                    format!("Memory {:.1} / {:.0} GB", gb(m.mem_used), gb(m.mem_total)),
+                    "Memory",
+                    format!("{:.1} / {:.0} GB", gb(m.mem_used), gb(m.mem_total)),
                     if m.mem_total > 0 { m.mem_used as f32 / m.mem_total as f32 } else { 0.0 },
                     m.mem_high(),
-                ))
-                .child(meter(
+                )))
+                .when(show_disk, |r| r.child(meter(
                     "m-disk",
-                    Icon::new(IconName::HardDrive),
-                    format!("Disk {} free", crate::dbstatus::bytes_label(m.disk_free)),
+                    "Disk",
+                    format!("{} free", crate::dbstatus::bytes_label(m.disk_free)),
                     if m.disk_total > 0 { 1.0 - m.disk_free as f32 / m.disk_total as f32 } else { 0.0 },
                     m.disk_low(),
-                ))
+                )))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.page = Page::Status;
                     cx.notify();
@@ -316,11 +357,9 @@ impl Manager {
         });
         let items = self.attention(cx);
         let count = items.len();
-        let bell = Button::new("bell")
+        let bell = crate::ui::button("bell")
             .ghost()
-            .small()
             .icon(Icon::new(IconName::Bell).text_color(fg))
-            .when(count > 0, |b| b.label(count.to_string()))
             .text_color(fg)
             .tooltip(if count == 0 { "Nothing needs attention" } else { "Needs attention" })
             .dropdown_menu({
@@ -353,16 +392,31 @@ impl Manager {
             .items_center()
             .bg(bg)
             .text_color(fg)
-            .child(ui::product_logo(ui::Product::Manager, 22.))
-            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("SENTIENT Platform Manager"))
+            .child(ui::product_logo(ui::Product::Manager, 20.))
+            // No product name here: the window's own title carries it.
             .child(
-                Button::new("switcher")
+                // The mockup's switcher: a framed chip with a status dot, the
+                // name, the address faint, a chevron; a remote one is framed
+                // in amber and carries a REMOTE tag.
+                crate::ui::button("switcher")
                     .ghost()
-                    .small()
-                    .label(instance)
-                    .icon(Icon::new(IconName::ChevronDown).size_3p5().text_color(dim))
                     .text_color(fg)
-                    .bg(fg.opacity(0.14))
+                    .bg(fg.opacity(0.12))
+                    .border_1()
+                    .border_color(if remote.is_some() { remote_amber } else { fg.opacity(0.22) })
+                    .child(
+                        h_flex()
+                            .gap(px(7.))
+                            .items_center()
+                            .text_size(px(13.5))
+                            .child(div().size(px(8.)).rounded_full().bg(if remote.is_some() { remote_amber } else { status_green }))
+                            .child(div().font_weight(FontWeight::MEDIUM).child(name))
+                            .when_some(address, |r, a| r.child(div().text_color(fg.opacity(0.7)).child(a)))
+                            .child(Icon::new(IconName::ChevronDown).size_3p5().text_color(dim))
+                            .when(remote.is_some(), |r| {
+                                r.child(div().px(px(5.)).rounded(px(4.)).bg(remote_amber).text_color(rgb(0x1b1b1b)).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child("REMOTE"))
+                            }),
+                    )
                     .dropdown_menu({
                         let this = cx.entity().downgrade();
                         let remotes = self.remotes.clone();
@@ -392,12 +446,31 @@ impl Manager {
                         }
                     }),
             )
-            .when(remote.is_some(), |b| {
-                b.child(div().px_1p5().py_0p5().rounded(px(4.)).border_1().border_color(fg.opacity(0.6)).text_xs().font_weight(FontWeight::MEDIUM).child("Remote"))
-            })
             .child(div().flex_1())
             .children(monitor)
-            .child(bell)
+            .child(
+                // The bell with an amber count, as in the mockup.
+                div().relative().child(bell).when(count > 0, |b| {
+                    b.child(
+                        div()
+                            .absolute()
+                            .top(px(1.))
+                            .right(px(1.))
+                            .min_w(px(15.))
+                            .h(px(15.))
+                            .px(px(3.))
+                            .rounded_full()
+                            .bg(rgb(0xf59e0b))
+                            .text_color(rgb(0x1c1917))
+                            .text_size(px(10.))
+                            .font_weight(FontWeight::BOLD)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(count.to_string()),
+                    )
+                }),
+            )
     }
 
     /// Switch to an instance (None: this computer). Remote instances are
@@ -458,6 +531,35 @@ impl Manager {
     /// The notices above every screen: what this run follows (a self-update,
     /// a Setup that found SENTIENT) and a newer SENTIENT, Platform Manager
     /// or gateway on the update channel (crate::updates).
+    /// On a remote instance: a bar saying every page acts on that server,
+    /// with Read again and the way back (the mockup's K4).
+    fn remote_bar(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let r = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned()?;
+        let theme = cx.theme().clone();
+        let info: Hsla = if theme::is_dark(cx) { rgb(0x27403f).into() } else { rgb(0xe6f1f1).into() };
+        Some(
+            h_flex()
+                .gap_3()
+                .px_4()
+                .py(px(7.))
+                .items_center()
+                .flex_wrap()
+                .bg(info)
+                .border_b_1()
+                .border_color(theme.border)
+                .text_sm()
+                .child(div().size(px(9.)).rounded_full().bg(rgb(crate::remote::parse_hex(&r.color).unwrap_or(0x187074))))
+                .child(div().flex_1().min_w(px(200.)).child(format!("Remote: {} ({}). Everything on these pages acts on that server.", r.name, r.host)))
+                .child(crate::ui::button("remote-reload").ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(p) = this.remote_pages.clone() {
+                        p.update(cx, |p, cx| p.reload(cx));
+                    }
+                })))
+                .child(crate::ui::button("remote-back").outline().label("Back to this computer").on_click(cx.listener(|this, _, _, cx| this.open_instance(None, cx))))
+                .into_any_element(),
+        )
+    }
+
     fn notices(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let theme = cx.theme().clone();
         let (sentient, manager) = self.updates.read(cx).notices();
@@ -496,12 +598,12 @@ impl Manager {
             col = col.child(
                 bar("notice-updated", crate::ui::Tone::Good, text)
                     .when(pending > 0, |b| {
-                        b.child(Button::new("notice-updated-changes").primary().small().label("Show the changes").on_click(cx.listener(|this, _, _, cx| {
+                        b.child(crate::ui::button("notice-updated-changes").primary().label("Show the changes").on_click(cx.listener(|this, _, _, cx| {
                             this.page = Page::Update;
                             cx.notify();
                         })))
                     })
-                    .child(Button::new("notice-updated-close").ghost().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::button("notice-updated-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
                         this.updated_from = None;
                         cx.notify();
                     }))),
@@ -516,7 +618,7 @@ impl Manager {
                         crate::ui::Tone::Good,
                         format!("Found SENTIENT {} on this computer with its database, settings and backups. Nothing was changed.", r.sentient_version),
                     )
-                    .child(Button::new("notice-found-close").ghost().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::button("notice-found-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
                         this.found_notice = false;
                         cx.notify();
                     }))),
@@ -530,15 +632,15 @@ impl Manager {
                 col = col.child(
                     bar("notice-both", crate::ui::Tone::Neutral, format!("Platform Manager {} and SENTIENT {} are available.", m.version, s.version))
                         .when(m.installer.is_some(), |b| {
-                            b.child(Button::new("notice-both-go").primary().small().label("Update Platform Manager").on_click(cx.listener(|this, _, _, cx| {
+                            b.child(crate::ui::button("notice-both-go").primary().label("Update Platform Manager").on_click(cx.listener(|this, _, _, cx| {
                                 let page = this.update_page(cx);
                                 page.update(cx, |p, cx| p.start_manager_update(cx));
                                 this.page = Page::Update;
                                 cx.notify();
                             })))
                         })
-                        .child(Button::new("notice-both-notes").ghost().small().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx))))
-                        .child(Button::new("notice-both-later").ghost().small().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        .child(crate::ui::button("notice-both-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx))))
+                        .child(crate::ui::button("notice-both-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                             let (mv, sv) = (mv.clone(), sv.clone());
                             this.updates.update(cx, |s, cx| {
                                 s.dismiss_manager(mv, cx);
@@ -553,15 +655,15 @@ impl Manager {
                 col = col.child(
                     bar("notice-manager", crate::ui::Tone::Neutral, format!("Platform Manager {} is available.", m.version))
                         .when(m.installer.is_some(), |b| {
-                            b.child(Button::new("notice-manager-go").primary().small().label("Update and restart").on_click(cx.listener(|this, _, _, cx| {
+                            b.child(crate::ui::button("notice-manager-go").primary().label("Update and restart").on_click(cx.listener(|this, _, _, cx| {
                                 let page = this.update_page(cx);
                                 page.update(cx, |p, cx| p.start_manager_update(cx));
                                 this.page = Page::Update;
                                 cx.notify();
                             })))
                         })
-                        .child(Button::new("notice-manager-notes").ghost().small().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx))))
-                        .child(Button::new("notice-manager-later").ghost().small().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        .child(crate::ui::button("notice-manager-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx))))
+                        .child(crate::ui::button("notice-manager-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                             let v = v.clone();
                             this.updates.update(cx, |s, cx| s.dismiss_manager(v, cx));
                         }))),
@@ -572,12 +674,12 @@ impl Manager {
                 let v = s.version.clone();
                 col = col.child(
                     bar("notice-sentient", crate::ui::Tone::Neutral, format!("SENTIENT {} is available{}.", s.version, dated(&s.date)))
-                        .child(Button::new("notice-sentient-go").primary().small().label("Update…").on_click(cx.listener(|this, _, _, cx| {
+                        .child(crate::ui::button("notice-sentient-go").primary().label("Update…").on_click(cx.listener(|this, _, _, cx| {
                             this.page = Page::Update;
                             cx.notify();
                         })))
-                        .child(Button::new("notice-sentient-notes").ghost().small().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Sentient, cx))))
-                        .child(Button::new("notice-sentient-later").ghost().small().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        .child(crate::ui::button("notice-sentient-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Sentient, cx))))
+                        .child(crate::ui::button("notice-sentient-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                             let v = v.clone();
                             this.updates.update(cx, |s, cx| s.dismiss_sentient(v, cx));
                         }))),
@@ -589,11 +691,11 @@ impl Manager {
             let v = o.version.clone();
             col = col.child(
                 bar("notice-gateway", crate::ui::Tone::Neutral, format!("Sentient Gateway {} is available{}.", o.version, dated(&o.date)))
-                    .child(Button::new("notice-gateway-go").primary().small().label("Update…").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::button("notice-gateway-go").primary().label("Update…").on_click(cx.listener(|this, _, _, cx| {
                         this.page = Page::Gateway;
                         cx.notify();
                     })))
-                    .child(Button::new("notice-gateway-later").ghost().small().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(crate::ui::button("notice-gateway-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                         let v = v.clone();
                         this.updates.update(cx, |s, cx| s.dismiss_gateway(v, cx));
                     }))),
@@ -631,32 +733,35 @@ impl Manager {
         self.repair = repair;
     }
 
-    fn nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn nav(&self, rail: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let items = Page::ALL.into_iter().map(|page| {
             let active = page == self.page;
+            // The mockup's menu item: muted text, the open page tinted in
+            // the primary colour and medium weight.
             h_flex()
                 .id(page.id())
-                .gap_3()
-                .px_4()
-                .py_2()
-                .rounded(theme.radius)
+                .gap(px(9.))
+                .when(rail, |r| r.justify_center().px_2())
+                .when(!rail, |r| r.px(px(11.)))
+                .py(px(7.))
+                .rounded(px(7.))
                 .cursor_pointer()
                 .text_sm()
-                .when(active, |row| {
-                    row.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground)
-                })
-                .when(!active, |row| row.hover(|row| row.bg(theme.list_hover)))
-                .child(page.icon().small())
-                .child(page.title())
+                .text_color(theme.muted_foreground)
+                .when(active, |row| row.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground).font_weight(FontWeight::MEDIUM))
+                .when(!active, |row| row.hover(|row| row.bg(theme.list_hover).text_color(theme.foreground)))
+                .child(page.icon().size(px(17.)))
+                .when(!rail, |r| r.child(page.title()))
+                .when(rail, |r| r.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(page.title()).build(window, cx)))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.page = page;
                     cx.notify();
                 }))
         });
-        let choice = theme::Choice::saved();
         v_flex()
-            .w_56()
+            .when(rail, |n| n.w(px(64.)))
+            .when(!rail, |n| n.w(px(NAV_W)))
             .h_full()
             .flex_shrink_0()
             .p_3()
@@ -664,79 +769,169 @@ impl Manager {
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.sidebar_border)
-            .children(items)
-            .child(div().my_1().h(px(1.)).bg(theme.sidebar_border))
-            .child({
+            .child(
+                // The menu scrolls when the window is short; the bottom group stays.
+                v_flex()
+                    .id("nav-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .gap_1()
+                    .children(items)
+                    .child(div().my_1().h(px(1.)).flex_shrink_0().bg(theme.sidebar_border))
+                    .child({
                 let active = self.page == Page::Instances;
                 h_flex()
                     .id("instances")
-                    .gap_3()
-                    .px_4()
-                    .py_2()
-                    .rounded(theme.radius)
+                    .gap(px(9.))
+                    .when(rail, |r| r.justify_center().px_2())
+                    .when(!rail, |r| r.px(px(11.)))
+                    .py(px(7.))
+                    .rounded(px(7.))
                     .cursor_pointer()
                     .text_sm()
-                    .when(active, |row| row.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground))
-                    .when(!active, |row| row.hover(|row| row.bg(theme.list_hover)))
-                    .child(Page::Instances.icon().small())
-                    .child(Page::Instances.title())
-                    .when(!self.remotes.is_empty(), |r| r.child(div().flex_1()).child(div().text_xs().text_color(theme.muted_foreground).child((self.remotes.len() + 1).to_string())))
+                    .text_color(theme.muted_foreground)
+                    .when(active, |row| row.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground).font_weight(FontWeight::MEDIUM))
+                    .when(!active, |row| row.hover(|row| row.bg(theme.list_hover).text_color(theme.foreground)))
+                    .child(Page::Instances.icon().size(px(17.)))
+                    .when(!rail, |r| r.child(Page::Instances.title()))
+                    .when(rail, |r| r.tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Instances").build(window, cx)))
+                    .when(!self.remotes.is_empty() && !rail, |r| r.child(div().flex_1()).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child((self.remotes.len() + 1).to_string())))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.page = Page::Instances;
                         cx.notify();
                     }))
-            })
-            .child(div().flex_1())
+                    }),
+            )
             .child(
                 h_flex()
-                    .px_2()
+                    .flex_shrink_0()
+                    .when(rail, |r| r.flex_col().px_0())
+                    .when(!rail, |r| r.px_2())
                     .pt_2()
                     .gap_1()
                     .items_center()
                     .border_t_1()
                     .border_color(theme.sidebar_border)
-                    .child(
+                    .when(!rail, |r| r.child(
                         div()
                             .flex_1()
-                            .text_xs()
+                            .text_size(px(13.))
                             .font_family(theme.mono_font_family.clone())
                             .text_color(theme.muted_foreground)
                             .child(format!("v{}", crate::updates::manager_version())),
-                    )
+                    ))
                     .child({
-                        let b = Button::new("about").ghost().small().icon(IconName::Info).tooltip("About and preferences").on_click(cx.listener(|this, _, _, cx| {
-                            this.page = Page::About;
-                            cx.notify();
-                        }));
-                        if self.page == Page::About { b.selected(true) } else { b }
+                        // The same 30 px icon box as the theme icon; tinted
+                        // while About is open.
+                        let on = self.page == Page::About;
+                        div()
+                            .id("about")
+                            .size(px(30.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(theme.radius)
+                            .cursor_pointer()
+                            .text_color(if on { theme.primary } else { theme.muted_foreground })
+                            .when(on, |b| b.bg(theme.primary.opacity(0.10)))
+                            .when(!on, |b| b.hover(|b| b.bg(theme.list_hover)))
+                            .child(Icon::new(IconName::Info).size_4())
+                            .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("About and preferences").build(window, cx))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.page = Page::About;
+                                cx.notify();
+                            }))
                     })
-                    .child(
-                        Button::new("theme")
-                            .ghost()
-                            .small()
-                            .icon(match choice {
-                                theme::Choice::Light => Icon::new(IconName::Sun),
-                                theme::Choice::Dark => Icon::new(IconName::Moon),
-                                theme::Choice::System => Icon::new(Lucide::Monitor),
-                            })
-                            .tooltip("Theme")
-                            .dropdown_menu(move |menu, _, _| {
-                                let mut menu = menu;
-                                for c in theme::Choice::ALL {
-                                    menu = menu.item(PopupMenuItem::new(c.label())
-                                            .when(c != choice, |i| {
-                                                i.icon(match c {
-                                                    theme::Choice::Light => Lucide::Sun,
-                                                    theme::Choice::Dark => Lucide::Moon,
-                                                    theme::Choice::System => Lucide::Monitor,
-                                                })
-                                            })
-                                            .checked(c == choice).on_click(move |_, window, cx| theme::choose(c, Some(window), cx)));
-                                }
-                                menu
-                            }),
-                    ),
+                    .child(self.theme_button(rail, cx)),
             )
+    }
+
+    /// The theme icon and its popover: above the icon, pointing at it, one
+    /// row per choice with its icon, the current one tinted with a tick
+    /// (the approved mockup). At rail width it opens to the right.
+    fn theme_button(&self, rail: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let choice = theme::Choice::saved();
+        let open = self.theme_open;
+        let icon_of = |c: theme::Choice| match c {
+            theme::Choice::Light => Icon::new(IconName::Sun),
+            theme::Choice::Dark => Icon::new(IconName::Moon),
+            theme::Choice::System => Icon::new(Lucide::Monitor),
+        };
+        let button = div()
+            .id("theme")
+            .size(px(30.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(theme.radius)
+            .cursor_pointer()
+            .text_color(if open { theme.primary } else { theme.muted_foreground })
+            .when(open, |b| b.bg(theme.primary.opacity(0.10)))
+            .when(!open, |b| b.hover(|b| b.bg(theme.list_hover)))
+            .child(icon_of(choice).size_4())
+            .when(!open, |b| b.tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Theme").build(window, cx)))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.theme_open = !this.theme_open;
+                cx.notify();
+            }));
+        let popover = open.then(|| {
+            let rows = theme::Choice::ALL.into_iter().map(|c| {
+                let on = c == choice;
+                h_flex()
+                    .id(SharedString::from(format!("theme-{}", c.label())))
+                    .gap_2()
+                    .items_center()
+                    .px_2()
+                    .py(px(6.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .text_sm()
+                    .when(on, |r| r.bg(theme.primary.opacity(0.10)).text_color(theme.primary).font_weight(FontWeight::MEDIUM))
+                    .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))
+                    .child(icon_of(c).size_4())
+                    .child(div().flex_1().child(c.label()))
+                    .when(on, |r| r.child(Icon::new(IconName::Check).size_4()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        theme::choose(c, Some(window), cx);
+                        this.theme_open = false;
+                        cx.notify();
+                    }))
+            });
+            // The pointer: a small square turned 45 degrees is not possible
+            // here, so a bordered triangle is drawn from two stacked borders.
+            let pointer_x = if rail { px(9.) } else { px(162. - 24.) };
+            deferred(
+                div()
+                    .absolute()
+                    .bottom(px(30. + 9.))
+                    .when(rail, |d| d.left(px(-2.)))
+                    .when(!rail, |d| d.right(px(-6.)))
+                    .w(px(162.))
+                    .child(
+                        v_flex()
+                            .id("theme-popover")
+                            .occlude()
+                            .p_1()
+                            .gap_px()
+                            .rounded(px(ui::PANEL_RADIUS))
+                            .bg(theme.popover)
+                            .text_color(theme.popover_foreground)
+                            .border_1()
+                            .border_color(theme.border)
+                            .shadow_lg()
+                            .children(rows)
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                this.theme_open = false;
+                                cx.notify();
+                            })),
+                    )
+                    .child(ui::pointer_down(theme.popover, theme.border, pointer_x)),
+            )
+            .with_priority(1)
+        });
+        div().relative().child(button).children(popover)
     }
 
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -761,7 +956,8 @@ impl Manager {
                         p.clone()
                     }
                     None => {
-                        let p = cx.new(|cx| remote_pages::RemotePages::new(r.clone(), kind, window, cx));
+                        let updates = self.updates.clone();
+                        let p = cx.new(|cx| remote_pages::RemotePages::new(r.clone(), kind, updates, window, cx));
                         self.remote_pages = Some(p.clone());
                         p
                     }
@@ -777,11 +973,11 @@ impl Manager {
                             .child(
                                 h_flex()
                                     .gap_2()
-                                    .child(Button::new("to-instances").primary().small().label(format!("Go to {}", r.name)).on_click(cx.listener(|this, _, _, cx| {
+                                    .child(crate::ui::button("to-instances").primary().label(format!("Go to {}", r.name)).on_click(cx.listener(|this, _, _, cx| {
                                         this.page = Page::Instances;
                                         cx.notify();
                                     })))
-                                    .child(Button::new("to-local").ghost().small().label("Back to this computer").on_click(cx.listener(|this, _, _, cx| this.open_instance(None, cx)))),
+                                    .child(crate::ui::button("to-local").ghost().label("Back to this computer").on_click(cx.listener(|this, _, _, cx| this.open_instance(None, cx)))),
                             ),
                     )
                     .into_any_element();
@@ -790,7 +986,13 @@ impl Manager {
         match self.page {
             Page::Instances => {
                 if self.instances.is_none() {
-                    let page = cx.new(|cx| instances::InstancesPage::new(record, cx));
+                    let open = self.open_remote.clone();
+                    let page = cx.new(|cx| {
+                        let mut p = instances::InstancesPage::new(record, cx);
+                        // An instance opened before this page was first shown.
+                        p.open = open;
+                        p
+                    });
                     self._subscriptions.push(cx.subscribe(&page, |this, _, e: &instances::OpenInstance, cx| {
                         this.open_instance(e.0.clone(), cx);
                     }));
@@ -901,12 +1103,33 @@ impl Manager {
 
 impl Render for Manager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let top = self.top_bar(cx);
-        let nav = self.nav(cx);
+        // The layout follows the window: an icon rail below RAIL_BELOW px,
+        // fewer monitors in the top bar as it narrows.
+        let width = f32::from(window.viewport_size().width);
+        // A Control row's "Logs" asked for the Logs page.
+        if crate::logsource::take_go() {
+            self.page = Page::Logs;
+        }
+        let top = self.top_bar(width, cx);
+        let nav = self.nav(width < RAIL_BELOW, cx);
         let notices = self.notices(cx);
+        let remote_bar = self.remote_bar(cx);
         let content = self.content(window, cx);
+        let rail = width < RAIL_BELOW;
+        let layer = crate::modal::layer(window, cx, if rail { 64. } else { NAV_W }, 42.);
+        if layer.is_some() && window.focused(cx).is_none() {
+            window.focus(&self.modal_focus, cx);
+        }
         v_flex()
             .size_full()
+            .relative()
+            .track_focus(&self.modal_focus)
+            // Escape closes the open dialog, from anywhere in the window.
+            .on_key_down(|e: &KeyDownEvent, window, cx| {
+                if e.keystroke.key == "escape" && cx.try_global::<crate::modal::ModalSlot>().is_some_and(|s| s.0.is_some()) {
+                    crate::modal::dismiss(window, cx);
+                }
+            })
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(top)
@@ -916,10 +1139,17 @@ impl Render for Manager {
                     .min_h_0()
                     .w_full()
                     .child(nav)
-                    .child(v_flex().flex_1().h_full().min_w_0().children(notices).child(h_flex().flex_1().min_h_0().w_full().child(content))),
+                    .child(v_flex().flex_1().h_full().min_w_0().children(remote_bar).children(notices).child(crate::ui::appear(h_flex().flex_1().min_h_0().w_full().child(content), SharedString::from(format!("page-{}", self.page.id())), 140))),
             )
+            .children(layer)
     }
 }
+
+/// Below this window width the menu becomes an icon rail.
+pub(crate) const RAIL_BELOW: f32 = 960.;
+
+/// The menu's width (the mockup's 188 px at its 12.5 px text, for 14 px).
+pub(crate) const NAV_W: f32 = 210.;
 
 /// ", released 2026-10-24", or nothing.
 fn dated(date: &str) -> String {

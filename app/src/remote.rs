@@ -278,7 +278,7 @@ pub fn run(inst: &Instance, remote: &str, once: Option<&str>) -> Result<String, 
 }
 
 /// The passphrase or password was kept only until the Platform Manager closed.
-pub const FORGOTTEN: &str = "The passphrase or password is not kept on this computer (no keyring here). Enter it again with Edit.";
+pub const FORGOTTEN: &str = "The passphrase or password is not kept on this computer (no keyring). Enter it again with Edit.";
 
 /// ssh's messages in plain words.
 fn explain(err: &str) -> Option<String> {
@@ -412,7 +412,7 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
         return win::deploy(inst, sink);
     }
     if det.arch != "x86_64" {
-        return Err(failed(&format!("There is no Platform Manager agent for Linux on {} processors yet.", det.arch), ""));
+        return Err(failed(&format!("No server agent for Linux on {} processors.", det.arch), ""));
     }
     let me = agent_file(false, sink)?;
     let want = sentient_installer_core::manifest::sha256_file(&me)?;
@@ -518,7 +518,10 @@ pub fn ready(inst: &Instance) -> Result<(), String> {
 }
 
 /// What [`status`] says before the Platform Manager is on the server.
-pub const NOT_SET_UP: &str = "The Platform Manager is not on this server yet. Set it up to see the server's state and work on it.";
+/// The Platform Manager there has no SENTIENT added yet: nothing to report.
+pub const NOT_ADDED: &str = "No SENTIENT is added on this server.";
+
+pub const NOT_SET_UP: &str = "The server agent is not set up on this server. Set up installs it, to read the server's state and work on it.";
 
 /// The server's state, from its own Platform Manager (`--job status-json`).
 pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {
@@ -564,6 +567,12 @@ pub struct RemoteStatus {
     /// A job running there now (started earlier, maybe from a closed window).
     #[serde(default)]
     pub running_job: Option<String>,
+    /// SENTIENT's web port there (Open SENTIENT).
+    #[serde(default)]
+    pub http_port: Option<u16>,
+    /// Compose files the stack was started with that are gone since.
+    #[serde(default)]
+    pub vanished_files: Vec<String>,
 }
 
 /// One service or container on the server (Status and Control).
@@ -588,7 +597,11 @@ pub struct RemoteBackups {
 /// the one JSON line it prints.
 fn read_json<T: serde::de::DeserializeOwned>(inst: &Instance, job: &str) -> Result<T, String> {
     let out = spm_job(inst, job)?;
-    let line = out.lines().rev().find(|l| { let t = l.trim_start(); t.starts_with('{') || t.starts_with('[') }).ok_or("The server's Platform Manager gave no answer.")?;
+    // "null": nothing to report yet, no SENTIENT added there. Not a failure.
+    if out.lines().any(|l| l.trim() == "null") {
+        return Err(NOT_ADDED.into());
+    }
+    let line = out.lines().rev().find(|l| { let t = l.trim_start(); t.starts_with('{') || t.starts_with('[') }).ok_or("The server's Platform Manager gave no answer. Try again; if it stays, Show details on the job, or run Set up again.")?;
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 
@@ -655,6 +668,11 @@ pub fn home(inst: &Instance) -> Result<String, String> {
 }
 
 pub fn backups(inst: &Instance) -> Result<RemoteBackups, String> {
+    // Development aid: canned backups (screens).
+    #[cfg(debug_assertions)]
+    if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_BACKUPS") {
+        return serde_json::from_str(&t.to_string_lossy()).map_err(|e| e.to_string());
+    }
     read_json(inst, "backups-json")
 }
 
@@ -750,9 +768,36 @@ pub fn follow(inst: &Instance, id: &str, sink: &ProgressFn) -> Result<(), String
 
 /// The last lines of SENTIENT's log on the server.
 pub fn logs(inst: &Instance, lines: u32) -> Result<String, String> {
-    let pw = secret(&inst.id);
-    let _ = pw;
     spm_job(inst, &format!("logs {lines}"))
+}
+
+/// One log source on the server: the last `lines`, or since midnight with
+/// `today` (crate::logsource).
+pub fn logs_from(inst: &Instance, source: crate::logsource::Source, lines: u32, today: bool) -> Result<String, String> {
+    #[cfg(debug_assertions)]
+    if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_LOGS") {
+        return Ok(std::fs::read_to_string(std::path::Path::new(&t).join(format!("{}.log", source.key()))).unwrap_or_default());
+    }
+    spm_job(inst, &format!("logs {lines} --source {}{}", source.key(), if today { " --today" } else { "" }))
+}
+
+/// The log sources the server has.
+pub fn log_sources(inst: &Instance) -> Result<Vec<crate::logsource::Source>, String> {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("SPM_DEBUG_REMOTE_LOGS").is_some() {
+        return Ok(vec![crate::logsource::Source::Sentient, crate::logsource::Source::Database, crate::logsource::Source::ClickHouse]);
+    }
+    read_json(inst, "logs 0 --sources")
+}
+
+/// Is there a file at `path` on the server (a certificate or key for
+/// Platform settings)? Looks only; nothing is read.
+pub fn file_exists(inst: &Instance, path: &str) -> Result<bool, String> {
+    if is_windows(inst) {
+        return Ok(win::ps(inst, &format!("Test-Path -PathType Leaf '{}'", path.replace('\'', "''")))?.trim() == "True");
+    }
+    let quoted = format!("'{}'", path.replace('\'', "'\\''"));
+    Ok(run(inst, &format!("test -f {quoted} && echo yes || echo no"), None)?.trim() == "yes")
 }
 
 /// The server runs Windows.
@@ -781,6 +826,27 @@ pub fn remove_file(inst: &Instance, path: &str) {
 
 /// An error in two parts: a plain headline, and the technical details the
 /// screen shows behind "Show details" (crate::manager::instances).
+/// A job's failure as a plain headline and its technical details: split at
+/// DETAILS, or, for a raw command error, a plain headline with the raw text
+/// as the details.
+pub fn split_failure(m: &str) -> (String, Option<String>) {
+    if let Some((h, d)) = m.split_once(DETAILS) {
+        return (h.to_string(), Some(d.to_string()));
+    }
+    let raw = m.contains("docker ") || m.contains("exit status") || m.contains("exited") || m.lines().count() > 2 || m.len() > 200;
+    if !raw {
+        return (m.to_string(), None);
+    }
+    let headline = if m.contains("no such file") || m.contains("not found") && m.contains(".yml") {
+        "A compose file SENTIENT's stack needs is missing."
+    } else if m.contains("permission denied") || m.contains("Permission denied") {
+        "The server refused the action: not enough rights."
+    } else {
+        "The action did not finish on the server."
+    };
+    (headline.to_string(), Some(m.to_string()))
+}
+
 pub fn failed(headline: &str, details: &str) -> String {
     if details.trim().is_empty() { headline.to_string() } else { format!("{headline}{DETAILS}{}", details.trim()) }
 }
@@ -1119,6 +1185,23 @@ mod tests {
         assert!(running_job(&inst).is_none());
         let e = logs(&inst, 10).unwrap_err();
         eprintln!("logs without SENTIENT: {e}");
+        // Nothing added: a calm "not added", not a failure.
+        assert_eq!(services(&inst).unwrap_err(), NOT_ADDED);
+        assert_eq!(backups(&inst).unwrap_err(), NOT_ADDED);
+        assert!(!status(&inst).unwrap().installed);
+        // After Set up: no SENTIENT there, so nothing is added and it says so.
+        let id = start_job(&inst, &["add-if-one"]).unwrap();
+        let said = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let s2 = said.clone();
+        let collect: ProgressFn = std::sync::Arc::new(move |p| {
+            if let Progress::Done { message } = p {
+                s2.lock().unwrap().push(message);
+            }
+        });
+        follow(&inst, &id, &collect).unwrap();
+        let said = said.lock().unwrap().join(" ");
+        eprintln!("add-if-one: {said}");
+        assert!(said.contains("No SENTIENT was found"), "{said}");
         let _ = std::fs::remove_file(known_hosts());
     }
 

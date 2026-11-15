@@ -112,7 +112,7 @@ pub fn catalog() -> &'static [Category] {
             kind: TelemetryHistorical,
             tables: &[Exact("ts_kv")],
             file_store: None,
-            notes: "The ts_kv hypertable — usually the largest component. Supports none/all/last-N-days.",
+            notes: "The ts_kv hypertable, usually the largest component. Supports none/all/last-N-days.",
         },
         Category {
             id: "telemetry_latest",

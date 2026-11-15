@@ -229,7 +229,7 @@ fn sentient_offer(all: &[Release], channel: Channel, installed: &str, native: bo
     let candidates = releases::on_channel(all, channel, releases::is_sentient);
     if candidates.is_empty() {
         return match channel {
-            Channel::Nightly => Err("No nightly SENTIENT build is published yet.".into()),
+            Channel::Nightly => Err("No nightly SENTIENT build is published.".into()),
             _ => Ok(None),
         };
     }

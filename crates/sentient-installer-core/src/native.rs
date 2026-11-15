@@ -255,7 +255,7 @@ fn psql(cfg: &NativeConfig, db: &str, sql: &str) -> Result<String, String> {
         let err = sys::decode(&o.stderr).trim().to_string();
         if err.contains("password authentication failed") {
             return Err(format!(
-                "psql: {err} — this computer's PostgreSQL was kept from an earlier install: enter that install's PostgreSQL admin password."
+                "psql: {err}. This computer's PostgreSQL was kept from an earlier install: enter that install's PostgreSQL admin password."
             ));
         }
         return Err(format!("psql: {err}"));
@@ -674,8 +674,8 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         if !cfg.pg_data().join("PG_VERSION").exists() {
             return Err(
                 "initdb reported success but created no database cluster. On Windows this \
-                 usually means postgres.exe cannot start at all — most often a missing \
-                 Visual C++ runtime (vcruntime140_1.dll) — or that initdb was run from a \
+                 usually means postgres.exe cannot start at all, most often a missing \
+                 Visual C++ runtime (vcruntime140_1.dll), or that initdb was run from a \
                  non-interactive session with an elevated token."
                     .into(),
             );
@@ -782,7 +782,7 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
             "SELECT extversion FROM pg_extension WHERE extname='timescaledb';",
         )?;
         if ver.is_empty() {
-            return Err("TimescaleDB did not load — check shared_preload_libraries and the PostgreSQL version pin (>= 18.6)".into());
+            return Err("TimescaleDB did not load. Check shared_preload_libraries and the PostgreSQL version pin (>= 18.6)".into());
         }
         log(&sink, format!("TimescaleDB {ver} active"));
     }
@@ -1060,7 +1060,7 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     #[cfg(not(target_os = "linux"))]
     {
     if !is_ready(cfg) {
-        return Err("database prerequisites are not installed — run setup first".into());
+        return Err("database prerequisites are not installed. Run setup first".into());
     }
 
     stage_payload(&sink, cfg)?;
@@ -1137,7 +1137,7 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
             // expected on repair/upgrade paths, so log rather than hard-fail and
             // let the readiness probe below be the real gate.
             log(&sink, format!(
-                "note: the schema installer returned an error ({}). If the database was already installed this is expected — continuing.",
+                "note: the schema installer returned an error ({}). If the database was already installed this is expected. Continuing.",
                 sys::decode(&err).trim()
             ));
         }
@@ -1164,7 +1164,7 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
-    Err("SENTIENT did not start listening within 90s — check the service log".into())
+    Err("SENTIENT did not start listening within 90s. Check the service log".into())
     }
 }
 
@@ -1549,6 +1549,33 @@ pub fn stop_server(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> 
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
     Err("SENTIENT did not stop within a minute".into())
+    }
+}
+
+/// Start, stop or restart one service of the install (the caller checks it
+/// is one of the install's own).
+pub fn service_control(sink: ProgressFn, name: &str, action: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        return crate::native_linux::service_control(sink, name, action);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        match action {
+            "start" | "stop" => {
+                step(&sink, &format!("{action} {name}"));
+                let _ = sc(&[action, name]);
+            }
+            "restart" => {
+                step(&sink, &format!("restart {name}"));
+                let _ = sc(&["stop", name]);
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let _ = sc(&["start", name]);
+            }
+            other => return Err(format!("unknown action: {other}")),
+        }
+        sink(Progress::Done { message: format!("{name}: {action} done.") });
+        Ok(())
     }
 }
 
@@ -2005,7 +2032,7 @@ pub fn verify_bundle(src: &ArtifactSource) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "the offline bundle is incomplete — missing: {}",
+            "the offline bundle is incomplete, missing: {}",
             missing.join(", ")
         ))
     }

@@ -118,3 +118,66 @@ mod tests {
         assert_eq!(find("RULE_ENGINE_CONSUMERS"), "4");
     }
 }
+
+/// How a setting is edited, from its name, label and built-in value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueKind {
+    /// On or off.
+    Switch,
+    /// A file on the computer that runs SENTIENT (certificates, keys).
+    File,
+    /// A whole number, with its unit when it has one.
+    Number(Option<&'static str>),
+    Text,
+}
+
+impl Setting {
+    pub fn kind(&self) -> ValueKind {
+        let env = self.env.as_str();
+        if matches!(self.default.as_str(), "true" | "false") || env.ends_with("_ENABLED") {
+            return ValueKind::Switch;
+        }
+        if env.contains("_PEM_") || env.ends_with("_FILE") {
+            return ValueKind::File;
+        }
+        let unit = [("(ms)", "ms"), ("(s)", "s"), ("(min)", "min"), ("(days)", "days"), ("(MB)", "MB")]
+            .into_iter()
+            .find(|(tag, _)| self.label.ends_with(tag))
+            .map(|(_, u)| u);
+        let whole = !self.default.is_empty() && self.default.chars().all(|c| c.is_ascii_digit());
+        let counted = ["_THREADS", "_PORT", "_SIZE", "_MAX", "_MIN", "_CONNECTIONS", "_WORKERS", "_CONSUMERS", "_COUNT"].iter().any(|s| env.ends_with(s));
+        if unit.is_some() || whole || (counted && !env.starts_with("pg:")) {
+            return ValueKind::Number(unit);
+        }
+        ValueKind::Text
+    }
+
+    /// The label without its unit, which the field shows after the number.
+    pub fn short_label(&self) -> String {
+        match self.kind() {
+            ValueKind::Number(Some(u)) => self.label.trim_end_matches(&format!("({u})")).trim_end().to_string(),
+            _ => self.label.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod kind_tests {
+    use super::*;
+
+    #[test]
+    fn every_setting_gets_a_fitting_field() {
+        let all: Vec<Setting> = groups().into_iter().flat_map(|g| g.settings).collect();
+        let kind = |env: &str| all.iter().find(|s| s.env == env).unwrap().kind();
+        assert_eq!(kind("SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT"), ValueKind::Switch);
+        assert_eq!(kind("AUDIT_LOG_CLEANUP_ENABLED"), ValueKind::Switch);
+        assert_eq!(kind("SSL_PEM_CERT"), ValueKind::File);
+        assert_eq!(kind("COAP_SSL_PEM_KEY"), ValueKind::File);
+        assert_eq!(kind("SECURITY_CLAIM_DURATION"), ValueKind::Number(Some("ms")));
+        assert_eq!(kind("SQL_TS_BATCH_THREADS"), ValueKind::Number(None));
+        assert_eq!(kind("EDGE_GRPC_PORT"), ValueKind::Number(None));
+        assert_eq!(kind("pg:shared_buffers"), ValueKind::Text);
+        assert_eq!(kind("RUST_LOG"), ValueKind::Text);
+        assert_eq!(kind("LICENSE_SERVER_URL"), ValueKind::Text);
+    }
+}

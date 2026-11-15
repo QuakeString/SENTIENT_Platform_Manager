@@ -4,7 +4,7 @@
 //! without any window: the maintenance screen and the server agent
 //! (`--job repair`, crate::headless) both run it.
 
-use sentient_installer_core::{distro, native, releases};
+use sentient_installer_core::{distro, native};
 use sentient_installer_core::progress::{Progress, ProgressFn};
 
 use crate::installation::{Engine, InstallationRecord};

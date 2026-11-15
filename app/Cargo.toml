@@ -31,6 +31,7 @@ sentient-backup-core = { path = "../crates/sentient-backup-core" }
 # The backup engine is async on tokio; jobs run it on a small runtime of their own.
 tokio = { version = "1", features = ["rt"] }
 futures = "0.3"
+anyhow = "1"
 # The same hashing SENTIENT verifies (common/src/security/password.rs).
 argon2 = { version = "0.5", features = ["std"] }
 chrono = "0.4"

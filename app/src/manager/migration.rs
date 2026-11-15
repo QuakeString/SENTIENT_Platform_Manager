@@ -3,10 +3,9 @@
 //! Migration: change the database type (crate::migration does the work).
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme, Disableable as _, h_flex, v_flex,
+    button::ButtonVariants as _,
     progress::Progress,
-    radio::RadioGroup,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -37,12 +36,37 @@ pub struct MigrationPage {
 
 impl EventEmitter<RecordChanged> for MigrationPage {}
 
-fn describe(flavor: Flavor) -> &'static str {
+fn describe(flavor: Flavor, windows: bool) -> &'static str {
     match flavor {
         Flavor::Stock => "Everything in PostgreSQL. Simplest; suits small sites.",
         Flavor::Timescaledb => "PostgreSQL with TimescaleDB: history compressed and in time chunks.",
-        Flavor::Clickhouse => "History in ClickHouse (Docker in WSL2), everything else in PostgreSQL. For large sites.",
+        Flavor::Clickhouse if windows => "History in ClickHouse (Docker in WSL2), everything else in PostgreSQL. For large sites.",
+        Flavor::Clickhouse => "History in ClickHouse, everything else in PostgreSQL. For large sites.",
     }
+}
+
+/// The database types to change to, as choice cards. Shared with a remote
+/// server's Migration.
+pub(crate) fn target_cards(theme: &gpui_kit::component::Theme, id: &str, targets: &[Flavor], selected: Option<usize>, windows: bool, pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
+    v_flex().gap_2().children(targets.iter().enumerate().map(|(i, f)| {
+        let pick = pick.clone();
+        ui::radio_card(theme, SharedString::from(format!("{id}target-{i}")), flavor_label(*f), describe(*f, windows), selected == Some(i)).on_click(move |_, _, cx| pick(i, cx))
+    }))
+}
+
+/// What changing the database does, step by step.
+pub(crate) fn steps_text(theme: &gpui_kit::component::Theme, clickhouse_on_windows: bool) -> Div {
+    v_flex()
+        .gap_1()
+        .text_sm()
+        .text_color(theme.muted_foreground)
+        .child("1. A full backup, history included, is written to the backups folder of the installation.")
+        .child("2. SENTIENT stops for about a minute and starts again on the new type.")
+        .child("3. The history from before the switch is then copied month by month while SENTIENT runs; charts fill in as it goes.")
+        .child("4. The old history is kept where it was until you remove it.")
+        .when(clickhouse_on_windows, |c| {
+            c.child("ClickHouse is installed first (WSL2 and Docker under a hidden service account); if Windows must restart for WSL2, nothing is changed and you start again afterwards.")
+        })
 }
 
 impl MigrationPage {
@@ -109,7 +133,7 @@ impl MigrationPage {
                 kept::KeptKind::ClickhouseDatabase => "and the ClickHouse history in it",
             }
         );
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             let item = item.clone();
             dialog.title("Remove for good?").description(text.clone()).confirm().ok_text("Remove").on_ok(move |_, _, cx| {
@@ -190,36 +214,27 @@ impl Render for MigrationPage {
             Ok(targets) => ui::panel(&theme)
                 .child(ui::fact(&theme, "Database now", flavor_label(current)))
                 .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Change to"))
-                .child(
-                    RadioGroup::vertical("target")
-                        .children(targets.iter().map(|f| format!("{} — {}", flavor_label(*f), describe(*f))))
-                        .selected_index(self.target)
-                        .disabled(busy || unfinished.is_some())
-                        .on_change(cx.listener(|this, value: &usize, _, cx| {
-                            this.target = Some(*value);
-                            this.confirm = false;
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    v_flex()
-                        .gap_1()
-                        .text_sm()
-                        .text_color(theme.muted_foreground)
-                        .child("1. A full backup, history included, is written to the backups folder of the installation.")
-                        .child("2. SENTIENT stops for about a minute and starts again on the new type.")
-                        .child("3. The history from before the switch is then copied month by month while SENTIENT runs; charts fill in as it goes.")
-                        .child("4. The old history is kept where it was until you remove it.")
-                        .when(chosen == Some(Flavor::Clickhouse), |c| {
-                            c.child("ClickHouse is installed first (WSL2 and Docker under a hidden service account); if Windows must restart for WSL2, nothing is changed and you start again afterwards.")
-                        }),
-                )
+                .child({
+                    let locked = busy || unfinished.is_some();
+                    let this = cx.entity().downgrade();
+                    target_cards(&theme, "", targets, self.target, cfg!(windows), std::rc::Rc::new(move |i, cx| {
+                        if !locked {
+                            this.update(cx, |this, cx| {
+                                this.target = Some(i);
+                                this.confirm = false;
+                                cx.notify();
+                            })
+                            .ok();
+                        }
+                    }))
+                })
+                .child(steps_text(&theme, cfg!(windows) && chosen == Some(Flavor::Clickhouse)))
                 .child(
                     h_flex()
                         .gap_2()
                         .when(!self.confirm, |r| {
                             r.child(
-                                Button::new("migrate")
+                                crate::ui::button("migrate")
                                     .primary()
                                     .label(chosen.map(|f| format!("Change to {}", flavor_label(f))).unwrap_or_else(|| "Change database".into()))
                                     .disabled(busy || chosen.is_none() || unfinished.is_some())
@@ -231,14 +246,14 @@ impl Render for MigrationPage {
                         })
                         .when(self.confirm, |r| {
                             r.child(
-                                Button::new("migrate-confirm")
+                                crate::ui::button("migrate-confirm")
                                     .danger()
                                     .label("Stop SENTIENT and change now")
                                     .disabled(busy)
                                     .on_click(cx.listener(|this, _, _, cx| this.start(cx))),
                             )
                             .child(
-                                Button::new("migrate-cancel")
+                                crate::ui::button("migrate-cancel")
                                     .ghost()
                                     .label("Cancel")
                                     .disabled(busy)
@@ -267,9 +282,8 @@ impl Render for MigrationPage {
                 .when(root_only, |p| {
                     p.child(
                         h_flex().child(
-                            Button::new("show-kept")
+                            crate::ui::button("show-kept")
                                 .outline()
-                                .small()
                                 .label("Show (asks for the administrator password)")
                                 .disabled(busy)
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -295,13 +309,12 @@ impl Render for MigrationPage {
                                 .flex_1()
                                 .min_w_0()
                                 .child(div().font_weight(FontWeight::MEDIUM).child(item.name.clone()))
-                                .child(div().text_xs().text_color(theme.muted_foreground).child(item.detail.clone())),
+                                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(item.detail.clone())),
                         )
                         .child(div().text_color(theme.muted_foreground).child(kept::human(item.bytes)))
                         .child(
-                            Button::new(SharedString::from(format!("remove-{i}")))
+                            crate::ui::button(SharedString::from(format!("remove-{i}")))
                                 .outline()
-                                .small()
                                 .label("Remove")
                                 .disabled(busy)
                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -322,7 +335,7 @@ impl Render for MigrationPage {
                     )))
                     .child(
                         h_flex().child(
-                            Button::new("resume")
+                            crate::ui::button("resume")
                                 .primary()
                                 .label("Continue copying")
                                 .disabled(busy)
@@ -341,7 +354,7 @@ impl Render for MigrationPage {
                             .when_some(percent, |p, v| p.child(Progress::new("migration-progress").value(v)))
                     })
                     .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
-                    .children(log.into_iter().map(|line| div().text_xs().text_color(theme.muted_foreground).child(line))),
+                    .children(log.into_iter().map(|line| div().text_size(px(13.)).text_color(theme.muted_foreground).child(line))),
             )
         })
     }

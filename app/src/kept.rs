@@ -178,7 +178,7 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
                     kept.push(Kept {
                         kind: KeptKind::ClickhouseDatabase,
                         detail: if name.contains("_before_install_") {
-                            "ClickHouse history from an earlier install, set aside when this one started fresh".into()
+                            "ClickHouse history from an earlier install, set aside when the current install started fresh".into()
                         } else {
                             "ClickHouse data: a restore, or the history from before a restore was put into service".into()
                         },
@@ -260,7 +260,7 @@ pub fn remove_clickhouse(sink: &ProgressFn) -> Result<(), String> {
                 "unregister",
                 Some(std::time::Duration::from_secs(180)),
             ) {
-                sink(Progress::Log { line: format!("ClickHouse's WSL distribution was not removed: {e}. Its disk stays under C:\\Users\\sentient-clickhouse until it is removed by hand (wsl --unregister sentient, as that account).") });
+                sink(Progress::Log { line: format!("ClickHouse's WSL distribution was not removed: {e}. Its disk stays under C:\\Users\\sentient-clickhouse until it is removed manually (wsl --unregister sentient, as that account).") });
             }
         }
         clickhouse_wsl::remove_account(sink);

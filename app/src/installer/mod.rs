@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex,
+    button::ButtonVariants as _,
     input::{InputEvent, InputState},
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -94,6 +94,10 @@ pub struct Installer {
     accepted: bool,
     /// Install the Platform Manager alone, without SENTIENT.
     manager_only: bool,
+    /// Started from the installed Platform Manager to add SENTIENT
+    /// (`--add-sentient`): no choice of what to install, and nothing about
+    /// installing the Platform Manager itself.
+    pub(crate) adding_sentient: bool,
     checks: Option<Vec<CheckRow>>,
     flavor: Option<Flavor>,
     load_demo: bool,
@@ -242,6 +246,7 @@ impl Installer {
             engine: if cfg!(windows) { Engine::Native } else { Engine::Docker },
             accepted: false,
             manager_only: false,
+            adding_sentient: std::env::args().any(|a| a == "--add-sentient"),
             checks: None,
             flavor: None,
             load_demo: false,
@@ -380,7 +385,7 @@ impl Installer {
                         rows.push(CheckRow {
                             label: "SENTIENT already installed".into(),
                             detail: format!(
-                                "SENTIENT {} runs here as {}, from {}. Installing again would overwrite it: open the Platform Manager and use “Add existing instance” on its Status screen instead.",
+                                "SENTIENT {} runs on this computer as {}, from {}. Installing again would overwrite it: open the Platform Manager and use “Add existing instance” on its Status screen instead.",
                                 c.record.sentient_version, c.kind, c.location
                             )
                             .into(),
@@ -894,7 +899,7 @@ impl Installer {
 
     fn confirm_remove_leftovers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             dialog
                 .title("Remove the earlier install?")
@@ -910,13 +915,13 @@ impl Installer {
 
     fn confirm_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let installing = self.step == INSTALL && self.install.read(cx).is_running();
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             dialog
                 .title("Cancel setup?")
                 .description(if installing {
                     "The install stops after the current task. Anything already installed stays on this computer; run setup again to finish or remove it."
                 } else {
-                    "Nothing has been installed yet."
+                    "Nothing has been installed."
                 })
                 .confirm()
                 .ok_text("Cancel setup")
@@ -940,7 +945,7 @@ impl Installer {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_xs()
+                .text_size(px(13.))
                 .map(|m| {
                     if current {
                         m.bg(theme.primary).text_color(theme.primary_foreground).child(format!("{}", n + 1))
@@ -955,8 +960,10 @@ impl Installer {
             h_flex()
                 .id(("step", i))
                 .gap_3()
-                .px_4()
-                .py_1p5()
+                .mx_3()
+                .px_3()
+                .py_2()
+                .rounded(theme.radius)
                 .text_sm()
                 .when(current, |r| r.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground))
                 .when(!current && !done, |r| r.text_color(theme.muted_foreground))
@@ -978,11 +985,13 @@ impl Installer {
                 v_flex()
                     .px_4()
                     .pb_4()
-                    .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(theme.primary).child("SENTIENT"))
-                    .child(div().text_xs().text_color(theme.muted_foreground).child(if self.manager_only {
+                    .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(theme.primary).whitespace_nowrap().child("SENTIENT Setup"))
+                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).whitespace_nowrap().text_ellipsis().child(if self.manager_only {
                         "Platform Manager"
+                    } else if self.adding_sentient {
+                        "Platform"
                     } else {
-                        "Platform + Platform Manager"
+                        "Platform and Manager"
                     })),
             )
             .children(rows)
@@ -1009,31 +1018,29 @@ impl Installer {
             .bg(theme.background)
             .border_t_1()
             .border_color(theme.border)
-            .child(div().text_xs().text_color(theme.muted_foreground).child({
+            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child({
                 let shown = self.shown_steps();
                 let at = shown.iter().position(|s| *s == self.step).unwrap_or(0);
                 format!("Step {} of {}", at + 1, shown.len())
             }))
             .map(|bar| match (self.problem.clone(), blocked.clone()) {
-                (Some(problem), _) => bar.child(div().ml_4().min_w_0().text_sm().text_color(theme.danger).child(problem)),
+                (Some(problem), _) => bar.child(div().ml_4().flex_1().min_w_0().text_sm().line_clamp(2).text_color(theme.danger).child(problem)),
                 (None, Some(reason)) => bar.child(
                     h_flex()
                         .ml_4()
                         .flex_1()
                         .min_w_0()
-                        .overflow_hidden()
                         .gap_1p5()
                         .text_sm()
                         .text_color(theme.muted_foreground)
-                        .child(Icon::new(IconName::Info).small())
-                        .child(div().min_w_0().truncate().child(reason)),
+                        .child(Icon::new(IconName::Info).small().flex_shrink_0())
+                        .child(div().flex_1().min_w_0().line_clamp(2).child(reason)),
                 ),
-                (None, None) => bar,
+                (None, None) => bar.child(div().flex_1()),
             })
-            .child(div().flex_1())
             .when(self.step < FINISH, |bar| {
                 bar.child(
-                    Button::new("cancel")
+                    crate::ui::button("cancel")
                         .ghost()
                         .label("Cancel")
                         .on_click(cx.listener(|this, _, window, cx| this.confirm_cancel(window, cx))),
@@ -1041,14 +1048,14 @@ impl Installer {
             })
             .when(self.step > 0 && self.step < INSTALL, |bar| {
                 bar.child(
-                    Button::new("back")
+                    crate::ui::button("back")
                         .outline()
                         .label("Back")
                         .on_click(cx.listener(|this, _, _, cx| this.go(this.previous_shown(this.step), cx))),
                 )
             })
             .child(
-                Button::new("next")
+                crate::ui::button("next")
                     .primary()
                     .label(next_label)
                     .disabled((self.step == INSTALL && !failed) || blocked.is_some())
@@ -1066,8 +1073,11 @@ impl Render for Installer {
         let footer = self.footer(cx);
         let page = self.page(window, cx);
         let theme = cx.theme().clone();
+        // The shared dialogs, centred right of the steps (crate::modal).
+        let layer = crate::modal::layer(window, cx, 224., 0.);
         h_flex()
             .size_full()
+            .relative()
             .bg(theme.background)
             .text_color(theme.foreground)
             .child(nav)
@@ -1083,13 +1093,21 @@ impl Render for Installer {
                             .min_h_0()
                             .overflow_y_scroll()
                             .p_8()
-                            .gap_4()
                             .bg(theme.muted)
-                            .child(div().text_2xl().child(self.title(self.step)))
-                            .child(page),
+                            // One content column on every step.
+                            .child(
+                                v_flex()
+                                    .w_full()
+                                    .max_w(px(820.))
+                                    .flex_1()
+                                    .gap_4()
+                                    .child(div().text_size(px(18.)).font_weight(FontWeight::MEDIUM).child(self.title(self.step)))
+                                    .child(page),
+                            ),
                     )
                     .child(footer),
             )
+            .children(layer)
             .into_any_element()
     }
 }

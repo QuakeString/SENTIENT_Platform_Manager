@@ -5,7 +5,7 @@
 
 use gpui_kit::component::{
     Theme, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
 };
 use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -68,19 +68,19 @@ pub const START_DELAY_HELP: &str = "Seconds SENTIENT waits after Windows starts 
 
 /// "Start delay [ 15 ] seconds (i)": the installer's and Control's field.
 pub fn start_delay_row(theme: &Theme, state: &Entity<gpui_kit::component::input::InputState>) -> Div {
-    use gpui_kit::component::{Sizable as _, button::{Button, ButtonVariants as _}, input::Input, IconName};
+    use gpui_kit::component::{Sizable as _, button::ButtonVariants as _, input::Input, IconName};
     gpui_kit::component::h_flex()
         .gap_2()
         .items_center()
         .child(div().text_sm().child("Start delay"))
-        .child(div().w_20().child(Input::new(state).small()))
+        .child(div().w_20().child(Input::new(state)))
         .child(div().text_sm().text_color(theme.muted_foreground).child("seconds"))
-        .child(Button::new("start-delay-help").ghost().xsmall().icon(IconName::Info).tooltip(START_DELAY_HELP))
+        .child(crate::ui::button("start-delay-help").ghost().xsmall().icon(IconName::Info).tooltip(START_DELAY_HELP))
 }
 
 /// The corner radius of panels and cards (buttons and inputs keep the
 /// theme's smaller one).
-pub const PANEL_RADIUS: f32 = 8.;
+pub const PANEL_RADIUS: f32 = 12.;
 
 /// A content panel: surface colour, hairline border, panel radius.
 pub fn panel(theme: &Theme) -> Div {
@@ -101,11 +101,17 @@ pub fn page(theme: &Theme, title: &'static str, summary: &'static str) -> Statef
         .min_w_0()
         .h_full()
         .overflow_y_scroll()
-        .p_8()
-        .gap_4()
+        // The mockup's page: 16 px padding, 14 px between blocks, the title
+        // and its line of text as one block.
+        .p_4()
+        .gap(px(14.))
         .bg(theme.muted)
-        .child(div().text_2xl().child(title))
-        .child(div().text_color(theme.muted_foreground).child(summary))
+        .child(
+            v_flex()
+                .gap_0p5()
+                .child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(title))
+                .child(div().text_sm().text_color(theme.muted_foreground).child(summary)),
+        )
 }
 
 #[derive(Clone, Copy)]
@@ -121,14 +127,15 @@ pub fn pill(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div {
     let (bg, fg) = match tone {
         Tone::Good => (theme.success, theme.success_foreground),
         Tone::Warn => (theme.warning, theme.warning_foreground),
-        Tone::Bad => (theme.danger, theme.danger_foreground),
+        // Soft like the others: a red tint with red text.
+        Tone::Bad => (theme.danger.opacity(0.14), theme.danger),
         Tone::Neutral => (theme.secondary, theme.secondary_foreground),
     };
     h_flex()
         .px_2p5()
         .py_0p5()
         .rounded_full()
-        .text_xs()
+        .text_size(px(13.))
         .font_weight(FontWeight::MEDIUM)
         .bg(bg)
         .text_color(fg)
@@ -140,7 +147,7 @@ pub fn fact(theme: &Theme, label: &'static str, value: impl Into<SharedString>) 
     h_flex()
         .gap_4()
         .text_sm()
-        .child(div().w_56().flex_shrink_0().text_color(theme.muted_foreground).child(label))
+        .child(div().w(px(168.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
         .child(div().min_w_0().child(value.into()))
 }
 
@@ -155,19 +162,19 @@ pub fn not_installed(theme: &Theme) -> Div {
             h_flex()
                 .gap_2()
                 .child(
-                    Button::new("install-sentient")
+                    crate::ui::button("install-sentient")
                         .primary()
                         .label("Download and install SENTIENT")
                         .on_click(|_, window, cx| crate::standalone::install_sentient(window, cx)),
                 )
                 .child(
-                    Button::new("install-sentient-package")
+                    crate::ui::button("install-sentient-package")
                         .outline()
                         .label("Install from local files…")
                         .on_click(|_, window, cx| crate::standalone::install_sentient_from_package(window, cx)),
                 )
                 .child(
-                    Button::new("remove-manager")
+                    crate::ui::button("remove-manager")
                         .outline()
                         .label("Remove the Platform Manager")
                         .on_click(|_, window, cx| crate::standalone::remove_manager(window, cx)),
@@ -181,7 +188,8 @@ pub fn outcome(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div 
     let (bg, fg) = match tone {
         Tone::Good => (theme.success, theme.success_foreground),
         Tone::Warn => (theme.warning, theme.warning_foreground),
-        Tone::Bad => (theme.danger, theme.danger_foreground),
+        // Soft like the others: a red tint with red text.
+        Tone::Bad => (theme.danger.opacity(0.14), theme.danger),
         Tone::Neutral => (theme.secondary, theme.secondary_foreground),
     };
     let text: SharedString = text.into();
@@ -276,14 +284,14 @@ pub fn release_notes(theme: &Theme, notes: &[crate::notes::Notes]) -> Div {
                     .gap_2()
                     .items_baseline()
                     .child(div().font_weight(FontWeight::MEDIUM).child(n.version.clone()))
-                    .when(!n.date.is_empty(), |r| r.child(div().text_xs().text_color(theme.muted_foreground).child(n.date.clone()))),
+                    .when(!n.date.is_empty(), |r| r.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(n.date.clone()))),
             )
             .when(!n.summary.is_empty(), |c| c.child(div().text_sm().text_color(theme.muted_foreground).child(n.summary.clone())))
             .children(n.sections.iter().map(|(name, entries)| {
                 v_flex()
                     .gap_0p5()
                     .pt_1()
-                    .child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(theme.primary).child(name.to_uppercase()))
+                    .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.primary).child(name.to_uppercase()))
                     .children(entries.iter().map(|e| {
                         gpui_kit::component::h_flex()
                             .gap_2()
@@ -370,31 +378,230 @@ pub fn flavor_logos(flavor: sentient_installer_core::stack::Flavor, size: f32) -
 /// and segments inside it with equal padding. The chosen segment is filled
 /// with the primary colour. The same height as a standard button.
 pub fn seg_track(theme: &Theme) -> Div {
+    // The mockup's segmented control: one bordered strip, segments edge to
+    // edge, the chosen one tinted with primary text.
     gpui_kit::component::h_flex()
         .flex_none()
         .items_center()
-        .gap(px(2.))
-        .p(px(2.))
         .rounded(theme.radius)
         .border_1()
         .border_color(theme.border)
         .bg(theme.background)
+        .overflow_hidden()
 }
 
 /// One segment of a [`seg_track`]; give it `.on_click(...)`.
 pub fn seg_item(theme: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, on: bool) -> Stateful<Div> {
-    let radius = if theme.radius > px(3.) { theme.radius - px(2.) } else { theme.radius };
     div()
         .id(id)
-        .h(px(26.))
-        .px_3()
+        .h(px(30.))
+        .px(px(11.))
         .flex()
         .items_center()
-        .rounded(radius)
         .text_sm()
         .whitespace_nowrap()
         .cursor_pointer()
-        .when(on, |d| d.bg(theme.primary).text_color(theme.primary_foreground).font_weight(FontWeight::MEDIUM))
-        .when(!on, |d| d.text_color(theme.foreground).hover(|d| d.bg(theme.list_hover)))
+        .when(on, |d| d.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground).font_weight(FontWeight::MEDIUM))
+        .when(!on, |d| d.text_color(theme.muted_foreground).hover(|d| d.bg(theme.list_hover).text_color(theme.foreground)))
         .child(label.into())
+}
+
+/// A row of sibling boxes or cards: all stretch to the tallest, tops
+/// aligned, wrapping on narrow windows. Use it for every row of boxes.
+pub fn box_row() -> Div {
+    gpui_kit::component::h_flex().flex_wrap().gap_3().items_stretch()
+}
+
+/// Whether the desktop asks for less motion (KDE's animation speed at 0,
+/// GNOME's animations off, or SPM_REDUCE_MOTION=1). Read once.
+pub fn reduce_motion() -> bool {
+    static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *R.get_or_init(|| {
+        if std::env::var("SPM_REDUCE_MOTION").is_ok_and(|v| v == "1") {
+            return true;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let out = |cmd: &str, args: &[&str]| std::process::Command::new(cmd).args(args).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+            if out("kreadconfig6", &["--file", "kdeglobals", "--group", "KDE", "--key", "AnimationDurationFactor"]).is_some_and(|v| v == "0") {
+                return true;
+            }
+            if out("gsettings", &["get", "org.gnome.desktop.interface", "enable-animations"]).is_some_and(|v| v == "false") {
+                return true;
+            }
+        }
+        false
+    })
+}
+
+/// Fade (and rise a little) when shown; `key` restarts it when it changes.
+pub fn appear<E: IntoElement + Styled + 'static>(el: E, key: impl Into<ElementId>, ms: u64) -> AnyElement {
+    if reduce_motion() {
+        return el.into_any_element();
+    }
+    el.with_animation(key, Animation::new(std::time::Duration::from_millis(ms)).with_easing(ease_out_quint()), |el, d| el.opacity(d))
+        .into_any_element()
+}
+
+/// One choice of several, with a real radio mark, a title and a line about
+/// it. Give it `.on_click(...)`.
+pub fn radio_card(theme: &Theme, id: impl Into<ElementId>, title: impl Into<SharedString>, desc: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
+    gpui_kit::component::h_flex()
+        .id(id)
+        .gap_3()
+        .p_3()
+        .items_start()
+        .rounded(px(PANEL_RADIUS))
+        .border_1()
+        .border_color(if selected { theme.primary } else { theme.border })
+        .when(selected, |c| c.bg(theme.list_active))
+        .cursor_pointer()
+        .hover(|c| c.border_color(theme.primary))
+        .child(
+            div()
+                .mt(px(2.))
+                .size_4()
+                .flex_shrink_0()
+                .rounded_full()
+                .border_2()
+                .border_color(if selected { theme.primary } else { theme.muted_foreground })
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(selected, |r| r.child(div().size_2().rounded_full().bg(theme.primary))),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .child(div().font_weight(FontWeight::MEDIUM).child(title.into()))
+                .child(div().text_sm().text_color(theme.muted_foreground).child(desc.into())),
+        )
+}
+
+/// A service's plain name: SENTIENT, Database (PostgreSQL), ClickHouse,
+/// Gateway; None for one not recognised.
+pub fn service_label(name: &str) -> Option<&'static str> {
+    let n = name.to_lowercase();
+    if n.contains("postgres") {
+        Some("Database (PostgreSQL)")
+    } else if n.contains("clickhouse") {
+        Some("ClickHouse")
+    } else if n.contains("gateway") {
+        Some("Gateway")
+    } else if n.starts_with("sentient") || n.contains("sentientserver") {
+        Some("SENTIENT")
+    } else {
+        None
+    }
+}
+
+/// Per-row actions on the Control page: (service name, action) and
+/// (service name) for its log.
+pub type ServiceAct = std::rc::Rc<dyn Fn(&str, &'static str, &mut Window, &mut App)>;
+pub type ServiceLog = std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)>;
+
+/// The Services panel's rows: state, plain name with the raw name muted, the
+/// detail faint; on Control also Start, Stop, Restart and Logs per row.
+/// The same on this computer and on a remote server.
+pub fn service_rows(
+    theme: &Theme,
+    services: impl IntoIterator<Item = (SharedString, bool, bool, SharedString)>,
+    actions: Option<(ServiceAct, ServiceLog, Option<String>)>,
+) -> Vec<Div> {
+    // One order on every page: SENTIENT, Database, ClickHouse, Gateway.
+    let rank = |n: &str| match service_label(n) {
+        Some("SENTIENT") => 0,
+        Some("Database (PostgreSQL)") => 1,
+        Some("ClickHouse") => 2,
+        Some("Gateway") => 3,
+        _ => 4,
+    };
+    let mut services: Vec<_> = services.into_iter().collect();
+    services.sort_by_key(|(n, ..)| rank(n));
+    services
+        .into_iter()
+        .map(|(name, running, starting, detail)| {
+            let (tone, label) = if running { (Tone::Good, "Running") } else if starting { (Tone::Warn, "Starting") } else { (Tone::Bad, "Stopped") };
+            let plain = service_label(&name);
+            let busy = actions.as_ref().and_then(|a| a.2.as_ref()).is_some_and(|b| *b == *name);
+            let any_busy = actions.as_ref().is_some_and(|a| a.2.is_some());
+            gpui_kit::component::h_flex()
+                .gap_4()
+                .text_sm()
+                .items_center()
+                .child(gpui_kit::component::h_flex().w(px(168.)).flex_shrink_0().child(if busy { pill(theme, Tone::Neutral, "Working…") } else { pill(theme, tone, label) }))
+                .child(
+                    gpui_kit::component::h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_2()
+                        .child(div().flex_shrink_0().child(SharedString::from(plain.unwrap_or(&name).to_string())))
+                        .when(plain.is_some(), |r| r.child(div().flex_shrink_0().text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(name.clone())))
+                        .when(!detail.is_empty(), |r| r.child(div().min_w_0().text_ellipsis().text_color(theme.muted_foreground).child(SharedString::from(format!("· {detail}"))))),
+                )
+                .when_some(actions.clone(), |r, (act, log, _)| {
+                    let icon = |id: &str, icon: gpui_kit::assets::IconName, tip: &'static str, enabled: bool, action: &'static str| {
+                        let (act, n) = (act.clone(), name.to_string());
+                        button(SharedString::from(format!("svc-{action}-{id}")))
+                            .ghost()
+                            .icon(gpui_kit::component::Icon::new(icon))
+                            .tooltip(tip)
+                            .when(!enabled || any_busy, |b| gpui_kit::component::Disableable::disabled(b, true))
+                            .on_click(move |_, window, cx| act(&n, action, window, cx))
+                    };
+                    let n = name.to_string();
+                    r.child(
+                        gpui_kit::component::h_flex()
+                            .gap_1()
+                            .flex_shrink_0()
+                            .child(icon(&name, gpui_kit::assets::IconName::Play, "Start", !running, "start"))
+                            .child(icon(&name, gpui_kit::assets::IconName::Square, "Stop", running, "stop"))
+                            .child(icon(&name, gpui_kit::assets::IconName::RotateCw, "Restart", running, "restart"))
+                            .child(button(SharedString::from(format!("svc-log-{name}"))).ghost().label("Logs").on_click(move |_, window, cx| log(&n, window, cx))),
+                    )
+                })
+        })
+        .collect()
+}
+
+/// A popover's pointer under it, at `x` from its left: a 12 px wide
+/// triangle in the popover's colour, outlined in its border colour.
+pub fn pointer_down(fill: Hsla, border: Hsla, x: Pixels) -> impl IntoElement {
+    div().absolute().left(x).bottom(px(-7.)).w(px(14.)).h(px(8.)).child(
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                let o = bounds.origin;
+                let tri = |inset: f32| {
+                    let mut p = gpui_kit::Path::new(point(o.x + px(inset), o.y));
+                    p.line_to(point(o.x + px(14. - inset), o.y));
+                    p.line_to(point(o.x + px(7.), o.y + px(8. - inset)));
+                    p
+                };
+                window.paint_path(tri(0.), border);
+                window.paint_path(tri(1.4), fill);
+            },
+        )
+        .size_full(),
+    )
+}
+
+/// Every button: the toolkit's, with the mockup's medium-weight label.
+pub fn button(id: impl Into<gpui_kit::ElementId>) -> gpui_kit::component::button::Button {
+    gpui_kit::component::button::Button::new(id).font_weight(FontWeight::MEDIUM)
+}
+
+/// `/home/mz/…/sentient-platform-manager`: a long text cut in the middle to
+/// `max` characters, keeping both ends.
+pub fn middle_ellipsis(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max || max < 8 {
+        return s.to_string();
+    }
+    let keep = max - 1;
+    let head = keep / 2;
+    let tail = keep - head;
+    format!("{}…{}", chars[..head].iter().collect::<String>(), chars[chars.len() - tail..].iter().collect::<String>())
 }

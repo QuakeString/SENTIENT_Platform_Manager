@@ -20,8 +20,7 @@
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Icon, WindowExt as _, h_flex, v_flex,
-    Sizable as _,
+    ActiveTheme, Disableable as _, Icon, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     progress::Progress as ProgressBar,
@@ -30,8 +29,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use std::path::PathBuf;
 
-use sentient_installer_core::{distro, native, releases};
-use sentient_installer_core::progress::{Progress, ProgressFn};
+use sentient_installer_core::{native, releases};
+use sentient_installer_core::progress::Progress;
 
 use crate::installation::{Engine, InstallationRecord};
 use crate::jobs::{Job, JobState};
@@ -243,7 +242,7 @@ impl Maintenance {
         }
         let this = cx.entity().downgrade();
         let keep = self.keep_data;
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             let (title, text, ok) = match action {
                 Action::Repair => (
@@ -406,7 +405,7 @@ fn line(
 impl Maintenance {
     /// The "What's new" button of a line: the notes this Setup carries.
     fn notes_button(&self, id: &'static str, cx: &mut Context<Self>) -> Button {
-        Button::new(id).outline().small().label("What's new").on_click(cx.listener(|this, _, _, cx| {
+        crate::ui::button(id).outline().label("What's new").on_click(cx.listener(|this, _, _, cx| {
             this.screen = Screen::WhatsNew;
             cx.notify();
         }))
@@ -442,9 +441,8 @@ impl Maintenance {
             .gap_2()
             .child(div().text_sm().text_color(theme.muted_foreground).child("Other choices"))
             .child(h_flex().gap_2().children(Action::ALL.into_iter().map(|action| {
-                Button::new(SharedString::from(format!("other-{}", action.id())))
+                crate::ui::button(SharedString::from(format!("other-{}", action.id())))
                     .outline()
-                    .small()
                     .label(action.title())
                     .on_click(cx.listener(move |this, _, window, cx| this.confirm(action, window, cx)))
             })))
@@ -462,7 +460,7 @@ impl Maintenance {
     /// C7b: the Platform Manager was removed, SENTIENT is still here.
     fn install_manager_screen(&self, theme: &gpui_kit::component::Theme, record: &InstallationRecord, found: &Found, cx: &mut Context<Self>) -> Vec<AnyElement> {
         vec![
-            div().text_2xl().child("Install the SENTIENT Platform Manager").into_any_element(),
+            div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child("Install the SENTIENT Platform Manager").into_any_element(),
             div().text_color(theme.muted_foreground).child("This setup found SENTIENT already on this computer.").into_any_element(),
             line(
                 theme,
@@ -484,12 +482,12 @@ impl Maintenance {
             h_flex()
                 .gap_2()
                 .justify_end()
-                .child(Button::new("install-manager").primary().label("Install the Platform Manager").on_click(cx.listener(|this, _, _, cx| {
+                .child(crate::ui::button("install-manager").primary().label("Install the Platform Manager").on_click(cx.listener(|this, _, _, cx| {
                     this.tick_manager = true;
                     this.tick_sentient = false;
                     this.run_update(cx);
                 })))
-                .child(Button::new("close").outline().label("Close").on_click(|_, window, _| window.remove_window()))
+                .child(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window()))
                 .into_any_element(),
         ]
     }
@@ -507,7 +505,7 @@ impl Maintenance {
             _ => format!("{} is installed. This setup is the same version.", found.installed_manager_label()),
         };
         let mut out: Vec<AnyElement> = vec![
-            div().text_2xl().child(format!("SENTIENT {} is installed on this computer", record.sentient_version)).into_any_element(),
+            div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(format!("SENTIENT {} is installed on this computer", record.sentient_version)).into_any_element(),
             div().text_color(theme.muted_foreground).child("Tick what this setup should update.").into_any_element(),
         ];
         let manager_on = self.manager_tickable();
@@ -575,13 +573,13 @@ impl Maintenance {
             h_flex()
                 .gap_2()
                 .justify_end()
-                .child(Button::new("update").primary().label(self.update_label()).disabled(nothing).on_click(cx.listener(|this, _, _, cx| {
+                .child(crate::ui::button("update").primary().label(self.update_label()).disabled(nothing).on_click(cx.listener(|this, _, _, cx| {
                     if !this.manager_tickable() {
                         this.tick_manager = false;
                     }
                     this.run_update(cx);
                 })))
-                .child(Button::new("close").outline().label("Close").on_click(|_, window, _| window.remove_window()))
+                .child(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window()))
                 .into_any_element(),
         );
         out.push(self.other_choices(theme, cx).into_any_element());
@@ -593,7 +591,7 @@ impl Maintenance {
         let older = found.manager_move == releases::Move::Older;
         let mut out: Vec<AnyElement> = Vec::new();
         if older {
-            out.push(div().text_2xl().child("A newer Platform Manager is already installed").into_any_element());
+            out.push(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child("A newer Platform Manager is already installed").into_any_element());
             out.push(
                 div()
                     .text_color(theme.muted_foreground)
@@ -602,7 +600,7 @@ impl Maintenance {
             );
             out.push(ui::outcome(theme, Tone::Warn, "This older setup will not replace the newer program.").into_any_element());
         } else {
-            out.push(div().text_2xl().child(format!("SENTIENT {} is installed on this computer", record.sentient_version)).into_any_element());
+            out.push(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(format!("SENTIENT {} is installed on this computer", record.sentient_version)).into_any_element());
             out.push(
                 div()
                     .text_color(theme.muted_foreground)
@@ -671,14 +669,14 @@ impl Maintenance {
             None => String::new(),
         };
         vec![
-            div().text_2xl().child("What's new in this setup").into_any_element(),
+            div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child("What's new in this setup").into_any_element(),
             div()
                 .text_color(theme.muted_foreground)
                 .child(format!("Platform Manager {} is installed. This setup is {}{carries}.", found.installed_manager_label(), found.this_manager))
                 .into_any_element(),
             ui::panel(theme).child(ui::release_notes(theme, &notes)).children(sentient_db.map(|d| div().text_sm().child(d))).into_any_element(),
             h_flex()
-                .child(Button::new("back").outline().label("Back").on_click(cx.listener(|this, _, _, cx| {
+                .child(crate::ui::button("back").outline().label("Back").on_click(cx.listener(|this, _, _, cx| {
                     this.screen = Screen::Home;
                     cx.notify();
                 })))
@@ -724,7 +722,7 @@ impl Maintenance {
         let marked = ui::mark_steps(&self.planned, job.steps(), finished);
         let log: Vec<SharedString> = job.log().iter().rev().take(14).rev().cloned().collect();
         let mut out: Vec<AnyElement> = vec![
-            div().text_2xl().child(title).into_any_element(),
+            div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(title).into_any_element(),
             div().text_color(theme.muted_foreground).child(versions).into_any_element(),
         ];
         match job.state() {
@@ -755,7 +753,7 @@ impl Maintenance {
         if (self.show_log || finished.is_none()) && !log.is_empty() {
             out.push(
                 ui::panel(theme)
-                    .text_xs()
+                    .text_size(px(13.))
                     .font_family(theme.mono_font_family.clone())
                     .text_color(theme.muted_foreground)
                     .children(log.into_iter().map(|l| div().child(l)))
@@ -766,23 +764,23 @@ impl Maintenance {
             Some(true) => out.push(
                 h_flex()
                     .gap_2()
-                    .child(Button::new("open").primary().label("Open the Platform Manager").on_click(|_, window, _| {
+                    .child(crate::ui::button("open").primary().label("Open the Platform Manager").on_click(|_, window, _| {
                         if open_manager(&[]) {
                             window.remove_window();
                         }
                     }))
-                    .child(Button::new("close").outline().label("Close").on_click(|_, window, _| window.remove_window()))
+                    .child(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window()))
                     .into_any_element(),
             ),
             Some(false) => out.push(
                 h_flex()
                     .gap_2()
-                    .child(Button::new("retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.run_update(cx))))
-                    .child(Button::new("log").outline().label(if self.show_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::button("retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.run_update(cx))))
+                    .child(crate::ui::button("log").outline().label(if self.show_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
                         this.show_log = !this.show_log;
                         cx.notify();
                     })))
-                    .child(Button::new("close").outline().label("Close").on_click(|_, window, _| window.remove_window()))
+                    .child(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window()))
                     .into_any_element(),
             ),
             None => {}
@@ -801,7 +799,7 @@ impl Maintenance {
         };
         let log: Vec<SharedString> = job.log().iter().rev().take(12).rev().cloned().collect();
         let mut out = vec![
-            div().text_2xl().child(action.title()).into_any_element(),
+            div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(action.title()).into_any_element(),
             div().text_sm().child(job.step_with_time()).into_any_element(),
         ];
         if busy {
@@ -812,14 +810,14 @@ impl Maintenance {
         out.extend(outcome.map(|(tone, text)| ui::outcome(theme, tone, text).into_any_element()));
         out.push(
             ui::panel(theme)
-                .text_xs()
+                .text_size(px(13.))
                 .font_family(theme.mono_font_family.clone())
                 .text_color(theme.muted_foreground)
                 .children(log.into_iter().map(|l| div().child(l)))
                 .into_any_element(),
         );
         if !busy {
-            out.push(h_flex().child(Button::new("close").primary().label("Close").on_click(|_, window, _| window.remove_window())).into_any_element());
+            out.push(h_flex().child(crate::ui::button("close").primary().label("Close").on_click(|_, window, _| window.remove_window())).into_any_element());
         }
         let _ = cx;
         out
@@ -835,12 +833,21 @@ fn capitalise(s: &str) -> String {
 }
 
 impl Render for Maintenance {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The shared dialogs over the whole window (crate::modal).
+        let layer = crate::modal::layer(window, cx, 0., 0.);
+        let body = self.body(cx);
+        div().size_full().relative().child(body).children(layer)
+    }
+}
+
+impl Maintenance {
+    fn body(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let theme = cx.theme().clone();
         let page = v_flex().id("maintenance").size_full().overflow_y_scroll().p_8().gap_4().bg(theme.muted).text_color(theme.foreground);
 
         let (Some(record), Some(found)) = (self.record.clone(), self.found.clone()) else {
-            return page.child(div().text_2xl().child("SENTIENT Setup")).child(ui::not_installed(&theme));
+            return page.child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child("SENTIENT Setup")).child(ui::not_installed(&theme));
         };
         if let (Some(broken), Screen::Home) = (&self.broken, self.screen) {
             return page.p_0().child(div().size_full().child(broken.clone()));

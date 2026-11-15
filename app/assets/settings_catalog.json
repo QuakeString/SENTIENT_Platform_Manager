@@ -129,25 +129,25 @@
       "settings": [
         {
           "env": "pg:max_connections",
-          "label": "max_connections",
+          "label": "Connections allowed",
           "default": "",
           "help": "PostgreSQL server setting. Sized from this computer's RAM when recommended."
         },
         {
           "env": "pg:shared_buffers",
-          "label": "shared_buffers",
+          "label": "Memory for PostgreSQL",
           "default": "",
           "help": "About 25 % of RAM is typical."
         },
         {
           "env": "pg:work_mem",
-          "label": "work_mem",
+          "label": "Memory per query",
           "default": "",
           "help": "Memory per sort or hash operation."
         },
         {
           "env": "pg:effective_cache_size",
-          "label": "effective_cache_size",
+          "label": "Memory PostgreSQL may count on for caching",
           "default": "",
           "help": "Planner hint, about 75 % of RAM."
         }

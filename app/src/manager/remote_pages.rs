@@ -5,16 +5,16 @@
 //! and worked through detached jobs there. One view per open instance; the
 //! menu chooses which page it shows.
 
-use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
-    input::{Input, InputEvent, InputState},
+    ActiveTheme, Disableable as _, h_flex, v_flex,
+    button::ButtonVariants as _,
+    menu::{DropdownMenu as _, PopupMenuItem},
+    input::{InputEvent, InputState},
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::dbstatus::{DbStatus, bytes_label, count_label, day_label};
+use crate::dbstatus::{DbStatus, bytes_label};
 use crate::jobs::{Job, JobState};
 use crate::remote::{self, Instance, RemoteBackups, RemoteService, RemoteStatus};
 use crate::ui::{self, Tone};
@@ -61,12 +61,30 @@ pub struct RemotePages {
     /// One input per catalog setting, made once the values are read.
     inputs: Vec<(String, Entity<InputState>)>,
     gateway: Read<std::collections::HashMap<String, String>>,
-    /// Migration's chosen target: stock, timescaledb or clickhouse.
-    target: usize,
+    /// Migration's chosen target (an index into the types other than the one now).
+    target: Option<usize>,
+    /// Migration: Change was pressed; the confirmation shows.
+    migrate_confirm: bool,
     logs: Read<String>,
     /// The newest SENTIENT on the update channel (None: none newer).
     offer: Read<Option<crate::updates::Offer>>,
-    filter: Entity<InputState>,
+    /// The versions "Other version" lists.
+    versions: Read<Vec<crate::online::Version>>,
+    /// "add-if-one" ran once for this instance.
+    auto_add_tried: bool,
+    /// Platform settings: the open tab (crate::manager::settings::TAB_TITLES).
+    settings_tab: usize,
+    /// Control: the service whose own action runs now.
+    svc_busy: Option<String>,
+    /// Logs: the shared view, made when the page first shows.
+    log_view: Option<Entity<crate::manager::logs::LogView>>,
+
+    /// Platform settings: what "Check" found for a file path on the server.
+    file_checks: std::collections::HashMap<String, Read<bool>>,
+    /// A version picked under "Other version", waiting for its confirmation.
+    pick: Option<String>,
+    /// This Platform Manager's update channel (shared with the local Update).
+    updates: Entity<crate::updates::UpdateState>,
     follow: bool,
     job: Entity<Job>,
     job_label: Option<SharedString>,
@@ -78,20 +96,15 @@ pub struct RemotePages {
 }
 
 impl RemotePages {
-    pub fn new(inst: Instance, kind: Kind, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(inst: Instance, kind: Kind, updates: Entity<crate::updates::UpdateState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let job = cx.new(|_| Job::new());
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter lines, e.g. ERROR"));
         let subs = vec![
             cx.observe(&job, |this, job, cx| {
                 if !job.read(cx).is_running() {
+                    this.svc_busy = None;
                     this.reload(cx);
                 }
                 cx.notify();
-            }),
-            cx.subscribe_in(&filter, window, |_, _, e, _, cx| {
-                if matches!(e, InputEvent::Change) {
-                    cx.notify();
-                }
             }),
         ];
         let mut p = Self {
@@ -105,10 +118,18 @@ impl RemotePages {
             settings: Read::Loading,
             inputs: Vec::new(),
             gateway: Read::Loading,
-            target: 2,
+            target: None,
+            migrate_confirm: false,
             logs: Read::Loading,
             offer: Read::Loading,
-            filter,
+            versions: Read::Loading,
+            pick: None,
+            file_checks: Default::default(),
+            log_view: None,
+            svc_busy: None,
+            settings_tab: 0,
+            auto_add_tried: false,
+            updates,
             follow: true,
             job,
             job_label: None,
@@ -117,6 +138,12 @@ impl RemotePages {
             _tasks: Vec::new(),
             _subscriptions: subs,
         };
+        // Development aid: open Platform settings on a tab (screens).
+        #[cfg(debug_assertions)]
+        if let Ok(t) = std::env::var("SPM_SETTINGS_TAB") {
+            let names = ["platform", "database", "network", "retention", "advanced"];
+            p.settings_tab = names.iter().position(|n| n.eq_ignore_ascii_case(&t)).unwrap_or(0);
+        }
         p.reload(cx);
         p.start_log_follow(cx);
         p
@@ -131,9 +158,14 @@ impl RemotePages {
     }
 
     /// Read what the page shows (in the background).
-    fn reload(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         let inst = self.inst.clone();
         self.fetch(cx, move || remote::ready(&inst), |p, r| p.ready = r);
+        // Every page needs to know whether a SENTIENT is added there.
+        if !matches!(self.kind, Kind::Status | Kind::Control | Kind::Update | Kind::Migration | Kind::Repair) {
+            let inst = self.inst.clone();
+            self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r);
+        }
         let inst = self.inst.clone();
         match self.kind {
             Kind::Status | Kind::Control => {
@@ -150,9 +182,26 @@ impl RemotePages {
                 let i2 = inst.clone();
                 self.fetch(cx, move || remote::status(&i2), |p, r| p.status = r);
                 let native = inst.detected.as_ref().is_some_and(|d| d.install != "Docker");
+                self.pick = None;
                 self.fetch(
                     cx,
                     move || {
+                        #[cfg(debug_assertions)]
+                        if std::env::var_os("SPM_DEBUG_REMOTE_OFFER").is_some() {
+                            let v = |version: &str, date: &str| crate::online::Version { version: version.into(), date: date.into(), summary: String::new() };
+                            return Ok(vec![v("4.4.0.2", "2026-11-14"), v("4.4.0.1", "2026-11-13"), v("4.3.0.58", "2026-11-02")]);
+                        }
+                        crate::online::versions(native)
+                    },
+                    |p, r| p.versions = r,
+                );
+                self.fetch(
+                    cx,
+                    move || {
+                        #[cfg(debug_assertions)]
+                        if std::env::var_os("SPM_DEBUG_REMOTE_OFFER").is_some() {
+                            return Ok(Some(canned_offer()));
+                        }
                         let installed = remote::status(&inst)?.sentient_version;
                         let channel = crate::updates::Prefs::load().channel;
                         crate::updates::check(channel, Some(installed), native).sentient
@@ -213,7 +262,8 @@ impl RemotePages {
         self._tasks.push(task);
     }
 
-    fn run_job(&mut self, label: &'static str, args: Vec<String>, cx: &mut Context<Self>) {
+    fn run_job(&mut self, label: impl Into<String>, args: Vec<String>, cx: &mut Context<Self>) {
+        let label: String = label.into();
         if self.job.read(cx).is_running() {
             return;
         }
@@ -254,26 +304,23 @@ impl RemotePages {
             JobState::Running => p.child(div().text_sm().child(job.step_with_time())),
             JobState::Done(m) => p.child(ui::outcome(&theme, Tone::Good, m.clone())),
             JobState::Failed(m) => {
-                let (headline, details) = match m.split_once(remote::DETAILS) {
-                    Some((h, d)) => (h.to_string(), Some(d.to_string())),
-                    None => (m.to_string(), None),
-                };
+                let (headline, details) = remote::split_failure(m);
                 let shown = self.show_details;
                 p.child(ui::outcome(&theme, Tone::Bad, headline)).when_some(details, |p, d| {
-                    p.child(Button::new("job-details").ghost().small().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
+                    p.child(crate::ui::button("job-details").ghost().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
                         this.show_details = !this.show_details;
                         cx.notify();
                     })))
-                    .when(shown, |p| p.child(div().p_2().rounded(theme.radius).bg(theme.muted).text_xs().font_family(theme.mono_font_family.clone()).child(d)))
+                    .when(shown, |p| p.child(div().p_2().rounded(theme.radius).bg(theme.muted).text_size(px(13.)).font_family(theme.mono_font_family.clone()).child(d)))
                 })
             }
             JobState::Idle => p,
         };
         let done = !job.is_running();
         Some(
-            p.child(v_flex().p_2().rounded(theme.radius).bg(theme.muted).text_xs().font_family(theme.mono_font_family.clone()).children(log.into_iter().map(|l| div().child(l))))
+            p.child(v_flex().p_2().rounded(theme.radius).bg(theme.muted).text_size(px(13.)).font_family(theme.mono_font_family.clone()).children(log.into_iter().map(|l| div().child(l))))
                 .when(done, |p| {
-                    p.child(h_flex().justify_end().child(Button::new("job-close").outline().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                    p.child(h_flex().justify_end().child(crate::ui::button("job-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
                         this.job_label = None;
                         this.job.update(cx, |j, cx| j.reset(cx));
                         cx.notify();
@@ -288,27 +335,28 @@ impl RemotePages {
             Read::Loading => p = p.child(div().text_sm().text_color(theme.muted_foreground).child("Reading…")),
             Read::Failed(e) => p = p.child(ui::outcome(theme, Tone::Bad, e.clone())),
             Read::Got(list) => {
-                for s in list {
-                    let (tone, label) = if s.running {
-                        (Tone::Good, "Running")
-                    } else if s.starting {
-                        (Tone::Warn, "Starting")
-                    } else {
-                        (Tone::Bad, "Stopped")
-                    };
-                    p = p.child(
-                        h_flex()
-                            .gap_3()
-                            .text_sm()
-                            .items_center()
-                            .child(h_flex().w(px(90.)).child(ui::pill(theme, tone, label)))
-                            .child(div().w(px(220.)).child(s.name.clone()))
-                            .child(div().flex_1().min_w_0().text_ellipsis().text_color(theme.muted_foreground).child(s.detail.clone())),
-                    );
-                }
+                p = p.children(ui::service_rows(theme, list.iter().map(|s| (s.name.clone().into(), s.running, s.starting, s.detail.clone().into())), None));
             }
         }
         p
+    }
+
+    /// No SENTIENT added on the server yet. Not an error: what was found and
+    /// the one action. Adding writes only the Platform Manager's own record.
+    fn not_added_panel(&self, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+        let busy = self.job.read(cx).is_running();
+        let det = self.inst.detected.clone().unwrap_or_default();
+        ui::panel(&theme)
+            .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Sentient, 30.)).child(ui::pill(&theme, Tone::Neutral, "Not added")))
+            .child(div().text_sm().text_color(theme.muted_foreground).child(if det.install.is_empty() {
+                "The server agent is set up; no SENTIENT on this server is added to the Platform Manager. Add existing finds a SENTIENT that runs on the server (in Docker, or installed some other way). Nothing on it is changed.".to_string()
+            } else {
+                format!("SENTIENT was found on this server ({}). Add existing lets the Platform Manager look after it. Nothing on it is changed.", det.install)
+            }))
+            .child(h_flex().gap_2().child(
+                crate::ui::button("r-adopt").primary().label("Add existing SENTIENT").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Adding the existing SENTIENT", vec!["add-if-one".into()], cx))),
+            ))
     }
 
     fn status_page(&self, cx: &mut Context<Self>) -> Div {
@@ -318,81 +366,79 @@ impl RemotePages {
             Read::Loading => col = col.child(Self::loading(&theme, "the state")),
             Read::Failed(e) => col = col.child(Self::failed(&theme, e)),
             Read::Got(s) if !s.installed => {
-                // SENTIENT may run there already, started some other way
-                // (Docker compose, an older installer): the Platform Manager
-                // there finds it and takes it over without changing it.
-                let busy = self.job.read(cx).is_running();
-                let det = self.inst.detected.clone().unwrap_or_default();
-                col = col.child(
-                    ui::panel(&theme)
-                        .child(div().font_weight(FontWeight::MEDIUM).child("The Platform Manager does not look after a SENTIENT here yet"))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(if det.install.is_empty() {
-                            "If SENTIENT already runs on this server (in Docker, or installed some other way), Add existing finds it and takes it over: its data, settings and containers stay as they are.".to_string()
-                        } else {
-                            format!("SENTIENT was found on this server ({}). Add existing takes it over: its data, settings and containers stay as they are.", det.install)
-                        }))
-                        .child(h_flex().gap_2().child(
-                            Button::new("r-adopt").primary().label("Add existing SENTIENT").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Adding the existing SENTIENT", vec!["add-existing".into()], cx))),
-                        )),
-                );
+                // Nothing added there yet: only the calm panel, no empty
+                // Services or Database panels.
+                return col.child(self.not_added_panel(cx));
             }
             Read::Got(s) => {
                 let det = self.inst.detected.clone().unwrap_or_default();
+                // Its port answers but none of its own services runs: some
+                // other program is serving there.
+                let none_running = matches!(&self.services, Read::Got(list) if !list.is_empty() && !list.iter().any(|v| v.running || v.starting));
                 let (tone, state) = if !s.installed {
                     (Tone::Neutral, "SENTIENT is not installed")
+                } else if s.serving && none_running {
+                    (Tone::Warn, "Another program answers on SENTIENT's port")
                 } else if s.serving {
                     (Tone::Good, "SENTIENT is running")
                 } else {
                     (Tone::Bad, "SENTIENT is stopped")
                 };
+                let url = format!("http://{}:{}", self.inst.host, s.http_port.unwrap_or(8080));
                 col = col.child(
                     ui::panel(&theme)
-                        .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Sentient, 28.)).child(ui::pill(&theme, tone, state)))
+                        .child(
+                            h_flex()
+                                .gap_3()
+                                .items_center()
+                                .child(ui::product_logo(ui::Product::Sentient, 30.))
+                                .child(ui::pill(&theme, tone, state))
+                                .child(div().flex_1())
+                                .when(s.installed, |r| r.child(crate::ui::button("r-open").primary().label("Open SENTIENT").on_click(move |_, _, cx| ui::open_url(&url, cx)))),
+                        )
                         .child(ui::fact(&theme, "SENTIENT version", s.sentient_version.clone()))
                         .child(ui::fact(&theme, "Database", s.database.clone()))
+                        .child(ui::fact(&theme, "Runs as", if det.install.is_empty() { "Not known".to_string() } else { det.install.clone() }))
+                        .children(s.vanished_files.first().map(|f| {
+                            div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!("This SENTIENT was started with an extra compose file that no longer exists: {f}"))
+                        }))
                         .child(ui::fact(&theme, "Server", format!("{} · {} {}", self.inst.address(), det.os_name, det.arch)))
-                        .child(ui::fact(&theme, "Runs as", if det.install.is_empty() { "—".to_string() } else { det.install.clone() }))
-                        .child(ui::fact(&theme, "Disk free", s.disk_free.map(bytes_label).unwrap_or_else(|| "—".into())))
-                        .child(ui::fact(&theme, "Last backup", s.last_backup.clone().unwrap_or_else(|| "none yet".into())))
-                        .child(ui::fact(&theme, "Platform Manager there", s.manager_version.clone())),
+                        .child({
+                            let here = crate::updates::manager_version();
+                            let older = sentient_installer_core::releases::is_newer(here, &s.manager_version, false);
+                            h_flex()
+                                .gap_3()
+                                .items_center()
+                                .child(ui::fact(&theme, "Server agent", s.manager_version.clone()).flex_1())
+                                .when(s.manager_version != here, |r| r.child(ui::pill(&theme, Tone::Neutral, if older { "Updated on the next job" } else { "Newer than this Platform Manager" })))
+                        }),
                 );
             }
         }
         col = col.child(self.services_panel(&theme));
-        let mut db = ui::panel(&theme).gap_2().child(div().font_weight(FontWeight::MEDIUM).child("Database"));
-        match &self.db {
-            Read::Loading => db = db.child(div().text_sm().text_color(theme.muted_foreground).child("Reading…")),
-            Read::Failed(e) => db = db.child(ui::outcome(&theme, Tone::Bad, e.clone())),
+        // The same Database panel as this computer's, read without asking.
+        let db = ui::panel(&theme).child(div().font_weight(FontWeight::MEDIUM).child("Database"));
+        let db = match &self.db {
+            Read::Loading => db.child(div().text_sm().text_color(theme.muted_foreground).child("Reading the database's size and state…")),
+            Read::Failed(e) => db.child(ui::outcome(&theme, Tone::Warn, format!("The database's size and state could not be read.\n{e}"))),
             Read::Got(d) => {
-                if let Some(pg) = &d.pg {
-                    db = db
-                        .child(h_flex().gap_2().items_center().child(ui::database_logo("postgresql", 16.)).child(div().text_sm().child(format!("PostgreSQL {}", pg.version))))
-                        .child(ui::fact(&theme, "Size", bytes_label(pg.db_bytes)))
-                        .child(ui::fact(&theme, "Connections", format!("{} of {}", pg.connections, pg.max_connections)));
-                    for t in pg.tables.iter().take(5) {
-                        db = db.child(
-                            h_flex()
-                                .gap_4()
-                                .text_sm()
-                                .child(div().w_56().flex_shrink_0().text_color(theme.muted_foreground).child(crate::dbstatus::plain_table(&t.name).map(|(l, _)| l.to_string()).unwrap_or_else(|| t.name.clone())))
-                                .child(div().child(bytes_label(t.bytes))),
-                        );
-                    }
-                }
-                if let Some(e) = &d.pg_error {
-                    db = db.child(ui::outcome(&theme, Tone::Bad, format!("PostgreSQL: {e}")));
-                }
-                if let Some(ch) = &d.ch {
-                    db = db
-                        .child(h_flex().gap_2().items_center().child(ui::database_logo("clickhouse", 16.)).child(div().text_sm().child(format!("ClickHouse {}", ch.version))))
-                        .child(ui::fact(&theme, "Telemetry history", format!("{} values, {}", count_label(ch.rows), bytes_label(ch.disk_bytes))))
-                        .when_some(ch.first_ms.zip(ch.last_ms), |p, (a, b)| p.child(ui::fact(&theme, "From – to", format!("{} – {}", day_label(a), day_label(b)))));
-                }
-                if let Some(e) = &d.ch_error {
-                    db = db.child(ui::outcome(&theme, Tone::Bad, format!("ClickHouse: {e}")));
-                }
+                let last = self.status.got().and_then(|s| s.last_backup.clone()).unwrap_or_else(|| "None".into());
+                let this = cx.entity().downgrade();
+                let back_up: std::rc::Rc<dyn Fn(&mut App)> = std::rc::Rc::new(move |cx| {
+                    this.update(cx, |p, cx| p.run_job("Backing up", vec!["backup-now".into()], cx)).ok();
+                });
+                crate::manager::status::db_details(
+                    &theme,
+                    db,
+                    d,
+                    "The server's database disk",
+                    None,
+                    last,
+                    crate::manager::status::DbActions { set_limit: None, remove_kept: None, back_up: Some(back_up) },
+                    crate::theme::is_dark(cx),
+                )
             }
-        }
+        };
         col.child(db)
     }
 
@@ -401,149 +447,267 @@ impl RemotePages {
         let busy = self.job.read(cx).is_running();
         let installed = self.status.got().is_some_and(|s| s.installed);
         let serving = self.status.got().is_some_and(|s| s.serving);
-        let btn = |id: &'static str, label: &'static str, icon: Lucide, primary: bool| {
-            let b = Button::new(id).label(label).icon(Icon::new(icon)).disabled(busy || !installed);
-            if primary { b.primary() } else { b.outline() }
-        };
+        let this = cx.entity().downgrade();
+        let (t1, t2, t3) = (this.clone(), this.clone(), this);
+        let row = crate::manager::control::control_row(
+            &theme,
+            "r-",
+            busy || !installed,
+            self.status.got().map(|s| s.serving),
+            std::rc::Rc::new(move |_, cx| {
+                t1.update(cx, |p, cx| p.run_job("Starting SENTIENT", vec!["control".into(), "start".into()], cx)).ok();
+            }),
+            std::rc::Rc::new(move |_, cx| {
+                t2.update(cx, |p, cx| p.run_job("Restarting SENTIENT", vec!["control".into(), "restart".into()], cx)).ok();
+            }),
+            std::rc::Rc::new(move |w, cx| {
+                let t3 = t3.clone();
+                crate::manager::control::confirm_stop(w, cx, std::rc::Rc::new(move |cx| {
+                    t3.update(cx, |p, cx| p.run_job("Stopping SENTIENT", vec!["control".into(), "stop".into()], cx)).ok();
+                }));
+            }),
+        );
+        let _ = serving;
         v_flex()
             .gap_4()
-            .child(
-                ui::panel(&theme)
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(if serving { "SENTIENT is running on this server." } else { "SENTIENT is not running on this server." }))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(btn("r-start", "Start", Lucide::Play, !serving).on_click(cx.listener(|this, _, _, cx| this.run_job("Starting SENTIENT", vec!["control".into(), "start".into()], cx))))
-                            .child(btn("r-stop", "Stop", Lucide::Square, false).on_click(cx.listener(|this, _, _, cx| this.run_job("Stopping SENTIENT", vec!["control".into(), "stop".into()], cx))))
-                            .child(btn("r-restart", "Restart", Lucide::RotateCw, serving).on_click(cx.listener(|this, _, _, cx| this.run_job("Restarting SENTIENT", vec!["control".into(), "restart".into()], cx)))),
-                    ),
-            )
-            .child(self.services_panel(&theme))
+            .child(ui::panel(&theme).child(row))
+            .child(self.services_panel_with_actions(cx))
     }
 
-    fn logs_page(&self, cx: &mut Context<Self>) -> Div {
+    /// Control's Services: each row with Start, Stop, Restart and Logs. The
+    /// database's own stop or restart asks first while SENTIENT runs.
+    fn services_panel_with_actions(&self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
-        let needle = self.filter.read(cx).value().to_lowercase();
-        let body: AnyElement = match &self.logs {
-            Read::Loading => div().text_sm().text_color(theme.muted_foreground).child("Reading the log…").into_any_element(),
-            Read::Failed(e) => ui::outcome(&theme, Tone::Bad, e.clone()).into_any_element(),
-            Read::Got(t) => {
-                let lines: Vec<SharedString> = t.lines().filter(|l| needle.is_empty() || l.to_lowercase().contains(&needle)).map(|l| SharedString::from(l.to_string())).collect();
-                div()
-                    .id("remote-log")
-                    .track_scroll(&self.scroll)
-                    .h(px(460.))
-                    .overflow_y_scroll()
-                    .p_2()
-                    .rounded(theme.radius)
-                    .bg(theme.muted)
-                    .text_xs()
-                    .font_family(theme.mono_font_family.clone())
-                    .children(lines.into_iter().map(|l| div().child(l)))
-                    .into_any_element()
+        let mut p = ui::panel(&theme).gap_2().child(div().font_weight(FontWeight::MEDIUM).child("Services"));
+        let serving = self.status.got().is_some_and(|s| s.serving);
+        let this = cx.entity().downgrade();
+        let act: ui::ServiceAct = std::rc::Rc::new(move |name, action, window, cx| {
+            let name = name.to_string();
+            let plain = ui::service_label(&name).unwrap_or(&name).to_string();
+            let verb = match action {
+                "start" => "Starting",
+                "stop" => "Stopping",
+                _ => "Restarting",
+            };
+            let go: std::rc::Rc<dyn Fn(&mut App)> = std::rc::Rc::new({
+                let (this, name, label) = (this.clone(), name.clone(), format!("{verb} {plain}"));
+                move |cx| {
+                    this.update(cx, |p, cx| {
+                        p.svc_busy = Some(name.clone());
+                        p.run_job(label.clone(), vec!["service".into(), action.into(), name.clone()], cx);
+                    })
+                    .ok();
+                }
+            });
+            let n = name.to_lowercase();
+            let database = n.contains("postgres") || n.contains("clickhouse");
+            if database && serving && action != "start" {
+                let title = format!("{} {plain}?", if action == "stop" { "Stop" } else { "Restart" });
+                crate::modal::alert(window, cx, move |d, _, _| {
+                    let go = go.clone();
+                    d.title(title.clone())
+                        .description("SENTIENT loses its database until it is back: devices and dashboards stop updating meanwhile.")
+                        .confirm()
+                        .ok_text(if action == "stop" { "Stop" } else { "Restart" })
+                        .on_ok(move |_, _, cx| {
+                            go(cx);
+                            true
+                        })
+                });
+            } else {
+                go(cx);
             }
+        });
+        let log: ui::ServiceLog = std::rc::Rc::new(|name, _, cx| {
+            crate::logsource::request(crate::logsource::of_service(name));
+            cx.refresh_windows();
+        });
+        match &self.services {
+            Read::Loading => p = p.child(div().text_sm().text_color(theme.muted_foreground).child("Reading…")),
+            Read::Failed(e) => p = p.child(ui::outcome(&theme, Tone::Bad, e.clone())),
+            Read::Got(list) => {
+                p = p.children(ui::service_rows(&theme, list.iter().map(|s| (s.name.clone().into(), s.running, s.starting, s.detail.clone().into())), Some((act, log, self.svc_busy.clone()))));
+            }
+        }
+        p
+    }
+
+    /// The same Logs view as this computer's, reading through the agent.
+    fn logs_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let inst = self.inst.clone();
+        let view = self.log_view.get_or_insert_with(|| cx.new(|cx| crate::manager::logs::LogView::remote(inst, window, cx))).clone();
+        v_flex().child(view)
+    }
+
+    /// The same layout as this computer's Update: the channel, then one
+    /// SENTIENT line with its buttons; the change log opens in a dialog.
+    fn update_page(&self, cx: &mut Context<Self>) -> Div {
+        use crate::manager::update::{Offered, product_row, sentient_summary};
+        let theme = cx.theme().clone();
+        let busy = self.job.read(cx).is_running();
+        let installed = self.status.got().map(|s| s.sentient_version.clone()).unwrap_or_else(|| "Reading…".into());
+        let channel = self.updates.read(cx).prefs.channel;
+        let checking = matches!(self.offer, Read::Loading);
+        let channels = ui::seg_track(&theme).children(sentient_installer_core::releases::Channel::ALL.into_iter().map(|c| {
+            ui::seg_item(&theme, SharedString::from(format!("r-channel-{}", c.label())), c.label(), c == channel).on_click(cx.listener(move |this, _, _, cx| {
+                this.updates.update(cx, |u, cx| u.set_channel(c, cx));
+                this.reload(cx);
+            }))
+        }));
+        let offer = match &self.offer {
+            Read::Got(o) => o.clone(),
+            _ => None,
         };
+        let state = match &self.offer {
+            Read::Loading => Offered::Checking,
+            Read::Failed(_) => Offered::NotChecked,
+            Read::Got(None) => Offered::UpToDate,
+            Read::Got(Some(o)) => Offered::Newer(o),
+        };
+        let (sub, pill) = sentient_summary(&installed, state, false);
+        let mut row = product_row(&theme, offer.is_some(), ui::Product::Sentient, "SENTIENT", sub);
+        if let Some((tone, text)) = pill {
+            row = row.child(ui::pill(&theme, tone, text));
+        }
+        if let Some(o) = &offer {
+            let version = o.version.clone();
+            let (o2, inst_v) = (o.clone(), installed.clone());
+            row = row
+                .child(
+                    crate::ui::button("r-update")
+                        .primary()
+                        .label(format!("Update to {}", o.version))
+                        .disabled(busy)
+                        .on_click(cx.listener(move |this, _, _, cx| this.run_job("Updating SENTIENT", vec!["update".into(), "--version".into(), version.clone()], cx))),
+                )
+                .child(crate::ui::button("r-notes").outline().label("What's new").on_click(move |_, _, cx| crate::manager::update::open_notes("SENTIENT", &inst_v, &o2, cx)));
+        }
+        let versions: Vec<crate::online::Version> = match &self.versions {
+            Read::Got(v) => v.iter().filter(|v| v.version != installed).cloned().collect(),
+            _ => Vec::new(),
+        };
+        let this = cx.entity().downgrade();
+        row = row.child(
+            crate::ui::button("r-other")
+                .outline()
+                .label("Other version")
+                .disabled(busy || versions.is_empty())
+                .dropdown_menu(move |menu, _, _| {
+                    let mut menu = menu;
+                    for v in &versions {
+                        let (t, ver) = (this.clone(), v.version.clone());
+                        menu = menu.item(PopupMenuItem::new(v.label()).on_click(move |_, _, cx| {
+                            t.update(cx, |p, cx| {
+                                p.pick = Some(ver.clone());
+                                cx.notify();
+                            })
+                            .ok();
+                        }));
+                    }
+                    menu
+                }),
+        );
+        let failed = match &self.offer {
+            Read::Failed(e) => Some(e.clone()),
+            _ => None,
+        };
+        let pick = self.pick.clone();
         ui::panel(&theme)
             .child(
                 h_flex()
                     .gap_3()
                     .items_center()
-                    .child(div().w_80().child(Input::new(&self.filter).small()))
+                    .flex_wrap()
+                    .child(div().text_sm().child("Channel"))
+                    .child(channels)
+                    .child(div().flex_1())
                     .child(
-                        Button::new("r-follow")
-                            .small()
-                            .label(if self.follow { "Following" } else { "Follow" })
-                            .when(self.follow, |b| b.primary())
-                            .when(!self.follow, |b| b.outline())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.follow = !this.follow;
-                                cx.notify();
-                            })),
-                    )
-                    .child(Button::new("r-logs-again").ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(|this, _, _, cx| this.reload(cx)))),
+                        crate::ui::button("r-check")
+                            .outline()
+                            .label(if checking { "Checking…" } else { "Check for updates" })
+                            .disabled(checking)
+                            .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
+                    ),
             )
-            .child(body)
-    }
-
-    fn update_page(&self, cx: &mut Context<Self>) -> Div {
-        let theme = cx.theme().clone();
-        let busy = self.job.read(cx).is_running();
-        let installed = self.status.got().map(|s| s.sentient_version.clone());
-        let mut p = ui::panel(&theme)
-            .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Sentient, 24.)).child(div().font_weight(FontWeight::MEDIUM).child("SENTIENT")))
-            .child(ui::fact(&theme, "Installed there", installed.clone().unwrap_or_else(|| "reading…".into())))
-            .child(ui::fact(&theme, "Update channel", format!("{} (this Platform Manager's preference)", crate::updates::Prefs::load().channel.label())));
-        match &self.offer {
-            Read::Loading => p = p.child(div().text_sm().text_color(theme.muted_foreground).child("Looking for a newer SENTIENT…")),
-            Read::Failed(e) => p = p.child(ui::outcome(&theme, Tone::Bad, e.clone())),
-            Read::Got(None) => p = p.child(ui::outcome(&theme, Tone::Good, "SENTIENT is up to date on this server.")),
-            Read::Got(Some(o)) => {
-                let version = o.version.clone();
-                p = p
-                    .child(ui::outcome(&theme, Tone::Neutral, format!("SENTIENT {} is available{}.", o.version, if o.date.is_empty() { String::new() } else { format!(", released {}", o.date) })))
-                    .when(!o.between.is_empty(), |p| p.child(ui::release_notes(&theme, &o.between)))
-                    .child(
-                        h_flex().child(
-                            Button::new("r-update")
-                                .primary()
-                                .label(format!("Update to {}", o.version))
-                                .disabled(busy)
-                                .on_click(cx.listener(move |this, _, _, cx| this.run_job("Updating SENTIENT", vec!["update".into(), "--version".into(), version.clone()], cx))),
-                        ),
-                    )
-                    .child(div().text_xs().text_color(theme.muted_foreground).child(
-                        "The update runs on the server by itself: a dropped connection does not stop it, and the previous version comes back if SENTIENT does not start.",
-                    ));
-            }
-        }
-        p
+            .when_some(failed, |p, e| {
+                p.child(ui::outcome(
+                    &theme,
+                    Tone::Warn,
+                    if e.contains("limiting") { "GitHub is limiting requests from this network. Try again in an hour." } else { "The release page could not be reached. Nothing was changed." },
+                ))
+            })
+            .child(row)
+            .when_some(pick, |p, v| {
+                let v2 = v.clone();
+                p.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .flex_wrap()
+                        .px_3()
+                        .py_2()
+                        .rounded(theme.radius)
+                        .bg(theme.secondary)
+                        .child(div().flex_1().min_w(px(220.)).text_sm().child(format!("Install SENTIENT {v} on this server instead of {installed}?")))
+                        .child(crate::ui::button("r-pick-go").primary().label(format!("Install {v}")).disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
+                            this.pick = None;
+                            this.run_job("Updating SENTIENT", vec!["update".into(), "--version".into(), v2.clone()], cx);
+                        })))
+                        .child(crate::ui::button("r-pick-no").ghost().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                            this.pick = None;
+                            cx.notify();
+                        }))),
+                )
+            })
+            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(
+                "The update runs on the server by itself: a dropped connection does not stop it, and the previous version comes back if SENTIENT does not start.",
+            ))
     }
 
     fn backup_page(&self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
-        let mut p = ui::panel(&theme).gap_2();
-        match &self.backups {
-            Read::Loading => p = p.child(div().text_sm().text_color(theme.muted_foreground).child("Reading the backups…")),
-            Read::Failed(e) => p = p.child(ui::outcome(&theme, Tone::Bad, e.clone())),
-            Read::Got(b) => {
-                p = p
-                    .child(
-                        h_flex()
-                            .gap_3()
-                            .items_center()
-                            .child(div().flex_1().text_sm().child(format!(
-                                "On the server in {}. {}",
-                                b.folder.display(),
-                                match &b.daily_at {
-                                    Some(t) => format!("Every day at {t}, keeping {}.", b.keep),
-                                    None => "No daily backup.".into(),
-                                }
-                            )))
-                            .child(Button::new("r-backup").primary().label("Back up now").icon(Icon::new(Lucide::Archive)).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx)))),
-                    )
-                    .when(b.list.is_empty(), |p| p.child(div().text_sm().text_color(theme.muted_foreground).child("No backups on the server yet.")));
-                for e in &b.list {
-                    let check = match &e.check {
-                        Some(c) if c.ok => ui::pill(&theme, Tone::Good, format!("Checked {}", c.at.get(..10).unwrap_or(&c.at))),
-                        Some(_) => ui::pill(&theme, Tone::Bad, "Damaged"),
-                        None => ui::pill(&theme, Tone::Neutral, "Not checked"),
-                    };
-                    p = p.child(
-                        h_flex()
-                            .gap_3()
-                            .items_center()
-                            .py_1p5()
-                            .border_t_1()
-                            .border_color(theme.border)
-                            .child(v_flex().flex_1().min_w_0().child(div().text_sm().text_ellipsis().child(e.name.clone())).child(div().text_xs().text_color(theme.muted_foreground).child(format!("{} · {}", e.made, if e.automatic { "automatic" } else { "by hand" }))))
-                            .child(div().text_sm().child(format!("{}{}", bytes_label(e.bytes), if e.parts > 1 { format!(" · {} parts", e.parts) } else { String::new() })))
-                            .child(check),
-                    );
-                }
-            }
+        // The same panels as this computer's Backup: "Back up now", the
+        // daily backup, then the list. Rows the server cannot change from
+        // here yet are left out.
+        let b = match &self.backups {
+            Read::Loading => return Self::loading(&theme, "the backups"),
+            Read::Failed(e) => return Self::failed(&theme, e),
+            Read::Got(b) => b.clone(),
+        };
+        let now = ui::panel(&theme)
+            .gap_0()
+            .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Back up now"))
+            .child(crate::manager::backup::brow_pub(&theme, "Save to", None, div().text_sm().child(b.folder.display().to_string())))
+            .child(h_flex().pt_2().child(crate::ui::button("r-backup").primary().label("Back up now").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx)))));
+        let auto = ui::panel(&theme)
+            .gap_0()
+            .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Automatic backup"))
+            .child(crate::manager::backup::brow_pub(&theme, "Back up every day at", None, div().text_sm().child(b.daily_at.clone().unwrap_or_else(|| "No automatic backup".into()))))
+            .when(b.daily_at.is_some(), |p| p.child(crate::manager::backup::brow_pub(&theme, "Keep", None, div().text_sm().child(format!("{} backups", b.keep)))));
+        let total: u64 = b.list.iter().map(|e| e.bytes).sum();
+        let mut list = ui::panel(&theme).gap_0().child(
+            h_flex()
+                .gap_3()
+                .pb_1()
+                .items_center()
+                .child(div().font_weight(FontWeight::MEDIUM).child("Backups"))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().text_color(theme.muted_foreground).child(format!(
+                    "{} · {} file{}, {}",
+                    b.folder.display(),
+                    b.list.len(),
+                    if b.list.len() == 1 { "" } else { "s" },
+                    bytes_label(total)
+                ))),
+        );
+        if b.list.is_empty() {
+            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder."));
         }
-        p
+        for (i, e) in b.list.iter().enumerate() {
+            // The server cannot run the integrity check yet: no pill to act on.
+            list = list.child(crate::manager::backup::entry_row_with(&theme, i, e, false));
+        }
+        v_flex().gap_4().child(now).child(auto).child(list)
     }
 
     // -- Settings, Migration, Repair, Gateway --------------------------------
@@ -596,40 +760,115 @@ impl RemotePages {
                     .border_color(theme.primary)
                     .bg(theme.accent)
                     .child(div().flex_1().text_sm().child(format!("{n} change{} to apply on {}. SENTIENT restarts when a setting needs it.", if n == 1 { "" } else { "s" }, self.inst.name)))
-                    .child(Button::new("r-set-undo").ghost().small().label("Undo").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::button("r-set-undo").ghost().label("Undo").on_click(cx.listener(|this, _, _, cx| {
                         this.inputs.clear();
                         cx.notify();
                     })))
-                    .child(Button::new("r-set-apply").primary().small().label("Apply").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.apply_settings(all.clone(), cx)))),
+                    .child(crate::ui::button("r-set-apply").primary().label("Apply").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.apply_settings(all.clone(), cx)))),
             );
         }
-        for g in groups {
-            let mut panel = ui::panel(&theme).gap_1().child(div().font_weight(FontWeight::MEDIUM).child(g.name.clone()));
-            for st in g.settings {
-                let Some((_, input)) = self.inputs.iter().find(|(e, _)| *e == st.env) else { continue };
-                let is_changed = changed.contains(&st.env);
-                panel = panel.child(
-                    h_flex()
-                        .gap_3()
-                        .items_center()
-                        .py_1()
-                        .border_t_1()
-                        .border_color(theme.border)
-                        .child(
-                            h_flex()
-                                .w(px(260.))
-                                .flex_shrink_0()
-                                .gap_1()
-                                .items_center()
-                                .child(div().text_sm().when(is_changed, |d| d.text_color(theme.primary).font_weight(FontWeight::MEDIUM)).child(st.label.clone()))
-                                .child(Button::new(SharedString::from(format!("r-help-{}", st.env))).ghost().xsmall().icon(IconName::Info).tooltip(st.help.clone())),
-                        )
-                        .child(div().flex_1().min_w_0().child(Input::new(input).small())),
-                );
+        // The same tabs, rows and Advanced table as this computer's
+        // Platform settings. Rows that need this computer (presets from its
+        // memory, administrator accounts) are left out.
+        use crate::manager::settings as local;
+        let this = cx.entity().downgrade();
+        let nav = local::tab_bar(&theme, "r-", self.settings_tab, std::rc::Rc::new(move |i, cx| {
+            this.update(cx, |p, cx| {
+                p.settings_tab = i;
+                cx.notify();
+            })
+            .ok();
+        }));
+        let active = self.settings_tab;
+        let all: Vec<crate::catalog::Setting> = groups.iter().flat_map(|g| g.settings.iter().cloned()).collect();
+        let field_of = |st: &crate::catalog::Setting, cx: &mut Context<Self>| -> AnyElement {
+            let Some((_, input)) = self.inputs.iter().find(|(e, _)| *e == st.env) else { return div().into_any_element() };
+            let this = cx.entity().downgrade();
+            let inp = input.clone();
+            let set: crate::manager::setting_field::SetFn = std::rc::Rc::new(move |v, window, cx| {
+                inp.update(cx, |s, cx| s.set_value(v.to_string(), window, cx));
+                this.update(cx, |_, cx| cx.notify()).ok();
+            });
+            let this = cx.entity().downgrade();
+            let (env, inp) = (st.env.clone(), input.clone());
+            let check: crate::manager::setting_field::ActFn = std::rc::Rc::new(move |_, cx| {
+                let path = inp.read(cx).value().trim().to_string();
+                let env = env.clone();
+                this.update(cx, |p, cx| p.check_file(env, path, cx)).ok();
+            });
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_2()
+                .items_center()
+                .child(crate::manager::setting_field::field(st, input, set, crate::manager::setting_field::FileButton::Check(check), cx))
+                .children(self.file_checks.get(&st.env).map(|r| match r {
+                    Read::Loading => ui::pill(&theme, Tone::Neutral, "Checking…"),
+                    Read::Got(true) => ui::pill(&theme, Tone::Good, "Found on the server"),
+                    Read::Got(false) => ui::pill(&theme, Tone::Bad, "Not on the server"),
+                    Read::Failed(_) => ui::pill(&theme, Tone::Warn, "Could not check"),
+                }))
+                .into_any_element()
+        };
+        let help = |st: &crate::catalog::Setting| {
+            let default = if st.default.is_empty() { "SENTIENT's own".to_string() } else { st.default.clone() };
+            Some(format!("{}\n\nVariable: {}. Built-in value: {default}.", st.help, st.env))
+        };
+        if self.settings_tab < 4 {
+            let mut sec = local::section(&theme, local::TAB_TITLES[self.settings_tab], None);
+            for key in local::TAB_KEYS[self.settings_tab] {
+                let Some(st) = all.iter().find(|s| s.env == *key) else { continue };
+                let field = field_of(st, cx);
+                sec = sec.child(local::row(&theme, st.short_label(), help(st), changed.contains(&st.env), field));
             }
-            col = col.child(panel);
+            col = col.child(sec);
+        } else {
+            let mut table = ui::panel(&theme).gap_0().child(local::table_header(&theme));
+            for st in &all {
+                let field = field_of(st, cx);
+                table = table.child(local::table_row(
+                    &theme,
+                    st.short_label(),
+                    help(st),
+                    changed.contains(&st.env),
+                    h_flex().gap_3().items_center().child(h_flex().w(px(local::VALUE_W)).flex_shrink_0().child(field)).child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(local::builtin_label(st))),
+                ));
+            }
+            col = col.child(table);
         }
-        col
+        // The same category list and heading as this computer's.
+        h_flex()
+            .gap_4()
+            .items_start()
+            .child(nav)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(px(14.))
+                    .child(
+                        v_flex()
+                            .gap_0p5()
+                            .child(div().text_size(px(17.)).font_weight(FontWeight::MEDIUM).child(local::TAB_TITLES[active.min(4)]))
+                            .child(div().text_sm().text_color(theme.muted_foreground).child(local::TAB_ABOUT[active.min(4)])),
+                    )
+                    .child(col),
+            )
+    }
+
+    /// "Check" beside a file setting: does the server have that file?
+    fn check_file(&mut self, env: String, path: String, cx: &mut Context<Self>) {
+        if path.is_empty() {
+            self.file_checks.remove(&env);
+            cx.notify();
+            return;
+        }
+        self.file_checks.insert(env.clone(), Read::Loading);
+        let inst = self.inst.clone();
+        self.fetch(cx, move || remote::file_exists(&inst, &path), move |p, r| {
+            p.file_checks.insert(env, r);
+        });
+        cx.notify();
     }
 
     fn apply_settings(&mut self, values: std::collections::HashMap<String, String>, cx: &mut Context<Self>) {
@@ -657,37 +896,63 @@ impl RemotePages {
         cx.notify();
     }
 
+    /// The same panel as this computer's Migration: the type now, the
+    /// types to change to as cards, the steps, then Change and its confirmation.
     fn migration_page(&self, cx: &mut Context<Self>) -> Div {
+        use sentient_installer_core::stack::Flavor;
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
         let current = self.status.got().map(|s| s.database.clone()).unwrap_or_default();
-        const TARGETS: [(&str, &str); 3] = [("stock", "PostgreSQL"), ("timescaledb", "PostgreSQL + TimescaleDB"), ("clickhouse", "PostgreSQL + ClickHouse")];
-        let (flavor, label) = TARGETS[self.target.min(2)];
-        let same = current == label;
+        let all = [Flavor::Stock, Flavor::Timescaledb, Flavor::Clickhouse];
+        let now = all.into_iter().find(|f| crate::installation::flavor_label(*f) == current);
+        let targets: Vec<Flavor> = all.into_iter().filter(|f| Some(*f) != now).collect();
+        let chosen = self.target.and_then(|i| targets.get(i).copied());
+        let this = cx.entity().downgrade();
         ui::panel(&theme)
-            .child(ui::fact(&theme, "Database now", if current.is_empty() { "reading…".to_string() } else { current.clone() }))
+            .child(ui::fact(&theme, "Database now", if current.is_empty() { "Reading…".to_string() } else { current.clone() }))
+            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Change to"))
+            .child(crate::manager::migration::target_cards(&theme, "r-", &targets, self.target, crate::remote::is_windows(&self.inst), std::rc::Rc::new(move |i, cx| {
+                this.update(cx, |p, cx| {
+                    if !p.job.read(cx).is_running() {
+                        p.target = Some(i);
+                        p.migrate_confirm = false;
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })))
+            .child(crate::manager::migration::steps_text(&theme, false))
             .child(
-                h_flex().gap_3().items_center().child(div().text_sm().child("Move to")).child(
-                    gpui_kit::component::radio::RadioGroup::horizontal("r-target")
-                        .children(TARGETS.map(|t| t.1))
-                        .selected_index(Some(self.target))
-                        .on_change(cx.listener(|this, v: &usize, _, cx| {
-                            this.target = *v;
+                h_flex()
+                    .gap_2()
+                    .when(!self.migrate_confirm, |r| {
+                        r.child(
+                            crate::ui::button("r-migrate")
+                                .primary()
+                                .label(chosen.map(|f| format!("Change to {}", crate::installation::flavor_label(f))).unwrap_or_else(|| "Change database".into()))
+                                .disabled(busy || chosen.is_none() || now.is_none())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.migrate_confirm = true;
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .when_some(chosen.filter(|_| self.migrate_confirm), |r, f| {
+                        r.child(
+                            crate::ui::button("r-migrate-confirm")
+                                .danger()
+                                .label("Stop SENTIENT and change now")
+                                .disabled(busy)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.migrate_confirm = false;
+                                    this.run_job("Moving the database", vec!["migrate".into(), f.as_str().into()], cx);
+                                })),
+                        )
+                        .child(crate::ui::button("r-migrate-no").ghost().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                            this.migrate_confirm = false;
                             cx.notify();
-                        })),
-                ),
-            )
-            .child(div().text_sm().text_color(theme.muted_foreground).child(
-                "The data is copied into the new type beside the old one, SENTIENT switches over, and the old database is kept until you remove it. SENTIENT stops while it switches.",
-            ))
-            .child(
-                h_flex().child(
-                    Button::new("r-migrate")
-                        .primary()
-                        .label(if same { "This is the database type already".to_string() } else { format!("Move to {label}") })
-                        .disabled(busy || same || current.is_empty())
-                        .on_click(cx.listener(move |this, _, _, cx| this.run_job("Moving the database", vec!["migrate".into(), flavor.into()], cx))),
-                ),
+                        })))
+                    }),
             )
     }
 
@@ -695,10 +960,14 @@ impl RemotePages {
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
         let installed = self.status.got().is_some_and(|s| s.installed);
+        // The same panel as this computer's Repair. Uninstalling is done on
+        // the server itself, so that panel is left out here.
         ui::panel(&theme)
-            .child(div().text_sm().child("Repair puts SENTIENT's services, files and settings on this server back as the Platform Manager installed them. The database and its data are kept."))
-            .child(h_flex().child(Button::new("r-repair").primary().label("Repair").icon(Icon::new(Lucide::Wrench)).disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job("Repairing", vec!["repair".into()], cx)))))
-            .child(div().text_xs().text_color(theme.muted_foreground).child("Uninstalling SENTIENT is done on the server itself, not from another computer."))
+            .child(div().font_weight(FontWeight::MEDIUM).child("Repair"))
+            .child(div().text_sm().text_color(theme.muted_foreground).child(
+                "For a SENTIENT that does not start or a service that went missing: the services and their configuration are written again from this installation's record, and SENTIENT is started. Data and settings are kept.",
+            ))
+            .child(h_flex().child(crate::ui::button("r-repair").outline().label("Repair").disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job("Repairing", vec!["repair".into()], cx)))))
     }
 
     fn gateway_page(&self, cx: &mut Context<Self>) -> Div {
@@ -721,14 +990,14 @@ impl RemotePages {
                 .child(if !installed { ui::pill(&theme, Tone::Neutral, "Not installed") } else if running { ui::pill(&theme, Tone::Good, "Running") } else { ui::pill(&theme, Tone::Bad, "Stopped") }),
         );
         if !installed {
-            return p.child(div().text_sm().text_color(theme.muted_foreground).child("No gateway on this server. Install it from the Platform Manager on the server itself; its access token stays there."));
+            return p.child(div().text_sm().text_color(theme.muted_foreground).child("No gateway on this server. Install it with the Platform Manager on the server itself, so its access token stays on the server."));
         }
         p = p
             .child(ui::fact(&theme, "Version", get("version")))
             .child(ui::fact(&theme, "Connects to", format!("{}:{}", get("host"), get("port"))))
             .child(ui::fact(&theme, "Its page", get("page")));
         let act = |id: &'static str, label: &'static str, action: &'static str| {
-            Button::new(id).outline().small().label(label).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.run_job("Gateway", vec!["gateway-control".into(), action.into()], cx)))
+            crate::ui::button(id).outline().label(label).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.run_job("Gateway", vec!["gateway-control".into(), action.into()], cx)))
         };
         p.child(
             h_flex()
@@ -736,7 +1005,7 @@ impl RemotePages {
                 .child(act("r-gw-start", "Start", "start"))
                 .child(act("r-gw-stop", "Stop", "stop"))
                 .child(act("r-gw-restart", "Restart", "restart"))
-                .child(Button::new("r-gw-update").primary().small().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx)))),
+                .child(crate::ui::button("r-gw-update").primary().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx)))),
         )
     }
 
@@ -747,17 +1016,17 @@ impl RemotePages {
         let busy = self.job.read(cx).is_running();
         let not_set_up = e == remote::NOT_SET_UP;
         ui::panel(&theme)
-            .child(div().font_weight(FontWeight::MEDIUM).child(if not_set_up { "Not set up yet" } else { "The server does not answer" }))
+            .child(div().font_weight(FontWeight::MEDIUM).child(if not_set_up { "Server agent not set up" } else { "The server does not answer" }))
             .child(div().text_sm().text_color(theme.muted_foreground).child(if not_set_up {
-                "The Platform Manager works on a server through its own copy there. Set up copies the matching build over SSH and checks it; nothing else on the server changes.".to_string()
+                "The Platform Manager works on a server through its server agent. Set up copies the matching agent over SSH and checks it; nothing else on the server changes.".to_string()
             } else {
                 e.clone()
             }))
             .child(
                 h_flex().gap_2().child(if not_set_up {
-                    Button::new("r-setup").primary().label("Set up").loading(busy).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.set_up(cx)))
+                    crate::ui::button("r-setup").primary().label("Set up").loading(busy).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.set_up(cx)))
                 } else {
-                    Button::new("r-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
+                    crate::ui::button("r-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
                         this.ready = Read::Loading;
                         this.reload(cx);
                     }))
@@ -791,25 +1060,39 @@ impl Render for RemotePages {
         let (title, summary) = match self.kind {
             Kind::Status => ("Status", "SENTIENT on this server: its state, services and database."),
             Kind::Control => ("Control", "Start, stop or restart SENTIENT on this server."),
-            Kind::Logs => ("Logs", "The most recent lines of the SENTIENT log on this server."),
+            Kind::Logs => ("Logs", "SENTIENT's log and its database's on this server, newest at the bottom."),
             Kind::Update => ("Update", "A newer SENTIENT for this server, from the update channel."),
             Kind::Backup => ("Backup and restore", "The backups on this server."),
             Kind::Settings => ("Platform settings", "SENTIENT's settings on this server."),
             Kind::Migration => ("Migration", "Move this server's SENTIENT to another database type."),
-            Kind::Repair => ("Repair", "Put SENTIENT's services and files on this server back in order."),
+            Kind::Repair => ("Repair and uninstall", "Write the services and their configuration again on this server."),
             Kind::Gateway => ("Gateway", "The Sentient Gateway on this server."),
         };
+        // Set up earlier but nothing added: add a lone SENTIENT found there,
+        // once (it changes nothing on the server; the agent asks when the
+        // choice is real).
+        #[cfg(debug_assertions)]
+        if std::env::var_os("SPM_DEBUG_REMOTE_STATUS").is_some() {
+            self.auto_add_tried = true; // canned screens: no server to add on
+        }
+        if !self.auto_add_tried && matches!(&self.ready, Read::Got(())) && matches!(&self.status, Read::Got(s) if !s.installed) && !self.job.read(cx).is_running() {
+            self.auto_add_tried = true;
+            self.run_job("Looking for SENTIENT on the server", vec!["add-if-one".into()], cx);
+        }
         let gate: Option<Div> = match &self.ready {
             Read::Loading => Some(Self::loading(&theme, "the server's state")),
             // While Set up runs or shows its result, only its panel.
             Read::Failed(_) if self.job_label.is_some() => Some(div()),
             Read::Failed(e) => Some(self.gate_panel(e.clone(), cx)),
+            Read::Got(()) if self.kind != Kind::Status && self.kind != Kind::Gateway && matches!(&self.status, Read::Got(s) if !s.installed) => {
+                Some(if self.job_label.is_some() { div() } else { self.not_added_panel(cx) })
+            }
             Read::Got(()) => None,
         };
         let body = if let Some(g) = gate { g } else { match self.kind {
             Kind::Status => self.status_page(cx),
             Kind::Control => self.control_page(cx),
-            Kind::Logs => self.logs_page(cx),
+            Kind::Logs => self.logs_page(window, cx),
             Kind::Update => self.update_page(cx),
             Kind::Backup => self.backup_page(cx),
             Kind::Settings => self.settings_page(window, cx),
@@ -818,17 +1101,38 @@ impl Render for RemotePages {
             Kind::Gateway => self.gateway_page(cx),
         } };
         let job = self.job_panel(cx);
+        // Which server this is about shows in the bar under the top bar
+        // (crate::manager), as in the mockup.
         ui::page(&theme, title, summary)
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().size(px(10.)).rounded_full().bg(rgb(remote::parse_hex(&self.inst.color).unwrap_or(0x187074))))
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(format!("{} · {}", self.inst.name, self.inst.host)))
-                    .child(div().flex_1())
-                    .when(self.kind != Kind::Logs, |r| r.child(Button::new("r-reload").ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(|this, _, _, cx| this.reload(cx))))),
-            )
             .children(job)
             .child(body)
+    }
+}
+
+/// Screens: a canned offer with two versions of notes.
+#[cfg(debug_assertions)]
+fn canned_offer() -> crate::updates::Offer {
+    let n = |version: &str, date: &str, summary: &str, sections: Vec<(&str, Vec<&str>)>| crate::notes::Notes {
+        version: version.into(),
+        date: date.into(),
+        summary: summary.into(),
+        sections: sections.into_iter().map(|(k, v)| (k.to_string(), v.into_iter().map(String::from).collect())).collect(),
+        database: None,
+    };
+    crate::updates::Offer {
+        version: "4.4.0.2".into(),
+        tag: "4.4.0.2".into(),
+        date: "2026-11-14".into(),
+        notes: String::new(),
+        page: String::new(),
+        installer: None,
+        sha256: None,
+        between: vec![
+            n("4.4.0.2", "2026-11-14", "Request a demo or buy a licence from inside SENTIENT, and editor fixes.", vec![
+                ("Added", vec!["Licence: Request demo licence and Buy licence open dialogs inside SENTIENT."]),
+                ("Fixed", vec!["The fullscreen buttons of the JSON editor no longer submit the form they sit in.", "The licence limits on telemetry and attribute keys count the customer's keys only."]),
+            ]),
+            n("4.4.0.1", "2026-11-13", "First release of the 4.4 line.", vec![("Added", vec!["CoAP and LwM2M devices (DTLS, OSCORE).", "18 new widgets."])]),
+        ],
     }
 }

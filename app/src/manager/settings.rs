@@ -22,8 +22,8 @@
 use std::collections::HashMap;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
+    button::ButtonVariants as _,
     input::{Input, InputEvent, InputState},
     progress::Progress,
 };
@@ -49,16 +49,6 @@ enum Tab {
 
 impl Tab {
     const ALL: [Tab; 5] = [Tab::Platform, Tab::Database, Tab::Network, Tab::Retention, Tab::Advanced];
-
-    fn title(self) -> &'static str {
-        match self {
-            Tab::Platform => "Platform",
-            Tab::Database => "Database",
-            Tab::Network => "Network and certificates",
-            Tab::Retention => "Data retention",
-            Tab::Advanced => "Advanced",
-        }
-    }
 }
 
 /// PostgreSQL sized for the computer.
@@ -112,8 +102,10 @@ fn preset_values(p: Preset, groups: &[Group], ram_mb: u64) -> HashMap<&'static s
 /// built-in one.
 type Choices = &'static [(&'static str, &'static str)];
 
+/// The Value column of Advanced: every field starts and ends at the same place.
+pub(crate) const VALUE_W: f32 = 340.;
+
 const LOG_LEVELS: Choices = &[("Errors only", "error"), ("Normal", "info"), ("Detailed", "debug")];
-const ON_OFF: Choices = &[("On", "true"), ("Off", "false")];
 const KEEP_DAYS: Choices = &[("Forever", "0"), ("30 days", "30"), ("90 days", "90"), ("1 year", "365")];
 const KEEP_EVENTS: Choices = &[("Built-in", ""), ("7 days", "604800"), ("30 days", "2592000"), ("90 days", "7776000")];
 const KEEP_DEBUG: Choices = &[("Built-in", ""), ("1 day", "86400"), ("7 days", "604800"), ("30 days", "2592000")];
@@ -317,7 +309,7 @@ impl SettingsPage {
 
     fn confirm_sign_out_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             dialog
                 .title("Sign everyone out?")
@@ -428,8 +420,14 @@ impl SettingsPage {
         cx.notify();
     }
 
-    fn choose_file(&mut self, key: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use this file".into()) });
+    fn choose_file(&mut self, key: impl Into<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let key: String = key.into();
+        let start = crate::chooser::start_for(&self.value(&key, cx), None);
+        let rx = crate::chooser::open(
+            cx,
+            crate::chooser::Ask { title: "Choose the file", start: start.as_deref(), directory: false },
+            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use this file".into()) },
+        );
         let handle = window.window_handle();
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
@@ -437,7 +435,7 @@ impl SettingsPage {
             let text = path.display().to_string();
             let _ = handle.update(cx, |_, window, cx| {
                 let _ = this.update(cx, |page, cx| {
-                    page.set(key, &text, window, cx);
+                    page.set(&key, &text, window, cx);
                     cx.notify();
                 });
             });
@@ -456,7 +454,7 @@ impl SettingsPage {
         let text = format!(
             "{changed} setting(s) change. {restarts}, so SENTIENT is unavailable for a minute or so. If it does not start with the new settings, the previous ones are put back."
         );
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             let record = record.clone();
             let values = values.clone();
@@ -503,7 +501,61 @@ impl SettingsPage {
 // ---------------------------------------------------------------------------
 
 /// A row: label (and its help), then the control.
-fn row(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, help: Option<String>, changed: bool, control: impl IntoElement) -> Div {
+pub(crate) fn row(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, help: Option<String>, changed: bool, control: impl IntoElement) -> Div {
+    // The mockup's setting row: the label on the left (primary when
+    // changed), the control right-aligned in a fixed column.
+    let label: SharedString = label.into();
+    h_flex()
+        .gap_4()
+        .items_center()
+        .py_2()
+        .border_t_1()
+        .border_color(theme.border)
+        .child(
+            h_flex()
+                .flex_1()
+                .min_w(px(160.))
+                .gap_1()
+                .items_center()
+                .child(div().text_sm().when(changed, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.primary)).child(label.clone()))
+                .when_some(help, |r, h| {
+                    r.child(crate::ui::button(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))
+                }),
+        )
+        .child(h_flex().flex_shrink_0().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
+}
+
+/// A setting row with its variable name muted beside the plain label (the
+/// exact numbers under Custom).
+pub(crate) fn row_with_var(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, var: &str, help: Option<String>, changed: bool, control: impl IntoElement) -> Div {
+    let label: SharedString = label.into();
+    let var = var.trim_start_matches("pg:").to_string();
+    h_flex()
+        .gap_4()
+        .items_center()
+        .py_2()
+        .border_t_1()
+        .border_color(theme.border)
+        // The label with its (i), the variable name on a muted line under it.
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w(px(160.))
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().text_sm().when(changed, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.primary)).child(label.clone()))
+                        .when_some(help, |r, h| r.child(crate::ui::button(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))),
+                )
+                .child(div().text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(var)),
+        )
+        .child(h_flex().flex_shrink_0().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
+}
+
+/// A row of the All variables table: label column, then value and built-in
+/// columns (crate::manager::settings::table_header).
+pub(crate) fn table_row(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, help: Option<String>, changed: bool, control: impl IntoElement) -> Div {
     let label: SharedString = label.into();
     h_flex()
         .gap_3()
@@ -519,13 +571,13 @@ fn row(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, help:
                 .items_center()
                 .child(div().text_sm().when(changed, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.primary)).child(label.clone()))
                 .when_some(help, |r, h| {
-                    r.child(Button::new(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))
+                    r.child(crate::ui::button(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))
                 }),
         )
         .child(h_flex().flex_1().min_w_0().gap_2().items_center().child(control))
 }
 
-fn section(theme: &gpui_kit::component::Theme, title: &'static str, about: Option<&'static str>) -> Div {
+pub(crate) fn section(theme: &gpui_kit::component::Theme, title: &'static str, about: Option<&'static str>) -> Div {
     ui::panel(theme)
         .gap_1()
         .child(div().font_weight(FontWeight::MEDIUM).child(title))
@@ -546,6 +598,14 @@ impl SettingsPage {
 
     /// Buttons for a choice; the one matching the field is selected. A value
     /// that matches none shows as "Custom: …".
+    /// A yes/no setting as a switch (crate::manager::setting_field).
+    fn switch(&self, key: &'static str, cx: &mut Context<Self>) -> AnyElement {
+        match self.find(key).cloned() {
+            Some(st) => self.field(&st, cx),
+            None => div().into_any_element(),
+        }
+    }
+
     fn choice(&self, key: &'static str, choices: Choices, cx: &mut Context<Self>) -> Div {
         let now = self.value(key, cx);
         let builtin = self.find(key).map(|s| s.default.clone()).unwrap_or_default();
@@ -573,26 +633,50 @@ impl SettingsPage {
     }
 
     fn input(&self, key: &str, width: f32) -> Div {
-        div().w(px(width)).child(Input::new(&self.inputs[key]).small())
+        div().w(px(width)).child(Input::new(&self.inputs[key]))
     }
 
-    fn catalog_row(&self, theme: &gpui_kit::component::Theme, key: &'static str, width: f32, cx: &App) -> Div {
-        let label = self.find(key).map(|s| s.label.clone()).unwrap_or_else(|| key.to_string());
-        row(theme, label, self.help(key), self.is_changed(key, cx), self.input(key, width))
+    fn catalog_row(&self, theme: &gpui_kit::component::Theme, key: &'static str, width: f32, cx: &mut Context<Self>) -> Div {
+        let Some(setting) = self.find(key).cloned() else {
+            return row(theme, key, None, false, self.input(key, width));
+        };
+        let changed = self.is_changed(key, cx);
+        row(theme, setting.short_label(), self.help(key), changed, self.field(&setting, cx))
+    }
+
+    /// A catalog setting's field, by its kind (crate::manager::setting_field).
+    fn field(&self, setting: &crate::catalog::Setting, cx: &mut Context<Self>) -> AnyElement {
+        use crate::manager::setting_field::{self, FileButton};
+        let Some(input) = self.inputs.get(&setting.env) else { return div().into_any_element() };
+        let this = cx.entity().downgrade();
+        let key = setting.env.clone();
+        let set: setting_field::SetFn = std::rc::Rc::new(move |v, window, cx| {
+            this.update(cx, |page, cx| {
+                page.set(&key, v, window, cx);
+                cx.notify();
+            })
+            .ok();
+        });
+        let this = cx.entity().downgrade();
+        let key = setting.env.clone();
+        let choose: setting_field::ActFn = std::rc::Rc::new(move |window, cx| {
+            this.update(cx, |page, cx| page.choose_file(key.clone(), window, cx)).ok();
+        });
+        setting_field::field(setting, input, set, FileButton::Choose(choose), cx)
     }
 
     // ---- tabs --------------------------------------------------------------
 
     fn platform(&self, theme: &gpui_kit::component::Theme, record: &InstallationRecord, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let start = crate::self_install::autostart()
-            .map(|(on, delay)| if on { format!("With Windows, after {delay} s") } else { "By hand".into() })
+            .map(|(on, delay)| if on { format!("With Windows, after {delay} s") } else { "Manual".into() })
             .unwrap_or_else(|| "With the system".into());
         vec![
             self.admin_section(theme, cx).into_any_element(),
             section(theme, "Platform", Some("How SENTIENT runs on this computer."))
                 .child(row(theme, "Address users open", Some("Where browsers open SENTIENT. The web port is under Network and certificates.".into()), false, div().text_sm().child(record.url())))
                 .child(row(theme, "Log detail", self.help("RUST_LOG"), self.is_changed("RUST_LOG", cx), self.choice("RUST_LOG", LOG_LEVELS, cx)))
-                .child(row(theme, "Analytics engine", self.help("ANALYTICS_ENABLED"), self.is_changed("ANALYTICS_ENABLED", cx), self.choice("ANALYTICS_ENABLED", ON_OFF, cx)))
+                .child(row(theme, "Analytics engine", self.help("ANALYTICS_ENABLED"), self.is_changed("ANALYTICS_ENABLED", cx), self.switch("ANALYTICS_ENABLED", cx)))
                 .child(row(theme, "Starts", Some("Start with Windows, the start delay and the operator screen are under Control.".into()), false, div().text_sm().child(start)))
                 .into_any_element(),
             section(theme, "Licence", None)
@@ -616,13 +700,13 @@ impl SettingsPage {
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading the accounts…" } else { "Not read yet. Reading asks for the administrator password." }))
-                        .when(!self.reading_admin, |r| r.child(Button::new("read-admins").outline().small().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading the accounts…" } else { "Not read. Reading asks for the administrator password." }))
+                        .when(!self.reading_admin, |r| r.child(crate::ui::button("read-admins").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
                 );
             }
             Some(Err(e)) => sec = sec.child(ui::outcome(theme, Tone::Warn, e.clone())),
             Some(Ok(list)) => {
-                for a in list {
+                for (i, a) in list.iter().enumerate() {
                     let email = a.email.clone().unwrap_or_default();
                     let locked = a.locked_since.is_some();
                     let state = if locked {
@@ -648,25 +732,25 @@ impl SettingsPage {
                             .items_center()
                             .child(div().flex_1().text_sm().text_color(if locked { theme.danger } else { theme.muted_foreground }).child(format!("{state}{last}")))
                             .when(locked, |r| {
-                                r.child(Button::new(SharedString::from(format!("unlock-{email}"))).outline().small().label("Unlock").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
+                                r.child(crate::ui::button(SharedString::from(format!("unlock-{email}"))).outline().label("Unlock").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                     let e = e1.clone();
                                     this.admin_action(move |r| crate::sentient_admin::unlock(r, &e), cx);
                                 })))
                             })
-                            .child(Button::new(SharedString::from(format!("reset-{email}"))).outline().small().label("Reset password…").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
+                            .child(crate::ui::button(SharedString::from(format!("reset-{email}"))).outline().label("Reset password…").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                 this.reset_for = Some(e2.clone());
                                 this.admin_result = None;
                                 cx.notify();
                             }))),
-                    ));
+                    ).when(i == 0, |r| r));
                 }
                 sec = sec.child(row(
                     theme,
                     "Everyone signed in",
                     Some("Makes every open session sign in again, on every device.".into()),
                     false,
-                    h_flex().child(Button::new("sign-out-all").outline().small().label("Sign everyone out…").disabled(self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.confirm_sign_out_all(window, cx)))),
-                ));
+                    h_flex().child(crate::ui::button("sign-out-all").outline().label("Sign everyone out…").disabled(self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.confirm_sign_out_all(window, cx)))),
+                ).when(list.is_empty(), |r| r));
             }
         }
         if let Some(email) = &self.reset_for {
@@ -692,15 +776,15 @@ impl SettingsPage {
                     .child(
                         h_flex()
                             .gap_3()
-                            .child(v_flex().gap_1().w(px(240.)).child(div().text_xs().text_color(theme.muted_foreground).child("New password")).child(Input::new(&self.new_pw).mask_toggle()))
-                            .child(v_flex().gap_1().w(px(240.)).child(div().text_xs().text_color(theme.muted_foreground).child("Repeat it")).child(Input::new(&self.repeat_pw).mask_toggle())),
+                            .child(v_flex().gap_1().w(px(240.)).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("New password")).child(Input::new(&self.new_pw).mask_toggle()))
+                            .child(v_flex().gap_1().w(px(240.)).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Repeat it")).child(Input::new(&self.repeat_pw).mask_toggle())),
                     )
                     .when_some(problem.filter(|_| !pw.is_empty()), |c, p| c.child(div().text_sm().text_color(theme.danger).child(p)))
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(Button::new("do-reset").primary().label("Reset password").disabled(problem.is_some() || self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.reset_password(window, cx))))
-                            .child(Button::new("cancel-reset").outline().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                            .child(crate::ui::button("do-reset").primary().label("Reset password").disabled(problem.is_some() || self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.reset_password(window, cx))))
+                            .child(crate::ui::button("cancel-reset").outline().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
                                 this.reset_for = None;
                                 cx.notify();
                             }))),
@@ -754,11 +838,19 @@ impl SettingsPage {
                 "DB_POOL_REPORT_MIN",
                 "DB_MAX_CONNECTIONS",
             ] {
-                pg = pg.child(self.catalog_row(theme, k, 160., cx));
+                pg = pg.child(match self.find(k).cloned() {
+                    Some(st) => {
+                        let changed = self.is_changed(k, cx);
+                        // Every exact field one width.
+                        let field = h_flex().w(px(200.)).justify_end().child(self.field(&st, cx));
+                        row_with_var(theme, st.short_label(), k, self.help(k), changed, field)
+                    }
+                    None => self.catalog_row(theme, k, 160., cx),
+                });
             }
         } else {
             pg = pg
-                .child(row(theme, "Memory for the database", self.help("pg:shared_buffers"), self.is_changed("pg:shared_buffers", cx), div().text_sm().child(shown("pg:shared_buffers"))))
+                .child(row(theme, "Memory for PostgreSQL", self.help("pg:shared_buffers"), self.is_changed("pg:shared_buffers", cx), div().text_sm().child(shown("pg:shared_buffers"))))
                 .child(row(theme, "Memory per query", self.help("pg:work_mem"), self.is_changed("pg:work_mem", cx), div().text_sm().child(shown("pg:work_mem"))))
                 .child(row(theme, "Connections allowed", self.help("pg:max_connections"), self.is_changed("pg:max_connections", cx), div().text_sm().child(shown("pg:max_connections"))))
                 .child(row(theme, "SENTIENT's connection pool", self.help("DATABASE_POOL_MAX"), self.is_changed("DATABASE_POOL_MAX", cx), div().text_sm().child(shown("DATABASE_POOL_MAX"))));
@@ -774,8 +866,8 @@ impl SettingsPage {
         };
         if let Some((title, keys)) = ts {
             let mut s = section(theme, title, None);
-            for k in keys {
-                s = s.child(self.catalog_row(theme, k, 160., cx));
+            for (i, k) in keys.into_iter().enumerate() {
+                s = s.child(self.catalog_row(theme, k, 160., cx).when(i == 0, |r| r));
             }
             out.push(s.into_any_element());
         }
@@ -793,7 +885,7 @@ impl SettingsPage {
 
     fn network(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut ports = section(theme, "Ports", Some("SENTIENT's own ports. A new port is checked free before it is used."));
-        for (key, label) in PORTS {
+        for (i, (key, label)) in PORTS.into_iter().enumerate() {
             let now = self.value(key, cx);
             let changed = self.is_changed(key, cx);
             let busy = changed && now.parse::<u16>().is_ok_and(sentient_installer_core::checks::port_busy);
@@ -807,7 +899,7 @@ impl SettingsPage {
                     .items_center()
                     .child(self.input(key, 110.))
                     .when(busy, |r| r.child(ui::pill(theme, Tone::Warn, "in use by another program"))),
-            ));
+            ).when(i == 0, |r| r));
         }
         ports = ports.child(self.catalog_row(theme, "EDGE_GRPC_PORT", 110., cx));
         let mut certs = section(
@@ -815,20 +907,19 @@ impl SettingsPage {
             "Certificates",
             Some("PEM files on this computer. Without the HTTPS pair SENTIENT is served over HTTP; without the MQTT pair, MQTT over TLS is off."),
         );
-        for (key, label) in CERTS {
+        for (i, (key, label)) in CERTS.into_iter().enumerate() {
             certs = certs.child(row(
                 theme,
                 label,
                 self.help(key),
                 self.is_changed(key, cx),
                 h_flex().gap_2().child(self.input(key, 360.)).child(
-                    Button::new(SharedString::from(format!("choose-{key}")))
+                    crate::ui::button(SharedString::from(format!("choose-{key}")))
                         .outline()
-                        .small()
                         .label("Choose…")
                         .on_click(cx.listener(move |this, _, window, cx| this.choose_file(key, window, cx))),
                 ),
-            ));
+            ).when(i == 0, |r| r));
         }
         vec![
             ports.into_any_element(),
@@ -840,7 +931,7 @@ impl SettingsPage {
                     "Device claiming",
                     self.help("SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT"),
                     self.is_changed("SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT", cx),
-                    self.choice("SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT", ON_OFF, cx),
+                    self.switch("SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT", cx),
                 ))
                 .into_any_element(),
         ]
@@ -867,8 +958,8 @@ impl SettingsPage {
 ;
         let keep = keep.child(self.history_rows(theme, cx));
         let cleanup = section(theme, "Cleanup", None)
-            .child(row(theme, "Audit log cleanup", self.help("AUDIT_LOG_CLEANUP_ENABLED"), self.is_changed("AUDIT_LOG_CLEANUP_ENABLED", cx), self.choice("AUDIT_LOG_CLEANUP_ENABLED", ON_OFF, cx)))
-            .child(row(theme, "Event cleanup", self.help("SENTIENT__EVENT_CLEANUP__ENABLED"), self.is_changed("SENTIENT__EVENT_CLEANUP__ENABLED", cx), self.choice("SENTIENT__EVENT_CLEANUP__ENABLED", ON_OFF, cx)));
+            .child(row(theme, "Audit log cleanup", self.help("AUDIT_LOG_CLEANUP_ENABLED"), self.is_changed("AUDIT_LOG_CLEANUP_ENABLED", cx), self.switch("AUDIT_LOG_CLEANUP_ENABLED", cx)))
+            .child(row(theme, "Event cleanup", self.help("SENTIENT__EVENT_CLEANUP__ENABLED"), self.is_changed("SENTIENT__EVENT_CLEANUP__ENABLED", cx), self.switch("SENTIENT__EVENT_CLEANUP__ENABLED", cx)));
         vec![keep.into_any_element(), cleanup.into_any_element()]
     }
 
@@ -885,8 +976,8 @@ impl SettingsPage {
                 false,
                 h_flex()
                     .gap_2()
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading…" } else { "Not read yet." }))
-                    .when(!self.reading_admin, |r| r.child(Button::new("read-retention").outline().small().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading…" } else { "Not read." }))
+                    .when(!self.reading_admin, |r| r.child(crate::ui::button("read-retention").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
             )),
             Some(Err(e)) => v_flex().child(row(theme, "Telemetry history and alarms", Some(help.into()), false, div().text_sm().text_color(theme.muted_foreground).child(e.clone()))),
             Some(Ok(now)) => {
@@ -895,7 +986,7 @@ impl SettingsPage {
                 let pick = |id: &'static str, current: i64, telemetry: bool, cx: &mut Context<Self>| {
                     h_flex().gap_1().flex_wrap().children(DAYS.iter().map(move |(label, d)| {
                         let d = *d;
-                        let b = Button::new(SharedString::from(format!("{id}-{d}"))).small().label(*label).on_click(cx.listener(move |this, _, _, cx| {
+                        let b = crate::ui::button(SharedString::from(format!("{id}-{d}"))).label(*label).on_click(cx.listener(move |this, _, _, cx| {
                             if telemetry { this.retention_edit.telemetry_days = d } else { this.retention_edit.alarms_days = d }
                             cx.notify();
                         }));
@@ -911,11 +1002,11 @@ impl SettingsPage {
                             h_flex()
                                 .gap_2()
                                 .pt_1()
-                                .child(Button::new("save-retention").primary().small().label("Save").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
+                                .child(crate::ui::button("save-retention").primary().label("Save").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                     let r = this.retention_edit;
                                     this.admin_action(move |rec| crate::sentient_admin::set_retention(rec, r), cx);
                                 })))
-                                .child(Button::new("undo-retention").outline().small().label("Discard").on_click(cx.listener(move |this, _, _, cx| {
+                                .child(crate::ui::button("undo-retention").outline().label("Discard").on_click(cx.listener(move |this, _, _, cx| {
                                     this.retention_edit = now;
                                     cx.notify();
                                 }))),
@@ -957,16 +1048,7 @@ impl SettingsPage {
                         cx.notify();
                     }))
             }));
-        let mut table = ui::panel(theme).gap_0().flex_1().min_w_0().child(
-            h_flex()
-                .gap_3()
-                .pb_1()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(div().w(px(250.)).child("Setting"))
-                .child(div().w(px(200.)).child("Value"))
-                .child(div().flex_1().child("Built-in")),
-        );
+        let mut table = ui::panel(theme).gap_0().flex_1().min_w_0().child(table_header(theme));
         let mut rows = 0;
         for g in self.groups.iter().filter(|g| self.group.as_ref().is_none_or(|n| n == &g.name)) {
             for s in &g.settings {
@@ -980,8 +1062,9 @@ impl SettingsPage {
                 }
                 rows += 1;
                 let key = s.env.clone();
-                let label: SharedString = if self.show_names { s.env.clone().into() } else { s.label.clone().into() };
-                table = table.child(row(
+                let label: SharedString = if self.show_names { s.env.clone().into() } else { s.short_label().into() };
+                let field = self.field(s, cx);
+                table = table.child(table_row(
                     theme,
                     label,
                     self.help(&s.env),
@@ -989,10 +1072,10 @@ impl SettingsPage {
                     h_flex()
                         .gap_3()
                         .items_center()
-                        .child(self.input(&s.env, 200.))
-                        .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(if s.default.is_empty() { "—".to_string() } else { s.default.clone() }))
+                        .child(h_flex().w(px(VALUE_W)).flex_shrink_0().child(field))
+                        .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(builtin_label(s)))
                         .when(set, |r| {
-                            r.child(Button::new(SharedString::from(format!("reset-{}", s.env))).ghost().xsmall().label("Reset").on_click(cx.listener(move |this, _, window, cx| {
+                            r.child(crate::ui::button(SharedString::from(format!("reset-{}", s.env))).ghost().label("Reset").on_click(cx.listener(move |this, _, window, cx| {
                                 this.set(&key, "", window, cx);
                                 cx.notify();
                             })))
@@ -1010,9 +1093,9 @@ impl SettingsPage {
                     .gap_2()
                     .items_center()
                     .py_1()
-                    .child(div().w(px(250.)).child(Input::new(n).small()))
-                    .child(div().w(px(260.)).child(Input::new(v).small()))
-                    .child(Button::new(SharedString::from(format!("remove-var-{i}"))).ghost().xsmall().label("Remove").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(div().w(px(250.)).child(Input::new(n)))
+                    .child(div().w(px(260.)).child(Input::new(v)))
+                    .child(crate::ui::button(SharedString::from(format!("remove-var-{i}"))).ghost().label("Remove").on_click(cx.listener(move |this, _, _, cx| {
                         if i < this.custom.len() {
                             this.custom.remove(i);
                         }
@@ -1026,12 +1109,12 @@ impl SettingsPage {
                 .gap_2()
                 .items_center()
                 .pt_1()
-                .child(div().w(px(250.)).child(Input::new(&self.new_name).small()))
-                .child(div().w(px(260.)).child(Input::new(&self.new_value).small()))
-                .child(Button::new("add-var").outline().small().label("Add a variable").disabled(!name_ok).on_click(cx.listener(|this, _, window, cx| this.add_variable(window, cx)))),
+                .child(div().w(px(250.)).child(Input::new(&self.new_name)))
+                .child(div().w(px(260.)).child(Input::new(&self.new_value)))
+                .child(crate::ui::button("add-var").outline().label("Add a variable").disabled(!name_ok).on_click(cx.listener(|this, _, window, cx| this.add_variable(window, cx)))),
         );
         let filter = |id: &'static str, text: String, on: bool, only: bool| {
-            let b = Button::new(id).small().label(text).on_click(cx.listener(move |this, _, _, cx| {
+            let b = crate::ui::button(id).label(text).on_click(cx.listener(move |this, _, _, cx| {
                 this.changed_only = only;
                 cx.notify();
             }));
@@ -1043,11 +1126,10 @@ impl SettingsPage {
                 .items_center()
                 .child(div().flex_1().child(Input::new(&self.search).cleanable(true)))
                 .child(filter("filter-all", format!("All {total}"), !self.changed_only, false))
-                .child(filter("filter-set", format!("Set here {set_here}"), self.changed_only, true))
+                .child(filter("filter-set", format!("Set {set_here}"), self.changed_only, true))
                 .child(
-                    Button::new("show-names")
+                    crate::ui::button("show-names")
                         .ghost()
-                        .small()
                         .label(if self.show_names { "Show plain names" } else { "Show variable names" })
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.show_names = !this.show_names;
@@ -1064,7 +1146,7 @@ impl SettingsPage {
 impl Render for SettingsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let page = ui::page(&theme, "Platform settings", "How SENTIENT runs here. Change a value and apply it; only what changed restarts.");
+        let page = ui::page(&theme, "Platform settings", "How SENTIENT runs on this computer. Change a value and apply it; only what changed restarts.");
         let Some(record) = self.record.clone() else {
             return page.child(ui::not_installed(&theme));
         };
@@ -1086,22 +1168,13 @@ impl Render for SettingsPage {
             }
         }
 
-        let tabs = h_flex().gap_1().border_b_1().border_color(theme.border).children(Tab::ALL.into_iter().map(|t| {
-            let active = t == self.tab;
-            div()
-                .id(SharedString::from(format!("tab-{t:?}")))
-                .px_4()
-                .py_2()
-                .text_sm()
-                .cursor_pointer()
-                .border_b_2()
-                .border_color(if active { theme.primary } else { theme.transparent })
-                .text_color(if active { theme.primary } else { theme.muted_foreground })
-                .child(t.title())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.tab = t;
-                    cx.notify();
-                }))
+        let this = cx.entity().downgrade();
+        let tabs = tab_bar(&theme, "", Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0), std::rc::Rc::new(move |i, cx| {
+            this.update(cx, |p, cx| {
+                p.tab = Tab::ALL[i];
+                cx.notify();
+            })
+            .ok();
         }));
 
         let applybar = (!changed.is_empty()).then(|| {
@@ -1123,9 +1196,9 @@ impl Render for SettingsPage {
                     if changed.len() == 1 { "" } else { "s" },
                     restarts
                 )))
-                .child(Button::new("revert").outline().label("Discard").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.revert(window, cx))))
+                .child(crate::ui::button("revert").outline().label("Discard").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.revert(window, cx))))
                 .child(
-                    Button::new("apply")
+                    crate::ui::button("apply")
                         .primary()
                         .label("Apply")
                         .disabled(busy || !problems.is_empty())
@@ -1141,7 +1214,10 @@ impl Render for SettingsPage {
             Tab::Advanced => self.advanced(&theme, cx),
         };
 
-        page.child(tabs)
+        let active = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0);
+        let _ = page;
+        layout(&theme, tabs, active, v_flex()
+            .gap(px(14.))
             .children(applybar)
             .children(problems.into_iter().map(|p| div().text_sm().text_color(theme.danger).child(p)))
             .when(busy || outcome.is_some(), |page| {
@@ -1149,10 +1225,10 @@ impl Render for SettingsPage {
                     ui::panel(&theme)
                         .when(busy, |p| p.child(div().text_sm().child(step.clone())).when_some(percent, |p, v| p.child(Progress::new("settings-progress").value(v))))
                         .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
-                        .children(log.into_iter().map(|line| div().text_xs().text_color(theme.muted_foreground).child(line))),
+                        .children(log.into_iter().map(|line| div().text_size(px(13.)).text_color(theme.muted_foreground).child(line))),
                 )
             })
-            .children(body)
+            .children(body))
     }
 }
 
@@ -1175,5 +1251,104 @@ mod tests {
         let medium = preset_values(Preset::Medium, &groups, 16384);
         assert_eq!(medium["pg:shared_buffers"], "4096MB");
         assert_eq!(medium["DATABASE_POOL_MAX"], "");
+    }
+}
+
+/// The tab titles of Platform settings, in order.
+pub(crate) const TAB_TITLES: [&str; 5] = ["General", "Database", "Network and certificates", "History and cleanup", "All variables"];
+
+/// What each category holds, under its title.
+pub(crate) const TAB_ABOUT: [&str; 5] = [
+    "How SENTIENT runs, its administrator account and the licence.",
+    "PostgreSQL's memory and connections, and the telemetry history store.",
+    "SENTIENT's ports, certificates and which sites may call it.",
+    "How long data is kept and the nightly cleanup.",
+    "Every setting SENTIENT reads, with its built-in value.",
+];
+
+/// The catalog settings each of the first four tabs shows on a remote
+/// server (this computer's tabs add what only it can do).
+pub(crate) const TAB_KEYS: [&[&str]; 4] = [
+    &["RUST_LOG", "ANALYTICS_ENABLED", "LICENSE_SERVER_URL", "LICENSE_HEARTBEAT_INTERVAL_SECS"],
+    &["DATABASE_POOL_MAX", "DATABASE_POOL_MIN", "DB_POOL_PRIMARY_MAX", "DB_POOL_PRIMARY_MIN", "DB_POOL_REPORT_MAX", "DB_POOL_REPORT_MIN", "DB_MAX_CONNECTIONS", "CLICKHOUSE_TS_BATCH_SIZE", "CLICKHOUSE_TS_BATCH_MAX_DELAY_MS", "CLICKHOUSE_TS_BATCH_THREADS", "SENTIENT_TS_KV_CHUNK_DAYS", "SENTIENT_TS_KV_COMPRESS_AFTER_DAYS"],
+    &["EDGE_GRPC_PORT", "SSL_PEM_CERT", "SSL_PEM_KEY", "MQTT_SSL_PEM_CERT", "MQTT_SSL_PEM_KEY", "MQTT_SSL_PEM_CA", "COAP_SSL_PEM_CERT", "COAP_SSL_PEM_KEY", "SENTIENT_CORS_ALLOWED_ORIGINS", "SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT"],
+    &["AUDIT_LOG_TTL_DAYS", "NOTIFICATIONS_TTL_DAYS", "SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS", "SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS", "AUDIT_LOG_CLEANUP_ENABLED", "SENTIENT__EVENT_CLEANUP__ENABLED"],
+];
+
+/// The categories of Platform settings, as a list on the left (the
+/// mockup's H2). Shared with a remote server's.
+pub(crate) fn tab_bar(theme: &gpui_kit::component::Theme, id: &str, active: usize, pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
+    v_flex()
+        .w(px(190.))
+        .flex_shrink_0()
+        .gap_0p5()
+        .children(TAB_TITLES.iter().enumerate().map(|(i, title)| {
+            let on = i == active;
+            let pick = pick.clone();
+            div()
+                .id(SharedString::from(format!("{id}tab-{i}")))
+                .px(px(11.))
+                .py(px(7.))
+                .rounded(px(7.))
+                .text_sm()
+                .cursor_pointer()
+                .text_color(theme.muted_foreground)
+                .when(on, |d| d.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground).font_weight(FontWeight::MEDIUM))
+                .when(!on, |d| d.hover(|d| d.bg(theme.list_hover).text_color(theme.foreground)))
+                .child(*title)
+                .on_click(move |_, _, cx| pick(i, cx))
+        }))
+}
+
+/// Platform settings laid out as the mockup's H2: the category list, then
+/// the open category's title, its line and its panels.
+pub(crate) fn layout(theme: &gpui_kit::component::Theme, nav: Div, active: usize, body: impl IntoElement) -> Stateful<Div> {
+    h_flex()
+        .id("settings-page")
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .items_start()
+        .bg(theme.muted)
+        .child(v_flex().h_full().p_3().border_r_1().border_color(theme.border).child(nav))
+        .child(
+            v_flex()
+                .id("settings-body")
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .overflow_y_scroll()
+                .p_4()
+                .gap(px(14.))
+                .child(
+                    v_flex()
+                        .gap_0p5()
+                        .child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(TAB_TITLES[active.min(4)]))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(TAB_ABOUT[active.min(4)])),
+                )
+                .child(body),
+        )
+}
+
+/// The Advanced table's header row. Shared with a remote server's.
+pub(crate) fn table_header(theme: &gpui_kit::component::Theme) -> Div {
+    h_flex()
+        .gap_3()
+        .pb_1()
+        .text_size(px(13.))
+        .text_color(theme.muted_foreground)
+        .child(div().w(px(250.)).child("Setting"))
+        .child(div().w(px(VALUE_W)).child("Value"))
+        .child(div().flex_1().child("Built-in"))
+}
+
+/// A setting's built-in value, as the Advanced table shows it.
+pub(crate) fn builtin_label(s: &crate::catalog::Setting) -> String {
+    match (s.kind(), s.default.as_str()) {
+        (_, "") => "SENTIENT's own".to_string(),
+        (crate::catalog::ValueKind::Switch, "true") => "On".to_string(),
+        (crate::catalog::ValueKind::Switch, "false") => "Off".to_string(),
+        (crate::catalog::ValueKind::Number(Some(u)), d) => format!("{d} {u}"),
+        (_, d) => d.to_string(),
     }
 }

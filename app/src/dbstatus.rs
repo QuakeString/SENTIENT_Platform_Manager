@@ -51,6 +51,15 @@ pub struct PgInfo {
     /// Tables in the database (for "Everything else: N tables").
     #[serde(default)]
     pub table_count: u32,
+    /// Telemetry history kept in PostgreSQL: rows from the planner's
+    /// statistics (approximate), and the period it spans (partition or chunk
+    /// bounds). None when not in PostgreSQL or not read quickly.
+    #[serde(default)]
+    pub ts_rows: Option<u64>,
+    #[serde(default)]
+    pub ts_first_ms: Option<i64>,
+    #[serde(default)]
+    pub ts_last_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -75,6 +84,9 @@ pub struct ChInfo {
     /// How long history is kept, in days (None: forever).
     #[serde(default)]
     pub ttl_days: Option<u32>,
+    /// Values with no valid time (before 2000-01-01), left out of the period.
+    #[serde(default)]
+    pub invalid_rows: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -114,6 +126,56 @@ const PG_SQL: &str = "SELECT json_build_object(\
 const HYPERTABLE_SQL: &str = "SELECT COALESCE(json_object_agg(hypertable_name, \
  hypertable_size(format('%I.%I', hypertable_schema, hypertable_name)::regclass)), '{}'::json)::text \
  FROM timescaledb_information.hypertables WHERE hypertable_schema = 'public'";
+
+/// The first valid time: values before 2000-01-01 have no real time.
+pub const VALID_FROM_MS: i64 = 946_684_800_000;
+
+/// Telemetry history on stock PostgreSQL: rows from the partitions' planner
+/// statistics and the bounds of the partitions that hold rows.
+const STOCK_TS_SQL: &str = "SELECT json_build_object(\
+ 'rows', (SELECT COALESCE(sum(GREATEST(c.reltuples, 0)), 0)::bigint FROM pg_partition_tree('public.ts_kv') t JOIN pg_class c ON c.oid = t.relid WHERE t.isleaf),\
+ 'bounds', (SELECT COALESCE(json_agg(pg_get_expr(c.relpartbound, c.oid)), '[]'::json) FROM pg_partition_tree('public.ts_kv') t \
+   JOIN pg_class c ON c.oid = t.relid WHERE t.isleaf AND c.relispartition AND c.reltuples > 0))::text";
+
+/// Without partitions: the period from the data, under a short time limit.
+const PLAIN_TS_RANGE_SQL: &str = "SELECT json_build_object('first', min(ts), 'last', max(ts))::text FROM ts_kv WHERE ts >= 946684800000";
+
+/// TimescaleDB: its own row estimate and the chunks' time ranges.
+const TIMESCALE_TS_SQL: &str = "SELECT json_build_object(\
+ 'rows', approximate_row_count('public.ts_kv'),\
+ 'first', (SELECT min(range_start_integer) FROM timescaledb_information.chunks WHERE hypertable_name = 'ts_kv' AND range_start_integer >= 946684800000),\
+ 'last', (SELECT max(range_end_integer) FROM timescaledb_information.chunks WHERE hypertable_name = 'ts_kv'))::text";
+
+#[derive(Deserialize, Default)]
+struct TsRow {
+    #[serde(default)]
+    rows: Option<f64>,
+    #[serde(default)]
+    bounds: Vec<String>,
+    #[serde(default)]
+    first: Option<i64>,
+    #[serde(default)]
+    last: Option<i64>,
+}
+
+/// The lowest FROM and highest TO of `FOR VALUES FROM ('a') TO ('b')`
+/// partition bounds, valid times only.
+pub fn bounds_range(bounds: &[String]) -> (Option<i64>, Option<i64>) {
+    let num = |s: &str| s.trim().trim_matches(|c| c == '(' || c == ')' || c == '\'' || c == ' ').parse::<i64>().ok();
+    let mut first: Option<i64> = None;
+    let mut last: Option<i64> = None;
+    for b in bounds {
+        let Some(rest) = b.split("FROM").nth(1) else { continue };
+        let mut it = rest.split("TO");
+        if let (Some(a), Some(z)) = (it.next().and_then(num), it.next().and_then(num)) {
+            if a >= VALID_FROM_MS {
+                first = Some(first.map_or(a, |f| f.min(a)));
+            }
+            last = Some(last.map_or(z, |l| l.max(z)));
+        }
+    }
+    (first, last)
+}
 
 #[derive(Deserialize)]
 struct PgRow {
@@ -158,6 +220,9 @@ pub fn parse_pg(json: &str, hyper: Option<&str>) -> Result<(PgInfo, Option<Strin
             free_bytes: None,
             disk_total: None,
             table_count: row.table_count,
+            ts_rows: None,
+            ts_first_ms: None,
+            ts_last_ms: None,
         },
         row.data_directory,
     ))
@@ -194,6 +259,45 @@ pub fn plain_table(name: &str) -> Option<(&'static str, &'static str)> {
         "report" | "report_file" => ("Reports", ""),
         "rule_node" | "rule_node_state" => ("Rule chains", ""),
         "device" => ("Devices", ""),
+        "analytics_result" => ("Analytics results", ""),
+        "analytics_pipeline" => ("Analytics pipelines", ""),
+        "analytics_spectrum" => ("Analytics spectra", ""),
+        "translation_usage" | "translation_target" | "translation_source" | "translator_instance" => ("Translations", ""),
+        "task_job" => ("Background tasks", ""),
+        "widgets_bundle" | "widgets_bundle_widget" => ("Widget bundles", ""),
+        "tb_user" => ("Users", ""),
+        "user_credentials" => ("User sign-in data", ""),
+        "report_template" => ("Report templates", ""),
+        "report_job" | "report_delivery" => ("Report runs", ""),
+        "asset" => ("Assets", ""),
+        "asset_profile" => ("Asset profiles", ""),
+        "device_profile" => ("Device profiles", ""),
+        "device_credentials" => ("Device credentials", ""),
+        "calculated_field" => ("Calculated fields", ""),
+        "notification_rule" | "notification_template" | "notification_target" | "notification_request" => ("Notification setup", ""),
+        "key_dictionary" => ("Key names", ""),
+        "api_usage_state" => ("Usage counters", ""),
+        "group_permission" | "role" => ("Roles and permissions", ""),
+        "ai_conversation" | "ai_conversation_message" => ("AI conversations", ""),
+        "ai_model" => ("AI models", ""),
+        "entity_group" | "entity_group_membership" => ("Groups", ""),
+        "scheduler_event" => ("Scheduled events", ""),
+        "entity_alarm" => ("Alarm links", ""),
+        "relation" => ("Relations", ""),
+        "ota_package" => ("Firmware and software", ""),
+        "customer" => ("Customers", ""),
+        "rule_chain" => ("Rule chains", ""),
+        "entity_view" => ("Entity views", ""),
+        "entity_version" => ("Versions", ""),
+        "tenant_profile" => ("Tenant profiles", ""),
+        "tenant" => ("Tenants", ""),
+        "recipe" | "recipe_data" => ("Recipes", ""),
+        "queue_stats" => ("Queue statistics", ""),
+        "admin_settings" => ("System settings", ""),
+        "edge" | "edge_event" => ("Edge", ""),
+        "rpc" => ("Device commands", ""),
+        "integration" => ("Integrations", ""),
+        "license" | "license_time_anchor" => ("Licence", ""),
         _ => return None,
     })
 }
@@ -380,7 +484,36 @@ fn read_now(record: &InstallationRecord) -> DbStatus {
             } else {
                 db.text(HYPERTABLE_SQL).await.ok().flatten()
             };
-            parse_pg(&main, hyper.as_deref())
+            let mut parsed = parse_pg(&main, hyper.as_deref());
+            // Telemetry history kept in PostgreSQL: cheap reads only, each
+            // under a short limit; what is not read quickly is left out.
+            if !hybrid {
+                if let Ok((info, _)) = parsed.as_mut() {
+                    let _ = db.text("SELECT set_config('statement_timeout', '3000', false)").await;
+                    let timescale = info.timescaledb.is_some();
+                    let got = db.text(if timescale { TIMESCALE_TS_SQL } else { STOCK_TS_SQL }).await.ok().flatten();
+                    let mut ts: TsRow = got.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+                    if !timescale {
+                        let (a, z) = bounds_range(&ts.bounds);
+                        ts.first = a;
+                        ts.last = z;
+                        if ts.bounds.is_empty() {
+                            if let Some(t) = db.text(PLAIN_TS_RANGE_SQL).await.ok().flatten() {
+                                if let Ok(r) = serde_json::from_str::<TsRow>(&t) {
+                                    ts.first = r.first;
+                                    ts.last = r.last;
+                                }
+                            }
+                        }
+                    }
+                    let now = chrono::Utc::now().timestamp_millis();
+                    info.ts_rows = ts.rows.filter(|r| *r >= 0.0).map(|r| r as u64);
+                    info.ts_first_ms = ts.first.filter(|f| *f >= VALID_FROM_MS);
+                    info.ts_last_ms = ts.last.map(|l| l.min(now)).filter(|l| *l >= VALID_FROM_MS);
+                    let _ = db.text("SELECT set_config('statement_timeout', '0', false)").await;
+                }
+            }
+            parsed
         })
     });
     match pg {
@@ -415,11 +548,13 @@ fn read_now(record: &InstallationRecord) -> DbStatus {
         let q = format!(
             "SELECT (SELECT sum(bytes_on_disk) FROM system.parts WHERE active AND database = currentDatabase()), \
              (SELECT sum(rows) FROM system.parts WHERE active AND database = currentDatabase() AND table = '{HISTORY_TABLE}'), \
-             (SELECT min(ts) FROM {HISTORY_TABLE}), (SELECT max(ts) FROM {HISTORY_TABLE}) \
+             (SELECT min(ts) FROM {HISTORY_TABLE} WHERE ts >= {VALID_FROM_MS}), (SELECT max(ts) FROM {HISTORY_TABLE}), \
+             (SELECT count() FROM {HISTORY_TABLE} WHERE ts < {VALID_FROM_MS}) \
              SETTINGS max_execution_time = 10 FORMAT TSV"
         );
         match ch.version().and_then(|v| ch.text(&q).map(|t| (v, t))) {
             Ok((version, tsv)) => match parse_ch_history(&tsv) {
+                // The fifth column: values with no valid time.
                 Some((disk, rows, first, last)) => {
                     let free_bytes = if docker {
                         disk_linux("/var/lib/clickhouse", Some(&names.ch)).map(|d| d.0)
@@ -460,6 +595,7 @@ fn read_now(record: &InstallationRecord) -> DbStatus {
                         broken_parts,
                         months,
                         ttl_days,
+                        invalid_rows: tsv.trim().split('\t').nth(4).and_then(|v| v.parse().ok()).unwrap_or(0),
                     });
                 }
                 None => status.ch_error = Some(format!("unexpected answer: {}", tsv.trim())),
@@ -605,6 +741,26 @@ pub fn ago_label(rfc3339: &str, now: chrono::DateTime<chrono::Local>) -> String 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn partition_bounds_give_the_period() {
+        let b = vec![
+            "FOR VALUES FROM ('1704067200000') TO ('1704672000000')".to_string(),
+            "FOR VALUES FROM ('1709251200000') TO ('1709856000000')".to_string(),
+            "FOR VALUES FROM ('0') TO ('946684800000')".to_string(),
+            "DEFAULT".to_string(),
+        ];
+        assert_eq!(bounds_range(&b), (Some(1_704_067_200_000), Some(1_709_856_000_000)));
+        assert_eq!(bounds_range(&[]), (None, None));
+    }
+
+    #[test]
+    fn every_listed_table_has_a_plain_name() {
+        for t in ["analytics_result", "attribute_kv", "ts_kv_latest", "resource", "widget_type", "audit_log", "translation_usage", "rpc", "key_dictionary"] {
+            assert!(plain_table(t).is_some(), "{t}");
+        }
+    }
+
     use super::*;
 
     #[test]

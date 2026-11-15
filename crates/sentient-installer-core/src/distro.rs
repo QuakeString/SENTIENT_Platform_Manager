@@ -245,11 +245,29 @@ impl DeployConfig {
     fn compose_cmd(&self, sub: &str) -> String {
         match &self.external {
             Some(ext) => {
-                let files: String = ext.files.iter().map(|f| format!(" -f {}", shell_quote(f))).collect();
+                // A file the stack was started with that is gone since (a
+                // temporary override) is left out: compose refuses a missing
+                // -f, and the project name finds the containers anyway.
+                let files: String = ext.files.iter().filter(|f| host_file_exists(f)).map(|f| format!(" -f {}", shell_quote(f))).collect();
                 let dir = if ext.working_dir.is_empty() { String::new() } else { format!(" --project-directory {}", shell_quote(&ext.working_dir)) };
                 format!("docker compose -p {}{dir}{files} {sub}", shell_quote(&ext.project))
             }
             None => format!("docker compose -f {} {sub}", self.compose_path()),
+        }
+    }
+
+    /// Compose files the adopted stack was started with that no longer
+    /// exist (Status says so quietly).
+    pub fn vanished_files(&self) -> Vec<String> {
+        self.external.as_ref().map(|e| e.files.iter().filter(|f| !host_file_exists(f)).cloned().collect()).unwrap_or_default()
+    }
+
+    /// `start`, `stop` or `restart` without the compose files: by project
+    /// name for an adopted stack, so a vanished file cannot stop it.
+    fn control_cmd(&self, sub: &str) -> String {
+        match &self.external {
+            Some(ext) => format!("docker compose -p {} {sub}", shell_quote(&ext.project)),
+            None => self.compose_cmd(sub),
         }
     }
 
@@ -612,7 +630,7 @@ macro_rules! bail_if_cancelled {
 pub fn deploy_clickhouse(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     cfg.validate()?;
     if !is_ready() {
-        return Err("Docker is not reachable — run the Docker setup step first.".into());
+        return Err("Docker is not reachable. Run the Docker setup step first.".into());
     }
     sink(Progress::Step { name: "Writing the ClickHouse configuration".into() });
     write_host_file(&sink, &cfg.compose_path(), &compose_clickhouse_only(cfg))?;
@@ -655,12 +673,12 @@ pub fn deploy(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
 pub fn deploy_with(sink: ProgressFn, cfg: &DeployConfig, keep_existing: Option<bool>) -> Result<(), String> {
     cfg.validate()?;
     if !is_ready() {
-        return Err("Docker is not reachable — run the Docker setup step first.".into());
+        return Err("Docker is not reachable. Run the Docker setup step first.".into());
     }
 
     sink(Progress::Step { name: "Writing the SENTIENT configuration".into() });
     write_stack_files(&sink, cfg)?;
-    sink(Progress::Log { line: format!("{} — {}", cfg.compose_path(), cfg.flavor.label()) });
+    sink(Progress::Log { line: format!("{}: {}", cfg.compose_path(), cfg.flavor.label()) });
     bail_if_cancelled!();
 
     sink(Progress::Step { name: "Pulling SENTIENT images (first time, a few minutes)".into() });
@@ -684,7 +702,7 @@ pub fn deploy_with(sink: ProgressFn, cfg: &DeployConfig, keep_existing: Option<b
     if let Err(e) = run_stream(&sink, &cfg.compose_cmd(&format!("run --rm -e INSTALL_SENTIENT=true{demo} sentient"))) {
         bail_if_cancelled!();
         sink(Progress::Log { line: format!(
-            "note: install step returned an error ({e}). If the database was already installed this is expected — continuing."
+            "note: install step returned an error ({e}). If the database was already installed this is expected. Continuing."
         ) });
     }
     bail_if_cancelled!();
@@ -703,7 +721,7 @@ pub fn deploy_with(sink: ProgressFn, cfg: &DeployConfig, keep_existing: Option<b
         sink(Progress::Log { line: format!("waiting for SENTIENT to start… ({}s)", i * 5) });
         std::thread::sleep(std::time::Duration::from_secs(5));
     }
-    Err("SENTIENT didn't answer in time — it may still be initializing the database.".into())
+    Err("SENTIENT didn't answer in time. It may still be initializing the database.".into())
 }
 
 /// Tear down a partial/cancelled deploy: containers, network, volumes, and
@@ -762,7 +780,7 @@ pub fn cleanup(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     let _ = run_stream(&sink, &format!("docker rm -f {} {} {} 2>/dev/null || true", n.app, n.pg, n.ch));
     // No `docker image prune`: it removes every untagged image on the host,
     // other projects' included, and a partial pull leaves no image behind.
-    sink(Progress::Done { message: "Cleanup complete — you can safely retry the install.".into() });
+    sink(Progress::Done { message: "Cleanup complete. You can safely retry the install.".into() });
     Ok(())
 }
 
@@ -805,7 +823,7 @@ pub fn uninstall(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
             let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
             let _ = sys::output("wsl.exe", &["--unregister", DISTRO]);
         } else {
-            sink(Progress::Log { line: "No SENTIENT distro found — nothing to remove.".into() });
+            sink(Progress::Log { line: "No SENTIENT distro found. Nothing to remove.".into() });
         }
         sink(Progress::Done { message: "SENTIENT and its Docker environment were removed.".into() });
         Ok(())
@@ -930,7 +948,7 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
         sink(Progress::Done { message: "Docker Engine is installed and running.".into() });
         Ok(())
     } else {
-        Err("Docker was installed but isn't responding yet — try the step again.".into())
+        Err("Docker was installed but isn't responding yet. Try the step again.".into())
     }
 }
 
@@ -970,7 +988,7 @@ elif command -v dnf >/dev/null 2>&1; then
 elif command -v zypper >/dev/null 2>&1; then
   zypper --non-interactive install docker docker-compose
 else
-  echo "No supported package manager (apt, pacman, dnf, zypper) — install Docker Engine by hand and re-run." >&2
+  echo "No supported package manager (apt, pacman, dnf, zypper). Install Docker Engine by hand and re-run." >&2
   exit 1
 fi
 "#.to_string()
@@ -1070,15 +1088,31 @@ fn shell_quote(s: &str) -> String {
 
 /// Start / stop / restart the deployed stack.
 pub fn control(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Result<(), String> {
+    let external = cfg.external.is_some();
     let (label, sub) = match action {
+        // An adopted stack starts its own containers again; SPM's own stack
+        // is brought up from its file.
+        "start" if external => ("Starting SENTIENT", "start"),
         "start" => ("Starting SENTIENT", "up -d"),
         "stop" => ("Stopping SENTIENT", "stop"),
         "restart" => ("Restarting SENTIENT", "restart"),
         _ => return Err(format!("unknown action: {action}")),
     };
     sink(Progress::Step { name: label.into() });
-    run_stream(&sink, &cfg.compose_cmd(sub))?;
-    sink(Progress::Done { message: format!("{label} — done.") });
+    run_stream(&sink, &cfg.control_cmd(sub))?;
+    sink(Progress::Done { message: format!("{label}: done.") });
+    Ok(())
+}
+
+/// Start, stop or restart one container of the stack. `container` must come
+/// from the stack's own list (the caller checks it).
+pub fn service_control(sink: ProgressFn, container: &str, action: &str) -> Result<(), String> {
+    if !matches!(action, "start" | "stop" | "restart") {
+        return Err(format!("unknown action: {action}"));
+    }
+    sink(Progress::Step { name: format!("{action} {container}") });
+    run_stream(&sink, &format!("docker {action} {}", shell_quote(container)))?;
+    sink(Progress::Done { message: format!("{container}: {action} done.") });
     Ok(())
 }
 
@@ -1334,6 +1368,26 @@ fn _uses(_: &EnvVar) {}
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_vanished_override_does_not_stop_control() {
+        let dir = std::env::temp_dir().join(format!("spm-vanished-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("docker-compose.yml");
+        std::fs::write(&main, "services: {}\n").unwrap();
+        let gone = dir.join("override.yml");
+        let cfg = DeployConfig {
+            external: Some(ExternalCompose { project: "sentient".into(), files: vec![main.display().to_string(), gone.display().to_string()], working_dir: String::new() }),
+            ..Default::default()
+        };
+        let up = cfg.compose_cmd("up -d");
+        assert!(up.contains(&main.display().to_string()) && !up.contains("override.yml"), "{up}");
+        assert_eq!(cfg.control_cmd("stop"), "docker compose -p 'sentient' stop".replace('\'', if cfg.control_cmd("stop").contains('\'') { "'" } else { "" }));
+        assert_eq!(cfg.vanished_files(), vec![gone.display().to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     #[test]

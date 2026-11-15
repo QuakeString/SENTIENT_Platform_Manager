@@ -9,12 +9,10 @@ use std::collections::{HashMap, HashSet};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     input::{Input, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
-    radio::RadioGroup,
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
-    WindowExt as _,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -67,6 +65,8 @@ pub struct InstancesPage {
     local: Option<InstallationRecord>,
     list: Vec<Instance>,
     statuses: HashMap<String, Result<RemoteStatus, String>>,
+    /// Read again once the refresh under way ends.
+    refresh_again: HashSet<String>,
     refreshing: HashSet<String>,
     form: Option<Form>,
     job: Entity<Job>,
@@ -99,6 +99,13 @@ impl InstancesPage {
             if !job.read(cx).is_running() {
                 if let Some((id, _)) = this.job_for.clone() {
                     this.refresh(&id, cx);
+                    // The dialog's title says how it ended.
+                    let name = this.instance(&id).map(|i| i.name).unwrap_or_default();
+                    match job.read(cx).state() {
+                        JobState::Done(_) if this.job_dialog => crate::modal::set_title(format!("Finished on {name}"), cx),
+                        JobState::Failed(_) if this.job_dialog => crate::modal::set_title(format!("Did not finish on {name}"), cx),
+                        _ => {}
+                    }
                 }
             }
             cx.notify();
@@ -108,6 +115,7 @@ impl InstancesPage {
             list: remote::load(),
             statuses: HashMap::new(),
             refreshing: HashSet::new(),
+            refresh_again: HashSet::new(),
             form: None,
             job,
             job_for: None,
@@ -127,6 +135,36 @@ impl InstancesPage {
         }
         if page.local.is_some() {
             page.refresh_local(cx);
+        }
+        // Screens: the job dialog running, finished or failed on the first
+        // remote instance (SPM_DEBUG_JOB=running|done|failed).
+        #[cfg(debug_assertions)]
+        if let (Ok(kind), Some(inst)) = (std::env::var("SPM_DEBUG_JOB"), page.list.first().cloned()) {
+            use sentient_installer_core::progress::Progress;
+            page.job_for = Some((inst.id.clone(), format!("Setting up {}", inst.name).into()));
+            page.retry = Some(Retry::SetUp(inst.id.clone()));
+            let name = inst.name.clone();
+            page.job.update(cx, |job, cx| {
+                job.start(
+                    move |sink| {
+                        sink(Progress::Step { name: "Copying the Platform Manager to the server".into() });
+                        sink(Progress::Log { line: "sentient-platform-manager-agent-linux-x86_64: 11.3 MB".into() });
+                        match kind.as_str() {
+                            "running" => {
+                                std::thread::sleep(std::time::Duration::from_secs(120));
+                                Ok(())
+                            }
+                            "failed" => Err(remote::failed("The server refused the administrator password.", "sudo: 1 incorrect password attempt")),
+                            _ => {
+                                sink(Progress::Step { name: "Looking for SENTIENT on the server".into() });
+                                sink(Progress::Done { message: format!("The Platform Manager is set up on {name}. SENTIENT 4.4.0.2 (Docker) was found and added. Nothing on it was changed.") });
+                                Ok(())
+                            }
+                        }
+                    },
+                    cx,
+                )
+            });
         }
         // The cards refresh every minute.
         let tick = cx.spawn(async move |this, cx| loop {
@@ -157,6 +195,9 @@ impl InstancesPage {
     fn refresh(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(inst) = self.instance(id) else { return };
         if !self.refreshing.insert(id.to_string()) {
+            // One is under way and may have started before a job changed the
+            // server: read again when it ends.
+            self.refresh_again.insert(id.to_string());
             return;
         }
         let id = id.to_string();
@@ -166,7 +207,11 @@ impl InstancesPage {
             let got = cx.background_executor().spawn(async move { remote::status(&i) }).await;
             this.update(cx, |page, cx| {
                 page.refreshing.remove(&id);
-                page.statuses.insert(id, got);
+                let again = page.refresh_again.remove(&id);
+                page.statuses.insert(id.clone(), got);
+                if again {
+                    page.refresh(&id, cx);
+                }
                 cx.notify();
             })
             .ok();
@@ -417,8 +462,11 @@ impl InstancesPage {
             job.start(
                 move |sink| {
                     remote::deploy(&inst, &sink)?;
-                    sink(sentient_installer_core::progress::Progress::Done { message: format!("The Platform Manager is set up on {}.", inst.name) });
-                    Ok(())
+                    // A lone SENTIENT already there is added in the same job
+                    // (the agent says what it found and did).
+                    sink(sentient_installer_core::progress::Progress::Step { name: "Looking for SENTIENT on the server".into() });
+                    let job_id = remote::start_job(&inst, &["add-if-one"])?;
+                    remote::follow(&inst, &job_id, &sink)
                 },
                 cx,
             )
@@ -491,11 +539,11 @@ impl InstancesPage {
         let (tone, state) = state_of(status.as_ref(), self.refreshing.contains(LOCAL));
         let current = self.open.is_none();
         let open_btn: AnyElement = if current {
-            Button::new("open-local").primary().small().label("Open").disabled(true).tooltip("This instance is open").into_any_element()
+            open_now_tag(&theme).into_any_element()
         } else {
-            Button::new("open-local").primary().small().label("Open").on_click(cx.listener(|_, _, _, cx| cx.emit(OpenInstance(None)))).into_any_element()
+            crate::ui::button("open-local").primary().label("Open").on_click(cx.listener(|_, _, _, cx| cx.emit(OpenInstance(None)))).into_any_element()
         };
-        let more = Button::new("more-local").ghost().small().icon(IconName::Ellipsis).tooltip("More").dropdown_menu({
+        let more = crate::ui::button("more-local").ghost().small().icon(IconName::Ellipsis).tooltip("More").dropdown_menu({
             let this = cx.entity().downgrade();
             move |menu, _, _| {
                 let t = this.clone();
@@ -530,7 +578,7 @@ impl InstancesPage {
         let can_read = matches!(&status, Some(Ok(s)) if s.installed);
         let not_set_up = matches!(&status, Some(Err(e)) if e == remote::NOT_SET_UP);
         let this = cx.entity().downgrade();
-        let more = Button::new(SharedString::from(format!("more-{id}"))).ghost().small().icon(IconName::Ellipsis).tooltip("Work on this instance").dropdown_menu({
+        let more = crate::ui::button(SharedString::from(format!("more-{id}"))).ghost().small().icon(IconName::Ellipsis).tooltip("Work on this instance").dropdown_menu({
             let (this, id) = (this.clone(), id.clone());
             move |menu, _, _| {
                 let item = |icon: Lucide, label: &'static str, enabled: bool, f: Box<dyn Fn(&mut InstancesPage, &mut Window, &mut Context<InstancesPage>)>| {
@@ -558,19 +606,19 @@ impl InstancesPage {
         let unreachable = matches!(&status, Some(Err(e)) if e != remote::NOT_SET_UP && e != remote::FORGOTTEN && !e.contains("administrator rights"));
         let current = self.open.as_deref() == Some(id.as_str());
         let primary: AnyElement = if unreachable {
-            Button::new(SharedString::from(format!("retry-{id}"))).primary().small().label("Try again").loading(refreshing).on_click(cx.listener({
+            crate::ui::button(SharedString::from(format!("retry-{id}"))).primary().label("Try again").loading(refreshing).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.refresh(&id, cx)
             })).into_any_element()
         } else if not_set_up {
-            Button::new(SharedString::from(format!("setup-{id}"))).primary().small().label("Set up").disabled(busy).on_click(cx.listener({
+            crate::ui::button(SharedString::from(format!("setup-{id}"))).primary().label("Set up").disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.set_up(&id, cx)
             })).into_any_element()
         } else if current {
-            Button::new(SharedString::from(format!("open-{id}"))).primary().small().label("Open").disabled(true).tooltip("This instance is open").into_any_element()
+            open_now_tag(&theme).into_any_element()
         } else {
-            Button::new(SharedString::from(format!("open-{id}"))).primary().small().label("Open").on_click(cx.listener({
+            crate::ui::button(SharedString::from(format!("open-{id}"))).primary().label("Open").on_click(cx.listener({
                 let id = id.clone();
                 move |_, _, _, cx| cx.emit(OpenInstance(Some(id.clone())))
             })).into_any_element()
@@ -579,11 +627,11 @@ impl InstancesPage {
             .gap_2()
             .items_center()
             .child(primary)
-            .child(Button::new(SharedString::from(format!("edit-{id}"))).outline().small().label("Edit").disabled(busy).on_click(cx.listener({
+            .child(crate::ui::button(SharedString::from(format!("edit-{id}"))).outline().label("Edit").disabled(busy).on_click(cx.listener({
                 let inst = inst.clone();
                 move |this, _, window, cx| this.open_form(Some(inst.clone()), window, cx)
             })))
-            .child(Button::new(SharedString::from(format!("remove-{id}"))).outline().small().label("Remove").disabled(busy).on_click(cx.listener({
+            .child(crate::ui::button(SharedString::from(format!("remove-{id}"))).outline().label("Remove").disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| {
                     this.confirm_remove = Some(id.clone());
@@ -611,7 +659,7 @@ impl InstancesPage {
                         .rounded(theme.radius)
                         .bg(theme.accent)
                         .child(div().flex_1().text_sm().child("A job is running on this server."))
-                        .child(Button::new(SharedString::from(format!("follow-{id}"))).small().outline().label("Follow").disabled(busy).on_click(cx.listener({
+                        .child(crate::ui::button(SharedString::from(format!("follow-{id}"))).outline().label("Follow").disabled(busy).on_click(cx.listener({
                             let id = id.clone();
                             move |this, _, _, cx| this.follow_job(&id, job_id.clone(), cx)
                         }))),
@@ -629,11 +677,11 @@ impl InstancesPage {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(Button::new("remove-yes").danger().small().label("Remove").on_click(cx.listener({
+                            .child(crate::ui::button("remove-yes").danger().label("Remove").on_click(cx.listener({
                                 let id = id.clone();
                                 move |this, _, _, cx| this.remove(&id, cx)
                             })))
-                            .child(Button::new("remove-no").ghost().small().label("Keep").on_click(cx.listener(|this, _, _, cx| {
+                            .child(crate::ui::button("remove-no").ghost().label("Keep").on_click(cx.listener(|this, _, _, cx| {
                                 this.confirm_remove = None;
                                 cx.notify();
                             }))),
@@ -646,21 +694,18 @@ impl InstancesPage {
     fn form_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let f = self.form.as_ref()?;
         let theme = cx.theme().clone();
-        let help = |id: &'static str, text: &'static str| Button::new(id).ghost().xsmall().icon(IconName::Info).tooltip(text);
-        let field = |label: &'static str, control: AnyElement| {
-            h_flex().gap_3().items_center().child(div().w(px(170.)).flex_shrink_0().text_sm().child(label)).child(div().flex_1().min_w_0().child(control))
-        };
+        let help = |id: &'static str, text: &'static str| crate::ui::button(id).ghost().xsmall().icon(IconName::Info).tooltip(text);
         let busy = matches!(f.stage, Stage::Checking | Stage::Connecting);
         let swatches = h_flex().gap_2().items_center().children(remote::PALETTE.iter().map(|c| {
             let selected = f.color.eq_ignore_ascii_case(c);
             let hex = c.to_string();
             div()
                 .id(SharedString::from(format!("swatch-{c}")))
-                .size(px(22.))
+                .size(px(24.))
                 .rounded_full()
                 .bg(rgb(remote::parse_hex(c).unwrap_or(0)))
                 .border_2()
-                .border_color(if selected { theme.foreground } else { theme.background })
+                .border_color(if selected { theme.primary } else { theme.background })
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if let Some(f) = &mut this.form {
@@ -671,137 +716,183 @@ impl InstancesPage {
                     cx.notify();
                 }))
         }));
-        let mut panel = v_flex()
-            .gap_2()
-            .child(div().text_sm().text_color(theme.muted_foreground).child("A computer running SENTIENT that this Platform Manager reaches over SSH."))
-            .child(field("Name", Input::new(&f.name).into_any_element()))
-            .child(field(
-                "Address",
-                h_flex().gap_2().child(div().flex_1().child(Input::new(&f.host))).child(div().text_sm().child("Port")).child(div().w_20().child(Input::new(&f.port))).into_any_element(),
-            ))
-            .child(field(
-                "System",
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div().flex_none().child(RadioGroup::horizontal("os")
-                            .children(["Linux", "Windows"])
-                            .selected_index(Some(if f.os == Os::Windows { 1 } else { 0 }))
-                            .on_change(cx.listener(|this, v: &usize, _, cx| {
-                                if let Some(f) = &mut this.form {
-                                    f.os = if *v == 1 { Os::Windows } else { Os::Linux };
-                                }
-                                cx.notify();
-                            }))),
-                    )
-                    .child(help(
-                        "help-os",
-                        if f.os == Os::Windows {
-                            "Windows 10/11 or Windows Server 2019 and later, with OpenSSH Server turned on:\n1. Settings, System, Optional features, Add a feature: OpenSSH Server (or in PowerShell as administrator: Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0).\n2. Start it and start it with Windows: Start-Service sshd; Set-Service sshd -StartupType Automatic.\n3. Allow TCP port 22 in Windows Defender Firewall (the feature adds the rule).\n4. Sign in with an account in the Administrators group. For a key: put its public key in C:\\ProgramData\\ssh\\administrators_authorized_keys."
-                        } else {
-                            "Ubuntu, Debian, Red Hat, Rocky, Alma, Fedora, openSUSE and others, with an SSH server (openssh-server):\n1. Install it if missing: sudo apt install openssh-server (Debian, Ubuntu) or sudo dnf install openssh-server (Red Hat family).\n2. Start it with the system: sudo systemctl enable --now ssh (sshd on Red Hat).\n3. Allow TCP port 22 in the firewall if one is on.\n4. Sign in as root or a user that may use sudo. For a key: add its public key to ~/.ssh/authorized_keys of that user."
-                        },
-                    ))
-                    .child(Button::new("os-guide").ghost().small().label("Setup guide").icon(IconName::ExternalLink).on_click({
-                        let anchor = if f.os == Os::Windows { "windows-servers" } else { "linux-servers" };
-                        move |_, _, cx| ui::open_url(&format!("https://sentient.invenia.in/docs/installation/remote-instances/#{anchor}"), cx)
-                    }))
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(
-                        f.editing
-                            .as_ref()
-                            .and_then(|id| self.instance(id))
-                            .and_then(|i| i.detected)
-                            .map(|d| format!("Found: {} {}", d.os_name, d.arch))
-                            .unwrap_or_else(|| "Checked when connecting".into()),
-                    ))
-                    .into_any_element(),
-            ))
-            .child(field("User", h_flex().gap_1().items_center().child(div().flex_1().child(Input::new(&f.user))).child(help("help-user", "An account on the server that may use sudo, or root. The Platform Manager runs its work there as an administrator.")).into_any_element()))
-            .child(field(
-                "Sign in with",
-                RadioGroup::horizontal("auth")
-                    .children(["Key file", "Password"])
-                    .selected_index(Some(if f.auth == Auth::Key { 0 } else { 1 }))
-                    .on_change(cx.listener(|this, v: &usize, _, cx| {
-                        if let Some(f) = &mut this.form {
-                            f.auth = if *v == 0 { Auth::Key } else { Auth::Password };
-                        }
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-            ))
-            .when(f.auth == Auth::Key, |p| {
-                p.child(field(
-                    "Key file",
+        // One grid for every row: label (with its help) | control, so all
+        // controls share the same left and right edges.
+        // The mockup's form row (K2): the label on the left, the control in a
+        // right-hand column of one width; rows divided by a line.
+        let row = |label: &'static str, help_id: &'static str, help_text: Option<&'static str>, control: AnyElement| {
+            h_flex()
+                .gap_3()
+                .items_center()
+                .min_h(px(40.))
+                .py_1()
+                .border_t_1()
+                .border_color(theme.border)
+                .child(
                     h_flex()
-                        .gap_2()
-                        .child(div().flex_1().min_w_0().child(Input::new(&f.key_file)))
-                        .child(Button::new("key-choose").outline().label("Choose…").on_click(cx.listener(|this, _, _, cx| this.choose_key(cx))))
-                        .into_any_element(),
-                ))
-            })
-            .child(field(
-                if f.auth == Auth::Key { "Key passphrase" } else { "Password" },
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .child(div().flex_1().child(Input::new(&f.secret).mask_toggle()))
-                    .child(help("help-secret", "Kept in this computer's secret store (Windows: sealed to this computer; Linux: the desktop keyring, else until the Platform Manager closes). It is never written to the instance list."))
-                    .into_any_element(),
-            ))
-            .when(f.auth == Auth::Key && f.os == Os::Linux, |p| {
-                p.child(field(
-                    "sudo password",
-                    h_flex()
+                        .flex_1()
+                        .min_w_0()
                         .gap_1()
                         .items_center()
-                        .child(div().flex_1().child(Input::new(&f.sudo_secret).mask_toggle()))
-                        .child(help("help-sudo", "The password sudo asks for on the server, when the user is not root and sudo is not set up without one. Kept in the secret store like the passphrase."))
-                        .into_any_element(),
-                ))
-            })
-            .child(field(
+                        .child(div().text_sm().child(label))
+                        .when_some(help_text, |l, t| l.child(help(help_id, t))),
+                )
+                .child(h_flex().w(px(290.)).flex_shrink_0().justify_end().child(div().w_full().child(control)))
+        };
+        let os_help = if f.os == Os::Windows {
+            "Windows 10/11 or Windows Server 2019 and later, with OpenSSH Server turned on:\n1. Settings, System, Optional features, Add a feature: OpenSSH Server (or in PowerShell as administrator: Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0).\n2. Start it and start it with Windows: Start-Service sshd; Set-Service sshd -StartupType Automatic.\n3. Allow TCP port 22 in Windows Defender Firewall (the feature adds the rule).\n4. Sign in with an account in the Administrators group. For a key: put its public key in C:\\ProgramData\\ssh\\administrators_authorized_keys."
+        } else {
+            "Ubuntu, Debian, Red Hat, Rocky, Alma, Fedora, openSUSE and others, with an SSH server (openssh-server):\n1. Install it if missing: sudo apt install openssh-server (Debian, Ubuntu) or sudo dnf install openssh-server (Red Hat family).\n2. Start it with the system: sudo systemctl enable --now ssh (sshd on Red Hat).\n3. Allow TCP port 22 in the firewall if one is on.\n4. Sign in as root or a user that may use sudo. For a key: add its public key to ~/.ssh/authorized_keys of that user."
+        };
+        let found = f
+            .editing
+            .as_ref()
+            .and_then(|id| self.instance(id))
+            .and_then(|i| i.detected)
+            .map(|d| format!("Found when connecting: {} {}", d.os_name, d.arch))
+            .unwrap_or_else(|| "Connecting checks the system and keeps what it finds.".into());
+        let mut panel = v_flex()
+            .gap_2()
+            .child(div().pb_1().text_sm().text_color(theme.muted_foreground).child("A computer running SENTIENT that this Platform Manager reaches over SSH."))
+            .child(row("Name", "", None, Input::new(&f.name).into_any_element()))
+            .child(row(
                 "Colour",
+                "help-colour",
+                Some("The top bar takes this colour while the instance is open, so it is clear which computer you are working on. This computer is always SENTIENT teal."),
                 h_flex()
                     .gap_3()
                     .items_center()
                     .child(swatches)
-                    .child(div().w(px(1.)).h(px(20.)).bg(theme.border))
-                    .child(ColorPicker::new(&f.color_picker).featured_colors(remote::PALETTE.iter().map(|c| rgb(remote::parse_hex(c).unwrap_or(0)).into()).collect()))
-                    .child(help("help-colour", "The top bar takes this colour while the instance is open, so it is clear which computer you are working on. This computer is always SENTIENT teal."))
+                    .child(div().w(px(1.)).h(px(22.)).bg(theme.border))
+                    .child(ColorPicker::new(&f.color_picker).icon(IconName::Plus).featured_colors(remote::PALETTE.iter().map(|c| rgb(remote::parse_hex(c).unwrap_or(0)).into()).collect()))
                     .into_any_element(),
             ))
+
+            .child(v_flex().child(row(
+                "System",
+                "help-os",
+                Some(os_help),
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        ui::seg_track(&theme)
+                            .child(ui::seg_item(&theme, "os-linux", "Linux", f.os == Os::Linux).on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(f) = &mut this.form {
+                                    f.os = Os::Linux;
+                                }
+                                cx.notify();
+                            })))
+                            .child(ui::seg_item(&theme, "os-windows", "Windows", f.os == Os::Windows).on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(f) = &mut this.form {
+                                    f.os = Os::Windows;
+                                }
+                                cx.notify();
+                            }))),
+                    )
+                    .child(crate::ui::button("os-guide").ghost().small().label("Setup guide").icon(IconName::ExternalLink).on_click({
+                        let anchor = if f.os == Os::Windows { "windows-servers" } else { "linux-servers" };
+                        move |_, _, cx| ui::open_url(&format!("https://sentient.invenia.in/docs/installation/remote-instances/#{anchor}"), cx)
+                    }))
+                    .into_any_element(),
+            )).child(
+                // What connecting found (or will check) sits inside the
+                // System row, under its control.
+                h_flex().justify_end().pb_1().child(div().w(px(290.)).text_size(px(13.)).text_color(theme.muted_foreground).child(found)),
+            ))
+            .child(row(
+                "Address",
+                "",
+                None,
+                h_flex().gap_2().items_center().child(div().flex_1().min_w_0().child(Input::new(&f.host))).child(div().text_sm().child("Port")).child(div().w(px(84.)).child(Input::new(&f.port))).into_any_element(),
+            ))
+            .child(row("User", "help-user", Some("An account on the server that may use sudo, or root. The Platform Manager runs its work on the server as an administrator."), Input::new(&f.user).into_any_element()))
+            .child(row(
+                "Sign in with",
+                "",
+                None,
+                h_flex()
+                    .child(
+                        ui::seg_track(&theme)
+                            .child(ui::seg_item(&theme, "auth-key", "Key file", f.auth == Auth::Key).on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(f) = &mut this.form {
+                                    f.auth = Auth::Key;
+                                }
+                                cx.notify();
+                            })))
+                            .child(ui::seg_item(&theme, "auth-password", "Password", f.auth == Auth::Password).on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(f) = &mut this.form {
+                                    f.auth = Auth::Password;
+                                }
+                                cx.notify();
+                            }))),
+                    )
+                    .into_any_element(),
+            ))
+            .when(f.auth == Auth::Key, |p| {
+                p.child(row(
+                    "Key file",
+                    "",
+                    None,
+                    h_flex()
+                        .gap_2()
+                        .child(div().flex_1().min_w_0().child(Input::new(&f.key_file)))
+                        .child(crate::ui::button("key-choose").outline().label("Choose…").on_click(cx.listener(|this, _, _, cx| this.choose_key(cx))))
+                        .into_any_element(),
+                ))
+            })
+            .child(row(
+                if f.auth == Auth::Key { "Key passphrase" } else { "Password" },
+                "help-secret",
+                Some("Kept in this computer's secret store (Windows: sealed to this computer; Linux: the desktop keyring, else until the Platform Manager closes). It is never written to the instance list."),
+                Input::new(&f.secret).mask_toggle().into_any_element(),
+            ))
+            .when(f.auth == Auth::Key && f.os == Os::Linux, |p| {
+                p.child(row(
+                    "sudo password",
+                    "help-sudo",
+                    Some("The password sudo asks for on the server, when the user is not root and sudo is not set up without one. Kept in the secret store like the passphrase."),
+                    Input::new(&f.sudo_secret).mask_toggle().into_any_element(),
+                ))
+            })
 ;
         if let Some(e) = &f.error {
             panel = panel.child(ui::outcome(&theme, Tone::Bad, e.clone()));
         }
+        // The mockup's K3: the trust step on its own, before anything else.
         if let Stage::Fingerprint { fingerprint, keys } = &f.stage {
             let keys = keys.clone();
             let fp = fingerprint.clone();
-            panel = panel.child(
+            let host = format!("{}{}", self.form.as_ref().map(|f| f.host.read(cx).value().to_string()).unwrap_or_default(), "");
+            return Some(
                 v_flex()
-                    .gap_2()
-                    .p_3()
-                    .rounded(theme.radius)
-                    .border_1()
-                    .border_color(theme.warning)
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Is this the server's key?"))
-                    .child(div().text_sm().font_family(theme.mono_font_family.clone()).child(fingerprint.clone()))
+                    .gap_3()
+                    .child(div().font_weight(FontWeight::MEDIUM).child("Is this the right computer?"))
+                    .child(ui::fact(&theme, "Address", host))
+                    .child(ui::fact(&theme, "Its fingerprint", fingerprint.clone()))
                     .child(div().text_sm().text_color(theme.muted_foreground).child(
-                        "Compare it with what the server shows for: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub. After you accept it, a different key is refused.",
+                        "Compare it with the fingerprint shown on that server (ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub). It is asked once and remembered; if it ever changes, the connection is refused.",
                     ))
                     .child(
                         h_flex()
+                            .mt_2()
+                            .pt_3()
+                            .border_t_1()
+                            .border_color(theme.border)
                             .gap_2()
-                            .child(Button::new("trust").primary().small().label("It matches: connect").on_click(cx.listener(move |this, _, _, cx| this.connect(Some((keys.clone(), fp.clone())), cx))))
-                            .child(Button::new("distrust").ghost().small().label("It does not match").on_click(cx.listener(|this, _, _, cx| this.set_error("Not connected: the key was not accepted.", cx)))),
-                    ),
+                            .justify_end()
+                            .child(crate::ui::button("distrust").outline().label("Cancel").on_click(cx.listener(|this, _, _, cx| this.set_error("Not connected: the fingerprint was not accepted.", cx))))
+                            .child(crate::ui::button("trust").primary().label("Trust and add").on_click(cx.listener(move |this, _, _, cx| this.connect(Some((keys.clone(), fp.clone())), cx)))),
+                    )
+                    .into_any_element(),
             );
         }
         panel = panel.child(
             h_flex()
-                .pt_2()
+                .mt_2()
+                .pt_3()
+                .border_t_1()
+                .border_color(theme.border)
                 .gap_2()
                 .items_center()
                 .child(div().flex_1().text_sm().text_color(theme.muted_foreground).child(match f.stage {
@@ -809,13 +900,13 @@ impl InstancesPage {
                     Stage::Connecting => "Signing in and looking at the system…",
                     _ => "",
                 }))
-                .child(Button::new("cancel").outline().label("Cancel").disabled(busy).on_click(cx.listener(|this, _, _, cx| {
+                .child(crate::ui::button("cancel").outline().label("Cancel").disabled(busy).on_click(cx.listener(|this, _, _, cx| {
                     this.form = None;
                     cx.notify();
                 })))
                 .when(!matches!(f.stage, Stage::Fingerprint { .. }), |r| {
                     r.child(
-                        Button::new("check")
+                        crate::ui::button("check")
                             .primary()
                             .label(if f.editing.is_some() { "Save and connect" } else { "Connect" })
                             .loading(busy)
@@ -829,7 +920,15 @@ impl InstancesPage {
 
     /// Pick the key file with the system's file chooser.
     fn choose_key(&mut self, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use this key".into()) });
+        // Opens where the key in the field is, else in ~/.ssh.
+        let now = self.form.as_ref().map(|f| f.key_file.read(cx).value().to_string()).unwrap_or_default();
+        let ssh = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from).map(|h| h.join(".ssh"));
+        let start = crate::chooser::start_for(&expand_home(&now).display().to_string(), ssh);
+        let rx = crate::chooser::open(
+            cx,
+            crate::chooser::Ask { title: "Choose the SSH key file", start: start.as_deref(), directory: false },
+            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use this key".into()) },
+        );
         let task = cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
             let Some(path) = paths.into_iter().next() else { return };
@@ -852,88 +951,118 @@ impl InstancesPage {
 
     /// The add/edit form and a job's progress show as dialogs over the
     /// page, opened and closed with their state.
-    fn sync_dialogs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn sync_dialogs(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let page = cx.entity();
         if self.form.is_some() && !self.form_dialog && !self.job_dialog {
             self.form_dialog = true;
             let title = if self.form.as_ref().is_some_and(|f| f.editing.is_some()) { "Edit instance" } else { "Add a remote instance" };
             let slot = cx.new(|cx| Slot::new(page.clone(), SlotKind::Form, cx));
             let p2 = page.clone();
-            window.open_dialog(cx, move |d, _, _| {
-                let p3 = p2.clone();
-                d.title(title).w(px(700.)).child(slot.clone()).on_close(move |_, _, cx| {
-                    p3.update(cx, |p, cx| {
-                        p.form = None;
-                        p.form_dialog = false;
-                        cx.notify();
-                    });
-                })
-            });
+            crate::modal::open(
+                crate::modal::Modal {
+                    title: title.into(),
+                    body: slot.into(),
+                    width: 540.,
+                    on_close: Some(std::rc::Rc::new(move |_, cx| {
+                        p2.update(cx, |p, cx| {
+                            p.form = None;
+                            p.form_dialog = false;
+                            cx.notify();
+                        });
+                    })),
+                },
+                cx,
+            );
         } else if self.form.is_none() && self.form_dialog {
             self.form_dialog = false;
-            window.close_dialog(cx);
+            crate::modal::close(cx);
         }
         if let Some((_, label)) = self.job_for.clone() {
             if !self.job_dialog && !self.form_dialog {
                 self.job_dialog = true;
                 let slot = cx.new(|cx| Slot::new(page.clone(), SlotKind::Job, cx));
                 let p2 = page.clone();
-                window.open_dialog(cx, move |d, _, _| {
-                    let p3 = p2.clone();
-                    d.title(label.clone()).w(px(620.)).child(slot.clone()).on_close(move |_, _, cx| {
-                        p3.update(cx, |p, cx| {
-                            p.job_dialog = false;
-                            if !p.job.read(cx).is_running() {
-                                p.job_for = None;
-                                p.job.update(cx, |j, cx| j.reset(cx));
-                            }
-                            cx.notify();
-                        });
-                    })
-                });
+                crate::modal::open(
+                    crate::modal::Modal {
+                        title: label,
+                        body: slot.into(),
+                        width: 560.,
+                        on_close: Some(std::rc::Rc::new(move |_, cx| {
+                            p2.update(cx, |p, cx| {
+                                p.job_dialog = false;
+                                if !p.job.read(cx).is_running() {
+                                    p.job_for = None;
+                                    p.job.update(cx, |j, cx| j.reset(cx));
+                                }
+                                cx.notify();
+                            });
+                        })),
+                    },
+                    cx,
+                );
             }
         } else if self.job_dialog {
             self.job_dialog = false;
-            window.close_dialog(cx);
+            crate::modal::close(cx);
         }
     }
 
     fn job_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (_, label) = self.job_for.clone()?;
+        let (id, label) = self.job_for.clone()?;
         let theme = cx.theme().clone();
         let job = self.job.read(cx);
         let log: Vec<SharedString> = job.log().iter().rev().take(14).rev().cloned().collect();
+        let inst = self.instance(&id);
+        // Which server this is about: its colour dot, name and address, as on
+        // the page headers.
+        let mut p = v_flex().gap_3().when_some(inst.clone(), |p, i| {
+            p.child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .text_sm()
+                    .child(div().size(px(10.)).rounded_full().bg(rgb(remote::parse_hex(&i.color).unwrap_or(0x187074))))
+                    .child(div().font_weight(FontWeight::MEDIUM).child(i.name.clone()))
+                    .child(div().text_color(theme.muted_foreground).child(i.host.clone())),
+            )
+        });
         let _ = &label;
-        let mut p = v_flex().gap_3();
         p = match job.state() {
             JobState::Running => p.child(div().text_sm().child(job.step_with_time())),
             JobState::Done(m) => p.child(ui::outcome(&theme, Tone::Good, m.clone())),
             JobState::Failed(m) => {
-                let (headline, details) = match m.split_once(remote::DETAILS) {
-                    Some((h, d)) => (h.to_string(), Some(d.to_string())),
-                    None => (m.to_string(), None),
-                };
+                let (headline, details) = remote::split_failure(m);
                 let shown = self.show_details;
                 p.child(ui::outcome(&theme, Tone::Bad, headline)).when_some(details, |p, d| {
-                    p.child(Button::new("job-details").ghost().small().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
+                    p.child(crate::ui::button("job-details").ghost().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
                         this.show_details = !this.show_details;
                         cx.notify();
                     })))
-                    .when(shown, |p| p.child(div().p_2().rounded(theme.radius).bg(theme.muted).text_xs().font_family(theme.mono_font_family.clone()).child(d)))
+                    .when(shown, |p| p.child(div().p_2().rounded(theme.radius).bg(theme.muted).text_size(px(13.)).font_family(theme.mono_font_family.clone()).child(d)))
                 })
             }
             JobState::Idle => p,
         };
         let done = !job.is_running();
         let failed = matches!(job.state(), JobState::Failed(_));
+        // The raw steps show while it runs; afterwards only under Show details.
+        let show_log = !done || self.show_details;
+        let shown_toggle = done && !failed && !log.is_empty();
+        let details_on = self.show_details;
         Some(
-            p.when(!log.is_empty(), |p| {
+            p.when(shown_toggle, |p| {
+                p.child(h_flex().child(crate::ui::button("job-log").ghost().label(if details_on { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
+                    this.show_details = !this.show_details;
+                    cx.notify();
+                }))))
+            })
+            .when(!log.is_empty() && show_log, |p| {
                 p.child(
                     v_flex()
                         .p_2()
                         .rounded(theme.radius)
                         .bg(theme.muted)
-                        .text_xs()
+                        .text_size(px(13.))
                         .font_family(theme.mono_font_family.clone())
                         .children(log.into_iter().map(|l| div().child(l))),
                 )
@@ -944,7 +1073,7 @@ impl InstancesPage {
                         .gap_2()
                         .justify_end()
                         .when(failed && self.retry.is_some(), |r| {
-                            r.child(Button::new("job-retry").primary().small().label("Try again").on_click(cx.listener(|this, _, _, cx| {
+                            r.child(crate::ui::button("job-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
                                 this.job.update(cx, |j, cx| j.reset(cx));
                                 match this.retry.clone() {
                                     Some(Retry::SetUp(id)) => this.set_up(&id, cx),
@@ -953,7 +1082,16 @@ impl InstancesPage {
                                 }
                             })))
                         })
-                        .child(Button::new("job-close").outline().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                        .when(!failed, |r| {
+                            let id = id.clone();
+                            r.child(crate::ui::button("job-open").primary().label("Open").on_click(cx.listener(move |this, _, _, cx| {
+                                this.job_for = None;
+                                this.job.update(cx, |j, cx| j.reset(cx));
+                                cx.emit(OpenInstance(Some(id.clone())));
+                                cx.notify();
+                            })))
+                        })
+                        .child(crate::ui::button("job-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
                             this.job_for = None;
                             this.job.update(cx, |j, cx| j.reset(cx));
                             cx.notify();
@@ -976,11 +1114,11 @@ impl InstancesPage {
                         .gap_2()
                         .items_center()
                         .child(div().flex_1().font_weight(FontWeight::MEDIUM).child(format!("SENTIENT log on {name}")))
-                        .child(Button::new("logs-again").ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener({
+                        .child(crate::ui::button("logs-again").ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener({
                             let id = id.clone();
                             move |this, _, _, cx| this.show_logs(&id, cx)
                         })))
-                        .child(Button::new("logs-close").ghost().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                        .child(crate::ui::button("logs-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
                             this.logs = None;
                             cx.notify();
                         }))),
@@ -993,7 +1131,7 @@ impl InstancesPage {
                         .p_2()
                         .rounded(theme.radius)
                         .bg(theme.muted)
-                        .text_xs()
+                        .text_size(px(13.))
                         .font_family(theme.mono_font_family.clone())
                         .children(text.lines().map(|l| div().child(SharedString::from(l.to_string()))).collect::<Vec<_>>()),
                 )
@@ -1005,6 +1143,18 @@ impl InstancesPage {
 impl Render for InstancesPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        // Screens: the trust step open (SPM_DEBUG_TRUST).
+        #[cfg(debug_assertions)]
+        {
+            static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if std::env::var_os("SPM_DEBUG_TRUST").is_some() && !SHOWN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                self.open_form(None, window, cx);
+                if let Some(f) = &mut self.form {
+                    f.host.update(cx, |s, cx| s.set_value("10.0.4.12", window, cx));
+                    f.stage = Stage::Fingerprint { keys: String::new(), fingerprint: "SHA256:k3Vd0FqW8nE2xTz1mR4cYpL7sB9aH6uJ5gKo0Qm7x8".into() };
+                }
+            }
+        }
         self.sync_dialogs(window, cx);
         let local = self.local_card(cx);
         let cards: Vec<AnyElement> = self.list.clone().iter().map(|i| self.remote_card(i, cx)).collect();
@@ -1033,27 +1183,40 @@ impl Render for InstancesPage {
             .min_w_0()
             .h_full()
             .overflow_y_scroll()
-            .p_8()
-            .gap_4()
+            .p_4()
+            .gap(px(14.))
             .bg(theme.muted)
             .child(
                 h_flex()
                     .gap_3()
                     .items_center()
-                    .child(v_flex().flex_1().min_w_0().gap_1().child(div().text_2xl().child("Instances")).child(div().text_color(theme.muted_foreground).child(summary)))
+                    .child(v_flex().flex_1().min_w_0().gap_0p5().child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child("Instances")).child(div().text_sm().text_color(theme.muted_foreground).child(summary)))
                     .when(self.form.is_none(), |r| {
-                        r.child(Button::new("add").primary().icon(IconName::Plus).label("Add a remote instance").on_click(cx.listener(|this, _, window, cx| this.open_form(None, window, cx))))
+                        r.child(crate::ui::button("add").primary().icon(IconName::Plus).label("Add a remote instance").on_click(cx.listener(|this, _, window, cx| this.open_form(None, window, cx))))
                     }),
             )
             .children(logs)
-            .child(h_flex().flex_wrap().gap_4().items_stretch().child(local).children(cards))
+            .child({
+                // The cards fill the page: as many columns as fit (one on
+                // narrow windows), all the same width.
+                let width = f32::from(window.viewport_size().width);
+                let rail = width < crate::manager::RAIL_BELOW;
+                let inner = width - if rail { 64. } else { crate::manager::NAV_W } - 32.;
+                let cols = if rail { 1. } else { ((inner + 16.) / (CARD_MIN_W + 16.)).floor().max(1.) };
+                let card_w = ((inner - 16. * (cols - 1.)) / cols).floor();
+                h_flex()
+                    .flex_wrap()
+                    .gap_4()
+                    .items_stretch()
+                    .children(std::iter::once(local).chain(cards).map(|c| v_flex().w(px(card_w)).flex_shrink_0().child(c)))
+            })
     }
 }
 
 /// The key for this computer's status.
 const LOCAL: &str = "@local";
-/// A card's width in the grid.
-const CARD_W: f32 = 330.;
+/// The narrowest a card gets before the grid drops a column.
+const CARD_MIN_W: f32 = 300.;
 /// Cards in a row stretch to the tallest; none is shorter than this.
 const CARD_MIN_H: f32 = 268.;
 
@@ -1079,8 +1242,15 @@ fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<Remote
         h_flex()
             .gap_3()
             .text_sm()
-            .child(div().w(px(96.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
-            .child(div().flex_1().min_w_0().text_ellipsis().when(warn, |d| d.text_color(theme.warning_foreground)).child(value))
+            .items_start()
+            .child(div().w(px(84.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
+            // A value that needs attention is a pill, as in the mockup; long
+            // values wrap inside the card.
+            .child(if warn {
+                h_flex().flex_1().min_w_0().child(ui::pill(theme, Tone::Warn, value))
+            } else {
+                h_flex().flex_1().min_w_0().child(div().flex_1().min_w_0().child(value))
+            })
     };
     let mut col = v_flex().gap_1();
     match status {
@@ -1094,22 +1264,22 @@ fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<Remote
                 .child(row("Database", db, false))
                 .child(row(
                     "Disk",
-                    s.disk_free.map(|d| format!("{} free", crate::dbstatus::bytes_label(d))).unwrap_or_else(|| "—".into()),
+                    s.disk_free.map(|d| format!("{} free", crate::dbstatus::bytes_label(d))).unwrap_or_else(|| "Not known".into()),
                     s.disk_free.is_some_and(|d| d < crate::dbstatus::LOW_DISK),
                 ))
-                .child(row("Last backup", s.last_backup.clone().unwrap_or_else(|| "none yet".into()), s.last_backup.is_none()))
+                .child(row("Last backup", s.last_backup.clone().unwrap_or_else(|| "None".into()), s.last_backup.is_none()))
                 .when_some(s.uptime_secs, |c, u| c.child(row("Up for", uptime_label(u), false)));
         }
         Some(Ok(s)) => {
             col = col
-                .child(row("Connection", "works".into(), false))
-                .child(row("Found", "no SENTIENT here".into(), false))
+                .child(row("Connection", "OK".into(), false))
+                .child(row("SENTIENT", "Not found".into(), false))
                 .when_some(s.disk_free, |c, d| c.child(row("Disk", format!("{} free", crate::dbstatus::bytes_label(d)), false)));
         }
         Some(Err(e)) => col = col.child(div().text_sm().text_color(if e == remote::NOT_SET_UP || e == remote::FORGOTTEN { theme.foreground } else { theme.danger }).child(e.clone())),
         None => {
             col = col.child(div().text_sm().text_color(theme.muted_foreground).child(match det {
-                Some(d) if !d.arch.is_empty() => format!("{} · {}", d.arch, if d.install.is_empty() { "install not found yet".to_string() } else { d.install.clone() }),
+                Some(d) if !d.arch.is_empty() => format!("{} · {}", d.arch, if d.install.is_empty() { "install not found".to_string() } else { d.install.clone() }),
                 _ => "Reading its state…".to_string(),
             }))
         }
@@ -1137,40 +1307,63 @@ fn grid_card(
     facts: Div,
     footer: Div,
 ) -> Div {
+    // One rounded box. Its own background is the instance colour, so the
+    // colour band's top corners are the card's corners (GPUI does not clip
+    // children to a radius); the white body sits below the band and rounds
+    // only its bottom corners, inside the border. The open card changes only
+    // the border's colour: same width, same box.
+    let inner = ui::PANEL_RADIUS - 1.;
     v_flex()
-        .w(px(CARD_W))
-        .flex_shrink_0()
+        .w_full()
+        .flex_1()
         .min_h(px(CARD_MIN_H))
         .rounded(px(ui::PANEL_RADIUS))
-        .bg(theme.background)
+        .bg(rgb(remote::parse_hex(color).unwrap_or(0x187074)))
         .border_1()
-        .border_color(if current { theme.primary } else { theme.border })
-        // The colour strip follows the card's rounded top corners (GPUI
-        // does not clip children to a radius).
-        .child(div().h(px(5.)).w_full().flex_shrink_0().rounded_t(px(ui::PANEL_RADIUS - 1.)).bg(rgb(remote::parse_hex(color).unwrap_or(0x187074))))
+        // Opaque, so the colour under the border does not show through it.
+        .border_color(if current { theme.primary } else { theme.background.blend(theme.border) })
+        .pt(px(5.))
         .child(
             v_flex()
                 .flex_1()
                 .gap_3()
                 .p_4()
+                .bg(theme.background)
+                .rounded_b(px(inner))
                 .child(
                     h_flex()
                         .gap_3()
                         .items_start()
-                        .child(os_tile(det, 36.))
+                        .child(os_tile(det, 32.))
+                        // One line each, cut with an ellipsis (the mockup's K1).
                         .child(
                             v_flex()
                                 .flex_1()
                                 .min_w_0()
-                                .child(div().font_weight(FontWeight::MEDIUM).text_ellipsis().child(name))
-                                .child(div().text_xs().text_color(theme.muted_foreground).text_ellipsis().child(sub)),
+                                .child(div().font_weight(FontWeight::MEDIUM).whitespace_nowrap().overflow_hidden().text_ellipsis().child(name))
+                                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).whitespace_nowrap().overflow_hidden().text_ellipsis().child(sub)),
                         )
                         .child(ui::pill(theme, tone, state)),
                 )
                 .child(facts.flex_1())
-                .child(div().h(px(1.)).bg(theme.border))
                 .child(footer),
         )
+}
+
+/// On the open instance's card, in place of its Open button.
+fn open_now_tag(theme: &gpui_kit::component::Theme) -> Div {
+    // The mockup's quiet chip: an outlined, faded button shape.
+    h_flex()
+        .items_center()
+        .px(px(11.))
+        .h(px(28.))
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.border)
+        .text_size(px(13.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.muted_foreground.opacity(0.75))
+        .child("Open now")
 }
 
 /// The system's logo on a tile.
@@ -1245,9 +1438,8 @@ impl Render for Slot {
             SlotKind::Form => p.form_panel(cx),
             SlotKind::Job => p.job_panel(cx),
         });
-        // Scrolls inside when the window is short.
-        let max_h = (window.viewport_size().height - px(200.)).max(px(220.));
-        div().id("slot").max_h(max_h).overflow_y_scroll().children(body)
+        let _ = window;
+        div().id("slot").children(body)
     }
 }
 
@@ -1257,3 +1449,4 @@ fn hex_of(c: Hsla) -> String {
     let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     format!("#{:02x}{:02x}{:02x}", b(r.r), b(r.g), b(r.b))
 }
+
