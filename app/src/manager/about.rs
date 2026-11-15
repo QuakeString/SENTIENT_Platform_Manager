@@ -6,7 +6,7 @@
 //! then preferences and support, and where it lives as a quiet footer.
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, h_flex, v_flex,
+    ActiveTheme, Icon, IconName, Sizable as _, Disableable as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -51,12 +51,13 @@ impl AboutPage {
     }
 }
 
-fn tile(theme: &gpui_kit::component::Theme, id: &'static str, title: &'static str, about: impl Into<SharedString>) -> Stateful<Div> {
-    v_flex()
+fn tile(theme: &gpui_kit::component::Theme, id: &'static str, icon: IconName, title: &'static str, about: impl Into<SharedString>) -> Stateful<Div> {
+    h_flex()
         .id(id)
         .flex_1()
-        .min_w(px(180.))
-        .gap_1()
+        .min_w(px(200.))
+        .gap_3()
+        .items_start()
         .p_3()
         .rounded(theme.radius)
         .bg(theme.background)
@@ -64,15 +65,22 @@ fn tile(theme: &gpui_kit::component::Theme, id: &'static str, title: &'static st
         .border_color(theme.border)
         .cursor_pointer()
         .hover(|d| d.border_color(theme.primary))
-        .child(div().font_weight(FontWeight::MEDIUM).child(title))
-        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(about.into()))
+        .child(Icon::new(icon).size_4().text_color(theme.primary).mt_0p5())
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(title))
+                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(about.into())),
+        )
 }
 
 fn pref_row(theme: &gpui_kit::component::Theme, label: &'static str, about: Option<&'static str>, control: impl IntoElement) -> Div {
     h_flex()
         .gap_3()
         .items_center()
-        .py_2()
+        .py_2p5()
         .border_t_1()
         .border_color(theme.border)
         .child(
@@ -99,30 +107,39 @@ impl Render for AboutPage {
             (Some(f), None) if f.manager.is_ok() => (Tone::Good, "Up to date".to_string()),
             _ => (Tone::Neutral, "Not checked".to_string()),
         };
-        let hero = ui::panel(&theme)
-            .gap_3()
-            .child(
-                h_flex()
-                    .gap_4()
-                    .items_center()
-                    .child(ui::product_logo(ui::Product::Manager, 48.))
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().text_lg().font_weight(FontWeight::MEDIUM).child("SENTIENT Platform Manager"))
-                            .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Version {version} · checked {last}"))),
-                    )
-                    .child(ui::pill(&theme, state.0, state.1)),
-            )
-            .child(h_flex().gap_2().flex_wrap().child(crate::ui::button("about-notes").outline().label("What's new").on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew))))
-            .child(
-                crate::ui::button("about-check")
-                    .outline()
-                    .label(if checking { "Checking…" } else { "Check for updates" })
-                    .disabled(checking)
-                    .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))),
-            ));
+        // The mockup's K6: one centred column; the product line with its
+        // state and buttons on the right; captioned groups; icon tiles; the
+        // paths as a footer line.
+        let hero = ui::panel(&theme).child(
+            h_flex()
+                .gap_4()
+                .items_center()
+                .flex_wrap()
+                .child(ui::product_logo(ui::Product::Manager, 48.))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w(px(200.))
+                        .child(div().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child("SENTIENT Platform Manager"))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Version {version} · checked {last}"))),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .items_center()
+                        .child(ui::pill(&theme, state.0, state.1))
+                        .child(crate::ui::button("about-notes").outline().small().label("What's new").on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew))))
+                        .child(
+                            crate::ui::button("about-check")
+                                .outline()
+                                .small()
+                                .label(if checking { "Checking…" } else { "Check for updates" })
+                                .disabled(checking)
+                                .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))),
+                        ),
+                ),
+        );
         let channels = ui::seg_track(&theme).children(Channel::ALL.into_iter().map(|c| {
             ui::seg_item(&theme, SharedString::from(format!("about-channel-{}", c.label())), c.label(), c == channel)
                 .on_click(cx.listener(move |this, _, _, cx| this.updates.update(cx, |u, cx| u.set_channel(c, cx))))
@@ -132,53 +149,61 @@ impl Render for AboutPage {
             .child(ui::seg_item(&theme, "about-by-hand", "Only when I ask", !daily).on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.set_daily(false, cx)))));
         let prefs = ui::panel(&theme)
             .gap_0()
-            .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Preferences"))
+            .py_1()
             .child(pref_row(&theme, "Language", None, div().text_sm().child("English")).border_t_0())
             .child(pref_row(&theme, "Update channel", Some("Release candidates arrive earlier and are less tested."), channels))
             .child(pref_row(&theme, "Check for updates", None, checks));
         let log_path = crate::jobs::activity_log();
-        let support = ui::panel(&theme)
-            .child(div().font_weight(FontWeight::MEDIUM).child("Support"))
+        let support = v_flex()
+            .gap_3()
             .child(
                 h_flex()
                     .gap_3()
                     .flex_wrap()
                     .items_stretch()
-                    .child(tile(&theme, "about-log", "Open the log", "What the Platform Manager did, with times.").on_click(move |_, _, cx| {
+                    .child(tile(&theme, "about-log", IconName::File, "Open the log", "What the Platform Manager did, with times.").on_click(move |_, _, cx| {
                         if log_path.exists() {
                             ui::open_url(&log_path.display().to_string(), cx);
                         }
                     }))
                     .child(
-                        tile(&theme, "about-support", "Create a support file", if self.making { "Collecting…" } else { "Logs, versions and settings in one file, without passwords." })
+                        tile(&theme, "about-support", IconName::ArrowDown, "Create a support file", if self.making { "Collecting…" } else { "Logs, versions and settings in one file, without passwords." })
                             .on_click(cx.listener(|this, _, _, cx| this.make_support_file(cx))),
                     )
-                    .child(tile(&theme, "about-docs", "Documentation", "Opens docs.invenia.in in the browser.").on_click(|_, _, cx| ui::open_url("https://docs.invenia.in", cx))),
+                    .child(tile(&theme, "about-docs", IconName::BookOpen, "Documentation", "Opens docs.invenia.in in the browser.").on_click(|_, _, cx| ui::open_url("https://docs.invenia.in", cx))),
             )
             .children(self.support.as_ref().map(|r| match r {
                 Ok(p) => ui::outcome(&theme, Tone::Good, format!("Support file saved: {}", p.display())).into_any_element(),
                 Err(e) => ui::outcome(&theme, Tone::Bad, format!("The support file could not be made: {e}")).into_any_element(),
             }));
-        // Where it lives: the paths wrap, and Copy takes the whole path.
-        let place = |id: &'static str, label: &'static str, path: String| {
-            let copy = path.clone();
-            h_flex()
-                .gap_3()
-                .items_center()
-                .py_1p5()
-                .child(div().w(px(110.)).flex_shrink_0().text_sm().text_color(theme.muted_foreground).child(label))
-                .child(div().flex_1().min_w_0().text_sm().font_family(theme.mono_font_family.clone()).child(path))
-                .child(crate::ui::button(id).outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
-        };
-        let places = ui::panel(&theme)
-            .gap_0()
-            .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Files"))
-            .child(place("copy-installed", "Installed in", crate::self_install::manager_dir().display().to_string()))
-            .child(place("copy-data", "Data in", crate::updates::prefs_dir().display().to_string()).border_t_1().border_color(theme.border));
-        ui::page(&theme, "About", "This program's version, updates and support.")
-            .child(hero)
-            .child(prefs)
-            .child(support)
-            .child(places)
+        let caption = |t: &'static str| div().px_0p5().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(t.to_uppercase());
+        let footer = h_flex()
+            .gap_x_5()
+            .gap_y_1()
+            .flex_wrap()
+            .justify_center()
+            .text_size(px(13.))
+            .text_color(theme.muted_foreground)
+            .child(div().min_w_0().child(format!("Installed in {}", crate::self_install::manager_dir().display())))
+            .child(div().min_w_0().child(format!("Data in {}", crate::updates::prefs_dir().display())));
+        v_flex()
+            .id("about")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_y_scroll()
+            .p_4()
+            .bg(theme.muted)
+            .items_center()
+            .child(
+                v_flex()
+                    .w_full()
+                    .max_w(px(800.))
+                    .gap(px(14.))
+                    .child(hero)
+                    .child(v_flex().gap_2().child(caption("Preferences")).child(prefs))
+                    .child(v_flex().gap_2().child(caption("Support")).child(support))
+                    .child(footer),
+            )
     }
 }

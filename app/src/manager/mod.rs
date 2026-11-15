@@ -271,7 +271,6 @@ impl Manager {
             None => (if dark { rgb(0x155e61).into() } else { rgb(0x187074).into() }, rgb(0xffffff).into()),
         };
         let dim = fg.opacity(0.75);
-        let amber: Hsla = rgb(0xfbbf24).into();
         let (name, address): (String, Option<String>) = match (&remote, &self.record) {
             (Some(r), _) => (r.name.clone(), Some(format!("{} over SSH", r.host))),
             (None, Some(r)) => ("This computer".into(), Some(format!("SENTIENT {}", r.sentient_version))),
@@ -280,21 +279,34 @@ impl Manager {
         let instance = format!("{name} {}", address.clone().unwrap_or_default());
         let remote_amber: Hsla = rgb(0xf0b24a).into();
         let status_green: Hsla = rgb(0x6ee7b7).into();
-        // The mockup's monitors: a faint label, then the value (amber when
-        // high); no icons, no bars.
-        let meter = |id: &'static str, label: &'static str, value: String, high: bool| {
+        // The mockup's top bar: above 900 px the product name and the
+        // monitors' bars show; below, only the switcher and the values.
+        let wide = width > 900.;
+        let warn_fill: Hsla = rgb(0xf59e0b).into();
+        let warn_text: Hsla = rgb(0xfcd34d).into();
+        let meter = |id: &'static str, label: &'static str, value: String, fraction: f32, high: bool| {
             h_flex()
                 .id(id)
                 .gap(px(6.))
                 .items_center()
                 .text_size(px(12.5))
                 .child(div().text_color(fg.opacity(0.65)).child(label))
-                .child(div().whitespace_nowrap().text_color(if high { amber } else { fg }).child(value))
+                .when(wide, |r| {
+                    r.child(
+                        div()
+                            .w(px(42.))
+                            .h(px(5.))
+                            .rounded_full()
+                            .bg(fg.opacity(0.2))
+                            .child(div().h_full().rounded_full().w(relative(fraction.clamp(0.0, 1.0))).bg(if high { warn_fill } else { fg })),
+                    )
+                })
+                .child(div().whitespace_nowrap().text_color(if high { warn_text } else { fg }).child(value))
         };
         // What fits: a rough width per piece (about 7 px a character at
         // 12.5-14 px), kept in this order: CPU, memory, disk.
         let text_w = |s: &str| s.chars().count() as f32 * 7.2;
-        let mut room = width - 20. - (20. + 12.) - (text_w(&instance) + 60. + 12.) - if remote.is_some() { 64. } else { 0. } - 40. - 12.;
+        let mut room = width - 20. - (20. + 12.) - (text_w(&instance) + 60. + 12.) - if remote.is_some() { 64. } else { 0. } - 40. - 12. - if width > 900. { 190. } else { 0. };
         let mut fits = |need: f32| {
             let ok = room >= need;
             if ok {
@@ -305,9 +317,10 @@ impl Manager {
         let shown = if remote.is_some() { self.remote_monitor } else { self.monitor };
         let (show_cpu, show_mem, show_disk) = match shown {
             Some(_) => {
-                let cpu = fits(16. + 70.);
-                let mem = cpu && fits(16. + 140.);
-                let disk = mem && fits(16. + 120.);
+                let bar = if wide { 48. } else { 0. };
+                let cpu = fits(16. + 70. + bar);
+                let mem = cpu && fits(16. + 140. + bar);
+                let disk = mem && fits(16. + 120. + bar);
                 (cpu, mem, disk)
             }
             None => (false, false, false),
@@ -322,17 +335,19 @@ impl Manager {
                 .rounded(px(6.))
                 .cursor_pointer()
                 .hover(|d| d.bg(fg.opacity(0.1)))
-                .when(show_cpu, |r| r.child(meter("m-cpu", "CPU", format!("{:.0}%", m.cpu), m.cpu_high())))
+                .when(show_cpu, |r| r.child(meter("m-cpu", "CPU", format!("{:.0}%", m.cpu), m.cpu / 100.0, m.cpu_high())))
                 .when(show_mem, |r| r.child(meter(
                     "m-mem",
                     "Memory",
                     format!("{:.1} / {:.0} GB", gb(m.mem_used), gb(m.mem_total)),
+                    if m.mem_total > 0 { m.mem_used as f32 / m.mem_total as f32 } else { 0.0 },
                     m.mem_high(),
                 )))
                 .when(show_disk, |r| r.child(meter(
                     "m-disk",
                     "Disk",
                     format!("{} free", crate::dbstatus::bytes_label(m.disk_free)),
+                    if m.disk_total > 0 { 1.0 - m.disk_free as f32 / m.disk_total as f32 } else { 0.0 },
                     m.disk_low(),
                 )))
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -378,6 +393,7 @@ impl Manager {
             .bg(bg)
             .text_color(fg)
             .child(ui::product_logo(ui::Product::Manager, 20.))
+            .when(wide, |b| b.child(div().text_size(px(13.5)).text_color(fg.opacity(0.85)).whitespace_nowrap().child("SENTIENT Platform Manager")))
             .child(
                 // The mockup's switcher: a framed chip with a status dot, the
                 // name, the address faint, a chevron; a remote one is framed

@@ -1150,14 +1150,14 @@ impl Render for InstancesPage {
             .min_w_0()
             .h_full()
             .overflow_y_scroll()
-            .p_8()
-            .gap_4()
+            .p_4()
+            .gap(px(14.))
             .bg(theme.muted)
             .child(
                 h_flex()
                     .gap_3()
                     .items_center()
-                    .child(v_flex().flex_1().min_w_0().gap_1().child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child("Instances")).child(div().text_color(theme.muted_foreground).child(summary)))
+                    .child(v_flex().flex_1().min_w_0().gap_0p5().child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child("Instances")).child(div().text_sm().text_color(theme.muted_foreground).child(summary)))
                     .when(self.form.is_none(), |r| {
                         r.child(crate::ui::button("add").primary().icon(IconName::Plus).label("Add a remote instance").on_click(cx.listener(|this, _, window, cx| this.open_form(None, window, cx))))
                     }),
@@ -1168,7 +1168,7 @@ impl Render for InstancesPage {
                 // narrow windows), all the same width.
                 let width = f32::from(window.viewport_size().width);
                 let rail = width < crate::manager::RAIL_BELOW;
-                let inner = width - if rail { 64. } else { crate::manager::NAV_W } - 64.;
+                let inner = width - if rail { 64. } else { crate::manager::NAV_W } - 32.;
                 let cols = if rail { 1. } else { ((inner + 16.) / (CARD_MIN_W + 16.)).floor().max(1.) };
                 let card_w = ((inner - 16. * (cols - 1.)) / cols).floor();
                 h_flex()
@@ -1183,7 +1183,7 @@ impl Render for InstancesPage {
 /// The key for this computer's status.
 const LOCAL: &str = "@local";
 /// The narrowest a card gets before the grid drops a column.
-const CARD_MIN_W: f32 = 320.;
+const CARD_MIN_W: f32 = 260.;
 /// Cards in a row stretch to the tallest; none is shorter than this.
 const CARD_MIN_H: f32 = 268.;
 
@@ -1210,7 +1210,12 @@ fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<Remote
             .gap_3()
             .text_sm()
             .child(div().w(px(96.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
-            .child(div().flex_1().min_w_0().text_ellipsis().when(warn, |d| d.text_color(theme.warning_foreground)).child(value))
+            // A value that needs attention is a pill, as in the mockup.
+            .child(if warn {
+                h_flex().flex_1().min_w_0().child(ui::pill(theme, Tone::Warn, value))
+            } else {
+                h_flex().flex_1().min_w_0().child(div().text_ellipsis().child(value))
+            })
     };
     let mut col = v_flex().gap_1();
     match status {
@@ -1305,21 +1310,23 @@ fn grid_card(
                         .child(ui::pill(theme, tone, state)),
                 )
                 .child(facts.flex_1())
-                .child(div().h(px(1.)).bg(theme.border))
                 .child(footer),
         )
 }
 
 /// On the open instance's card, in place of its Open button.
 fn open_now_tag(theme: &gpui_kit::component::Theme) -> Div {
+    // The mockup's quiet chip: an outlined, faded button shape.
     h_flex()
-        .gap_1p5()
         .items_center()
-        .px_2()
-        .h(px(32.))
-        .text_sm()
-        .text_color(theme.muted_foreground)
-        .child(gpui_kit::component::Icon::new(IconName::Check).size_4().text_color(theme.success))
+        .px(px(11.))
+        .h(px(28.))
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.border)
+        .text_size(px(13.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.muted_foreground.opacity(0.75))
         .child("Open now")
 }
 

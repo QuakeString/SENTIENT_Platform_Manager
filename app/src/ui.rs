@@ -101,11 +101,17 @@ pub fn page(theme: &Theme, title: &'static str, summary: &'static str) -> Statef
         .min_w_0()
         .h_full()
         .overflow_y_scroll()
-        .p_8()
-        .gap_4()
+        // The mockup's page: 16 px padding, 14 px between blocks, the title
+        // and its line of text as one block.
+        .p_4()
+        .gap(px(14.))
         .bg(theme.muted)
-        .child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(title))
-        .child(div().text_color(theme.muted_foreground).child(summary))
+        .child(
+            v_flex()
+                .gap_0p5()
+                .child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(title))
+                .child(div().text_sm().text_color(theme.muted_foreground).child(summary)),
+        )
 }
 
 #[derive(Clone, Copy)]
@@ -372,32 +378,31 @@ pub fn flavor_logos(flavor: sentient_installer_core::stack::Flavor, size: f32) -
 /// and segments inside it with equal padding. The chosen segment is filled
 /// with the primary colour. The same height as a standard button.
 pub fn seg_track(theme: &Theme) -> Div {
+    // The mockup's segmented control: one bordered strip, segments edge to
+    // edge, the chosen one tinted with primary text.
     gpui_kit::component::h_flex()
         .flex_none()
         .items_center()
-        .gap(px(2.))
-        .p(px(2.))
         .rounded(theme.radius)
         .border_1()
         .border_color(theme.border)
         .bg(theme.background)
+        .overflow_hidden()
 }
 
 /// One segment of a [`seg_track`]; give it `.on_click(...)`.
 pub fn seg_item(theme: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, on: bool) -> Stateful<Div> {
-    let radius = if theme.radius > px(3.) { theme.radius - px(2.) } else { theme.radius };
     div()
         .id(id)
-        .h(px(26.))
-        .px_3()
+        .h(px(30.))
+        .px(px(11.))
         .flex()
         .items_center()
-        .rounded(radius)
         .text_sm()
         .whitespace_nowrap()
         .cursor_pointer()
-        .when(on, |d| d.bg(theme.primary).text_color(theme.primary_foreground).font_weight(FontWeight::MEDIUM))
-        .when(!on, |d| d.text_color(theme.foreground).hover(|d| d.bg(theme.list_hover)))
+        .when(on, |d| d.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground).font_weight(FontWeight::MEDIUM))
+        .when(!on, |d| d.text_color(theme.muted_foreground).hover(|d| d.bg(theme.list_hover).text_color(theme.foreground)))
         .child(label.into())
 }
 
@@ -482,13 +487,21 @@ pub fn service_rows(theme: &Theme, services: impl IntoIterator<Item = (SharedStr
         .into_iter()
         .map(|(name, running, starting, detail)| {
             let (tone, label) = if running { (Tone::Good, "Running") } else if starting { (Tone::Warn, "Starting") } else { (Tone::Bad, "Stopped") };
+            // The mockup's row: the state in the label column, then the name
+            // with its detail faint after it.
             gpui_kit::component::h_flex()
-                .gap_3()
+                .gap_4()
                 .text_sm()
                 .items_center()
-                .child(gpui_kit::component::h_flex().w(px(96.)).flex_shrink_0().child(pill(theme, tone, label)))
-                .child(div().w(px(220.)).flex_shrink_0().text_ellipsis().child(name))
-                .child(div().flex_1().min_w_0().text_ellipsis().text_color(theme.muted_foreground).child(detail))
+                .child(gpui_kit::component::h_flex().w(px(168.)).flex_shrink_0().child(pill(theme, tone, label)))
+                .child(
+                    gpui_kit::component::h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_1()
+                        .child(div().flex_shrink_0().child(name))
+                        .when(!detail.is_empty(), |r| r.child(div().min_w_0().text_ellipsis().text_color(theme.muted_foreground).child(SharedString::from(format!("· {detail}"))))),
+                )
         })
         .collect()
 }
