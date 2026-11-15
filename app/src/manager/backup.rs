@@ -430,7 +430,10 @@ impl BackupPage {
         self.made = None;
         let made = cx.entity().downgrade();
         let (tx, rx) = std::sync::mpsc::channel::<crate::backups::Made>();
+        let me = cx.entity();
         self.backup.update(cx, |job, cx| {
+            job.set_label("Backing up");
+            job.set_details(std::rc::Rc::new(move |cx| BackupDialog::open(me.clone(), false, "Backup".into(), cx)));
             job.start(
                 move |sink| {
                     // Native Linux: the database password is root-only.
@@ -465,6 +468,8 @@ impl BackupPage {
     fn run_check(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let pass = Some(self.passphrase.read(cx).value().to_string()).filter(|p| !p.is_empty());
         self.checked = Some((path.clone(), None));
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        BackupDialog::open(cx.entity(), true, format!("Verify {name}"), cx);
         let task = cx.spawn(async move |this, cx| {
             let p = path.clone();
             let r = cx.background_executor().spawn(async move { crate::backups::check(&p, pass.as_deref()) }).await;
@@ -864,6 +869,134 @@ impl BackupPage {
     }
 }
 
+impl BackupPage {
+    /// J3/J4: a backup's run and its result (the strip's Details).
+    fn run_view(&self, theme: &gpui_kit::component::Theme, cx: &App) -> Option<Div> {
+        let job = self.backup.read(cx);
+        if !matches!(job.state(), JobState::Idle) {
+            let finished = match job.state() {
+                JobState::Done(_) => Some(true),
+                JobState::Failed(_) => Some(false),
+                _ => None,
+            };
+            let marked = ui::mark_steps(&self.planned_backup, job.steps(), finished);
+            let mut run = v_flex().gap_3();
+            match (finished, &self.made) {
+                (None, _) => {
+                    run = run
+                        .child(div().font_weight(FontWeight::MEDIUM).child(format!("Backing up to {}", self.prefs.folder.display())))
+                        .when_some(job.log().last().cloned(), |c, l| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(l)))
+                        .when_some(job.percent(), |c, v| c.child(ProgressBar::new("backup-progress").value(v)))
+                        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("SENTIENT keeps running during a backup."));
+                }
+                (Some(true), Some(m)) => {
+                    let name = m.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    let whole = m.files.first().map(|(_, h, _)| h.clone()).unwrap_or_default();
+                    let short = if whole.len() > 16 { format!("{}…{}", &whole[..8], &whole[whole.len() - 8..]) } else { whole.clone() };
+                    let folder = self.prefs.folder.display().to_string();
+                    run = run
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(div().flex_1().child(ui::outcome(theme, Tone::Good, format!("Backup finished and checked: {name}, {}.", crate::dbstatus::bytes_label(m.bytes)))))
+                                .child(crate::ui::button("open-folder").outline().label("Open folder").on_click(move |_, _, cx| ui::open_url(&folder, cx))),
+                        )
+                        .child(div().font_weight(FontWeight::MEDIUM).child("Integrity"))
+                        .child(brow(theme, "Each part", None, div().text_sm().child(format!("SHA-256 stored inside the file, {} parts", m.members))))
+                        .child(if m.files.len() == 1 {
+                            brow(
+                                theme,
+                                "Whole file SHA-256",
+                                None,
+                                h_flex()
+                                    .gap_2()
+                                    .child(div().text_sm().font_family(theme.mono_font_family.clone()).child(short))
+                                    .child(crate::ui::button("copy-hash").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(whole.clone())))),
+                            )
+                        } else {
+                            brow(theme, "Files", None, div().text_sm().child(format!("{} parts, each with its SHA-256", m.files.len())))
+                        })
+                        .child(brow(theme, "Saved beside it", None, div().text_sm().child(m.sidecar.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())))
+                        .child(brow(theme, "Read back", None, div().text_sm().child(m.check.summary.clone())))
+                        .when_some(m.copied_to.clone(), |c, p| c.child(brow(theme, "Second copy", None, div().text_sm().child(p.display().to_string()))));
+                }
+                (Some(true), None) => run = run.child(ui::outcome(theme, Tone::Good, "Backup finished and checked.")),
+                (Some(false), _) => {
+                    if let JobState::Failed(e) = job.state() {
+                        run = run.child(ui::outcome(theme, Tone::Bad, e.clone()));
+                    }
+                }
+            }
+            run = run.child(ui::steps(theme, &marked));
+            return Some(run);
+        }
+        None
+
+    }
+
+    /// J6: a check's result, part by part (in its dialog).
+    fn check_view(&self, theme: &gpui_kit::component::Theme) -> Option<Div> {
+        if let Some((path, result)) = &self.checked {
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let mut c = v_flex().gap_2();
+            match result {
+                None => c = c.child(div().text_sm().text_color(theme.muted_foreground).child(format!("Checking {name}: reading every part…"))),
+                Some(Err(e)) => c = c.child(ui::outcome(theme, Tone::Bad, format!("{name} could not be checked: {e}"))),
+                Some(Ok(r)) => {
+                    let n = r.members.len() + r.missing.len();
+                    c = c.child(ui::outcome(
+                        theme,
+                        if r.ok() { Tone::Good } else { Tone::Bad },
+                        if r.ok() { format!("{name}: all {n} parts match.") } else { format!("{name} is damaged. Do not rely on this file.") },
+                    ));
+                    let mark = |ok: bool| ui::StepMark::from_ok(ok);
+                    let mut rows: Vec<(String, ui::StepMark)> = Vec::new();
+                    if let Some(files) = &r.files {
+                        let all = files.iter().all(|(_, ok)| *ok);
+                        rows.push((format!("File{} against its .sha256", if files.len() > 1 { "s" } else { "" }), mark(all)));
+                    }
+                    for m in &r.members {
+                        rows.push((format!("{} ({})", m.label, crate::dbstatus::bytes_label(m.bytes)), mark(m.ok)));
+                    }
+                    for missing in &r.missing {
+                        rows.push((format!("{}: missing", sentient_backup_core::restore::member_label(missing)), ui::StepMark::Failed));
+                    }
+                    c = c.child(ui::steps(theme, &rows));
+                }
+            }
+            return Some(c);
+        }
+        None
+    }
+}
+
+/// A Backup page result in the shared dialog, following the page.
+struct BackupDialog {
+    page: Entity<BackupPage>,
+    check: bool,
+    _observe: Subscription,
+}
+
+impl BackupDialog {
+    fn open(page: Entity<BackupPage>, check: bool, title: String, cx: &mut App) {
+        let view = cx.new(|cx| BackupDialog { _observe: cx.observe(&page, |_, _, cx| cx.notify()), page, check });
+        crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 640., on_close: None }, cx);
+    }
+}
+
+impl Render for BackupDialog {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let page = self.page.read(cx);
+        let body = if self.check { page.check_view(&theme) } else { page.run_view(&theme, cx) };
+        v_flex()
+            .gap_3()
+            .children(body)
+            .child(h_flex().justify_end().child(crate::ui::button("bk-dialog-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx))))
+    }
+}
+
 impl EventEmitter<Go> for BackupPage {}
 
 /// A row: label, then its control. Shared with a remote server's Backup.
@@ -994,67 +1127,6 @@ impl BackupPage {
         }
         out.push(now.into_any_element());
 
-        // J3/J4: the run and its result.
-        let job = self.backup.read(cx);
-        if !self.planned_backup.is_empty() && !matches!(job.state(), JobState::Idle) {
-            let finished = match job.state() {
-                JobState::Done(_) => Some(true),
-                JobState::Failed(_) => Some(false),
-                _ => None,
-            };
-            let marked = ui::mark_steps(&self.planned_backup, job.steps(), finished);
-            let mut run = ui::panel(theme);
-            match (finished, &self.made) {
-                (None, _) => {
-                    run = run
-                        .child(div().font_weight(FontWeight::MEDIUM).child(format!("Backing up to {}", self.prefs.folder.display())))
-                        .when_some(job.log().last().cloned(), |c, l| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(l)))
-                        .when_some(job.percent(), |c, v| c.child(ProgressBar::new("backup-progress").value(v)))
-                        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("SENTIENT keeps running during a backup."));
-                }
-                (Some(true), Some(m)) => {
-                    let name = m.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                    let whole = m.files.first().map(|(_, h, _)| h.clone()).unwrap_or_default();
-                    let short = if whole.len() > 16 { format!("{}…{}", &whole[..8], &whole[whole.len() - 8..]) } else { whole.clone() };
-                    let folder = self.prefs.folder.display().to_string();
-                    run = run
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .child(div().flex_1().child(ui::outcome(theme, Tone::Good, format!("Backup finished and checked: {name}, {}.", bytes_label(m.bytes)))))
-                                .child(crate::ui::button("open-folder").outline().label("Open folder").on_click(move |_, _, cx| ui::open_url(&folder, cx))),
-                        )
-                        .child(div().font_weight(FontWeight::MEDIUM).child("Integrity"))
-                        .child(brow(theme, "Each part", None, div().text_sm().child(format!("SHA-256 stored inside the file, {} parts", m.members))))
-                        .child(if m.files.len() == 1 {
-                            brow(
-                                theme,
-                                "Whole file SHA-256",
-                                None,
-                                h_flex()
-                                    .gap_2()
-                                    .child(div().text_sm().font_family(theme.mono_font_family.clone()).child(short))
-                                    .child(crate::ui::button("copy-hash").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(whole.clone())))),
-                            )
-                        } else {
-                            brow(theme, "Files", None, div().text_sm().child(format!("{} parts, each with its SHA-256", m.files.len())))
-                        })
-                        .child(brow(theme, "Saved beside it", None, div().text_sm().child(m.sidecar.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())))
-                        .child(brow(theme, "Read back", None, div().text_sm().child(m.check.summary.clone())))
-                        .when_some(m.copied_to.clone(), |c, p| c.child(brow(theme, "Second copy", None, div().text_sm().child(p.display().to_string()))));
-                }
-                (Some(true), None) => run = run.child(ui::outcome(theme, Tone::Good, "Backup finished and checked.")),
-                (Some(false), _) => {
-                    if let JobState::Failed(e) = job.state() {
-                        run = run.child(ui::outcome(theme, Tone::Bad, e.clone()));
-                    }
-                }
-            }
-            run = run.child(ui::steps(theme, &marked));
-            out.push(run.into_any_element());
-        }
-
         // Automatic backup.
         let auto = ui::panel(theme)
             .gap_0()
@@ -1153,37 +1225,6 @@ impl BackupPage {
                     .child(crate::ui::button(SharedString::from(format!("delete-{}", e.name))).ghost().label("Delete").on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), window, cx)))),
             );
         }
-        // J6: a check's result, part by part.
-        if let Some((path, result)) = &self.checked {
-            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            let mut c = v_flex().gap_1().pt_2();
-            match result {
-                None => c = c.child(div().text_sm().text_color(theme.muted_foreground).child(format!("Checking {name}: reading every part…"))),
-                Some(Err(e)) => c = c.child(ui::outcome(theme, Tone::Bad, format!("{name} could not be checked: {e}"))),
-                Some(Ok(r)) => {
-                    let n = r.members.len() + r.missing.len();
-                    c = c.child(ui::outcome(
-                        theme,
-                        if r.ok() { Tone::Good } else { Tone::Bad },
-                        if r.ok() { format!("{name}: all {n} parts match.") } else { format!("{name} is damaged. Do not rely on this file.") },
-                    ));
-                    let mark = |ok: bool| ui::StepMark::from_ok(ok);
-                    let mut rows: Vec<(String, ui::StepMark)> = Vec::new();
-                    if let Some(files) = &r.files {
-                        let all = files.iter().all(|(_, ok)| *ok);
-                        rows.push((format!("File{} against its .sha256", if files.len() > 1 { "s" } else { "" }), mark(all)));
-                    }
-                    for m in &r.members {
-                        rows.push((format!("{} ({})", m.label, bytes_label(m.bytes)), mark(m.ok)));
-                    }
-                    for missing in &r.missing {
-                        rows.push((format!("{}: missing", sentient_backup_core::restore::member_label(missing)), ui::StepMark::Failed));
-                    }
-                    c = c.child(ui::steps(theme, &rows));
-                }
-            }
-            list = list.child(c);
-        }
         out.push(list.into_any_element());
         out
     }
@@ -1203,7 +1244,6 @@ impl Render for BackupPage {
         let clickhouse = record.flavor() == Flavor::Clickhouse;
         let busy = self.backup.read(cx).is_running() || self.restore.read(cx).is_running();
         let replace_panel = self.replace_panel(&theme, busy, cx);
-        let backup_status = self.job_view(&self.backup, cx);
 
         let categories = self.inspection.as_ref().map(|i| {
             i.categories
@@ -1307,7 +1347,7 @@ impl Render for BackupPage {
                         ),
                     )
                 })
-                .children(backup_status),
+                ,
         ))
         .child(replace_panel)
     }

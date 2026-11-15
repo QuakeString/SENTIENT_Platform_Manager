@@ -10,7 +10,7 @@
 //! returns and drops the callback, so the drain loop ends on its own.
 
 use futures::StreamExt as _;
-use gpui_kit::{Context, SharedString, Task};
+use gpui_kit::{App, Context, SharedString, Task};
 use sentient_installer_core::progress::{Progress, ProgressFn};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,6 +35,9 @@ pub struct Job {
     /// What the global progress strip calls it ("Stopping ClickHouse on
     /// ST-DEV"); None: its current step.
     label: Option<SharedString>,
+    /// What the strip's Details opens for this job (a page's own result
+    /// view); None: the job's steps and output.
+    details: Option<std::rc::Rc<dyn Fn(&mut App)>>,
     _task: Option<Task<()>>,
     /// Re-renders once a second while running, so the step's time moves.
     _ticker: Option<Task<()>>,
@@ -51,6 +54,7 @@ impl Job {
             last_done: None,
             step_started: None,
             label: None,
+            details: None,
             _task: None,
             _ticker: None,
         }
@@ -59,6 +63,15 @@ impl Job {
     /// Name the job for the progress strip (before `start`).
     pub fn set_label(&mut self, label: impl Into<SharedString>) {
         self.label = Some(label.into());
+    }
+
+    /// What the strip's Details opens (see `details`).
+    pub fn set_details(&mut self, open: std::rc::Rc<dyn Fn(&mut App)>) {
+        self.details = Some(open);
+    }
+
+    pub fn details(&self) -> Option<std::rc::Rc<dyn Fn(&mut App)>> {
+        self.details.clone()
     }
 
     pub fn state(&self) -> &JobState {

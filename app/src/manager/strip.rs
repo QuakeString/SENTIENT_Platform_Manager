@@ -166,7 +166,10 @@ impl Render for Strip {
                 _ => div().size(px(8.)).rounded_full().bg(accent).into_any_element(),
             })
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if matches!(tone, Tone::Bad) { theme.danger } else { theme.foreground }).child(text))
-            .child(crate::ui::button("strip-details").ghost().xsmall().label("Details").on_click(move |_, _, cx| open_details(job_e.clone(), label.clone(), cx)))
+            .child(crate::ui::button("strip-details").ghost().xsmall().label("Details").on_click(move |_, _, cx| match job_e.read(cx).details() {
+                Some(open) => open(cx),
+                None => open_details(job_e.clone(), label.clone(), cx),
+            }))
             .when(!running, |r| {
                 r.child(crate::ui::button("strip-close").ghost().xsmall().icon(IconName::Close).on_click(cx.listener(|s, _, _, cx| {
                     s.job = None;
