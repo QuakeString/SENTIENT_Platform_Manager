@@ -72,7 +72,6 @@ pub struct RemotePages {
     target: Option<usize>,
     /// Migration: Change was pressed; the confirmation shows.
     migrate_confirm: bool,
-    logs: Read<String>,
     /// The newest SENTIENT on the update channel (None: none newer).
     offer: Read<Option<crate::updates::Offer>>,
     /// The versions "Other version" lists.
@@ -129,7 +128,6 @@ impl RemotePages {
             gateway: Read::Loading,
             target: None,
             migrate_confirm: false,
-            logs: Read::Loading,
             offer: Read::Loading,
             versions: Read::Loading,
             pick: None,
@@ -156,7 +154,6 @@ impl RemotePages {
         }
         p.reload(cx);
         p.refresh_agent(cx);
-        p.start_log_follow(cx);
         p
     }
 
@@ -228,7 +225,7 @@ impl RemotePages {
                     self.fetch(cx, move || remote::dbstatus(&inst), |p, r| p.db = r);
                 }
             }
-            Kind::Logs => self.fetch(cx, move || remote::logs(&inst, 500).map(|t| ui::strip_ansi(&t)), |p, r| p.logs = r),
+            Kind::Logs => {}
             Kind::Update => {
                 let i2 = inst.clone();
                 self.fetch(cx, move || remote::status(&i2), |p, r| p.status = r);
@@ -286,29 +283,6 @@ impl RemotePages {
                 cx.notify();
             })
             .ok();
-        });
-        self._tasks.push(task);
-    }
-
-    /// The log page reads again every few seconds while it is shown and
-    /// "Follow" is on.
-    fn start_log_follow(&mut self, cx: &mut Context<Self>) {
-        let task = cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(std::time::Duration::from_secs(5)).await;
-            let alive = this
-                .update(cx, |p, cx| {
-                    if p.kind == Kind::Logs && p.follow && !matches!(p.logs, Read::Loading) {
-                        let inst = p.inst.clone();
-                        p.fetch(cx, move || remote::logs(&inst, 500).map(|t| ui::strip_ansi(&t)), |p, r| {
-                            p.logs = r;
-                            p.scroll.scroll_to_bottom();
-                        });
-                    }
-                })
-                .is_ok();
-            if !alive {
-                break;
-            }
         });
         self._tasks.push(task);
     }

@@ -310,7 +310,9 @@ pub fn run(args: &[String]) -> i32 {
                     return 2;
                 }
             },
-            None => println!("{}", record.platform().logs(n)),
+            // No source named (an older window): SENTIENT's own log, read
+            // by container or service, never through the compose files.
+            None => println!("{}", crate::logsource::read(&record, crate::logsource::Source::Sentient, n, today)),
         }
         return 0;
     }

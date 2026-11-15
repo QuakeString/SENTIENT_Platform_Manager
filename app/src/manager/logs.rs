@@ -27,10 +27,10 @@ use crate::ui;
 const TAIL: u32 = 500;
 const FOLLOW_EVERY: Duration = Duration::from_secs(3);
 
-/// Reads one source: (source, lines, since midnight) → raw text.
-pub type LoadFn = Arc<dyn Fn(Source, u32, bool) -> String + Send + Sync>;
-/// The sources there are.
-pub type SourcesFn = Arc<dyn Fn() -> Vec<Source> + Send + Sync>;
+/// Reads one source: (source, lines, since midnight) → raw text, or why not.
+pub type LoadFn = Arc<dyn Fn(Source, u32, bool) -> Result<String, String> + Send + Sync>;
+/// The sources there are, or why they could not be read.
+pub type SourcesFn = Arc<dyn Fn() -> Result<Vec<Source>, String> + Send + Sync>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Levels {
@@ -50,6 +50,8 @@ pub struct LogView {
     filter: Entity<InputState>,
     follow: bool,
     status: Option<SharedString>,
+    /// A read that failed: the page shows it with Try again, never as a line.
+    error: Option<String>,
     scroll: ScrollHandle,
     /// Selected lines, as indices into the shown list.
     selected: BTreeSet<usize>,
@@ -78,6 +80,7 @@ impl LogView {
             filter,
             follow: true,
             status: None,
+            error: None,
             scroll: ScrollHandle::new(),
             selected: BTreeSet::new(),
             anchor: None,
@@ -98,16 +101,16 @@ impl LogView {
     /// This computer's logs.
     pub fn local(record: InstallationRecord, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let r1 = record.clone();
-        let load: LoadFn = Arc::new(move |s, n, today| logsource::read(&r1, s, n, today));
-        let sources: SourcesFn = Arc::new(move || logsource::available(&record));
+        let load: LoadFn = Arc::new(move |s, n, today| Ok(logsource::read(&r1, s, n, today)));
+        let sources: SourcesFn = Arc::new(move || Ok(logsource::available(&record)));
         Self::new(load, sources, window, cx)
     }
 
     /// A remote server's logs, read through its agent.
     pub fn remote(inst: crate::remote::Instance, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let i1 = inst.clone();
-        let load: LoadFn = Arc::new(move |s, n, today| crate::remote::logs_from(&i1, s, n, today).unwrap_or_else(|e| e));
-        let sources: SourcesFn = Arc::new(move || crate::remote::log_sources(&inst).unwrap_or_else(|_| vec![Source::Sentient]));
+        let load: LoadFn = Arc::new(move |s, n, today| crate::remote::logs_from(&i1, s, n, today));
+        let sources: SourcesFn = Arc::new(move || crate::remote::log_sources(&inst));
         Self::new(load, sources, window, cx)
     }
 
@@ -116,7 +119,18 @@ impl LogView {
         cx.spawn(async move |this, cx| {
             let got = cx.background_executor().spawn(async move { f() }).await;
             this.update(cx, |v, cx| {
-                v.sources = got;
+                match got {
+                    Ok(got) if !got.is_empty() => {
+                        // The chosen source may not exist there.
+                        if v.pick.is_some_and(|p| !got.contains(&p)) {
+                            v.pick = got.first().copied();
+                        }
+                        v.sources = got;
+                        v.start(cx);
+                    }
+                    Ok(_) => {}
+                    Err(e) => v.error = Some(e),
+                }
                 cx.notify();
             })
             .ok();
@@ -125,12 +139,19 @@ impl LogView {
     }
 
     /// The chosen source(s) as columns.
-    fn read(load: &LoadFn, pick: Option<Source>, sources: &[Source], n: u32, today: bool) -> Vec<Line> {
-        let parse = |s: Source| load(s, n, today).lines().filter(|l| !l.trim().is_empty()).map(|l| logsource::parse(l, s)).collect::<Vec<_>>();
+    fn read(load: &LoadFn, pick: Option<Source>, sources: &[Source], n: u32, today: bool) -> Result<Vec<Line>, String> {
+        let parse = |s: Source| load(s, n, today).map(|t| t.lines().filter(|l| !l.trim().is_empty()).map(|l| logsource::parse(l, s)).collect::<Vec<_>>());
         match pick {
             // Every list in time order: one source sorts like several.
-            Some(s) => logsource::merge(vec![parse(s)]),
-            None => logsource::merge(sources.iter().map(|s| parse(*s)).collect()),
+            Some(s) => Ok(logsource::merge(vec![parse(s)?])),
+            None => {
+                // All: the sources that answered; an error only when none did.
+                let read: Vec<_> = sources.iter().map(|s| parse(*s)).collect();
+                if let Some(Err(e)) = read.iter().find(|r| r.is_err()).filter(|_| read.iter().all(|r| r.is_err())) {
+                    return Err(e.clone());
+                }
+                Ok(logsource::merge(read.into_iter().filter_map(Result::ok).collect()))
+            }
         }
     }
 
@@ -146,7 +167,16 @@ impl LogView {
                     if v.pick != pick {
                         v.selected.clear();
                     }
-                    v.lines = lines;
+                    match lines {
+                        Ok(lines) => {
+                            v.lines = lines;
+                            v.error = None;
+                        }
+                        Err(e) => {
+                            v.lines.clear();
+                            v.error = Some(e);
+                        }
+                    }
                     if v.follow {
                         v.scroll.scroll_to_bottom();
                     }
@@ -216,7 +246,7 @@ impl LogView {
                 None => shown.join("\n"),
                 Some((n, today)) => cx
                     .background_executor()
-                    .spawn(async move { Self::read(&load, pick, &sources, n, today).iter().map(|l| Self::text_of(l, all)).collect::<Vec<_>>().join("\n") })
+                    .spawn(async move { Self::read(&load, pick, &sources, n, today).map(|ls| ls.iter().map(|l| Self::text_of(l, all)).collect::<Vec<_>>().join("\n")).unwrap_or_else(|e| e) })
                     .await,
             };
             let header = format!("# {}\n", logsource::zone_label());
@@ -425,7 +455,20 @@ impl Render for LogView {
                     .p_2()
                     .font_family(theme.mono_font_family.clone())
                     .text_size(px(12.5))
-                    .when(total == 0, |p| {
+                    .when_some(self.error.clone().filter(|_| total == 0), |p, e| {
+                        p.child(
+                            v_flex().flex_1().items_center().justify_center().gap_3().font_family(theme.font_family.clone()).text_sm().child(div().text_color(theme.muted_foreground).child("The log could not be read.")).child(
+                                div().max_w(px(560.)).text_color(theme.danger).child(e),
+                            )
+                            .child(crate::ui::button("log-retry").outline().label("Try again").on_click(cx.listener(|v, _, _, cx| {
+                                v.error = None;
+                                v.read_sources(cx);
+                                v.start(cx);
+                                cx.notify();
+                            }))),
+                        )
+                    })
+                    .when(total == 0 && self.error.is_none(), |p| {
                         p.child(
                             div().flex_1().flex().items_center().justify_center().font_family(theme.font_family.clone()).text_sm().text_color(theme.muted_foreground).child(
                                 if self.lines.is_empty() { "No log lines" } else { "No lines match the filter" },
