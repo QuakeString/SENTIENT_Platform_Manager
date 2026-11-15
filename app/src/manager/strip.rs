@@ -260,7 +260,8 @@ impl Render for Strip {
     }
 }
 
-/// What a job did: its state, its steps and every output line, to copy.
+/// What a job did: its state, its steps and every output line, to copy;
+/// Retry when it failed and can run again.
 pub struct JobDetails {
     job: Entity<Job>,
     _observe: Subscription,
@@ -289,6 +290,7 @@ impl Render for JobDetails {
             }
             JobState::Idle => div(),
         };
+        let retry = matches!(job.state(), JobState::Failed(_)).then(|| job.retry()).flatten();
         let lines: Vec<SharedString> = job.steps().iter().map(|s| SharedString::from(format!("▸ {s}"))).chain(job.log().iter().cloned()).collect();
         let text = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         v_flex()
@@ -312,6 +314,12 @@ impl Render for JobDetails {
                     .gap_2()
                     .justify_end()
                     .child(crate::ui::button("job-details-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))))
+                    .when_some(retry.clone(), |r, retry| {
+                        r.child(crate::ui::button("job-details-retry").outline().label("Retry").on_click(move |_, _, cx| {
+                            crate::modal::close(cx);
+                            retry(cx);
+                        }))
+                    })
                     .child(crate::ui::button("job-details-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx))),
             )
     }

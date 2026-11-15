@@ -423,7 +423,10 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
         return Ok(());
     }
     sink(Progress::Step { name: "Copying the Platform Manager to the server".into() });
-    let staging = format!("/tmp/spm-upload-{}", &want[..12]);
+    // Staged in the account's home, not /tmp: /tmp is often mounted
+    // noexec, and the copy must run once before it replaces anything.
+    let home = home(inst).unwrap_or_else(|_| "/tmp".into());
+    let staging = format!("{}/.spm-upload-{}", home.trim_end_matches('/'), &want[..12]);
     sftp_put(inst, &me, &staging)?;
     let got = run(inst, &format!("sha256sum {staging} | cut -d' ' -f1"), None)?;
     if got.trim() != want {
@@ -843,12 +846,26 @@ pub fn is_windows(inst: &Instance) -> bool {
 /// Run `--job <job>` with the server's Platform Manager as administrator
 /// and return what it printed.
 fn spm_job(inst: &Instance, job: &str) -> Result<String, String> {
-    if is_windows(inst) {
+    let r = if is_windows(inst) {
         win::ps(inst, &format!("& '{}' --job {job}", win::EXE))
     } else {
         sudo_run(inst, &format!("{REMOTE_SPM} --job {job}"), None)
-    }
+    };
+    // An agent that does not know the job answers with its usage text: that
+    // text goes to the activity log, the pages say the agent is out of date.
+    r.map_err(|e| {
+        if e.contains("usage: --job") || e.contains("Unknown job") {
+            crate::jobs::log_line(&format!("{}: the agent does not know \"{job}\" (out of date)", inst.name));
+            AGENT_OLD.to_string()
+        } else {
+            e
+        }
+    })
 }
+
+/// The agent on the server answered a job it does not know: it is older
+/// than this Platform Manager. Pages show one notice with Update agent.
+pub const AGENT_OLD: &str = "The agent on this server is out of date.";
 
 /// Delete a file on the server (the settings file after applying).
 pub fn remove_file(inst: &Instance, path: &str) {

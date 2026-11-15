@@ -67,23 +67,44 @@ pub fn open_url(url: &str, cx: &mut App) {
 
 /// A short error in the shared dialog, with Close (no window needed).
 pub fn show_error(title: impl Into<SharedString>, text: impl Into<SharedString>, cx: &mut App) {
-    struct ErrorBody(SharedString);
+    show_error_with(title, text, None, cx)
+}
+
+/// An error in the shared dialog: the headline, the details (the step that
+/// failed and what it printed) to read and Copy, and Retry when given.
+pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedString>, retry: Option<std::rc::Rc<dyn Fn(&mut App)>>, cx: &mut App) {
+    struct ErrorBody(SharedString, Option<std::rc::Rc<dyn Fn(&mut App)>>);
     impl Render for ErrorBody {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             use gpui_kit::component::ActiveTheme as _;
+            use gpui_kit::component::button::ButtonVariants as _;
             let theme = cx.theme().clone();
+            let (head, detail) = crate::remote::split_failure(&self.0);
+            let copy = self.0.to_string();
             gpui_kit::component::v_flex()
-                .gap_4()
-                .child(div().text_sm().text_color(theme.muted_foreground).child(self.0.clone()))
-                .child(gpui_kit::component::h_flex().justify_end().child({
-                    use gpui_kit::component::button::ButtonVariants as _;
-                    button("error-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx))
-                }))
+                .gap_3()
+                .child(div().text_sm().child(head))
+                .when_some(detail.filter(|d| !d.trim().is_empty()), |c, d| {
+                    c.child(div().id("error-detail").max_h(px(300.)).overflow_y_scroll().p_2().rounded(theme.radius).bg(theme.muted).font_family(theme.mono_font_family.clone()).text_size(px(12.5)).child(d.trim().to_string()))
+                })
+                .child(
+                    gpui_kit::component::h_flex()
+                        .gap_2()
+                        .justify_end()
+                        .child(button("error-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+                        .when_some(self.1.clone(), |r, retry| {
+                            r.child(button("error-retry").outline().label("Retry").on_click(move |_, _, cx| {
+                                crate::modal::close(cx);
+                                retry(cx);
+                            }))
+                        })
+                        .child(button("error-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx))),
+                )
         }
     }
     let text = text.into();
-    let view = cx.new(|_| ErrorBody(text));
-    crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 480., on_close: None }, cx);
+    let view = cx.new(|_| ErrorBody(text, retry));
+    crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 560., on_close: None }, cx);
 }
 
 /// Open SENTIENT on `port`: full screen like the kiosk shortcut when the
@@ -267,6 +288,44 @@ pub fn not_installed(theme: &Theme) -> Div {
 
 /// The result of a job: like a pill in colour, but a block that wraps, one
 /// row per line, for messages longer than a word or two.
+/// A page's own notice, directly in the page (never inside a card): an
+/// icon, a headline, the rest of the text, and an optional action.
+pub fn notice(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div {
+    notice_with(theme, tone, text, None)
+}
+
+pub fn notice_with(theme: &Theme, tone: Tone, text: impl Into<SharedString>, action: Option<AnyElement>) -> Div {
+    let (bg, fg, icon) = match tone {
+        Tone::Good => (theme.success, theme.success_foreground, gpui_kit::component::IconName::CircleCheck),
+        Tone::Warn => (theme.warning, theme.warning_foreground, gpui_kit::component::IconName::TriangleAlert),
+        Tone::Bad => (theme.danger.opacity(0.12), theme.danger, gpui_kit::component::IconName::CircleX),
+        Tone::Neutral => (theme.secondary, theme.secondary_foreground, gpui_kit::component::IconName::Info),
+    };
+    let text: SharedString = text.into();
+    let mut lines = text.lines().map(String::from);
+    let head = lines.next().unwrap_or_default();
+    let rest: Vec<String> = lines.collect();
+    gpui_kit::component::h_flex()
+        .gap_3()
+        .items_start()
+        .px_4()
+        .py_3()
+        .rounded(px(PANEL_RADIUS))
+        .bg(bg)
+        .text_color(fg)
+        .child(gpui_kit::component::Icon::new(icon).text_color(fg).mt(px(2.)))
+        .child(
+            gpui_kit::component::v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .text_sm()
+                .child(div().font_weight(FontWeight::MEDIUM).child(head))
+                .children(rest.into_iter().map(|l| div().child(l))),
+        )
+        .children(action)
+}
+
 pub fn outcome(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div {
     let (bg, fg) = match tone {
         Tone::Good => (theme.success, theme.success_foreground),

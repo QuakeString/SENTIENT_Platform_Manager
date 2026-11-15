@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use gpui_kit::component::{ActiveTheme, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -112,6 +112,9 @@ pub struct StatsPage {
     hover: Option<(usize, usize)>,
     /// Each chart's plot bounds, for the pointer.
     plots: Vec<Rc<Cell<Bounds<Pixels>>>>,
+    /// Update agent (a server whose agent is too old for these readings).
+    job: Entity<crate::jobs::Job>,
+    _watch: Option<Subscription>,
     _poll: Option<Task<()>>,
     _tasks: Vec<Task<()>>,
 }
@@ -138,6 +141,8 @@ impl StatsPage {
             live_err: None,
             hover: None,
             plots: (0..6).map(|_| Rc::new(Cell::new(Bounds::default()))).collect(),
+            job: cx.new(|_| crate::jobs::Job::new()),
+            _watch: None,
             _poll: None,
             _tasks: Vec::new(),
         };
@@ -153,6 +158,18 @@ impl StatsPage {
         if range != Range::Live {
             self.hist = None;
         }
+        // 20 seconds without a first reading: say so, with Retry.
+        let timeout = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(20)).await;
+            this.update(cx, |p, cx| {
+                if p.live.is_empty() && p.live_err.is_none() {
+                    p.live_err = Some("The server did not answer within 20 seconds.".into());
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
+        self._tasks.push(timeout);
         self._poll = Some(cx.spawn(async move |this, cx| {
             let mut first = true;
             loop {
@@ -204,6 +221,32 @@ impl StatsPage {
                 cx.background_executor().timer(if range == Range::Live { LIVE_EVERY } else { HISTORY_EVERY }).await;
             }
         }));
+    }
+
+    /// Update the server's agent (the progress chip; Retry on failure),
+    /// then read again.
+    fn update_agent(&mut self, cx: &mut Context<Self>) {
+        let Source::Remote(inst) = self.src.clone() else { return };
+        let me = cx.entity().downgrade();
+        let me2 = me.clone();
+        self.job.update(cx, |job, cx| {
+            job.set_label(format!("Updating the server agent on {}", inst.name));
+            job.set_retry(Rc::new(move |cx: &mut App| {
+                me.update(cx, |p, cx| p.update_agent(cx)).ok();
+            }));
+            job.start(move |sink| crate::remote::deploy(&inst, &sink), cx)
+        });
+        let watch = cx.observe(&self.job, move |p, job, cx| {
+            if matches!(job.read(cx).state(), crate::jobs::JobState::Done(_)) {
+                p.live_err = None;
+                p.start(cx);
+                p.read_day(cx);
+            }
+            cx.notify();
+        });
+        let _ = me2;
+        self._watch = Some(watch);
+        cx.notify();
     }
 
     fn read_day(&mut self, cx: &mut Context<Self>) {
@@ -545,12 +588,36 @@ impl Render for StatsPage {
 
         let latest = self.live.last().cloned().or_else(|| self.points().last().cloned());
         let mut col = v_flex().gap(px(10.)).child(header);
-        if let (Some(e), true) = (&self.live_err, self.live.is_empty()) {
-            col = col.child(ui::panel(&theme).child(ui::outcome(&theme, ui::Tone::Warn, format!("The statistics could not be read.\n{e}"))));
+        let page = |col: Div| v_flex().id("stats-page").flex_1().min_w_0().h_full().overflow_y_scroll().p_4().bg(theme.muted).child(col);
+        // Nothing read: one notice in the page and nothing else (no empty
+        // boxes, no endless "Reading…").
+        if latest.is_none() {
+            let busy = self.job.read(cx).is_running();
+            col = col.child(match &self.live_err {
+                Some(e) if e == crate::remote::AGENT_OLD => ui::notice_with(
+                    &theme,
+                    ui::Tone::Warn,
+                    "The agent on this server is out of date.\nUpdate it to read the server's statistics. Nothing else on the server changes.",
+                    Some(crate::ui::button("stats-agent-update").primary().label("Update agent").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.update_agent(cx))).into_any_element()),
+                ),
+                Some(e) => ui::notice_with(
+                    &theme,
+                    ui::Tone::Bad,
+                    format!("The statistics could not be read.\n{e}"),
+                    Some(crate::ui::button("stats-retry").outline().label("Retry").on_click(cx.listener(|p, _, _, cx| {
+                        p.live_err = None;
+                        p.start(cx);
+                        p.read_day(cx);
+                        cx.notify();
+                    })).into_any_element()),
+                ),
+                None => div().text_sm().text_color(theme.muted_foreground).child("Reading the statistics…"),
+            });
+            return page(col);
         }
         if let Some(Err(e)) = &self.hist {
             if self.range != Range::Live {
-                col = col.child(ui::panel(&theme).child(ui::outcome(&theme, ui::Tone::Warn, format!("The history could not be read.\n{e}"))));
+                col = col.child(ui::notice(&theme, ui::Tone::Warn, format!("The history could not be read.\n{e}")));
             }
         }
 
@@ -589,10 +656,11 @@ impl Render for StatsPage {
         let charts: Vec<AnyElement> = charts(&points).into_iter().enumerate().map(|(i, c)| self.chart(i, c, &times, cx)).collect();
         col = col.child(grid(chart_cols, charts));
 
-        // Services and Database.
-        let services = latest.as_ref().map(|s| services_panel(&theme, s)).unwrap_or_else(|| ui::panel(&theme));
-        let db = database_panel(&theme, latest.as_ref(), &self.day);
-        col = col.child(if side_by_side {
+        // Services and Database: each only with something in it.
+        let services = latest.as_ref().filter(|s| !s.services.is_empty()).map(|s| services_panel(&theme, s));
+        let db = latest.as_ref().filter(|s| s.db.is_some()).map(|_| database_panel(&theme, latest.as_ref(), &self.day));
+        col = col.child(match (services, db) {
+            (Some(services), Some(db)) if side_by_side => {
             // Siblings in a row share its height.
             h_flex()
                 .gap(px(10.))
@@ -600,11 +668,11 @@ impl Render for StatsPage {
                 .child(div().flex_grow(1.6).flex_basis(px(0.)).min_w_0().flex().flex_col().child(services.flex_1()))
                 .child(div().flex_grow(1.).flex_basis(px(0.)).min_w_0().flex().flex_col().child(db.flex_1()))
                 .into_any_element()
-        } else {
-            v_flex().gap(px(10.)).child(services).child(db).into_any_element()
+            }
+            (services, db) => v_flex().gap(px(10.)).children(services).children(db).into_any_element(),
         });
 
-        v_flex().id("stats-page").flex_1().min_w_0().h_full().overflow_y_scroll().p_4().bg(theme.muted).child(col)
+        page(col)
     }
 }
 

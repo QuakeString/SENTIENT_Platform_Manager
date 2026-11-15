@@ -38,6 +38,8 @@ pub struct Job {
     /// What the strip's Details opens for this job (a page's own result
     /// view); None: the job's steps and output.
     details: Option<std::rc::Rc<dyn Fn(&mut App)>>,
+    /// Run it again from its failure dialog (crate::manager::strip).
+    retry: Option<std::rc::Rc<dyn Fn(&mut App)>>,
     _task: Option<Task<()>>,
     /// Re-renders once a second while running, so the step's time moves.
     _ticker: Option<Task<()>>,
@@ -55,6 +57,7 @@ impl Job {
             step_started: None,
             label: None,
             details: None,
+            retry: None,
             _task: None,
             _ticker: None,
         }
@@ -72,6 +75,15 @@ impl Job {
 
     pub fn details(&self) -> Option<std::rc::Rc<dyn Fn(&mut App)>> {
         self.details.clone()
+    }
+
+    /// What Retry in its failure dialog runs.
+    pub fn set_retry(&mut self, retry: std::rc::Rc<dyn Fn(&mut App)>) {
+        self.retry = Some(retry);
+    }
+
+    pub fn retry(&self) -> Option<std::rc::Rc<dyn Fn(&mut App)>> {
+        self.retry.clone()
     }
 
     pub fn state(&self) -> &JobState {
@@ -227,6 +239,11 @@ impl Job {
 }
 
 pub use crate::maintenance_ops::activity_log;
+
+/// A line in the Platform Manager's own log (About → Open the log).
+pub fn log_line(line: &str) {
+    activity(line);
+}
 
 fn activity(line: &str) {
     use std::io::Write as _;

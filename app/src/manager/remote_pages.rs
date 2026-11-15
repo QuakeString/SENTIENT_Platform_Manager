@@ -15,7 +15,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::dbstatus::{DbStatus, bytes_label};
-use crate::jobs::Job;
+use crate::jobs::{Job, JobState};
 use crate::remote::{self, Instance, RemoteBackups, RemoteService, RemoteStatus};
 use crate::ui::{self, Tone};
 
@@ -47,6 +47,9 @@ impl<T> Read<T> {
         }
     }
 }
+
+/// How long a reading may take before the page says the server does not answer.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// The server agent update started when a server is opened.
 enum AgentRefresh {
@@ -110,6 +113,13 @@ impl RemotePages {
             cx.observe(&job, |this, job, cx| {
                 if !job.read(cx).is_running() {
                     this.svc_busy = None;
+                    // An agent update run as a job: its pill follows it.
+                    if matches!(this.agent_refresh, AgentRefresh::Running) {
+                        this.agent_refresh = match job.read(cx).state() {
+                            JobState::Failed(m) => AgentRefresh::Failed(m.to_string()),
+                            _ => AgentRefresh::Idle,
+                        };
+                    }
                     this.reload(cx);
                 }
                 cx.notify();
@@ -206,6 +216,44 @@ impl RemotePages {
         self._tasks.push(task);
     }
 
+    /// A reading came back "agent out of date".
+    fn agent_old(&self) -> bool {
+        let old = |e: &str| e == remote::AGENT_OLD;
+        matches!(&self.ready, Read::Failed(e) if old(e))
+            || matches!(&self.status, Read::Failed(e) if old(e))
+            || matches!(&self.services, Read::Failed(e) if old(e))
+            || matches!(&self.db, Read::Failed(e) if old(e))
+            || matches!(&self.backups, Read::Failed(e) if old(e))
+            || matches!(&self.settings, Read::Failed(e) if old(e))
+            || matches!(&self.gateway, Read::Failed(e) if old(e))
+    }
+
+    /// Update the server agent as a job (the progress chip; on failure its
+    /// dialog with the error, Copy and Retry).
+    pub(crate) fn update_agent(&mut self, cx: &mut Context<Self>) {
+        if self.job.read(cx).is_running() {
+            return;
+        }
+        let inst = self.inst.clone();
+        let me = cx.entity().downgrade();
+        self.agent_refresh = AgentRefresh::Running;
+        self.job.update(cx, |job, cx| {
+            job.set_label(format!("Updating the server agent on {}", inst.name));
+            job.set_retry(std::rc::Rc::new(move |cx: &mut App| {
+                me.update(cx, |p, cx| p.update_agent(cx)).ok();
+            }));
+            job.start(
+                move |sink| {
+                    remote::deploy(&inst, &sink)?;
+                    sink(sentient_installer_core::progress::Progress::Done { message: format!("The server agent on {} is up to date.", inst.name) });
+                    Ok(())
+                },
+                cx,
+            )
+        });
+        cx.notify();
+    }
+
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         let inst = self.inst.clone();
         self.fetch(cx, move || remote::ready(&inst), |p, r| p.ready = r);
@@ -273,18 +321,35 @@ impl RemotePages {
         work: impl FnOnce() -> Result<T, String> + Send + 'static,
         put: impl FnOnce(&mut Self, Read<T>) + 'static,
     ) {
+        // Whichever comes first: the answer, or 20 seconds without one (a
+        // reading never waits forever).
+        let put = std::rc::Rc::new(std::cell::RefCell::new(Some(put)));
+        let p2 = put.clone();
         let task = cx.spawn(async move |this, cx| {
             let got = cx.background_executor().spawn(async move { work() }).await;
             this.update(cx, |p, cx| {
-                put(p, match got {
-                    Ok(v) => Read::Got(v),
-                    Err(e) => Read::Failed(e),
-                });
+                if let Some(put) = put.borrow_mut().take() {
+                    put(p, match got {
+                        Ok(v) => Read::Got(v),
+                        Err(e) => Read::Failed(e),
+                    });
+                }
                 cx.notify();
             })
             .ok();
         });
         self._tasks.push(task);
+        let timeout = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(READ_TIMEOUT).await;
+            this.update(cx, |p, cx| {
+                if let Some(put) = p2.borrow_mut().take() {
+                    put(p, Read::Failed(format!("The server did not answer within {} seconds.", READ_TIMEOUT.as_secs())));
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
+        self._tasks.push(timeout);
     }
 
     fn run_job(&mut self, label: impl Into<String>, args: Vec<String>, cx: &mut Context<Self>) {
@@ -314,7 +379,7 @@ impl RemotePages {
     // -- rendering ----------------------------------------------------------
 
     fn failed(theme: &gpui_kit::component::Theme, e: &str) -> Div {
-        ui::panel(theme).child(ui::outcome(theme, Tone::Bad, e.to_string()))
+        ui::notice(theme, Tone::Bad, e.to_string())
     }
 
     fn loading(theme: &gpui_kit::component::Theme, what: &str) -> Div {
@@ -407,8 +472,20 @@ impl RemotePages {
                                 .map(|r| match &self.agent_refresh {
                                     AgentRefresh::Running => r.child(ui::pill(&theme, Tone::Warn, "Updating")),
                                     AgentRefresh::Failed(why) => {
-                                        let why = SharedString::from(why.clone());
-                                        r.child(div().id("agent-failed").child(ui::pill(&theme, Tone::Bad, "Update failed")).tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(why.clone()).build(w, cx)))
+                                        // A button: the real error, Copy and Retry.
+                                        let why = why.clone();
+                                        let this = cx.entity().downgrade();
+                                        r.child(div().id("agent-failed").cursor_pointer().child(ui::pill(&theme, Tone::Bad, "Update failed ›")).on_click(move |_, _, cx| {
+                                            let this = this.clone();
+                                            ui::show_error_with(
+                                                "The server agent could not be updated",
+                                                why.clone(),
+                                                Some(std::rc::Rc::new(move |cx: &mut App| {
+                                                    this.update(cx, |p, cx| p.update_agent(cx)).ok();
+                                                })),
+                                                cx,
+                                            );
+                                        }))
                                     }
                                     AgentRefresh::Idle => r,
                                 }),
@@ -1251,6 +1328,19 @@ impl Render for RemotePages {
             Kind::Repair => self.repair_page(cx),
             Kind::Gateway => self.gateway_page(cx),
         } };
+        // An agent too old for this page's jobs: one notice and Update agent,
+        // in place of every panel that cannot load.
+        let body = if self.agent_old() {
+            let busy = self.job.read(cx).is_running();
+            ui::notice_with(
+                &theme,
+                Tone::Warn,
+                "The agent on this server is out of date.\nUpdate it to use this page. Nothing else on the server changes.",
+                Some(crate::ui::button("agent-update").primary().label("Update agent").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.update_agent(cx))).into_any_element()),
+            )
+        } else {
+            body
+        };
         // Which server this is shows in the top bar (its colour, the
         // switcher with REMOTE); a job shows in the progress strip.
         let reload = { use gpui_kit::component::Sizable as _; crate::ui::button("remote-reload").ghost().small().icon(gpui_kit::component::IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(|this, _, _, cx| this.reload(cx))) };
