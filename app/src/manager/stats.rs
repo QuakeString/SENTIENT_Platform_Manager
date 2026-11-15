@@ -180,9 +180,19 @@ impl StatsPage {
                             break;
                         }
                     } else {
+                        // The history, and one live reading for the figures,
+                        // Services and Database above and below the charts.
+                        let s2 = s.clone();
                         let got = cx.background_executor().spawn(async move { s.history(range.secs()) }).await;
+                        let now = cx.background_executor().spawn(async move { s2.live() }).await;
                         if this.update(cx, |p, cx| {
                             p.hist = Some(got);
+                            if let Ok(sample) = now {
+                                p.live.push(sample);
+                                if p.live.len() > LIVE_KEEP {
+                                    p.live.remove(0);
+                                }
+                            }
                             cx.notify();
                         })
                         .is_err()
@@ -388,7 +398,7 @@ impl StatsPage {
                     .gap(px(6.))
                     .items_start()
                     // The scale: its widest label decides the column, for every chart alike.
-                    .child(v_flex().w(px(26.)).h(px(PLOT_H)).justify_between().items_end().child(axis(1.)).child(axis(0.5)).child(axis(0.)))
+                    .child(v_flex().w(px(26.)).h(px(PLOT_H)).justify_between().items_end().when(!empty, |c| c.child(axis(1.)).child(axis(0.5)).child(axis(0.))))
                     .child(
                         div()
                             .id(SharedString::from(format!("plot-{i}")))
@@ -400,11 +410,11 @@ impl StatsPage {
                             .children(tip)
                             .when(empty, |d| {
                                 d.child(
-                                    div().absolute().inset_0().flex().items_center().justify_center().text_size(px(12.5)).text_color(theme.muted_foreground).child(if self.range == Range::Live {
+                                    div().absolute().inset_0().px_2().flex().items_center().justify_center().child(div().w_full().text_center().text_size(px(12.5)).text_color(theme.muted_foreground).child(if self.range == Range::Live {
                                         "Reading…"
                                     } else {
-                                        "No history yet: it fills up, one reading a minute."
-                                    }),
+                                        "No history yet. It fills up, one reading a minute."
+                                    })),
                                 )
                             })
                             .on_mouse_move(cx.listener(move |p, e: &MouseMoveEvent, _, cx| {
