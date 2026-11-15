@@ -8,7 +8,6 @@ use std::rc::Rc;
 
 use gpui_kit::component::{
     ActiveTheme, h_flex,
-    button::Button,
     input::{Input, InputState},
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -87,7 +86,7 @@ pub fn field(setting: &Setting, input: &Entity<InputState>, set: SetFn, file: Fi
                 .gap_2()
                 .items_center()
                 .child(div().flex_1().min_w(px(160.)).max_w(px(420.)).child(Input::new(input)))
-                .child(Button::new(SharedString::from(format!("file-{env}"))).outline().label(label).on_click(move |_, window, cx| act(window, cx)))
+                .child(crate::ui::button(SharedString::from(format!("file-{env}"))).outline().label(label).on_click(move |_, window, cx| act(window, cx)))
                 .into_any_element()
         }
         ValueKind::Text => div().flex_1().min_w(px(180.)).max_w(px(420.)).child(Input::new(input)).into_any_element(),

@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     input::{InputEvent, InputState},
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -1041,7 +1041,7 @@ impl Installer {
             .child(div().flex_1())
             .when(self.step < FINISH, |bar| {
                 bar.child(
-                    Button::new("cancel")
+                    crate::ui::button("cancel")
                         .ghost()
                         .label("Cancel")
                         .on_click(cx.listener(|this, _, window, cx| this.confirm_cancel(window, cx))),
@@ -1049,14 +1049,14 @@ impl Installer {
             })
             .when(self.step > 0 && self.step < INSTALL, |bar| {
                 bar.child(
-                    Button::new("back")
+                    crate::ui::button("back")
                         .outline()
                         .label("Back")
                         .on_click(cx.listener(|this, _, _, cx| this.go(this.previous_shown(this.step), cx))),
                 )
             })
             .child(
-                Button::new("next")
+                crate::ui::button("next")
                     .primary()
                     .label(next_label)
                     .disabled((self.step == INSTALL && !failed) || blocked.is_some())
@@ -1102,7 +1102,7 @@ impl Render for Installer {
                                     .max_w(px(820.))
                                     .flex_1()
                                     .gap_4()
-                                    .child(div().text_2xl().child(self.title(self.step)))
+                                    .child(div().text_size(px(18.)).font_weight(FontWeight::MEDIUM).child(self.title(self.step)))
                                     .child(page),
                             ),
                     )

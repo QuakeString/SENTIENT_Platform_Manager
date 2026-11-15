@@ -4,7 +4,7 @@
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     progress::Progress,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -234,7 +234,7 @@ impl Render for MigrationPage {
                         .gap_2()
                         .when(!self.confirm, |r| {
                             r.child(
-                                Button::new("migrate")
+                                crate::ui::button("migrate")
                                     .primary()
                                     .label(chosen.map(|f| format!("Change to {}", flavor_label(f))).unwrap_or_else(|| "Change database".into()))
                                     .disabled(busy || chosen.is_none() || unfinished.is_some())
@@ -246,14 +246,14 @@ impl Render for MigrationPage {
                         })
                         .when(self.confirm, |r| {
                             r.child(
-                                Button::new("migrate-confirm")
+                                crate::ui::button("migrate-confirm")
                                     .danger()
                                     .label("Stop SENTIENT and change now")
                                     .disabled(busy)
                                     .on_click(cx.listener(|this, _, _, cx| this.start(cx))),
                             )
                             .child(
-                                Button::new("migrate-cancel")
+                                crate::ui::button("migrate-cancel")
                                     .ghost()
                                     .label("Cancel")
                                     .disabled(busy)
@@ -282,7 +282,7 @@ impl Render for MigrationPage {
                 .when(root_only, |p| {
                     p.child(
                         h_flex().child(
-                            Button::new("show-kept")
+                            crate::ui::button("show-kept")
                                 .outline()
                                 .label("Show (asks for the administrator password)")
                                 .disabled(busy)
@@ -313,7 +313,7 @@ impl Render for MigrationPage {
                         )
                         .child(div().text_color(theme.muted_foreground).child(kept::human(item.bytes)))
                         .child(
-                            Button::new(SharedString::from(format!("remove-{i}")))
+                            crate::ui::button(SharedString::from(format!("remove-{i}")))
                                 .outline()
                                 .label("Remove")
                                 .disabled(busy)
@@ -335,7 +335,7 @@ impl Render for MigrationPage {
                     )))
                     .child(
                         h_flex().child(
-                            Button::new("resume")
+                            crate::ui::button("resume")
                                 .primary()
                                 .label("Continue copying")
                                 .disabled(busy)

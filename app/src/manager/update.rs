@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     checkbox::Checkbox,
     menu::{DropdownMenu as _, PopupMenuItem},
     progress::Progress,
@@ -322,7 +322,7 @@ impl UpdatePage {
         let movement = releases::movement(&chosen.version, installed);
         let items: Vec<(Version, bool)> = list.iter().map(|v| (v.clone(), v.version == chosen.version)).collect();
         let installed_owned = installed.to_string();
-        let menu = Button::new("version-pick")
+        let menu = crate::ui::button("version-pick")
             .outline()
             .label(format!("{} ▾", chosen.version))
             .disabled(busy)
@@ -351,13 +351,13 @@ impl UpdatePage {
             });
         let version = chosen.version.clone();
         let action = match movement {
-            Move::Newer => Button::new("install-version")
+            Move::Newer => crate::ui::button("install-version")
                 .primary()
                 .label(format!("Update to {version}"))
                 .disabled(busy)
                 .on_click(cx.listener(move |this, _, _, cx| this.install_version(version.clone(), cx))),
-            Move::Same => Button::new("install-version").outline().label(format!("{version} is installed")).disabled(true),
-            Move::Older => Button::new("install-version")
+            Move::Same => crate::ui::button("install-version").outline().label(format!("{version} is installed")).disabled(true),
+            Move::Older => crate::ui::button("install-version")
                 .outline()
                 .label(format!("Go back to {version}…"))
                 .disabled(busy)
@@ -493,8 +493,8 @@ impl UpdatePage {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(Button::new("changes-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.apply_changes(cx))))
-                            .child(Button::new("changes-log").outline().label(if self.show_changes_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
+                            .child(crate::ui::button("changes-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.apply_changes(cx))))
+                            .child(crate::ui::button("changes-log").outline().label(if self.show_changes_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
                                 this.show_changes_log = !this.show_changes_log;
                                 cx.notify();
                             }))),
@@ -508,8 +508,8 @@ impl UpdatePage {
                 .child(
                     h_flex()
                         .gap_2()
-                        .child(Button::new("changes-apply").primary().label("Apply now").on_click(cx.listener(|this, _, _, cx| this.apply_changes(cx))))
-                        .child(Button::new("changes-later").outline().label("Later").on_click(cx.listener(|this, _, _, cx| {
+                        .child(crate::ui::button("changes-apply").primary().label("Apply now").on_click(cx.listener(|this, _, _, cx| this.apply_changes(cx))))
+                        .child(crate::ui::button("changes-later").outline().label("Later").on_click(cx.listener(|this, _, _, cx| {
                             this.changes_later = true;
                             cx.notify();
                         }))),
@@ -607,14 +607,14 @@ impl UpdatePage {
                 row = row
                     .when(has_installer, |r| {
                         r.child(
-                            Button::new("manager-install")
+                            crate::ui::button("manager-install")
                                 .primary()
                                 .label(if installing { "Updating…" } else { "Update and restart" })
                                 .disabled(installing)
                                 .on_click(cx.listener(|this, _, _, cx| this.start_manager_update(cx))),
                         )
                     })
-                    .child(Button::new("manager-notes").outline().label("What's new").on_click(cx.listener(|this, _, _, cx| this.show_notes(Product::Manager, cx))));
+                    .child(crate::ui::button("manager-notes").outline().label("What's new").on_click(cx.listener(|this, _, _, cx| this.show_notes(Product::Manager, cx))));
             }
             row
         };
@@ -628,8 +628,8 @@ impl UpdatePage {
                             .gap_2()
                             .items_center()
                             .child(div().flex_1().child(ui::outcome(theme, Tone::Bad, m)))
-                            .child(Button::new("manager-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.start_manager_update(cx))))
-                            .child(Button::new("manager-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                            .child(crate::ui::button("manager-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.start_manager_update(cx))))
+                            .child(crate::ui::button("manager-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
                                 this.manager_job.update(cx, |job, cx| job.reset(cx));
                             }))),
                     )
@@ -664,16 +664,16 @@ impl UpdatePage {
             if let Some(o) = &sentient_offer {
                 let first = manager_offer.is_some();
                 row = row.child(
-                    Button::new("sentient-update")
+                    crate::ui::button("sentient-update")
                         .primary()
                         .label(format!("Update to {}", o.version))
                         .disabled(first || busy)
                         .on_click(cx.listener(|this, _, _, cx| this.start_sentient_update(cx))),
                 );
-                row = row.child(Button::new("sentient-notes").outline().label("What's new").on_click(cx.listener(|this, _, _, cx| this.show_notes(Product::Sentient, cx))));
+                row = row.child(crate::ui::button("sentient-notes").outline().label("What's new").on_click(cx.listener(|this, _, _, cx| this.show_notes(Product::Sentient, cx))));
             }
             let _ = docker;
-            row.child(Button::new("sentient-other").outline().label("Other version").on_click(cx.listener(|this, _, _, cx| {
+            row.child(crate::ui::button("sentient-other").outline().label("Other version").on_click(cx.listener(|this, _, _, cx| {
                 this.show_other = !this.show_other;
                 cx.notify();
             })))
@@ -701,7 +701,7 @@ impl UpdatePage {
                     .child(channels)
                     .child(div().flex_1())
                     .child(
-                        Button::new("check-updates")
+                        crate::ui::button("check-updates")
                             .outline()
                             .label(if checking { "Checking…" } else { "Check for updates" })
                             .disabled(checking)
@@ -725,9 +725,9 @@ impl UpdatePage {
                             "The release page could not be reached. Nothing was changed.".to_string()
                         }))
                         .when(!e.contains("limiting"), |r| {
-                            r.child(Button::new("retry-check").outline().label("Try again").on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))))
+                            r.child(crate::ui::button("retry-check").outline().label("Try again").on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))))
                         })
-                        .child(Button::new("from-file").outline().label("Update from a file…").on_click(cx.listener(|this, _, _, cx| this.update_from_file(cx)))),
+                        .child(crate::ui::button("from-file").outline().label("Update from a file…").on_click(cx.listener(|this, _, _, cx| this.update_from_file(cx)))),
                 )
             })
             .child(manager_row)
@@ -806,7 +806,7 @@ impl Render for UpdatePage {
                                         .gap_3()
                                         .items_center()
                                         .child(
-                                            Button::new("download-latest")
+                                            crate::ui::button("download-latest")
                                                 .primary()
                                                 .label(format!("Update to {version}"))
                                                 .disabled(busy)
@@ -837,7 +837,7 @@ impl Render for UpdatePage {
                             .gap_3()
                             .items_center()
                             .child(
-                                Button::new("choose")
+                                crate::ui::button("choose")
                                     .outline()
                                     .label("Update from a file…")
                                     .disabled(busy)
@@ -868,7 +868,7 @@ impl Render for UpdatePage {
                 )
                 .child(
                     h_flex().child(
-                        Button::new("update")
+                        crate::ui::button("update")
                             .primary()
                             .label(if busy { "Updating…" } else { "Update SENTIENT" })
                             .disabled(!can_run)
@@ -899,7 +899,7 @@ impl Render for UpdatePage {
                 })
                 .child(
                     h_flex().child(
-                        Button::new("rollback")
+                        crate::ui::button("rollback")
                             .danger()
                             .outline()
                             .label("Roll back last update…")

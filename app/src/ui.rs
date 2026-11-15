@@ -5,7 +5,7 @@
 
 use gpui_kit::component::{
     Theme, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
 };
 use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -68,14 +68,14 @@ pub const START_DELAY_HELP: &str = "Seconds SENTIENT waits after Windows starts 
 
 /// "Start delay [ 15 ] seconds (i)": the installer's and Control's field.
 pub fn start_delay_row(theme: &Theme, state: &Entity<gpui_kit::component::input::InputState>) -> Div {
-    use gpui_kit::component::{Sizable as _, button::{Button, ButtonVariants as _}, input::Input, IconName};
+    use gpui_kit::component::{Sizable as _, button::ButtonVariants as _, input::Input, IconName};
     gpui_kit::component::h_flex()
         .gap_2()
         .items_center()
         .child(div().text_sm().child("Start delay"))
         .child(div().w_20().child(Input::new(state)))
         .child(div().text_sm().text_color(theme.muted_foreground).child("seconds"))
-        .child(Button::new("start-delay-help").ghost().xsmall().icon(IconName::Info).tooltip(START_DELAY_HELP))
+        .child(crate::ui::button("start-delay-help").ghost().xsmall().icon(IconName::Info).tooltip(START_DELAY_HELP))
 }
 
 /// The corner radius of panels and cards (buttons and inputs keep the
@@ -104,7 +104,7 @@ pub fn page(theme: &Theme, title: &'static str, summary: &'static str) -> Statef
         .p_8()
         .gap_4()
         .bg(theme.muted)
-        .child(div().text_2xl().child(title))
+        .child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(title))
         .child(div().text_color(theme.muted_foreground).child(summary))
 }
 
@@ -141,7 +141,7 @@ pub fn fact(theme: &Theme, label: &'static str, value: impl Into<SharedString>) 
     h_flex()
         .gap_4()
         .text_sm()
-        .child(div().w_56().flex_shrink_0().text_color(theme.muted_foreground).child(label))
+        .child(div().w(px(168.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
         .child(div().min_w_0().child(value.into()))
 }
 
@@ -156,19 +156,19 @@ pub fn not_installed(theme: &Theme) -> Div {
             h_flex()
                 .gap_2()
                 .child(
-                    Button::new("install-sentient")
+                    crate::ui::button("install-sentient")
                         .primary()
                         .label("Download and install SENTIENT")
                         .on_click(|_, window, cx| crate::standalone::install_sentient(window, cx)),
                 )
                 .child(
-                    Button::new("install-sentient-package")
+                    crate::ui::button("install-sentient-package")
                         .outline()
                         .label("Install from local files…")
                         .on_click(|_, window, cx| crate::standalone::install_sentient_from_package(window, cx)),
                 )
                 .child(
-                    Button::new("remove-manager")
+                    crate::ui::button("remove-manager")
                         .outline()
                         .label("Remove the Platform Manager")
                         .on_click(|_, window, cx| crate::standalone::remove_manager(window, cx)),
@@ -491,4 +491,31 @@ pub fn service_rows(theme: &Theme, services: impl IntoIterator<Item = (SharedStr
                 .child(div().flex_1().min_w_0().text_ellipsis().text_color(theme.muted_foreground).child(detail))
         })
         .collect()
+}
+
+/// A popover's pointer under it, at `x` from its left: a 12 px wide
+/// triangle in the popover's colour, outlined in its border colour.
+pub fn pointer_down(fill: Hsla, border: Hsla, x: Pixels) -> impl IntoElement {
+    div().absolute().left(x).bottom(px(-7.)).w(px(14.)).h(px(8.)).child(
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                let o = bounds.origin;
+                let tri = |inset: f32| {
+                    let mut p = gpui_kit::Path::new(point(o.x + px(inset), o.y));
+                    p.line_to(point(o.x + px(14. - inset), o.y));
+                    p.line_to(point(o.x + px(7.), o.y + px(8. - inset)));
+                    p
+                };
+                window.paint_path(tri(0.), border);
+                window.paint_path(tri(1.4), fill);
+            },
+        )
+        .size_full(),
+    )
+}
+
+/// Every button: the toolkit's, with the mockup's medium-weight label.
+pub fn button(id: impl Into<gpui_kit::ElementId>) -> gpui_kit::component::button::Button {
+    gpui_kit::component::button::Button::new(id).font_weight(FontWeight::MEDIUM)
 }

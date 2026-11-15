@@ -4,7 +4,7 @@
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, Theme, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     checkbox::Checkbox,
     input::{Input, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -85,7 +85,7 @@ impl Installer {
         let chosen = self.chosen_version.clone().unwrap_or_else(|| list[0].version.clone());
         let this = cx.entity().downgrade();
         Some(
-            Button::new("sentient-version")
+            crate::ui::button("sentient-version")
                 .outline()
                 .label(format!("{chosen} ▾"))
                 .dropdown_menu(move |menu, _, _| {
@@ -295,7 +295,7 @@ impl Installer {
                         .gap_3()
                         .when(!self.leftovers.is_empty(), |r| {
                             r.child(
-                                Button::new("remove-leftovers")
+                                crate::ui::button("remove-leftovers")
                                     .danger()
                                     .label("Remove the earlier install")
                                     .disabled(cleaning)
@@ -337,7 +337,7 @@ impl Installer {
             })
             .child(
                 h_flex().child(
-                    Button::new("recheck")
+                    crate::ui::button("recheck")
                         .outline()
                         .label("Check again")
                         .on_click(cx.listener(|this, _, _, cx| this.run_checks(cx))),
@@ -390,7 +390,7 @@ impl Installer {
                     .gap_2()
                     .items_end()
                     .child(field(&theme, "Program folder", &program).flex_1())
-                    .child(Button::new("browse-program").outline().label("Browse").on_click(
+                    .child(crate::ui::button("browse-program").outline().label("Browse").on_click(
                         cx.listener(move |this, _, window, cx| this.browse(program.clone(), window, cx)),
                     )),
             )
@@ -399,7 +399,7 @@ impl Installer {
                     .gap_2()
                     .items_end()
                     .child(field(&theme, "Database folder (PostgreSQL and its data)", &data).flex_1())
-                    .child(Button::new("browse-data").outline().label("Browse").on_click(
+                    .child(crate::ui::button("browse-data").outline().label("Browse").on_click(
                         cx.listener(move |this, _, window, cx| this.browse(data.clone(), window, cx)),
                     )),
             )
@@ -514,7 +514,7 @@ impl Installer {
             let native = self.engine == Engine::Native;
             let kept_passwords = self.kept_passwords;
             let choice = |id: &'static str, label: &'static str, selected: bool| {
-                let b = Button::new(id).label(label);
+                let b = crate::ui::button(id).label(label);
                 if selected { b.primary() } else { b.outline() }
             };
             ui::panel(&theme)
@@ -650,7 +650,7 @@ impl Installer {
                         .when_some(next, |row, next| {
                             let field = field.clone();
                             row.child(div().child(format!("{what} port for SENTIENT: {next} is free.")))
-                                .child(Button::new(SharedString::from(format!("use-port-{port}"))).outline().label(format!("Use {next}")).on_click(cx.listener(
+                                .child(crate::ui::button(SharedString::from(format!("use-port-{port}"))).outline().label(format!("Use {next}")).on_click(cx.listener(
                                     move |this, _, window, cx| {
                                         field.update(cx, |state, cx| state.set_value(next.to_string(), window, cx));
                                         this.problem = None;
@@ -658,7 +658,7 @@ impl Installer {
                                     },
                                 )))
                         })
-                        .child(Button::new(SharedString::from(format!("recheck-port-{port}"))).ghost().label("Check again").on_click(cx.listener(
+                        .child(crate::ui::button(SharedString::from(format!("recheck-port-{port}"))).ghost().label("Check again").on_click(cx.listener(
                             move |this, _, _, cx| {
                                 this.port_owners.remove(&port);
                                 cx.notify();
@@ -781,7 +781,7 @@ impl Installer {
                         )
                         .child(div().w_48().flex_shrink_0().child(Input::new(&self.settings[&s.env])))
                         .child(
-                            Button::new(SharedString::from(format!("help-{}", s.env)))
+                            crate::ui::button(SharedString::from(format!("help-{}", s.env)))
                                 .ghost()
                                 .xsmall()
                                 .icon(IconName::Info)
@@ -1018,7 +1018,7 @@ impl Installer {
                     div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child(value)
                 })
                 .child(
-                    Button::new(SharedString::from(format!("change-{step}-{label}")))
+                    crate::ui::button(SharedString::from(format!("change-{step}-{label}")))
                         .ghost()
                         .label("Change")
                         .on_click(cx.listener(move |this, _, _, cx| this.go(step, cx))),
@@ -1053,7 +1053,7 @@ impl Installer {
                         .child(div().font_weight(FontWeight::MEDIUM).child("Restart required"))
                         .child("Windows must restart to finish enabling WSL2 for ClickHouse. Setup continues by itself after you sign in again; your choices are kept.")
                         .child(h_flex().child(
-                            Button::new("restart-now")
+                            crate::ui::button("restart-now")
                                 .primary()
                                 .label("Restart now")
                                 .on_click(|_, _, _| super::plan::restart_now()),
@@ -1110,7 +1110,7 @@ impl Installer {
                     &theme,
                     "The Platform Manager is installed. To install SENTIENT later, open it and choose Download and install SENTIENT (or Install from local files).",
                 ))
-                .child(h_flex().child(Button::new("open-manager").primary().label("Open Platform Manager").on_click(
+                .child(h_flex().child(crate::ui::button("open-manager").primary().label("Open Platform Manager").on_click(
                     |_, _, _| {
                         let _ = std::process::Command::new(crate::self_install::manager_exe()).arg("--manager").spawn();
                     },
@@ -1162,12 +1162,12 @@ impl Installer {
                 h_flex()
                     .gap_2()
                     .child(
-                        Button::new("open-sentient")
+                        crate::ui::button("open-sentient")
                             .primary()
                             .label("Open SENTIENT")
                             .on_click(move |_, _, cx| ui::open_sentient(port, kiosk, cx)),
                     )
-                    .child(Button::new("open-manager").outline().label("Open Platform Manager").on_click(
+                    .child(crate::ui::button("open-manager").outline().label("Open Platform Manager").on_click(
                         |_, _, _| {
                             let _ = std::process::Command::new(crate::self_install::manager_exe())
                                 .arg("--manager")

@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use gpui_kit::component::{
     ActiveTheme, h_flex,
-    button::Button,
     checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
 };
@@ -167,8 +166,8 @@ pub(crate) fn toolbar(
         .flex_wrap()
         .child(div().w_80().child(Input::new(filter)))
         .child(Checkbox::new(SharedString::from(format!("{id}follow"))).label("Follow").checked(follow).on_change(move |value: &bool, window, cx| on_follow(*value, window, cx)))
-        .child(Button::new(SharedString::from(format!("{id}refresh"))).outline().label("Refresh").on_click(move |_, window, cx| on_refresh(window, cx)))
-        .child(Button::new(SharedString::from(format!("{id}export"))).outline().label("Export…").on_click(move |_, window, cx| on_export(window, cx)))
+        .child(crate::ui::button(SharedString::from(format!("{id}refresh"))).outline().label("Refresh").on_click(move |_, window, cx| on_refresh(window, cx)))
+        .child(crate::ui::button(SharedString::from(format!("{id}export"))).outline().label("Export…").on_click(move |_, window, cx| on_export(window, cx)))
         .child(div().flex_1())
         .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(if shown == 1 { "1 line".to_string() } else { format!("{shown} lines") }))
 }

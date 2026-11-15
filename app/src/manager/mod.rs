@@ -21,7 +21,7 @@ pub(crate) mod update;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     menu::{DropdownMenu as _, PopupMenuItem},
 };
 use gpui_kit::component::Sizable as _;
@@ -141,6 +141,8 @@ pub struct Manager {
     remote_pages: Option<Entity<remote_pages::RemotePages>>,
     /// Takes the keyboard while a dialog is open (Escape closes it).
     modal_focus: FocusHandle,
+    /// The theme popover in the menu's bottom group is open.
+    theme_open: bool,
     /// The open instance's processor, memory and disk (top bar).
     monitor: Option<Monitor>,
     updates: Entity<UpdateState>,
@@ -189,6 +191,7 @@ impl Manager {
             remote_monitor: None,
             remote_pages: None,
             modal_focus: cx.focus_handle(),
+            theme_open: cfg!(debug_assertions) && std::env::var_os("SPM_THEME_OPEN").is_some(),
             monitor: None,
             updates,
             updated_from,
@@ -350,7 +353,7 @@ impl Manager {
         });
         let items = self.attention(cx);
         let count = items.len();
-        let bell = Button::new("bell")
+        let bell = crate::ui::button("bell")
             .ghost()
             .icon(Icon::new(IconName::Bell).text_color(fg))
             .when(count > 0, |b| b.label(count.to_string()))
@@ -389,7 +392,7 @@ impl Manager {
             .child(ui::product_logo(ui::Product::Manager, 22.))
             .when(show_title, |b| b.child(div().text_sm().font_weight(FontWeight::MEDIUM).whitespace_nowrap().child("SENTIENT Platform Manager")))
             .child(
-                Button::new("switcher")
+                crate::ui::button("switcher")
                     .ghost()
                     .label(instance)
                     .icon(Icon::new(IconName::ChevronDown).size_3p5().text_color(dim))
@@ -528,12 +531,12 @@ impl Manager {
             col = col.child(
                 bar("notice-updated", crate::ui::Tone::Good, text)
                     .when(pending > 0, |b| {
-                        b.child(Button::new("notice-updated-changes").primary().label("Show the changes").on_click(cx.listener(|this, _, _, cx| {
+                        b.child(crate::ui::button("notice-updated-changes").primary().label("Show the changes").on_click(cx.listener(|this, _, _, cx| {
                             this.page = Page::Update;
                             cx.notify();
                         })))
                     })
-                    .child(Button::new("notice-updated-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::button("notice-updated-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
                         this.updated_from = None;
                         cx.notify();
                     }))),
@@ -548,7 +551,7 @@ impl Manager {
                         crate::ui::Tone::Good,
                         format!("Found SENTIENT {} on this computer with its database, settings and backups. Nothing was changed.", r.sentient_version),
                     )
-                    .child(Button::new("notice-found-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::button("notice-found-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
                         this.found_notice = false;
                         cx.notify();
                     }))),
@@ -562,15 +565,15 @@ impl Manager {
                 col = col.child(
                     bar("notice-both", crate::ui::Tone::Neutral, format!("Platform Manager {} and SENTIENT {} are available.", m.version, s.version))
                         .when(m.installer.is_some(), |b| {
-                            b.child(Button::new("notice-both-go").primary().label("Update Platform Manager").on_click(cx.listener(|this, _, _, cx| {
+                            b.child(crate::ui::button("notice-both-go").primary().label("Update Platform Manager").on_click(cx.listener(|this, _, _, cx| {
                                 let page = this.update_page(cx);
                                 page.update(cx, |p, cx| p.start_manager_update(cx));
                                 this.page = Page::Update;
                                 cx.notify();
                             })))
                         })
-                        .child(Button::new("notice-both-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx))))
-                        .child(Button::new("notice-both-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        .child(crate::ui::button("notice-both-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx))))
+                        .child(crate::ui::button("notice-both-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                             let (mv, sv) = (mv.clone(), sv.clone());
                             this.updates.update(cx, |s, cx| {
                                 s.dismiss_manager(mv, cx);
@@ -585,15 +588,15 @@ impl Manager {
                 col = col.child(
                     bar("notice-manager", crate::ui::Tone::Neutral, format!("Platform Manager {} is available.", m.version))
                         .when(m.installer.is_some(), |b| {
-                            b.child(Button::new("notice-manager-go").primary().label("Update and restart").on_click(cx.listener(|this, _, _, cx| {
+                            b.child(crate::ui::button("notice-manager-go").primary().label("Update and restart").on_click(cx.listener(|this, _, _, cx| {
                                 let page = this.update_page(cx);
                                 page.update(cx, |p, cx| p.start_manager_update(cx));
                                 this.page = Page::Update;
                                 cx.notify();
                             })))
                         })
-                        .child(Button::new("notice-manager-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx))))
-                        .child(Button::new("notice-manager-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        .child(crate::ui::button("notice-manager-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx))))
+                        .child(crate::ui::button("notice-manager-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                             let v = v.clone();
                             this.updates.update(cx, |s, cx| s.dismiss_manager(v, cx));
                         }))),
@@ -604,12 +607,12 @@ impl Manager {
                 let v = s.version.clone();
                 col = col.child(
                     bar("notice-sentient", crate::ui::Tone::Neutral, format!("SENTIENT {} is available{}.", s.version, dated(&s.date)))
-                        .child(Button::new("notice-sentient-go").primary().label("Update…").on_click(cx.listener(|this, _, _, cx| {
+                        .child(crate::ui::button("notice-sentient-go").primary().label("Update…").on_click(cx.listener(|this, _, _, cx| {
                             this.page = Page::Update;
                             cx.notify();
                         })))
-                        .child(Button::new("notice-sentient-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Sentient, cx))))
-                        .child(Button::new("notice-sentient-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        .child(crate::ui::button("notice-sentient-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Sentient, cx))))
+                        .child(crate::ui::button("notice-sentient-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                             let v = v.clone();
                             this.updates.update(cx, |s, cx| s.dismiss_sentient(v, cx));
                         }))),
@@ -621,11 +624,11 @@ impl Manager {
             let v = o.version.clone();
             col = col.child(
                 bar("notice-gateway", crate::ui::Tone::Neutral, format!("Sentient Gateway {} is available{}.", o.version, dated(&o.date)))
-                    .child(Button::new("notice-gateway-go").primary().label("Update…").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::button("notice-gateway-go").primary().label("Update…").on_click(cx.listener(|this, _, _, cx| {
                         this.page = Page::Gateway;
                         cx.notify();
                     })))
-                    .child(Button::new("notice-gateway-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(crate::ui::button("notice-gateway-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                         let v = v.clone();
                         this.updates.update(cx, |s, cx| s.dismiss_gateway(v, cx));
                     }))),
@@ -688,7 +691,6 @@ impl Manager {
                     cx.notify();
                 }))
         });
-        let choice = theme::Choice::saved();
         v_flex()
             .when(rail, |n| n.w(px(64.)))
             .when(!rail, |n| n.w_56())
@@ -751,38 +753,101 @@ impl Manager {
                             .child(format!("v{}", crate::updates::manager_version())),
                     ))
                     .child({
-                        let b = Button::new("about").ghost().icon(IconName::Info).tooltip("About and preferences").on_click(cx.listener(|this, _, _, cx| {
+                        let b = crate::ui::button("about").ghost().icon(IconName::Info).tooltip("About and preferences").on_click(cx.listener(|this, _, _, cx| {
                             this.page = Page::About;
                             cx.notify();
                         }));
                         if self.page == Page::About { b.selected(true) } else { b }
                     })
-                    .child(
-                        Button::new("theme")
-                            .ghost()
-                            .icon(match choice {
-                                theme::Choice::Light => Icon::new(IconName::Sun),
-                                theme::Choice::Dark => Icon::new(IconName::Moon),
-                                theme::Choice::System => Icon::new(Lucide::Monitor),
-                            })
-                            .tooltip("Theme")
-                            .dropdown_menu(move |menu, _, _| {
-                                let mut menu = menu;
-                                for c in theme::Choice::ALL {
-                                    menu = menu.item(PopupMenuItem::new(c.label())
-                                            .when(c != choice, |i| {
-                                                i.icon(match c {
-                                                    theme::Choice::Light => Lucide::Sun,
-                                                    theme::Choice::Dark => Lucide::Moon,
-                                                    theme::Choice::System => Lucide::Monitor,
-                                                })
-                                            })
-                                            .checked(c == choice).on_click(move |_, window, cx| theme::choose(c, Some(window), cx)));
-                                }
-                                menu
-                            }),
-                    ),
+                    .child(self.theme_button(rail, cx)),
             )
+    }
+
+    /// The theme icon and its popover: above the icon, pointing at it, one
+    /// row per choice with its icon, the current one tinted with a tick
+    /// (the approved mockup). At rail width it opens to the right.
+    fn theme_button(&self, rail: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let choice = theme::Choice::saved();
+        let open = self.theme_open;
+        let icon_of = |c: theme::Choice| match c {
+            theme::Choice::Light => Icon::new(IconName::Sun),
+            theme::Choice::Dark => Icon::new(IconName::Moon),
+            theme::Choice::System => Icon::new(Lucide::Monitor),
+        };
+        let button = div()
+            .id("theme")
+            .size(px(30.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(theme.radius)
+            .cursor_pointer()
+            .text_color(if open { theme.primary } else { theme.muted_foreground })
+            .when(open, |b| b.bg(theme.primary.opacity(0.10)))
+            .when(!open, |b| b.hover(|b| b.bg(theme.list_hover)))
+            .child(icon_of(choice).size_4())
+            .when(!open, |b| b.tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Theme").build(window, cx)))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.theme_open = !this.theme_open;
+                cx.notify();
+            }));
+        let popover = open.then(|| {
+            let rows = theme::Choice::ALL.into_iter().map(|c| {
+                let on = c == choice;
+                h_flex()
+                    .id(SharedString::from(format!("theme-{}", c.label())))
+                    .gap_2()
+                    .items_center()
+                    .px_2()
+                    .py(px(6.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .text_sm()
+                    .when(on, |r| r.bg(theme.primary.opacity(0.10)).text_color(theme.primary).font_weight(FontWeight::MEDIUM))
+                    .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))
+                    .child(icon_of(c).size_4())
+                    .child(div().flex_1().child(c.label()))
+                    .when(on, |r| r.child(Icon::new(IconName::Check).size_4()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        theme::choose(c, Some(window), cx);
+                        this.theme_open = false;
+                        cx.notify();
+                    }))
+            });
+            // The pointer: a small square turned 45 degrees is not possible
+            // here, so a bordered triangle is drawn from two stacked borders.
+            let pointer_x = if rail { px(9.) } else { px(162. - 24.) };
+            deferred(
+                div()
+                    .absolute()
+                    .bottom(px(30. + 9.))
+                    .when(rail, |d| d.left(px(-2.)))
+                    .when(!rail, |d| d.right(px(-6.)))
+                    .w(px(162.))
+                    .child(
+                        v_flex()
+                            .id("theme-popover")
+                            .occlude()
+                            .p_1()
+                            .gap_px()
+                            .rounded(px(ui::PANEL_RADIUS))
+                            .bg(theme.popover)
+                            .text_color(theme.popover_foreground)
+                            .border_1()
+                            .border_color(theme.border)
+                            .shadow_lg()
+                            .children(rows)
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                this.theme_open = false;
+                                cx.notify();
+                            })),
+                    )
+                    .child(ui::pointer_down(theme.popover, theme.border, pointer_x)),
+            )
+            .with_priority(1)
+        });
+        div().relative().child(button).children(popover)
     }
 
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -824,11 +889,11 @@ impl Manager {
                             .child(
                                 h_flex()
                                     .gap_2()
-                                    .child(Button::new("to-instances").primary().label(format!("Go to {}", r.name)).on_click(cx.listener(|this, _, _, cx| {
+                                    .child(crate::ui::button("to-instances").primary().label(format!("Go to {}", r.name)).on_click(cx.listener(|this, _, _, cx| {
                                         this.page = Page::Instances;
                                         cx.notify();
                                     })))
-                                    .child(Button::new("to-local").ghost().label("Back to this computer").on_click(cx.listener(|this, _, _, cx| this.open_instance(None, cx)))),
+                                    .child(crate::ui::button("to-local").ghost().label("Back to this computer").on_click(cx.listener(|this, _, _, cx| this.open_instance(None, cx)))),
                             ),
                     )
                     .into_any_element();

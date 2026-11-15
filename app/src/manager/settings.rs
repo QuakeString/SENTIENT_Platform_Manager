@@ -23,7 +23,7 @@ use std::collections::HashMap;
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     input::{Input, InputEvent, InputState},
     progress::Progress,
 };
@@ -528,7 +528,7 @@ pub(crate) fn row(theme: &gpui_kit::component::Theme, label: impl Into<SharedStr
                 .items_center()
                 .child(div().text_sm().when(changed, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.primary)).child(label.clone()))
                 .when_some(help, |r, h| {
-                    r.child(Button::new(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))
+                    r.child(crate::ui::button(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))
                 }),
         )
         .child(h_flex().flex_1().min_w_0().gap_2().items_center().child(control))
@@ -650,7 +650,7 @@ impl SettingsPage {
                         .gap_2()
                         .items_center()
                         .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading the accounts…" } else { "Not read. Reading asks for the administrator password." }))
-                        .when(!self.reading_admin, |r| r.child(Button::new("read-admins").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
+                        .when(!self.reading_admin, |r| r.child(crate::ui::button("read-admins").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
                 );
             }
             Some(Err(e)) => sec = sec.child(ui::outcome(theme, Tone::Warn, e.clone())),
@@ -681,12 +681,12 @@ impl SettingsPage {
                             .items_center()
                             .child(div().flex_1().text_sm().text_color(if locked { theme.danger } else { theme.muted_foreground }).child(format!("{state}{last}")))
                             .when(locked, |r| {
-                                r.child(Button::new(SharedString::from(format!("unlock-{email}"))).outline().label("Unlock").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
+                                r.child(crate::ui::button(SharedString::from(format!("unlock-{email}"))).outline().label("Unlock").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                     let e = e1.clone();
                                     this.admin_action(move |r| crate::sentient_admin::unlock(r, &e), cx);
                                 })))
                             })
-                            .child(Button::new(SharedString::from(format!("reset-{email}"))).outline().label("Reset password…").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
+                            .child(crate::ui::button(SharedString::from(format!("reset-{email}"))).outline().label("Reset password…").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                 this.reset_for = Some(e2.clone());
                                 this.admin_result = None;
                                 cx.notify();
@@ -698,7 +698,7 @@ impl SettingsPage {
                     "Everyone signed in",
                     Some("Makes every open session sign in again, on every device.".into()),
                     false,
-                    h_flex().child(Button::new("sign-out-all").outline().label("Sign everyone out…").disabled(self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.confirm_sign_out_all(window, cx)))),
+                    h_flex().child(crate::ui::button("sign-out-all").outline().label("Sign everyone out…").disabled(self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.confirm_sign_out_all(window, cx)))),
                 ).when(list.is_empty(), |r| r.border_t_0()));
             }
         }
@@ -732,8 +732,8 @@ impl SettingsPage {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(Button::new("do-reset").primary().label("Reset password").disabled(problem.is_some() || self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.reset_password(window, cx))))
-                            .child(Button::new("cancel-reset").outline().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                            .child(crate::ui::button("do-reset").primary().label("Reset password").disabled(problem.is_some() || self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.reset_password(window, cx))))
+                            .child(crate::ui::button("cancel-reset").outline().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
                                 this.reset_for = None;
                                 cx.notify();
                             }))),
@@ -855,7 +855,7 @@ impl SettingsPage {
                 self.help(key),
                 self.is_changed(key, cx),
                 h_flex().gap_2().child(self.input(key, 360.)).child(
-                    Button::new(SharedString::from(format!("choose-{key}")))
+                    crate::ui::button(SharedString::from(format!("choose-{key}")))
                         .outline()
                         .label("Choose…")
                         .on_click(cx.listener(move |this, _, window, cx| this.choose_file(key, window, cx))),
@@ -918,7 +918,7 @@ impl SettingsPage {
                 h_flex()
                     .gap_2()
                     .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading…" } else { "Not read." }))
-                    .when(!self.reading_admin, |r| r.child(Button::new("read-retention").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
+                    .when(!self.reading_admin, |r| r.child(crate::ui::button("read-retention").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
             )),
             Some(Err(e)) => v_flex().child(row(theme, "Telemetry history and alarms", Some(help.into()), false, div().text_sm().text_color(theme.muted_foreground).child(e.clone()))),
             Some(Ok(now)) => {
@@ -927,7 +927,7 @@ impl SettingsPage {
                 let pick = |id: &'static str, current: i64, telemetry: bool, cx: &mut Context<Self>| {
                     h_flex().gap_1().flex_wrap().children(DAYS.iter().map(move |(label, d)| {
                         let d = *d;
-                        let b = Button::new(SharedString::from(format!("{id}-{d}"))).label(*label).on_click(cx.listener(move |this, _, _, cx| {
+                        let b = crate::ui::button(SharedString::from(format!("{id}-{d}"))).label(*label).on_click(cx.listener(move |this, _, _, cx| {
                             if telemetry { this.retention_edit.telemetry_days = d } else { this.retention_edit.alarms_days = d }
                             cx.notify();
                         }));
@@ -943,11 +943,11 @@ impl SettingsPage {
                             h_flex()
                                 .gap_2()
                                 .pt_1()
-                                .child(Button::new("save-retention").primary().label("Save").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
+                                .child(crate::ui::button("save-retention").primary().label("Save").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                     let r = this.retention_edit;
                                     this.admin_action(move |rec| crate::sentient_admin::set_retention(rec, r), cx);
                                 })))
-                                .child(Button::new("undo-retention").outline().label("Discard").on_click(cx.listener(move |this, _, _, cx| {
+                                .child(crate::ui::button("undo-retention").outline().label("Discard").on_click(cx.listener(move |this, _, _, cx| {
                                     this.retention_edit = now;
                                     cx.notify();
                                 }))),
@@ -1016,7 +1016,7 @@ impl SettingsPage {
                         .child(h_flex().w(px(VALUE_W)).flex_shrink_0().child(field))
                         .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(builtin_label(s)))
                         .when(set, |r| {
-                            r.child(Button::new(SharedString::from(format!("reset-{}", s.env))).ghost().label("Reset").on_click(cx.listener(move |this, _, window, cx| {
+                            r.child(crate::ui::button(SharedString::from(format!("reset-{}", s.env))).ghost().label("Reset").on_click(cx.listener(move |this, _, window, cx| {
                                 this.set(&key, "", window, cx);
                                 cx.notify();
                             })))
@@ -1036,7 +1036,7 @@ impl SettingsPage {
                     .py_1()
                     .child(div().w(px(250.)).child(Input::new(n)))
                     .child(div().w(px(260.)).child(Input::new(v)))
-                    .child(Button::new(SharedString::from(format!("remove-var-{i}"))).ghost().label("Remove").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(crate::ui::button(SharedString::from(format!("remove-var-{i}"))).ghost().label("Remove").on_click(cx.listener(move |this, _, _, cx| {
                         if i < this.custom.len() {
                             this.custom.remove(i);
                         }
@@ -1052,10 +1052,10 @@ impl SettingsPage {
                 .pt_1()
                 .child(div().w(px(250.)).child(Input::new(&self.new_name)))
                 .child(div().w(px(260.)).child(Input::new(&self.new_value)))
-                .child(Button::new("add-var").outline().label("Add a variable").disabled(!name_ok).on_click(cx.listener(|this, _, window, cx| this.add_variable(window, cx)))),
+                .child(crate::ui::button("add-var").outline().label("Add a variable").disabled(!name_ok).on_click(cx.listener(|this, _, window, cx| this.add_variable(window, cx)))),
         );
         let filter = |id: &'static str, text: String, on: bool, only: bool| {
-            let b = Button::new(id).label(text).on_click(cx.listener(move |this, _, _, cx| {
+            let b = crate::ui::button(id).label(text).on_click(cx.listener(move |this, _, _, cx| {
                 this.changed_only = only;
                 cx.notify();
             }));
@@ -1069,7 +1069,7 @@ impl SettingsPage {
                 .child(filter("filter-all", format!("All {total}"), !self.changed_only, false))
                 .child(filter("filter-set", format!("Set {set_here}"), self.changed_only, true))
                 .child(
-                    Button::new("show-names")
+                    crate::ui::button("show-names")
                         .ghost()
                         .label(if self.show_names { "Show plain names" } else { "Show variable names" })
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -1137,9 +1137,9 @@ impl Render for SettingsPage {
                     if changed.len() == 1 { "" } else { "s" },
                     restarts
                 )))
-                .child(Button::new("revert").outline().label("Discard").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.revert(window, cx))))
+                .child(crate::ui::button("revert").outline().label("Discard").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.revert(window, cx))))
                 .child(
-                    Button::new("apply")
+                    crate::ui::button("apply")
                         .primary()
                         .label("Apply")
                         .disabled(busy || !problems.is_empty())

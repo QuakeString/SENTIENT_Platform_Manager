@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     input::{Input, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
@@ -541,9 +541,9 @@ impl InstancesPage {
         let open_btn: AnyElement = if current {
             open_now_tag(&theme).into_any_element()
         } else {
-            Button::new("open-local").primary().label("Open").on_click(cx.listener(|_, _, _, cx| cx.emit(OpenInstance(None)))).into_any_element()
+            crate::ui::button("open-local").primary().label("Open").on_click(cx.listener(|_, _, _, cx| cx.emit(OpenInstance(None)))).into_any_element()
         };
-        let more = Button::new("more-local").ghost().small().icon(IconName::Ellipsis).tooltip("More").dropdown_menu({
+        let more = crate::ui::button("more-local").ghost().small().icon(IconName::Ellipsis).tooltip("More").dropdown_menu({
             let this = cx.entity().downgrade();
             move |menu, _, _| {
                 let t = this.clone();
@@ -578,7 +578,7 @@ impl InstancesPage {
         let can_read = matches!(&status, Some(Ok(s)) if s.installed);
         let not_set_up = matches!(&status, Some(Err(e)) if e == remote::NOT_SET_UP);
         let this = cx.entity().downgrade();
-        let more = Button::new(SharedString::from(format!("more-{id}"))).ghost().small().icon(IconName::Ellipsis).tooltip("Work on this instance").dropdown_menu({
+        let more = crate::ui::button(SharedString::from(format!("more-{id}"))).ghost().small().icon(IconName::Ellipsis).tooltip("Work on this instance").dropdown_menu({
             let (this, id) = (this.clone(), id.clone());
             move |menu, _, _| {
                 let item = |icon: Lucide, label: &'static str, enabled: bool, f: Box<dyn Fn(&mut InstancesPage, &mut Window, &mut Context<InstancesPage>)>| {
@@ -606,19 +606,19 @@ impl InstancesPage {
         let unreachable = matches!(&status, Some(Err(e)) if e != remote::NOT_SET_UP && e != remote::FORGOTTEN && !e.contains("administrator rights"));
         let current = self.open.as_deref() == Some(id.as_str());
         let primary: AnyElement = if unreachable {
-            Button::new(SharedString::from(format!("retry-{id}"))).primary().label("Try again").loading(refreshing).on_click(cx.listener({
+            crate::ui::button(SharedString::from(format!("retry-{id}"))).primary().label("Try again").loading(refreshing).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.refresh(&id, cx)
             })).into_any_element()
         } else if not_set_up {
-            Button::new(SharedString::from(format!("setup-{id}"))).primary().label("Set up").disabled(busy).on_click(cx.listener({
+            crate::ui::button(SharedString::from(format!("setup-{id}"))).primary().label("Set up").disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.set_up(&id, cx)
             })).into_any_element()
         } else if current {
             open_now_tag(&theme).into_any_element()
         } else {
-            Button::new(SharedString::from(format!("open-{id}"))).primary().label("Open").on_click(cx.listener({
+            crate::ui::button(SharedString::from(format!("open-{id}"))).primary().label("Open").on_click(cx.listener({
                 let id = id.clone();
                 move |_, _, _, cx| cx.emit(OpenInstance(Some(id.clone())))
             })).into_any_element()
@@ -627,11 +627,11 @@ impl InstancesPage {
             .gap_2()
             .items_center()
             .child(primary)
-            .child(Button::new(SharedString::from(format!("edit-{id}"))).outline().label("Edit").disabled(busy).on_click(cx.listener({
+            .child(crate::ui::button(SharedString::from(format!("edit-{id}"))).outline().label("Edit").disabled(busy).on_click(cx.listener({
                 let inst = inst.clone();
                 move |this, _, window, cx| this.open_form(Some(inst.clone()), window, cx)
             })))
-            .child(Button::new(SharedString::from(format!("remove-{id}"))).outline().label("Remove").disabled(busy).on_click(cx.listener({
+            .child(crate::ui::button(SharedString::from(format!("remove-{id}"))).outline().label("Remove").disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| {
                     this.confirm_remove = Some(id.clone());
@@ -659,7 +659,7 @@ impl InstancesPage {
                         .rounded(theme.radius)
                         .bg(theme.accent)
                         .child(div().flex_1().text_sm().child("A job is running on this server."))
-                        .child(Button::new(SharedString::from(format!("follow-{id}"))).outline().label("Follow").disabled(busy).on_click(cx.listener({
+                        .child(crate::ui::button(SharedString::from(format!("follow-{id}"))).outline().label("Follow").disabled(busy).on_click(cx.listener({
                             let id = id.clone();
                             move |this, _, _, cx| this.follow_job(&id, job_id.clone(), cx)
                         }))),
@@ -677,11 +677,11 @@ impl InstancesPage {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(Button::new("remove-yes").danger().label("Remove").on_click(cx.listener({
+                            .child(crate::ui::button("remove-yes").danger().label("Remove").on_click(cx.listener({
                                 let id = id.clone();
                                 move |this, _, _, cx| this.remove(&id, cx)
                             })))
-                            .child(Button::new("remove-no").ghost().label("Keep").on_click(cx.listener(|this, _, _, cx| {
+                            .child(crate::ui::button("remove-no").ghost().label("Keep").on_click(cx.listener(|this, _, _, cx| {
                                 this.confirm_remove = None;
                                 cx.notify();
                             }))),
@@ -694,7 +694,7 @@ impl InstancesPage {
     fn form_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let f = self.form.as_ref()?;
         let theme = cx.theme().clone();
-        let help = |id: &'static str, text: &'static str| Button::new(id).ghost().xsmall().icon(IconName::Info).tooltip(text);
+        let help = |id: &'static str, text: &'static str| crate::ui::button(id).ghost().xsmall().icon(IconName::Info).tooltip(text);
         let busy = matches!(f.stage, Stage::Checking | Stage::Connecting);
         let swatches = h_flex().gap_2().items_center().children(remote::PALETTE.iter().map(|c| {
             let selected = f.color.eq_ignore_ascii_case(c);
@@ -779,7 +779,7 @@ impl InstancesPage {
                                 cx.notify();
                             }))),
                     )
-                    .child(Button::new("os-guide").ghost().small().label("Setup guide").icon(IconName::ExternalLink).on_click({
+                    .child(crate::ui::button("os-guide").ghost().small().label("Setup guide").icon(IconName::ExternalLink).on_click({
                         let anchor = if f.os == Os::Windows { "windows-servers" } else { "linux-servers" };
                         move |_, _, cx| ui::open_url(&format!("https://sentient.invenia.in/docs/installation/remote-instances/#{anchor}"), cx)
                     }))
@@ -817,7 +817,7 @@ impl InstancesPage {
                     h_flex()
                         .gap_2()
                         .child(div().flex_1().min_w_0().child(Input::new(&f.key_file)))
-                        .child(Button::new("key-choose").outline().label("Choose…").on_click(cx.listener(|this, _, _, cx| this.choose_key(cx))))
+                        .child(crate::ui::button("key-choose").outline().label("Choose…").on_click(cx.listener(|this, _, _, cx| this.choose_key(cx))))
                         .into_any_element(),
                 ))
             })
@@ -868,8 +868,8 @@ impl InstancesPage {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(Button::new("trust").primary().label("It matches: connect").on_click(cx.listener(move |this, _, _, cx| this.connect(Some((keys.clone(), fp.clone())), cx))))
-                            .child(Button::new("distrust").ghost().label("It does not match").on_click(cx.listener(|this, _, _, cx| this.set_error("Not connected: the key was not accepted.", cx)))),
+                            .child(crate::ui::button("trust").primary().label("It matches: connect").on_click(cx.listener(move |this, _, _, cx| this.connect(Some((keys.clone(), fp.clone())), cx))))
+                            .child(crate::ui::button("distrust").ghost().label("It does not match").on_click(cx.listener(|this, _, _, cx| this.set_error("Not connected: the key was not accepted.", cx)))),
                     ),
             );
         }
@@ -886,13 +886,13 @@ impl InstancesPage {
                     Stage::Connecting => "Signing in and looking at the system…",
                     _ => "",
                 }))
-                .child(Button::new("cancel").outline().label("Cancel").disabled(busy).on_click(cx.listener(|this, _, _, cx| {
+                .child(crate::ui::button("cancel").outline().label("Cancel").disabled(busy).on_click(cx.listener(|this, _, _, cx| {
                     this.form = None;
                     cx.notify();
                 })))
                 .when(!matches!(f.stage, Stage::Fingerprint { .. }), |r| {
                     r.child(
-                        Button::new("check")
+                        crate::ui::button("check")
                             .primary()
                             .label(if f.editing.is_some() { "Save and connect" } else { "Connect" })
                             .loading(busy)
@@ -1023,7 +1023,7 @@ impl InstancesPage {
                 };
                 let shown = self.show_details;
                 p.child(ui::outcome(&theme, Tone::Bad, headline)).when_some(details, |p, d| {
-                    p.child(Button::new("job-details").ghost().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
+                    p.child(crate::ui::button("job-details").ghost().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
                         this.show_details = !this.show_details;
                         cx.notify();
                     })))
@@ -1052,7 +1052,7 @@ impl InstancesPage {
                         .gap_2()
                         .justify_end()
                         .when(failed && self.retry.is_some(), |r| {
-                            r.child(Button::new("job-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
+                            r.child(crate::ui::button("job-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
                                 this.job.update(cx, |j, cx| j.reset(cx));
                                 match this.retry.clone() {
                                     Some(Retry::SetUp(id)) => this.set_up(&id, cx),
@@ -1063,14 +1063,14 @@ impl InstancesPage {
                         })
                         .when(!failed, |r| {
                             let id = id.clone();
-                            r.child(Button::new("job-open").primary().label("Open").on_click(cx.listener(move |this, _, _, cx| {
+                            r.child(crate::ui::button("job-open").primary().label("Open").on_click(cx.listener(move |this, _, _, cx| {
                                 this.job_for = None;
                                 this.job.update(cx, |j, cx| j.reset(cx));
                                 cx.emit(OpenInstance(Some(id.clone())));
                                 cx.notify();
                             })))
                         })
-                        .child(Button::new("job-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                        .child(crate::ui::button("job-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
                             this.job_for = None;
                             this.job.update(cx, |j, cx| j.reset(cx));
                             cx.notify();
@@ -1093,11 +1093,11 @@ impl InstancesPage {
                         .gap_2()
                         .items_center()
                         .child(div().flex_1().font_weight(FontWeight::MEDIUM).child(format!("SENTIENT log on {name}")))
-                        .child(Button::new("logs-again").ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener({
+                        .child(crate::ui::button("logs-again").ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener({
                             let id = id.clone();
                             move |this, _, _, cx| this.show_logs(&id, cx)
                         })))
-                        .child(Button::new("logs-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                        .child(crate::ui::button("logs-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
                             this.logs = None;
                             cx.notify();
                         }))),
@@ -1157,9 +1157,9 @@ impl Render for InstancesPage {
                 h_flex()
                     .gap_3()
                     .items_center()
-                    .child(v_flex().flex_1().min_w_0().gap_1().child(div().text_2xl().child("Instances")).child(div().text_color(theme.muted_foreground).child(summary)))
+                    .child(v_flex().flex_1().min_w_0().gap_1().child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child("Instances")).child(div().text_color(theme.muted_foreground).child(summary)))
                     .when(self.form.is_none(), |r| {
-                        r.child(Button::new("add").primary().icon(IconName::Plus).label("Add a remote instance").on_click(cx.listener(|this, _, window, cx| this.open_form(None, window, cx))))
+                        r.child(crate::ui::button("add").primary().icon(IconName::Plus).label("Add a remote instance").on_click(cx.listener(|this, _, window, cx| this.open_form(None, window, cx))))
                     }),
             )
             .children(logs)

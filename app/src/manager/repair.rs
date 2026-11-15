@@ -6,7 +6,7 @@
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     checkbox::Checkbox,
     progress::Progress,
 };
@@ -144,7 +144,7 @@ impl Render for RepairPage {
                     )))
                     .child(
                         h_flex().child(
-                            Button::new("take-over")
+                            crate::ui::button("take-over")
                                 .outline()
                                 .label("Take over the compose file…")
                                 .disabled(done)
@@ -161,7 +161,7 @@ impl Render for RepairPage {
                 ))
                 .child(
                     h_flex().child(
-                        Button::new("repair")
+                        crate::ui::button("repair")
                             .outline()
                             .label("Repair")
                             .disabled(done)
@@ -187,7 +187,7 @@ impl Render for RepairPage {
                 )
                 .child(
                     h_flex().child(
-                        Button::new("uninstall")
+                        crate::ui::button("uninstall")
                             .danger()
                             .label(if self.keep_data { "Uninstall" } else { "Uninstall and delete the data" })
                             .disabled(done)
@@ -207,7 +207,7 @@ impl Render for RepairPage {
                     .when(uninstalled, |p| {
                         p.child(
                             h_flex().child(
-                                Button::new("close")
+                                crate::ui::button("close")
                                     .primary()
                                     .label("Close")
                                     .on_click(|_, window, _| window.remove_window()),

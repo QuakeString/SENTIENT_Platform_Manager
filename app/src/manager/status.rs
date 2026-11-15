@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -217,7 +217,7 @@ impl StatusPage {
                 div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!("read at {t}"))
             }))
             .child(
-                Button::new("db-read")
+                crate::ui::button("db-read")
                     .outline()
                     .label(if self.db_reading { "Reading…" } else if self.db.is_none() { "Read" } else { "Refresh" })
                     .disabled(self.db_reading)
@@ -333,7 +333,7 @@ impl StatusPage {
                     .children(c.problem.clone().map(|p| ui::outcome(theme, Tone::Warn, format!("Cannot be added: {p}"))))
                     .child(
                         h_flex().mt_2().child(
-                            Button::new(("adopt", i))
+                            crate::ui::button(("adopt", i))
                                 .primary()
                                 .label("Add this instance…")
                                 .disabled(busy || c.problem.is_some())
@@ -389,7 +389,7 @@ impl Render for StatusPage {
                         e.name,
                         e.check.map(|c| c.summary).unwrap_or_default()
                     )))
-                    .child(Button::new("backup-damaged").outline().label("Back up now").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Backup)))),
+                    .child(crate::ui::button("backup-damaged").outline().label("Back up now").on_click(cx.listener(|_, _, _, cx| cx.emit(Go::Backup)))),
             )
         });
         // B7: changes from a newer Platform Manager, waiting quietly.
@@ -410,7 +410,7 @@ impl Render for StatusPage {
                         crate::updates::manager_version(),
                         if waiting == 1 { "is" } else { "are" }
                     )))
-                    .child(Button::new("changes-waiting").outline().label("Apply…").on_click(cx.listener(|_, _, _, cx| cx.emit(OpenUpdate)))),
+                    .child(crate::ui::button("changes-waiting").outline().label("Apply…").on_click(cx.listener(|_, _, _, cx| cx.emit(OpenUpdate)))),
             )
         });
 
@@ -424,7 +424,7 @@ impl Render for StatusPage {
                         .child(ui::pill(&theme, tone, overall))
                         .child(div().flex_1())
                         .child(
-                            Button::new("open")
+                            crate::ui::button("open")
                                 .primary()
                                 .label("Open SENTIENT")
                                 .on_click({
@@ -500,7 +500,7 @@ impl StatusPage {
                     .child(ui::pill(theme, tone, pill))
                     .child(div().flex_1().text_color(theme.muted_foreground).child(line))
                     .child(
-                        Button::new("open-gateway")
+                        crate::ui::button("open-gateway")
                             .outline()
                             .label(if installed { "Manage" } else { "Install…" })
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(OpenGateway))),
@@ -567,11 +567,11 @@ pub(crate) fn db_details(
                 .child(div().flex_1().min_w(px(240.)).child(format!("{drive} is almost full ({} free).{when}", bytes_label(f))))
                 .when(db.hybrid && actions.set_limit.is_some(), |r| {
                     let set_limit = actions.set_limit.clone().unwrap();
-                    r.child(Button::new("low-limit").outline().label("Set a history limit…").on_click({ let f = set_limit.clone(); move |_, _, cx| f(cx) }))
+                    r.child(crate::ui::button("low-limit").outline().label("Set a history limit…").on_click({ let f = set_limit.clone(); move |_, _, cx| f(cx) }))
                 })
                 .when_some(kept.zip(actions.remove_kept.clone()), |r, (k, remove_kept)| {
                     r.child(
-                        Button::new("low-kept")
+                        crate::ui::button("low-kept")
                             .outline()
                             .label(format!("Remove kept copies ({})", bytes_label(k)))
                             .on_click(move |_, _, cx| remove_kept(cx)),
@@ -665,7 +665,7 @@ pub(crate) fn db_details(
                             .text_sm()
                             .child(div().w_32().flex_shrink_0().text_color(theme.muted_foreground).child("Last backup"))
                             .child(div().flex_1().min_w_0().child(last_backup.clone()))
-                            .when_some(actions.back_up.clone(), |r, f| r.child(Button::new("backup-now").outline().label("Back up now").on_click(move |_, _, cx| f(cx)))),
+                            .when_some(actions.back_up.clone(), |r, f| r.child(crate::ui::button("backup-now").outline().label("Back up now").on_click(move |_, _, cx| f(cx)))),
                     )
                     .child(div().pt_1().text_size(px(13.)).text_color(theme.muted_foreground).child("Largest tables"));
                 let shown: Vec<&crate::dbstatus::Table> = pg.tables.iter().filter(|t| t.bytes > 0).take(5).collect();
@@ -729,7 +729,7 @@ pub(crate) fn db_details(
                                 Some(d) => format!("{d} days"),
                                 None => "forever".into(),
                             }))
-                            .when_some(actions.set_limit.clone(), |r, f| r.child(Button::new("history-limit").outline().label("Set a limit…").on_click(move |_, _, cx| f(cx)))),
+                            .when_some(actions.set_limit.clone(), |r, f| r.child(crate::ui::button("history-limit").outline().label("Set a limit…").on_click(move |_, _, cx| f(cx)))),
                     )
                     .child(
                         h_flex()

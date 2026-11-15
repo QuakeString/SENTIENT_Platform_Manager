@@ -6,7 +6,7 @@
 //! click on the dim layer close it; the body scrolls between a fixed title
 //! and the buttons the content draws at its bottom.
 
-use gpui_kit::component::{ActiveTheme, IconName, Sizable as _, button::{Button, ButtonVariants as _}, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex};
 use gpui_kit::*;
 
 /// What a page asks to show.
@@ -91,7 +91,7 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
                 .border_b_1()
                 .border_color(theme.border)
                 .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(modal.title.clone()))
-                .child(Button::new("modal-close").ghost().small().icon(IconName::Close).on_click(|_, window, cx| dismiss(window, cx))),
+                .child(crate::ui::button("modal-close").ghost().small().icon(IconName::Close).on_click(|_, window, cx| dismiss(window, cx))),
         )
         .child(div().id("modal-body").flex_1().min_h_0().overflow_y_scroll().p_4().child(modal.body.clone()));
     Some(
@@ -169,7 +169,7 @@ impl Render for AlertBody {
         let lower = self.a.ok.to_lowercase();
         let destructive = ["delete", "remove", "uninstall", "stop", "replace", "sign everyone out", "sign out"].iter().any(|w| lower.starts_with(w));
         let on_ok = self.a.on_ok.clone();
-        let ok = Button::new("alert-ok").label(self.a.ok.clone()).on_click(move |e, window, cx| {
+        let ok = crate::ui::button("alert-ok").label(self.a.ok.clone()).on_click(move |e, window, cx| {
             let close_it = on_ok.as_ref().is_none_or(|f| f(e, window, cx));
             if close_it {
                 close(cx);
@@ -182,7 +182,7 @@ impl Render for AlertBody {
                 h_flex()
                     .gap_2()
                     .justify_end()
-                    .child(Button::new("alert-cancel").outline().label("Cancel").on_click(|_, _, cx| close(cx)))
+                    .child(crate::ui::button("alert-cancel").outline().label("Cancel").on_click(|_, _, cx| close(cx)))
                     .child(if destructive { ok.danger() } else { ok.primary() }),
             )
     }

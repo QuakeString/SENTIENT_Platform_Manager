@@ -7,7 +7,6 @@
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex, v_flex,
-    button::Button,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -116,9 +115,9 @@ impl Render for AboutPage {
                     )
                     .child(ui::pill(&theme, state.0, state.1)),
             )
-            .child(h_flex().gap_2().flex_wrap().child(Button::new("about-notes").outline().label("What's new").on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew))))
+            .child(h_flex().gap_2().flex_wrap().child(crate::ui::button("about-notes").outline().label("What's new").on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew))))
             .child(
-                Button::new("about-check")
+                crate::ui::button("about-check")
                     .outline()
                     .label(if checking { "Checking…" } else { "Check for updates" })
                     .disabled(checking)
@@ -169,7 +168,7 @@ impl Render for AboutPage {
                 .py_1p5()
                 .child(div().w(px(110.)).flex_shrink_0().text_sm().text_color(theme.muted_foreground).child(label))
                 .child(div().flex_1().min_w_0().text_sm().font_family(theme.mono_font_family.clone()).child(path))
-                .child(Button::new(id).outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+                .child(crate::ui::button(id).outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
         };
         let places = ui::panel(&theme)
             .gap_0()

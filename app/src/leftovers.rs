@@ -9,7 +9,7 @@
 //! holding their ports and the operator had to remove services, a hidden
 //! account, a WSL machine and folders by hand.
 
-use sentient_installer_core::progress::{Progress, ProgressFn};
+use sentient_installer_core::progress::ProgressFn;
 
 /// Descriptions of what is left, empty when nothing is. Blocking.
 #[cfg(windows)]

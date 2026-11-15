@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     input::{Input, InputEvent, InputState},
     progress::Progress,
 };
@@ -174,7 +174,7 @@ impl Render for GatewayPage {
                         .child(ui::pill(&theme, tone, pill))
                         .child(div().flex_1())
                         .when_some(status.page_url.clone(), |r, url| {
-                            r.child(Button::new("gw-page").outline().label("Open local page").on_click(move |_, _, cx| ui::open_url(&url, cx)))
+                            r.child(crate::ui::button("gw-page").outline().label("Open local page").on_click(move |_, _, cx| ui::open_url(&url, cx)))
                         }),
                 )
                 .child(ui::fact(&theme, "Version", status.version.clone().unwrap_or_else(|| "unknown".into())))
@@ -204,9 +204,9 @@ impl Render for GatewayPage {
                 .child(
                     h_flex()
                         .gap_2()
-                        .child(Button::new("gw-start").outline().label("Start").disabled(busy || status.running).on_click(cx.listener(|p, _, _, cx| p.control("start", cx))))
-                        .child(Button::new("gw-stop").outline().label("Stop").disabled(busy || !status.running).on_click(cx.listener(|p, _, _, cx| p.control("stop", cx))))
-                        .child(Button::new("gw-restart").outline().label("Restart").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.control("restart", cx)))),
+                        .child(crate::ui::button("gw-start").outline().label("Start").disabled(busy || status.running).on_click(cx.listener(|p, _, _, cx| p.control("start", cx))))
+                        .child(crate::ui::button("gw-stop").outline().label("Stop").disabled(busy || !status.running).on_click(cx.listener(|p, _, _, cx| p.control("stop", cx))))
+                        .child(crate::ui::button("gw-restart").outline().label("Restart").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.control("restart", cx)))),
                 )
                 .child(match (&newer, &newest) {
                     (Some(o), _) => {
@@ -218,7 +218,7 @@ impl Render for GatewayPage {
                                     .gap_3()
                                     .items_center()
                                     .child(
-                                        Button::new("gw-update")
+                                        crate::ui::button("gw-update")
                                             .primary()
                                             .label(format!("Update to {}", o.version))
                                             .disabled(busy || !status.managed || (status.container.is_none() && o.installer.is_none()))
@@ -277,7 +277,7 @@ impl Render for GatewayPage {
                             .gap_3()
                             .items_center()
                             .child(
-                                Button::new("gw-install")
+                                crate::ui::button("gw-install")
                                     .primary()
                                     .label(label)
                                     .disabled(busy || (cfg!(windows) && o.installer.is_none()))

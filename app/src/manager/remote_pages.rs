@@ -7,7 +7,7 @@
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     menu::{DropdownMenu as _, PopupMenuItem},
     input::{InputEvent, InputState},
 };
@@ -312,7 +312,7 @@ impl RemotePages {
                 };
                 let shown = self.show_details;
                 p.child(ui::outcome(&theme, Tone::Bad, headline)).when_some(details, |p, d| {
-                    p.child(Button::new("job-details").ghost().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
+                    p.child(crate::ui::button("job-details").ghost().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
                         this.show_details = !this.show_details;
                         cx.notify();
                     })))
@@ -325,7 +325,7 @@ impl RemotePages {
         Some(
             p.child(v_flex().p_2().rounded(theme.radius).bg(theme.muted).text_size(px(13.)).font_family(theme.mono_font_family.clone()).children(log.into_iter().map(|l| div().child(l))))
                 .when(done, |p| {
-                    p.child(h_flex().justify_end().child(Button::new("job-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                    p.child(h_flex().justify_end().child(crate::ui::button("job-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
                         this.job_label = None;
                         this.job.update(cx, |j, cx| j.reset(cx));
                         cx.notify();
@@ -360,7 +360,7 @@ impl RemotePages {
                 format!("SENTIENT was found on this server ({}). Add existing lets the Platform Manager look after it. Nothing on it is changed.", det.install)
             }))
             .child(h_flex().gap_2().child(
-                Button::new("r-adopt").primary().label("Add existing SENTIENT").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Adding the existing SENTIENT", vec!["add-if-one".into()], cx))),
+                crate::ui::button("r-adopt").primary().label("Add existing SENTIENT").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Adding the existing SENTIENT", vec!["add-if-one".into()], cx))),
             ))
     }
 
@@ -399,7 +399,7 @@ impl RemotePages {
                                 .child(ui::product_logo(ui::Product::Sentient, 30.))
                                 .child(ui::pill(&theme, tone, state))
                                 .child(div().flex_1())
-                                .when(s.installed, |r| r.child(Button::new("r-open").primary().label("Open SENTIENT").on_click(move |_, _, cx| ui::open_url(&url, cx)))),
+                                .when(s.installed, |r| r.child(crate::ui::button("r-open").primary().label("Open SENTIENT").on_click(move |_, _, cx| ui::open_url(&url, cx)))),
                         )
                         .child(ui::fact(&theme, "SENTIENT version", s.sentient_version.clone()))
                         .child(ui::fact(&theme, "Database", s.database.clone()))
@@ -562,13 +562,13 @@ impl RemotePages {
             let (o2, inst_v) = (o.clone(), installed.clone());
             row = row
                 .child(
-                    Button::new("r-update")
+                    crate::ui::button("r-update")
                         .primary()
                         .label(format!("Update to {}", o.version))
                         .disabled(busy)
                         .on_click(cx.listener(move |this, _, _, cx| this.run_job("Updating SENTIENT", vec!["update".into(), "--version".into(), version.clone()], cx))),
                 )
-                .child(Button::new("r-notes").outline().label("What's new").on_click(move |_, _, cx| crate::manager::update::open_notes("SENTIENT", &inst_v, &o2, cx)));
+                .child(crate::ui::button("r-notes").outline().label("What's new").on_click(move |_, _, cx| crate::manager::update::open_notes("SENTIENT", &inst_v, &o2, cx)));
         }
         let versions: Vec<crate::online::Version> = match &self.versions {
             Read::Got(v) => v.iter().filter(|v| v.version != installed).cloned().collect(),
@@ -576,7 +576,7 @@ impl RemotePages {
         };
         let this = cx.entity().downgrade();
         row = row.child(
-            Button::new("r-other")
+            crate::ui::button("r-other")
                 .outline()
                 .label("Other version")
                 .disabled(busy || versions.is_empty())
@@ -610,7 +610,7 @@ impl RemotePages {
                     .child(channels)
                     .child(div().flex_1())
                     .child(
-                        Button::new("r-check")
+                        crate::ui::button("r-check")
                             .outline()
                             .label(if checking { "Checking…" } else { "Check for updates" })
                             .disabled(checking)
@@ -637,11 +637,11 @@ impl RemotePages {
                         .rounded(theme.radius)
                         .bg(theme.secondary)
                         .child(div().flex_1().min_w(px(220.)).text_sm().child(format!("Install SENTIENT {v} on this server instead of {installed}?")))
-                        .child(Button::new("r-pick-go").primary().label(format!("Install {v}")).disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
+                        .child(crate::ui::button("r-pick-go").primary().label(format!("Install {v}")).disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
                             this.pick = None;
                             this.run_job("Updating SENTIENT", vec!["update".into(), "--version".into(), v2.clone()], cx);
                         })))
-                        .child(Button::new("r-pick-no").ghost().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                        .child(crate::ui::button("r-pick-no").ghost().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
                             this.pick = None;
                             cx.notify();
                         }))),
@@ -667,7 +667,7 @@ impl RemotePages {
             .gap_0()
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Back up now"))
             .child(crate::manager::backup::brow_pub(&theme, "Save to", None, div().text_sm().child(b.folder.display().to_string())).border_t_0())
-            .child(h_flex().pt_2().child(Button::new("r-backup").primary().label("Back up now").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx)))));
+            .child(h_flex().pt_2().child(crate::ui::button("r-backup").primary().label("Back up now").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx)))));
         let auto = ui::panel(&theme)
             .gap_0()
             .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Automatic backup"))
@@ -748,11 +748,11 @@ impl RemotePages {
                     .border_color(theme.primary)
                     .bg(theme.accent)
                     .child(div().flex_1().text_sm().child(format!("{n} change{} to apply on {}. SENTIENT restarts when a setting needs it.", if n == 1 { "" } else { "s" }, self.inst.name)))
-                    .child(Button::new("r-set-undo").ghost().label("Undo").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::button("r-set-undo").ghost().label("Undo").on_click(cx.listener(|this, _, _, cx| {
                         this.inputs.clear();
                         cx.notify();
                     })))
-                    .child(Button::new("r-set-apply").primary().label("Apply").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.apply_settings(all.clone(), cx)))),
+                    .child(crate::ui::button("r-set-apply").primary().label("Apply").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.apply_settings(all.clone(), cx)))),
             );
         }
         // The same tabs, rows and Advanced table as this computer's
@@ -898,7 +898,7 @@ impl RemotePages {
                     .gap_2()
                     .when(!self.migrate_confirm, |r| {
                         r.child(
-                            Button::new("r-migrate")
+                            crate::ui::button("r-migrate")
                                 .primary()
                                 .label(chosen.map(|f| format!("Change to {}", crate::installation::flavor_label(f))).unwrap_or_else(|| "Change database".into()))
                                 .disabled(busy || chosen.is_none() || now.is_none())
@@ -910,7 +910,7 @@ impl RemotePages {
                     })
                     .when_some(chosen.filter(|_| self.migrate_confirm), |r, f| {
                         r.child(
-                            Button::new("r-migrate-confirm")
+                            crate::ui::button("r-migrate-confirm")
                                 .danger()
                                 .label("Stop SENTIENT and change now")
                                 .disabled(busy)
@@ -919,7 +919,7 @@ impl RemotePages {
                                     this.run_job("Moving the database", vec!["migrate".into(), f.as_str().into()], cx);
                                 })),
                         )
-                        .child(Button::new("r-migrate-no").ghost().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                        .child(crate::ui::button("r-migrate-no").ghost().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
                             this.migrate_confirm = false;
                             cx.notify();
                         })))
@@ -938,7 +938,7 @@ impl RemotePages {
             .child(div().text_sm().text_color(theme.muted_foreground).child(
                 "For a SENTIENT that does not start or a service that went missing: the services and their configuration are written again from this installation's record, and SENTIENT is started. Data and settings are kept.",
             ))
-            .child(h_flex().child(Button::new("r-repair").outline().label("Repair").disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job("Repairing", vec!["repair".into()], cx)))))
+            .child(h_flex().child(crate::ui::button("r-repair").outline().label("Repair").disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job("Repairing", vec!["repair".into()], cx)))))
     }
 
     fn gateway_page(&self, cx: &mut Context<Self>) -> Div {
@@ -968,7 +968,7 @@ impl RemotePages {
             .child(ui::fact(&theme, "Connects to", format!("{}:{}", get("host"), get("port"))))
             .child(ui::fact(&theme, "Its page", get("page")));
         let act = |id: &'static str, label: &'static str, action: &'static str| {
-            Button::new(id).outline().label(label).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.run_job("Gateway", vec!["gateway-control".into(), action.into()], cx)))
+            crate::ui::button(id).outline().label(label).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.run_job("Gateway", vec!["gateway-control".into(), action.into()], cx)))
         };
         p.child(
             h_flex()
@@ -976,7 +976,7 @@ impl RemotePages {
                 .child(act("r-gw-start", "Start", "start"))
                 .child(act("r-gw-stop", "Stop", "stop"))
                 .child(act("r-gw-restart", "Restart", "restart"))
-                .child(Button::new("r-gw-update").primary().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx)))),
+                .child(crate::ui::button("r-gw-update").primary().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx)))),
         )
     }
 
@@ -995,9 +995,9 @@ impl RemotePages {
             }))
             .child(
                 h_flex().gap_2().child(if not_set_up {
-                    Button::new("r-setup").primary().label("Set up").loading(busy).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.set_up(cx)))
+                    crate::ui::button("r-setup").primary().label("Set up").loading(busy).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.set_up(cx)))
                 } else {
-                    Button::new("r-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
+                    crate::ui::button("r-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
                         this.ready = Read::Loading;
                         this.reload(cx);
                     }))
@@ -1080,7 +1080,7 @@ impl Render for RemotePages {
                     .child(div().size(px(10.)).rounded_full().bg(rgb(remote::parse_hex(&self.inst.color).unwrap_or(0x187074))))
                     .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(format!("{} · {}", self.inst.name, self.inst.host)))
                     .child(div().flex_1())
-                    .when(self.kind != Kind::Logs, |r| r.child(Button::new("r-reload").ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(|this, _, _, cx| this.reload(cx))))),
+                    .when(self.kind != Kind::Logs, |r| r.child(crate::ui::button("r-reload").ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(|this, _, _, cx| this.reload(cx))))),
             )
             .children(job)
             .child(body)

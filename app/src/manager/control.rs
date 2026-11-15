@@ -8,7 +8,7 @@
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex, v_flex,
-    button::{Button, ButtonVariants as _},
+    button::ButtonVariants as _,
     checkbox::Checkbox,
     input::{Input, InputState},
 };
@@ -352,7 +352,7 @@ impl Render for ControlPage {
                 })
                 .child(
                     h_flex().child(
-                        Button::new("apply-signin")
+                        crate::ui::button("apply-signin")
                             .outline()
                             .label("Apply")
                             .disabled(sbusy || !changed)
@@ -386,7 +386,7 @@ impl Render for ControlPage {
                     .when(self.start_on, |panel| panel.child(div().pl_6().child(ui::start_delay_row(&theme, &self.start_delay))))
                     .child(
                         h_flex().child(
-                            Button::new("apply-start")
+                            crate::ui::button("apply-start")
                                 .outline()
                                 .label("Apply")
                                 .disabled(busy || !changed)
@@ -427,7 +427,7 @@ pub(crate) fn control_row(
 ) -> Div {
     h_flex()
         .gap_2()
-        .child(Button::new(SharedString::from(format!("{id}start"))).primary().label("Start").disabled(busy).on_click(move |_, w, cx| start(w, cx)))
-        .child(Button::new(SharedString::from(format!("{id}restart"))).outline().label("Restart").disabled(busy).on_click(move |_, w, cx| restart(w, cx)))
-        .child(Button::new(SharedString::from(format!("{id}stop"))).outline().label("Stop").disabled(busy).on_click(move |_, w, cx| stop(w, cx)))
+        .child(crate::ui::button(SharedString::from(format!("{id}start"))).primary().label("Start").disabled(busy).on_click(move |_, w, cx| start(w, cx)))
+        .child(crate::ui::button(SharedString::from(format!("{id}restart"))).outline().label("Restart").disabled(busy).on_click(move |_, w, cx| restart(w, cx)))
+        .child(crate::ui::button(SharedString::from(format!("{id}stop"))).outline().label("Stop").disabled(busy).on_click(move |_, w, cx| stop(w, cx)))
 }
