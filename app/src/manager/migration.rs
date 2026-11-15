@@ -3,7 +3,7 @@
 //! Migration: change the database type (crate::migration does the work).
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     progress::Progress,
 };
@@ -133,7 +133,7 @@ impl MigrationPage {
                 kept::KeptKind::ClickhouseDatabase => "and the ClickHouse history in it",
             }
         );
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             let item = item.clone();
             dialog.title("Remove for good?").description(text.clone()).confirm().ok_text("Remove").on_ok(move |_, _, cx| {

@@ -65,6 +65,8 @@ pub struct InstancesPage {
     local: Option<InstallationRecord>,
     list: Vec<Instance>,
     statuses: HashMap<String, Result<RemoteStatus, String>>,
+    /// Read again once the refresh under way ends.
+    refresh_again: HashSet<String>,
     refreshing: HashSet<String>,
     form: Option<Form>,
     job: Entity<Job>,
@@ -97,6 +99,13 @@ impl InstancesPage {
             if !job.read(cx).is_running() {
                 if let Some((id, _)) = this.job_for.clone() {
                     this.refresh(&id, cx);
+                    // The dialog's title says how it ended.
+                    let name = this.instance(&id).map(|i| i.name).unwrap_or_default();
+                    match job.read(cx).state() {
+                        JobState::Done(_) if this.job_dialog => crate::modal::set_title(format!("Finished on {name}"), cx),
+                        JobState::Failed(_) if this.job_dialog => crate::modal::set_title(format!("Did not finish on {name}"), cx),
+                        _ => {}
+                    }
                 }
             }
             cx.notify();
@@ -106,6 +115,7 @@ impl InstancesPage {
             list: remote::load(),
             statuses: HashMap::new(),
             refreshing: HashSet::new(),
+            refresh_again: HashSet::new(),
             form: None,
             job,
             job_for: None,
@@ -155,6 +165,9 @@ impl InstancesPage {
     fn refresh(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(inst) = self.instance(id) else { return };
         if !self.refreshing.insert(id.to_string()) {
+            // One is under way and may have started before a job changed the
+            // server: read again when it ends.
+            self.refresh_again.insert(id.to_string());
             return;
         }
         let id = id.to_string();
@@ -164,7 +177,11 @@ impl InstancesPage {
             let got = cx.background_executor().spawn(async move { remote::status(&i) }).await;
             this.update(cx, |page, cx| {
                 page.refreshing.remove(&id);
-                page.statuses.insert(id, got);
+                let again = page.refresh_again.remove(&id);
+                page.statuses.insert(id.clone(), got);
+                if again {
+                    page.refresh(&id, cx);
+                }
                 cx.notify();
             })
             .ok();
@@ -415,8 +432,11 @@ impl InstancesPage {
             job.start(
                 move |sink| {
                     remote::deploy(&inst, &sink)?;
-                    sink(sentient_installer_core::progress::Progress::Done { message: format!("The Platform Manager is set up on {}.", inst.name) });
-                    Ok(())
+                    // A lone SENTIENT already there is added in the same job
+                    // (the agent says what it found and did).
+                    sink(sentient_installer_core::progress::Progress::Step { name: "Looking for SENTIENT on the server".into() });
+                    let job_id = remote::start_job(&inst, &["add-if-one"])?;
+                    remote::follow(&inst, &job_id, &sink)
                 },
                 cx,
             )
@@ -944,12 +964,25 @@ impl InstancesPage {
     }
 
     fn job_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (_, label) = self.job_for.clone()?;
+        let (id, label) = self.job_for.clone()?;
         let theme = cx.theme().clone();
         let job = self.job.read(cx);
         let log: Vec<SharedString> = job.log().iter().rev().take(14).rev().cloned().collect();
+        let inst = self.instance(&id);
+        // Which server this is about: its colour dot, name and address, as on
+        // the page headers.
+        let mut p = v_flex().gap_3().when_some(inst.clone(), |p, i| {
+            p.child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .text_sm()
+                    .child(div().size(px(10.)).rounded_full().bg(rgb(remote::parse_hex(&i.color).unwrap_or(0x187074))))
+                    .child(div().font_weight(FontWeight::MEDIUM).child(i.name.clone()))
+                    .child(div().text_color(theme.muted_foreground).child(i.host.clone())),
+            )
+        });
         let _ = &label;
-        let mut p = v_flex().gap_3();
         p = match job.state() {
             JobState::Running => p.child(div().text_sm().child(job.step_with_time())),
             JobState::Done(m) => p.child(ui::outcome(&theme, Tone::Good, m.clone())),
@@ -996,6 +1029,15 @@ impl InstancesPage {
                                     Some(Retry::Job(id, label, args)) => this.run_job(&id, label, args, cx),
                                     None => {}
                                 }
+                            })))
+                        })
+                        .when(!failed, |r| {
+                            let id = id.clone();
+                            r.child(Button::new("job-open").primary().label("Open").on_click(cx.listener(move |this, _, _, cx| {
+                                this.job_for = None;
+                                this.job.update(cx, |j, cx| j.reset(cx));
+                                cx.emit(OpenInstance(Some(id.clone())));
+                                cx.notify();
                             })))
                         })
                         .child(Button::new("job-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {

@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     input::{Input, InputEvent, InputState},
     progress::Progress,
@@ -320,7 +320,7 @@ impl SettingsPage {
 
     fn confirm_sign_out_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             dialog
                 .title("Sign everyone out?")
@@ -465,7 +465,7 @@ impl SettingsPage {
         let text = format!(
             "{changed} setting(s) change. {restarts}, so SENTIENT is unavailable for a minute or so. If it does not start with the new settings, the previous ones are put back."
         );
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             let record = record.clone();
             let values = values.clone();

@@ -70,6 +70,8 @@ pub struct RemotePages {
     offer: Read<Option<crate::updates::Offer>>,
     /// The versions "Other version" lists.
     versions: Read<Vec<crate::online::Version>>,
+    /// "add-if-one" ran once for this instance.
+    auto_add_tried: bool,
     /// Platform settings: the open tab (crate::manager::settings::TAB_TITLES).
     settings_tab: usize,
     /// Logs: where Export saved the text, or why it could not.
@@ -128,6 +130,7 @@ impl RemotePages {
             file_checks: Default::default(),
             log_note: None,
             settings_tab: 0,
+            auto_add_tried: false,
             updates,
             filter,
             follow: true,
@@ -161,6 +164,11 @@ impl RemotePages {
     fn reload(&mut self, cx: &mut Context<Self>) {
         let inst = self.inst.clone();
         self.fetch(cx, move || remote::ready(&inst), |p, r| p.ready = r);
+        // Every page needs to know whether a SENTIENT is added there.
+        if !matches!(self.kind, Kind::Status | Kind::Control | Kind::Update | Kind::Migration | Kind::Repair) {
+            let inst = self.inst.clone();
+            self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r);
+        }
         let inst = self.inst.clone();
         match self.kind {
             Kind::Status | Kind::Control => {
@@ -338,6 +346,24 @@ impl RemotePages {
         p
     }
 
+    /// No SENTIENT added on the server yet. Not an error: what was found and
+    /// the one action. Adding writes only the Platform Manager's own record.
+    fn not_added_panel(&self, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+        let busy = self.job.read(cx).is_running();
+        let det = self.inst.detected.clone().unwrap_or_default();
+        ui::panel(&theme)
+            .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Sentient, 30.)).child(ui::pill(&theme, Tone::Neutral, "Not added yet")))
+            .child(div().text_sm().text_color(theme.muted_foreground).child(if det.install.is_empty() {
+                "The Platform Manager is set up on this server but does not look after a SENTIENT there yet. If SENTIENT already runs there (in Docker, or installed some other way), Add existing finds it. Nothing on it is changed.".to_string()
+            } else {
+                format!("SENTIENT was found on this server ({}). Add existing lets the Platform Manager look after it. Nothing on it is changed.", det.install)
+            }))
+            .child(h_flex().gap_2().child(
+                Button::new("r-adopt").primary().label("Add existing SENTIENT").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Adding the existing SENTIENT", vec!["add-if-one".into()], cx))),
+            ))
+    }
+
     fn status_page(&self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let mut col = v_flex().gap_4();
@@ -345,23 +371,9 @@ impl RemotePages {
             Read::Loading => col = col.child(Self::loading(&theme, "the state")),
             Read::Failed(e) => col = col.child(Self::failed(&theme, e)),
             Read::Got(s) if !s.installed => {
-                // SENTIENT may run there already, started some other way
-                // (Docker compose, an older installer): the Platform Manager
-                // there finds it and takes it over without changing it.
-                let busy = self.job.read(cx).is_running();
-                let det = self.inst.detected.clone().unwrap_or_default();
-                col = col.child(
-                    ui::panel(&theme)
-                        .child(div().font_weight(FontWeight::MEDIUM).child("The Platform Manager does not look after a SENTIENT here yet"))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(if det.install.is_empty() {
-                            "If SENTIENT already runs on this server (in Docker, or installed some other way), Add existing finds it and takes it over: its data, settings and containers stay as they are.".to_string()
-                        } else {
-                            format!("SENTIENT was found on this server ({}). Add existing takes it over: its data, settings and containers stay as they are.", det.install)
-                        }))
-                        .child(h_flex().gap_2().child(
-                            Button::new("r-adopt").primary().label("Add existing SENTIENT").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Adding the existing SENTIENT", vec!["add-existing".into()], cx))),
-                        )),
-                );
+                // Nothing added there yet: only the calm panel, no empty
+                // Services or Database panels.
+                return col.child(self.not_added_panel(cx));
             }
             Read::Got(s) => {
                 let det = self.inst.detected.clone().unwrap_or_default();
@@ -1018,11 +1030,21 @@ impl Render for RemotePages {
             Kind::Repair => ("Repair and uninstall", "Write the services and their configuration again on this server."),
             Kind::Gateway => ("Gateway", "The Sentient Gateway on this server."),
         };
+        // Set up earlier but nothing added: add a lone SENTIENT found there,
+        // once (it changes nothing on the server; the agent asks when the
+        // choice is real).
+        if !self.auto_add_tried && matches!(&self.ready, Read::Got(())) && matches!(&self.status, Read::Got(s) if !s.installed) && !self.job.read(cx).is_running() {
+            self.auto_add_tried = true;
+            self.run_job("Looking for SENTIENT on the server", vec!["add-if-one".into()], cx);
+        }
         let gate: Option<Div> = match &self.ready {
             Read::Loading => Some(Self::loading(&theme, "the server's state")),
             // While Set up runs or shows its result, only its panel.
             Read::Failed(_) if self.job_label.is_some() => Some(div()),
             Read::Failed(e) => Some(self.gate_panel(e.clone(), cx)),
+            Read::Got(()) if self.kind != Kind::Status && self.kind != Kind::Gateway && matches!(&self.status, Read::Got(s) if !s.installed) => {
+                Some(if self.job_label.is_some() { div() } else { self.not_added_panel(cx) })
+            }
             Read::Got(()) => None,
         };
         let body = if let Some(g) = gate { g } else { match self.kind {

@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -169,7 +169,7 @@ impl UpdatePage {
              that check refuses and nothing is changed: {installed} keeps running. Going back is possible only between \
              versions with the same database."
         );
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             let version = version.clone();
             dialog
@@ -245,7 +245,7 @@ impl UpdatePage {
             point.describe(),
             if clickhouse { " The telemetry history in ClickHouse is not rolled back: it keeps what was recorded since the update." } else { "" }
         );
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             dialog.title("Roll back the last update?").description(text.clone()).confirm().ok_text("Roll back").on_ok(move |_, _, cx| {
                 this.update(cx, |page, cx| page.run_rollback(cx)).ok();

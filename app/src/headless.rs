@@ -186,6 +186,32 @@ pub fn run(args: &[String]) -> i32 {
             }
         };
     }
+    // After Set up: add the SENTIENT found here when there is exactly one
+    // and adding changes nothing on it (only the Platform Manager's own
+    // record is written). Otherwise leave the choice to the operator.
+    // Always ends with one Done line saying what happened.
+    if job == "add-if-one" {
+        let sink = if json { json_printer() } else { printer() };
+        let found = crate::adopt::find();
+        let message = match found.as_slice() {
+            [] => "No SENTIENT was found on this server yet.".to_string(),
+            [c] if c.problem.is_none() && !c.sets_admin_password => match crate::adopt::adopt_as_needed(c, None, sink.clone()) {
+                Ok(()) => format!(
+                    "SENTIENT {}{} was found and added. Nothing on it was changed.",
+                    c.record.sentient_version,
+                    if c.kind.is_empty() { String::new() } else { format!(" ({})", c.kind) }
+                ),
+                Err(e) => {
+                    sink(Progress::Error { message: format!("SENTIENT was found but could not be added: {e}") });
+                    return 1;
+                }
+            },
+            [_] => "SENTIENT was found on this server. Adding it needs your choice: open Status to see it.".to_string(),
+            many => format!("{} SENTIENT instances were found on this server. Open Status to choose one.", many.len()),
+        };
+        sink(Progress::Done { message });
+        return 0;
+    }
     if job == "find-existing" || job == "add-existing" {
         let sink = if json { json_printer() } else { printer() };
         let found = crate::adopt::find();

@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     input::{InputEvent, InputState},
 };
@@ -899,7 +899,7 @@ impl Installer {
 
     fn confirm_remove_leftovers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             dialog
                 .title("Remove the earlier install?")
@@ -915,7 +915,7 @@ impl Installer {
 
     fn confirm_cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let installing = self.step == INSTALL && self.install.read(cx).is_running();
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             dialog
                 .title("Cancel setup?")
                 .description(if installing {
@@ -1074,8 +1074,11 @@ impl Render for Installer {
         let footer = self.footer(cx);
         let page = self.page(window, cx);
         let theme = cx.theme().clone();
+        // The shared dialogs, centred right of the steps (crate::modal).
+        let layer = crate::modal::layer(window, cx, 224., 0.);
         h_flex()
             .size_full()
+            .relative()
             .bg(theme.background)
             .text_color(theme.foreground)
             .child(nav)
@@ -1105,6 +1108,7 @@ impl Render for Installer {
                     )
                     .child(footer),
             )
+            .children(layer)
             .into_any_element()
     }
 }

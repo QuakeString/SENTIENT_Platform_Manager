@@ -56,7 +56,7 @@ pub fn install_sentient_from_package(window: &mut Window, cx: &mut App) {
 
 /// Confirm, then remove the Platform Manager and close it.
 pub fn remove_manager(window: &mut Window, cx: &mut App) {
-    window.open_alert_dialog(cx, |dialog, _, _| {
+    crate::modal::alert(window, cx, |dialog, _, _| {
         dialog
             .title("Remove the Platform Manager?")
             .description("Its shortcuts and the program are removed from this computer. SENTIENT is not installed, so nothing else changes.")

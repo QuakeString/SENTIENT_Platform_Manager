@@ -518,6 +518,9 @@ pub fn ready(inst: &Instance) -> Result<(), String> {
 }
 
 /// What [`status`] says before the Platform Manager is on the server.
+/// The Platform Manager there has no SENTIENT added yet: nothing to report.
+pub const NOT_ADDED: &str = "No SENTIENT is added on this server yet.";
+
 pub const NOT_SET_UP: &str = "The Platform Manager is not on this server yet. Set it up to see the server's state and work on it.";
 
 /// The server's state, from its own Platform Manager (`--job status-json`).
@@ -591,7 +594,11 @@ pub struct RemoteBackups {
 /// the one JSON line it prints.
 fn read_json<T: serde::de::DeserializeOwned>(inst: &Instance, job: &str) -> Result<T, String> {
     let out = spm_job(inst, job)?;
-    let line = out.lines().rev().find(|l| { let t = l.trim_start(); t.starts_with('{') || t.starts_with('[') }).ok_or("The server's Platform Manager gave no answer.")?;
+    // "null": nothing to report yet, no SENTIENT added there. Not a failure.
+    if out.lines().any(|l| l.trim() == "null") {
+        return Err(NOT_ADDED.into());
+    }
+    let line = out.lines().rev().find(|l| { let t = l.trim_start(); t.starts_with('{') || t.starts_with('[') }).ok_or("The server's Platform Manager gave no answer. Try again; if it stays, Show details on the job, or run Set up again.")?;
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 
@@ -1137,6 +1144,23 @@ mod tests {
         assert!(running_job(&inst).is_none());
         let e = logs(&inst, 10).unwrap_err();
         eprintln!("logs without SENTIENT: {e}");
+        // Nothing added: a calm "not added", not a failure.
+        assert_eq!(services(&inst).unwrap_err(), NOT_ADDED);
+        assert_eq!(backups(&inst).unwrap_err(), NOT_ADDED);
+        assert!(!status(&inst).unwrap().installed);
+        // After Set up: no SENTIENT there, so nothing is added and it says so.
+        let id = start_job(&inst, &["add-if-one"]).unwrap();
+        let said = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let s2 = said.clone();
+        let collect: ProgressFn = std::sync::Arc::new(move |p| {
+            if let Progress::Done { message } = p {
+                s2.lock().unwrap().push(message);
+            }
+        });
+        follow(&inst, &id, &collect).unwrap();
+        let said = said.lock().unwrap().join(" ");
+        eprintln!("add-if-one: {said}");
+        assert!(said.contains("No SENTIENT was found"), "{said}");
         let _ = std::fs::remove_file(known_hosts());
     }
 

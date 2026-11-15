@@ -5,7 +5,7 @@
 //! from its own compose file can be taken over here (crate::adopt).
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, WindowExt as _, h_flex,
+    ActiveTheme, Disableable as _, h_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     progress::Progress,
@@ -99,7 +99,7 @@ impl RepairPage {
                 "Delete everything",
             ),
         };
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             dialog.title(title).description(text).confirm().ok_text(ok).on_ok(move |_, _, cx| {
                 this.update(cx, |page, cx| page.start(action, cx)).ok();

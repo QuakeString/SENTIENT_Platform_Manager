@@ -7,7 +7,7 @@
 //! signs in by itself after a restart (autologin).
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     input::{Input, InputState},
@@ -402,7 +402,7 @@ impl Render for ControlPage {
 /// Stopping takes every device connection down, so it is confirmed. Shared
 /// with a remote server's Control.
 pub(crate) fn confirm_stop(window: &mut Window, cx: &mut App, stop: std::rc::Rc<dyn Fn(&mut App)>) {
-    window.open_alert_dialog(cx, move |dialog, _, _| {
+    crate::modal::alert(window, cx, move |dialog, _, _| {
         let stop = stop.clone();
         dialog
             .title("Stop SENTIENT?")

@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     input::{Input, InputState},
@@ -478,7 +478,7 @@ impl BackupPage {
     fn confirm_delete(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             let path = path.clone();
             dialog.title(format!("Delete {name}?")).description("The backup file (all its parts) and its .sha256 are deleted. This cannot be undone.").confirm().ok_text("Delete").on_ok(move |_, _, cx| {
@@ -623,7 +623,7 @@ impl BackupPage {
     fn confirm_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
         let text = "Users, passwords, devices and dashboards will be those of the backup. Everything on this instance now is replaced. SENTIENT stops for about a minute while it switches.";
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             dialog.title("Replace this instance's data?").description(text).confirm().ok_text("Replace").on_ok(move |_, _, cx| {
                 this.update(cx, |page, cx| page.run_replace(cx)).ok();

@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -282,7 +282,7 @@ impl StatusPage {
                 ""
             }
         );
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             let candidate = candidate.clone();
             dialog.title("Add this existing instance?").description(text.clone()).confirm().ok_text("Add instance").on_ok(move |_, _, cx| {

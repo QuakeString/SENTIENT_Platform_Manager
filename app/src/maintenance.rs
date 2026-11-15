@@ -20,7 +20,7 @@
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Icon, WindowExt as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, Icon, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     progress::Progress as ProgressBar,
@@ -242,7 +242,7 @@ impl Maintenance {
         }
         let this = cx.entity().downgrade();
         let keep = self.keep_data;
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             let (title, text, ok) = match action {
                 Action::Repair => (
@@ -833,7 +833,16 @@ fn capitalise(s: &str) -> String {
 }
 
 impl Render for Maintenance {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The shared dialogs over the whole window (crate::modal).
+        let layer = crate::modal::layer(window, cx, 0., 0.);
+        let body = self.body(cx);
+        div().size_full().relative().child(body).children(layer)
+    }
+}
+
+impl Maintenance {
+    fn body(&mut self, cx: &mut Context<Self>) -> Stateful<Div> {
         let theme = cx.theme().clone();
         let page = v_flex().id("maintenance").size_full().overflow_y_scroll().p_8().gap_4().bg(theme.muted).text_color(theme.foreground);
 
