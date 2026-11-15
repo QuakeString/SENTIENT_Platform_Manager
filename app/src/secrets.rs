@@ -159,6 +159,26 @@ pub fn forget(secret: Secret) {
 #[cfg(not(windows))]
 pub fn forget(_: Secret) {}
 
+/// A secret kept under its own name (a remote instance's passphrase or
+/// password, crate::remote), sealed the same way.
+#[cfg(windows)]
+pub fn save_named(name: &str, value: &str) -> Result<(), String> {
+    let dir = store::ensure_dir().map_err(|e| format!("save {name}: {e}"))?;
+    let sealed = store::protect(value.as_bytes()).map_err(|e| format!("save {name}: {e}"))?;
+    std::fs::write(dir.join(format!("{name}.bin")), sealed).map_err(|e| format!("save {name}: {e}"))
+}
+
+#[cfg(windows)]
+pub fn get_named(name: &str) -> Option<String> {
+    let sealed = std::fs::read(store::dir().join(format!("{name}.bin"))).ok()?;
+    String::from_utf8(store::unprotect(&sealed)?).ok()
+}
+
+#[cfg(windows)]
+pub fn forget_named(name: &str) {
+    let _ = std::fs::remove_file(store::dir().join(format!("{name}.bin")));
+}
+
 #[cfg(windows)]
 pub fn forget_all() {
     for secret in ALL {
