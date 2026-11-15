@@ -1555,6 +1555,20 @@ mod tests {
         let _ = std::fs::remove_file(known_hosts());
     }
 
+    /// The plan the agent prints (headless takeover-plan) reads back here
+    /// (crate::remote::takeover_plan), files with their found flags.
+    #[test]
+    fn takeover_plan_reads_back() {
+        use sentient_installer_core::distro::adopt::TakeOverPlan;
+        let p = TakeOverPlan { project: "p".into(), files: vec![("/a/compose.yml".into(), false)], env_files: vec![("/a/.env".into(), true)], loopback_port: Some(15432), ..Default::default() };
+        let out = format!("some log line\n{}\n", serde_json::to_string(&p).unwrap());
+        let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).unwrap();
+        let back: TakeOverPlan = serde_json::from_str(line).unwrap();
+        assert_eq!(back.files, p.files);
+        assert_eq!(back.env_files, p.env_files);
+        assert_eq!(back.loopback_port, Some(15432));
+    }
+
     #[test]
     fn tells_what_sudo_allows() {
         assert_eq!(classify_admin("GROUPS ops sudo\nADMIN_OK\n", "", true), Admin::Yes);
