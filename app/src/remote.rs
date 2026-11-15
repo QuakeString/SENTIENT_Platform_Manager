@@ -1658,6 +1658,7 @@ mod tests {
         // The update fails: the reason, nothing asked again.
         let e = after_agent_update(|| Err::<&str, _>(AGENT_OLD.to_string()), || Err("ops needs administrator rights on the server: sudo asks for a password.".into())).unwrap_err();
         assert!(e.contains("could not be updated first") && e.contains("needs administrator rights"), "{e}");
+        #[cfg(feature = "gui")]
         assert!(crate::manager::remote_pages::needs_sudo_password(&e));
         // Another failure passes through untouched.
         assert_eq!(after_agent_update(|| Err::<&str, _>("ssh: timeout".into()), || panic!()), Err("ssh: timeout".to_string()));
