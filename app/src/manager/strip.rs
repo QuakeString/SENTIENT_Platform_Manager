@@ -221,7 +221,7 @@ impl Strip {
 fn open_details(job: Entity<Job>, label: Option<SharedString>, cx: &mut App) {
     let title = label.clone().unwrap_or_else(|| "Details".into());
     let view = cx.new(|cx| JobDetails::new(job, cx));
-    crate::modal::open(crate::modal::Modal { title, body: view.into(), width: 760., on_close: None }, cx);
+    crate::modal::open(crate::modal::Modal { title, body: view.into(), width: 760., icon: None, on_close: None }, cx);
 }
 
 impl Strip {

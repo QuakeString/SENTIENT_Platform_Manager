@@ -975,7 +975,7 @@ pub(crate) fn open_notes(product_name: &'static str, installed: &str, offer: &cr
     let fallback = offer.notes.clone();
     let view = cx.new(|_| NotesDialog { intro, notes, fallback });
     crate::modal::open(
-        crate::modal::Modal { title: format!("What's new in {product_name} {}", offer.version).into(), body: view.into(), width: 680., on_close: None },
+        crate::modal::Modal { title: format!("What's new in {product_name} {}", offer.version).into(), body: view.into(), width: 680., icon: None, on_close: None },
         cx,
     );
 }

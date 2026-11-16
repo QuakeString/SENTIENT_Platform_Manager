@@ -500,7 +500,7 @@ impl InstancesPage {
         let Some(inst) = self.instance(id) else { return };
         let title = format!("Logs on {}", inst.name);
         let view = cx.new(|cx| crate::manager::logs::LogView::remote(inst, window, cx));
-        crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 1000., on_close: None }, cx);
+        crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 1000., icon: None, on_close: None }, cx);
     }
 
     // -- rendering ----------------------------------------------------------
@@ -1041,6 +1041,7 @@ impl InstancesPage {
                     title: title.into(),
                     body: slot.into(),
                     width: FORM_DIALOG_W,
+                    icon: None,
                     on_close: Some(std::rc::Rc::new(move |_, cx| {
                         p2.update(cx, |p, cx| {
                             p.form = None;
@@ -1065,6 +1066,7 @@ impl InstancesPage {
                         title: label,
                         body: slot.into(),
                         width: 560.,
+                        icon: None,
                         on_close: Some(std::rc::Rc::new(move |_, cx| {
                             p2.update(cx, |p, cx| {
                                 p.job_dialog = false;

@@ -8,6 +8,7 @@
 
 use gpui_kit::component::{ActiveTheme, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex};
 use gpui_kit::*;
+use gpui_kit::prelude::FluentBuilder as _;
 
 /// What a page asks to show.
 #[derive(Clone)]
@@ -15,6 +16,8 @@ pub struct Modal {
     pub title: SharedString,
     pub body: AnyView,
     pub width: f32,
+    /// An icon before the title (the mockup's dialogs).
+    pub icon: Option<gpui_kit::component::Icon>,
     /// Called once when it closes by Escape, the close button or the dim layer.
     pub on_close: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>,
 }
@@ -99,6 +102,8 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
                 .items_center()
                 .border_b_1()
                 .border_color(theme.border)
+                .gap_2()
+                .when_some(modal.icon.clone(), |r, i| r.child(i.size_4().text_color(theme.muted_foreground)))
                 .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(modal.title.clone()))
                 .child(crate::ui::button("modal-close").ghost().small().icon(IconName::Close).on_click(|_, window, cx| dismiss(window, cx))),
         )
@@ -178,7 +183,7 @@ pub fn alert(window: &mut Window, cx: &mut App, build: impl FnOnce(Alert, &mut W
     let a = build(Alert { title: "".into(), text: "".into(), ok: "OK".into(), on_ok: None }, window, cx);
     let title = a.title.clone();
     let view = cx.new(|_| AlertBody { a });
-    open(Modal { title, body: view.into(), width: 480., on_close: None }, cx);
+    open(Modal { title, body: view.into(), width: 480., icon: None, on_close: None }, cx);
 }
 
 struct AlertBody {

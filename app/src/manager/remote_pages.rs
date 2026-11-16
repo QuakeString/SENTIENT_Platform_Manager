@@ -6,7 +6,7 @@
 //! menu chooses which page it shows.
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, Sizable as _, h_flex, v_flex,
     button::ButtonVariants as _,
     menu::{DropdownMenu as _, PopupMenuItem},
     input::{Input, InputEvent, InputState},
@@ -14,7 +14,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::dbstatus::{DbStatus, bytes_label};
+use crate::dbstatus::DbStatus;
 use crate::jobs::{Job, JobState};
 use crate::remote::{self, Instance, RemoteBackups, RemoteService, RemoteStatus};
 use crate::ui::{self, Tone};
@@ -120,7 +120,7 @@ fn ask_sudo_password_now(inst: Instance, then: std::rc::Rc<dyn Fn(&mut App)>, cx
     let _ = handle.update(cx, |_, window, cx| {
         let input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("sudo password"));
         let view = cx.new(|_| SudoPrompt { inst, input, then });
-        crate::modal::open(crate::modal::Modal { title: "Administrator password needed".into(), body: view.into(), width: 480., on_close: None }, cx);
+        crate::modal::open(crate::modal::Modal { title: "Administrator password needed".into(), body: view.into(), width: 480., icon: None, on_close: None }, cx);
     });
 }
 
@@ -590,7 +590,14 @@ impl RemotePages {
 
     /// A section's title with its small save's outcome beside it.
     fn section_title(&self, theme: &gpui_kit::component::Theme, title: &'static str, section: &'static str, cx: &mut Context<Self>) -> Div {
-        let outcome: Option<AnyElement> = match &self.saved {
+        let outcome = self.saved_note(theme, section, cx);
+        h_flex().gap_3().items_center().min_h(px(28.)).child(div().font_weight(FontWeight::MEDIUM).child(title)).children(outcome)
+    }
+
+    /// "Saved" after a small save of `section` (it fades in), or why not
+    /// with Retry.
+    fn saved_note(&self, theme: &gpui_kit::component::Theme, section: &'static str, cx: &mut Context<Self>) -> Option<AnyElement> {
+        match &self.saved {
             Some((s, Ok(()), _)) if *s == section => Some(
                 h_flex()
                     .gap_1()
@@ -616,8 +623,7 @@ impl RemotePages {
                 )
             }
             _ => None,
-        };
-        h_flex().gap_3().items_center().min_h(px(28.)).child(div().font_weight(FontWeight::MEDIUM).child(title)).children(outcome)
+        }
     }
 
     fn run_job(&mut self, label: impl Into<String>, args: Vec<String>, cx: &mut Context<Self>) {
@@ -1184,69 +1190,104 @@ impl RemotePages {
         });
     }
 
+    /// B2–B4: the folder chooser on the server; the choice is saved there
+    /// (the backups in the old folder moved along or left).
+    fn open_folder_chooser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Read::Got(b) = &self.backups else { return };
+        let here: Vec<&crate::backups::Entry> = b.list.iter().filter(|e| !e.old_folder).collect();
+        let this = cx.entity().downgrade();
+        crate::manager::folder_chooser::open(
+            crate::manager::folder_chooser::Opening {
+                target: crate::manager::folder_chooser::Target::Remote(self.inst.clone()),
+                on: self.inst.name.clone(),
+                current: b.folder.clone(),
+                here: (here.len(), here.iter().map(|e| e.bytes).sum()),
+                keep: b.keep,
+                full_bytes: b.list.first().map(|e| e.bytes),
+                done: std::rc::Rc::new(move |dir, move_them, cx| {
+                    let args = vec!["backup-folder".into(), dir.display().to_string(), if move_them { "move" } else { "leave" }.into()];
+                    this.update(cx, |p, cx| p.run_quiet("folder", args, cx)).ok();
+                }),
+            },
+            window,
+            cx,
+        );
+    }
+
     fn backup_page(&self, cx: &mut Context<Self>) -> Div {
+        use crate::manager::backup as bk;
         let theme = cx.theme().clone();
         // A small save under way keeps the controls where they are, off.
         let busy = self.job.read(cx).is_running() || self.saving.is_some();
-        // The same panels as this computer's Backup: "Back up now", the
-        // daily backup, then the list. Rows the server cannot change from
-        // here yet are left out.
         let b = match &self.backups {
             Read::Loading => return self.skeleton(&theme),
             Read::Failed(e) => return Self::failed(&theme, e),
             Read::Got(b) => b.clone(),
         };
-        let now = ui::panel(&theme)
-            .gap_0()
-            .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Back up now"))
-            .child(crate::manager::backup::brow_pub(&theme, "Save to", None, div().text_sm().child(b.folder.display().to_string())))
-            .child(h_flex().pt_2().child(crate::ui::button("r-backup").primary().label("Back up now").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx)))));
-        // The same rows as this computer's; a change is saved on the server at once.
+        // B1: the Backup card. A change is saved on the server at once.
         let on = b.daily_at.is_some();
-        let time = b.daily_at.clone().unwrap_or_else(|| "23:30".into());
-        let include = match b.preset {
-            crate::backups::Preset::Everything => "everything",
-            crate::backups::Preset::Configuration => "configuration",
+        let time = b.daily_at.clone().unwrap_or_else(|| "02:00".into());
+        let include: &'static str = match (b.preset, b.history) {
+            (crate::backups::Preset::Configuration, _) => "configuration",
+            (_, crate::backups::History::LastDays(_)) => "last90",
+            _ => "everything",
         };
         let save = |at: String, keep: u32, include: &'static str| -> Vec<String> { vec!["backup-auto".into(), at, keep.to_string(), include.into()] };
         let keep = b.keep;
         let this = cx.entity().downgrade();
-        let auto = ui::panel(&theme)
-            .gap_0()
-            .child(div().pb_1().child(self.section_title(&theme, "Automatic backup", "auto", cx)))
-            .child(crate::manager::backup::brow_pub(&theme, "Back up every day", Some("A backup every day at this time, on the server's clock."), {
-                let (t1, this1) = (time.clone(), this.clone());
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(gpui_kit::component::switch::Switch::new("r-auto-on").checked(on).disabled(busy).on_click(cx.listener(move |this, v: &bool, _, cx| {
-                        let at = if *v { t1.clone() } else { "off".into() };
-                        this.run_quiet("auto", save(at, keep, include), cx);
-                    })))
-                    .child(crate::ui::button("r-auto-time").outline().disabled(!on || busy).label(time.clone()).icon(gpui_kit::component::IconName::ChevronDown).dropdown_menu(move |menu, _, _| {
-                        let mut menu = menu;
-                        for h in 0..24 {
-                            for m in [0, 30] {
-                                let t = format!("{h:02}:{m:02}");
-                                let (this, t2) = (this1.clone(), t.clone());
-                                menu = menu.item(PopupMenuItem::new(t).on_click(move |_, _, cx| {
-                                    this.update(cx, |p, cx| p.run_quiet("auto", save(t2.clone(), keep, include), cx)).ok();
-                                }));
+
+        let folder_row = bk::card_row(
+            &theme,
+            "Backup folder",
+            None,
+            bk::folder_value(&theme, &b.folder, b.free, self.saved_note(&theme, "folder", cx)),
+            Some(bk::change_button("r-folder-change", busy).on_click(cx.listener(|this, _, window, cx| this.open_folder_chooser(window, cx))).into_any_element()),
+            false,
+        );
+        let auto_row = bk::card_row(&theme, "Automatic backup", Some("A backup every day at this time, on the server's clock."), {
+            let (t1, this1) = (time.clone(), this.clone());
+            h_flex()
+                .gap_3()
+                .items_center()
+                .child(gpui_kit::component::switch::Switch::new("r-auto-on").checked(on).disabled(busy).on_click(cx.listener(move |this, v: &bool, _, cx| {
+                    let at = if *v { t1.clone() } else { "off".into() };
+                    this.run_quiet("auto", save(at, keep, include), cx);
+                })))
+                .child(
+                    crate::ui::button("r-auto-time")
+                        .ghost()
+                        .small()
+                        .disabled(!on || busy)
+                        .label(if on { format!("Every day at {time}") } else { "Off".to_string() })
+                        .dropdown_menu(move |menu, _, _| {
+                            let mut menu = menu;
+                            for h in 0..24 {
+                                for m in [0, 30] {
+                                    let t = format!("{h:02}:{m:02}");
+                                    let (this, t2) = (this1.clone(), t.clone());
+                                    menu = menu.item(PopupMenuItem::new(t).on_click(move |_, _, cx| {
+                                        this.update(cx, |p, cx| p.run_quiet("auto", save(t2.clone(), keep, include), cx)).ok();
+                                    }));
+                                }
                             }
-                        }
-                        menu
-                    }))
-            }))
-            .child(crate::manager::backup::brow_pub(&theme, "Keep", Some("Older automatic backups are deleted."), {
-                let (t1, this1) = (if on { time.clone() } else { "off".into() }, this.clone());
-                crate::manager::backup::keep_menu("r-auto-keep", keep, busy, move |k, _, cx| {
-                    this1.update(cx, |p, cx| p.run_quiet("auto", save(t1.clone(), k, include), cx)).ok();
-                })
-            }))
-            .child(crate::manager::backup::brow_pub(&theme, "Include", Some("Everything: the whole database and its files. Configuration: devices, dashboards, users and settings, without telemetry history."), {
+                            menu
+                        }),
+                )
+        }, None, false);
+        let keep_row = bk::card_row(&theme, "Keep", Some("Older backups are deleted, across the folder and any folder used before."), {
+            let (t1, this1) = (if on { time.clone() } else { "off".into() }, this.clone());
+            bk::keep_menu("r-auto-keep", keep, busy, move |k, _, cx| {
+                this1.update(cx, |p, cx| p.run_quiet("auto", save(t1.clone(), k, include), cx)).ok();
+            })
+        }, None, false);
+        let what_row = bk::card_row(
+            &theme,
+            "What to back up",
+            Some("Everything: the whole database and its files. Last 90 days: the same with only the last 90 days of telemetry. Configuration only: devices, dashboards, users and settings, without telemetry history."),
+            {
                 let at = if on { time.clone() } else { "off".into() };
                 let mut seg = ui::seg_track(&theme);
-                for (key, label) in [("everything", "Everything"), ("configuration", "Configuration only")] {
+                for (key, label) in [("everything", "Everything"), ("last90", "Last 90 days"), ("configuration", "Configuration only")] {
                     let at = at.clone();
                     seg = seg.child(ui::seg_item(&theme, SharedString::from(format!("r-inc-{key}")), label, include == key).on_click(cx.listener(move |this, _, _, cx| {
                         if include != key && !this.job.read(cx).is_running() && this.saving.is_none() {
@@ -1255,49 +1296,58 @@ impl RemotePages {
                     })));
                 }
                 seg
-            }));
-        let total: u64 = b.list.iter().map(|e| e.bytes).sum();
+            },
+            None,
+            true,
+        );
+        let card = ui::panel(&theme)
+            .gap_0()
+            .child(div().pb_1().child(self.section_title(&theme, "Backup", "auto", cx)))
+            .child(folder_row)
+            .child(auto_row)
+            .child(keep_row)
+            .child(what_row);
+
+        // The Backups table.
         let mut list = ui::panel(&theme).gap_0().child(
             h_flex()
                 .gap_3()
-                .pb_1()
+                .pb_2()
                 .items_center()
-                .child(self.section_title(&theme, "Backups", "backups", cx))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().text_color(theme.muted_foreground).child(format!(
-                    "{} · {} file{}, {}",
-                    b.folder.display(),
-                    b.list.len(),
-                    if b.list.len() == 1 { "" } else { "s" },
-                    bytes_label(total)
-                ))),
+                .child(div().flex_1().min_w_0().child(self.section_title(&theme, "Backups", "backups", cx)))
+                .child(crate::ui::button("r-backup").outline().label("Back up now").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx)))),
         );
         if b.list.is_empty() {
             list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder."));
+        } else {
+            list = list.child(bk::table_header(&theme));
         }
         for (i, e) in b.list.iter().enumerate() {
             let damaged = e.check.as_ref().is_some_and(|c| !c.ok);
             let path = e.path.display().to_string();
-            let (p1, p2, p3, name) = (path.clone(), path.clone(), path, e.name.clone());
-            let name2 = name.clone();
-            list = list.child(
-                crate::manager::backup::entry_row_with(&theme, i, e, true)
-                    .child(crate::manager::backup::action_slot(
-                        crate::manager::backup::SLOT_RESTORE,
-                        (!damaged).then(|| crate::ui::button(SharedString::from(format!("r-restore-{}", e.name))).outline().label("Restore…").w_full().disabled(busy).on_click(cx.listener(move |this, _, window, cx| this.confirm_restore(p1.clone(), name.clone(), window, cx))).into_any_element()),
-                    ))
-                    .child(crate::manager::backup::action_slot(
-                        crate::manager::backup::SLOT_VERIFY,
-                        Some(crate::ui::button(SharedString::from(format!("r-verify-{}", e.name))).outline().label("Verify").w_full().disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
-                            this.run_job("Verifying the backup", vec!["backup-verify".into(), p2.clone()], cx);
-                        })).into_any_element()),
-                    ))
-                    .child(crate::manager::backup::action_slot(
-                        crate::manager::backup::SLOT_DELETE,
-                        Some(crate::ui::button(SharedString::from(format!("r-delete-{}", e.name))).outline().text_color(theme.danger).label("Delete").w_full().disabled(busy).on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), name2.clone(), window, cx))).into_any_element()),
-                    )),
-            );
+            let (p1, p2, p3, name, name2) = (path.clone(), path.clone(), path, e.name.clone(), e.name.clone());
+            let (t1, t2, t3) = (this.clone(), this.clone(), this.clone());
+            list = list.child(bk::table_row(
+                &theme,
+                i,
+                e,
+                busy,
+                bk::RowActions {
+                    restore: (!damaged).then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
+                        std::rc::Rc::new(move |window, cx| {
+                            t1.update(cx, |p, cx| p.confirm_restore(p1.clone(), name.clone(), window, cx)).ok();
+                        })
+                    }),
+                    verify: std::rc::Rc::new(move |_, cx| {
+                        t2.update(cx, |p, cx| p.run_job("Verifying the backup", vec!["backup-verify".into(), p2.clone()], cx)).ok();
+                    }),
+                    delete: std::rc::Rc::new(move |window, cx| {
+                        t3.update(cx, |p, cx| p.confirm_delete(p3.clone(), name2.clone(), window, cx)).ok();
+                    }),
+                },
+            ));
         }
-        v_flex().gap_4().child(now).child(auto).child(list)
+        v_flex().gap_4().child(card).child(list)
     }
 
     // -- Settings, Migration, Repair, Gateway --------------------------------
@@ -1878,7 +1928,8 @@ impl Render for RemotePages {
             Kind::Update => self.update_page(cx),
             Kind::Backup => {
                 // Screens: a row's Restore or Delete confirmation open
-                // (SPM_DEBUG_BACKUP_DIALOG=restore|delete).
+                // (SPM_DEBUG_BACKUP_DIALOG=restore|delete), or the folder
+                // chooser (=folder).
                 #[cfg(debug_assertions)]
                 {
                     static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -1886,7 +1937,12 @@ impl Render for RemotePages {
                         if let Some(e) = b.list.first().cloned() {
                             if !SHOWN.swap(true, std::sync::atomic::Ordering::SeqCst) {
                                 let path = e.path.display().to_string();
-                                if which == "delete" { self.confirm_delete(path, e.name, window, cx) } else { self.confirm_restore(path, e.name, window, cx) }
+                                match which.as_str() {
+                                    "delete" => self.confirm_delete(path, e.name, window, cx),
+                                    // The folder chooser (B2–B4).
+                                    "folder" => self.open_folder_chooser(window, cx),
+                                    _ => self.confirm_restore(path, e.name, window, cx),
+                                }
                             }
                         }
                     }
