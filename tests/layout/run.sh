@@ -67,4 +67,7 @@ fi
 printf '%s\n' "${list[@]}" | xargs -P "$JOBS" -L 1 bash -c 'one "$@"' _ | tee "$OUT/summary.txt"
 fails=$(grep -c '^FAIL' "$OUT/summary.txt"); total=$(grep -c -E '^(ok|FAIL)' "$OUT/summary.txt")
 echo "layout test: $((total - fails))/$total passed"
-[ "$fails" -eq 0 ]
+# Across renders: a selected menu label the same size as unselected, one row
+# pitch, the space under the brand row (labels.py).
+python3 "$HERE/labels.py" "$OUT" | tee "$OUT/labels.txt"; labels=${PIPESTATUS[0]}
+[ "$fails" -eq 0 ] && [ "$labels" -eq 0 ]

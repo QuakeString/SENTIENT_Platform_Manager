@@ -136,8 +136,12 @@ const SLIDE: Duration = Duration::from_millis(220);
 const FILLET: f32 = 14.;
 /// The selected row's own corner radius (its left end).
 const SEL_RADIUS: f32 = 10.;
-/// A row's height.
-pub const ROW_H: f32 = 34.;
+/// A row's height (the selection's too), and the gap between rows: a
+/// 44 px pitch. Folded, unfolded and over the page alike.
+pub const ROW_H: f32 = 40.;
+const ROW_GAP: f32 = 4.;
+/// Clear space between the brand row and the first row's selection.
+const NAV_TOP: f32 = 16.;
 /// The top bar's height, and the brand row's beside it (their lines meet).
 pub const BAR_H: f32 = 60.;
 /// Where every menu icon's centre is, folded or not: the middle of the
@@ -398,8 +402,9 @@ impl Manager {
                 .font_weight(if on { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
                 .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))
                 .child(row_probe(id))
+                .child(ui::layout_probe("menu-row"))
                 .child(div().relative().flex_shrink_0().child(icon.size(px(ICON)).text_color(if on { theme.primary } else { theme.muted_foreground })).child(ui::layout_probe("menu-icon")))
-                .when(!rail, |r| r.child(div().relative().whitespace_nowrap().opacity(names).child(title.clone())))
+                .when(!rail, |r| r.child(div().relative().whitespace_nowrap().opacity(names).child(title.clone()).child(ui::layout_probe(if on { "menu-label-on" } else { "menu-label" }))))
                 .when(rail, move |r| r.tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(title.clone()).build(w, cx)))
         };
         let items = Page::ALL.into_iter().map(|page| {
@@ -486,10 +491,12 @@ impl Manager {
                         })
                 });
             h_flex()
+                .relative()
                 .h(px(BAR_H))
                 .flex_shrink_0()
                 .items_center()
                 .gap(px(10.))
+                .child(ui::layout_probe("menu-brand"))
                 // The logo's centre on ICON_X, folded or not.
                 .pl(px(ICON_X - LOGO / 2.))
                 .when(!rail, |r| r.pr(px(10.)))
@@ -648,8 +655,8 @@ impl Manager {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .gap(px(2.))
-                    .pt(px(12.))
+                    .gap(px(ROW_GAP))
+                    .pt(px(NAV_TOP))
                     .pl(px(left_pad))
                     .when(rail, |m| m.pr(px(MENU_PAD)))
                     .children(items)
