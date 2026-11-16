@@ -284,6 +284,7 @@ section{display:flex;flex-direction:column;gap:10px}
 .thb.on{background:color-mix(in srgb,var(--ic) 16%,transparent)}
 .desk.solid .bar{background:var(--tb)}
 .legend .bar{background:var(--tb)}
+.mt{border-collapse:collapse;width:100%;font-size:13.5px}.mt th{text-align:left;font-weight:500;color:var(--text2);padding:6px 10px;border-bottom:1px solid var(--border)}.mt td{padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}.mt td:first-child{white-space:nowrap;color:var(--text2)}.mt td:nth-child(3),.mt td:nth-child(4){white-space:nowrap}
 </style>
 
 <main>
@@ -320,6 +321,11 @@ section{display:flex;flex-direction:column;gap:10px}
       <li>Add button reads "Add instance".</li>
       <li>To confirm in the build: the blur. The desktop blur behind the menu depends on the system (Windows 11 and KDE support it); where it is not available the menu stays see-through without blur, or solid if that reads badly.</li>
     </ul>
+  </div>
+  <div class="notes" style="max-width:1100px">
+    <b style="font-weight:500">Motion plan (for your go)</b>
+    <p class="mut" style="margin-top:4px">Rules: every movement eases out, 100 to 400 ms, moves only position, size, opacity or colour, and runs at the screen's refresh rate. SPM already follows the system "reduce motion" setting; that switch turns all of these off. Each build is checked for dropped frames at x1 and x2.</p>
+    <div style="overflow-x:auto;margin-top:10px"><table class="mt"><thead><tr><th>Where</th><th>What moves</th><th>Time</th><th>Today</th></tr></thead><tbody><tr><td>Menu</td><td>Selection slides to the clicked row</td><td>220 ms</td><td>In mockup</td></tr><tr><td>Menu</td><td>Fold and unfold: width glides 232 to 64 px, names fade</td><td>200 ms</td><td>New</td></tr><tr><td>Pages</td><td>New page fades in and rises 6 px; no white flash</td><td>160 ms</td><td>Extend (fade exists)</td></tr><tr><td>Top bar</td><td>Switching instance: tint and switcher cross-fade to the new colour</td><td>250 ms</td><td>New</td></tr><tr><td>Top bar</td><td>Health dot changes colour smoothly; one soft pulse when it turns amber or red</td><td>300 ms</td><td>New</td></tr><tr><td>Top bar</td><td>CPU, memory and disk bars glide to the new value instead of jumping</td><td>400 ms</td><td>New</td></tr><tr><td>Popovers</td><td>Bell, theme picker, ⋯ menus, switcher list: fade and grow from 97 %</td><td>140 ms</td><td>New</td></tr><tr><td>Dialogs</td><td>Backdrop fades, dialog rises 8 px and fades in; closes faster</td><td>180 / 120 ms</td><td>New</td></tr><tr><td>Tooltips</td><td>Fade in after a short pause</td><td>100 ms</td><td>New</td></tr><tr><td>Loading</td><td>Skeleton shimmer stays; real values fade in in place</td><td>150 ms</td><td>Extend</td></tr><tr><td>Jobs</td><td>Progress strip width glides; when done it fills, then fades out</td><td>300 ms</td><td>Extend</td></tr><tr><td>Lists</td><td>Backups and notifications: a new row slides in, a removed row folds away</td><td>180 ms</td><td>New</td></tr><tr><td>Controls</td><td>Switch knob slides; segmented highlight slides like the menu</td><td>150 ms</td><td>New</td></tr><tr><td>Panels</td><td>Expanding sections (licence Details / Limits, job details) open by height</td><td>200 ms</td><td>New</td></tr><tr><td>Tiles</td><td>Hover lifts the tile shadow; the open tile's border fades in</td><td>120 ms</td><td>New</td></tr><tr><td>Buttons</td><td>Refresh spins (exists); Saved tick fades in, then out</td><td>150 ms</td><td>Exists / extend</td></tr></tbody></table></div>
   </div>
 </main>
 
