@@ -1121,6 +1121,14 @@ impl Installer {
 
 impl Render for Installer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Windows 10: the app's caption and rounded corners (crate::win_frame).
+        let root = self.render_root(window, cx).into_any_element();
+        crate::win_frame::frame(crate::mode::AppMode::Install.window_title(), root, window, cx)
+    }
+}
+
+impl Installer {
+    fn render_root(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(earlier) = &self.earlier {
             return div().size_full().child(earlier.clone()).into_any_element();
         }
