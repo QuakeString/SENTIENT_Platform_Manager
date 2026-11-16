@@ -7,9 +7,9 @@ name: build-installers
 # release build for a shippable installer). A release-candidate tag (v*-rc*)
 # builds release and publishes a pre-release. On a version tag the installers
 # and the Arch package are attached to a GitHub Release (see the release job).
-# Also runs (debug) on a PR
-# that edits this file, so a change to the installer build is proven before it
-# merges.
+# Also runs on a PR that edits this file, so a change to the installer build
+# is proven before it merges; the Windows setup is then a release build (a
+# testable installer, the rc version from an spm/rcNN-... branch).
 #
 # Nightly: every night at 02:00 IST, when master has commits the last
 # nightly does not, a release build is published as the release tagged
@@ -138,7 +138,16 @@ jobs:
           # the tag it is built from (v0.8.0-rc6 -> 0.8.0-rc6).
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then export SPM_VERSION="${GITHUB_REF_NAME#v}"; fi
           if [ -n "${{ needs.gate.outputs.version }}" ]; then export SPM_VERSION="${{ needs.gate.outputs.version }}"; fi
-          if [ "${{ github.event.inputs.profile }}" = "release" ] || [[ "$GITHUB_REF" == refs/tags/v*-rc* ]] || [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+          # A pull request from a release-candidate branch (spm/rcNN-...)
+          # builds a testable installer: release, reporting the rc version
+          # and the branch's own commit (not the PR's merge commit).
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            export SPM_COMMIT="$(echo '${{ github.event.pull_request.head.sha }}' | cut -c1-7)"
+            rc=$(echo '${{ github.head_ref }}' | sed -n 's|^spm/rc\([0-9][0-9]*\)-.*|\1|p')
+            base=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+            if [ -n "$rc" ]; then export SPM_VERSION="$base-rc$rc"; fi
+          fi
+          if [ "${{ github.event.inputs.profile }}" = "release" ] || [[ "$GITHUB_REF" == refs/tags/v*-rc* ]] || [ "$GITHUB_EVENT_NAME" = "schedule" ] || [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             cargo build --release; echo "PROFILE=release" >> "$GITHUB_ENV"
           else
             cargo build; echo "PROFILE=debug" >> "$GITHUB_ENV"
