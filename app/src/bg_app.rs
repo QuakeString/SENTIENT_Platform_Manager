@@ -201,8 +201,44 @@ pub fn start(options: fn(&mut App) -> WindowOptions, open_window: bool, request:
     .detach();
 }
 
-fn handle(cmd: Command, cx: &mut App) {
+/// The request an unelevated tray hands to its elevated copy for `cmd`
+/// (Windows: the window and every action run elevated). None: the tray
+/// does it itself.
+fn needs_elevated_copy(cmd: &Command, admin: bool, window_needs_admin: bool) -> Option<String> {
+    if admin || !window_needs_admin {
+        return None;
+    }
     match cmd {
+        Command::Show | Command::Toggle => Some("show".into()),
+        Command::Action(a) => Some(format!("action {a}")),
+        Command::Exit | Command::Handover => None,
+    }
+}
+
+/// Start the elevated copy (one UAC prompt) that takes over with `request`.
+/// Declined: the tray stays as it is, and says so in its log.
+fn hand_over(request: String) {
+    std::thread::spawn(move || {
+        let args = vec!["--manager".to_string(), "--takeover".to_string(), "--request".to_string(), request];
+        if !crate::elevate::relaunch_elevated(&args) {
+            crate::maintenance_ops::log_line("Administrator rights were not given: the window stays closed");
+        }
+    });
+}
+
+fn handle(cmd: Command, cx: &mut App) {
+    if let Some(request) = needs_elevated_copy(&cmd, crate::elevate::is_admin(), cfg!(windows)) {
+        hand_over(request);
+        return;
+    }
+    match cmd {
+        Command::Handover => {
+            // The elevated copy is the one copy from now on.
+            crate::maintenance_ops::log_line("Handing over to the elevated Platform Manager");
+            crate::background::release();
+            cx.global_mut::<Bg>().tray = None;
+            cx.quit();
+        }
         Command::Show => show(cx),
         Command::Toggle => {
             if let Some(w) = cx.global::<Bg>().window {
@@ -442,7 +478,22 @@ fn transition(before: Option<Seen>, now: Seen, name: &str) -> Option<Note> {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
-    use super::{Seen, transition};
+    use super::{Seen, needs_elevated_copy, transition};
+    use crate::background::Command;
+
+    /// An unelevated Windows tray hands the window and actions to an
+    /// elevated copy; Exit and a handover it does itself; elsewhere, or
+    /// elevated, it does everything itself.
+    #[test]
+    fn the_tray_hands_window_and_actions_to_an_elevated_copy() {
+        assert_eq!(needs_elevated_copy(&Command::Show, false, true).as_deref(), Some("show"));
+        assert_eq!(needs_elevated_copy(&Command::Toggle, false, true).as_deref(), Some("show"));
+        assert_eq!(needs_elevated_copy(&Command::Action("control:stop".into()), false, true).as_deref(), Some("action control:stop"));
+        assert_eq!(needs_elevated_copy(&Command::Exit, false, true), None);
+        assert_eq!(needs_elevated_copy(&Command::Handover, false, true), None);
+        assert_eq!(needs_elevated_copy(&Command::Show, true, true), None);
+        assert_eq!(needs_elevated_copy(&Command::Show, true, false), None);
+    }
 
     /// A problem is raised once and cleared once; a first reading or the
     /// same state again says nothing.

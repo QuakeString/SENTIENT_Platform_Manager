@@ -216,20 +216,39 @@ fn gui_main(args: Vec<String>) {
     // a taskbar action) hands its request to the running one, before asking
     // for administrator rights again.
     let request = background::request_of(&args);
+    let background_start = args.iter().any(|a| a == "--background");
+    // Setup and the self-update always run elevated; the Platform Manager
+    // elevates only for a user action: its sign-in tray runs unelevated
+    // and hands over to an elevated copy when the window is opened
+    // (crate::background::start_plan).
+    let mut elevate_now = true;
     if mode == AppMode::Manager && !args.iter().any(|a| a == "--self-update") {
-        if background::Prefs::load().show_tray && background::forward(&request) {
+        let prefs = background::Prefs::load();
+        if background_start && !prefs.background() {
+            // Started at sign-in, but the tray was turned off since.
             return;
         }
+        let running = if prefs.show_tray { background::running() } else { None };
+        let takeover = args.iter().any(|a| a == "--takeover");
+        let plan = background::start_plan(running, elevate::is_admin(), takeover, background_start, cfg!(windows));
+        elevate_now = match plan {
+            background::StartPlan::Exit => return,
+            background::StartPlan::Forward if background::forward(&request) => return,
+            // A stale lock: nothing runs after all.
+            background::StartPlan::Forward => cfg!(windows) && !background_start,
+            background::StartPlan::TakeOver => {
+                if !background::take_over() {
+                    maintenance_ops::log_line("The running Platform Manager did not hand over; starting anyway");
+                }
+                false
+            }
+            background::StartPlan::Run { elevate } => elevate,
+        };
         if request == "action exit" {
             return;
         }
     }
-    let background_start = args.iter().any(|a| a == "--background");
-    if mode == AppMode::Manager && background_start && !background::Prefs::load().background() {
-        // Started at sign-in, but the tray was turned off since.
-        return;
-    }
-    if !elevate::ensure_admin() {
+    if elevate_now && !elevate::ensure_admin() {
         return;
     }
     // The downloaded Platform Manager replacing the installed one.
