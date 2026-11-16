@@ -12,6 +12,7 @@ card on screen, the strip inside its right border (the 18 px padding, minus
 px) must be the page's colour. Prints one line per finding and exits 1 if
 there is any.
 """
+import os
 import sys
 from PIL import Image
 
@@ -67,6 +68,57 @@ def bar_controls(log):
     return [tuple(float(x) for x in l.split()[2:]) for l in lines[start + 1:end] if l.startswith("LAYOUT bar-ctrl ")]
 
 
+PAGE_GAP = 18.0
+
+
+def page_gaps(log, size, panels):
+    """The page's gaps (theme::PAGE_GAP): the menu edge to the cards, the
+    cards to the window's right edge, and card to card down a column and
+    across a row. Returns (what, logical px) pairs that are off."""
+    lines = open(log, errors="replace").read().splitlines()
+    edges = [float(l.split()[2]) for l in lines if l.startswith("LAYOUT menu-edge ")]
+    if not edges or not panels:
+        return []
+    menu = edges[-1]
+    w = size[0]
+    # A card's probe is inside its 1 px border: its outer box is 1 px more.
+    panels = [(l - 1, r + 1, t - 1, b + 1) for (l, r, t, b) in panels]
+    # The page's own cards: those not inside another card.
+    def inside(a, b):
+        return a != b and a[0] >= b[0] - 0.5 and a[1] <= b[1] + 0.5 and a[2] >= b[2] - 0.5 and a[3] <= b[3] + 0.5
+    top = [p for p in panels if not any(inside(p, q) for q in panels)]
+    off = []
+    left = min(p[0] for p in top)
+    right = max(p[1] for p in top)
+    # A page whose content is centred (a set width, as About or Licence)
+    # keeps equal sides instead.
+    centred = abs((left - menu) - (w - right)) <= 1 and left - menu > PAGE_GAP + 1
+    # A page with a column of its own on the left (Platform settings' groups)
+    # starts its cards further in.
+    side_column = left - menu > 3 * PAGE_GAP
+    if not centred and not side_column:
+        if abs(left - menu - PAGE_GAP) > 1:
+            off.append(("menu edge to cards", left - menu))
+        if abs(w - right - PAGE_GAP) > 1:
+            off.append(("cards to the window edge", w - right))
+    for a in top:
+        # The nearest card below, overlapping in x: the gap down.
+        below = [b for b in top if b[2] >= a[3] - 0.5 and not (b[1] <= a[0] or b[0] >= a[1])]
+        if below:
+            g = min(b[2] for b in below) - a[3]
+            # A section heading between two cards (About's APPEARANCE) is
+            # content, not a gap.
+            if abs(g - PAGE_GAP) > 1 and g < 2 * PAGE_GAP:
+                off.append((f"card to card down at y {a[3]:.0f}", g))
+        # The nearest card to the right, overlapping in y: the gap across.
+        beside = [b for b in top if b[0] >= a[1] - 0.5 and not (b[3] <= a[2] or b[2] >= a[3])]
+        if beside:
+            g = min(b[0] for b in beside) - a[1]
+            if abs(g - PAGE_GAP) > 1:
+                off.append((f"card to card across at x {a[1]:.0f}", g))
+    return off
+
+
 def differs(a, b):
     return max(abs(a[i] - b[i]) for i in range(3)) > TOL
 
@@ -113,6 +165,10 @@ def main():
         if len(hits) >= MIN_PIXELS:
             x, y = hits[0]
             bad.append(f"menu edge: {len(hits)} px of line inside the selected row's opening, first at ({x / scale:.1f}, {y / scale:.1f})")
+    # One page gap everywhere (not with a dialog or a floating panel open).
+    if not dialog and os.environ.get("SPM_CHECK_GAPS", "1") == "1":
+        for what, g in page_gaps(log, size, panels):
+            bad.append(f"page gap: {what} is {g:.1f} px, not {PAGE_GAP:.0f}")
     # Menu icons (an open popup or context menu): at least 18 px.
     for l in open(log, errors="replace").read().splitlines():
         if l.startswith("LAYOUT menu-item-icon "):

@@ -204,7 +204,11 @@ fn menu_probe(left_pad: f32) -> impl IntoElement {
                 r.left = f32::from(b.origin.x) + left_pad;
                 r.top_y = f32::from(b.origin.y);
                 r.bottom_y = f32::from(b.origin.y + b.size.height);
-            })
+            });
+            // The layout test measures the page's gaps from here.
+            if cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
+                eprintln!("LAYOUT menu-edge {:.2}", f32::from(b.origin.x + b.size.width));
+            }
         },
         |_, _, _, _| {},
     )

@@ -1301,11 +1301,11 @@ impl Render for InstancesPage {
                 // short last row keeps the same tile width with empty slots.
                 let cols = cols as usize;
                 let mut tiles: Vec<AnyElement> = std::iter::once(local).chain(cards).collect();
-                let mut rows = v_flex().gap(px(12.));
+                let mut rows = v_flex().gap(px(crate::ui::GAP));
                 while !tiles.is_empty() {
                     let rest = tiles.split_off(cols.min(tiles.len()));
                     let n = tiles.len();
-                    let mut row = h_flex().w_full().gap(px(12.)).items_stretch();
+                    let mut row = h_flex().w_full().gap(px(crate::ui::GAP)).items_stretch();
                     for t in tiles {
                         row = row.child(v_flex().flex_1().flex_basis(px(0.)).min_w_0().child(t));
                     }

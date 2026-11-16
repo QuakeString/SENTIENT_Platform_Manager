@@ -181,8 +181,8 @@ pub const PANEL_RADIUS: f32 = 12.;
 /// The one spacing scale (his rc12-19 ask: everything a little tighter):
 /// the page's padding (left equal to top), the space between cards, and a
 /// card's padding.
-pub const PAGE_PAD: f32 = 18.;
-pub const GAP: f32 = 14.;
+pub const PAGE_PAD: f32 = crate::theme::PAGE_GAP;
+pub const GAP: f32 = crate::theme::PAGE_GAP;
 pub const CARD_PY: f32 = 14.;
 pub const CARD_PX: f32 = 16.;
 

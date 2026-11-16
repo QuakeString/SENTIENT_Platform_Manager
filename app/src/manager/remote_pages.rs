@@ -976,7 +976,7 @@ impl RemotePages {
         );
         let _ = serving;
         v_flex()
-            .gap_4()
+            .gap(px(ui::GAP))
             .child(ui::panel(&theme).child(row))
             .child(self.services_panel_with_actions(cx))
     }

@@ -99,6 +99,10 @@ pub fn toggle(cx: &mut App) {
     Theme::change(next, None, cx);
 }
 
+/// The one page gap: card to card (down and across), the menu edge and the
+/// window edge to the page content, the page's top, and under its title.
+pub const PAGE_GAP: f32 = 18.;
+
 /// The top bar's controls (the instance switcher, the monitors, the theme
 /// button and the bell): one height, one radius, one hover tint (the
 /// instance's colour at this opacity), centred in the 60 px bar.

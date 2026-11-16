@@ -969,9 +969,9 @@ impl Render for FilesPage {
             this.reload(1, cx);
         }));
         let panes = if narrow {
-            v_flex().gap(px(16.)).child(left).child(div().relative().child(right).children(fake_drag)).into_any_element()
+            v_flex().gap(px(crate::ui::GAP)).child(left).child(div().relative().child(right).children(fake_drag)).into_any_element()
         } else {
-            h_flex().flex_1().min_h_0().gap(px(16.)).items_stretch().child(left).child(div().relative().flex_1().min_w_0().h_full().flex().child(right).children(fake_drag)).into_any_element()
+            h_flex().flex_1().min_h_0().gap(px(crate::ui::GAP)).items_stretch().child(left).child(div().relative().flex_1().min_w_0().h_full().flex().child(right).children(fake_drag)).into_any_element()
         };
         let page = v_flex()
             .id("page")
