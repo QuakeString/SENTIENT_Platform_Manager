@@ -279,6 +279,12 @@ def main():
             continue
         ref = im.getpixel((int(R - PAD * scale / 2), y0))
         hits = [(x, y) for y in range(y0, y1, 2) for x in range(x0, x1) if differs(im.getpixel((x, y)), ref)]
+        # A row divider that runs edge to edge (the settings card's rows):
+        # a line across the whole strip, not content reaching into it.
+        per_y = {}
+        for x, y in hits:
+            per_y[y] = per_y.get(y, 0) + 1
+        hits = [(x, y) for x, y in hits if per_y[y] < x1 - x0]
         # A scrolling body's scrollbar track: one or two full-height columns
         # of the same line, not content.
         cols = {x for x, _ in hits}

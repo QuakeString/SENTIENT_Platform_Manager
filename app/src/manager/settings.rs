@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, Sizable as _, h_flex, v_flex,
     button::ButtonVariants as _,
     input::{Input, InputEvent, InputState},
 };
@@ -128,18 +128,6 @@ fn preset_values(p: Preset, groups: &[Group], ram_mb: u64) -> HashMap<&'static s
     }
 }
 
-/// A choice offered as buttons: (label, value). An empty value is the
-/// built-in one.
-type Choices = &'static [(&'static str, &'static str)];
-
-/// The Value column of Advanced: every field starts and ends at the same place.
-pub(crate) const VALUE_W: f32 = 340.;
-
-const LOG_LEVELS: Choices = &[("Errors only", "error"), ("Normal", "info"), ("Detailed", "debug")];
-const KEEP_DAYS: Choices = &[("Forever", "0"), ("30 days", "30"), ("90 days", "90"), ("1 year", "365")];
-const KEEP_EVENTS: Choices = &[("Built-in", ""), ("7 days", "604800"), ("30 days", "2592000"), ("90 days", "7776000")];
-const KEEP_DEBUG: Choices = &[("Built-in", ""), ("1 day", "86400"), ("7 days", "604800"), ("30 days", "2592000")];
-
 const CERTS: [(&str, &str); 7] = [
     ("SSL_PEM_CERT", "HTTPS certificate"),
     ("SSL_PEM_KEY", "HTTPS private key"),
@@ -190,6 +178,8 @@ pub struct SettingsPage {
     locations: Option<Entity<super::movedata::LocationsCard>>,
     _subscriptions: Vec<Subscription>,
     _admin_tasks: Vec<Task<()>>,
+    /// Enter in the fields (crate::ui::enter_moves_on).
+    _enter: Vec<Subscription>,
 }
 
 impl EventEmitter<RecordChanged> for SettingsPage {}
@@ -300,6 +290,7 @@ impl SettingsPage {
             job,
             locations: None,
             _subscriptions: subscriptions,
+            _enter: Vec::new(),
         };
         // Data locations, where the data can move (Docker; ClickHouse in WSL
         // on Windows), or in the mockup's screens.
@@ -313,6 +304,81 @@ impl SettingsPage {
             page.tab = Tab::ALL.into_iter().find(|x| format!("{x:?}").eq_ignore_ascii_case(&t)).unwrap_or(Tab::Platform);
         }
         page.custom_db = page.preset(cx).is_none();
+        // Enter: the next field shown; on the last one, Apply (or the first
+        // field that is not valid). The add-a-variable and password forms
+        // end on their own buttons.
+        let fields: Vec<Entity<InputState>> = page.inputs.values().cloned().collect();
+        page._enter = ui::enter_moves_on(&fields, window, cx, |p: &Self, cx| p.shown_inputs(cx), |p: &mut Self, window, cx| p.submit(window, cx));
+        page._enter.extend(ui::enter_moves_on(
+            &[page.new_name.clone(), page.new_value.clone()],
+            window,
+            cx,
+            |p: &Self, _| vec![p.new_name.clone(), p.new_value.clone()],
+            |p: &mut Self, window, cx| {
+                p.add_variable(window, cx);
+                None
+            },
+        ));
+        page._enter.extend(ui::enter_moves_on(
+            &[page.new_pw.clone(), page.repeat_pw.clone()],
+            window,
+            cx,
+            |p: &Self, _| vec![p.new_pw.clone(), p.repeat_pw.clone()],
+            |p: &mut Self, window, cx| {
+                let pw = p.new_pw.read(cx).value().to_string();
+                if pw.chars().count() < 8 {
+                    return Some(p.new_pw.clone());
+                }
+                if pw != p.repeat_pw.read(cx).value().as_ref() {
+                    return Some(p.repeat_pw.clone());
+                }
+                if !p.admin_busy {
+                    p.reset_password(window, cx);
+                }
+                None
+            },
+        ));
+        // Startup's fields end on the same Apply.
+        let me = cx.entity().downgrade();
+        page.startup.update(cx, |s, _| {
+            s.on_submit = Some(std::rc::Rc::new(move |window, cx| {
+                me.update(cx, |p, cx| {
+                    if let Some(f) = p.submit(window, cx) {
+                        f.update(cx, |s, cx| s.focus(window, cx));
+                    }
+                })
+                .ok();
+            }));
+        });
+        // Leaving the page with changes not applied asks first.
+        let (a, b, c, d) = (cx.entity().downgrade(), cx.entity().downgrade(), cx.entity().downgrade(), cx.entity().downgrade());
+        ui::set_unsaved(
+            None,
+            ui::Unsaved {
+                pending: std::rc::Rc::new(move |cx| a.upgrade().map(|p| p.read(cx).pending(cx)).unwrap_or((0, 0))),
+                list: std::rc::Rc::new(move |cx| d.upgrade().map(|p| p.read(cx).change_lines(cx)).unwrap_or_default()),
+                apply: std::rc::Rc::new(move |window, cx| {
+                    b.update(cx, |p, cx| p.apply_all(false, window, cx)).ok();
+                }),
+                discard: std::rc::Rc::new(move |window, cx| {
+                    c.update(cx, |p, cx| p.discard_all(window, cx)).ok();
+                }),
+            },
+        );
+        // Screens and the layout test: some settings changed and one field
+        // not valid, so the bar shows (SPM_DEBUG_SETTINGS_PENDING=short on
+        // General, =long on All variables).
+        #[cfg(debug_assertions)]
+        if let Ok(which) = std::env::var("SPM_DEBUG_SETTINGS_PENDING") {
+            page.tab = if which == "long" { Tab::Advanced } else { Tab::Platform };
+            let mut set = vec![("RUST_LOG", "debug"), ("LICENSE_SERVER_URL", "https://licence.example.com/a/rather/long/address")];
+            if which != "valid" && which != "leave" {
+                set.push(("LICENSE_BINDING_CHECK_INTERVAL_SECS", "jj"));
+            }
+            for (k, v) in set {
+                page.set(k, v, window, cx);
+            }
+        }
         // Read without asking where that needs no administrator password.
         if page.record.as_ref().is_some_and(|r| !crate::rootjob::needed(r)) {
             page.read_admin(cx);
@@ -408,6 +474,127 @@ impl SettingsPage {
             let value = value.to_string();
             input.update(cx, |state, cx| state.set_value(value, window, cx));
         }
+    }
+
+    /// Why a field's value cannot be used (one line), or None.
+    fn problem(&self, key: &str, cx: &App) -> Option<String> {
+        let v = self.value(key, cx);
+        match self.find(key) {
+            Some(s) => s.problem(&v),
+            // SENTIENT's own ports: a port number.
+            None if key.starts_with("port:") => crate::catalog::Setting { env: "X_PORT".into(), label: String::new(), default: String::new(), recommended: None, help: String::new() }.problem(&v),
+            None => None,
+        }
+    }
+
+    /// The fields whose value cannot be used, by name.
+    fn invalid_keys(&self, cx: &App) -> Vec<String> {
+        let mut k: Vec<String> = self.inputs.keys().filter(|k| self.problem(k, cx).is_some()).cloned().collect();
+        k.sort();
+        k
+    }
+
+    /// Changes not applied on every tab (settings, Startup, the history
+    /// kept) and the fields not valid: the bar and leaving the page.
+    fn pending(&self, cx: &App) -> (usize, usize) {
+        let retention = match &self.retention_now {
+            Some(Ok(now)) => (self.retention_edit.telemetry_days != now.telemetry_days) as usize + (self.retention_edit.alarms_days != now.alarms_days) as usize,
+            _ => 0,
+        };
+        let startup = self.startup.read(cx);
+        (self.changed(cx).len() + startup.pending_count(cx) + retention, self.invalid_keys(cx).len() + startup.invalid_count(cx))
+    }
+
+    /// Apply every change (`confirm`: the settings' own confirmation, with
+    /// what restarts; leaving the page has asked already).
+    fn apply_all(&mut self, confirm: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending(cx).1 > 0 || self.job.read(cx).is_running() {
+            return;
+        }
+        if let Some(Ok(now)) = &self.retention_now {
+            if self.retention_edit != *now && !self.admin_busy {
+                let r = self.retention_edit;
+                self.admin_action(move |rec| crate::sentient_admin::set_retention(rec, r), cx);
+            }
+        }
+        self.startup.update(cx, |s, cx| s.apply_pending(cx));
+        if !self.changed(cx).is_empty() {
+            if confirm {
+                self.confirm_apply(window, cx);
+            } else {
+                self.start_apply(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn discard_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.revert(window, cx);
+        self.startup.update(cx, |s, cx| s.discard(window, cx));
+        if let Some(Ok(now)) = &self.retention_now {
+            self.retention_edit = *now;
+        }
+        cx.notify();
+    }
+
+    /// Enter on a form's last field: the first field not valid (shown
+    /// first), else Apply.
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Entity<InputState>> {
+        let bad = self.invalid_keys(cx);
+        if !bad.is_empty() {
+            let shown = self.shown_inputs(cx);
+            let first_shown = shown.into_iter().find(|i| bad.iter().any(|k| self.inputs.get(k) == Some(i)));
+            return first_shown.or_else(|| self.inputs.get(&bad[0]).cloned());
+        }
+        if self.startup.read(cx).invalid_count(cx) > 0 {
+            return None;
+        }
+        self.apply_all(true, window, cx);
+        None
+    }
+
+    /// The inputs the open tab shows, in their order (Enter).
+    fn shown_inputs(&self, cx: &App) -> Vec<Entity<InputState>> {
+        let typed = |k: &str| self.find(k).is_none_or(is_input);
+        let keys: Vec<String> = match self.tab {
+            Tab::Platform => vec!["LICENSE_SERVER_URL".into(), "LICENSE_HEARTBEAT_INTERVAL_SECS".into()],
+            Tab::Database => {
+                let mut k: Vec<String> = Vec::new();
+                if self.custom_db || self.preset(cx).is_none() {
+                    k.extend(DB_EXACT.iter().map(|s| s.to_string()));
+                }
+                k.extend(self.record.as_ref().map(|r| ts_keys(r.flavor())).unwrap_or_default().iter().map(|s| s.to_string()));
+                k
+            }
+            Tab::Network => PORTS
+                .iter()
+                .map(|(k, _)| k.to_string())
+                .chain(std::iter::once("EDGE_GRPC_PORT".to_string()))
+                .chain(CERTS.iter().map(|(k, _)| k.to_string()))
+                .chain(std::iter::once("SENTIENT_CORS_ALLOWED_ORIGINS".to_string()))
+                .collect(),
+            Tab::Retention | Tab::Startup => Vec::new(),
+            Tab::Advanced => {
+                let needle = self.search.read(cx).value().to_lowercase();
+                let needle = needle.as_str();
+                self.groups
+                    .iter()
+                    .filter(|g| self.group.as_ref().is_none_or(|n| n == &g.name))
+                    .flat_map(|g| g.settings.iter().filter(move |s| self.table_shows(g, s, needle, cx)).map(|s| s.env.clone()))
+                    .collect()
+            }
+        };
+        keys.iter().filter(|k| typed(k)).filter_map(|k| self.inputs.get(k).cloned()).collect()
+    }
+
+    /// Whether the All variables table shows this setting now.
+    fn table_shows(&self, g: &Group, s: &Setting, needle: &str, cx: &App) -> bool {
+        let changed = self.is_changed(&s.env, cx);
+        let set = !self.value(&s.env, cx).is_empty();
+        if self.changed_only && !(changed || set) {
+            return false;
+        }
+        needle.is_empty() || format!("{} {} {} {}", s.label, s.env, g.name, s.help).to_lowercase().contains(needle)
     }
 
     /// The values in the fields (empty ones left out).
@@ -537,37 +724,45 @@ impl SettingsPage {
             let custom = custom.clone();
             dialog.title("Apply the new settings?").description(text.clone()).confirm().ok_text("Apply").on_ok(move |_, _, cx| {
                 let (record, values, custom) = (record.clone(), values.clone(), custom.clone());
-                this.update(cx, |page, cx| {
-                    page.job.update(cx, |job, cx| {
-                        if crate::rootjob::needed(&record) {
-                            // The root job reads the values from a file;
-                            // added variables travel as `custom:<NAME>`.
-                            let path = std::env::temp_dir().join(format!("spm-settings-{}.json", std::process::id()));
-                            let mut all = values.clone();
-                            for (n, v) in &custom {
-                                all.insert(format!("{}{n}", crate::settings::CUSTOM_PREFIX), v.clone());
-                            }
-                            let written = serde_json::to_string(&all)
-                                .map_err(|e| e.to_string())
-                                .and_then(|j| std::fs::write(&path, j).map_err(|e| e.to_string()));
-                            let args = vec!["apply-settings".to_string(), path.display().to_string()];
-                            job.start(
-                                move |sink| {
-                                    written?;
-                                    let result = crate::rootjob::run(&args, &sink).map(|_| ());
-                                    let _ = std::fs::remove_file(&path);
-                                    result
-                                },
-                                cx,
-                            )
-                        } else {
-                            job.start(move |sink| crate::settings::apply_with(record, &values, Some(&custom), sink).map(|_| ()), cx)
-                        }
-                    });
-                })
-                .ok();
+                this.update(cx, |page, cx| page.run_apply(record, values, custom, cx)).ok();
                 true
             })
+        });
+    }
+
+    /// Apply without the confirmation (leaving the page asked already).
+    fn start_apply(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        let (values, custom) = (self.values(cx), self.custom_values(cx));
+        self.run_apply(record, values, custom, cx);
+    }
+
+    fn run_apply(&mut self, record: InstallationRecord, values: HashMap<String, String>, custom: Vec<(String, String)>, cx: &mut Context<Self>) {
+        self.job.update(cx, |job, cx| {
+            if crate::rootjob::needed(&record) {
+                // The root job reads the values from a file;
+                // added variables travel as `custom:<NAME>`.
+                let path = std::env::temp_dir().join(format!("spm-settings-{}.json", std::process::id()));
+                let mut all = values.clone();
+                for (n, v) in &custom {
+                    all.insert(format!("{}{n}", crate::settings::CUSTOM_PREFIX), v.clone());
+                }
+                let written = serde_json::to_string(&all)
+                    .map_err(|e| e.to_string())
+                    .and_then(|j| std::fs::write(&path, j).map_err(|e| e.to_string()));
+                let args = vec!["apply-settings".to_string(), path.display().to_string()];
+                job.start(
+                    move |sink| {
+                        written?;
+                        let result = crate::rootjob::run(&args, &sink).map(|_| ());
+                        let _ = std::fs::remove_file(&path);
+                        result
+                    },
+                    cx,
+                )
+            } else {
+                job.start(move |sink| crate::settings::apply_with(record, &values, Some(&custom), sink).map(|_| ()), cx)
+            }
         });
     }
 }
@@ -576,95 +771,72 @@ impl SettingsPage {
 // Pieces
 // ---------------------------------------------------------------------------
 
-/// A row: label (and its help), then the control.
-pub(crate) fn row(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, help: Option<String>, changed: bool, control: impl IntoElement) -> Div {
-    // The mockup's setting row: the label on the left (primary when
-    // changed), the control right-aligned in a fixed column.
-    let label: SharedString = label.into();
-    // On a narrow window the control moves under the label, right-aligned.
-    h_flex()
-        .flex_wrap()
-        .gap_x_4()
-        .gap_y_1()
-        .items_center()
-        .py_2()
-        .border_t_1()
-        .border_color(theme.border)
-        .child(
-            h_flex()
-                .flex_1()
-                .min_w(px(160.))
-                .gap_1()
-                .items_center()
-                .child(div().text_sm().when(changed, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.primary)).child(label.clone()))
-                .when_some(help, |r, h| {
-                    r.child(crate::ui::button(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))
-                }),
-        )
-        .child(h_flex().flex_shrink_0().ml_auto().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
+/// A row whose control takes the field and current columns (an account,
+/// a plain value, a set of buttons). Shared with Startup.
+pub(crate) fn row(_theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, help: Option<String>, changed: bool, control: impl IntoElement) -> ui::SettingRow {
+    let mut r = ui::SettingRow::wide(label, help, control);
+    r.changed = changed;
+    r
 }
 
-/// A setting row with its variable name muted beside the plain label (the
-/// exact numbers under Custom).
-pub(crate) fn row_with_var(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, var: &str, help: Option<String>, changed: bool, control: impl IntoElement) -> Div {
-    let label: SharedString = label.into();
-    let var = var.trim_start_matches("pg:").to_string();
-    // On a narrow window the control moves under the label, right-aligned.
-    h_flex()
-        .flex_wrap()
-        .gap_x_4()
-        .gap_y_1()
-        .items_center()
-        .py_2()
-        .border_t_1()
-        .border_color(theme.border)
-        // The label with its (i), the variable name on a muted line under it.
-        .child(
-            v_flex()
-                .flex_1()
-                .min_w(px(160.))
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .child(div().text_sm().when(changed, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.primary)).child(label.clone()))
-                        .when_some(help, |r, h| r.child(crate::ui::button(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))),
-                )
-                .child(div().text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(var)),
-        )
-        .child(h_flex().flex_shrink_0().ml_auto().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
+/// A plain value in a wide row.
+fn text_value(theme: &gpui_kit::component::Theme, text: impl Into<SharedString>) -> Div {
+    div().pt(px(10.)).text_sm().text_color(theme.foreground).child(text.into())
 }
 
-/// A row of the All variables table: label column, then value and built-in
-/// columns (crate::manager::settings::table_header).
-pub(crate) fn table_row(theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, help: Option<String>, changed: bool, control: impl IntoElement) -> Div {
-    let label: SharedString = label.into();
-    h_flex()
-        .gap_3()
-        .items_center()
-        .py_1p5()
-        .border_t_1()
-        .border_color(theme.border)
-        .child(
-            h_flex()
-                .w(px(LABEL_W))
-                .min_w(px(120.))
-                .flex_shrink(1.)
-                .gap_1()
-                .items_center()
-                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().when(changed, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.primary)).child(label.clone()))
-                .when_some(help, |r, h| {
-                    r.child(crate::ui::button(SharedString::from(format!("help-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))
-                }),
-        )
-        .child(h_flex().flex_1().min_w_0().gap_2().items_center().child(control))
+/// The exact PostgreSQL and pool numbers under Database › Custom.
+const DB_EXACT: [&str; 11] = [
+    "pg:shared_buffers",
+    "pg:effective_cache_size",
+    "pg:work_mem",
+    "pg:max_connections",
+    "DATABASE_POOL_MAX",
+    "DATABASE_POOL_MIN",
+    "DB_POOL_PRIMARY_MAX",
+    "DB_POOL_PRIMARY_MIN",
+    "DB_POOL_REPORT_MAX",
+    "DB_POOL_REPORT_MIN",
+    "DB_MAX_CONNECTIONS",
+];
+
+/// The time-series store's settings, by the database type.
+fn ts_keys(flavor: Flavor) -> &'static [&'static str] {
+    match flavor {
+        Flavor::Clickhouse => &["CLICKHOUSE_TS_BATCH_SIZE", "CLICKHOUSE_TS_BATCH_MAX_DELAY_MS", "CLICKHOUSE_TS_BATCH_THREADS"],
+        Flavor::Timescaledb => &["SENTIENT_TS_KV_CHUNK_DAYS", "SENTIENT_TS_KV_COMPRESS_AFTER_DAYS"],
+        _ => &[],
+    }
 }
 
-pub(crate) fn section(theme: &gpui_kit::component::Theme, title: &'static str, about: Option<&'static str>) -> Div {
-    ui::panel(theme)
-        .gap_1()
-        .child(div().font_weight(FontWeight::MEDIUM).child(title))
-        .when_some(about, |p, a| p.child(div().pb_1().text_sm().text_color(theme.muted_foreground).child(a)))
+/// A setting typed into an input (not a choice or a switch): Enter moves
+/// through these.
+pub(crate) fn is_input(s: &Setting) -> bool {
+    crate::manager::setting_field::choices_for(&s.env).is_none() && s.kind() != crate::catalog::ValueKind::Switch
+}
+
+/// The tab a setting is on (0 General … 3 History and cleanup, 4 All
+/// variables for the rest), for the tabs' counts. Shared with a remote
+/// server's.
+pub(crate) fn tab_index_of(key: &str) -> usize {
+    if key.starts_with("port:") {
+        return 2;
+    }
+    if key.starts_with("pg:") {
+        return 1;
+    }
+    TAB_KEYS.iter().position(|keys| keys.contains(&key)).unwrap_or(4)
+}
+
+/// A setting's line in the leave prompt: "Name: old to new".
+pub(crate) fn change_line(s: &Setting, old: &str, new: &str) -> String {
+    use crate::manager::setting_field::current_words;
+    format!("{}: {} to {}", s.short_label(), current_words(s, old), current_words(s, new))
+}
+
+/// The bar's small line when a field is not valid: its name and whether
+/// it needs a number or another number.
+pub(crate) fn first_invalid_of(s: &Setting, value: &str) -> (String, bool) {
+    (s.short_label(), value.trim().parse::<u64>().is_err())
 }
 
 impl SettingsPage {
@@ -679,66 +851,10 @@ impl SettingsPage {
         Some(format!("{}\n\nVariable: {}. Built-in value: {default}.", s.help, s.env))
     }
 
-    /// Buttons for a choice; the one matching the field is selected. A value
-    /// that matches none shows as "Custom: …".
-    /// A yes/no setting as a switch (crate::manager::setting_field).
-    fn switch(&self, key: &'static str, cx: &mut Context<Self>) -> AnyElement {
-        match self.find(key).cloned() {
-            Some(st) => self.field(&st, cx),
-            None => div().into_any_element(),
-        }
-    }
-
-    fn choice(&self, key: &'static str, choices: Choices, cx: &mut Context<Self>) -> Div {
-        let now = self.value(key, cx);
-        let builtin = self.find(key).map(|s| s.default.clone()).unwrap_or_default();
-        // The value in effect: the field, else the built-in one. A log filter
-        // ("info,sqlx=warn") counts by its overall level.
-        let effective = if now.is_empty() { builtin.clone() } else { now.clone() };
-        let level = |v: &str| v.split(',').next().unwrap_or("").trim().to_string();
-        let exact = choices.iter().position(|(_, v)| !v.is_empty() && (*v == effective || (key == "RUST_LOG" && *v == level(&effective))));
-        let selected_at = exact.or_else(|| if now.is_empty() { choices.iter().position(|(_, v)| v.is_empty()) } else { None });
-        let selected = |v: &str| selected_at.is_some_and(|i| choices[i].1 == v);
-        let any = selected_at.is_some();
-        let now = if now.is_empty() { builtin } else { now };
-        let muted = cx.theme().muted_foreground;
-        let theme = cx.theme().clone();
-        h_flex()
-            .gap_2()
-            .flex_wrap()
-            .child(ui::seg_track(&theme).children(choices.iter().map(|(label, value)| {
-                ui::seg_item(&theme, SharedString::from(format!("{key}-{value}")), *label, selected(value)).on_click(cx.listener(move |this, _, window, cx| {
-                    this.set(key, value, window, cx);
-                    cx.notify();
-                }))
-            })))
-            .when(!any, |r| r.child(div().text_sm().text_color(muted).child(format!("Custom: {now}"))))
-    }
-
-    fn input(&self, key: &str, width: f32) -> Div {
-        div().w(px(width)).child(Input::new(&self.inputs[key]))
-    }
-
-    fn catalog_row(&self, theme: &gpui_kit::component::Theme, key: &'static str, width: f32, cx: &mut Context<Self>) -> Div {
-        let Some(setting) = self.find(key).cloned() else {
-            return row(theme, key, None, false, self.input(key, width));
-        };
-        let changed = self.is_changed(key, cx);
-        row(theme, setting.short_label(), self.help(key), changed, self.field(&setting, cx))
-    }
-
-    /// A catalog setting's field, by its kind (crate::manager::setting_field).
-    fn field(&self, setting: &crate::catalog::Setting, cx: &mut Context<Self>) -> AnyElement {
-        match self.field_parts(setting, false, cx) {
-            (f, Some(b)) => h_flex().flex_1().min_w_0().gap_2().items_center().child(f).child(b).into_any_element(),
-            (f, None) => f,
-        }
-    }
-
-    /// The field and its file button apart (the All variables table).
-    fn field_parts(&self, setting: &crate::catalog::Setting, table: bool, cx: &mut Context<Self>) -> (AnyElement, Option<AnyElement>) {
+    /// A catalog setting's control (crate::manager::setting_field).
+    fn control(&self, setting: &Setting, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         use crate::manager::setting_field::{self, FileButton};
-        let Some(input) = self.inputs.get(&setting.env) else { return (div().into_any_element(), None) };
+        let Some(input) = self.inputs.get(&setting.env) else { return div().into_any_element() };
         let this = cx.entity().downgrade();
         let key = setting.env.clone();
         let set: setting_field::SetFn = std::rc::Rc::new(move |v, window, cx| {
@@ -753,51 +869,92 @@ impl SettingsPage {
         let choose: setting_field::ActFn = std::rc::Rc::new(move |window, cx| {
             this.update(cx, |page, cx| page.choose_file(key.clone(), window, cx)).ok();
         });
-        setting_field::field_parts(setting, input, set, FileButton::Choose(choose), table, cx)
+        setting_field::control(setting, input, set, FileButton::Choose(choose), window, cx)
+    }
+
+    /// A catalog setting's row: name, (i), Restart when its change
+    /// restarts SENTIENT, the field, the value in effect in words. `desc`:
+    /// the small line under the name.
+    fn setting_row(&self, key: &str, desc: Option<String>, window: &Window, cx: &mut Context<Self>) -> Option<ui::SettingRow> {
+        let st = self.find(key)?.clone();
+        let changed = self.is_changed(key, cx);
+        let applied = self.applied.get(key).cloned().unwrap_or_default();
+        Some(ui::SettingRow {
+            label: st.short_label().into(),
+            help: self.help(key),
+            desc,
+            restart: changed,
+            changed,
+            control: self.control(&st, window, cx),
+            wide: false,
+            current: Some(crate::manager::setting_field::current_words(&st, &applied)),
+            first: false,
+        })
+    }
+
+    /// One of SENTIENT's own ports: a port field (not a catalog setting).
+    fn port_row(&self, key: &'static str, label: &'static str, window: &Window, cx: &mut Context<Self>) -> ui::SettingRow {
+        let theme = cx.theme().clone();
+        let now = self.value(key, cx);
+        let changed = self.is_changed(key, cx);
+        let busy = changed && now.parse::<u16>().is_ok_and(sentient_installer_core::checks::port_busy);
+        let applied = self.applied.get(key).cloned().unwrap_or_default();
+        ui::SettingRow {
+            label: label.into(),
+            help: None,
+            desc: busy.then(|| "In use by another program".to_string()),
+            restart: changed,
+            changed,
+            control: ui::field_input(&theme, &self.inputs[key], Some(ui::Slot::Unit("port".into())), self.problem(key, cx), false, window, cx).into_any_element(),
+            wide: false,
+            current: Some(if applied.is_empty() { "Not set".to_string() } else { applied }),
+            first: false,
+        }
     }
 
     // ---- tabs --------------------------------------------------------------
 
-    fn platform(&self, theme: &gpui_kit::component::Theme, record: &InstallationRecord, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn platform(&self, theme: &gpui_kit::component::Theme, record: &InstallationRecord, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let start = crate::self_install::autostart()
             .map(|(on, delay)| if on { format!("With Windows, after {delay} s") } else { "Manual".into() })
             .unwrap_or_else(|| "With the system".into());
+        let platform: Vec<ui::SettingRow> = vec![
+            row(theme, "Address users open", Some("Where browsers open SENTIENT. The web port is under Network and certificates.".into()), false, text_value(theme, record.url())),
+        ]
+        .into_iter()
+        .chain(["RUST_LOG", "ANALYTICS_ENABLED"].iter().filter_map(|k| self.setting_row(k, None, window, cx)))
+        .chain(std::iter::once(row(theme, "Starts", Some("Start with Windows, the start delay and the operator screen are under Startup.".into()), false, text_value(theme, start))))
+        .collect();
+        let licence: Vec<ui::SettingRow> = ["LICENSE_SERVER_URL", "LICENSE_HEARTBEAT_INTERVAL_SECS", "LICENSE_BINDING_CHECK_INTERVAL_SECS"].iter().filter_map(|k| self.setting_row(k, None, window, cx)).collect();
         vec![
             self.admin_section(theme, cx).into_any_element(),
-            section(theme, "Platform", Some("How SENTIENT runs on this computer."))
-                .child(row(theme, "Address users open", Some("Where browsers open SENTIENT. The web port is under Network and certificates.".into()), false, div().text_sm().child(record.url())))
-                .child(row(theme, "Log detail", self.help("RUST_LOG"), self.is_changed("RUST_LOG", cx), self.choice("RUST_LOG", LOG_LEVELS, cx)))
-                .child(row(theme, "Analytics engine", self.help("ANALYTICS_ENABLED"), self.is_changed("ANALYTICS_ENABLED", cx), self.switch("ANALYTICS_ENABLED", cx)))
-                .child(row(theme, "Starts", Some("Start with Windows, the start delay and the operator screen are under Startup.".into()), false, div().text_sm().child(start)))
-                .into_any_element(),
-            section(theme, "Licence", None)
-                .child(self.catalog_row(theme, "LICENSE_SERVER_URL", 320., cx))
-                .child(self.catalog_row(theme, "LICENSE_HEARTBEAT_INTERVAL_SECS", 120., cx))
-                .into_any_element(),
+            ui::group(theme, "Platform", platform, vec![], cx).into_any_element(),
+            ui::group(theme, "Licence", licence, vec![], cx).into_any_element(),
         ]
     }
 
     /// The system administrators, their password and lockout, and signing
     /// everyone out: all through SENTIENT's own command.
     fn admin_section(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
-        let mut sec = section(
-            theme,
-            "System administrator",
-            Some("For when nobody can sign in. Changes go through SENTIENT's own administration command and are written to its audit log; SENTIENT keeps running."),
-        );
+        let mut rows: Vec<ui::SettingRow> = Vec::new();
+        let mut extra: Vec<AnyElement> = Vec::new();
         match &self.admins {
             None => {
-                sec = sec.child(
+                rows.push(row(
+                    theme,
+                    "Accounts",
+                    Some("For when nobody can sign in. Changes go through SENTIENT's own administration command and are written to its audit log; SENTIENT keeps running.".into()),
+                    false,
                     h_flex()
-                        .gap_2()
+                        .gap(crate::ui::button_gap())
                         .items_center()
                         .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading the accounts…" } else { "Not read. Reading asks for the administrator password." }))
-                        .when(!self.reading_admin, |r| r.child(crate::ui::button("read-admins").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
-                );
+                        .when(!self.reading_admin, |r| r.child(crate::ui::probed(crate::ui::button("read-admins").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx)))))),
+                ));
             }
-            Some(Err(e)) => sec = sec.child(ui::outcome(theme, Tone::Warn, e.clone())),
+            Some(Err(e)) => extra.push(ui::outcome(theme, Tone::Warn, e.clone()).into_any_element()),
             Some(Ok(list)) => {
-                for (i, a) in list.iter().enumerate() {
+                for a in list.iter() {
                     let email = a.email.clone().unwrap_or_default();
                     let locked = a.locked_since.is_some();
                     let state = if locked {
@@ -813,15 +970,16 @@ impl SettingsPage {
                         .map(|t| format!(" · last sign-in {}", t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M")))
                         .unwrap_or_default();
                     let (e1, e2) = (email.clone(), email.clone());
-                    sec = sec.child(row(
+                    rows.push(row(
                         theme,
                         email.clone(),
                         None,
                         false,
                         h_flex()
+                            .w_full()
                             .gap(crate::ui::button_gap())
                             .items_center()
-                            .child(div().flex_1().text_sm().text_color(if locked { theme.danger } else { theme.muted_foreground }).child(format!("{state}{last}")))
+                            .child(div().flex_1().min_w_0().text_sm().text_color(if locked { theme.danger } else { theme.muted_foreground }).child(format!("{state}{last}")))
                             .when(locked, |r| {
                                 r.child(crate::ui::probed(crate::ui::button(SharedString::from(format!("unlock-{email}"))).outline().label("Unlock").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                     let e = e1.clone();
@@ -833,15 +991,15 @@ impl SettingsPage {
                                 this.admin_result = None;
                                 cx.notify();
                             })))),
-                    ).when(i == 0, |r| r));
+                    ));
                 }
-                sec = sec.child(row(
+                rows.push(row(
                     theme,
                     "Everyone signed in",
                     Some("Makes every open session sign in again, on every device.".into()),
                     false,
-                    h_flex().child(crate::ui::button("sign-out-all").outline().label("Sign everyone out…").disabled(self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.confirm_sign_out_all(window, cx)))),
-                ).when(list.is_empty(), |r| r));
+                    h_flex().child(crate::ui::probed(crate::ui::button("sign-out-all").outline().label("Sign everyone out…").disabled(self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.confirm_sign_out_all(window, cx))))),
+                ));
             }
         }
         if let Some(email) = &self.reset_for {
@@ -854,10 +1012,9 @@ impl SettingsPage {
             } else {
                 None
             };
-            sec = sec.child(
+            extra.push(
                 v_flex()
                     .gap_2()
-                    .mt_2()
                     .p_3()
                     .rounded(theme.radius)
                     .border_1()
@@ -866,6 +1023,7 @@ impl SettingsPage {
                     .child(div().text_sm().text_color(theme.muted_foreground).child("The new password works at once; the account's open sessions are signed out and it is unlocked."))
                     .child(
                         h_flex()
+                            .flex_wrap()
                             .gap_3()
                             .child(v_flex().gap_1().w(px(240.)).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("New password")).child(Input::new(&self.new_pw).mask_toggle()))
                             .child(v_flex().gap_1().w(px(240.)).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Repeat it")).child(Input::new(&self.repeat_pw).mask_toggle())),
@@ -879,19 +1037,20 @@ impl SettingsPage {
                                 this.reset_for = None;
                                 cx.notify();
                             })))),
-                    ),
+                    )
+                    .into_any_element(),
             );
         }
         if self.admin_busy {
-            sec = sec.child(div().text_sm().text_color(theme.muted_foreground).child("Working…"));
+            extra.push(div().text_sm().text_color(theme.muted_foreground).child("Working…").into_any_element());
         }
         if let Some((tone, text)) = &self.admin_result {
-            sec = sec.child(ui::outcome(theme, *tone, text.clone()));
+            extra.push(ui::outcome(theme, *tone, text.clone()).into_any_element());
         }
-        sec
+        ui::group(theme, "System administrator", rows, extra, cx)
     }
 
-    fn database(&self, theme: &gpui_kit::component::Theme, record: &InstallationRecord, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn database(&self, theme: &gpui_kit::component::Theme, record: &InstallationRecord, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let current = self.preset(cx);
         let open_custom = self.custom_db || current.is_none();
         let presets = ui::seg_track(theme)
@@ -912,308 +1071,136 @@ impl SettingsPage {
             }
         };
         let pg_changed = PRESET_KEYS.iter().filter(|k| k.starts_with("pg:")).any(|k| self.is_changed(k, cx));
-        let mut pg = section(theme, "PostgreSQL memory and connections", None)
-            .child(row(theme, "This computer", None, false, div().text_sm().child(format!("{} of memory", crate::dbstatus::bytes_label(self.ram_mb << 20)))))
-            .child(row(theme, "Size for", Some("Sets PostgreSQL's memory and connections and SENTIENT's connection pools together. Custom shows the exact numbers.".into()), false, presets));
+        let mut rows = vec![
+            row(theme, "This computer", None, false, text_value(theme, format!("{} of memory", crate::dbstatus::bytes_label(self.ram_mb << 20)))),
+            row(theme, "Size for", Some("Sets PostgreSQL's memory and connections and SENTIENT's connection pools together. Custom shows the exact numbers.".into()), false, h_flex().pt_1().child(presets)),
+        ];
         if open_custom {
-            for k in [
-                "pg:shared_buffers",
-                "pg:effective_cache_size",
-                "pg:work_mem",
-                "pg:max_connections",
-                "DATABASE_POOL_MAX",
-                "DATABASE_POOL_MIN",
-                "DB_POOL_PRIMARY_MAX",
-                "DB_POOL_PRIMARY_MIN",
-                "DB_POOL_REPORT_MAX",
-                "DB_POOL_REPORT_MIN",
-                "DB_MAX_CONNECTIONS",
-            ] {
-                pg = pg.child(match self.find(k).cloned() {
-                    Some(st) => {
-                        let changed = self.is_changed(k, cx);
-                        // Every exact field one width.
-                        let field = h_flex().w(px(200.)).justify_end().child(self.field(&st, cx));
-                        row_with_var(theme, st.short_label(), k, self.help(k), changed, field)
-                    }
-                    None => self.catalog_row(theme, k, 160., cx),
-                });
+            for k in DB_EXACT {
+                rows.extend(self.setting_row(k, Some(k.trim_start_matches("pg:").to_string()), window, cx));
             }
         } else {
-            pg = pg
-                .child(row(theme, "Memory for PostgreSQL", self.help("pg:shared_buffers"), self.is_changed("pg:shared_buffers", cx), div().text_sm().child(shown("pg:shared_buffers"))))
-                .child(row(theme, "Memory per query", self.help("pg:work_mem"), self.is_changed("pg:work_mem", cx), div().text_sm().child(shown("pg:work_mem"))))
-                .child(row(theme, "Connections allowed", self.help("pg:max_connections"), self.is_changed("pg:max_connections", cx), div().text_sm().child(shown("pg:max_connections"))))
-                .child(row(theme, "SENTIENT's connection pool", self.help("DATABASE_POOL_MAX"), self.is_changed("DATABASE_POOL_MAX", cx), div().text_sm().child(shown("DATABASE_POOL_MAX"))));
+            for (label, k) in [("Memory for PostgreSQL", "pg:shared_buffers"), ("Memory per query", "pg:work_mem"), ("Connections allowed", "pg:max_connections"), ("SENTIENT's connection pool", "DATABASE_POOL_MAX")] {
+                rows.push(row(theme, label, self.help(k), self.is_changed(k, cx), text_value(theme, shown(k))));
+            }
         }
-        if pg_changed {
-            pg = pg.child(ui::outcome(theme, Tone::Warn, "Changing PostgreSQL's memory or connections restarts PostgreSQL: SENTIENT is offline for about half a minute."));
-        }
-        let mut out = vec![pg.into_any_element()];
-        let ts: Option<(&'static str, Vec<&'static str>)> = match record.flavor() {
-            Flavor::Clickhouse => Some(("Telemetry history (ClickHouse)", vec!["CLICKHOUSE_TS_BATCH_SIZE", "CLICKHOUSE_TS_BATCH_MAX_DELAY_MS", "CLICKHOUSE_TS_BATCH_THREADS"])),
-            Flavor::Timescaledb => Some(("Telemetry history (TimescaleDB)", vec!["SENTIENT_TS_KV_CHUNK_DAYS", "SENTIENT_TS_KV_COMPRESS_AFTER_DAYS"])),
+        let warn = if pg_changed {
+            vec![ui::outcome(theme, Tone::Warn, "Changing PostgreSQL's memory or connections restarts PostgreSQL: SENTIENT is offline for about half a minute.").into_any_element()]
+        } else {
+            vec![]
+        };
+        let mut out = vec![ui::group(theme, "PostgreSQL memory and connections", rows, warn, cx).into_any_element()];
+        let title = match record.flavor() {
+            Flavor::Clickhouse => Some("Telemetry history (ClickHouse)"),
+            Flavor::Timescaledb => Some("Telemetry history (TimescaleDB)"),
             _ => None,
         };
-        if let Some((title, keys)) = ts {
-            let mut s = section(theme, title, None);
-            for (i, k) in keys.into_iter().enumerate() {
-                s = s.child(self.catalog_row(theme, k, 160., cx).when(i == 0, |r| r));
-            }
-            out.push(s.into_any_element());
+        if let Some(title) = title {
+            let rows: Vec<ui::SettingRow> = ts_keys(record.flavor()).iter().filter_map(|k| self.setting_row(k, None, window, cx)).collect();
+            out.push(ui::group(theme, title, rows, vec![], cx).into_any_element());
         }
         if let Some(l) = &self.locations {
-            out.push(l.clone().into_any_element());
+            out.push(ui::group(theme, "Where the data is", vec![], vec![l.clone().into_any_element()], cx).into_any_element());
             return out;
         }
         out.push(
-            section(theme, "Where the data is", Some("Sizes, free disk and growth are on Status."))
-                .child(row(theme, "PostgreSQL", None, false, div().text_sm().child(if record.engine == Engine::Docker {
+            ui::group(
+                theme,
+                "Where the data is",
+                vec![row(theme, "PostgreSQL", Some("Sizes, free disk and growth are on Status.".into()), false, text_value(theme, if record.engine == Engine::Docker {
                     "In its Docker volume".to_string()
                 } else {
                     format!("{}, port {}", record.pg_dir.display(), record.stack.pg_port)
-                })))
-                .into_any_element(),
+                }))],
+                vec![],
+                cx,
+            )
+            .into_any_element(),
         );
         out
     }
 
-    fn network(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let mut ports = section(theme, "Ports", Some("SENTIENT's own ports. A new port is checked free before it is used."));
-        for (i, (key, label)) in PORTS.into_iter().enumerate() {
-            let now = self.value(key, cx);
-            let changed = self.is_changed(key, cx);
-            let busy = changed && now.parse::<u16>().is_ok_and(sentient_installer_core::checks::port_busy);
-            ports = ports.child(row(
-                theme,
-                label,
-                None,
-                changed,
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(self.input(key, 110.))
-                    .when(busy, |r| r.child(ui::pill(theme, Tone::Warn, "in use by another program"))),
-            ).when(i == 0, |r| r));
-        }
-        ports = ports.child(self.catalog_row(theme, "EDGE_GRPC_PORT", 110., cx));
-        let mut certs = section(
-            theme,
-            "Certificates",
-            Some("PEM files on this computer. Without the HTTPS pair SENTIENT is served over HTTP; without the MQTT pair, MQTT over TLS is off."),
-        );
-        for (i, (key, label)) in CERTS.into_iter().enumerate() {
-            certs = certs.child(row(
-                theme,
-                label,
-                self.help(key),
-                self.is_changed(key, cx),
-                h_flex().gap_2().child(self.input(key, 360.)).child(
-                    crate::ui::button(SharedString::from(format!("choose-{key}")))
-                        .outline()
-                        .label("Choose…")
-                        .on_click(cx.listener(move |this, _, window, cx| this.choose_file(key, window, cx))),
-                ),
-            ).when(i == 0, |r| r));
-        }
+    fn network(&self, theme: &gpui_kit::component::Theme, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut ports: Vec<ui::SettingRow> = PORTS.into_iter().map(|(key, label)| self.port_row(key, label, window, cx)).collect();
+        ports.extend(self.setting_row("EDGE_GRPC_PORT", None, window, cx));
+        let certs: Vec<ui::SettingRow> = CERTS
+            .into_iter()
+            .filter_map(|(key, label)| {
+                let mut r = self.setting_row(key, None, window, cx)?;
+                r.label = label.into();
+                Some(r)
+            })
+            .collect();
+        let access: Vec<ui::SettingRow> = ["SENTIENT_CORS_ALLOWED_ORIGINS", "SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT"].iter().filter_map(|k| self.setting_row(k, None, window, cx)).collect();
         vec![
-            ports.into_any_element(),
-            certs.into_any_element(),
-            section(theme, "Access", None)
-                .child(self.catalog_row(theme, "SENTIENT_CORS_ALLOWED_ORIGINS", 360., cx))
-                .child(row(
-                    theme,
-                    "Device claiming",
-                    self.help("SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT"),
-                    self.is_changed("SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT", cx),
-                    self.switch("SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT", cx),
-                ))
-                .into_any_element(),
+            ui::group(theme, "Ports", ports, vec![], cx).into_any_element(),
+            ui::group(theme, "Certificates", certs, vec![], cx).into_any_element(),
+            ui::group(theme, "Access", access, vec![], cx).into_any_element(),
         ]
     }
 
-    fn retention(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let keep = section(theme, "How long data is kept", Some("Older records are deleted by SENTIENT's nightly cleanup."))
-            .child(row(theme, "Audit log", self.help("AUDIT_LOG_TTL_DAYS"), self.is_changed("AUDIT_LOG_TTL_DAYS", cx), self.choice("AUDIT_LOG_TTL_DAYS", KEEP_DAYS, cx)))
-            .child(row(theme, "Notifications", self.help("NOTIFICATIONS_TTL_DAYS"), self.is_changed("NOTIFICATIONS_TTL_DAYS", cx), self.choice("NOTIFICATIONS_TTL_DAYS", KEEP_DAYS, cx)))
-            .child(row(
-                theme,
-                "Events",
-                self.help("SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS"),
-                self.is_changed("SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS", cx),
-                self.choice("SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS", KEEP_EVENTS, cx),
-            ))
-            .child(row(
-                theme,
-                "Debug events",
-                self.help("SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS"),
-                self.is_changed("SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS", cx),
-                self.choice("SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS", KEEP_DEBUG, cx),
-            ))
-;
-        let keep = keep.child(self.history_rows(theme, cx));
-        let cleanup = section(theme, "Cleanup", None)
-            .child(row(theme, "Audit log cleanup", self.help("AUDIT_LOG_CLEANUP_ENABLED"), self.is_changed("AUDIT_LOG_CLEANUP_ENABLED", cx), self.switch("AUDIT_LOG_CLEANUP_ENABLED", cx)))
-            .child(row(theme, "Event cleanup", self.help("SENTIENT__EVENT_CLEANUP__ENABLED"), self.is_changed("SENTIENT__EVENT_CLEANUP__ENABLED", cx), self.switch("SENTIENT__EVENT_CLEANUP__ENABLED", cx)));
-        vec![keep.into_any_element(), cleanup.into_any_element()]
+    fn retention(&self, theme: &gpui_kit::component::Theme, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut keep: Vec<ui::SettingRow> = ["AUDIT_LOG_TTL_DAYS", "NOTIFICATIONS_TTL_DAYS", "SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS", "SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS"].iter().filter_map(|k| self.setting_row(k, None, window, cx)).collect();
+        keep.extend(self.history_rows(theme, cx));
+        let cleanup: Vec<ui::SettingRow> = ["AUDIT_LOG_CLEANUP_ENABLED", "SENTIENT__EVENT_CLEANUP__ENABLED"].iter().filter_map(|k| self.setting_row(k, None, window, cx)).collect();
+        vec![ui::group(theme, "How long data is kept", keep, vec![], cx).into_any_element(), ui::group(theme, "Cleanup", cleanup, vec![], cx).into_any_element()]
     }
 
     /// Telemetry history and alarms: the default tenant profile's retention,
-    /// through SENTIENT's own command, saved on its own.
-    fn history_rows(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
+    /// through SENTIENT's own command (applied with the bar).
+    fn history_rows(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Vec<ui::SettingRow> {
         const DAYS: [(&str, i64); 5] = [("Forever", 0), ("30 days", 30), ("90 days", 90), ("1 year", 365), ("3 years", 1095)];
         let help = "For tenants that use the default tenant profile (a tenant with its own profile keeps its own). Older values are deleted by SENTIENT's nightly cleanup.";
+        let words = |d: i64| DAYS.iter().find(|(_, x)| *x == d).map(|(l, _)| l.to_string()).unwrap_or_else(|| format!("{d} days"));
         match &self.retention_now {
-            None => v_flex().child(row(
+            None => vec![row(
                 theme,
                 "Telemetry history and alarms",
                 Some(help.into()),
                 false,
                 h_flex()
-                    .gap_2()
+                    .gap(crate::ui::button_gap())
+                    .items_center()
                     .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading…" } else { "Not read." }))
-                    .when(!self.reading_admin, |r| r.child(crate::ui::button("read-retention").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx))))),
-            )),
-            Some(Err(e)) => v_flex().child(row(theme, "Telemetry history and alarms", Some(help.into()), false, div().text_sm().text_color(theme.muted_foreground).child(e.clone()))),
+                    .when(!self.reading_admin, |r| r.child(crate::ui::probed(crate::ui::button("read-retention").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx)))))),
+            )],
+            Some(Err(e)) => vec![row(theme, "Telemetry history and alarms", Some(help.into()), false, text_value(theme, e.clone()))],
             Some(Ok(now)) => {
                 let now = *now;
                 let edit = self.retention_edit;
-                let pick = |id: &'static str, current: i64, telemetry: bool, cx: &mut Context<Self>| {
-                    h_flex().gap(crate::ui::button_gap()).flex_wrap().children(DAYS.iter().map(move |(label, d)| {
-                        let d = *d;
-                        let b = crate::ui::button(SharedString::from(format!("{id}-{d}"))).label(*label).on_click(cx.listener(move |this, _, _, cx| {
-                            if telemetry { this.retention_edit.telemetry_days = d } else { this.retention_edit.alarms_days = d }
+                let labels: Vec<&str> = DAYS.iter().map(|(l, _)| *l).collect();
+                let mut out = Vec::new();
+                for (label, id, current, was, telemetry) in [("Telemetry history", "ret-tel", edit.telemetry_days, now.telemetry_days, true), ("Alarms", "ret-alarm", edit.alarms_days, now.alarms_days, false)] {
+                    let this = cx.entity().downgrade();
+                    let pick = std::rc::Rc::new(move |i: usize, _: &mut Window, cx: &mut App| {
+                        let d = DAYS[i].1;
+                        this.update(cx, |p, cx| {
+                            if telemetry { p.retention_edit.telemetry_days = d } else { p.retention_edit.alarms_days = d }
                             cx.notify();
-                        }));
-                        crate::ui::probed(if current == d { b.primary() } else { b.outline() })
-                    }))
-                };
-                let changed = edit != now;
-                v_flex()
-                    .child(row(theme, "Telemetry history", Some(help.into()), edit.telemetry_days != now.telemetry_days, pick("ret-tel", edit.telemetry_days, true, cx)))
-                    .child(row(theme, "Alarms", Some(help.into()), edit.alarms_days != now.alarms_days, pick("ret-alarm", edit.alarms_days, false, cx)))
-                    .when(changed, |c| {
-                        c.child(
-                            h_flex()
-                                .gap(crate::ui::button_gap())
-                                .pt_1()
-                                .child(crate::ui::probed(crate::ui::button("save-retention").primary().label("Save").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
-                                    let r = this.retention_edit;
-                                    this.admin_action(move |rec| crate::sentient_admin::set_retention(rec, r), cx);
-                                }))))
-                                .child(crate::ui::probed(crate::ui::button("undo-retention").outline().label("Discard").on_click(cx.listener(move |this, _, _, cx| {
-                                    this.retention_edit = now;
-                                    cx.notify();
-                                })))),
-                        )
-                    })
+                        })
+                        .ok();
+                    });
+                    out.push(ui::SettingRow {
+                        label: label.into(),
+                        help: Some(help.into()),
+                        desc: None,
+                        restart: false,
+                        changed: current != was,
+                        control: ui::chips(theme, id, &labels, DAYS.iter().position(|(_, d)| *d == current), pick).into_any_element(),
+                        wide: false,
+                        current: Some(words(was)),
+                        first: false,
+                    });
+                }
+                out
             }
         }
     }
 
-    fn advanced(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn advanced(&self, theme: &gpui_kit::component::Theme, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let needle = self.search.read(cx).value().to_lowercase();
         let set_here = self.groups.iter().flat_map(|g| g.settings.iter()).filter(|s| !self.value(&s.env, cx).is_empty() || self.is_changed(&s.env, cx)).count();
         let total: usize = self.groups.iter().map(|g| g.settings.len()).sum();
-        let nav_item = |id: SharedString, text: String, active: bool| {
-            h_flex()
-                .id(id)
-                .px_3()
-                .py_1p5()
-                .rounded(theme.radius)
-                .text_sm()
-                .cursor_pointer()
-                .when(active, |d| d.bg(theme.accent).text_color(theme.primary))
-                .when(!active, |d| d.text_color(theme.muted_foreground))
-                .child(text)
-        };
-        let groups_nav = v_flex()
-            .w(px(210.))
-            .flex_shrink_0()
-            .gap_0p5()
-            .child(nav_item("group-all".into(), format!("All · {total}"), self.group.is_none()).on_click(cx.listener(|this, _, _, cx| {
-                this.group = None;
-                cx.notify();
-            })))
-            .children(self.groups.iter().map(|g| {
-                let name = g.name.clone();
-                nav_item(SharedString::from(format!("group-{}", g.name)), format!("{} · {}", g.name, g.settings.len()), self.group.as_deref() == Some(&g.name))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.group = Some(name.clone());
-                        cx.notify();
-                    }))
-            }));
-        let mut table = ui::panel(theme).gap_0().flex_1().min_w_0().overflow_hidden().child(table_header(theme));
-        let mut rows = 0;
-        for g in self.groups.iter().filter(|g| self.group.as_ref().is_none_or(|n| n == &g.name)) {
-            for s in &g.settings {
-                let changed = self.is_changed(&s.env, cx);
-                let set = !self.value(&s.env, cx).is_empty();
-                if self.changed_only && !(changed || set) {
-                    continue;
-                }
-                if !needle.is_empty() && !format!("{} {} {} {}", s.label, s.env, g.name, s.help).to_lowercase().contains(&needle) {
-                    continue;
-                }
-                rows += 1;
-                let key = s.env.clone();
-                let label: SharedString = if self.show_names { s.env.clone().into() } else { s.short_label().into() };
-                let (field, action) = self.field_parts(s, true, cx);
-                table = table.child(table_row(
-                    theme,
-                    label,
-                    self.help(&s.env),
-                    changed,
-                    table_cells(
-                        theme,
-                        &s.env,
-                        field,
-                        action,
-                        builtin_label(s),
-                        set.then(|| {
-                            crate::ui::button(SharedString::from(format!("reset-{}", s.env)))
-                                .ghost()
-                                .label("Reset")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.set(&key, "", window, cx);
-                                    cx.notify();
-                                }))
-                                .into_any_element()
-                        }),
-                    ),
-                ));
-            }
-        }
-        if rows == 0 {
-            table = table.child(div().py_3().text_sm().text_color(theme.muted_foreground).child("Nothing matches."));
-        }
-        let mut added = section(theme, "Added variables", Some("Variables SENTIENT reads that are not in the list above. For support and special cases."));
-        for (i, (n, v)) in self.custom.iter().enumerate() {
-            added = added.child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .py_1()
-                    .child(div().w(px(250.)).child(Input::new(n)))
-                    .child(div().w(px(260.)).child(Input::new(v)))
-                    .child(crate::ui::button(SharedString::from(format!("remove-var-{i}"))).ghost().label("Remove").on_click(cx.listener(move |this, _, _, cx| {
-                        if i < this.custom.len() {
-                            this.custom.remove(i);
-                        }
-                        cx.notify();
-                    }))),
-            );
-        }
-        let name_ok = crate::settings::valid_name(&self.new_name.read(cx).value());
-        added = added.child(
-            h_flex()
-                .gap_2()
-                .items_center()
-                .pt_1()
-                .child(div().w(px(250.)).child(Input::new(&self.new_name)))
-                .child(div().w(px(260.)).child(Input::new(&self.new_value)))
-                .child(crate::ui::button("add-var").outline().label("Add a variable").disabled(!name_ok).on_click(cx.listener(|this, _, window, cx| this.add_variable(window, cx)))),
-        );
         let filter = |id: &'static str, text: String, on: bool, only: bool| {
             let b = crate::ui::button(id).label(text).on_click(cx.listener(move |this, _, _, cx| {
                 this.changed_only = only;
@@ -1221,39 +1208,192 @@ impl SettingsPage {
             }));
             if on { b.primary() } else { b.outline() }
         };
-        vec![
+        let mut out = vec![
             h_flex()
+                .flex_wrap()
                 .gap(crate::ui::button_gap())
                 .items_center()
-                .child(div().flex_1().child(Input::new(&self.search).cleanable(true)))
+                .px(px(18.))
+                .pt(px(14.))
+                .child(div().flex_1().min_w(px(200.)).child(Input::new(&self.search).cleanable(true)))
                 .child(crate::ui::probed(filter("filter-all", format!("All {total}"), !self.changed_only, false)))
                 .child(crate::ui::probed(filter("filter-set", format!("Set {set_here}"), self.changed_only, true)))
-                .child(crate::ui::probed(
-                    crate::ui::button("show-names")
-                        .ghost()
-                        .label(if self.show_names { "Show plain names" } else { "Show variable names" })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.show_names = !this.show_names;
-                            cx.notify();
-                        })),
-                ))
                 .into_any_element(),
-            h_flex().gap(px(crate::ui::GAP)).items_start().child(groups_nav).child(table).into_any_element(),
-            added.into_any_element(),
-        ]
+        ];
+        let mut any = false;
+        for g in &self.groups {
+            let mut rows = Vec::new();
+            let shown: Vec<Setting> = g.settings.iter().filter(|s| self.table_shows(g, s, &needle, cx)).cloned().collect();
+            for s in &shown {
+                let Some(mut r) = self.setting_row(&s.env, Some(s.env.clone()), window, cx) else { continue };
+                // A value set here can go back to the built-in one.
+                if !self.value(&s.env, cx).is_empty() {
+                    let key = s.env.clone();
+                    r.label = r.label.clone();
+                    r.desc = Some(format!("{} · set here", s.env));
+                    let reset = crate::ui::button(SharedString::from(format!("reset-{}", s.env))).ghost().xsmall().label("Reset").on_click(cx.listener(move |this, _, window, cx| {
+                        this.set(&key, "", window, cx);
+                        cx.notify();
+                    }));
+                    r.control = h_flex().gap_2().items_start().child(r.control).child(div().pt(px(8.)).child(reset)).into_any_element();
+                }
+                rows.push(r);
+            }
+            if !rows.is_empty() {
+                any = true;
+                out.push(ui::group(theme, &g.name, rows, vec![], cx).into_any_element());
+            }
+        }
+        if !any {
+            out.push(div().px(px(18.)).py_3().text_sm().text_color(theme.muted_foreground).child("Nothing matches.").into_any_element());
+        }
+        let mut added: Vec<ui::SettingRow> = Vec::new();
+        for (i, (n, v)) in self.custom.iter().enumerate() {
+            added.push(row(
+                theme,
+                n.read(cx).value().to_string(),
+                None,
+                false,
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().w(px(ui::FIELD_W)).child(Input::new(v)))
+                    .child(crate::ui::button(SharedString::from(format!("remove-var-{i}"))).ghost().label("Remove").on_click(cx.listener(move |this, _, _, cx| {
+                        if i < this.custom.len() {
+                            this.custom.remove(i);
+                        }
+                        cx.notify();
+                    }))),
+            ));
+        }
+        let name_ok = crate::settings::valid_name(&self.new_name.read(cx).value());
+        added.push(row(
+            theme,
+            "Add a variable",
+            Some("Variables SENTIENT reads that are not in the list above. For support and special cases.".into()),
+            false,
+            h_flex()
+                .flex_wrap()
+                .gap_2()
+                .items_center()
+                .child(div().w(px(180.)).child(Input::new(&self.new_name)))
+                .child(div().w(px(140.)).child(Input::new(&self.new_value)))
+                .child(crate::ui::probed(crate::ui::button("add-var").outline().label("Add").disabled(!name_ok).on_click(cx.listener(|this, _, window, cx| this.add_variable(window, cx))))),
+        ));
+        out.push(ui::group(theme, "Added variables", added, vec![], cx).into_any_element());
+        out
+    }
+
+    /// The tabs' counts: (changes, holds a field not valid) per tab.
+    fn tab_badges(&self, cx: &App) -> Vec<(usize, bool)> {
+        let mut b = vec![(0usize, false); Tab::ALL.len()];
+        let at = |t: Tab| Tab::ALL.iter().position(|x| *x == t).unwrap_or(0);
+        let tab_of = |k: &str| match tab_index_of(k) {
+            0 => Tab::Platform,
+            1 => Tab::Database,
+            2 => Tab::Network,
+            3 => Tab::Retention,
+            _ => Tab::Advanced,
+        };
+        for k in self.inputs.keys() {
+            let i = at(tab_of(k));
+            if self.is_changed(k, cx) {
+                b[i].0 += 1;
+            }
+            if self.problem(k, cx).is_some() {
+                b[i].1 = true;
+            }
+        }
+        if self.custom_values(cx) != self.custom_applied {
+            b[at(Tab::Advanced)].0 += 1;
+        }
+        if let Some(Ok(now)) = &self.retention_now {
+            b[at(Tab::Retention)].0 += (self.retention_edit.telemetry_days != now.telemetry_days) as usize + (self.retention_edit.alarms_days != now.alarms_days) as usize;
+        }
+        let st = self.startup.read(cx);
+        b[at(Tab::Startup)] = (st.pending_count(cx), st.invalid_count(cx) > 0);
+        b
+    }
+
+    /// The changes as the leave prompt lists them.
+    fn change_lines(&self, cx: &App) -> Vec<String> {
+        let mut out = Vec::new();
+        for k in self.changed(cx) {
+            let old = self.applied.get(&k).cloned().unwrap_or_default();
+            let new = self.value(&k, cx);
+            match self.find(&k) {
+                Some(s) => out.push(change_line(s, &old, &new)),
+                None => {
+                    let label = PORTS.iter().find(|(p, _)| *p == k).map(|(_, l)| format!("{l} port")).unwrap_or_else(|| k.clone());
+                    out.push(format!("{label}: {} to {}", if old.is_empty() { "not set" } else { &old }, if new.is_empty() { "not set" } else { &new }));
+                }
+            }
+        }
+        if let Some(Ok(now)) = &self.retention_now {
+            if self.retention_edit.telemetry_days != now.telemetry_days {
+                out.push(format!("Telemetry history: {} to {} days", now.telemetry_days, self.retention_edit.telemetry_days));
+            }
+            if self.retention_edit.alarms_days != now.alarms_days {
+                out.push(format!("Alarms: {} to {} days", now.alarms_days, self.retention_edit.alarms_days));
+            }
+        }
+        let n = self.startup.read(cx).pending_count(cx);
+        if n > 0 {
+            out.push(format!("Startup: {n} change{}", if n == 1 { "" } else { "s" }));
+        }
+        out
+    }
+
+    /// The Apply bar's small line.
+    fn bar_line(&self, cx: &App) -> (String, bool) {
+        let (changes, _) = self.pending(cx);
+        let changed = self.changed(cx);
+        let restart = !changed.is_empty();
+        if let Some(k) = self.invalid_keys(cx).first() {
+            let (label, number) = match self.find(k) {
+                Some(s) => first_invalid_of(s, &self.value(k, cx)),
+                None => (PORTS.iter().find(|(p, _)| p == k).map(|(_, l)| format!("{l} port")).unwrap_or_else(|| k.clone()), self.value(k, cx).parse::<u64>().is_err()),
+            };
+            return (ui::pending_line(changes, &[], restart, Some((&label, number))), restart);
+        }
+        if self.startup.read(cx).invalid_count(cx) > 0 {
+            return (ui::pending_line(changes, &[], restart, Some(("Start delay", true))), restart);
+        }
+        let mut names: Vec<String> = changed
+            .iter()
+            .map(|k| self.find(k).map(|s| s.short_label()).or_else(|| PORTS.iter().find(|(p, _)| p == k).map(|(_, l)| format!("{l} port"))).unwrap_or_else(|| k.clone()))
+            .collect();
+        if let Some(Ok(now)) = &self.retention_now {
+            if self.retention_edit.telemetry_days != now.telemetry_days {
+                names.push("Telemetry history".into());
+            }
+            if self.retention_edit.alarms_days != now.alarms_days {
+                names.push("Alarms".into());
+            }
+        }
+        if self.startup.read(cx).pending_count(cx) > 0 {
+            names.push("Startup".into());
+        }
+        (ui::pending_line(changes, &names, restart, None), restart)
     }
 }
 
 impl Render for SettingsPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let page = ui::page(&theme, "Platform settings", "How SENTIENT runs on this computer. Change a value and apply it; only what changed restarts.");
+        ui::set_stacked(f32::from(window.viewport_size().width) < ui::ROW_STACK_W);
         let Some(record) = self.record.clone() else {
-            return page.child(ui::not_installed(&theme));
+            return ui::page(&theme, "Platform settings", "How SENTIENT runs on this computer. Change a value and apply it; only what changed restarts.").child(ui::not_installed(&theme)).into_any_element();
         };
+        #[cfg(debug_assertions)]
+        {
+            static ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if std::env::var("SPM_DEBUG_SETTINGS_PENDING").is_ok_and(|v| v == "leave") && !ASKED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                window.defer(cx, |window, cx| ui::debug_leave_prompt(None, window, cx));
+            }
+        }
         let job = self.job.read(cx);
         let busy = job.is_running();
-        let changed = self.changed(cx);
         // Someone else's compose file: the notice, and Apply stays off.
         let external = record.engine == crate::installation::Engine::Docker && record.stack.external.is_some();
         let foreign = external.then(|| {
@@ -1263,7 +1403,8 @@ impl Render for SettingsPage {
                 crate::ui::button("set-take-over").outline().label("Take over the compose file…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element(),
             )
         });
-        let mut problems = crate::settings::check(&self.values(cx));
+        // What no single field shows: two ports alike, an added variable's name.
+        let mut problems: Vec<String> = crate::settings::check(&self.values(cx)).into_iter().filter(|p| p.contains("already used")).collect();
         for (n, _) in self.custom_values(cx) {
             if !crate::settings::valid_name(&n) {
                 problems.push(format!("{n}: not a usable variable name (letters, digits and _)"));
@@ -1272,7 +1413,7 @@ impl Render for SettingsPage {
 
         let this = cx.entity().downgrade();
         let titles: Vec<&'static str> = Tab::ALL.iter().map(|t| t.title()).collect();
-        let tabs = tab_bar(&theme, "", &titles, Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0), std::rc::Rc::new(move |i, cx| {
+        let tabs = ui::card_tabs(&theme, "", &titles, Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0), &self.tab_badges(cx), std::rc::Rc::new(move |i, cx| {
             this.update(cx, |p, cx| {
                 p.tab = Tab::ALL[i];
                 super::session::set_settings_tab(Tab::ALL[i].session_index());
@@ -1281,53 +1422,54 @@ impl Render for SettingsPage {
             .ok();
         }));
 
-        let applybar = (!changed.is_empty()).then(|| {
-            let values = self.values(cx);
-            let stack = crate::settings::with_custom(&crate::settings::with_values(&record.stack, &values), &self.custom_values(cx));
-            let restarts = crate::settings::restarts(&record.stack, &stack).unwrap_or("Nothing restarts");
-            h_flex()
-                .gap(crate::ui::button_gap())
-                .items_center()
-                .px_4()
-                .py_2()
-                .rounded(theme.radius)
-                .bg(theme.accent)
-                .border_1()
-                .border_color(theme.primary)
-                .child(div().flex_1().text_sm().child(format!(
-                    "{} change{} · {}",
-                    changed.len(),
-                    if changed.len() == 1 { "" } else { "s" },
-                    restarts
-                )))
-                .child(crate::ui::probed(crate::ui::button("revert").outline().label("Discard").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.revert(window, cx)))))
-                .child(crate::ui::probed(
-                    crate::ui::button("apply")
-                        .primary()
-                        .label("Apply")
-                        .disabled(busy || external || !problems.is_empty())
-                        .on_click(cx.listener(|this, _, window, cx| this.confirm_apply(window, cx))),
-                ))
-        });
+        let (changes, invalid) = self.pending(cx);
+        let (line, restart) = self.bar_line(cx);
+        let bar = ui::pending_bar(
+            &theme,
+            "settings-pending",
+            changes,
+            invalid,
+            line,
+            restart,
+            !busy && !external && problems.is_empty(),
+            cx.listener(|this, _, window, cx| this.discard_all(window, cx)),
+            cx.listener(|this, _, window, cx| this.apply_all(true, window, cx)),
+        );
 
         let body = match self.tab {
-            Tab::Platform => self.platform(&theme, &record, cx),
-            Tab::Database => self.database(&theme, &record, cx),
-            Tab::Network => self.network(&theme, cx),
-            Tab::Retention => self.retention(&theme, cx),
+            Tab::Platform => self.platform(&theme, &record, window, cx),
+            Tab::Database => self.database(&theme, &record, window, cx),
+            Tab::Network => self.network(&theme, window, cx),
+            Tab::Retention => self.retention(&theme, window, cx),
             Tab::Startup => vec![self.startup.clone().into_any_element()],
-            Tab::Advanced => self.advanced(&theme, cx),
+            Tab::Advanced => self.advanced(&theme, window, cx),
         };
 
-        let _ = page;
-        layout(&theme, tabs, self.tab.title(), self.tab.about(), v_flex()
-            .gap(px(ui::GAP))
-            .children(foreign)
-            .children(applybar)
-            .children(problems.into_iter().map(|p| div().text_sm().text_color(theme.danger).child(p)))
-            
-            .children(body))
+        settings_page(&theme, "Platform settings", self.tab.about(), v_flex().children(foreign).children(problems.into_iter().map(|p| div().text_sm().text_color(theme.danger).child(p))), ui::settings_card(&theme, "settings-body", tabs, v_flex().pb(px(12.)).children(body), bar))
+            .into_any_element()
     }
+}
+
+/// Platform settings' page: its title and line, notices, then the settings
+/// card filling the rest (it scrolls inside; the page does not). Shared
+/// with a remote server's.
+pub(crate) fn settings_page(theme: &gpui_kit::component::Theme, title: &'static str, about: &'static str, notices: impl IntoElement, card: impl IntoElement) -> Stateful<Div> {
+    v_flex()
+        .id("settings-page")
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .p(px(ui::PAGE_PAD))
+        .gap(px(ui::GAP))
+        .bg(theme.muted)
+        .child(
+            v_flex()
+                .gap_0p5()
+                .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child(title))
+                .child(div().text_sm().text_color(theme.muted_foreground).child(about)),
+        )
+        .child(notices)
+        .child(card)
 }
 
 #[cfg(test)]
@@ -1350,6 +1492,17 @@ mod tests {
         assert_eq!(medium["pg:shared_buffers"], "4096MB");
         assert_eq!(medium["DATABASE_POOL_MAX"], "");
     }
+
+    /// The tabs' counts put a setting on the tab that shows it.
+    #[test]
+    fn settings_count_on_their_tab() {
+        use super::tab_index_of;
+        assert_eq!(tab_index_of("LICENSE_BINDING_CHECK_INTERVAL_SECS"), 0);
+        assert_eq!(tab_index_of("pg:work_mem"), 1);
+        assert_eq!(tab_index_of("port:http"), 2);
+        assert_eq!(tab_index_of("NOTIFICATIONS_TTL_DAYS"), 3);
+        assert_eq!(tab_index_of("SQL_TS_BATCH_THREADS"), 4);
+    }
 }
 
 /// The Startup tab's title and line (this computer only).
@@ -1360,7 +1513,7 @@ const STARTUP_ABOUT: &str = "What happens when this computer starts and someone 
 /// computer's add Startup before All variables.
 pub(crate) const TAB_TITLES: [&str; 5] = ["General", "Database", "Network and certificates", "History and cleanup", "All variables"];
 
-/// What each category holds, under its title.
+/// What each category holds (the page's line under its title).
 pub(crate) const TAB_ABOUT: [&str; 5] = [
     "How SENTIENT runs, its administrator account and the licence.",
     "PostgreSQL's memory and connections, and the telemetry history store.",
@@ -1372,133 +1525,54 @@ pub(crate) const TAB_ABOUT: [&str; 5] = [
 /// The catalog settings each of the first four tabs shows on a remote
 /// server (this computer's tabs add what only it can do).
 pub(crate) const TAB_KEYS: [&[&str]; 4] = [
-    &["RUST_LOG", "ANALYTICS_ENABLED", "LICENSE_SERVER_URL", "LICENSE_HEARTBEAT_INTERVAL_SECS"],
+    &["RUST_LOG", "ANALYTICS_ENABLED", "LICENSE_SERVER_URL", "LICENSE_HEARTBEAT_INTERVAL_SECS", "LICENSE_BINDING_CHECK_INTERVAL_SECS"],
     &["DATABASE_POOL_MAX", "DATABASE_POOL_MIN", "DB_POOL_PRIMARY_MAX", "DB_POOL_PRIMARY_MIN", "DB_POOL_REPORT_MAX", "DB_POOL_REPORT_MIN", "DB_MAX_CONNECTIONS", "CLICKHOUSE_TS_BATCH_SIZE", "CLICKHOUSE_TS_BATCH_MAX_DELAY_MS", "CLICKHOUSE_TS_BATCH_THREADS", "SENTIENT_TS_KV_CHUNK_DAYS", "SENTIENT_TS_KV_COMPRESS_AFTER_DAYS"],
     &["EDGE_GRPC_PORT", "SSL_PEM_CERT", "SSL_PEM_KEY", "MQTT_SSL_PEM_CERT", "MQTT_SSL_PEM_KEY", "MQTT_SSL_PEM_CA", "COAP_SSL_PEM_CERT", "COAP_SSL_PEM_KEY", "SENTIENT_CORS_ALLOWED_ORIGINS", "SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT"],
     &["AUDIT_LOG_TTL_DAYS", "NOTIFICATIONS_TTL_DAYS", "SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS", "SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS", "AUDIT_LOG_CLEANUP_ENABLED", "SENTIENT__EVENT_CLEANUP__ENABLED"],
 ];
 
-/// The categories of Platform settings, as a list on the left (the
-/// mockup's H2). Shared with a remote server's.
-pub(crate) fn tab_bar(theme: &gpui_kit::component::Theme, id: &str, titles: &[&'static str], active: usize, pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
-    // A narrow window: the categories as a wrapping row above the page,
-    // which then has the whole width.
-    let narrow = ui::narrow();
-    div()
-        .flex()
-        .when(narrow, |d| d.flex_row().flex_wrap().w_full())
-        .when(!narrow, |d| d.flex_col().w(px(190.)).min_w(px(132.)).flex_shrink(1.))
-        .gap_0p5()
-        .children(titles.iter().enumerate().map(|(i, title)| {
-            let on = i == active;
-            let pick = pick.clone();
-            div()
-                .id(SharedString::from(format!("{id}tab-{i}")))
-                .px(px(11.))
-                .py(px(7.))
-                .rounded(px(7.))
-                .text_sm()
-                .cursor_pointer()
-                .text_color(theme.muted_foreground)
-                .when(on, |d| d.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground).font_weight(FontWeight::MEDIUM))
-                .when(!on, |d| d.hover(|d| d.bg(theme.list_hover).text_color(theme.foreground)))
-                .child(*title)
-                .on_click(move |_, _, cx| pick(i, cx))
-        }))
-}
+/// The setting groups each of the first four tabs shows on a remote
+/// server: (heading, keys).
+pub(crate) const TAB_GROUPS: [&[(&str, &[&str])]; 4] = [
+    &[("Platform", &["RUST_LOG", "ANALYTICS_ENABLED"]), ("Licence", &["LICENSE_SERVER_URL", "LICENSE_HEARTBEAT_INTERVAL_SECS", "LICENSE_BINDING_CHECK_INTERVAL_SECS"])],
+    &[
+        ("Connection pools", &["DATABASE_POOL_MAX", "DATABASE_POOL_MIN", "DB_POOL_PRIMARY_MAX", "DB_POOL_PRIMARY_MIN", "DB_POOL_REPORT_MAX", "DB_POOL_REPORT_MIN", "DB_MAX_CONNECTIONS"]),
+        ("Telemetry history", &["CLICKHOUSE_TS_BATCH_SIZE", "CLICKHOUSE_TS_BATCH_MAX_DELAY_MS", "CLICKHOUSE_TS_BATCH_THREADS", "SENTIENT_TS_KV_CHUNK_DAYS", "SENTIENT_TS_KV_COMPRESS_AFTER_DAYS"]),
+    ],
+    &[
+        ("Ports", &["EDGE_GRPC_PORT"]),
+        ("Certificates", &["SSL_PEM_CERT", "SSL_PEM_KEY", "MQTT_SSL_PEM_CERT", "MQTT_SSL_PEM_KEY", "MQTT_SSL_PEM_CA", "COAP_SSL_PEM_CERT", "COAP_SSL_PEM_KEY"]),
+        ("Access", &["SENTIENT_CORS_ALLOWED_ORIGINS", "SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT"]),
+    ],
+    &[("How long data is kept", &["AUDIT_LOG_TTL_DAYS", "NOTIFICATIONS_TTL_DAYS", "SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS", "SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS"]), ("Cleanup", &["AUDIT_LOG_CLEANUP_ENABLED", "SENTIENT__EVENT_CLEANUP__ENABLED"])],
+];
 
-/// Platform settings laid out as the mockup's H2: the category list, then
-/// the open category's title, its line and its panels.
-pub(crate) fn layout(theme: &gpui_kit::component::Theme, nav: Div, title: &'static str, about: &'static str, body: impl IntoElement) -> Stateful<Div> {
-    h_flex()
-        .id("settings-page")
-        .flex_1()
-        .min_w_0()
-        .h_full()
-        .items_start()
-        .bg(theme.muted)
-        .when(ui::narrow(), |p| p.flex_col().items_stretch())
-        .child(if ui::narrow() {
-            div().w_full().p(px(ui::PAGE_PAD)).pb_0().child(nav)
-        } else {
-            v_flex().h_full().p_3().border_r_1().border_color(theme.border).child(nav)
-        })
-        .child(
-            v_flex()
-                .id("settings-body")
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .overflow_y_scroll()
-                .p(px(crate::ui::PAGE_PAD))
-                .gap(px(crate::ui::GAP))
-                .child(
-                    v_flex()
-                        .gap_0p5()
-                        .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child(title))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(about)),
-                )
-                .child(body),
-        )
-}
-
-/// The Advanced table's header row. Shared with a remote server's.
-pub(crate) fn table_header(theme: &gpui_kit::component::Theme) -> Div {
-    h_flex()
-        .gap_3()
-        .pb_1()
-        .text_size(px(13.))
-        .text_color(theme.muted_foreground)
-        .child(div().w(px(LABEL_W)).min_w(px(120.)).flex_shrink(1.).child("Setting"))
-        .child(div().flex_1().min_w(px(150.)).max_w(px(VALUE_W)).child("Value"))
-        .child(div().w(px(ACTION_W)).flex_shrink_0())
-        .child(div().flex_1())
-        .child(div().w(px(BUILTIN_W)).flex_shrink_0().text_right().child("Built-in"))
-}
-
-/// The table's label and built-in column widths; the value takes the rest
-/// up to VALUE_W, so nothing crosses the panel at any window width.
-const LABEL_W: f32 = 220.;
-const BUILTIN_W: f32 = 120.;
-const ACTION_W: f32 = 84.;
-
-/// A table row's value and built-in cells (with `extra`, such as Reset,
-/// after the value). Shared with a remote server's table.
-pub(crate) fn table_cells(theme: &gpui_kit::component::Theme, key: &str, field: impl IntoElement, action: Option<AnyElement>, builtin: String, extra: Option<AnyElement>) -> Div {
-    let tip: SharedString = builtin.clone().into();
-    h_flex()
-        .flex_1()
-        .min_w_0()
-        .gap_3()
-        .items_center()
-        // Every value field one width; a file's Check or Choose in a column
-        // of its own (empty where it does not apply).
-        .child(h_flex().flex_1().min_w(px(150.)).max_w(px(VALUE_W)).gap_2().items_center().child(h_flex().flex_1().min_w_0().child(field)).children(extra))
-        .child(h_flex().w(px(ACTION_W)).flex_shrink_0().children(action))
-        .child(div().flex_1())
-        .child(
-            div()
-                .id(SharedString::from(format!("builtin-{key}")))
-                .w(px(BUILTIN_W))
-                .flex_shrink_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .text_right()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child(builtin)
-                .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx)),
-        )
-}
-
-/// A setting's built-in value, as the Advanced table shows it.
+/// A setting's built-in value in words (the current column when nothing
+/// is set).
 pub(crate) fn builtin_label(s: &crate::catalog::Setting) -> String {
-    match (s.kind(), s.default.as_str()) {
-        (_, "") => "SENTIENT's own".to_string(),
-        (crate::catalog::ValueKind::Switch, "true") => "On".to_string(),
-        (crate::catalog::ValueKind::Switch, "false") => "Off".to_string(),
-        (crate::catalog::ValueKind::Number(Some(u)), d) => format!("{d} {u}"),
-        (_, d) => d.to_string(),
+    crate::manager::setting_field::current_words(s, "")
+}
+
+impl super::Manager {
+    /// Leave the page (a menu row, another instance): from Platform settings
+    /// with changes not applied, asks first (crate::ui::ask_before_leaving);
+    /// `go` runs at once, or after Apply or Discard, never after Stay.
+    pub(super) fn leave_then(&mut self, window: &mut Window, cx: &mut Context<Self>, go: impl Fn(&mut Self, &mut Context<Self>) + 'static) {
+        let scope = self.open_remote.clone();
+        if self.page != super::Page::Settings || ui::unsaved(&scope, cx) == (0, 0) {
+            go(self, cx);
+            return;
+        }
+        let me = cx.entity().downgrade();
+        let go = std::rc::Rc::new(go);
+        ui::ask_before_leaving(
+            scope,
+            window,
+            cx,
+            std::rc::Rc::new(move |_, cx| {
+                let go = go.clone();
+                me.update(cx, |m, cx| go(m, cx)).ok();
+            }),
+        );
     }
 }

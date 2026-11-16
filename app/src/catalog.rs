@@ -152,6 +152,64 @@ impl Setting {
         ValueKind::Text
     }
 
+    /// The range a number setting takes: ports 1 to 65535, counts of
+    /// threads, workers and connections at least 1, durations and sizes up
+    /// to a bound no real value comes near (ten years, a terabyte).
+    pub fn range(&self) -> (u64, u64) {
+        let env = self.env.as_str();
+        if env.ends_with("_PORT") {
+            return (1, 65_535);
+        }
+        let unit = match self.kind() {
+            ValueKind::Number(u) => u,
+            _ => None,
+        };
+        match unit {
+            Some("ms") => return (0, 315_360_000_000),
+            Some("s") => return (0, 315_360_000),
+            Some("min") => return (0, 5_256_000),
+            Some("days") => return (0, 36_500),
+            Some("MB") => return (0, 1_048_576),
+            _ => {}
+        }
+        if ["_THREADS", "_WORKERS", "_CONSUMERS", "_CONNECTIONS", "_MAX"].iter().any(|s| env.ends_with(s)) {
+            return (1, 1_000_000);
+        }
+        (0, u32::MAX as u64)
+    }
+
+    /// Why a typed value cannot be used, as the one line under its field
+    /// ("Enter whole seconds from 0 to 315360000."); None when it can (an
+    /// empty field is SENTIENT's own value). Numbers and switches only:
+    /// text and files are taken as typed.
+    pub fn problem(&self, value: &str) -> Option<String> {
+        let v = value.trim();
+        if v.is_empty() {
+            return None;
+        }
+        match self.kind() {
+            ValueKind::Number(unit) => {
+                let (lo, hi) = self.range();
+                let ok = v.chars().all(|c| c.is_ascii_digit()) && v.parse::<u64>().is_ok_and(|n| (lo..=hi).contains(&n));
+                if ok {
+                    return None;
+                }
+                let what = match unit {
+                    Some("s") => "whole seconds",
+                    Some("ms") => "whole milliseconds",
+                    Some("min") => "whole minutes",
+                    Some("days") => "whole days",
+                    Some("MB") => "whole megabytes",
+                    _ if self.env.ends_with("_PORT") => "a port number",
+                    _ => "a whole number",
+                };
+                Some(format!("Enter {what} from {lo} to {hi}."))
+            }
+            ValueKind::Switch => (!matches!(v, "true" | "false")).then(|| "Enter true or false.".to_string()),
+            _ => None,
+        }
+    }
+
     /// The label without its unit, which the field shows after the number.
     pub fn short_label(&self) -> String {
         match self.kind() {
@@ -179,5 +237,33 @@ mod kind_tests {
         assert_eq!(kind("pg:shared_buffers"), ValueKind::Text);
         assert_eq!(kind("RUST_LOG"), ValueKind::Text);
         assert_eq!(kind("LICENSE_SERVER_URL"), ValueKind::Text);
+    }
+
+    /// Numbers refuse what is not a whole number and what is out of range;
+    /// every built-in value passes its own check.
+    #[test]
+    fn numeric_fields_refuse_words_and_out_of_range() {
+        let all: Vec<Setting> = groups().into_iter().flat_map(|g| g.settings).collect();
+        let s = |env: &str| all.iter().find(|s| s.env == env).unwrap().clone();
+        let binding = s("LICENSE_BINDING_CHECK_INTERVAL_SECS");
+        let msg = Some("Enter whole seconds from 0 to 315360000.".to_string());
+        assert_eq!(binding.problem("jj"), msg);
+        assert_eq!(binding.problem("12.5"), msg);
+        assert_eq!(binding.problem("-5"), msg);
+        assert_eq!(binding.problem("999999999999"), msg);
+        assert_eq!(binding.problem("99999999999999999999999"), msg);
+        assert_eq!(binding.problem(" 3600 "), None);
+        assert_eq!(binding.problem(""), None);
+        let port = s("EDGE_GRPC_PORT");
+        assert_eq!(port.problem("0").as_deref(), Some("Enter a port number from 1 to 65535."));
+        assert_eq!(port.problem("65536").as_deref(), Some("Enter a port number from 1 to 65535."));
+        assert_eq!(port.problem("7070"), None);
+        assert_eq!(s("SQL_TS_BATCH_THREADS").problem("0").as_deref(), Some("Enter a whole number from 1 to 1000000."));
+        // Text and files are taken as typed.
+        assert_eq!(s("LICENSE_SERVER_URL").problem("jj"), None);
+        assert_eq!(s("RUST_LOG").problem("info,x=debug"), None);
+        for st in &all {
+            assert_eq!(st.problem(&st.default), None, "{} built-in {:?}", st.env, st.default);
+        }
     }
 }

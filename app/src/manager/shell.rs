@@ -469,20 +469,31 @@ impl Manager {
                 .when(page == Page::Files && !rail, |r| {
                     r.child(div().flex_1()).child(div().px(px(7.)).rounded_full().bg(theme.muted).text_size(px(11.)).text_color(theme.muted_foreground).child("New"))
                 })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                this.page = page;
-                this.menu_overlay = false;
-                cx.notify();
+                .on_click(cx.listener(move |this, _, window, cx| {
+                // Platform settings with changes not applied asks first
+                // (not on its own row).
+                if page == this.page {
+                    this.menu_overlay = false;
+                    cx.notify();
+                    return;
+                }
+                this.leave_then(window, cx, move |this, cx| {
+                    this.page = page;
+                    this.menu_overlay = false;
+                    cx.notify();
+                });
             }))
         });
         let instances = row("instances", Page::Instances.icon(), Page::Instances.title().into(), self.page == Page::Instances)
             .when(!self.remotes.is_empty() && !rail, |r| {
                 r.child(div().flex_1()).child(div().relative().text_size(px(13.)).text_color(theme.muted_foreground).child((self.remotes.len() + 1).to_string()))
             })
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.page = Page::Instances;
-                this.menu_overlay = false;
-                cx.notify();
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.leave_then(window, cx, |this, cx| {
+                    this.page = Page::Instances;
+                    this.menu_overlay = false;
+                    cx.notify();
+                });
             }));
 
         // The product on top: its logo and name, and the fold button; folded,

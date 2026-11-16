@@ -226,6 +226,50 @@ impl BackupPage {
             pending: None,
             history: None,
         };
+        // Enter: the passwords end on Read the database; the telemetry days
+        // and passphrase on Back up now.
+        let pw = [page.password.clone(), page.ch_password.clone()];
+        let subs = crate::ui::enter_moves_on(
+            &pw,
+            window,
+            cx,
+            |p: &Self, _| {
+                let ch = p.record.as_ref().is_some_and(|r| r.flavor() == Flavor::Clickhouse);
+                let mut v = vec![p.password.clone()];
+                if ch {
+                    v.push(p.ch_password.clone());
+                }
+                v
+            },
+            |p: &mut Self, _, cx| {
+                if !(p.backup.read(cx).is_running() || p.restore.read(cx).is_running()) {
+                    p.inspect(cx);
+                }
+                None
+            },
+        );
+        page._observe.extend(subs);
+        let subs = crate::ui::enter_moves_on(
+            &[page.telemetry_days.clone(), page.passphrase.clone()],
+            window,
+            cx,
+            |p: &Self, _| {
+                let mut v = Vec::new();
+                if p.telemetry == 1 {
+                    v.push(p.telemetry_days.clone());
+                }
+                v.push(p.passphrase.clone());
+                v
+            },
+            |p: &mut Self, _, cx| {
+                let busy = p.backup.read(cx).is_running() || p.restore.read(cx).is_running();
+                if !busy && p.inspection.is_some() && p.output.is_some() {
+                    p.run_backup(cx);
+                }
+                None
+            },
+        );
+        page._observe.extend(subs);
         page.read_sizes(cx);
         page.read_history(cx);
         #[cfg(debug_assertions)]
