@@ -1651,11 +1651,12 @@ impl RestoreFlow {
                     let r = cx
                         .background_executor()
                         .spawn(async move {
-                            let args = vec!["remove-kept".to_string(), name.clone()];
+                            let args = vec!["restore-remove-db".to_string(), name.clone()];
+                            let quiet = sentient_installer_core::progress::noop();
                             match &target {
-                                Target::Server(inst) => remote::run_followed(inst, &args, &sentient_installer_core::progress::noop()),
-                                Target::Here(record) if crate::rootjob::needed(record) => crate::rootjob::run(&args, &sentient_installer_core::progress::noop()).map(|_| ()),
-                                Target::Here(record) => crate::kept::list(record).and_then(|l| l.into_iter().find(|k| k.name == name).ok_or_else(|| format!("{name} is no longer there.")).and_then(|k| crate::kept::remove(record, &k, sentient_installer_core::progress::noop()))),
+                                Target::Server(inst) => remote::run_followed(inst, &args, &quiet),
+                                Target::Here(record) if crate::rootjob::needed(record) => crate::rootjob::run(&args, &quiet).map(|_| ()),
+                                Target::Here(record) => rf::remove_restored(record, &name, &quiet),
                             }
                         })
                         .await;
