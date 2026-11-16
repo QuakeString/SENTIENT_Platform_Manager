@@ -224,7 +224,13 @@ pub fn askpass() -> i32 {
 /// An ssh command for `inst` running `remote` there. `once` is a secret to
 /// use instead of the stored one (before it is saved).
 pub fn ssh(inst: &Instance, remote: &str, once: Option<&str>) -> Command {
+    ssh_with(inst, &[], remote, once)
+}
+
+/// [`ssh`] with options before the host (`-s` for a subsystem).
+fn ssh_with(inst: &Instance, before_host: &[&str], remote: &str, once: Option<&str>) -> Command {
     let mut c = Command::new("ssh");
+    c.args(before_host);
     c.args(["-p", &inst.port.to_string()])
         .args(["-o", &format!("UserKnownHostsFile={}", known_hosts().display())])
         .args(["-o", "StrictHostKeyChecking=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "-o", "ConnectTimeout=12"])
@@ -281,7 +287,7 @@ pub fn run(inst: &Instance, remote: &str, once: Option<&str>) -> Result<String, 
 pub const FORGOTTEN: &str = "The passphrase or password is not kept on this computer (no keyring). Enter it again with Edit.";
 
 /// ssh's messages in plain words.
-fn explain(err: &str) -> Option<String> {
+pub(crate) fn explain(err: &str) -> Option<String> {
     let e = err.to_lowercase();
     Some(if e.contains("remote host identification has changed") || e.contains("host key verification failed") {
         "The server's key is not the one accepted before. The connection was refused: if the server was reinstalled, remove and add the instance again; otherwise someone may be in between.".into()
@@ -403,6 +409,25 @@ enum Admin {
 /// connection; blocking).
 pub fn sudo_needs_password(inst: &Instance) -> bool {
     matches!(probe_admin(inst), Admin::NeedsPassword(_))
+}
+
+/// The Files page's SFTP session (crate::sftp): `ssh -s sftp` with the
+/// instance's sign-in, or, as administrator, the server's sftp-server
+/// through sudo (its password, when one is kept, goes first on standard
+/// input). Pipes set; spawn it and hand it to `Sftp::start`.
+pub fn sftp_command(inst: &Instance, admin: bool) -> (Command, Option<String>) {
+    let (mut c, pw) = if admin && inst.user != "root" {
+        let pw = sudo_password(inst);
+        let script = format!(
+            "for p in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/lib/ssh/sftp-server /usr/libexec/sftp-server /usr/lib/sftp-server; do if [ -x \"$p\" ]; then exec {}\"$p\"; fi; done; echo 'The server has no sftp-server program.' >&2; exit 127",
+            sudo(inst, pw.is_some())
+        );
+        (ssh_with(inst, &[], &script, None), pw)
+    } else {
+        (ssh_with(inst, &["-s"], "sftp", None), None)
+    };
+    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    (c, pw)
 }
 
 /// Find out with one connection whether sudo works for the account.

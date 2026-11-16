@@ -384,7 +384,12 @@ impl Manager {
                 .when(rail, move |r| r.tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(title.clone()).build(w, cx)))
         };
         let items = Page::ALL.into_iter().map(|page| {
-            row(page.id(), page.icon(), page.title().into(), page == self.page).on_click(cx.listener(move |this, _, _, cx| {
+            row(page.id(), page.icon(), page.title().into(), page == self.page)
+                // Files is new in this release (the mockup's pill).
+                .when(page == Page::Files && !rail, |r| {
+                    r.child(div().flex_1()).child(div().px(px(7.)).rounded_full().bg(theme.muted).text_size(px(11.)).text_color(theme.muted_foreground).child("New"))
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
                 this.page = page;
                 cx.notify();
             }))

@@ -45,6 +45,10 @@ pub struct Job {
     /// Followed on its own page (crate::manager::jobview): its result shows
     /// there, so no dialog opens when it fails.
     on_page: bool,
+    /// The strip chip's text while it runs ("Copying 2 items · 42%"), and
+    /// a panel the chip opens instead of Details (the Files transfers).
+    chip: Option<std::rc::Rc<dyn Fn(&App) -> String>>,
+    panel: Option<gpui_kit::AnyView>,
     _task: Option<Task<()>>,
     /// Re-renders once a second while running, so the step's time moves.
     _ticker: Option<Task<()>>,
@@ -65,6 +69,8 @@ impl Job {
             retry: None,
             instance: None,
             on_page: false,
+            chip: None,
+            panel: None,
             _task: None,
             _ticker: None,
         }
@@ -78,6 +84,15 @@ impl Job {
     /// Shown on its page (see `on_page`).
     pub fn set_on_page(&mut self, on: bool) {
         self.on_page = on;
+    }
+
+    pub fn set_chip(&mut self, chip: std::rc::Rc<dyn Fn(&App) -> String>, panel: gpui_kit::AnyView) {
+        self.chip = Some(chip);
+        self.panel = Some(panel);
+    }
+
+    pub fn chip(&self) -> Option<(std::rc::Rc<dyn Fn(&App) -> String>, gpui_kit::AnyView)> {
+        Some((self.chip.clone()?, self.panel.clone()?))
     }
 
     pub fn on_page(&self) -> bool {
