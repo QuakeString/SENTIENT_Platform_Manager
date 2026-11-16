@@ -3,7 +3,11 @@
 //! SENTIENT Platform Manager — installer, maintenance tool and management app
 //! in one GPUI program. See docs/GPUI_PLATFORM_MANAGER_PLAN.md.
 
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// The window build is a GUI program on Windows; the server agent (built
+// without the "gui" feature) is a console program, so a job run over SSH
+// is waited for and its output read (PowerShell neither waits for nor
+// captures a GUI program: "gave no answer", his rc12-22 Windows server).
+#![cfg_attr(all(not(debug_assertions), feature = "gui"), windows_subsystem = "windows")]
 
 mod adopt;
 // Always built: the menu entries list its actions (crate::self_install).
