@@ -67,10 +67,15 @@ for a in json.load(open(sys.argv[1]))["assets"]:
         sys.exit(f'{a["name"]}: downloaded {got} bytes, the release says {a["size"]}')
 PY
 
+# Each installer signed with the release key: the Platform Manager refuses an
+# unsigned one once a signed release exists (scripts/sign-release.sh).
+"$here/sign-release.sh" "$work"/files/SENTIENT-Setup-manager-*
+
 notes=$(python3 "$here/release-notes.py" extract "$root/CHANGELOG.md" "$version" --public)
 table=$'| File | Size | SHA-256 |\n|---|---|---|\n'
 for f in "$work"/files/*; do
   n=$(basename "$f")
+  case "$n" in *.minisig) continue ;; esac
   table+="| \`$n\` | $(du -h "$f" | cut -f1) | \`$(sha256sum "$f" | cut -d' ' -f1)\` |"$'\n'
 done
 body="$notes"$'\n\n'"### Downloads"$'\n\n'"Windows: run \`SENTIENT-Setup-manager-*.exe\`. Linux: \`SENTIENT-Setup-manager-*-linux-x86_64\`, or the Arch package."$'\n\n'"$table"

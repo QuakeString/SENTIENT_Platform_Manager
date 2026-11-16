@@ -17,6 +17,7 @@ mod win_icon;
 mod agent;
 #[cfg(feature = "gui")]
 mod assets;
+mod authenticode;
 mod backup_jobs;
 mod backups;
 mod catalog;

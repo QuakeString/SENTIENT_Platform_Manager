@@ -53,7 +53,7 @@ png = { version = "0.17", optional = true }
 
 # Database password in Windows Credential Manager (see src/secrets.rs).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Security_WinTrust", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader"] }
 raw-window-handle = "0.6"
 
 # The tray (crate::tray): StatusNotifierItem over D-Bus on Linux (KDE, and
