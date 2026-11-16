@@ -46,8 +46,9 @@ use crate::theme;
 use crate::ui;
 use crate::sysmon::Monitor;
 use crate::updates::UpdateState;
+use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Page {
     Status,
     Logs,
@@ -159,17 +160,29 @@ pub struct Manager {
     remotes: Vec<crate::remote::Instance>,
     /// The remote instance that is open (None: this computer).
     open_remote: Option<String>,
-    /// That instance's processor, memory and disk (None until read, or
-    /// when it does not answer).
+    /// That instance's processor, memory and disk (None until read; the
+    /// last reading while a new one fails, see `remote_monitor_stale`).
     remote_monitor: Option<Monitor>,
-    /// The pages of the open remote instance.
-    remote_pages: Option<Entity<remote_pages::RemotePages>>,
-    /// Statistics of the open instance (None: this computer).
-    stats: Option<(Option<String>, Entity<stats::StatsPage>)>,
-    /// The Licence page, for the open instance (None: this computer).
-    licence: Option<(Option<String>, Entity<licence::LicencePage>)>,
-    /// Files, for the instance open when it was made (None: this computer).
-    files: Option<(Option<String>, Entity<files::FilesPage>)>,
+    /// The last reading failed: `remote_monitor` is the one before.
+    remote_monitor_stale: bool,
+    /// Each remote instance's last monitor reading, shown at once when it is
+    /// opened again (memory only, this run).
+    monitor_cache: HashMap<String, Monitor>,
+    /// Counts the instance switches: a monitor loop of an earlier opening
+    /// stops (and its reading is dropped) when this has moved on.
+    open_gen: u64,
+    /// The pages opened since the last switch: one kept from before is
+    /// read again (in the background) the first time it shows.
+    fresh: HashSet<Page>,
+    /// The pages of every remote instance opened in this run, by id: shown
+    /// again with what they read, and read again behind it.
+    remote_pages: HashMap<String, Entity<remote_pages::RemotePages>>,
+    /// Statistics, by instance (None: this computer), kept for the run.
+    stats: HashMap<Option<String>, Entity<stats::StatsPage>>,
+    /// The Licence page, by instance (None: this computer).
+    licence: HashMap<Option<String>, Entity<licence::LicencePage>>,
+    /// Files, by the instance open when it was made (None: this computer).
+    files: HashMap<Option<String>, Entity<files::FilesPage>>,
     /// Takes the keyboard while a dialog is open (Escape closes it).
     modal_focus: FocusHandle,
     /// The instance switcher's menu is open.
@@ -216,6 +229,21 @@ pub struct Manager {
     _tasks: Vec<Task<()>>,
 }
 
+/// Switch timing (SPM_DEBUG_SWITCH=1): when the last switch started, for
+/// the frames that follow it.
+thread_local!(static SWITCH_AT: std::cell::Cell<Option<(std::time::Instant, u32)>> = const { std::cell::Cell::new(None) });
+
+/// Logs how long open_instance itself took (work on the UI thread).
+struct SwitchTiming(std::time::Instant, Option<String>);
+impl Drop for SwitchTiming {
+    fn drop(&mut self) {
+        if std::env::var_os("SPM_DEBUG_SWITCH").is_some() {
+            eprintln!("SWITCH start to={} open_instance_ms={:.2}", self.1.as_deref().unwrap_or("local"), self.0.elapsed().as_secs_f64() * 1000.);
+            SWITCH_AT.with(|s| s.set(Some((self.0, 0))));
+        }
+    }
+}
+
 /// The bell's events as saved (the tray's menu reads them without a window).
 pub fn saved_events() -> Vec<strip::Event> {
     strip::load_events()
@@ -225,13 +253,7 @@ impl Manager {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         // OpenGL (no Vulkan driver): the window cannot be translucent, so
         // the menu is solid and About says why.
-        if cfg!(target_os = "linux") {
-            let gl = _window.gpu_specs().is_some_and(|g| g.driver_info.contains("Core Profile") || g.driver_info.contains("OpenGL"));
-            shell::set_gl_only(gl);
-            if gl {
-                _window.set_background_appearance(WindowBackgroundAppearance::Opaque);
-            }
-        }
+        shell::detect_gl(_window);
         // Why the menu is solid or not (SPM_DEBUG_BLUR=1).
         if std::env::var_os("SPM_DEBUG_BLUR").is_some() {
             eprintln!(
@@ -293,10 +315,14 @@ impl Manager {
             remotes: crate::remote::load(),
             open_remote: None,
             remote_monitor: None,
-            remote_pages: None,
-            stats: None,
-            licence: None,
-            files: None,
+            remote_monitor_stale: false,
+            monitor_cache: HashMap::new(),
+            open_gen: 0,
+            fresh: HashSet::new(),
+            remote_pages: HashMap::new(),
+            stats: HashMap::new(),
+            licence: HashMap::new(),
+            files: HashMap::new(),
             modal_focus: cx.focus_handle(),
             strip: strip.clone(),
             switcher_open: false,
@@ -388,8 +414,8 @@ impl Manager {
                     let mut p = TakeOverPlan {
                         project: "sentient-prod".into(),
                         files: if kind == "stale" {
-                            // His case: the live file, and a temporary override that was deleted.
-                            vec![("/home/mz/INVENIA/SENTIENT/docker/docker-compose.clickhouse.yml".into(), true), ("/tmp/claude-1000/-home-mz-INVENIA-SENTIENT/b3581689-33ec-54c1-816f-64cf65838705/scratchpad/compose.licdlg.yml".into(), false)]
+                            // The live file, and a temporary override that was deleted.
+                            vec![("/home/ops/SENTIENT/docker/docker-compose.clickhouse.yml".into(), true), ("/tmp/sentient-test/compose.override.yml".into(), false)]
                         } else {
                             vec![("/home/ops/deploy/sentient/docker-compose.yml".into(), kind != "missing"), ("/home/ops/deploy/sentient/docker-compose.override.yml".into(), kind != "missing")]
                         },
@@ -478,14 +504,12 @@ impl Manager {
 
     /// Read the open instance's processor, memory and disk every few seconds.
     fn start_monitor(&mut self, cx: &mut Context<Self>) {
-        let dir = self
-            .record
-            .as_ref()
-            .map(|r| if r.pg_dir.as_os_str().is_empty() { r.install_dir.clone() } else { r.pg_dir.clone() })
-            .unwrap_or_else(|| std::path::PathBuf::from(if cfg!(windows) { "C:\\" } else { "/" }));
+        // The reader Statistics shares (crate::stats::local_read): its first
+        // reading then waits for nothing.
+        let record = self.record.clone();
         let task = cx.spawn(async move |this, cx| loop {
-            let d = dir.clone();
-            let m = cx.background_executor().spawn(async move { crate::sysmon::sample(&d) }).await;
+            let r = record.clone();
+            let m = cx.background_executor().spawn(async move { crate::sysmon::from_sample(&crate::stats::local_read(r.as_ref(), std::time::Duration::from_millis(250))) }).await;
             if this
                 .update(cx, |page, cx| {
                     page.monitor = Some(m);
@@ -721,13 +745,13 @@ impl Manager {
             .px_2()
             .pt_1()
             .pb_2()
-            .gap_2()
+            .gap(crate::ui::button_gap())
             .items_center()
             .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("Notifications"))
-            .when(unread > 0, |h| h.child(crate::ui::button("bell-read").ghost().label("Mark all as read").on_click(move |_, _, cx| s3.update(cx, |s, cx| s.mark_all_read(cx)))))
+            .when(unread > 0, |h| h.child(crate::ui::probed(crate::ui::button("bell-read").ghost().label("Mark all as read").on_click(move |_, _, cx| s3.update(cx, |s, cx| s.mark_all_read(cx))))))
             .when(!empty, |h| {
                 let close2 = close.clone();
-                h.child(crate::ui::button("bell-clear").ghost().label("Clear all").on_click(move |_, _, cx| {
+                h.child(crate::ui::probed(crate::ui::button("bell-clear").ghost().label("Clear all").on_click(move |_, _, cx| {
                     s4.update(cx, |s, cx| s.clear(None, cx));
                     let keys = cond_keys.clone();
                     close2
@@ -736,7 +760,7 @@ impl Manager {
                             cx.notify();
                         })
                         .ok();
-                }))
+                })))
             });
         // As tall as its entries, at most the window below the bar less
         // 24 px, and never over 560 px; the list scrolls inside, the header
@@ -814,7 +838,7 @@ impl Manager {
         let menu_theme = cx.theme().clone();
         let remote = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned();
         // The bar is tinted like the tile headers: the instance's colour
-        // mixed into the card colour (26 % light, 42 % dark), the theme's
+        // mixed into the card colour (theme::bar_tint), the theme's
         // own text on it (the approved shell mockup).
         let ic: Hsla = match &remote {
             Some(r) => rgb(crate::remote::parse_hex(&r.color).unwrap_or(0x187074)).into(),
@@ -822,7 +846,7 @@ impl Manager {
         };
         // Switching instance: the tint cross-fades to the new colour.
         let ic = ui::tween_color("bar-ic", ic, 250, window);
-        let bg: Hsla = menu_theme.background.blend(ic.opacity(if dark { 0.42 } else { 0.26 }));
+        let bg: Hsla = menu_theme.background.blend(ic.opacity(theme::bar_tint(dark)));
         let fg: Hsla = menu_theme.foreground;
         let muted_fg: Hsla = menu_theme.muted_foreground;
         let (name, address): (String, Option<String>) = match (&remote, &self.record) {
@@ -832,14 +856,14 @@ impl Manager {
         };
         let instance = format!("{name} {}", address.clone().unwrap_or_default());
         let light_bar = !dark;
-        // The switcher's pill: the instance's colour at 14 %.
-        let inset: Hsla = ic.opacity(0.14);
+        // The switcher's pill: the instance's colour over the bar.
+        let inset: Hsla = ic.opacity(theme::bar_inset(dark));
         // The open instance's state: green when SENTIENT runs, red when it
         // is stopped (the page's last reading, else the checker's), amber
         // while the server is being read or does not answer.
         let status_green: Hsla = rgb(0x3ddc84).into();
         let serving = match &remote {
-            Some(r) => self.remote_pages.as_ref().and_then(|p| p.read(cx).serving()).or_else(|| crate::bg_app::serving(Some(&r.id), cx)),
+            Some(r) => self.remote_pages.get(&r.id).and_then(|p| p.read(cx).serving()).or_else(|| crate::bg_app::serving(Some(&r.id), cx)),
             None => crate::bg_app::serving(None, cx),
         };
         // The dot is the open instance's health (the mockup's S8): green
@@ -849,7 +873,7 @@ impl Manager {
         let installed = remote.is_some() || self.record.is_some();
         let (state_dot, state_why): (Hsla, &'static str) = if !installed {
             (rgb(0x94a3b8).into(), "SENTIENT isn't installed on this computer")
-        } else if remote.is_some() && self.remote_monitor.is_none() {
+        } else if remote.is_some() && (self.remote_monitor.is_none() || self.remote_monitor_stale) {
             (rgb(0x94a3b8).into(), "The server does not answer, or is being read")
         } else if serving == Some(false) {
             (rgb(0xef4444).into(), "SENTIENT is stopped")
@@ -986,7 +1010,7 @@ impl Manager {
                 .px(px(10.))
                 .rounded(px(theme::BAR_CTRL_RADIUS))
                 .cursor_pointer()
-                .hover(move |d| d.bg(ic.opacity(theme::BAR_CTRL_HOVER)))
+                .hover(move |d| d.bg(ic.opacity(theme::bar_ctrl_hover(dark))))
                 .when(show_cpu, |r| r.child(meter("m-cpu", "CPU", "100%", format!("{:.0}%", m.cpu), g_cpu, m.cpu_high())))
                 .when(show_mem, |r| r.child(meter(
                     "m-mem",
@@ -1027,8 +1051,8 @@ impl Manager {
             .rounded(px(8.))
             .cursor_pointer()
             .rounded(px(theme::BAR_CTRL_RADIUS))
-            .when(bell_open, |b| b.bg(ic.opacity(theme::BAR_CTRL_HOVER)))
-            .hover(move |b| b.bg(ic.opacity(theme::BAR_CTRL_HOVER)))
+            .when(bell_open, |b| b.bg(ic.opacity(theme::bar_ctrl_hover(dark))))
+            .hover(move |b| b.bg(ic.opacity(theme::bar_ctrl_hover(dark))))
             .child(Icon::new(IconName::Bell).text_color(fg).size(px(20.)))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.bell_open = !this.bell_open;
@@ -1040,6 +1064,7 @@ impl Manager {
         h_flex()
             .id("top-bar")
             .relative()
+            .child(ui::layout_probe("top-bar"))
             .children(line)
             .h(px(shell::BAR_H))
             .flex_shrink_0()
@@ -1056,7 +1081,7 @@ impl Manager {
                 // border; hover one step darker (the text keeps its contrast).
                 // Its menu is the app's popover, like the theme menu.
                 let open = self.switcher_open;
-                let hover_inset: Hsla = ic.opacity(theme::BAR_CTRL_HOVER);
+                let hover_inset: Hsla = ic.opacity(theme::bar_ctrl_hover(dark));
                 let chip = div()
                     .id("switcher")
                     .flex()
@@ -1214,22 +1239,55 @@ impl Manager {
     /// Switch to an instance (None: this computer). Remote instances are
     /// worked on from their card on Instances for now.
     fn open_instance(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+        let t0 = std::time::Instant::now();
+        let _timing = SwitchTiming(t0, id.clone());
         if id.is_some() {
             self.page = Page::Status;
         }
+        // The pages kept for the instance being left stop their own
+        // reading (logs, statistics) until it is opened again.
+        let left = self.open_remote.clone();
+        if left != id {
+            if let Some(p) = left.as_ref().and_then(|l| self.remote_pages.get(l)).cloned() {
+                p.update(cx, |p, cx| p.set_hidden(true, cx));
+            }
+            if let Some(p) = self.stats.get(&left).cloned() {
+                p.update(cx, |p, _| p.set_paused(true));
+            }
+        }
         self.open_remote = id.clone();
-        self.remote_monitor = None;
-        self.remote_pages = None;
+        self.open_gen += 1;
+        self.fresh.clear();
+        // The top bar shows the last reading at once (none on a first open).
+        self.remote_monitor = id.as_ref().and_then(|id| self.monitor_cache.get(id).copied());
+        self.remote_monitor_stale = false;
+        if id.is_none() {
+            for page in self.status.clone() {
+                page.update(cx, |p, cx| p.refresh(cx));
+            }
+        }
         if let Some(inst) = id.as_ref().and_then(|id| self.remotes.iter().find(|r| &r.id == id)).cloned() {
-            // Read it every few seconds while it stays open.
+            // Read it every few seconds while it stays open. Each reading is
+            // for this instance and this opening (`gen`): one that comes
+            // back after a switch is dropped.
+            let gen = self.open_gen;
             let task = cx.spawn(async move |this, cx| loop {
                 let i = inst.clone();
                 let m = cx.background_executor().spawn(async move { crate::remote::monitor(&i).ok() }).await;
                 let still_open = this
                     .update(cx, |page, cx| {
-                        let open = page.open_remote.as_deref() == Some(inst.id.as_str());
+                        let open = page.open_gen == gen && page.open_remote.as_deref() == Some(inst.id.as_str());
                         if open {
-                            page.remote_monitor = m;
+                            match m {
+                                Some(m) => {
+                                    page.remote_monitor = Some(m);
+                                    page.remote_monitor_stale = false;
+                                    page.monitor_cache.insert(inst.id.clone(), m);
+                                }
+                                // No answer: the last reading stays, the
+                                // dot says it does not answer.
+                                None => page.remote_monitor_stale = true,
+                            }
                             cx.notify();
                         }
                         open
@@ -1249,6 +1307,21 @@ impl Manager {
             });
         }
         cx.notify();
+    }
+
+    /// The instance list changed: what is kept for an instance that went,
+    /// or whose connection changed, goes too.
+    fn prune_kept(&mut self, before: &[crate::remote::Instance]) {
+        let same = |a: &crate::remote::Instance| self.remotes.iter().any(|b| b.id == a.id && serde_json::to_string(a).ok() == serde_json::to_string(b).ok());
+        let gone: Vec<String> = before.iter().filter(|a| !same(a)).map(|a| a.id.clone()).collect();
+        for id in gone {
+            self.remote_pages.remove(&id);
+            self.monitor_cache.remove(&id);
+            let k = Some(id);
+            self.stats.remove(&k);
+            self.licence.remove(&k);
+            self.files.remove(&k);
+        }
     }
 
     /// The Update screen, made when first needed.
@@ -1284,7 +1357,7 @@ impl Manager {
             };
             h_flex()
                 .id(id)
-                .gap_3()
+                .gap(crate::ui::button_gap())
                 .px_4()
                 .py_2()
                 .items_center()
@@ -1308,15 +1381,15 @@ impl Manager {
             col = col.child(
                 bar("notice-updated", crate::ui::Tone::Good, text)
                     .when(pending > 0, |b| {
-                        b.child(crate::ui::button("notice-updated-changes").primary().label("Show the changes").on_click(cx.listener(|this, _, _, cx| {
+                        b.child(crate::ui::probed(crate::ui::button("notice-updated-changes").primary().label("Show the changes").on_click(cx.listener(|this, _, _, cx| {
                             this.page = Page::Update;
                             cx.notify();
-                        })))
+                        }))))
                     })
-                    .child(crate::ui::button("notice-updated-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button("notice-updated-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
                         this.updated_from = None;
                         cx.notify();
-                    }))),
+                    })))),
             );
         }
         // C7c: Setup installed this Platform Manager beside a SENTIENT.
@@ -1328,10 +1401,10 @@ impl Manager {
                         crate::ui::Tone::Good,
                         format!("Found SENTIENT {} on this computer with its database, settings and backups. Nothing was changed.", r.sentient_version),
                     )
-                    .child(crate::ui::button("notice-found-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button("notice-found-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
                         this.found_notice = false;
                         cx.notify();
-                    }))),
+                    })))),
                 );
             }
         }
@@ -1341,11 +1414,11 @@ impl Manager {
             let (mv, sv, gv) = (manager.as_ref().map(|m| m.version.clone()), sentient.as_ref().map(|s| s.version.clone()), gw.as_ref().map(|g| g.version.clone()));
             col = col.child(
                 bar("notice-several", crate::ui::Tone::Neutral, format!("{several} updates available"))
-                    .child(crate::ui::button("notice-several-go").primary().label("View").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button("notice-several-go").primary().label("View").on_click(cx.listener(|this, _, _, cx| {
                         this.page = Page::Update;
                         cx.notify();
-                    })))
-                    .child(crate::ui::button("notice-several-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                    }))))
+                    .child(crate::ui::probed(crate::ui::button("notice-several-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                         let (mv, sv, gv) = (mv.clone(), sv.clone(), gv.clone());
                         this.updates.update(cx, |s, cx| {
                             if let Some(v) = mv {
@@ -1358,7 +1431,7 @@ impl Manager {
                                 s.dismiss_gateway(v, cx);
                             }
                         });
-                    }))),
+                    })))),
             );
             return Some(col.into_any_element());
         }
@@ -1369,21 +1442,21 @@ impl Manager {
                 col = col.child(
                     bar("notice-both", crate::ui::Tone::Neutral, format!("Platform Manager {} and SENTIENT {} are available.", m.version, s.version))
                         .when(m.installer.is_some(), |b| {
-                            b.child(crate::ui::button("notice-both-go").primary().label("Update Platform Manager").on_click(cx.listener(|this, _, _, cx| {
+                            b.child(crate::ui::probed(crate::ui::button("notice-both-go").primary().label("Update Platform Manager").on_click(cx.listener(|this, _, _, cx| {
                                 let page = this.update_page(cx);
                                 page.update(cx, |p, cx| p.start_manager_update(cx));
                                 this.page = Page::Update;
                                 cx.notify();
-                            })))
+                            }))))
                         })
-                        .child(crate::ui::button("notice-both-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx))))
-                        .child(crate::ui::button("notice-both-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("notice-both-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx)))))
+                        .child(crate::ui::probed(crate::ui::button("notice-both-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                             let (mv, sv) = (mv.clone(), sv.clone());
                             this.updates.update(cx, |s, cx| {
                                 s.dismiss_manager(mv, cx);
                                 s.dismiss_sentient(sv, cx);
                             });
-                        }))),
+                        })))),
                 );
             }
             // A2: a new Platform Manager.
@@ -1392,18 +1465,18 @@ impl Manager {
                 col = col.child(
                     bar("notice-manager", crate::ui::Tone::Neutral, format!("Platform Manager {} is available.", m.version))
                         .when(m.installer.is_some(), |b| {
-                            b.child(crate::ui::button("notice-manager-go").primary().label("Update and restart").on_click(cx.listener(|this, _, _, cx| {
+                            b.child(crate::ui::probed(crate::ui::button("notice-manager-go").primary().label("Update and restart").on_click(cx.listener(|this, _, _, cx| {
                                 let page = this.update_page(cx);
                                 page.update(cx, |p, cx| p.start_manager_update(cx));
                                 this.page = Page::Update;
                                 cx.notify();
-                            })))
+                            }))))
                         })
-                        .child(crate::ui::button("notice-manager-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx))))
-                        .child(crate::ui::button("notice-manager-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("notice-manager-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx)))))
+                        .child(crate::ui::probed(crate::ui::button("notice-manager-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                             let v = v.clone();
                             this.updates.update(cx, |s, cx| s.dismiss_manager(v, cx));
-                        }))),
+                        })))),
                 );
             }
             // A3: a new SENTIENT.
@@ -1411,15 +1484,15 @@ impl Manager {
                 let v = s.version.clone();
                 col = col.child(
                     bar("notice-sentient", crate::ui::Tone::Neutral, format!("SENTIENT {} is available{}.", s.version, dated(&s.date)))
-                        .child(crate::ui::button("notice-sentient-go").primary().label("Update…").on_click(cx.listener(|this, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("notice-sentient-go").primary().label("Update…").on_click(cx.listener(|this, _, _, cx| {
                             this.page = Page::Update;
                             cx.notify();
-                        })))
-                        .child(crate::ui::button("notice-sentient-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Sentient, cx))))
-                        .child(crate::ui::button("notice-sentient-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        }))))
+                        .child(crate::ui::probed(crate::ui::button("notice-sentient-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Sentient, cx)))))
+                        .child(crate::ui::probed(crate::ui::button("notice-sentient-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                             let v = v.clone();
                             this.updates.update(cx, |s, cx| s.dismiss_sentient(v, cx));
-                        }))),
+                        })))),
                 );
             }
             (None, None) => {}
@@ -1428,14 +1501,14 @@ impl Manager {
             let v = o.version.clone();
             col = col.child(
                 bar("notice-gateway", crate::ui::Tone::Neutral, format!("Sentient Gateway {} is available{}.", o.version, dated(&o.date)))
-                    .child(crate::ui::button("notice-gateway-go").primary().label("Update…").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button("notice-gateway-go").primary().label("Update…").on_click(cx.listener(|this, _, _, cx| {
                         this.page = Page::Gateway;
                         cx.notify();
-                    })))
-                    .child(crate::ui::button("notice-gateway-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                    }))))
+                    .child(crate::ui::probed(crate::ui::button("notice-gateway-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
                         let v = v.clone();
                         this.updates.update(cx, |s, cx| s.dismiss_gateway(v, cx));
-                    }))),
+                    })))),
             );
         }
         Some(col.into_any_element())
@@ -1483,10 +1556,9 @@ impl Manager {
                 }
             }
             Some(id) => {
-                if self.open_remote.as_ref() == Some(&id) {
-                    for page in self.remote_pages.clone() {
-                        page.update(cx, |p, cx| p.after_job(cx));
-                    }
+                // A kept page of an instance not open now reads again too.
+                if let Some(page) = self.remote_pages.get(&id).cloned() {
+                    page.update(cx, |p, cx| p.after_job(cx));
                 }
             }
         }
@@ -1506,6 +1578,7 @@ impl Manager {
     /// choice (sun, moon, half circle for Follow system); a popover below it
     /// with the three.
     fn theme_button(&self, tint: Hsla, cx: &mut Context<Self>) -> impl IntoElement {
+        let dark = theme::is_dark(cx);
         let theme = cx.theme().clone();
         let choice = theme::Choice::saved();
         let open = self.theme_open;
@@ -1522,8 +1595,8 @@ impl Manager {
             .cursor_pointer()
             .text_color(theme.foreground)
             .rounded(px(theme::BAR_CTRL_RADIUS))
-            .when(open, |b| b.bg(tint.opacity(theme::BAR_CTRL_HOVER)))
-            .when(!open, |b| b.hover(move |b| b.bg(tint.opacity(theme::BAR_CTRL_HOVER))))
+            .when(open, |b| b.bg(tint.opacity(theme::bar_ctrl_hover(dark))))
+            .when(!open, |b| b.hover(move |b| b.bg(tint.opacity(theme::bar_ctrl_hover(dark)))))
             .child(icon_of(choice).size(px(19.)))
             .when(!open, |b| b.tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Theme").build(window, cx)))
             .on_click(cx.listener(|this, _, _, cx| {
@@ -1585,44 +1658,77 @@ impl Manager {
             }
         }
         // Statistics: the same view for this computer and a server.
+        // Files, Statistics and Licence: one page per instance, kept for the
+        // run; one kept from before reads again the first time it shows
+        // after a switch.
+        let again = self.fresh.insert(self.page);
         if self.page == Page::Files {
             let key = self.open_remote.clone();
-            if self.files.as_ref().is_none_or(|(k, _)| *k != key) {
-                let inst = key.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned();
-                self.files = Some((key, cx.new(|cx| files::FilesPage::new(inst, cx))));
-            }
-            return self.files.as_ref().map(|(_, p)| p.clone().into_any_element()).unwrap_or_else(|| div().into_any_element());
+            let page = match self.files.get(&key).cloned() {
+                Some(p) => {
+                    if again {
+                        p.update(cx, |p, cx| p.reshow(cx));
+                    }
+                    p
+                }
+                None => {
+                    let inst = key.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned();
+                    let p = cx.new(|cx| files::FilesPage::new(inst, cx));
+                    self.files.insert(key, p.clone());
+                    p
+                }
+            };
+            return page.into_any_element();
         }
         if self.page == Page::Statistics {
             let key = self.open_remote.clone();
-            if self.stats.as_ref().is_none_or(|(k, _)| *k != key) {
-                let src = match key.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
-                    Some(inst) => stats::Source::Remote(inst),
-                    None => stats::Source::Local(record.clone()),
-                };
-                self.stats = Some((key, cx.new(|cx| stats::StatsPage::new(src, cx))));
-            }
-            return self.stats.as_ref().map(|(_, p)| p.clone().into_any_element()).unwrap_or_else(|| div().into_any_element());
+            let page = match self.stats.get(&key).cloned() {
+                Some(p) => {
+                    if again {
+                        p.update(cx, |p, cx| p.reshow(cx));
+                    }
+                    p
+                }
+                None => {
+                    let src = match key.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
+                        Some(inst) => stats::Source::Remote(inst),
+                        None => stats::Source::Local(record.clone()),
+                    };
+                    let p = cx.new(|cx| stats::StatsPage::new(src, cx));
+                    self.stats.insert(key, p.clone());
+                    p
+                }
+            };
+            return page.into_any_element();
         }
         // Licence: the same view for this computer and a server.
         if self.page == Page::Licence {
             let key = self.open_remote.clone();
-            if self.licence.as_ref().is_none_or(|(k, _)| *k != key) {
-                let (target, name) = match key.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
-                    Some(inst) => {
-                        let n = inst.name.clone();
-                        (crate::licence::Target::Remote(inst), n)
+            let page = match self.licence.get(&key).cloned() {
+                Some(p) => {
+                    if again {
+                        p.update(cx, |p, cx| p.reshow(cx));
                     }
-                    None => (crate::licence::Target::Local(record.clone()), "this computer".to_string()),
-                };
-                let page = cx.new(|cx| licence::LicencePage::new(target, name, window, cx));
-                self._subscriptions.push(cx.subscribe(&page, |this, _, _: &licence::GoSettings, cx| {
-                    this.page = Page::Settings;
-                    cx.notify();
-                }));
-                self.licence = Some((key, page));
-            }
-            return self.licence.as_ref().map(|(_, p)| p.clone().into_any_element()).unwrap_or_else(|| div().into_any_element());
+                    p
+                }
+                None => {
+                    let (target, name) = match key.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
+                        Some(inst) => {
+                            let n = inst.name.clone();
+                            (crate::licence::Target::Remote(inst), n)
+                        }
+                        None => (crate::licence::Target::Local(record.clone()), "this computer".to_string()),
+                    };
+                    let page = cx.new(|cx| licence::LicencePage::new(target, name, window, cx));
+                    self._subscriptions.push(cx.subscribe(&page, |this, _, _: &licence::GoSettings, cx| {
+                        this.page = Page::Settings;
+                        cx.notify();
+                    }));
+                    self.licence.insert(key, page.clone());
+                    page
+                }
+            };
+            return page.into_any_element();
         }
         if let Some(r) = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
             let kind = match self.page {
@@ -1637,15 +1743,17 @@ impl Manager {
                 _ => None,
             };
             if let Some(kind) = kind {
-                let page = match &self.remote_pages {
+                let page = match self.remote_pages.get(&r.id).cloned() {
+                    // Kept from an earlier opening: what it read shows at
+                    // once, read again behind it.
                     Some(p) => {
-                        p.update(cx, |p, cx| p.show(kind, cx));
-                        p.clone()
+                        p.update(cx, |p, cx| if again { p.reshow(kind, cx) } else { p.show(kind, cx) });
+                        p
                     }
                     None => {
                         let updates = self.updates.clone();
                         let p = cx.new(|cx| remote_pages::RemotePages::new(r.clone(), kind, updates, window, cx));
-                        self.remote_pages = Some(p.clone());
+                        self.remote_pages.insert(r.id.clone(), p.clone());
                         p
                     }
                 };
@@ -1684,7 +1792,8 @@ impl Manager {
                         this.open_instance(e.0.clone(), cx);
                     }));
                     self._subscriptions.push(cx.subscribe(&page, |this, _, _: &instances::ListChanged, cx| {
-                        this.remotes = crate::remote::load();
+                        let before = std::mem::replace(&mut this.remotes, crate::remote::load());
+                        this.prune_kept(&before);
                         if this.open_remote.as_ref().is_some_and(|id| !this.remotes.iter().any(|r| &r.id == id)) {
                             this.open_remote = None;
                         }
@@ -1834,6 +1943,14 @@ impl Manager {
 
 impl Render for Manager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Windows 10: the app's caption and rounded corners (crate::win_frame).
+        let root = self.render_root(window, cx).into_any_element();
+        crate::win_frame::frame(crate::mode::AppMode::Manager.window_title(), root, window, cx)
+    }
+}
+
+impl Manager {
+    fn render_root(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The layout follows the window: an icon rail below RAIL_BELOW px,
         // fewer monitors in the top bar as it narrows.
         let width = f32::from(window.viewport_size().width);
@@ -1899,6 +2016,24 @@ impl Render for Manager {
             eprintln!("LAYOUT-FRAME {:.0} {:.0}", f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
         }
         let content = self.content(window, cx);
+        // Switch timing: each frame after a switch until the page shows
+        // its data (render done, and the next frame's start ≈ presented).
+        if let Some((t0, n)) = SWITCH_AT.with(|s| s.get()) {
+            let data = match &self.open_remote {
+                Some(id) => self.remote_pages.get(id).is_some_and(|p| p.read(cx).has_data()),
+                None => self.page != Page::Status || self.status.as_ref().is_some_and(|p| p.read(cx).has_data()),
+            };
+            let ms = t0.elapsed().as_secs_f64() * 1000.;
+            eprintln!("SWITCH frame={} render_ms={ms:.2} data={data}", n + 1);
+            if data {
+                SWITCH_AT.with(|s| s.set(None));
+                window.on_next_frame(move |_, _| eprintln!("SWITCH next_frame_ms={:.2}", t0.elapsed().as_secs_f64() * 1000.));
+            } else if n < 400 {
+                SWITCH_AT.with(|s| s.set(Some((t0, n + 1))));
+            } else {
+                SWITCH_AT.with(|s| s.set(None));
+            }
+        }
         self.run_pending(cx);
         let layer = crate::modal::layer(window, cx, menu_w, shell::BAR_H);
         if layer.is_some() && window.focused(cx).is_none() {

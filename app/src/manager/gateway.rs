@@ -17,6 +17,7 @@ use gpui_kit::*;
 
 use sentient_installer_core::gateway::{self, Offer, Settings, Status};
 
+use crate::gateway_record::GatewayRecord;
 use crate::installation::InstallationRecord;
 use crate::jobs::{Job, JobState};
 use crate::ui::{self, Tone};
@@ -26,6 +27,10 @@ const REFRESH: Duration = Duration::from_secs(5);
 
 pub struct GatewayPage {
     status: Option<Status>,
+    /// The gateway the Platform Manager was asked to manage (crate::gateway_record).
+    record: Option<GatewayRecord>,
+    /// The job that runs now: shown under the buttons when it ends.
+    action: Option<&'static str>,
     updates: Entity<UpdateState>,
     host: Entity<InputState>,
     port: Entity<InputState>,
@@ -63,8 +68,17 @@ impl GatewayPage {
             subs.push(cx.subscribe(i, |_, _, _: &InputEvent, cx| cx.notify()));
         }
         let poll = cx.spawn(async move |this, cx| loop {
-            let status = cx.background_executor().spawn(async { gateway::status() }).await;
-            if this.update(cx, |p, cx| { p.status = Some(status); cx.notify(); }).is_err() {
+            let (status, record) = cx.background_executor().spawn(async { (local_status(), crate::gateway_record::load()) }).await;
+            if this.update(cx, |p, cx| {
+                let first = p.status.is_none();
+                p.status = Some(status);
+                p.record = record;
+                // Screens: the removal dialog open (SPM_DEBUG_GATEWAY_REMOVE=1).
+                if first && cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_GATEWAY_REMOVE").is_some() && p.status.as_ref().is_some_and(|s| s.installed) {
+                    p.open_remove(cx);
+                }
+                cx.notify();
+            }).is_err() {
                 break;
             }
             cx.background_executor().timer(REFRESH).await;
@@ -74,13 +88,13 @@ impl GatewayPage {
                 u.check(cx);
             }
         });
-        Self { status: None, updates, host, port, token, password, password2, problem: None, job, _subscriptions: subs, _poll: poll }
+        Self { status: None, record: None, action: None, updates, host, port, token, password, password2, problem: None, job, _subscriptions: subs, _poll: poll }
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
-            let status = cx.background_executor().spawn(async { gateway::status() }).await;
-            this.update(cx, |p, cx| { p.status = Some(status); cx.notify(); }).ok();
+            let (status, record) = cx.background_executor().spawn(async { (local_status(), crate::gateway_record::load()) }).await;
+            this.update(cx, |p, cx| { p.status = Some(status); p.record = record; cx.notify(); }).ok();
         })
         .detach();
     }
@@ -124,7 +138,240 @@ impl GatewayPage {
     }
 
     fn control(&mut self, action: &'static str, cx: &mut Context<Self>) {
+        self.action = Some(action);
         self.job.update(cx, |job, cx| job.start(move |sink| gateway::control(&sink, action), cx));
+    }
+
+    /// "Manage it here": record the gateway as it is (nothing about it changes).
+    fn adopt(&mut self, cx: &mut Context<Self>) {
+        self.action = Some("adopt");
+        self.job.update(cx, |job, cx| {
+            job.start(
+                move |sink| {
+                    crate::gateway_record::adopt().map(|m| sink(sentient_installer_core::progress::Progress::Done { message: m }))
+                },
+                cx,
+            )
+        });
+    }
+
+    fn remove(&mut self, keep: bool, image: bool, cx: &mut Context<Self>) {
+        let Some(status) = self.status.clone() else { return };
+        self.action = Some("remove");
+        // One password prompt for all of it on Linux: a service, or a record
+        // to clear, needs root.
+        let as_root = cfg!(target_os = "linux") && !crate::rootjob::is_root() && (status.container.is_none() || self.record.is_some());
+        self.job.update(cx, |job, cx| {
+            job.start(
+                move |sink| {
+                    if as_root {
+                        let mut args = vec!["gateway-remove".to_string()];
+                        if !keep {
+                            args.push("--delete-data".into());
+                        }
+                        if image {
+                            args.push("--remove-image".into());
+                        }
+                        crate::rootjob::run(&args, &sink).map(|_| ())
+                    } else {
+                        let msg = gateway::remove(&sink, keep, image)?;
+                        let _ = crate::gateway_record::save(None);
+                        sink(sentient_installer_core::progress::Progress::Done { message: msg });
+                        Ok(())
+                    }
+                },
+                cx,
+            )
+        });
+    }
+
+    fn open_remove(&mut self, cx: &mut Context<Self>) {
+        let Some(status) = self.status.clone() else { return };
+        let this = cx.entity().downgrade();
+        open_remove_dialog(
+            RemoveTarget::of(&status, None),
+            std::rc::Rc::new(move |keep, image, cx: &mut App| {
+                this.update(cx, |p, cx| p.remove(keep, image, cx)).ok();
+            }),
+            cx,
+        );
+    }
+}
+
+/// What "Remove the Gateway…" removes, for its dialog: here or on a server.
+#[derive(Clone)]
+pub(crate) struct RemoveTarget {
+    /// docker, service, process or windows-service.
+    pub kind: String,
+    pub name: String,
+    pub image: Option<String>,
+    pub volumes: Vec<String>,
+    pub package: Option<String>,
+    /// The server's name; None: this computer.
+    pub server: Option<String>,
+}
+
+impl RemoveTarget {
+    pub fn of(s: &Status, server: Option<String>) -> Self {
+        RemoveTarget {
+            kind: s.kind().to_string(),
+            name: s.container.clone().or_else(|| s.service.clone()).or_else(|| s.process.clone()).unwrap_or_else(|| "SentientGateway".into()),
+            image: s.image.clone(),
+            volumes: s.volumes.clone(),
+            package: s.package.clone(),
+            server,
+        }
+    }
+
+    /// From a server's `gateway-status` line.
+    pub fn of_remote(get: &dyn Fn(&str) -> String, server: String) -> Self {
+        let kind = get("kind");
+        let name = match kind.as_str() {
+            "docker" => get("container"),
+            "service" => get("service"),
+            "process" => get("process"),
+            _ => "SentientGateway".into(),
+        };
+        let some = |v: String| (!v.is_empty()).then_some(v);
+        RemoveTarget {
+            kind,
+            name,
+            image: some(get("image")),
+            volumes: get("volumes").split(',').filter(|v| !v.is_empty()).map(str::to_string).collect(),
+            package: some(get("package")),
+            server: Some(server),
+        }
+    }
+
+    /// What the removal does, in one sentence.
+    fn what(&self) -> String {
+        let place = self.server.as_ref().map(|s| format!(" on {s}")).unwrap_or_default();
+        match self.kind.as_str() {
+            "docker" => format!("The Docker container {} is stopped and removed{place}. A compose file it came from is not changed.", self.name),
+            "service" => match &self.package {
+                Some(p) => format!("The service {} is stopped and disabled, and the package {p} is removed{place}.", self.name),
+                None => format!("The service {} is stopped and disabled, and its unit file and program are removed{place}.", self.name),
+            },
+            "windows-service" => format!("The Windows service SentientGateway is stopped and the gateway is uninstalled{place}."),
+            _ => format!("The gateway's program {} is removed{place}.", self.name),
+        }
+    }
+
+    /// Where "Keep its configuration and data" keeps them.
+    fn kept_where(&self) -> String {
+        match self.kind.as_str() {
+            "docker" if !self.volumes.is_empty() => format!("Its volumes are kept: {}. A new gateway container can use them again.", self.volumes.join(", ")),
+            "docker" => "The container has no volumes: its configuration lives in the container and goes with it.".into(),
+            "windows-service" => "Moved to a dated folder: ProgramData\\Sentient Gateway kept <date>.".into(),
+            _ => "The configuration (/etc/sentient-gateway, with the platform's access token) and the local buffer (/var/lib/sentient-gateway) are moved to a dated folder: /var/backups/sentient-gateway-<date>-<time>.".into(),
+        }
+    }
+}
+
+/// "Remove the Gateway…": what goes, the "Keep its configuration and data"
+/// switch (on), and for a container the image too (off). `on_ok(keep, image)`.
+pub(crate) fn open_remove_dialog(target: RemoveTarget, on_ok: std::rc::Rc<dyn Fn(bool, bool, &mut App)>, cx: &mut App) {
+    let view = cx.new(|_| RemoveDialog { target, keep: true, image: false, on_ok });
+    crate::modal::open(crate::modal::Modal { title: "Remove the Sentient Gateway?".into(), body: view.into(), width: 520., icon: None, on_close: None }, cx);
+}
+
+struct RemoveDialog {
+    target: RemoveTarget,
+    keep: bool,
+    image: bool,
+    on_ok: std::rc::Rc<dyn Fn(bool, bool, &mut App)>,
+}
+
+impl Render for RemoveDialog {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::component::{checkbox::Checkbox, switch::Switch};
+        let theme = cx.theme().clone();
+        let t = &self.target;
+        let docker = t.kind == "docker";
+        let ok = if self.keep { "Remove" } else { "Remove and delete the data" };
+        let (keep, image) = (self.keep, self.image);
+        let on_ok = self.on_ok.clone();
+        v_flex()
+            .gap_4()
+            .child(div().text_sm().text_color(theme.muted_foreground).child(t.what()))
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .items_center()
+                            .child(div().text_sm().child("Keep its configuration and data"))
+                            .child(ui::info("gw-remove-keep".into(), t.kept_where().into())),
+                    )
+                    .child(Switch::new("gw-remove-keep-switch").checked(self.keep).on_click(cx.listener(|d, v: &bool, _, cx| {
+                        d.keep = *v;
+                        cx.notify();
+                    }))),
+            )
+            .when(docker && t.image.is_some(), |b| {
+                b.child(
+                    Checkbox::new("gw-remove-image")
+                        .label(format!("Also remove the image {}", t.image.clone().unwrap_or_default()))
+                        .checked(self.image)
+                        .on_change(cx.listener(|d, v: &bool, _, cx| {
+                            d.image = *v;
+                            cx.notify();
+                        })),
+                )
+            })
+            .when(!self.keep, |b| {
+                b.child(ui::outcome(
+                    &theme,
+                    Tone::Bad,
+                    if docker {
+                        "Its volumes are deleted: the gateway's configuration, its access token and the data it buffered. This can't be undone."
+                    } else {
+                        "Its configuration, its access token and the data it buffered are deleted. This can't be undone."
+                    },
+                ))
+            })
+            .child(
+                h_flex()
+                    .gap(crate::ui::button_gap())
+                    .justify_end()
+                    .child(crate::ui::probed(crate::ui::button("gw-remove-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
+                    .child(crate::ui::probed(
+                        h_flex()
+                            .id("gw-remove-ok")
+                            .h(px(32.))
+                            .px_3()
+                            .items_center()
+                            .rounded(theme.radius)
+                            .bg(theme.danger)
+                            .text_color(gpui_kit::white())
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .cursor_pointer()
+                            .hover(|d| d.opacity(0.9))
+                            .child(ok)
+                            .on_click(move |_, _, cx| {
+                                crate::modal::close(cx);
+                                on_ok(keep, image, cx);
+                            }),
+                    )),
+            )
+    }
+}
+
+/// How the gateway runs, for "Runs as": a container also says who manages it.
+pub(crate) fn runs_as(kind: &str, name: &str, managed: bool, recorded: bool) -> String {
+    match kind {
+        "docker" if managed => format!("Docker container {name}"),
+        "docker" if recorded => format!("Docker container {name}, managed here (it was installed outside the Platform Manager)"),
+        "docker" => format!("Docker container {name}, installed outside the Platform Manager"),
+        "service" if recorded => format!("Service {name}, managed here"),
+        "service" => format!("Service {name}"),
+        "process" => format!("A process ({name}), started outside a service"),
+        _ => "Windows service SentientGateway".to_string(),
     }
 }
 
@@ -153,6 +400,15 @@ impl Render for GatewayPage {
             .clone()
             .filter(|o| status.installed && status.version.as_deref().is_some_and(|v| sentient_installer_core::releases::is_newer(&o.version, v, false)));
 
+        let recorded = self.record.as_ref().is_some_and(|r| r.is(&status));
+        // Someone else's gateway: a compose container, or a unit by hand.
+        let outside = !status.managed && !recorded && status.kind() != "windows-service";
+        let controllable = status.kind() != "process";
+        let outcome = match (self.action, job.state()) {
+            (Some("adopt" | "remove"), JobState::Done(m)) => Some((Tone::Good, m.clone())),
+            (Some(_), JobState::Failed(m)) => Some((Tone::Bad, m.clone())),
+            _ => None,
+        };
         let body = if status.installed {
             let (pill, tone) = if status.running { ("Running", Tone::Good) } else { ("Stopped", Tone::Bad) };
             ui::panel(&theme)
@@ -178,28 +434,43 @@ impl Render for GatewayPage {
                         _ => "Not commissioned (set the platform on its local page)".into(),
                     },
                 ))
-                .child(ui::fact(
-                    &theme,
-                    "Runs as",
-                    match (&status.container, status.managed, &status.service, &status.process) {
-                        (Some(c), true, ..) => format!("Docker container {c}"),
-                        (Some(c), false, ..) => format!("Docker container {c} (from a compose file the Platform Manager did not write)"),
-                        (None, _, Some(u), _) => format!("Service {u}"),
-                        (None, _, None, Some(p)) => format!("A process ({p}), started outside a service"),
-                        _ => "Windows service SentientGateway".to_string(),
-                    },
-                ))
+                .child(ui::fact(&theme, "Runs as", runs_as(status.kind(), &RemoveTarget::of(&status, None).name, status.managed, recorded)))
+                .when_some(status.compose_dir.clone(), |p, dir| {
+                    p.child(ui::fact(&theme, "Compose", match &status.compose_project {
+                        Some(proj) => format!("{proj}, in {dir}"),
+                        None => dir,
+                    }))
+                })
+                .when(!status.volumes.is_empty(), |p| p.child(ui::fact(&theme, "Volumes", status.volumes.join(", "))))
                 .child(match status.page_url.clone() {
                     Some(url) => ui::fact(&theme, "Web page", url),
                     None => ui::fact_help(&theme, "Web page", "Off", "The gateway's own web page is off. In a container it is turned on with ST_GW_UI=on."),
                 })
                 .child(
                     h_flex()
-                        .gap_2()
-                        .child(crate::ui::button("gw-start").outline().label("Start").disabled(busy || status.running).on_click(cx.listener(|p, _, _, cx| p.control("start", cx))))
-                        .child(crate::ui::button("gw-stop").outline().label("Stop").disabled(busy || !status.running).on_click(cx.listener(|p, _, _, cx| p.control("stop", cx))))
-                        .child(crate::ui::button("gw-restart").outline().label("Restart").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.control("restart", cx)))),
+                        .gap(crate::ui::button_gap())
+                        .flex_wrap()
+                        .when(controllable, |r| {
+                            r.child(crate::ui::probed(crate::ui::button("gw-start").outline().label("Start").disabled(busy || status.running).on_click(cx.listener(|p, _, _, cx| p.control("start", cx)))))
+                                .child(crate::ui::probed(crate::ui::button("gw-stop").outline().label("Stop").disabled(busy || !status.running).on_click(cx.listener(|p, _, _, cx| p.control("stop", cx)))))
+                                .child(crate::ui::probed(crate::ui::button("gw-restart").outline().label("Restart").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.control("restart", cx)))))
+                        })
+                        .child(crate::ui::probed(crate::ui::button("gw-logs").outline().label("Logs").on_click(|_, _, cx| {
+                            crate::logsource::request(crate::logsource::Source::Gateway);
+                            cx.refresh_windows();
+                        })))
+                        .when(outside, |r| {
+                            r.child(crate::ui::probed(
+                                h_flex().gap_1().items_center().child(crate::ui::button("gw-adopt").outline().label("Manage it here").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.adopt(cx)))).child(ui::info(
+                                    "gw-adopt-help".into(),
+                                    "Records this gateway as the one the Platform Manager manages: it lists it, starts and stops it, and offers its removal. Nothing about it changes: the container, its compose file and its volumes stay as they are.".into(),
+                                )),
+                            ))
+                        })
+                        .child(div().flex_1())
+                        .child(crate::ui::probed(crate::ui::button("gw-remove").danger().label("Remove the Gateway…").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.open_remove(cx))))),
                 )
+                .children(outcome.clone().map(|(tone, m)| ui::outcome(&theme, tone, m)))
                 .child(match (&newer, &newest) {
                     (Some(o), _) => {
                         let o2 = o.clone();
@@ -239,6 +510,12 @@ impl Render for GatewayPage {
                             .into_any_element()
                     }
                     (None, Some(Err(e))) => div().text_sm().text_color(theme.muted_foreground).child(format!("Gateway updates: {e}")).into_any_element(),
+                    // Up to date only against a known version.
+                    (None, Some(Ok(_))) if status.version.is_none() => div()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child("Its version is not known, so updates cannot be checked.")
+                        .into_any_element(),
                     (None, Some(Ok(_))) => div()
                         .text_sm()
                         .text_color(theme.muted_foreground)
@@ -271,6 +548,7 @@ impl Render for GatewayPage {
                             .child(field("Again", div().child(Input::new(&self.password2).mask_toggle())).flex_1()),
                     )
                 })
+                .children(outcome.clone().map(|(tone, m)| ui::outcome(&theme, tone, m)))
                 .children(self.problem.clone().map(|p| ui::outcome(&theme, Tone::Bad, p)))
                 .child(match o {
                     Some(o) => {
@@ -305,5 +583,56 @@ impl Render for GatewayPage {
         };
 
         page.child(body)
+    }
+}
+
+/// Repair and uninstall's Gateway choice: the gateway found, and its removal.
+pub(crate) fn remove_panel(theme: &gpui_kit::component::Theme, id: &'static str, runs_as: String, button: AnyElement) -> Div {
+    ui::panel(theme)
+        .child(h_flex().gap_2().items_center().child(ui::product_logo(ui::Product::Gateway, 24.)).child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway")))
+        .child(
+            h_flex()
+                .gap_1()
+                .items_center()
+                .child(div().text_sm().text_color(theme.muted_foreground).child(runs_as))
+                .child(ui::info(SharedString::from(format!("{id}-help")), "Remove the Gateway stops it and removes it. Its configuration and data are kept unless you choose otherwise. SENTIENT is not touched.".into())),
+        )
+        .child(ui::button_row(vec![button]))
+}
+
+/// The gateway on this computer (gateway::status). Screens: SPM_DEBUG_GATEWAY
+/// holds a canned `gateway-status` line (`none` for no gateway).
+pub(crate) fn local_status() -> Status {
+    sentient_installer_core::distro::gateway_docker::set_cache_dir(crate::updates::prefs_dir());
+    #[cfg(debug_assertions)]
+    if let Ok(t) = std::env::var("SPM_DEBUG_GATEWAY") {
+        let kv: std::collections::HashMap<String, String> = t.split([' ', '+']).filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.replace("%20", " "))).collect();
+        return status_of(&|k| kv.get(k).cloned().unwrap_or_default());
+    }
+    gateway::status()
+}
+
+/// A Status from a `gateway-status` line's values.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+fn status_of(get: &dyn Fn(&str) -> String) -> Status {
+    let some = |k: &str| Some(get(k)).filter(|v| !v.is_empty());
+    let kind = get("kind");
+    Status {
+        installed: get("installed") == "true",
+        version: some("version"),
+        running: get("running") == "true",
+        host: some("host"),
+        port: get("port").parse().ok(),
+        page_url: some("page").filter(|p| p != "off"),
+        container: some("container").filter(|_| kind == "docker"),
+        managed: get("managed") == "true",
+        service: some("service"),
+        process: some("process"),
+        image: some("image"),
+        compose_project: some("project"),
+        compose_dir: some("compose"),
+        volumes: get("volumes").split(',').filter(|v| !v.is_empty()).map(str::to_string).collect(),
+        program: some("program"),
+        package: some("package"),
     }
 }

@@ -913,11 +913,11 @@ mod password_tests {
         assert_eq!(find_db_password(&[], &[], &none, &[bare]), DbPassword::Unknown);
     }
 
-    /// SUNOIL's shape: SENTIENT has DATABASE_URL, PostgreSQL has
+    /// A plant stack's shape: SENTIENT has DATABASE_URL, PostgreSQL has
     /// POSTGRES_PASSWORD, both as Docker resolved them; no .env, and the
     /// compose file writes them through variables.
     #[test]
-    fn sunoils_stack() {
+    fn northwind_stack() {
         let app = env(&[("DATABASE_URL", "postgresql://sentient:S3cret%21x@sentient-postgres:5432/sentient"), ("HOST", "0.0.0.0"), ("PORT", "8080")]);
         let pg = env(&[("POSTGRES_DB", "sentient"), ("POSTGRES_USER", "sentient"), ("POSTGRES_PASSWORD", "S3cret!x")]);
         let compose = "services:\n  sentient:\n    environment:\n      DATABASE_URL: ${DATABASE_URL}\n  postgres:\n    environment:\n      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}\n".to_string();

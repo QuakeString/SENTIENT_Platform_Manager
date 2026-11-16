@@ -36,6 +36,9 @@ rustls.workspace = true
 rustls-platform-verifier.workspace = true
 sha2.workspace = true   # verify every downloaded artifact
 chrono.workspace = true  # names of the update and migration snapshots
+getrandom = "0.2"        # secrets from the OS random source
+base64 = "0.22"
+minisign-verify = "0.2"  # release signatures (crate::signing)
 
 [target.'cfg(windows)'.dependencies]
 # Automatic sign-in: LogonUserW checks the password, the LSA secret store keeps it.

@@ -50,7 +50,7 @@ enum Panel {
 
 pub struct LicencePage {
     target: Target,
-    /// "INVENIA IIoT", or "this computer".
+    /// "Fabrikam IIoT", or "this computer".
     name: String,
     view: View,
     open: Option<Panel>,
@@ -66,6 +66,10 @@ pub struct LicencePage {
     reading: bool,
     /// The last action's result, above the card.
     note: Option<(Tone, String)>,
+    /// A re-read failed while what was read before still shows.
+    stale: Option<String>,
+    /// When a reading last came back (HH:MM).
+    updated_at: Option<String>,
     /// Start SENTIENT, or update the server's agent.
     job: Entity<crate::jobs::Job>,
     /// The page's content width, measured.
@@ -103,6 +107,8 @@ impl LicencePage {
             sign_in_error: None,
             reading: false,
             note: None,
+            stale: None,
+            updated_at: None,
             job: cx.new(|_| crate::jobs::Job::new()),
             width: Rc::new(Cell::new(0.)),
             pending: None,
@@ -133,7 +139,13 @@ impl LicencePage {
             let got = cx.background_executor().spawn(async move { target.serving() }).await;
             this.update(cx, |p, cx| {
                 p.reading = false;
+                if got.is_ok() {
+                    p.stale = None;
+                    p.updated_at = Some(chrono::Local::now().format("%H:%M").to_string());
+                }
                 match got {
+                    // No answer while a state shows: it stays, said softly.
+                    Err(e) if e != crate::remote::AGENT_OLD && matches!(p.view, View::NotInstalled | View::Stopped | View::SignIn) => p.stale = Some(e),
                     Ok((false, _)) => p.view = View::NotInstalled,
                     Ok((true, false)) => p.view = View::Stopped,
                     Ok((true, true)) => match crate::licence::session(&p.target.key()) {
@@ -193,7 +205,11 @@ impl LicencePage {
             this.update(cx, |p, cx| {
                 p.reading = false;
                 match got {
-                    Ok(r) => p.view = View::Ready(Box::new(r)),
+                    Ok(r) => {
+                        p.stale = None;
+                        p.updated_at = Some(chrono::Local::now().format("%H:%M").to_string());
+                        p.view = View::Ready(Box::new(r));
+                    }
                     Err(e) if e == crate::licence::SESSION_ENDED => {
                         crate::licence::end_session(&key);
                         // The token ran out: renew it from what is kept.
@@ -205,6 +221,8 @@ impl LicencePage {
                         }
                     }
                     Err(e) if e == crate::remote::AGENT_OLD => p.view = View::AgentOld,
+                    // A failed re-read keeps the licence shown.
+                    Err(e) if matches!(p.view, View::Ready(_)) => p.stale = Some(e),
                     Err(e) => p.view = View::Failed(e),
                 }
                 p.debug_open(cx);
@@ -214,6 +232,14 @@ impl LicencePage {
         });
         self._tasks.push(task);
         cx.notify();
+    }
+
+    /// Shown again after another instance was open: read again behind
+    /// what shows.
+    pub fn reshow(&mut self, cx: &mut Context<Self>) {
+        if !self.reading && !self.signing_in {
+            self.reload(cx);
+        }
     }
 
     /// Read again (the title's Refresh, and after an action).
@@ -548,11 +574,11 @@ impl Render for ActionDialog {
         };
         body.child(
             h_flex()
-                .gap_2()
+                .gap(crate::ui::button_gap())
                 .justify_end()
                 .pt_1()
-                .child(ui::button("licence-act-cancel").outline().label("Cancel").disabled(self.busy).on_click(|_, _, cx| crate::modal::close(cx)))
-                .child(ok_button),
+                .child(crate::ui::probed(ui::button("licence-act-cancel").outline().label("Cancel").disabled(self.busy).on_click(|_, _, cx| crate::modal::close(cx))))
+                .child(crate::ui::probed(ok_button)),
         )
     }
 }
@@ -664,9 +690,12 @@ impl LicencePage {
                 me.update(cx, |p, cx| p.reload(cx)).ok();
             }
         });
+        let dbg = ui::debug_stale().filter(|_| !matches!(self.view, View::Checking | View::Loading));
+        let stale = self.stale.as_deref().or(dbg.as_deref()).filter(|_| !self.reading).map(|e| ui::stale_note(&theme, "licence-stale", e, self.updated_at.as_deref()));
         h_flex()
-            .gap_3()
+            .gap(crate::ui::button_gap())
             .items_center()
+            .children(stale)
             .when_some(signed, |r, s| {
                 r.child(
                     h_flex()
@@ -678,9 +707,9 @@ impl LicencePage {
                         .child(icon("user").size(px(16.)).text_color(theme.muted_foreground))
                         .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(s.email.clone())),
                 )
-                .child(ui::button("licence-sign-out").outline().label("Sign out").on_click(cx.listener(|p, _, _, cx| p.sign_out(cx))))
+                .child(crate::ui::probed(ui::button("licence-sign-out").outline().label("Sign out").on_click(cx.listener(|p, _, _, cx| p.sign_out(cx)))))
             })
-            .child(refresh)
+            .child(crate::ui::probed(refresh))
             .into_any_element()
     }
 
@@ -713,7 +742,7 @@ impl LicencePage {
             .child(
                 h_flex()
                     .flex_wrap()
-                    .gap_2()
+                    .gap(crate::ui::button_gap())
                     .items_center()
                     .child(
                         div().relative().flex_shrink_0().child(
@@ -958,7 +987,7 @@ impl LicencePage {
                 .w(px(w))
                 .child(h_flex().gap_2().items_center().child(div().flex_1().min_w_0().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child(title)).child(ui::pill(theme, Tone::Neutral, "Not licensed").text_size(px(12.)).py(px(0.))))
                 .child(
-                    h_flex().gap(px(10.)).items_center().child(div().flex_1().min_w_0().child(Input::new(&self.key))).child(div().relative().flex_shrink_0().child(ui::button("licence-activate").primary().label("Activate…").on_click(cx.listener(|p, _, window, cx| {
+                    h_flex().gap(px(10.)).items_center().child(div().flex_1().min_w_0().child(Input::new(&self.key))).child(ui::probed(ui::button("licence-activate").primary().label("Activate…").on_click(cx.listener(|p, _, window, cx| {
                         let key = p.key.read(cx).value().trim().to_string();
                         if key.is_empty() {
                             p.note = Some((Tone::Bad, "Enter the licence key first.".into()));
@@ -971,22 +1000,22 @@ impl LicencePage {
                 .child(
                     h_flex()
                         .flex_wrap()
-                        .gap(px(10.))
+                        .gap(crate::ui::button_gap())
                         .items_center()
                         .child(div().text_sm().text_color(theme.muted_foreground).child("Or import a licence key from a file:"))
-                        .child(div().relative().flex_shrink_0().child(ui::button("licence-import").outline().icon(icon("file")).label("Import key file…").on_click(cx.listener(|p, _, window, cx| p.choose_key_file(window, cx))))),
+                        .child(ui::probed(ui::button("licence-import").outline().icon(icon("file")).label("Import key file…").on_click(cx.listener(|p, _, window, cx| p.choose_key_file(window, cx))))),
                 )
                 .child(
                     h_flex()
                         .flex_wrap()
-                        .gap(px(10.))
+                        .gap(crate::ui::button_gap())
                         .items_center()
                         .pt(px(12.))
                         .border_t_1()
                         .border_color(theme.border)
                         .child(div().text_sm().text_color(theme.muted_foreground).child("No key yet?"))
-                        .child(div().relative().flex_shrink_0().child(ui::button("licence-demo").outline().icon(icon("mail")).label("Request a demo licence").on_click(|_, _, cx| ui::open_url(crate::licence::DEMO_URL, cx))))
-                        .child(div().relative().flex_shrink_0().child(ui::button("licence-buy").outline().icon(icon("cart")).label("Buy a licence").on_click(|_, _, cx| ui::open_url(crate::licence::BUY_URL, cx)))),
+                        .child(ui::probed(ui::button("licence-demo").outline().icon(icon("mail")).label("Request a demo licence").on_click(|_, _, cx| ui::open_url(crate::licence::DEMO_URL, cx))))
+                        .child(ui::probed(ui::button("licence-buy").outline().icon(icon("cart")).label("Buy a licence").on_click(|_, _, cx| ui::open_url(crate::licence::BUY_URL, cx)))),
                 ),
         )
     }

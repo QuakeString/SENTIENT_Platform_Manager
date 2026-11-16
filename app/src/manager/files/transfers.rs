@@ -212,7 +212,7 @@ impl Transfers {
             name: name.into(),
             from: Place::Local,
             from_admin: false,
-            src: format!("/home/mz/INVENIA/{name}"),
+            src: format!("/home/ops/exports/{name}"),
             to: remote.clone(),
             to_admin: false,
             dest_dir: dir.into(),
@@ -226,7 +226,7 @@ impl Transfers {
         self.items = vec![
             mk(1, "gateway-4.16.2-linux-x86_64.tar.gz", 40_055_603, 16_882_000, St::Copying, "/opt/sentient"),
             mk(2, "plant-dashboard.json", 421_888, 0, St::Waiting, "/opt/sentient"),
-            mk(3, "sunoil-tags.csv", 90_112, 90_112, St::Done(now), "/opt/sentient/conf"),
+            mk(3, "northwind-tags.csv", 90_112, 90_112, St::Done(now), "/opt/sentient/conf"),
         ];
         if let Ok(mut run) = self.shared.run.lock() {
             *run = self.items.clone();
@@ -423,7 +423,20 @@ fn copy_item(item: &Item, shared: &Shared, conns: &mut Conns, tick: &dyn Fn()) -
     r
 }
 
+/// A file name from a listing, checked before it becomes part of a path on
+/// the other side: a server could send "../../.bashrc" or "a/b" and write
+/// outside the folder it was given. One name, nothing more.
+pub(crate) fn safe_name(name: &str) -> Result<(), String> {
+    let bad = name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']);
+    if bad {
+        let shown: String = name.chars().map(|c| if c == '\0' { '\u{2400}' } else { c }).collect();
+        return Err(format!("Not copied: the name \"{shown}\" is not a plain file name (it is empty, \".\" or \"..\", or holds /, \\ or a NUL character)."));
+    }
+    Ok(())
+}
+
 fn copy_item_with(item: &Item, shared: &Shared, src: &mut Box<dyn Fs>, dst: &mut Box<dyn Fs>, tick: &dyn Fn()) -> Result<Option<St>, String> {
+    safe_name(&item.name)?;
     let (is_dir, size, mtime) = src.meta(&item.src)?.ok_or_else(|| format!("{} is not there any more.", item.src))?;
     let mut name = item.name.clone();
     let mut dest = item.to.join(&item.dest_dir, &name);
@@ -494,6 +507,7 @@ fn copy_item_with(item: &Item, shared: &Shared, src: &mut Box<dyn Fs>, dst: &mut
             return Err("Cancelled".into());
         }
         for e in src.list(&s)?.entries {
+            safe_name(&e.name)?;
             let (sp, dp) = (item.from.join(&s, &e.name), item.to.join(&d, &e.name));
             if e.dir {
                 dirs.push(dp.clone());
@@ -794,21 +808,21 @@ impl Render for AskFooter {
         let (v1, v2) = (self.v.clone(), self.v.clone());
         h_flex()
             .w_full()
-            .gap_2()
+            .gap(crate::ui::button_gap())
             .justify_end()
-            .child(crate::ui::button("ask-cancel").outline().label("Cancel copy").on_click(move |_, _, cx| {
+            .child(crate::ui::probed(crate::ui::button("ask-cancel").outline().label("Cancel copy").on_click(move |_, _, cx| {
                 let t = v1.read(cx).t.clone();
                 crate::modal::close(cx);
                 t.update(cx, |t, cx| t.answer(None, cx));
-            }))
-            .child(crate::ui::button("ask-go").primary().label("Continue").on_click(move |_, _, cx| {
+            })))
+            .child(crate::ui::probed(crate::ui::button("ask-go").primary().label("Continue").on_click(move |_, _, cx| {
                 let (t, c, rest) = {
                     let v = v2.read(cx);
                     (v.t.clone(), v.choice, v.rest)
                 };
                 crate::modal::close(cx);
                 t.update(cx, |t, cx| t.answer(Some((c, rest)), cx));
-            }))
+            })))
     }
 }
 
@@ -827,4 +841,23 @@ pub fn debug_ask(cx: &mut App) {
         cx.notify();
     });
     open_ask(t, cx);
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::safe_name;
+
+    /// A server's listing names one entry; anything that could climb out of
+    /// the destination folder or name a sub-path is refused.
+    #[test]
+    fn a_name_from_the_server_is_one_plain_name() {
+        for ok in ["report.csv", "a..b.txt", ".env", "..hidden", "Ünïcode name"] {
+            assert!(safe_name(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", ".", "..", "../x", "a/b", "/etc/passwd", "a\\b", "..\\..\\x", "nul\0byte"] {
+            let e = safe_name(bad).unwrap_err();
+            assert!(e.starts_with("Not copied: the name"), "{e}");
+        }
+        assert!(!safe_name("x\0y").unwrap_err().contains('\0'));
+    }
 }

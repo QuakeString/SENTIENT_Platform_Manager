@@ -59,11 +59,28 @@ pub struct LogView {
     selected: BTreeSet<usize>,
     anchor: Option<usize>,
     focus: FocusHandle,
+    /// Its instance is not the open one (a kept page): no reading until
+    /// it is shown again.
+    paused: bool,
     _poll: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl LogView {
+    /// A re-read that failed while the lines read before still show.
+    pub fn stale(&self) -> Option<&str> {
+        self.error.as_deref().filter(|_| !self.lines.is_empty())
+    }
+
+    /// Hidden behind another instance (or shown again: read at once).
+    pub fn set_paused(&mut self, paused: bool, cx: &mut Context<Self>) {
+        let was = self.paused;
+        self.paused = paused;
+        if was && !paused && self.follow {
+            self.start(cx);
+        }
+    }
+
     pub fn new(load: LoadFn, sources_fn: SourcesFn, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter lines"));
         let _subscriptions = vec![cx.subscribe_in(&filter, window, |this, _, event, _, cx| {
@@ -88,6 +105,7 @@ impl LogView {
             selected: BTreeSet::new(),
             anchor: None,
             focus: cx.focus_handle(),
+            paused: false,
             _poll: None,
             _subscriptions,
         };
@@ -181,7 +199,11 @@ impl LogView {
     fn start(&mut self, cx: &mut Context<Self>) {
         let load = self.load.clone();
         self._poll = Some(cx.spawn(async move |this, cx| loop {
-            let Ok((pick, sources)) = this.update(cx, |v, _| (v.pick, v.sources.clone())) else { break };
+            let Ok((pick, sources, paused)) = this.update(cx, |v, _| (v.pick, v.sources.clone(), v.paused)) else { break };
+            if paused {
+                cx.background_executor().timer(FOLLOW_EVERY).await;
+                continue;
+            }
             let load = load.clone();
             let lines = cx.background_executor().spawn(async move { Self::read(&load, pick, &sources, TAIL, false) }).await;
             let follow = this
@@ -194,8 +216,11 @@ impl LogView {
                             v.lines = lines;
                             v.error = None;
                         }
+                        // A failed re-read keeps the lines read before.
                         Err(e) => {
-                            v.lines.clear();
+                            if v.pick != pick {
+                                v.lines.clear();
+                            }
                             v.error = Some(e);
                         }
                     }
@@ -404,7 +429,7 @@ impl Render for LogView {
             .child(h_flex().gap_3().flex_wrap().items_center().when(!self.single, |r| r.child(sources)).child(levels))
             .child(
                 h_flex()
-                    .gap_3()
+                    .gap(crate::ui::button_gap())
                     .flex_wrap()
                     .items_center()
                     .child(div().w(px(280.)).child(Input::new(&self.filter)))
@@ -416,9 +441,9 @@ impl Render for LogView {
                         }
                         cx.notify();
                     })))
-                    .child(crate::ui::button("log-refresh").outline().label("Refresh").on_click(cx.listener(|v, _, _, cx| v.start(cx))))
-                    .child(crate::ui::button("log-copy").outline().label(if selected_n > 0 { format!("Copy {selected_n}") } else { "Copy".into() }).on_click(cx.listener(|v, _, _, cx| v.copy(cx))))
-                    .child(save)
+                    .child(crate::ui::probed(crate::ui::button("log-refresh").outline().label("Refresh").on_click(cx.listener(|v, _, _, cx| v.start(cx)))))
+                    .child(crate::ui::probed(crate::ui::button("log-copy").outline().label(if selected_n > 0 { format!("Copy {selected_n}") } else { "Copy".into() }).on_click(cx.listener(|v, _, _, cx| v.copy(cx)))))
+                    .child(crate::ui::probed(save))
                     .child(div().flex_1())
                     .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!(
                         "{} · {}",

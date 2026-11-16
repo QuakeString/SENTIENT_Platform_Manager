@@ -7,9 +7,9 @@ name: build-installers
 # release build for a shippable installer). A release-candidate tag (v*-rc*)
 # builds release and publishes a pre-release. On a version tag the installers
 # and the Arch package are attached to a GitHub Release (see the release job).
-# Also runs (debug) on a PR
-# that edits this file, so a change to the installer build is proven before it
-# merges.
+# Also runs on a PR that edits this file, so a change to the installer build
+# is proven before it merges; the Windows setup is then a release build (a
+# testable installer, the rc version from an spm/rcNN-... branch).
 #
 # Nightly: every night at 02:00 IST, when master has commits the last
 # nightly does not, a release build is published as the release tagged
@@ -67,9 +67,11 @@ jobs:
   #
   # The server agents first: the job code without the window (crate::remote
   # copies them to the servers a Platform Manager manages). Linux is static
-  # (musl) so it runs on any distribution without desktop libraries. Both
-  # are carried inside every build below (build.rs) and attached to the
-  # release, which is where an agent comes from when a build lacks one.
+  # (musl) so it runs on any distribution without desktop libraries; ARM64
+  # is built natively on an arm runner. All three are carried inside every
+  # build below (build.rs: the Windows setup, the Linux program and the
+  # Arch package) and attached to the release, where an agent comes from
+  # only for a build that lacks one.
   agents:
     name: server agents
     needs: gate
@@ -81,6 +83,10 @@ jobs:
             target: x86_64-unknown-linux-musl
             file: sentient-platform-manager
             name: sentient-platform-manager-agent-linux-x86_64
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-musl
+            file: sentient-platform-manager
+            name: sentient-platform-manager-agent-linux-aarch64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             file: sentient-platform-manager.exe
@@ -99,6 +105,15 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then export SPM_VERSION="${GITHUB_REF_NAME#v}"; fi
           if [ -n "${{ needs.gate.outputs.version }}" ]; then export SPM_VERSION="${{ needs.gate.outputs.version }}"; fi
+          # The same version and commit as the builds that carry it (the
+          # gpui-windows job's rules for a pull request), so agent-info on
+          # a server matches the program.
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            export SPM_COMMIT="$(echo '${{ github.event.pull_request.head.sha }}' | cut -c1-7)"
+            rc=$(echo '${{ github.head_ref }}' | sed -n 's|^spm/rc\([0-9][0-9]*\)-.*|\1|p')
+            base=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+            if [ -n "$rc" ]; then export SPM_VERSION="$base-rc$rc"; fi
+          fi
           cargo build --release --locked --no-default-features --target ${{ matrix.target }}
           mkdir -p ../agents
           cp "target/${{ matrix.target }}/release/${{ matrix.file }}" "../agents/${{ matrix.name }}"
@@ -133,12 +148,23 @@ jobs:
         run: |
           # The server agents this build carries (build.rs).
           export SPM_LINUX_AGENT="$GITHUB_WORKSPACE/agents/sentient-platform-manager-agent-linux-x86_64"
+          export SPM_LINUX_AARCH64_AGENT="$GITHUB_WORKSPACE/agents/sentient-platform-manager-agent-linux-aarch64"
           export SPM_WINDOWS_AGENT="$GITHUB_WORKSPACE/agents/sentient-platform-manager-agent-windows-x86_64.exe"
+          for f in "$SPM_LINUX_AGENT" "$SPM_LINUX_AARCH64_AGENT" "$SPM_WINDOWS_AGENT"; do test -s "$f" || { echo "missing agent $f"; exit 1; }; done
           # The version the program reports and compares updates against:
           # the tag it is built from (v0.8.0-rc6 -> 0.8.0-rc6).
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then export SPM_VERSION="${GITHUB_REF_NAME#v}"; fi
           if [ -n "${{ needs.gate.outputs.version }}" ]; then export SPM_VERSION="${{ needs.gate.outputs.version }}"; fi
-          if [ "${{ github.event.inputs.profile }}" = "release" ] || [[ "$GITHUB_REF" == refs/tags/v*-rc* ]] || [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+          # A pull request from a release-candidate branch (spm/rcNN-...)
+          # builds a testable installer: release, reporting the rc version
+          # and the branch's own commit (not the PR's merge commit).
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            export SPM_COMMIT="$(echo '${{ github.event.pull_request.head.sha }}' | cut -c1-7)"
+            rc=$(echo '${{ github.head_ref }}' | sed -n 's|^spm/rc\([0-9][0-9]*\)-.*|\1|p')
+            base=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+            if [ -n "$rc" ]; then export SPM_VERSION="$base-rc$rc"; fi
+          fi
+          if [ "${{ github.event.inputs.profile }}" = "release" ] || [[ "$GITHUB_REF" == refs/tags/v*-rc* ]] || [ "$GITHUB_EVENT_NAME" = "schedule" ] || [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             cargo build --release; echo "PROFILE=release" >> "$GITHUB_ENV"
           else
             cargo build; echo "PROFILE=debug" >> "$GITHUB_ENV"
@@ -199,7 +225,9 @@ jobs:
         run: |
           # The server agents this build carries (build.rs).
           export SPM_LINUX_AGENT="$GITHUB_WORKSPACE/agents/sentient-platform-manager-agent-linux-x86_64"
+          export SPM_LINUX_AARCH64_AGENT="$GITHUB_WORKSPACE/agents/sentient-platform-manager-agent-linux-aarch64"
           export SPM_WINDOWS_AGENT="$GITHUB_WORKSPACE/agents/sentient-platform-manager-agent-windows-x86_64.exe"
+          for f in "$SPM_LINUX_AGENT" "$SPM_LINUX_AARCH64_AGENT" "$SPM_WINDOWS_AGENT"; do test -s "$f" || { echo "missing agent $f"; exit 1; }; done
           # The version the program reports and compares updates against:
           # the tag it is built from (v0.8.0-rc6 -> 0.8.0-rc6).
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then export SPM_VERSION="${GITHUB_REF_NAME#v}"; fi
@@ -228,7 +256,7 @@ jobs:
   # itself so it links against Arch's libraries. Always an optimized build.
   arch-package:
     name: Arch Linux package
-    needs: gate
+    needs: [gate, agents]
     if: needs.gate.outputs.build == 'true'
     runs-on: ubuntu-latest
     container: archlinux:base-devel
@@ -238,13 +266,20 @@ jobs:
           pacman -Syu --noconfirm --needed git rust rust-musl musl clang cmake pkgconf \
             fontconfig freetype2 libxcb libxkbcommon libxkbcommon-x11 wayland vulkan-icd-loader alsa-lib
       - uses: actions/checkout@v4
+      # Every server agent, carried inside the package (the PKGBUILD takes
+      # them from SPM_PREBUILT_AGENTS).
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: agent-*
+          path: agents
+          merge-multiple: true
       - name: Build
         run: |
           useradd -m builder
           chown -R builder "$GITHUB_WORKSPACE"
           v=""; case "$GITHUB_REF" in refs/tags/v*) v="${GITHUB_REF_NAME#v}";; esac
           [ -n "${{ needs.gate.outputs.version }}" ] && v="${{ needs.gate.outputs.version }}"
-          su builder -c "SPM_VERSION='$v' '$GITHUB_WORKSPACE/packaging/arch/build.sh' '$GITHUB_WORKSPACE/dist'"
+          su builder -c "SPM_VERSION='$v' SPM_PREBUILT_AGENTS='$GITHUB_WORKSPACE/agents' '$GITHUB_WORKSPACE/packaging/arch/build.sh' '$GITHUB_WORKSPACE/dist'"
       - name: Upload
         uses: actions/upload-artifact@v4
         with:

@@ -72,6 +72,12 @@ pub fn show_error(title: impl Into<SharedString>, text: impl Into<SharedString>,
 
 /// An error in the shared dialog: the headline, the details (the step that
 /// failed and what it printed) to read and Copy, and Retry when given.
+/// What a failure's retry button says: "Ask again" when the failure is a
+/// closed password prompt (sentient_installer_core::elevation), else `usual`.
+pub fn retry_label(failure: &str, usual: &'static str) -> &'static str {
+    if sentient_installer_core::elevation::ElevationError::is_cancelled(failure) { "Ask again" } else { usual }
+}
+
 pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedString>, retry: Option<std::rc::Rc<dyn Fn(&mut App)>>, cx: &mut App) {
     struct ErrorBody(SharedString, Option<std::rc::Rc<dyn Fn(&mut App)>>);
     impl Render for ErrorBody {
@@ -81,6 +87,7 @@ pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedStr
             let theme = cx.theme().clone();
             let (head, detail) = crate::remote::split_failure(&self.0);
             let copy = self.0.to_string();
+            let again = retry_label(&self.0, "Retry");
             gpui_kit::component::v_flex()
                 .gap_3()
                 .child(div().text_sm().child(head))
@@ -89,16 +96,16 @@ pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedStr
                 })
                 .child(
                     gpui_kit::component::h_flex()
-                        .gap_2()
+                        .gap(crate::ui::button_gap())
                         .justify_end()
-                        .child(button("error-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+                        .child(crate::ui::probed(button("error-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))))
                         .when_some(self.1.clone(), |r, retry| {
-                            r.child(button("error-retry").outline().label("Retry").on_click(move |_, _, cx| {
+                            r.child(crate::ui::probed(button("error-retry").outline().label(again).on_click(move |_, _, cx| {
                                 crate::modal::close(cx);
                                 retry(cx);
-                            }))
+                            })))
                         })
-                        .child(button("error-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx))),
+                        .child(crate::ui::probed(button("error-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx)))),
                 )
         }
     }
@@ -240,6 +247,31 @@ pub fn page_with(theme: &Theme, title: &'static str, summary: &'static str, acti
             )
             .child(action),
     )
+}
+
+/// A refresh that failed while the page keeps what it read before: a muted
+/// "Couldn't refresh · last updated HH:MM" beside the title's Refresh, the
+/// reason in its (i). One line, cut rather than wrapped.
+/// Screens: every page with data shows its stale note (SPM_DEBUG_STALE=<why>).
+pub fn debug_stale() -> Option<String> {
+    if cfg!(debug_assertions) { std::env::var("SPM_DEBUG_STALE").ok() } else { None }
+}
+
+pub fn stale_note(theme: &Theme, id: &'static str, why: &str, at: Option<&str>) -> AnyElement {
+    let text = match at {
+        Some(t) => format!("Couldn't refresh · last updated {t}"),
+        None => "Couldn't refresh".to_string(),
+    };
+    h_flex()
+        .gap_1()
+        .items_center()
+        .min_w_0()
+        .flex_shrink(1.)
+        .text_sm()
+        .text_color(theme.muted_foreground)
+        .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(text))
+        .child(info(SharedString::from(id), SharedString::from(why.to_string())))
+        .into_any_element()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -440,10 +472,25 @@ pub fn not_installed(theme: &Theme) -> Div {
 /// below its label or runs out of its card (each reports its bounds to the
 /// layout probe).
 pub fn button_row(buttons: Vec<AnyElement>) -> Div {
-    gpui_kit::component::h_flex()
-        .flex_wrap()
-        .gap_2()
-        .children(buttons.into_iter().map(|b| div().relative().flex_shrink_0().child(b).child(layout_probe("button"))))
+    button_group(buttons).flex_wrap()
+}
+
+/// Buttons side by side on one line, theme::BUTTON_GAP apart, centred on
+/// one line (each reports its bounds to the layout probe).
+pub fn button_group(buttons: Vec<AnyElement>) -> Div {
+    gpui_kit::component::h_flex().items_center().gap(button_gap()).children(buttons.into_iter().map(probed))
+}
+
+/// The one gap between buttons, and between a button group and the text
+/// or pill beside it (theme::BUTTON_GAP).
+pub fn button_gap() -> Pixels {
+    px(crate::theme::BUTTON_GAP)
+}
+
+/// A button that reports its bounds to the layout test (the gap check):
+/// for a button placed outside button_group/button_row.
+pub fn probed(b: impl IntoElement) -> Div {
+    div().relative().flex_shrink_0().child(b).child(layout_probe("button"))
 }
 
 /// A page's own notice, directly in the page (never inside a card): an
@@ -841,6 +888,10 @@ pub fn svc_icon_button(theme: &Theme, id: SharedString, icon: gpui_kit::componen
         .disabled(!enabled)
 }
 
+/// A Services row's text line, and its height (two lines and their gap).
+const SVC_LINE_H: f32 = 20.;
+const SVC_ROW_H: f32 = 2. * SVC_LINE_H + 2.;
+
 /// The Services card's rows: the state, the plain name, the unit or
 /// container name and its uptime (wrapping in a narrow card), then Start,
 /// Stop, Restart and Logs, always shown, those that do not apply off. The
@@ -868,42 +919,61 @@ pub fn service_rows(
             let (tone, label) = if running { (Tone::Good, "Running") } else if starting { (Tone::Warn, "Starting") } else { (Tone::Bad, "Stopped") };
             let plain = service_label(&name);
             let busy = busy_name.as_ref().is_some_and(|b| *b == *name);
-            let state_pill = if busy { pill(theme, Tone::Warn, "Working…") } else { pill(theme, tone, label) }.min_w(px(86.)).justify_center();
+            // The pill hugs its word; the uptime goes on its own line under
+            // the name, so the name and the unit keep the row's room.
+            let state_pill = if busy { pill(theme, Tone::Warn, "Working…") } else { pill(theme, tone, label) };
             let piece = |d: Div| d.min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis();
-            let names = gpui_kit::component::h_flex()
+            let names = gpui_kit::component::v_flex()
                 .flex_1()
                 .min_w_0()
-                .flex_wrap()
-                .gap_x_2()
-                .gap_y_0p5()
-                .child(piece(div()).child(SharedString::from(plain.unwrap_or(&name).to_string())))
-                .when(plain.is_some(), |r| {
-                    r.child(piece(div()).text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(name.clone()))
-                })
-                .when(!detail.is_empty(), |r| r.child(piece(div()).text_color(theme.muted_foreground).child(SharedString::from(format!("· {detail}")))));
+                .gap_0p5()
+                .child(
+                    gpui_kit::component::h_flex()
+                        .min_w_0()
+                        .flex_wrap()
+                        .gap_x_2()
+                        .gap_y_0p5()
+                        // The plain name wraps rather than being cut.
+                        .child(div().min_w_0().child(SharedString::from(plain.unwrap_or(&name).to_string())))
+                        .when(plain.is_some(), |r| {
+                            r.child(piece(div()).text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(name.clone()))
+                        }),
+                )
+                .when(!detail.is_empty(), |r| r.child(piece(div()).text_color(theme.muted_foreground).child(detail.clone())));
             let icon = |action: &'static str, icon: gpui_kit::component::Icon, tip: &'static str, enabled: bool| {
                 let (act, n) = (act.clone(), name.to_string());
                 svc_icon_button(theme, SharedString::from(format!("svc-{action}-{name}")), icon, tip, enabled && !any_busy, action == "stop")
                     .on_click(move |_, window, cx| act(&n, action, window, cx))
             };
             let (log, n) = (log.clone(), name.to_string());
+            // One height for every row (two lines of names), whether the
+            // names wrap or not; the pill on the names' first line, the
+            // pill and names centred together, the icons centred on the row.
             gpui_kit::component::h_flex()
-                .gap_3()
+                .gap(button_gap())
                 .text_sm()
+                .line_height(px(SVC_LINE_H))
                 .items_center()
-                .child(gpui_kit::component::h_flex().flex_shrink_0().child(state_pill))
-                .child(names)
+                .min_h(px(SVC_ROW_H))
                 .child(
                     gpui_kit::component::h_flex()
-                        .gap_1()
-                        .flex_shrink_0()
-                        .child(icon("start", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Play), "Start", !running))
-                        .child(icon("stop", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Square), "Stop…", running))
-                        .child(icon("restart", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::RotateCw), "Restart", running))
-                        .child(
-                            svc_icon_button(theme, SharedString::from(format!("svc-log-{name}")), gpui_kit::component::Icon::empty().path("icons/file-text.svg"), "Logs", true, false)
-                                .on_click(move |_, window, cx| log(&n, window, cx)),
-                        ),
+                        .flex_1()
+                        .min_w_0()
+                        .items_start()
+                        .gap_3()
+                        .child(gpui_kit::component::h_flex().flex_shrink_0().h(px(SVC_LINE_H)).items_center().child(state_pill))
+                        .child(names),
+                )
+                .child(
+                    button_group(vec![
+                        icon("start", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Play), "Start", !running).into_any_element(),
+                        icon("stop", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Square), "Stop…", running).into_any_element(),
+                        icon("restart", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::RotateCw), "Restart", running).into_any_element(),
+                        svc_icon_button(theme, SharedString::from(format!("svc-log-{name}")), gpui_kit::component::Icon::empty().path("icons/file-text.svg"), "Logs", true, false)
+                            .on_click(move |_, window, cx| log(&n, window, cx))
+                            .into_any_element(),
+                    ])
+                    .flex_shrink_0(),
                 )
         })
         .collect()
@@ -1212,7 +1282,7 @@ pub fn refresh_button(id: &'static str, busy: bool, window: &mut Window, on: imp
         })
 }
 
-/// `/home/mz/…/sentient-platform-manager`: a long text cut in the middle to
+/// `/home/ops/…/sentient-platform-manager`: a long text cut in the middle to
 /// `max` characters, keeping both ends.
 pub fn middle_ellipsis(s: &str, max: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
@@ -1307,13 +1377,15 @@ pub fn layout_probe(name: &'static str) -> impl IntoElement {
         d.child(
             canvas(
                 move |bounds, _, _| {
-                    eprintln!(
-                        "LAYOUT {name} {:.0} {:.0} {:.0} {:.0}",
-                        f32::from(bounds.origin.x),
-                        f32::from(bounds.origin.x + bounds.size.width),
-                        f32::from(bounds.origin.y),
-                        f32::from(bounds.origin.y + bounds.size.height)
-                    );
+                    let (l, r) = (f32::from(bounds.origin.x), f32::from(bounds.origin.x + bounds.size.width));
+                    let (t, b) = (f32::from(bounds.origin.y), f32::from(bounds.origin.y + bounds.size.height));
+                    // Buttons to a hundredth: the gap check holds them to
+                    // half a pixel at x1.
+                    if name == "button" {
+                        eprintln!("LAYOUT {name} {l:.2} {r:.2} {t:.2} {b:.2}");
+                    } else {
+                        eprintln!("LAYOUT {name} {l:.0} {r:.0} {t:.0} {b:.0}");
+                    }
                 },
                 |_, _, _, _| {},
             )
@@ -1459,9 +1531,10 @@ pub fn skeleton_service_rows(theme: &Theme, key: &'static str, n: usize) -> Vec<
             gpui_kit::component::h_flex()
                 .gap_3()
                 .items_center()
-                .child(skeleton_block(theme, format!("{key}-p{i}"), px(86.).into(), 25.))
+                .min_h(px(SVC_ROW_H))
+                .child(skeleton_block(theme, format!("{key}-p{i}"), px(72.).into(), 25.))
                 .child(skeleton_line(theme, format!("{key}-n{i}"), [200., 240., 180.][i % 3]))
-                .child(gpui_kit::component::h_flex().gap_1().flex_shrink_0().children((0..4).map(|b| skeleton_block_r(theme, format!("{key}-b{i}-{b}"), px(32.).into(), 32., 6.))))
+                .child(gpui_kit::component::h_flex().gap(button_gap()).flex_shrink_0().children((0..4).map(|b| skeleton_block_r(theme, format!("{key}-b{i}-{b}"), px(32.).into(), 32., 6.))))
         })
         .collect()
 }
@@ -1470,7 +1543,7 @@ pub fn skeleton_service_rows(theme: &Theme, key: &'static str, n: usize) -> Vec<
 mod info_tests {
     use super::info_lines;
 
-    /// A remote job that ends with a long note (SUNOIL's takeover): read as
+    /// A remote job that ends with a long note (a takeover): read as
     /// a done message, its first sentence and the rest, never as an error.
     #[test]
     fn a_long_success_note_stays_a_note() {

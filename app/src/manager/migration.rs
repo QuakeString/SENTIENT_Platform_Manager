@@ -184,6 +184,8 @@ impl MigrationPage {
                 .background_executor()
                 .spawn(async move {
                     if crate::rootjob::needed(&record) {
+                        // Only when asked (see above): a user action.
+                        let _action = sentient_installer_core::elevation::user_action();
                         let noop = sentient_installer_core::progress::noop();
                         crate::rootjob::run(&["kept".to_string()], &noop)
                             .map(|lines| lines.iter().filter_map(|l| kept::decode(l)).collect())
@@ -417,7 +419,7 @@ impl MigrationPage {
             .ok();
         });
         let retry = match job.state() {
-            JobState::Failed(_) => job.retry().map(|r| crate::ui::button("mig-job-retry").primary().label("Try again").on_click(move |_, _, cx| r(cx)).into_any_element()),
+            JobState::Failed(m) => job.retry().map(|r| crate::ui::button("mig-job-retry").primary().label(crate::ui::retry_label(m, "Try again")).on_click(move |_, _, cx| r(cx)).into_any_element()),
             _ => None,
         };
         let stages: &[crate::manager::jobview::Stage] = if title.starts_with("Changing the database") { crate::manager::jobview::MIGRATION } else { &[] };
@@ -471,10 +473,10 @@ impl Render for MigrationPage {
                 .when(chosen.is_some(), |p| p.child(steps_text(&theme, cfg!(windows) && chosen == Some(Flavor::Clickhouse))))
                 .child(
                     h_flex()
-                        .gap_3()
+                        .gap(crate::ui::button_gap())
                         .items_center()
                         .when(!self.confirm, |r| {
-                            r.child(
+                            r.child(crate::ui::probed(
                                 crate::ui::button("migrate")
                                     .primary()
                                     .label(chosen.map(|f| format!("Change to {}", flavor_label(f))).unwrap_or_else(|| "Change database".into()))
@@ -482,18 +484,18 @@ impl Render for MigrationPage {
                                     .disabled(busy || external || chosen.is_none() || unfinished.is_some() || self.preflight != crate::manager::remote_pages::Preflight::Idle)
                                     .loading(self.preflight == crate::manager::remote_pages::Preflight::Checking)
                                     .on_click(cx.listener(|this, _, _, cx| this.check(cx))),
-                            )
+                            ))
                             .children(change_hint(&theme, external, chosen.is_some()))
                         })
                         .when(self.confirm, |r| {
-                            r.child(
+                            r.child(crate::ui::probed(
                                 crate::ui::button("migrate-confirm")
                                     .danger()
                                     .label("Stop SENTIENT and change now")
                                     .disabled(busy)
                                     .on_click(cx.listener(|this, _, _, cx| this.start(cx))),
-                            )
-                            .child(
+                            ))
+                            .child(crate::ui::probed(
                                 crate::ui::button("migrate-cancel")
                                     .ghost()
                                     .label("Cancel")
@@ -502,7 +504,7 @@ impl Render for MigrationPage {
                                         this.confirm = false;
                                         cx.notify();
                                     })),
-                            )
+                            ))
                         }),
                 )
                 .when(crate::movedata::unsupported(record).is_none(), |p| {

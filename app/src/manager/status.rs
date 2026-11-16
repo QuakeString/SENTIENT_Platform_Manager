@@ -175,7 +175,7 @@ impl StatusPage {
             cx.notify();
         });
         let gateway_poll = cx.spawn(async move |this, cx| loop {
-            let status = cx.background_executor().spawn(async { sentient_installer_core::gateway::status() }).await;
+            let status = cx.background_executor().spawn(async { crate::manager::gateway::local_status() }).await;
             if this.update(cx, |p, cx| { p.gateway = Some(status); cx.notify(); }).is_err() {
                 break;
             }
@@ -220,8 +220,14 @@ impl StatusPage {
         page
     }
 
-    /// Read the services now (after an action), apart from the poll.
-    fn refresh(&mut self, cx: &mut Context<Self>) {
+    /// Switch timing (SPM_DEBUG_SWITCH): the page shows what it read.
+    pub(crate) fn has_data(&self) -> bool {
+        self.snapshot.is_some() || (self.record.is_none() && self.found.is_some())
+    }
+
+    /// Read the services now (after an action, or shown again), apart from
+    /// the poll.
+    pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         let task = cx.spawn(async move |this, cx| {
             let snapshot = cx.background_executor().spawn(async move { record.platform().snapshot() }).await;
@@ -270,8 +276,17 @@ impl StatusPage {
         }
         self.db_reading = true;
         cx.notify();
+        // Read is pressed (the timer reads only what needs no password).
+        // Once the account only has to sign in again, it does not ask.
+        let ask = !crate::dbstatus::after_sign_in(&record);
         let task = cx.spawn(async move |this, cx| {
-            let status = cx.background_executor().spawn(async move { crate::dbstatus::read(&record) }).await;
+            let status = cx
+                .background_executor()
+                .spawn(async move {
+                    let _action = ask.then(sentient_installer_core::elevation::user_action);
+                    crate::dbstatus::read(&record)
+                })
+                .await;
             this.update(cx, |page, cx| {
                 page.db = Some(status);
                 page.db_reading = false;
@@ -307,8 +322,10 @@ impl StatusPage {
         let Some(db) = &self.db else {
             return panel.child(div().text_sm().text_color(theme.muted_foreground).child(if self.db_reading {
                 "Reading the database's size and state…"
+            } else if crate::dbstatus::after_sign_in(record) {
+                "The database's size and state are available after you sign in again."
             } else if crate::dbstatus::needs_admin(record) {
-                "Read shows the database's size and state. It asks for the administrator password, as the database password is kept where only an administrator can read it."
+                "Read shows the database's size and state. It asks for the administrator password once; after a Repair it reads without one."
             } else {
                 "Not read."
             }));
@@ -501,7 +518,7 @@ impl Render for StatusPage {
         let page = page.when_some(damaged, |page, e| {
             page.child(
                 h_flex()
-                    .gap_3()
+                    .gap(crate::ui::button_gap())
                     .items_center()
                     .px_4()
                     .py_2()
@@ -522,7 +539,7 @@ impl Render for StatusPage {
         let page = page.when(waiting > 0, |page| {
             page.child(
                 h_flex()
-                    .gap_3()
+                    .gap(crate::ui::button_gap())
                     .items_center()
                     .px_4()
                     .py_2()
@@ -642,7 +659,7 @@ impl StatusPage {
                 if g.running { "Running" } else { "Stopped" },
                 format!(
                     "Sentient Gateway {}{}{}",
-                    g.version.clone().unwrap_or_default(),
+                    g.version.clone().unwrap_or_else(|| "(version unknown)".into()),
                     g.host.as_ref().map(|h| format!(" · sends to {h}{}", g.port.map(|p| format!(":{p}")).unwrap_or_default())).unwrap_or_default(),
                     newer.as_ref().map(|o| format!(" · {} available", o.version)).unwrap_or_default()
                 ),
@@ -763,12 +780,11 @@ pub(crate) fn control_buttons(
         if primary { b.primary() } else { b.outline() }
     };
     let (bg, border, fg) = ui::stop_hover(theme);
-    h_flex()
-        .flex_wrap()
-        .gap_2()
-        .child(btn("start", "Start", IconName::Play, down, !up).on_click(move |_, w, cx| start(w, cx)))
-        .child(btn("stop", "Stop…", IconName::Square, false, !down).hover_colors(bg, border, fg).on_click(move |_, w, cx| stop(w, cx)))
-        .child(btn("restart", "Restart", IconName::RotateCw, false, !down).on_click(move |_, w, cx| restart(w, cx)))
+    ui::button_row(vec![
+        btn("start", "Start", IconName::Play, down, !up).on_click(move |_, w, cx| start(w, cx)).into_any_element(),
+        btn("stop", "Stop…", IconName::Square, false, !down).hover_colors(bg, border, fg).on_click(move |_, w, cx| stop(w, cx)).into_any_element(),
+        btn("restart", "Restart", IconName::RotateCw, false, !down).on_click(move |_, w, cx| restart(w, cx)).into_any_element(),
+    ])
 }
 
 /// What the database details may offer, each where the page can do it.
@@ -906,15 +922,15 @@ impl Render for BrokenParts {
         let busy = self.busy;
         col.child(
             h_flex()
-                .gap_2()
+                .gap(crate::ui::button_gap())
                 .justify_end()
                 .when(self.confirm_delete, |r| {
                     r.child(div().flex_1().text_sm().text_color(theme.danger).child("Delete them for good? Their readings cannot come back."))
-                        .child(crate::ui::button("parts-delete-no").outline().label("Cancel").on_click(cx.listener(|v, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("parts-delete-no").outline().label("Cancel").on_click(cx.listener(|v, _, _, cx| {
                             v.confirm_delete = false;
                             cx.notify();
-                        })))
-                        .child(
+                        }))))
+                        .child(crate::ui::probed(
                             div()
                                 .id("parts-delete-yes")
                                 .h(px(32.))
@@ -929,15 +945,15 @@ impl Render for BrokenParts {
                                 .cursor_pointer()
                                 .child("Delete")
                                 .on_click(cx.listener(|v, _, _, cx| v.run(false, cx))),
-                        )
+                        ))
                 })
                 .when(!self.confirm_delete, |r| {
-                    r.child(crate::ui::button("parts-delete").outline().text_color(theme.danger).label("Delete…").disabled(!has || busy).on_click(cx.listener(|v, _, _, cx| {
+                    r.child(crate::ui::probed(crate::ui::button("parts-delete").outline().text_color(theme.danger).label("Delete…").disabled(!has || busy).on_click(cx.listener(|v, _, _, cx| {
                         v.confirm_delete = true;
                         cx.notify();
-                    })))
-                    .child(crate::ui::button("parts-restore").primary().label("Try to restore").loading(busy).disabled(!has || busy).on_click(cx.listener(|v, _, _, cx| v.run(true, cx))))
-                    .child(crate::ui::button("parts-close").outline().label("Close").on_click(|_, _, cx| crate::modal::close(cx)))
+                    }))))
+                    .child(crate::ui::probed(crate::ui::button("parts-restore").primary().label("Try to restore").loading(busy).disabled(!has || busy).on_click(cx.listener(|v, _, _, cx| v.run(true, cx)))))
+                    .child(crate::ui::probed(crate::ui::button("parts-close").outline().label("Close").on_click(|_, _, cx| crate::modal::close(cx))))
                 }),
         )
     }
@@ -982,7 +998,7 @@ pub(crate) fn db_details(
         let kept = db.kept_bytes.filter(|b| *b > 0);
         panel = panel.child(
             h_flex()
-                .gap_2()
+                .gap(crate::ui::button_gap())
                 .items_center()
                 .flex_wrap()
                 .px_3()
@@ -993,25 +1009,25 @@ pub(crate) fn db_details(
                 .text_sm()
                 .child(div().flex_1().min_w(px(240.)).child(format!("{drive} is almost full ({} free).{when}", bytes_label(f))))
                 .when_some(actions.move_data.clone(), |r, open| {
-                    r.child(
+                    r.child(crate::ui::probed(
                         crate::ui::button("low-move")
                             .primary()
                             .icon(gpui_kit::component::Icon::empty().path("icons/move-data.svg"))
                             .label("Move data to another disk…")
                             .on_click(move |_, window, cx| open(window, cx)),
-                    )
+                    ))
                 })
                 .when(db.hybrid && actions.set_limit.is_some(), |r| {
                     let set_limit = actions.set_limit.clone().unwrap();
-                    r.child(crate::ui::button("low-limit").outline().label("Set a history limit…").on_click({ let f = set_limit.clone(); move |_, _, cx| f(cx) }))
+                    r.child(crate::ui::probed(crate::ui::button("low-limit").outline().label("Set a history limit…").on_click({ let f = set_limit.clone(); move |_, _, cx| f(cx) })))
                 })
                 .when_some(kept.zip(actions.remove_kept.clone()), |r, (k, remove_kept)| {
-                    r.child(
+                    r.child(crate::ui::probed(
                         crate::ui::button("low-kept")
                             .outline()
                             .label(format!("Remove kept copies ({})", bytes_label(k)))
                             .on_click(move |_, _, cx| remove_kept(cx)),
-                    )
+                    ))
                 }),
         );
     }

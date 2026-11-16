@@ -2038,29 +2038,30 @@ pub fn verify_bundle(src: &ArtifactSource) -> Result<(), String> {
     }
 }
 
-/// Generate a per-install JWT signing secret.
-///
-/// Seeded from `RandomState`, whose keys std draws from the OS entropy source,
-/// mixed with the wall clock and the process id. This is a signing secret for a
-/// single on-premise install, not a key that leaves the machine — but it must
-/// never be a constant, or every deployment would share one.
+/// A new secret (JWT signing key, database and ClickHouse passwords): 32
+/// bytes from the operating system's random source, as URL-safe base64
+/// without padding (43 characters of `A-Z a-z 0-9 - _`).
 pub fn generate_secret() -> String {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-    let mut out = String::with_capacity(64);
-    for i in 0..4u64 {
-        let mut h = RandomState::new().build_hasher();
-        h.write_u64(i);
-        h.write_u128(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        );
-        h.write_u32(std::process::id());
-        out.push_str(&format!("{:016x}", h.finish()));
+    use base64::Engine;
+    let mut bytes = [0u8; 32];
+    // The OS random source (getrandom(2) / BCryptGenRandom). Without it no
+    // secret is safe to make, so failing loudly is the only right answer.
+    getrandom::getrandom(&mut bytes).expect("the operating system's random source is not available");
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+#[cfg(test)]
+mod secret_tests {
+    use super::generate_secret;
+
+    #[test]
+    fn a_secret_is_32_random_bytes_in_url_safe_base64() {
+        let a = generate_secret();
+        // 32 bytes → 43 characters without padding.
+        assert_eq!(a.len(), 43);
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'), "{a}");
+        assert_ne!(a, generate_secret());
     }
-    out
 }
 
 /// True when this build can offer the native mode at all.

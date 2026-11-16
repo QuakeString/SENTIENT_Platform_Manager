@@ -440,7 +440,7 @@ impl Maintenance {
         v_flex()
             .gap_2()
             .child(div().text_sm().text_color(theme.muted_foreground).child("Other choices"))
-            .child(h_flex().gap_2().children(Action::ALL.into_iter().map(|action| {
+            .child(h_flex().gap(crate::ui::button_gap()).children(Action::ALL.into_iter().map(|action| {
                 crate::ui::button(SharedString::from(format!("other-{}", action.id())))
                     .outline()
                     .label(action.title())
@@ -480,14 +480,14 @@ impl Maintenance {
                 .child(self.notes_button("manager-notes", cx))
                 .into_any_element(),
             h_flex()
-                .gap_2()
+                .gap(crate::ui::button_gap())
                 .justify_end()
-                .child(crate::ui::button("install-manager").primary().label("Install the Platform Manager").on_click(cx.listener(|this, _, _, cx| {
+                .child(crate::ui::probed(crate::ui::button("install-manager").primary().label("Install the Platform Manager").on_click(cx.listener(|this, _, _, cx| {
                     this.tick_manager = true;
                     this.tick_sentient = false;
                     this.run_update(cx);
-                })))
-                .child(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window()))
+                }))))
+                .child(crate::ui::probed(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window())))
                 .into_any_element(),
         ]
     }
@@ -571,15 +571,15 @@ impl Maintenance {
         let nothing = !(self.tick_manager && manager_on) && !self.tick_sentient;
         out.push(
             h_flex()
-                .gap_2()
+                .gap(crate::ui::button_gap())
                 .justify_end()
-                .child(crate::ui::button("update").primary().label(self.update_label()).disabled(nothing).on_click(cx.listener(|this, _, _, cx| {
+                .child(crate::ui::probed(crate::ui::button("update").primary().label(self.update_label()).disabled(nothing).on_click(cx.listener(|this, _, _, cx| {
                     if !this.manager_tickable() {
                         this.tick_manager = false;
                     }
                     this.run_update(cx);
-                })))
-                .child(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window()))
+                }))))
+                .child(crate::ui::probed(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window())))
                 .into_any_element(),
         );
         out.push(self.other_choices(theme, cx).into_any_element());
@@ -763,24 +763,24 @@ impl Maintenance {
         match finished {
             Some(true) => out.push(
                 h_flex()
-                    .gap_2()
-                    .child(crate::ui::button("open").primary().label("Open the Platform Manager").on_click(|_, window, _| {
+                    .gap(crate::ui::button_gap())
+                    .child(crate::ui::probed(crate::ui::button("open").primary().label("Open the Platform Manager").on_click(|_, window, _| {
                         if open_manager(&[]) {
                             window.remove_window();
                         }
-                    }))
-                    .child(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window()))
+                    })))
+                    .child(crate::ui::probed(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window())))
                     .into_any_element(),
             ),
             Some(false) => out.push(
                 h_flex()
-                    .gap_2()
-                    .child(crate::ui::button("retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.run_update(cx))))
-                    .child(crate::ui::button("log").outline().label(if self.show_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
+                    .gap(crate::ui::button_gap())
+                    .child(crate::ui::probed(crate::ui::button("retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.run_update(cx)))))
+                    .child(crate::ui::probed(crate::ui::button("log").outline().label(if self.show_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
                         this.show_log = !this.show_log;
                         cx.notify();
-                    })))
-                    .child(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window()))
+                    }))))
+                    .child(crate::ui::probed(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window())))
                     .into_any_element(),
             ),
             None => {}
@@ -834,6 +834,14 @@ fn capitalise(s: &str) -> String {
 
 impl Render for Maintenance {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Windows 10: the app's caption and rounded corners (crate::win_frame).
+        let root = self.render_root(window, cx).into_any_element();
+        crate::win_frame::frame(crate::mode::AppMode::Maintenance.window_title(), root, window, cx)
+    }
+}
+
+impl Maintenance {
+    fn render_root(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The shared dialogs over the whole window (crate::modal).
         let layer = crate::modal::layer(window, cx, 0., 0.);
         let body = self.body(cx);

@@ -29,6 +29,11 @@ impl Monitor {
     }
 }
 
+/// The top bar's part of a Statistics reading.
+pub fn from_sample(s: &crate::stats::Sample) -> Monitor {
+    Monitor { cpu: s.cpu, mem_used: s.mem_used, mem_total: s.mem_total, disk_free: s.disk_free, disk_total: s.disk_total }
+}
+
 /// One reading. Blocking (about a quarter of a second for the processor).
 pub fn sample(data_dir: &Path) -> Monitor {
     use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};

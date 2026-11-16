@@ -63,10 +63,11 @@ const D2: &str = "22222222-2222-2222-2222-222222222222";
 const D3: &str = "33333333-3333-3333-3333-333333333333";
 
 fn sentient_dir() -> PathBuf {
-    PathBuf::from(std::env::var("SENTIENT_DIR").unwrap_or_else(|_| "/home/mz/INVENIA/SENTIENT".into()))
+    // A SENTIENT checkout; by default a sibling of this repository.
+    std::env::var("SENTIENT_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../SENTIENT"))
 }
 fn scratch() -> PathBuf {
-    PathBuf::from(std::env::var("SBR_E2E_DIR").unwrap_or_else(|_| "/mnt/data_1/INVENIA/spm-wt-E/scratch".into()))
+    std::env::var("SBR_E2E_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir().join("sbr-e2e"))
 }
 fn conn(t: T, db: &str) -> ConnConfig {
     ConnConfig { host: "127.0.0.1".into(), port: t.port(), dbname: db.into(), user: "sentient".into(), password: "scratch".into() }

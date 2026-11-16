@@ -350,7 +350,14 @@ impl SettingsPage {
         self.admin_busy = true;
         self.admin_result = None;
         let task = cx.spawn(async move |this, cx| {
-            let r = cx.background_executor().spawn(async move { work(&record) }).await;
+            let r = cx
+                .background_executor()
+                .spawn(async move {
+                    // A button the user pressed: it may ask for the password, once.
+                    let _action = sentient_installer_core::elevation::user_action();
+                    work(&record)
+                })
+                .await;
             this.update(cx, |page, cx| {
                 page.admin_busy = false;
                 page.admin_result = Some(match r {
@@ -812,20 +819,20 @@ impl SettingsPage {
                         None,
                         false,
                         h_flex()
-                            .gap_2()
+                            .gap(crate::ui::button_gap())
                             .items_center()
                             .child(div().flex_1().text_sm().text_color(if locked { theme.danger } else { theme.muted_foreground }).child(format!("{state}{last}")))
                             .when(locked, |r| {
-                                r.child(crate::ui::button(SharedString::from(format!("unlock-{email}"))).outline().label("Unlock").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
+                                r.child(crate::ui::probed(crate::ui::button(SharedString::from(format!("unlock-{email}"))).outline().label("Unlock").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                     let e = e1.clone();
                                     this.admin_action(move |r| crate::sentient_admin::unlock(r, &e), cx);
-                                })))
+                                }))))
                             })
-                            .child(crate::ui::button(SharedString::from(format!("reset-{email}"))).outline().label("Reset password…").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
+                            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("reset-{email}"))).outline().label("Reset password…").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                 this.reset_for = Some(e2.clone());
                                 this.admin_result = None;
                                 cx.notify();
-                            }))),
+                            })))),
                     ).when(i == 0, |r| r));
                 }
                 sec = sec.child(row(
@@ -866,12 +873,12 @@ impl SettingsPage {
                     .when_some(problem.filter(|_| !pw.is_empty()), |c, p| c.child(div().text_sm().text_color(theme.danger).child(p)))
                     .child(
                         h_flex()
-                            .gap_2()
-                            .child(crate::ui::button("do-reset").primary().label("Reset password").disabled(problem.is_some() || self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.reset_password(window, cx))))
-                            .child(crate::ui::button("cancel-reset").outline().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                            .gap(crate::ui::button_gap())
+                            .child(crate::ui::probed(crate::ui::button("do-reset").primary().label("Reset password").disabled(problem.is_some() || self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.reset_password(window, cx)))))
+                            .child(crate::ui::probed(crate::ui::button("cancel-reset").outline().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
                                 this.reset_for = None;
                                 cx.notify();
-                            }))),
+                            })))),
                     ),
             );
         }
@@ -1072,13 +1079,13 @@ impl SettingsPage {
                 let now = *now;
                 let edit = self.retention_edit;
                 let pick = |id: &'static str, current: i64, telemetry: bool, cx: &mut Context<Self>| {
-                    h_flex().gap_1().flex_wrap().children(DAYS.iter().map(move |(label, d)| {
+                    h_flex().gap(crate::ui::button_gap()).flex_wrap().children(DAYS.iter().map(move |(label, d)| {
                         let d = *d;
                         let b = crate::ui::button(SharedString::from(format!("{id}-{d}"))).label(*label).on_click(cx.listener(move |this, _, _, cx| {
                             if telemetry { this.retention_edit.telemetry_days = d } else { this.retention_edit.alarms_days = d }
                             cx.notify();
                         }));
-                        if current == d { b.primary() } else { b.outline() }
+                        crate::ui::probed(if current == d { b.primary() } else { b.outline() })
                     }))
                 };
                 let changed = edit != now;
@@ -1088,16 +1095,16 @@ impl SettingsPage {
                     .when(changed, |c| {
                         c.child(
                             h_flex()
-                                .gap_2()
+                                .gap(crate::ui::button_gap())
                                 .pt_1()
-                                .child(crate::ui::button("save-retention").primary().label("Save").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
+                                .child(crate::ui::probed(crate::ui::button("save-retention").primary().label("Save").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                     let r = this.retention_edit;
                                     this.admin_action(move |rec| crate::sentient_admin::set_retention(rec, r), cx);
-                                })))
-                                .child(crate::ui::button("undo-retention").outline().label("Discard").on_click(cx.listener(move |this, _, _, cx| {
+                                }))))
+                                .child(crate::ui::probed(crate::ui::button("undo-retention").outline().label("Discard").on_click(cx.listener(move |this, _, _, cx| {
                                     this.retention_edit = now;
                                     cx.notify();
-                                }))),
+                                })))),
                         )
                     })
             }
@@ -1216,12 +1223,12 @@ impl SettingsPage {
         };
         vec![
             h_flex()
-                .gap_2()
+                .gap(crate::ui::button_gap())
                 .items_center()
                 .child(div().flex_1().child(Input::new(&self.search).cleanable(true)))
-                .child(filter("filter-all", format!("All {total}"), !self.changed_only, false))
-                .child(filter("filter-set", format!("Set {set_here}"), self.changed_only, true))
-                .child(
+                .child(crate::ui::probed(filter("filter-all", format!("All {total}"), !self.changed_only, false)))
+                .child(crate::ui::probed(filter("filter-set", format!("Set {set_here}"), self.changed_only, true)))
+                .child(crate::ui::probed(
                     crate::ui::button("show-names")
                         .ghost()
                         .label(if self.show_names { "Show plain names" } else { "Show variable names" })
@@ -1229,7 +1236,7 @@ impl SettingsPage {
                             this.show_names = !this.show_names;
                             cx.notify();
                         })),
-                )
+                ))
                 .into_any_element(),
             h_flex().gap(px(crate::ui::GAP)).items_start().child(groups_nav).child(table).into_any_element(),
             added.into_any_element(),
@@ -1279,7 +1286,7 @@ impl Render for SettingsPage {
             let stack = crate::settings::with_custom(&crate::settings::with_values(&record.stack, &values), &self.custom_values(cx));
             let restarts = crate::settings::restarts(&record.stack, &stack).unwrap_or("Nothing restarts");
             h_flex()
-                .gap_3()
+                .gap(crate::ui::button_gap())
                 .items_center()
                 .px_4()
                 .py_2()
@@ -1293,14 +1300,14 @@ impl Render for SettingsPage {
                     if changed.len() == 1 { "" } else { "s" },
                     restarts
                 )))
-                .child(crate::ui::button("revert").outline().label("Discard").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.revert(window, cx))))
-                .child(
+                .child(crate::ui::probed(crate::ui::button("revert").outline().label("Discard").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.revert(window, cx)))))
+                .child(crate::ui::probed(
                     crate::ui::button("apply")
                         .primary()
                         .label("Apply")
                         .disabled(busy || external || !problems.is_empty())
                         .on_click(cx.listener(|this, _, window, cx| this.confirm_apply(window, cx))),
-                )
+                ))
         });
 
         let body = match self.tab {

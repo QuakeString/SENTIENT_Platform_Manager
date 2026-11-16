@@ -502,12 +502,12 @@ impl UpdatePage {
                     .child(ui::steps(theme, &marked))
                     .child(
                         h_flex()
-                            .gap_2()
-                            .child(crate::ui::button("changes-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.apply_changes(cx))))
-                            .child(crate::ui::button("changes-log").outline().label(if self.show_changes_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
+                            .gap(crate::ui::button_gap())
+                            .child(crate::ui::probed(crate::ui::button("changes-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.apply_changes(cx)))))
+                            .child(crate::ui::probed(crate::ui::button("changes-log").outline().label(if self.show_changes_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
                                 this.show_changes_log = !this.show_changes_log;
                                 cx.notify();
-                            }))),
+                            })))),
                     )
                     .when(self.show_changes_log, |p| p.children(log.into_iter().map(|l| div().text_size(px(13.)).text_color(theme.muted_foreground).child(l))))
             }
@@ -517,12 +517,12 @@ impl UpdatePage {
                 .child(div().text_sm().text_color(theme.muted_foreground).child(crate::changes::effect(&pending)))
                 .child(
                     h_flex()
-                        .gap_2()
-                        .child(crate::ui::button("changes-apply").primary().label("Apply now").on_click(cx.listener(|this, _, _, cx| this.apply_changes(cx))))
-                        .child(crate::ui::button("changes-later").outline().label("Later").on_click(cx.listener(|this, _, _, cx| {
+                        .gap(crate::ui::button_gap())
+                        .child(crate::ui::probed(crate::ui::button("changes-apply").primary().label("Apply now").on_click(cx.listener(|this, _, _, cx| this.apply_changes(cx)))))
+                        .child(crate::ui::probed(crate::ui::button("changes-later").outline().label("Later").on_click(cx.listener(|this, _, _, cx| {
                             this.changes_later = true;
                             cx.notify();
-                        }))),
+                        })))),
                 ),
         };
         let _ = planned;
@@ -615,16 +615,17 @@ impl UpdatePage {
             if let Some(o) = &manager_offer {
                 let has_installer = o.installer.is_some();
                 row = row
+                    .children(signature_note(theme, o, "manager"))
                     .when(has_installer, |r| {
-                        r.child(
+                        r.child(crate::ui::probed(
                             crate::ui::button("manager-install")
                                 .primary()
                                 .label(if installing { "Updating…" } else { "Update and restart" })
-                                .disabled(installing)
+                                .disabled(installing || (o.unsigned && o.signing_started))
                                 .on_click(cx.listener(|this, _, _, cx| this.start_manager_update(cx))),
-                        )
+                        ))
                     })
-                    .child(crate::ui::button("manager-notes").outline().label("What's new").on_click(cx.listener(|this, _, _, cx| this.show_notes(Product::Manager, cx))));
+                    .child(crate::ui::probed(crate::ui::button("manager-notes").outline().label("What's new").on_click(cx.listener(|this, _, _, cx| this.show_notes(Product::Manager, cx)))));
             }
             row
         };
@@ -635,13 +636,13 @@ impl UpdatePage {
                 .when_some(mfailed.clone(), |c, m| {
                     c.child(
                         h_flex()
-                            .gap_2()
+                            .gap(crate::ui::button_gap())
                             .items_center()
                             .child(div().flex_1().child(ui::outcome(theme, Tone::Bad, m)))
-                            .child(crate::ui::button("manager-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.start_manager_update(cx))))
-                            .child(crate::ui::button("manager-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                            .child(crate::ui::probed(crate::ui::button("manager-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.start_manager_update(cx)))))
+                            .child(crate::ui::probed(crate::ui::button("manager-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
                                 this.manager_job.update(cx, |job, cx| job.reset(cx));
-                            }))),
+                            })))),
                     )
                 })
                 .when(installing, |c| {
@@ -673,20 +674,25 @@ impl UpdatePage {
             }
             if let Some(o) = &sentient_offer {
                 let first = manager_offer.is_some();
-                row = row.child(
+                // A Docker install pulls the image; the signed manifest is
+                // what a native one downloads.
+                if !docker {
+                    row = row.children(signature_note(theme, o, "sentient"));
+                }
+                row = row.child(crate::ui::probed(
                     crate::ui::button("sentient-update")
                         .primary()
                         .label(format!("Update to {}", o.version))
-                        .disabled(first || busy)
+                        .disabled(first || busy || (!docker && o.unsigned && o.signing_started))
                         .on_click(cx.listener(|this, _, _, cx| this.start_sentient_update(cx))),
-                );
-                row = row.child(crate::ui::button("sentient-notes").outline().label("What's new").on_click(cx.listener(|this, _, _, cx| this.show_notes(Product::Sentient, cx))));
+                ));
+                row = row.child(crate::ui::probed(crate::ui::button("sentient-notes").outline().label("What's new").on_click(cx.listener(|this, _, _, cx| this.show_notes(Product::Sentient, cx)))));
             }
             let _ = docker;
-            row.child(crate::ui::button("sentient-other").outline().label("Other version").on_click(cx.listener(|this, _, _, cx| {
+            row.child(crate::ui::probed(crate::ui::button("sentient-other").outline().label("Other version").on_click(cx.listener(|this, _, _, cx| {
                 this.show_other = !this.show_other;
                 cx.notify();
-            })))
+            }))))
         });
 
         // A5: a candidate the Stable channel leaves out.
@@ -706,7 +712,7 @@ impl UpdatePage {
             .child(
                 h_flex()
                     .flex_wrap()
-                    .gap_3()
+                    .gap(crate::ui::button_gap())
                     .items_center()
                     .child(div().text_sm().child("Channel"))
                     .child(channels)
@@ -722,7 +728,7 @@ impl UpdatePage {
             .when_some(unreachable, |p, e| {
                 p.child(
                     h_flex()
-                        .gap_2()
+                        .gap(crate::ui::button_gap())
                         .items_center()
                         .px_3()
                         .py_2()
@@ -736,9 +742,9 @@ impl UpdatePage {
                             "The release page could not be reached. Nothing was changed.".to_string()
                         }))
                         .when(!e.contains("limiting"), |r| {
-                            r.child(crate::ui::button("retry-check").outline().label("Try again").on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))))
+                            r.child(crate::ui::probed(crate::ui::button("retry-check").outline().label("Try again").on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx))))))
                         })
-                        .child(crate::ui::button("from-file").outline().label("Update from a file…").on_click(cx.listener(|this, _, _, cx| this.update_from_file(cx)))),
+                        .child(crate::ui::probed(crate::ui::button("from-file").outline().label("Update from a file…").on_click(cx.listener(|this, _, _, cx| this.update_from_file(cx))))),
                 )
             })
             .child(manager_row)
@@ -811,7 +817,7 @@ impl Render for UpdatePage {
                                 .gap_2()
                                 .child(
                                     h_flex()
-                                        .gap_3()
+                                        .gap(crate::ui::button_gap())
                                         .items_center()
                                         .child(
                                             crate::ui::button("download-latest")
@@ -842,7 +848,7 @@ impl Render for UpdatePage {
                 .when(native, |panel| {
                     panel.child(
                         h_flex()
-                            .gap_3()
+                            .gap(crate::ui::button_gap())
                             .items_center()
                             .child(
                                 crate::ui::button("choose")
@@ -948,7 +954,7 @@ pub(crate) fn sentient_summary(installed: &str, state: Offered, manager_first: b
 pub(crate) fn product_row(theme: &gpui_kit::component::Theme, highlight: bool, logo: ui::Product, title: &'static str, sub: String) -> Div {
     h_flex()
         .flex_wrap()
-        .gap_3()
+        .gap(crate::ui::button_gap())
         .p_3()
         .items_center()
         .rounded(theme.radius)
@@ -1005,4 +1011,27 @@ impl Render for NotesDialog {
                 .into_any_element()
             })
     }
+}
+
+/// Beside an offer of a release without a signature: "Unsigned release"
+/// while no signed release exists (it is used, with this warning), "Not
+/// signed" once one does (the update refuses it). crate::signing has the rule.
+fn signature_note(theme: &gpui_kit::component::Theme, o: &crate::updates::Offer, id: &'static str) -> Option<AnyElement> {
+    if !o.unsigned {
+        return None;
+    }
+    let (tone, text, help) = if o.signing_started {
+        (Tone::Bad, "Not signed", "This release has no signature while newer SENTIENT releases are signed, so it is not installed. Ask your supplier for a signed release.")
+    } else {
+        (Tone::Warn, "Unsigned release", "Published before SENTIENT releases were signed. Its download is checked against its published checksum, not against the release signature. Releases from now on are signed, and an unsigned one is then refused.")
+    };
+    Some(
+        h_flex()
+            .flex_shrink_0()
+            .gap_1()
+            .items_center()
+            .child(ui::pill(theme, tone, text))
+            .child(ui::info(SharedString::from(format!("sig-{id}")), help.into()))
+            .into_any_element(),
+    )
 }

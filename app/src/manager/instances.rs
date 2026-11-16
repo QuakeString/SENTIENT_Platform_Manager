@@ -427,6 +427,7 @@ impl InstancesPage {
         if let Some(inst) = self.instance(id) {
             remote::untrust(&inst.host, inst.port);
             remote::forget_secret(id);
+            remote::reuse::forget(id);
         }
         self.list.retain(|i| i.id != id);
         self.statuses.remove(id);
@@ -457,6 +458,19 @@ impl InstancesPage {
             )
         });
         cx.notify();
+    }
+
+    /// "Use it anyway": the Platform Manager installed on the server does
+    /// the jobs; then check it again.
+    fn use_installed(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(inst) = self.instance(id) else { return };
+        match remote::use_installed(&inst) {
+            Ok(()) => self.refresh(id, cx),
+            Err(e) => {
+                self.statuses.insert(id.to_string(), Err(e));
+                cx.notify();
+            }
+        }
     }
 
     /// Copy the Platform Manager to the server (the first time).
@@ -571,7 +585,7 @@ impl InstancesPage {
             current,
             (tone, state),
             quick_facts(&theme, status.as_ref(), None),
-            h_flex().gap(px(6.)).items_center().child(open_btn).child(div().flex_1().min_w_0()).child(div().flex_shrink_0().child(more)),
+            h_flex().gap(crate::ui::button_gap()).items_center().child(open_btn).child(div().flex_1().min_w_0()).child(div().flex_shrink_0().child(more)),
         )
         .into_any_element()
     }
@@ -583,10 +597,23 @@ impl InstancesPage {
         let busy = self.job.read(cx).is_running();
         let refreshing = self.refreshing.contains(&id);
         let status = self.statuses.get(&id).cloned();
-        let (tone, state) = state_of(status.as_ref(), refreshing);
+        let (mut tone, mut state) = state_of(status.as_ref(), refreshing);
         let can_work = matches!(&status, Some(Ok(s)) if s.installed) && !busy;
         let can_read = matches!(&status, Some(Ok(s)) if s.installed);
-        let not_set_up = matches!(&status, Some(Err(e)) if e == remote::NOT_SET_UP);
+        let not_set_up = matches!(&status, Some(Err(e)) if remote::needs_setup(e));
+        // An installed Platform Manager there that works the same way: the
+        // card offers to use it (the server's pages offer both choices).
+        let use_installed = matches!(&status, Some(Err(e)) if remote::reuse::is_offer(e))
+            && remote::reuse::found(&id).is_some_and(|f| remote::reuse::fit(&f.info, &remote::reuse::AgentInfo::this()) == remote::reuse::Fit::Compatible);
+        // Found and usable: say so, not "Not set up" (the older/newer note
+        // is the line under it).
+        if use_installed {
+            if let Some(f) = remote::reuse::found(&id) {
+                let v = if f.info.version.is_empty() { String::new() } else { format!(" {}", f.info.version) };
+                state = format!("Platform Manager{v} found");
+                tone = Tone::Neutral;
+            }
+        }
         let this = cx.entity().downgrade();
         let more = crate::ui::button(SharedString::from(format!("more-{id}"))).outline().w(px(28.)).h(px(28.)).icon(gpui_kit::component::Icon::new(IconName::Ellipsis).size(px(18.)).text_color(cx.theme().foreground)).tooltip("Work on this instance").dropdown_menu({
             let (this, id) = (this.clone(), id.clone());
@@ -615,12 +642,17 @@ impl InstancesPage {
                     .item(item(Lucide::RefreshCw, "Check again", true, Box::new(move |p, _, cx| p.refresh(&i4, cx))))
             }
         });
-        let unreachable = matches!(&status, Some(Err(e)) if e != remote::NOT_SET_UP && e != remote::FORGOTTEN && !e.contains("administrator rights"));
+        let unreachable = matches!(&status, Some(Err(e)) if !remote::needs_setup(e) && e != remote::FORGOTTEN && !e.contains("administrator rights"));
         let current = self.open.as_deref() == Some(id.as_str());
         let primary: AnyElement = if unreachable {
             crate::ui::button(SharedString::from(format!("retry-{id}"))).primary().h(px(28.)).label("Try again").loading(refreshing).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.refresh(&id, cx)
+            })).into_any_element()
+        } else if use_installed {
+            crate::ui::button(SharedString::from(format!("use-installed-{id}"))).primary().h(px(28.)).label("Use it").disabled(busy).on_click(cx.listener({
+                let id = id.clone();
+                move |this, _, _, cx| this.use_installed(&id, cx)
             })).into_any_element()
         } else if not_set_up {
             crate::ui::button(SharedString::from(format!("setup-{id}"))).primary().h(px(28.)).label("Set up").disabled(busy).on_click(cx.listener({
@@ -636,27 +668,28 @@ impl InstancesPage {
             })).into_any_element()
         };
         let footer = h_flex()
-            .gap(px(6.))
+            .gap(crate::ui::button_gap())
             .items_center()
-            .child(primary)
-            .child(crate::ui::button(SharedString::from(format!("edit-{id}"))).outline().h(px(28.)).px(px(10.)).text_size(px(13.)).label("Edit").disabled(busy).on_click(cx.listener({
+            .child(crate::ui::probed(primary))
+            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("edit-{id}"))).outline().h(px(28.)).px(px(10.)).text_size(px(13.)).label("Edit").disabled(busy).on_click(cx.listener({
                 let inst = inst.clone();
                 move |this, _, window, cx| this.open_form(Some(inst.clone()), window, cx)
-            })))
-            .child(crate::ui::button(SharedString::from(format!("remove-{id}"))).outline().h(px(28.)).px(px(10.)).text_size(px(13.)).label("Remove").disabled(busy).on_click(cx.listener({
+            }))))
+            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("remove-{id}"))).outline().h(px(28.)).px(px(10.)).text_size(px(13.)).label("Remove").disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| {
                     this.confirm_remove = Some(id.clone());
                     cx.notify();
                 }
-            })))
+            }))))
             .child(div().flex_1().min_w_0())
             .child(div().flex_shrink_0().child(more));
         let mut sub = format!("{} over SSH", inst.host);
         if !det.os_name.is_empty() {
             sub.push_str(&format!(" · {}", det.os_name));
         }
-        if !det.install.is_empty() {
+        // "none": no SENTIENT found there, nothing to name.
+        if !det.install.is_empty() && !det.install.eq_ignore_ascii_case("none") {
             sub.push_str(&format!(", {}", det.install));
         }
         let mut facts = quick_facts(&theme, status.as_ref(), Some(&det));
@@ -665,7 +698,7 @@ impl InstancesPage {
             if let Some(job_id) = s.running_job.clone() {
                 facts = facts.child(
                     h_flex()
-                        .gap_2()
+                        .gap(crate::ui::button_gap())
                         .items_center()
                         .p_2()
                         .rounded(theme.radius)
@@ -688,15 +721,15 @@ impl InstancesPage {
                     .child(div().text_sm().child(format!("Remove {} from this list? Nothing on the server changes.", inst.name)))
                     .child(
                         h_flex()
-                            .gap_2()
-                            .child(crate::ui::button("remove-yes").danger().label("Remove").on_click(cx.listener({
+                            .gap(crate::ui::button_gap())
+                            .child(crate::ui::probed(crate::ui::button("remove-yes").danger().label("Remove").on_click(cx.listener({
                                 let id = id.clone();
                                 move |this, _, _, cx| this.remove(&id, cx)
-                            })))
-                            .child(crate::ui::button("remove-no").ghost().label("Keep").on_click(cx.listener(|this, _, _, cx| {
+                            }))))
+                            .child(crate::ui::probed(crate::ui::button("remove-no").ghost().label("Keep").on_click(cx.listener(|this, _, _, cx| {
                                 this.confirm_remove = None;
                                 cx.notify();
-                            }))),
+                            })))),
                     ),
             );
         }
@@ -909,10 +942,10 @@ impl InstancesPage {
                             .pt_3()
                             .border_t_1()
                             .border_color(theme.border)
-                            .gap_2()
+                            .gap(crate::ui::button_gap())
                             .justify_end()
-                            .child(crate::ui::button("distrust").outline().label("Cancel").on_click(cx.listener(|this, _, _, cx| this.set_error("Not connected: the fingerprint was not accepted.", cx))))
-                            .child(crate::ui::button("trust").primary().label("Trust and add").on_click(cx.listener(move |this, _, _, cx| this.connect(Some((keys.clone(), fp.clone())), cx)))),
+                            .child(crate::ui::probed(crate::ui::button("distrust").outline().label("Cancel").on_click(cx.listener(|this, _, _, cx| this.set_error("Not connected: the fingerprint was not accepted.", cx)))))
+                            .child(crate::ui::probed(crate::ui::button("trust").primary().label("Trust and add").on_click(cx.listener(move |this, _, _, cx| this.connect(Some((keys.clone(), fp.clone())), cx))))),
                     )
                     .into_any_element(),
             );
@@ -923,26 +956,26 @@ impl InstancesPage {
                 .pt_3()
                 .border_t_1()
                 .border_color(theme.border)
-                .gap_2()
+                .gap(crate::ui::button_gap())
                 .items_center()
                 .child(div().flex_1().text_sm().text_color(theme.muted_foreground).child(match f.stage {
                     Stage::Checking => "Asking the server for its key…",
                     Stage::Connecting => "Signing in and looking at the system…",
                     _ => "",
                 }))
-                .child(crate::ui::button("cancel").outline().label("Cancel").disabled(busy).on_click(cx.listener(|this, _, _, cx| {
+                .child(crate::ui::probed(crate::ui::button("cancel").outline().label("Cancel").disabled(busy).on_click(cx.listener(|this, _, _, cx| {
                     this.form = None;
                     cx.notify();
-                })))
+                }))))
                 .when(!matches!(f.stage, Stage::Fingerprint { .. }), |r| {
-                    r.child(
+                    r.child(crate::ui::probed(
                         crate::ui::button("check")
                             .primary()
                             .label(if f.editing.is_some() { "Save and connect" } else { "Connect" })
                             .loading(busy)
                             .disabled(busy)
                             .on_click(cx.listener(|this, _, _, cx| this.check(cx))),
-                    )
+                    ))
                 })
         );
         // With the guide open: the form as it is, the guide beside it at the
@@ -1152,32 +1185,32 @@ impl InstancesPage {
             .when(done, |p| {
                 p.child(
                     h_flex()
-                        .gap_2()
+                        .gap(crate::ui::button_gap())
                         .justify_end()
                         .when(failed && self.retry.is_some(), |r| {
-                            r.child(crate::ui::button("job-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
+                            r.child(crate::ui::probed(crate::ui::button("job-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
                                 this.job.update(cx, |j, cx| j.reset(cx));
                                 match this.retry.clone() {
                                     Some(Retry::SetUp(id)) => this.set_up(&id, cx),
                                     Some(Retry::Job(id, label, args)) => this.run_job(&id, label, args, cx),
                                     None => {}
                                 }
-                            })))
+                            }))))
                         })
                         .when(!failed, |r| {
                             let id = id.clone();
-                            r.child(crate::ui::button("job-open").primary().label("Open").on_click(cx.listener(move |this, _, _, cx| {
+                            r.child(crate::ui::probed(crate::ui::button("job-open").primary().label("Open").on_click(cx.listener(move |this, _, _, cx| {
                                 this.job_for = None;
                                 this.job.update(cx, |j, cx| j.reset(cx));
                                 cx.emit(OpenInstance(Some(id.clone())));
                                 cx.notify();
-                            })))
+                            }))))
                         })
-                        .child(crate::ui::button("job-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("job-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
                             this.job_for = None;
                             this.job.update(cx, |j, cx| j.reset(cx));
                             cx.notify();
-                        }))),
+                        })))),
                 )
             })
             .into_any_element(),
@@ -1238,7 +1271,7 @@ impl Render for InstancesPage {
                 Some(Ok(s)) if s.installed && s.serving => 0,
                 Some(Ok(s)) if s.installed => 1,
                 Some(Ok(_)) => 2,
-                Some(Err(e)) if e == remote::NOT_SET_UP => 3,
+                Some(Err(e)) if remote::needs_setup(e) => 3,
                 Some(Err(e)) if e == remote::FORGOTTEN || e.contains("administrator rights") => 5,
                 Some(Err(_)) => 4,
                 None => 6,
@@ -1339,9 +1372,10 @@ fn state_of(status: Option<&Result<RemoteStatus, String>>, refreshing: bool) -> 
     let (t, s) = match status {
         None if refreshing => (Tone::Neutral, "Checking…"),
         None => (Tone::Neutral, "Not checked"),
-        Some(Err(e)) if e == remote::NOT_SET_UP => (Tone::Warn, "Not set up"),
+        Some(Err(e)) if remote::needs_setup(e) => (Tone::Warn, "Not set up"),
         Some(Err(e)) if e == remote::FORGOTTEN => (Tone::Warn, "Sign-in needed"),
         Some(Err(e)) if e.contains("administrator rights") => (Tone::Warn, "Needs sudo"),
+        Some(Err(e)) if remote::is_not_admin(e) => (Tone::Warn, "Not an administrator"),
         Some(Err(_)) => (Tone::Bad, "Not reachable"),
         Some(Ok(s)) if !s.installed => (Tone::Neutral, "No SENTIENT"),
         Some(Ok(s)) if s.serving => (Tone::Good, "Running"),
@@ -1407,7 +1441,7 @@ fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<Remote
                 .child(row("SENTIENT", "Not found".into(), false))
                 .when_some(s.disk_free, |c, d| c.child(row("Disk", format!("{} free", crate::dbstatus::bytes_label(d)), false)));
         }
-        Some(Err(e)) => col = col.child(div().text_sm().text_color(if e == remote::NOT_SET_UP || e == remote::FORGOTTEN { theme.foreground } else { theme.danger }).child(e.clone())),
+        Some(Err(e)) => col = col.child(div().text_sm().text_color(if remote::needs_setup(e) || e == remote::FORGOTTEN { theme.foreground } else { theme.danger }).child(e.clone())),
         // Still reading: the rows it will show, values as placeholders.
         None => {
             for (i, label) in ["SENTIENT", "Licence", "Database", "Disk", "Last backup", "Up for"].into_iter().enumerate() {
@@ -1482,7 +1516,7 @@ fn grid_card(
     let dark = theme.mode.is_dark();
     let c = rgb(remote::parse_hex(color).unwrap_or(0x187074));
     let card = theme.background.to_rgb();
-    let head = mix(c, card, if dark { 0.42 } else { 0.26 });
+    let head = mix(c, card, crate::theme::bar_tint(dark));
     let body = mix(c, card, if dark { 0.13 } else { 0.07 });
     let fg = theme.foreground.to_rgb();
     // The state keeps its meaning (green, red, amber) but in the tile's

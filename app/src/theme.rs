@@ -103,12 +103,37 @@ pub fn toggle(cx: &mut App) {
 /// window edge to the page content, the page's top, and under its title.
 pub const PAGE_GAP: f32 = 18.;
 
+/// The one gap between buttons in a group, labelled and icon buttons alike
+/// (Start/Stop/Restart, a service's icons, dialog footers, popovers), and
+/// between a button group and the text or pill beside it.
+pub const BUTTON_GAP: f32 = 12.;
+
 /// The top bar's controls (the instance switcher, the monitors, the theme
 /// button and the bell): one height, one radius, one hover tint (the
 /// instance's colour at this opacity), centred in the 60 px bar.
 pub const BAR_CTRL_H: f32 = 40.;
 pub const BAR_CTRL_RADIUS: f32 = 8.;
-pub const BAR_CTRL_HOVER: f32 = 0.22;
+/// Hover over the bar's controls: the instance's colour at this opacity
+/// over the bar. Weaker in dark, where the same colour reads far stronger
+/// on the dark surface.
+pub fn bar_ctrl_hover(dark: bool) -> f32 {
+    if dark { 0.14 } else { 0.22 }
+}
+
+/// The instance's colour mixed into the bar's surface (and the Instances
+/// tiles' heads): faint in both themes, the same perceived strength. In
+/// light 26 % into white; in dark 18 % into the dark card colour, which
+/// gives the light tint's colour difference from the page (CIELAB dE
+/// 12-21 across the palette, both themes; tests/layout/check.py checks it).
+pub fn bar_tint(dark: bool) -> f32 {
+    if dark { 0.18 } else { 0.26 }
+}
+
+/// The instance switcher's pill over the bar: the instance's colour at this
+/// opacity (about 24 % in all in dark, 36 % in light).
+pub fn bar_inset(dark: bool) -> f32 {
+    if dark { 0.08 } else { 0.14 }
+}
 
 /// Plain information (an update waiting): a soft blue, for the
 /// notifications' tint and icon.

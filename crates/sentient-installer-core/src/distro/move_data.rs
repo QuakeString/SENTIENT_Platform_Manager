@@ -1370,7 +1370,7 @@ mod tests {
 
 /// The move on scratch stacks of their own (names `spmfmv<n>`, ports
 /// 3xxxx, volumes `spmfmv<n>-*`), with real folders under
-/// /mnt/data_1/INVENIA/spm-move-test (`SPM_MOVE_TEST_DIR`). Needs Docker,
+/// `SPM_MOVE_TEST_DIR` (default: spm-move-test in the temp folder). Needs Docker,
 /// the postgres, clickhouse and spmtest/sentient:fake images:
 /// `cargo test -p sentient-installer-core move_e2e -- --ignored --test-threads=1`.
 #[cfg(all(test, not(windows)))]
@@ -1385,7 +1385,7 @@ mod move_e2e {
     }
 
     fn base() -> String {
-        std::env::var("SPM_MOVE_TEST_DIR").unwrap_or_else(|_| "/mnt/data_1/INVENIA/spm-move-test".into())
+        std::env::var("SPM_MOVE_TEST_DIR").unwrap_or_else(|_| std::env::temp_dir().join("spm-move-test").to_string_lossy().into_owned())
     }
 
     fn sink() -> ProgressFn {

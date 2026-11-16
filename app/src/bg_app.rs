@@ -357,7 +357,7 @@ fn check_instances(cx: &mut App) {
                             Ok(s) if !s.installed => continue,
                             Ok(s) if s.serving => Seen::Running,
                             Ok(_) => Seen::Stopped,
-                            Err(e) if e == crate::remote::NOT_SET_UP || e == crate::remote::NOT_ADDED => continue,
+                            Err(e) if crate::remote::needs_setup(&e) || e == crate::remote::NOT_ADDED => continue,
                             Err(_) => Seen::NoAnswer,
                         };
                         v.push((Some((inst.id.clone(), inst.name.clone(), inst.color.clone())), seen));
@@ -448,13 +448,13 @@ mod tests {
     /// same state again says nothing.
     #[test]
     fn a_problem_is_raised_and_cleared() {
-        assert_eq!(transition(None, Seen::Stopped, "SUNOIL"), None);
-        let raised = transition(Some(Seen::Running), Seen::Stopped, "SUNOIL").unwrap();
+        assert_eq!(transition(None, Seen::Stopped, "NORTHWIND"), None);
+        let raised = transition(Some(Seen::Running), Seen::Stopped, "NORTHWIND").unwrap();
         assert!(raised.failed && raised.title == "SENTIENT stopped");
-        assert_eq!(transition(Some(Seen::Stopped), Seen::Stopped, "SUNOIL"), None);
-        let cleared = transition(Some(Seen::Stopped), Seen::Running, "SUNOIL").unwrap();
+        assert_eq!(transition(Some(Seen::Stopped), Seen::Stopped, "NORTHWIND"), None);
+        let cleared = transition(Some(Seen::Stopped), Seen::Running, "NORTHWIND").unwrap();
         assert!(!cleared.failed && cleared.title == "SENTIENT answers again");
-        assert_eq!(transition(Some(Seen::NoAnswer), Seen::Running, "SUNOIL").unwrap().title, "The server answers again");
+        assert_eq!(transition(Some(Seen::NoAnswer), Seen::Running, "NORTHWIND").unwrap().title, "The server answers again");
         assert!(transition(Some(Seen::Running), Seen::Stopped, "This computer").unwrap().detail.contains("on this computer"));
     }
 }

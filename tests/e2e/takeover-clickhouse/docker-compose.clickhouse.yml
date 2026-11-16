@@ -216,14 +216,6 @@ services:
       # COAP_SSL_PEM_KEY: /etc/sentient/certs/coap-server-pkcs8.key
     volumes:
       - sentient_data:/var/lib/sentient
-      # LINUX HOSTS ONLY - do not enable on Windows or macOS.
-      # Feeds fp_machine_id, one of six components in the license hardware
-      # fingerprint. Without it the collector uses the remaining five, which is
-      # a supported fallback. On Docker Desktop this path resolves inside the
-      # Linux VM rather than the real host, so the value it would bind is the
-      # VM's and changes whenever Docker Desktop is reset - worse than omitting
-      # it, because the fingerprint would then move on its own.
-      # - /etc/machine-id:/etc/machine-id:ro
     ports:
       - "8080:8080"     # HTTP / REST / WebSocket
       - "1883:1883"     # MQTT
@@ -278,7 +270,7 @@ configs:
                alone, each an INSERT producing parts that then need merging.
                These are diagnostics for tuning ClickHouse itself. On a plant
                box the system database outgrew the telemetry it stores
-               (saf: 1.4 GB of logs next to 0.6 GB of data), so every log is
+               (one site: 1.4 GB of logs next to 0.6 GB of data), so every log is
                either removed or capped by TTL. query_log (7 days) is what
                you need to debug a slow dashboard, part_log (7 days) explains
                merge behaviour, error_log (30 days) is tiny. -->

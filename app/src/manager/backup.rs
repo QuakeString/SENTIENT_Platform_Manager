@@ -157,6 +157,8 @@ impl BackupPage {
             cx.observe(&restore, |_, _, cx| cx.notify()),
         ];
         _observe.push(cx.subscribe(&schedule_time, |_, _, _: &gpui_kit::component::input::InputEvent, cx| cx.notify()));
+        // The note beside an empty passphrase comes and goes with it.
+        _observe.push(cx.subscribe(&passphrase, |_, _, _: &gpui_kit::component::input::InputEvent, cx| cx.notify()));
         // Keep: saved on Enter or when the field is left (1 to 365).
         _observe.push(cx.subscribe_in(&keep, window, |page: &mut Self, input, e: &gpui_kit::component::input::InputEvent, window, cx| {
             use gpui_kit::component::input::InputEvent;
@@ -372,7 +374,7 @@ impl BackupPage {
                     let summary = block_on(backup::run(&conn, &opts, bridge(sink.clone())))?
                         .map_err(|e| e.to_string())?;
                     if let Some(record) = &record {
-                        crate::secrets_key::save_beside(record, &summary.output, &sink);
+                        crate::secrets_key::save_beside(record, &summary.output, opts.passphrase.as_deref(), &sink);
                     }
                     // For the Status screen's "Last backup".
                     crate::dbstatus::record_backup(&summary.output);
@@ -735,6 +737,8 @@ impl BackupPage {
                     if !schedule {
                         return Ok(None);
                     }
+                    // Saved by the user: it may ask for the password, once.
+                    let _action = sentient_installer_core::elevation::user_action();
                     match record.as_ref().filter(|r| crate::rootjob::needed(r)) {
                         Some(_) => crate::rootjob::run(&["backup-schedule".to_string()], &sentient_installer_core::progress::noop()).map(|_| ()),
                         None => crate::backups::apply_schedule(&prefs),
@@ -785,7 +789,7 @@ impl BackupPage {
                     run = run
                         .child(
                             h_flex()
-                                .gap_2()
+                                .gap(crate::ui::button_gap())
                                 .items_center()
                                 .child(div().flex_1().child(ui::outcome(theme, Tone::Good, format!("Backup finished and checked: {name}, {}.", crate::dbstatus::bytes_label(m.bytes)))))
                                 .child(crate::ui::button("open-folder").outline().label("Open folder").on_click(move |_, _, cx| ui::open_url(&folder, cx))),
@@ -798,7 +802,7 @@ impl BackupPage {
                                 "Whole file SHA-256",
                                 None,
                                 h_flex()
-                                    .gap_2()
+                                    .gap(crate::ui::button_gap())
                                     .child(div().text_sm().font_family(theme.mono_font_family.clone()).child(short))
                                     .child(crate::ui::button("copy-hash").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(whole.clone())))),
                             )
@@ -1015,7 +1019,16 @@ impl BackupPage {
             None,
             false,
         );
-        let pass_row = card_row(theme, narrow, "Encrypt", Some("A passphrase for Back up now; without it the file cannot be read. Automatic backups are not encrypted."), div().w(px(260.)).child(Input::new(&self.passphrase).mask_toggle()), None, false);
+        let pass_empty = self.passphrase.read(cx).value().is_empty();
+        let pass_row = card_row(
+            theme,
+            narrow,
+            "Encrypt",
+            Some("A passphrase for Back up now; without it the file cannot be read. Automatic backups are not encrypted."),
+            h_flex().min_w_0().flex_wrap().gap_2().items_center().child(div().w(px(260.)).child(Input::new(&self.passphrase).mask_toggle())).children(key_plain_note(theme, pass_empty)),
+            None,
+            false,
+        );
         let copy_row = card_row(
             theme,
             narrow,
@@ -1023,7 +1036,7 @@ impl BackupPage {
             Some("A second disk or a network folder, in case this computer fails."),
             h_flex()
                 .min_w_0()
-                .gap_2()
+                .gap(crate::ui::button_gap())
                 .items_center()
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().when(p.copy_to.is_some(), |d| d.font_family(theme.mono_font_family.clone()).text_size(px(13.5))).when(p.copy_to.is_none(), |d| d.text_color(theme.muted_foreground)).child(p.copy_to.as_ref().map(|d| d.display().to_string()).unwrap_or_else(|| "Nowhere".into())))
                 .when(p.copy_to.is_some(), |r| {
@@ -1068,14 +1081,14 @@ impl BackupPage {
         let now_tip = estimate.map(|(t, _)| t).unwrap_or_else(|| "A backup now, with what the card says.".into());
         let mut list = ui::panel(theme).gap_0().child(
             h_flex()
-                .gap_2()
+                .gap(crate::ui::button_gap())
                 .pb_2()
                 .items_center()
                 .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child("Backups"))
-                .child(crate::ui::button("add-backup").ghost().label("Add a file…").tooltip("Add a backup file from elsewhere to the folder.").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx))))
-                .child(crate::ui::button("restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx))))
+                .child(crate::ui::probed(crate::ui::button("add-backup").ghost().label("Add a file…").tooltip("Add a backup file from elsewhere to the folder.").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx)))))
+                .child(crate::ui::probed(crate::ui::button("restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
                 .when(!self.choose, |r| {
-                    r.child(crate::ui::button("backup-now").outline().label(if busy { "Backing up…" } else { "Back up now" }).tooltip(now_tip).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_preset_backup(cx))))
+                    r.child(crate::ui::probed(crate::ui::button("backup-now").outline().label(if busy { "Backing up…" } else { "Back up now" }).tooltip(now_tip).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_preset_backup(cx)))))
                 }),
         );
         if let Some(t) = low {
@@ -1225,10 +1238,10 @@ impl Render for BackupPage {
                             )
                             .when(self.telemetry == 1, |r| r.child(div().w_20().child(Input::new(&self.telemetry_days)))),
                     )
-                    .child(div().w_80().child(Input::new(&self.passphrase).mask_toggle()))
+                    .child(h_flex().gap_2().items_center().child(div().w_80().child(Input::new(&self.passphrase).mask_toggle())).children(key_plain_note(&theme, self.passphrase.read(cx).value().is_empty())))
                     .child(
                         h_flex()
-                            .gap_3()
+                            .gap(crate::ui::button_gap())
                             .items_center()
                             .child(
                                 crate::ui::button("output")
@@ -1292,6 +1305,23 @@ const CARD_ACTION_W: f32 = 118.;
 
 /// A Backup card row: label, value, and an action column whose line is
 /// drawn apart from the row's (the mockup). `last`: no line under it.
+/// Beside an empty passphrase: SENTIENT's secrets key goes beside the
+/// backup as a plain file. With a passphrase it is encrypted with it.
+fn key_plain_note(theme: &gpui_kit::component::Theme, pass_empty: bool) -> Option<AnyElement> {
+    pass_empty.then(|| {
+        h_flex()
+            .flex_shrink_0()
+            .gap_1()
+            .items_center()
+            .child(ui::pill(theme, Tone::Warn, "Key not encrypted"))
+            .child(ui::info(
+                "key-plain".into(),
+                "Without a passphrase, SENTIENT's secrets key (it opens the stored mail, SMS and integration passwords) is saved beside the backup as a plain file, readable by this account only. Keep it apart from the backup when the backup leaves this computer. With a passphrase, the key is encrypted with it too.".into(),
+            ))
+            .into_any_element()
+    })
+}
+
 pub(crate) fn card_row(theme: &gpui_kit::component::Theme, narrow: bool, label: &'static str, help: Option<&'static str>, value: impl IntoElement, action: Option<AnyElement>, last: bool) -> Div {
     let line = |d: Div| if last { d } else { d.border_b_1().border_color(theme.border) };
     let label_el = h_flex()
@@ -1305,17 +1335,17 @@ pub(crate) fn card_row(theme: &gpui_kit::component::Theme, narrow: bool, label: 
     if narrow {
         return line(v_flex().py(px(8.)).gap_1())
             .child(label_el)
-            .child(h_flex().min_w_0().gap_2().items_center().child(h_flex().flex_1().min_w_0().gap_2().items_center().child(value)).children(action));
+            .child(h_flex().min_w_0().gap(crate::ui::button_gap()).items_center().child(h_flex().flex_1().min_w_0().gap_2().items_center().child(value)).children(action));
     }
-    h_flex()
-        .items_stretch()
-        .gap(px(16.))
+    // One divider under the whole row, label to action (his rc12-22 note:
+    // a line per column left a gap before the action).
+    line(h_flex().items_stretch().gap(px(16.)))
         .child(
-            line(h_flex().flex_1().min_w_0().min_h(px(53.)).py(px(8.)).items_center().flex_wrap().gap_y_1())
+            h_flex().flex_1().min_w_0().min_h(px(53.)).py(px(8.)).items_center().flex_wrap().gap_y_1()
                 .child(label_el.w(px(CARD_LABEL_W)).flex_shrink_0())
                 .child(h_flex().flex_1().min_w_0().gap_2().items_center().child(value)),
         )
-        .child(line(h_flex().w(px(CARD_ACTION_W)).flex_shrink_0().items_center().justify_end()).children(action))
+        .child(h_flex().w(px(CARD_ACTION_W)).flex_shrink_0().items_center().justify_end().children(action))
 }
 
 /// The folder row's value: the path, its free space, and what the page
@@ -1491,8 +1521,14 @@ pub(crate) fn table_row(theme: &gpui_kit::component::Theme, narrow: bool, i: usi
                 .child(small_pill(theme, tone, text))
                 .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)),
         )
-        .child(h_flex().w(px(if narrow { COL_RESTORE_NARROW } else { COL_RESTORE })).flex_shrink_0().justify_end().child(restore_btn))
-        .child(h_flex().w(px(COL_MENU)).flex_shrink_0().justify_end().child(menu))
+        // Restore… and the menu: one button group at the row's end (the
+        // header's two columns' width).
+        .child(
+            ui::button_group(vec![restore_btn.into_any_element(), menu.into_any_element()])
+                .w(px(if narrow { COL_RESTORE_NARROW } else { COL_RESTORE }) + px(COL_MENU))
+                .flex_shrink_0()
+                .justify_end(),
+        )
 }
 
 /// The table's pills: smaller than the page's.

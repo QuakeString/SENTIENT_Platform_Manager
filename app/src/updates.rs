@@ -19,6 +19,7 @@ use sentient_installer_core::manifest;
 use sentient_installer_core::progress::{Progress, ProgressFn};
 use sentient_installer_core::gateway;
 use sentient_installer_core::releases::{self, Channel, Release};
+use sentient_installer_core::signing::{self, Product};
 
 /// How often the daily check runs, and how often the manager looks whether
 /// it is due.
@@ -139,6 +140,14 @@ pub struct Offer {
     pub installer: Option<releases::Asset>,
     /// The installer's published SHA-256 (lower-case hex).
     pub sha256: Option<String>,
+    /// The installer's signature file (`<installer>.minisig`).
+    pub signature: Option<releases::Asset>,
+    /// The release carries no signature: it is from before releases were
+    /// signed (crate::signing's rule decides whether it may be used).
+    pub unsigned: bool,
+    /// The feed holds a signed release of this product: an unsigned one is
+    /// then refused.
+    pub signing_started: bool,
     /// The notes of every version from the installed one (left out) to this
     /// one, newest first: what updating brings ("What's new").
     pub between: Vec<crate::notes::Notes>,
@@ -154,6 +163,9 @@ impl Offer {
             page: r.html_url.clone(),
             installer: None,
             sha256: None,
+            signature: None,
+            unsigned: false,
+            signing_started: false,
             between: Vec::new(),
         }
     }
@@ -169,6 +181,33 @@ pub(crate) fn published_sha256(r: &Release, asset: &releases::Asset) -> Option<S
     body.lines().find(|l| l.contains(&format!("`{}`", asset.name))).and_then(|l| {
         l.split('`').map(str::trim).find(|p| p.len() == 64 && p.bytes().all(|b| b.is_ascii_hexdigit())).map(str::to_lowercase)
     })
+}
+
+/// A marker that this computer has seen a signed release of `product`: from
+/// then on an unsigned one is refused even if the feed stops showing
+/// signatures (crate::signing).
+fn signed_seen_flag(product: Product) -> PathBuf {
+    prefs_dir().join(match product {
+        Product::Sentient => "signed-releases-seen-sentient",
+        Product::Manager => "signed-releases-seen-manager",
+    })
+}
+
+/// Whether signing has begun for `product`: the feed holds a signed release
+/// of it, or this computer saw one before. Remembers a first sighting.
+pub fn signing_started(all: Option<&[Release]>, product: Product) -> bool {
+    let flag = signed_seen_flag(product);
+    if flag.exists() {
+        return true;
+    }
+    let in_feed = all.is_some_and(|all| signing::signing_started(all, product));
+    if in_feed {
+        if let Some(dir) = flag.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&flag, b"");
+    }
+    in_feed
 }
 
 /// One check's answer for each product: `Ok(None)` is "up to date".
@@ -191,6 +230,33 @@ pub struct Found {
 /// `installed` is SENTIENT's version here (None when it is not installed);
 /// `native` says whether this computer needs a package for its system.
 pub fn check(channel: Channel, installed: Option<String>, native: bool) -> Found {
+    // Renders: offers without a signature, before signing began
+    // ("unsigned") or after ("refused").
+    #[cfg(debug_assertions)]
+    if let Ok(kind) = std::env::var("SPM_DEBUG_UNSIGNED_OFFER") {
+        let offer = |version: &str| Offer {
+            version: version.into(),
+            tag: version.into(),
+            date: "2026-11-14".into(),
+            notes: String::new(),
+            page: String::new(),
+            installer: Some(releases::Asset { name: "SENTIENT-Setup-manager".into(), browser_download_url: String::new(), size: 1, digest: None }),
+            sha256: None,
+            signature: None,
+            unsigned: true,
+            signing_started: kind == "refused",
+            between: Vec::new(),
+        };
+        return Found {
+            sentient: Ok(installed.is_some().then(|| offer("4.4.0.2"))),
+            manager: Ok(Some(offer("0.9.0"))),
+            sentient_candidate: None,
+            manager_candidate: None,
+            gateway: Ok(None),
+            gateway_installed: None,
+            at: now(),
+        };
+    }
     // One list serves both products: they share the repository.
     let all = releases::fetch(releases::SENTIENT_REPO);
     let (sentient, sentient_candidate) = match (&installed, &all) {
@@ -254,6 +320,8 @@ fn sentient_offer(all: &[Release], channel: Channel, installed: &str, native: bo
             return Ok(None);
         }
         let mut offer = Offer::from(r, version.clone());
+        offer.unsigned = !r.has_asset(&signing::signature_name("manifest.json"));
+        offer.signing_started = signing_started(Some(all), Product::Sentient);
         offer.between = if r.is_nightly() {
             vec![crate::notes::Notes::from_release(r, &version)]
         } else {
@@ -280,6 +348,9 @@ fn newest_manager(all: &[Release], channel: Channel, installed: &str) -> Option<
     let mut offer = Offer::from(r, version.clone());
     offer.installer = r.assets.iter().find(|a| installer_for_this_system(&a.name)).cloned();
     offer.sha256 = offer.installer.as_ref().and_then(|a| published_sha256(r, a));
+    offer.signature = offer.installer.as_ref().and_then(|a| r.assets.iter().find(|s| s.name == signing::signature_name(&a.name)).cloned());
+    offer.unsigned = offer.signature.is_none();
+    offer.signing_started = signing_started(Some(all), Product::Manager);
     offer.between = crate::notes::between(all, installed, &version, |x| releases::is_manager(x) && (channel != Channel::Stable || !x.prerelease), releases::manager_version_of);
     Some(offer)
 }
@@ -369,6 +440,27 @@ pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
     if actual != expected {
         let _ = std::fs::remove_file(&file);
         return Err(format!("The downloaded Platform Manager {} is damaged (its checksum does not match the published one). Nothing was changed.", offer.version));
+    }
+    // Its signature, by crate::signing's rule; refused before it is run.
+    let refuse = |e: String| {
+        let _ = std::fs::remove_file(&file);
+        e
+    };
+    let signature = match &offer.signature {
+        Some(a) => signing::fetch_signature(&a.browser_download_url).map_err(|e| refuse(format!("The signature of Platform Manager {}: {e}. Nothing was changed.", offer.version)))?,
+        None => None,
+    };
+    let data = std::fs::read(&file).map_err(|e| refuse(format!("read {}: {e}", file.display())))?;
+    let what = format!("Platform Manager {}", offer.version);
+    let trust = signing::check(&what, &data, signature.as_deref(), offer.signing_started || signing_started(None, Product::Manager)).map_err(refuse)?;
+    drop(data);
+    if let Some(w) = trust.warning(&what) {
+        sink(Progress::Log { line: w });
+    }
+    // Windows: the installer's Authenticode signature too, before it runs.
+    #[cfg(windows)]
+    if let Some(w) = crate::authenticode::check(&file).map_err(|e| refuse(format!("{what} is not used: {e}. Nothing was changed.")))? {
+        sink(Progress::Log { line: format!("{what}: {w} (allowed until releases are code-signed).") });
     }
     #[cfg(unix)]
     {
@@ -524,7 +616,8 @@ impl UpdateState {
     /// A newer gateway than the one installed here, not dismissed.
     pub fn gateway_notice(&self) -> Option<gateway::Offer> {
         let f = self.found.as_ref()?;
-        let installed = f.gateway_installed.as_deref()?;
+        // An unknown version is never compared (nor called up to date).
+        let installed = f.gateway_installed.as_deref().filter(|v| !v.is_empty())?;
         let offer = f.gateway.as_ref().ok()?.as_ref()?;
         (releases::is_newer(&offer.version, installed, false) && self.prefs.dismissed_gateway.as_deref() != Some(&offer.version))
             .then(|| offer.clone())

@@ -33,6 +33,10 @@ const APP_USER: &str = "sentient";
 const ENV_FILE: &str = "/etc/sentient/sentient.env";
 const UNIT_FILE: &str = "/etc/systemd/system/sentient.service";
 const LOG_DIR: &str = "/var/log/sentient";
+/// Who may read SENTIENT's configuration without root: the account that
+/// installed it (added at install and repair) and the service's own user.
+/// The Platform Manager's pages then read it without asking for a password.
+pub const ADMIN_GROUP: &str = "sentient-admin";
 
 /// ClickHouse version installed natively — the same 24.8 LTS line the Docker
 /// engine pins (`clickhouse/clickhouse-server:24.8`). Newer majors changed the
@@ -115,8 +119,12 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         Pm::Pacman => format!(
             "pacman -Sy --noconfirm --needed postgresql{curl}\n\
              DATA=/var/lib/postgres/data\n\
-             [ -f \"$DATA/PG_VERSION\" ] || runuser -u postgres -- initdb -D \"$DATA\" --locale=C.UTF-8 --encoding=UTF8 >/dev/null\n",
-            curl = if ch { " curl" } else { "" }
+             {same_major}\
+             [ -f \"$DATA/PG_VERSION\" ] || runuser -u postgres -- initdb -D \"$DATA\" --locale=C.UTF-8 --encoding=UTF8 >/dev/null\n\
+             {first_port}",
+            curl = if ch { " curl" } else { "" },
+            same_major = SAME_MAJOR,
+            first_port = first_port(cfg.pg_port),
         ),
         Pm::Apt => format!(
             "export DEBIAN_FRONTEND=noninteractive\napt-get update -qq\napt-get install -y -qq postgresql{curl}\n",
@@ -124,8 +132,13 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         ),
         Pm::Dnf => format!(
             "dnf install -y postgresql-server postgresql{curl}\n\
-             [ -f /var/lib/pgsql/data/PG_VERSION ] || postgresql-setup --initdb >/dev/null\n",
-            curl = if ch { " curl" } else { "" }
+             DATA=/var/lib/pgsql/data\n\
+             {same_major}\
+             [ -f \"$DATA/PG_VERSION\" ] || postgresql-setup --initdb >/dev/null\n\
+             {first_port}",
+            curl = if ch { " curl" } else { "" },
+            same_major = SAME_MAJOR,
+            first_port = first_port(cfg.pg_port),
         ),
         Pm::Zypper => format!(
             "zypper --non-interactive install postgresql-server postgresql{curl}\n",
@@ -133,6 +146,15 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         ),
     };
     let install = if ch { format!("{install}{}", clickhouse_static_install()) } else { install };
+    // Where the first start listens: Arch and Fedora start on the chosen
+    // port (written before the start, so a taken 5432 cannot stop them);
+    // Debian's packaging creates and starts the cluster itself, on 5432 or
+    // the next free port; openSUSE initialises on its first start, on 5432.
+    let start_port = match pm {
+        Pm::Pacman | Pm::Dnf => cfg.pg_port.to_string(),
+        Pm::Apt => "$(pg_lsclusters -h 2>/dev/null | awk 'NR==1{print $3}')".into(),
+        Pm::Zypper => "5432".into(),
+    };
 
     // Tuning and port through ALTER SYSTEM (postgresql.auto.conf): the same
     // statement on every distribution, whatever their config layout. Reached
@@ -151,15 +173,20 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     // where systemd-networkd is enabled but manages nothing (many servers,
     // every container) that target only arrives after wait-online's own
     // 2-minute timeout.
+    // The wait stops at once when the service fails (its log is shown and
+    // the exit code says why, see `setup_error`), instead of waiting out
+    // the four minutes.
     let mut script = format!(
-        "set -e\n{install}\
+        "set -e\n{WAIT_PG}{install}\
+         START_PORT={start_port}\n\
+         systemctl reset-failed '{PG_UNIT}*' 2>/dev/null || true\n\
          systemctl enable --no-block --now {PG_UNIT}\n\
          echo '>> Waiting for PostgreSQL to start (can take two minutes while the system waits for the network)'\n\
-         for i in $(seq 1 240); do runuser -u postgres -- pg_isready -q && break; sleep 1; done\n\
-         runuser -u postgres -- psql -v ON_ERROR_STOP=1 -qAt {alter}\n\
+         wait_pg \"${{START_PORT:-5432}}\"\n\
+         runuser -u postgres -- psql -v ON_ERROR_STOP=1 -qAt -p \"${{START_PORT:-5432}}\" {alter}\n\
          systemctl restart --no-block {PG_UNIT}\n\
          sleep 2\n\
-         for i in $(seq 1 240); do runuser -u postgres -- pg_isready -q -p {port} && break; sleep 1; done\n\
+         wait_pg {port}\n\
          runuser -u postgres -- pg_isready -p {port}\n",
         port = cfg.pg_port,
     );
@@ -184,7 +211,7 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
             tcp = cfg.ch_native_port,
         ));
     }
-    exec::run_privileged(&sink, &script)?;
+    exec::run_privileged(&sink, &script).map_err(|e| setup_error(&e, cfg.pg_port))?;
     bail_if_cancelled()?;
 
     if is_ready(cfg) {
@@ -196,6 +223,65 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         Ok(())
     } else {
         Err("The database packages installed but their services are not registered. Check the log above.".into())
+    }
+}
+
+/// The data directory (`$DATA`) must be the installed PostgreSQL's major:
+/// a cluster from an older major stops the distribution's unit (Arch's
+/// postgresql-check-db-dir) and would only show as a long wait. It is never
+/// moved or deleted here; [`setup_error`] says what to do.
+const SAME_MAJOR: &str = "if [ -f \"$DATA/PG_VERSION\" ]; then\n\
+   HAVE=$(cat \"$DATA/PG_VERSION\"); WANT=$(postgres --version 2>/dev/null | sed -E 's/[^0-9]*([0-9]+).*/\\1/')\n\
+   if [ -n \"$WANT\" ] && [ \"$HAVE\" != \"$WANT\" ]; then\n\
+     echo \"!! $DATA holds a PostgreSQL $HAVE database; PostgreSQL $WANT is installed.\"\n\
+     exit 42\n\
+   fi\n\
+ fi\n";
+
+/// The chosen port and local-only listening before the first start (the
+/// same settings the ALTER SYSTEM step writes, so nothing changes after).
+fn first_port(port: u16) -> String {
+    format!(
+        "runuser -u postgres -- sh -c \"printf '%s\\n' 'port = {port}' \\\"listen_addresses = 'localhost'\\\" >> \\\"$DATA/postgresql.auto.conf\\\"\"\n"
+    )
+}
+
+/// `wait_pg <port>`: until PostgreSQL answers there (up to 4 minutes), but
+/// stop at once when a PostgreSQL unit has failed, with its log: exit 43
+/// when its port is taken, 41 otherwise; 40 when it never answers.
+const WAIT_PG: &str = "wait_pg() {\n\
+   for i in $(seq 1 240); do\n\
+     runuser -u postgres -- pg_isready -q -p \"$1\" && return 0\n\
+     if systemctl list-units --failed --plain --no-legend 'postgresql*' 2>/dev/null | grep -q .; then\n\
+       echo '!! PostgreSQL stopped while starting. Its log:'\n\
+       LOG=$(journalctl -u 'postgresql*' -n 25 --no-pager -o cat 2>/dev/null || true)\n\
+       printf '%s\\n' \"$LOG\"\n\
+       case \"$LOG\" in *'already in use'*) exit 43;; esac\n\
+       exit 41\n\
+     fi\n\
+     sleep 1\n\
+   done\n\
+   echo '!! PostgreSQL did not answer within 4 minutes. Its log:'\n\
+   journalctl -u 'postgresql*' -n 25 --no-pager -o cat 2>/dev/null || true\n\
+   exit 40\n\
+ }\n";
+
+/// What a failed database setup means, from the script's exit code.
+fn setup_error(e: &str, port: u16) -> String {
+    let code = |c: &str| e.contains(&format!("exited with {c}")) || e.contains(&format!("exit status: {c}"));
+    if code("42") {
+        "The PostgreSQL data folder holds a database from another PostgreSQL version (see the log above). \
+         If you need that data, upgrade it with pg_upgrade first; if not, move the folder aside \
+         (for example sudo mv /var/lib/postgres/data /var/lib/postgres/data.old) and run Setup again."
+            .into()
+    } else if code("43") {
+        format!("PostgreSQL could not listen on its port because another program uses it (see the log above). Stop that program or choose another port than {port} in Network ports, and run Setup again.")
+    } else if code("41") {
+        "PostgreSQL stopped while starting; its log is above. Fix what it reports and run Setup again.".into()
+    } else if code("40") {
+        "PostgreSQL did not answer within 4 minutes; its log is above.".into()
+    } else {
+        e.to_string()
     }
 }
 
@@ -413,7 +499,7 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     script.push_str(&format!(
         "echo '>> Writing the configuration'\n\
          cat > {ENV_FILE} <<'SENTIENTEOF'\n{env}SENTIENTEOF\n\
-         chown root:{APP_USER} {ENV_FILE} && chmod 640 {ENV_FILE}\n\
+         {access}\
          if runuser -u postgres -- psql -p {pgport} -d {db} -tAc \"SELECT to_regclass('public.tb_user') IS NOT NULL\" 2>/dev/null | grep -q t; then\n\
            echo '>> Checking the SENTIENT database (nothing is changed when it is already installed)'\n\
          else\n\
@@ -429,7 +515,7 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
          systemctl daemon-reload\n\
          systemctl enable {APP_UNIT} >/dev/null 2>&1\n\
          systemctl restart {APP_UNIT}\n",
-        env = env_file_body(cfg), unit = unit_body(cfg), inst = shq(&install_dir), url = shq(&db_url),
+        env = env_file_body(cfg), unit = unit_body(cfg), inst = shq(&install_dir), url = shq(&db_url), access = admin_group_script(),
         pgport = cfg.pg_port, db = shq(&cfg.db_name),
         stock_fix = if cfg.flavor == stack::Flavor::Stock {
             format!(
@@ -475,11 +561,95 @@ fn env_value(text: &str, key: &str) -> Option<String> {
     Some(inner.replace("'\\''", "'"))
 }
 
-pub fn read_secrets(_cfg: &NativeConfig) -> Result<EnvSecrets, String> {
-    let (ok, out, err) = exec::privileged_output(&format!("cat {ENV_FILE}")).ok_or("could not read the SENTIENT environment")?;
-    if !ok {
-        return Err(format!("read {ENV_FILE}: {}", err.trim()));
+/// The root part of install and repair that lets the Platform Manager read
+/// SENTIENT's configuration without root: the [`ADMIN_GROUP`] group with
+/// the installing account (the user behind pkexec or sudo) and the service
+/// user in it, `/etc/sentient` root:group 0750 and the environment file
+/// root:group 0640. systemd reads `EnvironmentFile=` as root; the service
+/// user reads beside it as a member.
+fn admin_group_script() -> String {
+    format!(
+        "getent group {G} >/dev/null 2>&1 || groupadd --system {G}\n\
+         if id -u {APP_USER} >/dev/null 2>&1; then usermod -aG {G} {APP_USER} || true; fi\n\
+         WHO=\"${{PKEXEC_UID:-${{SUDO_UID:-}}}}\"\n\
+         if [ -n \"$WHO\" ] && [ \"$WHO\" != 0 ]; then\n\
+           WHO_NAME=$(id -nu \"$WHO\" 2>/dev/null || true)\n\
+           if [ -n \"$WHO_NAME\" ]; then usermod -aG {G} \"$WHO_NAME\" && echo \">> $WHO_NAME may now read the SENTIENT configuration (after signing in again)\"; fi\n\
+         fi\n\
+         mkdir -p /etc/sentient\n\
+         chown root:{G} /etc/sentient && chmod 0750 /etc/sentient\n\
+         if [ -f {ENV_FILE} ]; then chown root:{G} {ENV_FILE} && chmod 0640 {ENV_FILE}; fi\n",
+        G = ADMIN_GROUP,
+    )
+}
+
+/// May this account read SENTIENT's configuration (and so its passwords)
+/// without asking for the administrator password?
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvAccess {
+    /// Yes (root, or a member of [`ADMIN_GROUP`] in this session).
+    Readable,
+    /// It is a member, but this session started before it was added.
+    AfterSignIn,
+    /// Not a member: an install from before the group, until Repair.
+    NeedsRepair,
+    /// There is no configuration file.
+    Missing,
+}
+
+pub const AFTER_SIGN_IN: &str = "Available after you sign in again (your account was given access to SENTIENT's settings).";
+pub const NEEDS_REPAIR: &str = "Needs the administrator password. Repair once and the Platform Manager reads it without one.";
+
+fn user_listed_in(group: &str) -> bool {
+    let me = sys::output("id", &["-un"]).map(|(_, o, _)| String::from_utf8_lossy(&o).trim().to_string()).unwrap_or_default();
+    let groups = std::fs::read_to_string("/etc/group").unwrap_or_default();
+    !me.is_empty() && listed(&groups, group, &me)
+}
+
+/// `name` among the members of `group` in /etc/group's text.
+fn listed(groups: &str, group: &str, name: &str) -> bool {
+    groups
+        .lines()
+        .find_map(|l| {
+            let mut f = l.split(':');
+            (f.next() == Some(group)).then(|| f.nth(2).unwrap_or("").split(',').any(|m| m.trim() == name))
+        })
+        .unwrap_or(false)
+}
+
+pub fn env_access() -> EnvAccess {
+    match std::fs::File::open(ENV_FILE) {
+        Ok(_) => EnvAccess::Readable,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => EnvAccess::Missing,
+        Err(_) if user_listed_in(ADMIN_GROUP) => EnvAccess::AfterSignIn,
+        Err(_) => EnvAccess::NeedsRepair,
     }
+}
+
+/// The environment file's text: read directly when this account may, else
+/// through the root helper — which asks for the password only inside an
+/// action the user started (crate::elevation); a page gets a message.
+fn read_env_text() -> Result<String, String> {
+    match std::fs::read_to_string(ENV_FILE) {
+        Ok(t) => return Ok(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{ENV_FILE} is missing")),
+        Err(_) => {}
+    }
+    let (ok, out, err) = exec::privileged_output(&format!("cat {ENV_FILE}")).ok_or("could not read the SENTIENT environment")?;
+    if ok {
+        return Ok(out);
+    }
+    if crate::elevation::ElevationError::from_message(&err) == Some(crate::elevation::ElevationError::NotNow) {
+        return Err(match env_access() {
+            EnvAccess::AfterSignIn => AFTER_SIGN_IN.to_string(),
+            _ => NEEDS_REPAIR.to_string(),
+        });
+    }
+    Err(format!("read {ENV_FILE}: {}", err.trim()))
+}
+
+pub fn read_secrets(_cfg: &NativeConfig) -> Result<EnvSecrets, String> {
+    let out = read_env_text()?;
     // postgresql://user:password@host:port/db
     let url = env_value(&out, "DATABASE_URL").ok_or("the environment file has no DATABASE_URL")?;
     let db_password = url
@@ -536,7 +706,7 @@ const ENGINE_ENV: &[&str] = &[
 pub fn read_installed() -> Option<Result<FoundNative, String>> {
     let install_dir = installed_dir()?;
     Some((|| {
-        let text = read_private_file(ENV_FILE)?.ok_or_else(|| format!("{ENV_FILE} is missing"))?;
+        let text = read_env_text()?;
         let env: Vec<(String, String)> = text
             .lines()
             .map(str::trim)
@@ -595,12 +765,15 @@ pub fn read_installed() -> Option<Result<FoundNative, String>> {
             ch_http_port,
             ch_native_port,
         };
-        // PostgreSQL's settings as the server has them.
+        // PostgreSQL's settings as the server has them: through SENTIENT's
+        // own database login when it answers, else as the postgres account
+        // (through the root helper, never a new password prompt on a page).
+        let probe = cfg.clone();
         let show = |name: &str| {
-            exec::privileged_output(&format!("runuser -u postgres -- psql -p {} -qAt -c {}", cfg.pg_port, shq(&format!("SHOW {name}"))))
+            pg_show_tcp(&probe, name).or_else(|| exec::privileged_output(&format!("runuser -u postgres -- psql -p {} -qAt -c {}", probe.pg_port, shq(&format!("SHOW {name}"))))
                 .filter(|(ok, _, _)| *ok)
                 .map(|(_, out, _)| out.trim().to_string())
-                .filter(|v| !v.is_empty())
+                .filter(|v| !v.is_empty()))
         };
         if let Some(v) = show("max_connections").and_then(|v| v.parse().ok()) {
             cfg.pg.pg_max_connections = v;
@@ -619,6 +792,22 @@ pub fn read_installed() -> Option<Result<FoundNative, String>> {
         }
         Ok(FoundNative { cfg, running: installed_running(), notes, problem })
     })())
+}
+
+/// `SHOW name` as SENTIENT's database user over TCP (its password is in
+/// `cfg`), without root.
+fn pg_show_tcp(cfg: &NativeConfig, name: &str) -> Option<String> {
+    if cfg.db_password.is_empty() {
+        return None;
+    }
+    let out = sys::command("psql")
+        .args(["-h", "127.0.0.1", "-p", &cfg.pg_port.to_string(), "-U", &cfg.db_user, "-d", &cfg.db_name, "-w", "-qAt", "-c", &format!("SHOW {name}")])
+        .env("PGPASSWORD", &cfg.db_password)
+        .env("PGCONNECT_TIMEOUT", "5")
+        .output()
+        .ok()?;
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !v.is_empty()).then_some(v)
 }
 
 /// Check the Platform Manager can do its work on a found installation.
@@ -657,6 +846,11 @@ pub fn verify_installed(found: &FoundNative) -> Result<(), String> {
 /// A root-only file of SENTIENT's (as root, through polkit unless already
 /// root); `None` if it is not there.
 pub fn read_private_file(path: &str) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(t) => return Ok(Some(t)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => {}
+    }
     let (ok, out, err) = exec::privileged_output(&format!("if [ -f {p} ]; then cat {p}; else echo __missing__ >&2; fi", p = shq(path)))
         .ok_or("could not run the administrator command")?;
     match (ok, err.contains("__missing__")) {
@@ -681,6 +875,11 @@ pub fn write_private_file(sink: &ProgressFn, path: &str, text: &str) -> Result<(
 /// Whether SENTIENT's environment file (where Linux keeps the passwords) is
 /// there.
 pub fn env_file_exists() -> bool {
+    match std::fs::metadata(ENV_FILE) {
+        Ok(_) => return true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(_) => {}
+    }
     exec::privileged_output(&format!("test -f {ENV_FILE}")).is_some_and(|(ok, _, _)| ok)
 }
 
@@ -717,8 +916,9 @@ pub fn reconfigure(sink: &ProgressFn, cfg: &NativeConfig, pg_changed: bool) -> R
         "set -e\n\
          systemctl stop {APP_UNIT}\n\
          cat > {ENV_FILE} <<'SENTIENTEOF'\n{env}SENTIENTEOF\n\
-         chown root:{APP_USER} {ENV_FILE} && chmod 640 {ENV_FILE}\n",
-        env = env_file_body(cfg)
+         {access}",
+        env = env_file_body(cfg),
+        access = admin_group_script()
     );
     if pg_changed {
         let mut alter = String::new();
@@ -954,5 +1154,74 @@ mod tests {
         assert!(e.contains("TS_TYPE='clickhouse'"));
         assert!(e.contains("DB_POOL_PRIMARY_MAX='48'"));
         assert!(!e.contains("HTTP_PORT="));
+    }
+}
+
+#[cfg(test)]
+mod start_tests {
+    use super::*;
+
+    fn bash(script: &str) -> (i32, String) {
+        let out = std::process::Command::new("bash").arg("-c").arg(script).output().expect("bash");
+        (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    #[test]
+    fn start_helpers_are_valid_shell() {
+        let script = format!("set -e\n{WAIT_PG}DATA=/nonexistent\n{SAME_MAJOR}");
+        let ok = std::process::Command::new("bash").arg("-n").arg("-c").arg(&script).status().unwrap();
+        assert!(ok.success(), "bash -n failed:\n{script}");
+        let fp = first_port(5433);
+        assert!(fp.contains("port = 5433") && fp.contains("listen_addresses = 'localhost'"), "{fp}");
+    }
+
+    #[test]
+    fn other_major_data_dir_stops_with_42() {
+        let dir = std::env::temp_dir().join(format!("spm-pgv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("PG_VERSION"), "1\n").unwrap();
+        // A fake `postgres --version` reporting 18.
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("postgres"), "#!/bin/sh\necho 'postgres (PostgreSQL) 18.7'\n").unwrap();
+        std::process::Command::new("chmod").args(["+x", bin.join("postgres").to_str().unwrap()]).status().unwrap();
+        let script = format!("PATH={}:$PATH\nDATA={}\n{SAME_MAJOR}echo same", bin.display(), dir.display());
+        let (code, out) = bash(&script);
+        assert_eq!(code, 42, "{out}");
+        assert!(out.contains("PostgreSQL 1 database; PostgreSQL 18 is installed"), "{out}");
+        std::fs::write(dir.join("PG_VERSION"), "18\n").unwrap();
+        let (code, out) = bash(&script);
+        assert_eq!((code, out.trim()), (0, "same"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn first_port_writes_the_auto_conf() {
+        // The quoting: run the line with runuser replaced by a pass-through.
+        let dir = std::env::temp_dir().join(format!("spm-pgp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let line = first_port(5433).replace("runuser -u postgres -- ", "");
+        let (code, _) = bash(&format!("DATA={}\n{line}", dir.display()));
+        assert_eq!(code, 0);
+        let conf = std::fs::read_to_string(dir.join("postgresql.auto.conf")).unwrap();
+        assert_eq!(conf, "port = 5433\nlisten_addresses = 'localhost'\n");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn exit_codes_say_why() {
+        assert!(setup_error("bash exited with 42", 5432).contains("another PostgreSQL version"));
+        let groups = "root:x:0:\nsentient-admin:x:961:sentient,mz\nwheel:x:998:mz\n";
+        assert!(listed(groups, "sentient-admin", "mz"));
+        assert!(listed(groups, "sentient-admin", "sentient"));
+        assert!(!listed(groups, "sentient-admin", "ops"));
+        assert!(!listed(groups, "docker", "mz"));
+        let access = admin_group_script();
+        assert!(access.contains("chown root:sentient-admin /etc/sentient && chmod 0750 /etc/sentient"));
+        assert!(access.contains("chmod 0640"));
+        assert!(access.contains("PKEXEC_UID"));
+        assert!(setup_error("pkexec exited with 43", 5433).contains("5433"));
+        assert!(setup_error("x exited with 41", 5432).contains("stopped while starting"));
+        assert_eq!(setup_error("x exited with 1", 5432), "x exited with 1");
     }
 }

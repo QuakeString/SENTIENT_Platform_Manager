@@ -23,6 +23,8 @@
 //! --job auto-signin <account|off>       (sign in by itself after a restart; on Windows
 //!                                       the password comes from SPM_AUTOSIGNIN_PASSWORD)
 //! --job take-over-compose               (an added Docker instance: use SPM's compose file)
+//! --job agent-info                      (version, commit and agent PROTOCOL, as JSON)
+//! --job agents                          (the server agents this package carries, written out)
 //! --job kept
 //! --job remove-kept <name>
 //! ```
@@ -39,21 +41,38 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | movedata-json | movedata-check <store> <folder> | movedata-estimate <store=folder,…> | move-data <store=folder,…> | move-data-remove-old <folder> | move-data-cancel | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
-gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
+use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live [system|services|db] | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | agent-info | agents | \
+gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart> | gateway-remove [--delete-data] [--remove-image] | gateway-adopt
 
-/// A console for the output: release builds on Windows have none of their
-/// own, so use the one the job was started from.
+Administrator password (native Linux): a job typed in a terminal may ask for it, once for the
+whole job. Started without a terminal (a script, a timer, a service), a job never asks: a step
+that needs root then fails and says so. Run such a job from a terminal, or as root.";
+
+/// A console for the output, only when there is nowhere else to write: a
+/// windowed build started from a console with its output not redirected.
+/// The agent (a console program) already has the console, and a piped
+/// run (crate::remote) has its pipes: both are left as they are, so the
+/// agent never takes over the console it shares with the shell that
+/// started it (a windowed program attached to it wrote over the lines
+/// that shell printed after it).
 fn attach_console() {
     #[cfg(windows)]
     {
         #[link(name = "kernel32")]
         unsafe extern "system" {
             fn AttachConsole(process_id: u32) -> i32;
+            fn GetConsoleWindow() -> *mut core::ffi::c_void;
+            fn GetStdHandle(which: u32) -> *mut core::ffi::c_void;
         }
-        // SAFETY: ATTACH_PARENT_PROCESS; fails harmlessly with no parent console.
+        const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+        // SAFETY: plain queries; ATTACH_PARENT_PROCESS fails harmlessly with
+        // no parent console.
         unsafe {
-            AttachConsole(u32::MAX);
+            let out = GetStdHandle(STD_OUTPUT_HANDLE);
+            let no_output = out.is_null() || out as isize == -1;
+            if no_output && GetConsoleWindow().is_null() {
+                AttachConsole(u32::MAX);
+            }
         }
     }
 }
@@ -79,12 +98,49 @@ fn json_printer() -> ProgressFn {
 }
 
 pub fn run(args: &[String]) -> i32 {
+    let code = run_job(args);
+    // Tests count the password prompts a job causes.
+    if std::env::var_os("SPM_ELEVATION_STATS").is_some() {
+        use sentient_installer_core::elevation;
+        eprintln!("elevation: {} password prompt(s), {} root step(s)", elevation::prompts(), elevation::steps());
+    }
+    code
+}
+
+fn run_job(args: &[String]) -> i32 {
     attach_console();
     let json = args.first().is_some_and(|a| a == "--json");
     let args = if json { &args[1..] } else { args };
+    // Which Platform Manager this is (crate::remote::reuse): read-only, so
+    // before the administrator check; any account may ask.
+    if args.first().map(String::as_str) == Some("agent-info") {
+        println!("{}", serde_json::to_string(&crate::remote::reuse::AgentInfo::this()).unwrap_or_default());
+        return 0;
+    }
+    // The server agents this package carries, written out where Set up
+    // copies them from (a package check: version and size of each).
+    if args.first().map(String::as_str) == Some("agents") {
+        for (system, file) in crate::remote::carried_agents() {
+            match file {
+                Ok(Some(path)) => println!("{}\t{}\t{}", system.label(), std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0), path.display()),
+                Ok(None) => println!("{}\tnot carried", system.label()),
+                Err(e) => println!("{}\t{e}", system.label()),
+            }
+        }
+        return 0;
+    }
     if !crate::elevate::is_admin() {
         eprintln!("Run this from an elevated prompt (Run as administrator).");
         return 2;
+    }
+    // Typed in a terminal, the job is the user's own action: its root steps
+    // may ask for the password (once, sentient_installer_core::elevation).
+    // A timer's job (stats-sample, scheduled-backup) never asks.
+    {
+        use std::io::IsTerminal as _;
+        if std::io::stdin().is_terminal() || std::io::stderr().is_terminal() {
+            sentient_installer_core::elevation::allow_in_process();
+        }
     }
     let job = args.first().map(String::as_str).unwrap_or("");
     if job == "install" {
@@ -115,10 +171,14 @@ pub fn run(args: &[String]) -> i32 {
         let newest = || gateway::newest(channel).and_then(|o| o.ok_or_else(|| "No gateway release on this channel.".to_string()));
         let result = match job {
             "gateway-status" => {
+                sentient_installer_core::distro::gateway_docker::set_cache_dir(crate::updates::prefs_dir());
                 let s = gateway::status();
                 let kind = s.kind();
+                // Values with spaces in them are %20-escaped (the line splits on spaces).
+                let esc = |v: Option<String>| v.unwrap_or_default().replace('%', "%25").replace(' ', "%20");
+                let recorded = crate::gateway_record::load().is_some_and(|r| r.is(&s));
                 println!(
-                    "installed={} version={} running={} host={} port={} page={} container={} managed={} kind={} service={} process={}",
+                    "installed={} version={} running={} host={} port={} page={} container={} managed={} kind={} service={} process={} image={} compose={} project={} volumes={} package={} recorded={recorded}",
                     s.installed,
                     s.version.unwrap_or_default(),
                     s.running,
@@ -129,10 +189,28 @@ pub fn run(args: &[String]) -> i32 {
                     s.managed,
                     kind,
                     s.service.clone().unwrap_or_default(),
-                    s.process.clone().unwrap_or_default().replace(' ', "")
+                    s.process.clone().unwrap_or_default().replace(' ', ""),
+                    esc(s.image.clone()),
+                    esc(s.compose_dir.clone()),
+                    esc(s.compose_project.clone()),
+                    esc(Some(s.volumes.join(","))),
+                    esc(s.package.clone()),
                 );
                 Ok(())
             }
+            // Remove the gateway found here (as root: the Gateway page runs
+            // it through rootjob; a server's agent runs as root).
+            "gateway-remove" => {
+                let keep = !args.iter().any(|a| a == "--delete-data");
+                let image = args.iter().any(|a| a == "--remove-image");
+                gateway::remove(&sink, keep, image).map(|msg| {
+                    if let Err(e) = crate::gateway_record::save(None) {
+                        sink(sentient_installer_core::progress::Progress::Log { line: format!("The gateway's record was not cleared: {e}") });
+                    }
+                    sink(sentient_installer_core::progress::Progress::Done { message: msg });
+                })
+            }
+            "gateway-adopt" => crate::gateway_record::adopt().map(|msg| sink(sentient_installer_core::progress::Progress::Done { message: msg })),
             "gateway-install" => match (args.get(1), args.get(2).and_then(|p| p.parse().ok())) {
                 (Some(host), Some(port)) => newest().and_then(|offer| {
                     let settings = gateway::Settings {
@@ -472,9 +550,16 @@ pub fn run(args: &[String]) -> i32 {
     // Statistics (crate::stats): a live reading with the database numbers,
     // one reading for the history (the sampler's timer), the history of the
     // last <seconds>, and installing the sampler.
+    // `stats-live <system|services|db>`: one part only, so a slow part
+    // never holds the others back (an older agent ignores the word and
+    // answers the whole reading, which the page takes as it is).
     if job == "stats-live" {
         let record = InstallationRecord::load();
-        println!("{}", serde_json::to_string(&crate::stats::read(record.as_ref(), std::time::Duration::from_secs(1), true)).unwrap_or_default());
+        let s = match args.get(1).and_then(|a| crate::stats::Part::from_arg(a)) {
+            Some(part) => crate::stats::read_part(record.as_ref(), part),
+            None => crate::stats::read(record.as_ref(), std::time::Duration::from_secs(1), true),
+        };
+        println!("{}", serde_json::to_string(&s).unwrap_or_default());
         return 0;
     }
     if job == "stats-sample" {

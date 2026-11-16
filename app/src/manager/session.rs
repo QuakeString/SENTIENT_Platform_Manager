@@ -33,6 +33,9 @@ pub struct Session {
     /// Files: each pane's Size, Modified and Owner column widths.
     #[serde(default)]
     pub files_cols: Option<[[f32; 3]; 2]>,
+    /// Files: the last folder open per place ("local" or an instance id).
+    #[serde(default)]
+    pub files_dirs: std::collections::BTreeMap<String, String>,
 }
 
 fn path() -> std::path::PathBuf {
@@ -78,6 +81,22 @@ pub fn set_files(split: f32, cols: [[f32; 3]; 2]) {
         if s.saved.as_ref() == Some(&s.current) {
             return;
         }
+        if let Ok(t) = serde_json::to_string_pretty(&s.current) {
+            let _ = std::fs::create_dir_all(crate::updates::prefs_dir());
+            let _ = std::fs::write(path(), t);
+        }
+        s.saved = Some(s.current.clone());
+        s.written = Some(Instant::now());
+    });
+}
+
+/// Files: the folder last open on `place` (written at once).
+pub fn set_files_dir(place: &str, dir: &str) {
+    with(|s| {
+        if s.current.files_dirs.get(place).map(String::as_str) == Some(dir) {
+            return;
+        }
+        s.current.files_dirs.insert(place.to_string(), dir.to_string());
         if let Ok(t) = serde_json::to_string_pretty(&s.current) {
             let _ = std::fs::create_dir_all(crate::updates::prefs_dir());
             let _ = std::fs::write(path(), t);
@@ -139,7 +158,17 @@ pub fn window_bounds(cx: &App, min: Size<Pixels>) -> Option<WindowBounds> {
         size(px(w.clamp(mw, maxw.max(mw))), px(h.clamp(mh, maxh.max(mh))))
     };
     let bounds = match on {
-        Some(d) => Bounds { origin: point(px(x), px(y)), size: size(Some(&d)) },
+        // Kept on that screen whole: after a scaling change (100 % → 150 %)
+        // the saved place could leave it running off the right or bottom.
+        Some(d) => {
+            let sz = size(Some(&d));
+            let (dx, dy) = (f32::from(d.origin.x), f32::from(d.origin.y));
+            let (dw, dh) = (f32::from(d.size.width), f32::from(d.size.height));
+            let (w2, h2) = (f32::from(sz.width), f32::from(sz.height));
+            let nx = x.min(dx + dw - w2).max(dx);
+            let ny = y.min(dy + dh - h2).max(dy);
+            Bounds { origin: point(px(nx), px(ny)), size: sz }
+        }
         // Off every screen now: the saved size, centred.
         None => Bounds::centered(None, size(displays.first().map(|d| d.bounds()).as_ref()), cx),
     };

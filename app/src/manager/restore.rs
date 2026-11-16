@@ -1,7 +1,7 @@
 // Copyright © 2016-2026 The SENTIENT Authors
 
 //! The Restore flow on the Backup page, for this computer and for a server
-//! (docs/mockups/restore.html, lanes R, X and B): "Restore from…" with its
+//! (the restore mockup, lanes R, X and B): "Restore from…" with its
 //! three sources, then in the page Check, What, Where, Pre-check, Settings
 //! and Confirm, the run in the page and the progress strip, and its end:
 //! done, failed before the switch (resume), rolled back, or stopped by the
@@ -61,7 +61,7 @@ impl Target {
         }
     }
 
-    /// "INVENIA IIoT", or "this instance" for this computer.
+    /// "Fabrikam IIoT", or "this instance" for this computer.
     fn instance_name(&self) -> String {
         match self {
             Target::Here(_) => "this instance".into(),
@@ -325,7 +325,7 @@ fn tint(theme: &gpui_kit::component::Theme) -> Div {
 /// The row of the wizard's buttons: Back at the left, Cancel and Next at
 /// the right, at the bottom of the page.
 fn footer(back: Option<AnyElement>, cancel: AnyElement, next: Option<AnyElement>) -> Div {
-    h_flex().mt_auto().pt(px(4.)).gap_2().items_center().children(back).child(div().flex_1()).child(cancel).children(next)
+    h_flex().mt_auto().pt(px(4.)).gap(ui::button_gap()).items_center().children(back.map(ui::probed)).child(div().flex_1()).child(ui::probed(cancel)).children(next.map(ui::probed))
 }
 
 fn progress_bar(theme: &gpui_kit::component::Theme, id: &'static str, value: f32, bad: bool) -> AnyElement {
@@ -1631,17 +1631,17 @@ impl Render for SkipFooter {
         let ok = self.dialog.read(cx).ok(cx);
         let flow = self.dialog.read(cx).flow.clone();
         h_flex()
-            .gap_2()
+            .gap(crate::ui::button_gap())
             .justify_end()
-            .child(ui::button("rs-skip-back").outline().label("Back").on_click(|_, _, cx| crate::modal::close(cx)))
-            .child(ui::button("rs-skip-go").danger().label("Restore without it").disabled(!ok).on_click(move |_, _, cx| {
+            .child(crate::ui::probed(ui::button("rs-skip-back").outline().label("Back").on_click(|_, _, cx| crate::modal::close(cx))))
+            .child(crate::ui::probed(ui::button("rs-skip-go").danger().label("Restore without it").disabled(!ok).on_click(move |_, _, cx| {
                 crate::modal::close(cx);
                 flow.update(cx, |f, cx| {
                     f.skip_safety = true;
                     f.safety = false;
                     f.start_precheck(cx);
                 });
-            }))
+            })))
     }
 }
 
@@ -1789,17 +1789,17 @@ impl RestoreFlow {
                 c = c.child(
                     h_flex()
                         .flex_wrap()
-                        .gap_2()
+                        .gap(crate::ui::button_gap())
                         .pt(px(10.))
                         .border_t_1()
                         .border_color(theme.border)
-                        .child(back_btn("rs-back-page", "Back to Backup and restore", cx))
-                        .child(ui::button("rs-show-log").outline().label(if self.show_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|f, _, _, cx| {
+                        .child(crate::ui::probed(back_btn("rs-back-page", "Back to Backup and restore", cx)))
+                        .child(crate::ui::probed(ui::button("rs-show-log").outline().label(if self.show_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|f, _, _, cx| {
                             f.show_log = !f.show_log;
                             cx.notify();
-                        })))
+                        }))))
                         .child(div().flex_1())
-                        .child(ui::button("rs-done").primary().label("Done").on_click(cx.listener(move |f, _, _, cx| f.leave(if licence_after { Some("licence") } else { None }, cx)))),
+                        .child(crate::ui::probed(ui::button("rs-done").primary().label("Done").on_click(cx.listener(move |f, _, _, cx| f.leave(if licence_after { Some("licence") } else { None }, cx))))),
                 );
             }
             Some(Result_::Failed) => {
@@ -2389,9 +2389,9 @@ impl Render for RestoreFrom {
                     Read::Got(l) if l.is_empty() => muted(&theme, format!("No backups in {}.", self.folder.display())),
                     Read::Got(l) => self.list_table(&theme, &l, self.selected, false, cx),
                 });
-                let mut row = h_flex().flex_wrap().gap_2().child(ui::button("rf-folder").ghost().icon(IconName::Folder).label(if server { "Another folder on the server…" } else { "Another folder…" }).on_click(cx.listener(|d, _, window, cx| d.change_folder(false, window, cx))));
+                let mut row = h_flex().flex_wrap().gap(crate::ui::button_gap()).child(crate::ui::probed(ui::button("rf-folder").ghost().icon(IconName::Folder).label(if server { "Another folder on the server…" } else { "Another folder…" }).on_click(cx.listener(|d, _, window, cx| d.change_folder(false, window, cx)))));
                 if !server {
-                    row = row.child(ui::button("rf-file").ghost().icon(IconName::File).label("A file elsewhere…").on_click(cx.listener(|d, _, _, cx| d.choose_local(cx))));
+                    row = row.child(crate::ui::probed(ui::button("rf-file").ghost().icon(IconName::File).label("A file elsewhere…").on_click(cx.listener(|d, _, _, cx| d.choose_local(cx)))));
                 }
                 body = body.child(row);
             }
@@ -2535,12 +2535,12 @@ impl Render for FromFooter {
         };
         let resume = d.tab == 1 && matches!(d.upload, Transfer::Broken { .. });
         h_flex()
-            .gap_2()
-            .child(ui::button("rf-cancel").outline().label(cancel).on_click(|_, _, cx| crate::modal::close(cx)))
+            .gap(crate::ui::button_gap())
+            .child(crate::ui::probed(ui::button("rf-cancel").outline().label(cancel).on_click(|_, _, cx| crate::modal::close(cx))))
             .child(div().flex_1())
-            .child(ui::button("rf-go").primary().label(label).disabled(!enabled).on_click(move |_, _, cx| {
+            .child(crate::ui::probed(ui::button("rf-go").primary().label(label).disabled(!enabled).on_click(move |_, _, cx| {
                 dialog.update(cx, |d, cx| if resume { d.start_upload(cx) } else { d.pick(cx) });
-            }))
+            })))
     }
 }
 
@@ -2701,8 +2701,8 @@ impl Render for HistoryFooter {
         };
         let name = format!("restore-{}.log", d.entry.id);
         h_flex()
-            .gap_2()
-            .child(ui::button("rh-save").outline().label("Save log…").disabled(log.is_none()).on_click(move |_, _, cx| {
+            .gap(crate::ui::button_gap())
+            .child(crate::ui::probed(ui::button("rh-save").outline().label("Save log…").disabled(log.is_none()).on_click(move |_, _, cx| {
                 let Some(text) = log.clone() else { return };
                 let rx = cx.prompt_for_new_path(&dirs_home(), Some(&name));
                 cx.spawn(async move |_| {
@@ -2711,9 +2711,9 @@ impl Render for HistoryFooter {
                     }
                 })
                 .detach();
-            }))
+            })))
             .child(div().flex_1())
-            .child(ui::button("rh-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx)))
+            .child(crate::ui::probed(ui::button("rh-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx))))
     }
 }
 
@@ -2744,10 +2744,10 @@ pub(crate) mod canned {
 
     pub fn source(frame: &str) -> Source {
         if frame == "R10e" {
-            return Source { file: "/var/backups/sentient/sentient-2026-11-10_config.sentient-backup".into(), sub: "sentient-2026-11-10_config from INVENIA IIoT".into(), note: None };
+            return Source { file: "/var/backups/sentient/sentient-2026-11-10_config.sentient-backup".into(), sub: "sentient-2026-11-10_config from Fabrikam IIoT".into(), note: None };
         }
         if frame == "R13w" {
-            return Source { file: "C:\\ProgramData\\SENTIENT\\backups\\sentient-2026-11-14_1712.sentient-backup".into(), sub: "sentient-2026-11-14_1712 from INVENIA IIoT".into(), note: None };
+            return Source { file: "C:\\ProgramData\\SENTIENT\\backups\\sentient-2026-11-14_1712.sentient-backup".into(), sub: "sentient-2026-11-14_1712 from Fabrikam IIoT".into(), note: None };
         }
         Source { file: "/var/backups/sentient/sentient-2026-11-14_1712.sentient-backup".into(), sub: "sentient-2026-11-14_1712 from Plant B".into(), note: Some("copied from Plant B, server to server".into()) }
     }
@@ -2807,7 +2807,7 @@ pub(crate) mod canned {
                 sentient_version: "4.4.0.2".into(),
                 schema_version: Some(31),
                 database_type: "PostgreSQL + ClickHouse".into(),
-                host: Some(if windows { "PLANT-B" } else { "IIOT-01" }.into()),
+                host: Some(if windows { "PLANT-B" } else { "FAB-01" }.into()),
                 windows,
                 native: windows,
                 http_port: 8080,
@@ -2858,8 +2858,8 @@ pub(crate) mod canned {
         if !old {
             settings.extend([
                 row("port:mqtt", "MQTT port", "1883", "21883", SettingKind::Choice { backup_default: false }, "Tied to this machine and its firewall"),
-                row("public_url", "Public URL", "https://plantb.local", "https://iiot.invenia.in", SettingKind::Choice { backup_default: false }, "Devices and links reach this server by its own name"),
-                row("tls", "TLS certificate", "plantb.local, until 3 Mar 2027", "iiot.invenia.in, until 9 Jan 2027", SettingKind::Choice { backup_default: false }, "A certificate belongs to the host name"),
+                row("public_url", "Public URL", "https://plantb.local", "https://iiot.fabrikam.example", SettingKind::Choice { backup_default: false }, "Devices and links reach this server by its own name"),
+                row("tls", "TLS certificate", "plantb.local, until 3 Mar 2027", "iiot.fabrikam.example, until 9 Jan 2027", SettingKind::Choice { backup_default: false }, "A certificate belongs to the host name"),
                 row("REPORT_TZ", "Time zone (reports)", "Asia/Kolkata", "UTC", SettingKind::Choice { backup_default: true }, "A setting of the plant, not the machine"),
                 row("AUDIT_LOG_TTL_DAYS", "Telemetry retention", "365 days", "90 days", SettingKind::Choice { backup_default: true }, "Kept data would be cut to 90 days otherwise"),
                 row("licence", "Licence", "Active, bound to PLANT-B", "Active, bound to this server", SettingKind::Locked, "Bound to the hardware: not carried over"),
@@ -2933,7 +2933,7 @@ pub(crate) mod canned {
             _ => {
                 let steps = [rf::STEP_SAFETY, rf::STEP_CHECK, rf::STEP_RESTORE, rf::STEP_SCHEMA, rf::STEP_SWITCH];
                 let log = |l: &str| sink(Progress::Log { line: l.into() });
-                let mut entry = Entry { id: "20261116110200".into(), at: "2026-11-16T05:32:00Z".into(), backup: "sentient-2026-11-14_1712".into(), source: Some("copied from Plant B, server to server".into()), by: "mz on MZ-LAPTOP".into(), scope: "Everything".into(), safety: Some("sentient-before-restore-2026-11-16_1102".into()), manager: "0.8.0".into(), ..Default::default() };
+                let mut entry = Entry { id: "20261116110200".into(), at: "2026-11-16T05:32:00Z".into(), backup: "sentient-2026-11-14_1712".into(), source: Some("copied from Plant B, server to server".into()), by: "ops on OPS-LAPTOP".into(), scope: "Everything".into(), safety: Some("sentient-before-restore-2026-11-16_1102".into()), manager: "0.8.0".into(), ..Default::default() };
                 sink(Progress::Step { name: steps[0].into() });
                 log("/var/backups/sentient/sentient-before-restore-2026-11-16_1102.sentient-backup · 2.9 GB, checked");
                 sink(Progress::Step { name: steps[1].into() });
@@ -2953,12 +2953,12 @@ pub(crate) mod canned {
                         let stop = frame == "X3";
                         if stop {
                             entry.result = Result_::Stopped;
-                            entry.message = "Stopped: /mnt/disk-a (PostgreSQL) fell to 1.9 GB free, under the safe level of 2 GB. Something else is writing there (sentient-postgres WAL grew 12 GB). Nothing on INVENIA IIoT changed; the half-restored database was removed.".into();
+                            entry.message = "Stopped: /mnt/disk-a (PostgreSQL) fell to 1.9 GB free, under the safe level of 2 GB. Something else is writing there (sentient-postgres WAL grew 12 GB). Nothing on Fabrikam IIoT changed; the half-restored database was removed.".into();
                         } else {
                             log("pg_restore: error: could not extend file \"base/16384/2619\"");
                             log("pg_restore: error: No space left on device");
                             entry.result = Result_::Failed;
-                            entry.message = "pg_restore failed: could not extend file \"base/16384/2619\": No space left on device. Nothing on INVENIA IIoT changed: SENTIENT runs on its own data. The half-restored database was removed.".into();
+                            entry.message = "pg_restore failed: could not extend file \"base/16384/2619\": No space left on device. Nothing on Fabrikam IIoT changed: SENTIENT runs on its own data. The half-restored database was removed.".into();
                         }
                         entry.failed_step = Some(rf::STEP_RESTORE.into());
                         sink(rf::data_line("result", &entry));
@@ -3044,7 +3044,7 @@ pub(crate) mod canned {
                 at: "2026-11-14T12:10:00Z".into(),
                 backup: "sentient-2026-11-14_1712".into(),
                 source: Some("copied from Plant B, server to server".into()),
-                by: "mz on MZ-LAPTOP".into(),
+                by: "ops on OPS-LAPTOP".into(),
                 scope: "Everything".into(),
                 result: Result_::Done,
                 message: "SENTIENT answered on the restored data after 48 s.".into(),
@@ -3092,7 +3092,7 @@ pub(crate) mod canned {
             }
             _ => {
                 d.tab = 2;
-                d.src = d.instances.iter().find(|i| i.name != "INVENIA IIoT").cloned().or_else(|| d.instances.first().cloned());
+                d.src = d.instances.iter().find(|i| i.id != "tb3").cloned().or_else(|| d.instances.first().cloned());
                 match frame {
                     "R6l" => d.src_list = Read::Loading,
                     "B8" => d.src_list = Read::Failed("did not answer".into()),

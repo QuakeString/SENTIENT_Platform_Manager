@@ -121,6 +121,39 @@ pub fn set_gl_only(gl: bool) {
     GL_ONLY.with(|g| g.set(gl));
 }
 
+/// Linux on OpenGL (no Vulkan driver): the window cannot be translucent, so
+/// the menu is solid (and About says why). Every window with the menu
+/// (the Platform Manager, Setup) calls it once it is open.
+pub(crate) fn detect_gl(window: &mut Window) {
+    if cfg!(target_os = "linux") {
+        let gl = window.gpu_specs().is_some_and(|g| g.driver_info.contains("Core Profile") || g.driver_info.contains("OpenGL"));
+        set_gl_only(gl);
+        if gl {
+            window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+        }
+    }
+}
+
+/// The selected row's name: the primary colour; in dark lifted 40 % toward
+/// white (see `shell_menu`). The Platform Manager's menu and Setup's steps.
+pub(crate) fn selected_label(theme: &gpui_kit::component::Theme) -> Hsla {
+    if theme.mode.is_dark() { theme.primary.blend(gpui_kit::white().opacity(0.4)) } else { theme.primary }
+}
+
+/// The menu's surface: solid, or translucent over the blurred desktop
+/// (`see_through`); open over the page (`overlay`, its progress
+/// `overlay_t`) nearly solid, to keep the names readable. The Platform
+/// Manager's menu and Setup's steps.
+pub(crate) fn menu_bg(theme: &gpui_kit::component::Theme, overlay: bool, overlay_t: f32) -> Hsla {
+    if !see_through() {
+        theme.sidebar
+    } else if overlay {
+        theme.sidebar.opacity(0.72 + 0.24 * overlay_t)
+    } else {
+        theme.sidebar.opacity(0.72)
+    }
+}
+
 /// The translucent menu on: chosen and possible.
 pub fn see_through() -> bool {
     see_through_supported() && Appearance::get().see_through
@@ -136,21 +169,25 @@ const SLIDE: Duration = Duration::from_millis(220);
 const FILLET: f32 = 14.;
 /// The selected row's own corner radius (its left end).
 const SEL_RADIUS: f32 = 10.;
-/// A row's height.
-pub const ROW_H: f32 = 34.;
+/// A row's height (the selection's too), and the gap between rows: a
+/// 44 px pitch. Folded, unfolded and over the page alike.
+pub const ROW_H: f32 = 40.;
+pub(crate) const ROW_GAP: f32 = 4.;
+/// Clear space between the brand row and the first row's selection.
+pub(crate) const NAV_TOP: f32 = 16.;
 /// The top bar's height, and the brand row's beside it (their lines meet).
 pub const BAR_H: f32 = 60.;
 /// Where every menu icon's centre is, folded or not: the middle of the
 /// folded menu. Folding only hides the labels; nothing moves.
 pub const ICON_X: f32 = 32.;
 /// The menu's left padding (the selection's left end), the same folded or not.
-const MENU_PAD: f32 = 12.;
+pub(crate) const MENU_PAD: f32 = 12.;
 /// Unfolded, the selection keeps a wider margin from the window's edge (his
 /// D1 note: too little room on its left); the icons stay on ICON_X.
 const MENU_PAD_OPEN: f32 = 12.;
 /// A row's icon size and its left padding inside the row (icon centre at ICON_X).
-const ICON: f32 = 18.;
-fn row_pl(pad: f32) -> f32 {
+pub(crate) const ICON: f32 = 18.;
+pub(crate) fn row_pl(pad: f32) -> f32 {
     ICON_X - pad - ICON / 2.
 }
 
@@ -181,7 +218,7 @@ thread_local! {
 }
 
 /// An invisible child of a row that notes where the row is.
-fn row_probe(id: &'static str) -> impl IntoElement {
+pub(crate) fn row_probe(id: &'static str) -> impl IntoElement {
     canvas(
         move |b, _, _| {
             ROWS.with(|r| {
@@ -196,7 +233,7 @@ fn row_probe(id: &'static str) -> impl IntoElement {
 
 /// Notes the menu's edges.
 /// Open over the page, the page's edge is the rail slot's (`slot`).
-fn menu_probe(left_pad: f32, slot: Option<f32>) -> impl IntoElement {
+pub(crate) fn menu_probe(left_pad: f32, slot: Option<f32>) -> impl IntoElement {
     canvas(
         move |b, _, _| {
             ROWS.with(|r| {
@@ -232,7 +269,7 @@ fn ease_out(t: f32) -> f32 {
 /// row's top, round its left end and bottom, and back into the line. Inside
 /// the opening the page's colour, so the row and the page are one. It
 /// slides to a newly selected row.
-fn selection(active: &'static str, page: Hsla, line: Hsla, motion: bool) -> impl IntoElement {
+pub(crate) fn selection(active: &'static str, page: Hsla, line: Hsla, motion: bool) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |_, _, window, _| {
@@ -347,8 +384,19 @@ fn selection(active: &'static str, page: Hsla, line: Hsla, motion: bool) -> impl
 // The menu
 // ---------------------------------------------------------------------------
 
+/// The product's name beside its logo on top of the menu: "SENTIENT" and
+/// the app under it (the Platform Manager's menu, Setup's steps).
+pub(crate) fn brand_name(theme: &gpui_kit::component::Theme, app: &'static str) -> Div {
+    v_flex()
+        .flex_1()
+        .min_w_0()
+        .line_height(px(17.))
+        .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child("SENTIENT"))
+        .child(div().text_size(px(10.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.primary).whitespace_nowrap().child(app))
+}
+
 /// The brand logo, the footer's logo and the preferences button.
-const LOGO: f32 = 32.;
+pub(crate) const LOGO: f32 = 32.;
 const FOOT_LOGO: f32 = 26.;
 const PREFS: f32 = 32.;
 
@@ -382,6 +430,12 @@ impl Manager {
         let motion = !ui::reduce_motion();
         let active: &'static str = if self.page == Page::Instances { "instances" } else if self.page == Page::About { "about" } else { self.page.id() };
         let left_pad = if rail { MENU_PAD } else { MENU_PAD_OPEN };
+        // The selected row's name: the primary colour; in dark lifted 40 %
+        // toward white. Teal on the dark selection was 5:1 against 9.6:1
+        // for the other names, and its fainter edges made it read a size
+        // smaller (his rc12-22 note); lifted it is 7.9:1. The icon keeps
+        // the primary colour.
+        let sel_label = selected_label(&theme);
         let row = |id: &'static str, icon: Icon, title: SharedString, on: bool| {
             h_flex()
                 .id(id)
@@ -394,12 +448,13 @@ impl Manager {
                 .rounded(px(8.))
                 .cursor_pointer()
                 .text_sm()
-                .text_color(if on { theme.primary } else { theme.foreground })
+                .text_color(if on { sel_label } else { theme.foreground })
                 .font_weight(if on { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
                 .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))
                 .child(row_probe(id))
+                .child(ui::layout_probe("menu-row"))
                 .child(div().relative().flex_shrink_0().child(icon.size(px(ICON)).text_color(if on { theme.primary } else { theme.muted_foreground })).child(ui::layout_probe("menu-icon")))
-                .when(!rail, |r| r.child(div().relative().whitespace_nowrap().opacity(names).child(title.clone())))
+                .when(!rail, |r| r.child(div().relative().whitespace_nowrap().opacity(names).child(title.clone()).child(ui::layout_probe(if on { "menu-label-on" } else { "menu-label" }))))
                 .when(rail, move |r| r.tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(title.clone()).build(w, cx)))
         };
         let items = Page::ALL.into_iter().map(|page| {
@@ -486,24 +541,19 @@ impl Manager {
                         })
                 });
             h_flex()
+                .relative()
                 .h(px(BAR_H))
                 .flex_shrink_0()
                 .items_center()
                 .gap(px(10.))
+                .child(ui::layout_probe("menu-brand"))
                 // The logo's centre on ICON_X, folded or not.
                 .pl(px(ICON_X - LOGO / 2.))
                 .when(!rail, |r| r.pr(px(10.)))
                 // No line under it (his rc12-20 note): the menu starts below.
                 .child(logo)
                 .when(!rail, |r| {
-                    r.child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .line_height(px(17.))
-                            .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child("SENTIENT"))
-                            .child(div().text_size(px(10.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.primary).whitespace_nowrap().child("PLATFORM MANAGER")),
-                    )
+                    r.child(brand_name(&theme, "PLATFORM MANAGER"))
                     .child(
                         div()
                             .id("fold")
@@ -619,13 +669,7 @@ impl Manager {
         // Over the page the window's blur has only the page under it (GPUI
         // cannot blur inside the window), so the open overlay is nearly
         // solid to keep the names readable.
-        let menu_bg = if !see_through() {
-            theme.sidebar
-        } else if overlay {
-            theme.sidebar.opacity(0.72 + 0.24 * overlay_t)
-        } else {
-            theme.sidebar.opacity(0.72)
-        };
+        let menu_bg = menu_bg(&theme, overlay, overlay_t);
         let dark = theme.mode.is_dark();
         let menu = v_flex()
             .w(px(menu_w))
@@ -648,8 +692,8 @@ impl Manager {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .gap(px(2.))
-                    .pt(px(12.))
+                    .gap(px(ROW_GAP))
+                    .pt(px(NAV_TOP))
                     .pl(px(left_pad))
                     .when(rail, |m| m.pr(px(MENU_PAD)))
                     .children(items)
