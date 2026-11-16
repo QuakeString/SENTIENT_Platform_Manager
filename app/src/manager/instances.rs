@@ -1365,6 +1365,7 @@ fn state_of(status: Option<&Result<RemoteStatus, String>>, refreshing: bool) -> 
         Some(Err(e)) if remote::needs_setup(e) => (Tone::Warn, "Not set up"),
         Some(Err(e)) if e == remote::FORGOTTEN => (Tone::Warn, "Sign-in needed"),
         Some(Err(e)) if e.contains("administrator rights") => (Tone::Warn, "Needs sudo"),
+        Some(Err(e)) if remote::is_not_admin(e) => (Tone::Warn, "Not an administrator"),
         Some(Err(_)) => (Tone::Bad, "Not reachable"),
         Some(Ok(s)) if !s.installed => (Tone::Neutral, "No SENTIENT"),
         Some(Ok(s)) if s.serving => (Tone::Good, "Running"),

@@ -221,7 +221,12 @@ impl Job {
         let sink: ProgressFn = std::sync::Arc::new(move |p| {
             let _ = tx.unbounded_send(p);
         });
-        let worker = cx.background_executor().spawn(async move { work(sink) });
+        // A job is something the user started: its root steps may ask for the
+        // administrator password, once (sentient_installer_core::elevation).
+        let worker = cx.background_executor().spawn(async move {
+            let _action = sentient_installer_core::elevation::user_action();
+            work(sink)
+        });
         self._task = Some(cx.spawn(async move |this, cx| {
             while let Some(progress) = rx.next().await {
                 if this

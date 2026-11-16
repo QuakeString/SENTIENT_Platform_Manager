@@ -220,8 +220,14 @@ impl StatusPage {
         page
     }
 
-    /// Read the services now (after an action), apart from the poll.
-    fn refresh(&mut self, cx: &mut Context<Self>) {
+    /// Switch timing (SPM_DEBUG_SWITCH): the page shows what it read.
+    pub(crate) fn has_data(&self) -> bool {
+        self.snapshot.is_some() || (self.record.is_none() && self.found.is_some())
+    }
+
+    /// Read the services now (after an action, or shown again), apart from
+    /// the poll.
+    pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         let task = cx.spawn(async move |this, cx| {
             let snapshot = cx.background_executor().spawn(async move { record.platform().snapshot() }).await;
@@ -270,8 +276,17 @@ impl StatusPage {
         }
         self.db_reading = true;
         cx.notify();
+        // Read is pressed (the timer reads only what needs no password).
+        // Once the account only has to sign in again, it does not ask.
+        let ask = !crate::dbstatus::after_sign_in(&record);
         let task = cx.spawn(async move |this, cx| {
-            let status = cx.background_executor().spawn(async move { crate::dbstatus::read(&record) }).await;
+            let status = cx
+                .background_executor()
+                .spawn(async move {
+                    let _action = ask.then(sentient_installer_core::elevation::user_action);
+                    crate::dbstatus::read(&record)
+                })
+                .await;
             this.update(cx, |page, cx| {
                 page.db = Some(status);
                 page.db_reading = false;
@@ -307,8 +322,10 @@ impl StatusPage {
         let Some(db) = &self.db else {
             return panel.child(div().text_sm().text_color(theme.muted_foreground).child(if self.db_reading {
                 "Reading the database's size and state…"
+            } else if crate::dbstatus::after_sign_in(record) {
+                "The database's size and state are available after you sign in again."
             } else if crate::dbstatus::needs_admin(record) {
-                "Read shows the database's size and state. It asks for the administrator password, as the database password is kept where only an administrator can read it."
+                "Read shows the database's size and state. It asks for the administrator password once; after a Repair it reads without one."
             } else {
                 "Not read."
             }));

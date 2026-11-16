@@ -72,6 +72,12 @@ pub fn show_error(title: impl Into<SharedString>, text: impl Into<SharedString>,
 
 /// An error in the shared dialog: the headline, the details (the step that
 /// failed and what it printed) to read and Copy, and Retry when given.
+/// What a failure's retry button says: "Ask again" when the failure is a
+/// closed password prompt (sentient_installer_core::elevation), else `usual`.
+pub fn retry_label(failure: &str, usual: &'static str) -> &'static str {
+    if sentient_installer_core::elevation::ElevationError::is_cancelled(failure) { "Ask again" } else { usual }
+}
+
 pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedString>, retry: Option<std::rc::Rc<dyn Fn(&mut App)>>, cx: &mut App) {
     struct ErrorBody(SharedString, Option<std::rc::Rc<dyn Fn(&mut App)>>);
     impl Render for ErrorBody {
@@ -81,6 +87,7 @@ pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedStr
             let theme = cx.theme().clone();
             let (head, detail) = crate::remote::split_failure(&self.0);
             let copy = self.0.to_string();
+            let again = retry_label(&self.0, "Retry");
             gpui_kit::component::v_flex()
                 .gap_3()
                 .child(div().text_sm().child(head))
@@ -93,7 +100,7 @@ pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedStr
                         .justify_end()
                         .child(button("error-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
                         .when_some(self.1.clone(), |r, retry| {
-                            r.child(button("error-retry").outline().label("Retry").on_click(move |_, _, cx| {
+                            r.child(button("error-retry").outline().label(again).on_click(move |_, _, cx| {
                                 crate::modal::close(cx);
                                 retry(cx);
                             }))
@@ -240,6 +247,31 @@ pub fn page_with(theme: &Theme, title: &'static str, summary: &'static str, acti
             )
             .child(action),
     )
+}
+
+/// A refresh that failed while the page keeps what it read before: a muted
+/// "Couldn't refresh · last updated HH:MM" beside the title's Refresh, the
+/// reason in its (i). One line, cut rather than wrapped.
+/// Screens: every page with data shows its stale note (SPM_DEBUG_STALE=<why>).
+pub fn debug_stale() -> Option<String> {
+    if cfg!(debug_assertions) { std::env::var("SPM_DEBUG_STALE").ok() } else { None }
+}
+
+pub fn stale_note(theme: &Theme, id: &'static str, why: &str, at: Option<&str>) -> AnyElement {
+    let text = match at {
+        Some(t) => format!("Couldn't refresh · last updated {t}"),
+        None => "Couldn't refresh".to_string(),
+    };
+    h_flex()
+        .gap_1()
+        .items_center()
+        .min_w_0()
+        .flex_shrink(1.)
+        .text_sm()
+        .text_color(theme.muted_foreground)
+        .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(text))
+        .child(info(SharedString::from(id), SharedString::from(why.to_string())))
+        .into_any_element()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

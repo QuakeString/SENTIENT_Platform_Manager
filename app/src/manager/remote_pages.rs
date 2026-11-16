@@ -164,6 +164,12 @@ pub(crate) fn preflight_notice(theme: &gpui_kit::component::Theme, why: &str, ta
     ui::notice_with(theme, Tone::Warn, format!("The database type cannot be changed now.\n{why}"), take_over)
 }
 
+/// An answer that is the server's state, not a failure to read it: it
+/// replaces what was read before.
+fn definite(e: &str) -> bool {
+    e == remote::AGENT_OLD || e == remote::NOT_SET_UP || e == remote::NOT_ADDED || needs_sudo_password(e)
+}
+
 /// How long a reading may take before the page says the server does not answer.
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -203,6 +209,14 @@ pub struct RemotePages {
     pending_migrate: Option<String>,
     /// Readings under way (fetch).
     in_flight: usize,
+    /// The last reading's generation (fetch), and each slot's newest
+    /// answer applied: an older answer never overwrites a newer one.
+    gen: u64,
+    applied: std::collections::HashMap<usize, u64>,
+    /// Slots whose last refresh failed (the cached value still shows).
+    stale: std::collections::HashMap<usize, String>,
+    /// When a reading last came back (HH:MM).
+    updated_at: Option<String>,
     /// A small save under way (run_quiet), by its section.
     saving: Option<&'static str>,
     /// The last small save: its section, how it went and its job (Retry).
@@ -317,6 +331,10 @@ impl RemotePages {
             shown_job: None,
             pending_migrate: None,
             in_flight: 0,
+            gen: 0,
+            applied: Default::default(),
+            stale: Default::default(),
+            updated_at: None,
             saving: None,
             // Screens: "Saved" shown on a section (SPM_DEBUG_SAVED=folder).
             saved: std::env::var("SPM_DEBUG_SAVED").ok().filter(|_| cfg!(debug_assertions)).map(|s| (&*s.leak(), Ok(()), Vec::new())),
@@ -358,6 +376,27 @@ impl RemotePages {
         p.reload(cx);
         p.refresh_agent(cx);
         p
+    }
+
+    /// Shown again after another instance was open: what it read before
+    /// shows at once and is read again behind it.
+    pub fn reshow(&mut self, kind: Kind, cx: &mut Context<Self>) {
+        self.kind = kind;
+        self.set_hidden(false, cx);
+        self.reload(cx);
+        cx.notify();
+    }
+
+    /// Switch timing (SPM_DEBUG_SWITCH): Status shows what it read.
+    pub fn has_data(&self) -> bool {
+        matches!(self.ready, Read::Got(_)) && self.status.got().is_some() && (self.kind != Kind::Status || (self.services.got().is_some() && self.db.got().is_some()))
+    }
+
+    /// Another instance is open: the log stops following meanwhile.
+    pub fn set_hidden(&mut self, hidden: bool, cx: &mut Context<Self>) {
+        if let Some(v) = self.log_view.clone() {
+            v.update(cx, |v, cx| v.set_paused(hidden, cx));
+        }
     }
 
     pub fn show(&mut self, kind: Kind, cx: &mut Context<Self>) {
@@ -462,36 +501,38 @@ impl RemotePages {
     pub(crate) fn after_job(&mut self, cx: &mut Context<Self>) {
         if self.shown_job.is_some() {
             let inst = self.inst.clone();
-            self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r);
+            self.fetch(cx, move || remote::status(&inst), |p| &mut p.status);
         } else {
             self.reload(cx);
         }
     }
 
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
+        // Only what this reading fails to refresh is said to be stale.
+        self.stale.clear();
         if let Some(l) = self.locations.clone() {
             l.update(cx, |l, cx| l.reload(cx));
         }
         let inst = self.inst.clone();
-        self.fetch(cx, move || remote::ready(&inst), |p, r| p.ready = r);
+        self.fetch(cx, move || remote::ready(&inst), |p| &mut p.ready);
         // Every page needs to know whether a SENTIENT is added there.
         if !matches!(self.kind, Kind::Status | Kind::Update | Kind::Migration | Kind::Repair) {
             let inst = self.inst.clone();
-            self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r);
+            self.fetch(cx, move || remote::status(&inst), |p| &mut p.status);
         }
         let inst = self.inst.clone();
         match self.kind {
             Kind::Status => {
-                self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r);
+                self.fetch(cx, move || remote::status(&inst), |p| &mut p.status);
                 let inst = self.inst.clone();
-                self.fetch(cx, move || remote::services(&inst), |p, r| p.services = r);
+                self.fetch(cx, move || remote::services(&inst), |p| &mut p.services);
                 let inst = self.inst.clone();
-                self.fetch(cx, move || remote::dbstatus(&inst), |p, r| p.db = r);
+                self.fetch(cx, move || remote::dbstatus(&inst), |p| &mut p.db);
             }
             Kind::Logs => {}
             Kind::Update => {
                 let i2 = inst.clone();
-                self.fetch(cx, move || remote::status(&i2), |p, r| p.status = r);
+                self.fetch(cx, move || remote::status(&i2), |p| &mut p.status);
                 let native = inst.detected.as_ref().is_some_and(|d| d.install != "Docker");
                 self.pick = None;
                 self.fetch(
@@ -504,7 +545,7 @@ impl RemotePages {
                         }
                         crate::online::versions(native)
                     },
-                    |p, r| p.versions = r,
+                    |p| &mut p.versions,
                 );
                 self.fetch(
                     cx,
@@ -517,12 +558,12 @@ impl RemotePages {
                         let channel = crate::updates::Prefs::load().channel;
                         crate::updates::check(channel, Some(installed), native).sentient
                     },
-                    |p, r| p.offer = r,
+                    |p| &mut p.offer,
                 );
             }
             Kind::Backup => {
                 let i2 = inst.clone();
-                self.fetch(cx, move || remote::backups(&i2), |p, r| p.backups = r);
+                self.fetch(cx, move || remote::backups(&i2), |p| &mut p.backups);
                 self.fetch(
                     cx,
                     move || {
@@ -532,19 +573,71 @@ impl RemotePages {
                         }
                         remote::restore_history(&inst)
                     },
-                    |p, r| p.restores = r,
+                    |p| &mut p.restores,
                 );
             }
             Kind::Settings => {
                 self.inputs.clear();
-                self.fetch(cx, move || remote::settings(&inst), |p, r| p.settings = r);
+                self.fetch(cx, move || remote::settings(&inst), |p| &mut p.settings);
             }
-            Kind::Migration | Kind::Repair => self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r),
-            Kind::Gateway => self.fetch(cx, move || remote::gateway(&inst), |p, r| p.gateway = r),
+            Kind::Migration | Kind::Repair => self.fetch(cx, move || remote::status(&inst), |p| &mut p.status),
+            Kind::Gateway => self.fetch(cx, move || remote::gateway(&inst), |p| &mut p.gateway),
         }
     }
 
+    /// Read one of the page's values in the background (stale-while-
+    /// revalidate): what was read before stays shown while it is read
+    /// again; a reading that fails for want of an answer keeps it and says
+    /// so softly (`stale`); an answer that IS the state (not set up, not
+    /// added, agent too old, sudo) replaces it. Each reading carries this
+    /// page's instance id and a generation: an older answer never overwrites
+    /// a newer one.
     fn fetch<T: Send + 'static>(
+        &mut self,
+        cx: &mut Context<Self>,
+        work: impl FnOnce() -> Result<T, String> + Send + 'static,
+        slot: fn(&mut Self) -> &mut Read<T>,
+    ) {
+        // The slot's key: its place in the page (no pointer is followed).
+        let key = (slot(self) as *mut Read<T> as usize).wrapping_sub(self as *mut Self as usize);
+        self.gen += 1;
+        let gen = self.gen;
+        let id = self.inst.id.clone();
+        // Click tests: refreshes fail while this file exists.
+        #[cfg(debug_assertions)]
+        let fail = std::env::var_os("SPM_DEBUG_REFRESH_FAIL").filter(|f| std::path::Path::new(f).exists()).is_some();
+        #[cfg(not(debug_assertions))]
+        let fail = false;
+        let work = move || if fail { Err("ssh: connect to host: Connection timed out".to_string()) } else { work() };
+        self.fetch_raw(cx, work, move |p, r| {
+            if p.inst.id != id || p.applied.get(&key).is_some_and(|g| *g > gen) {
+                return;
+            }
+            p.applied.insert(key, gen);
+            match r {
+                Read::Failed(e) if matches!(slot(p), Read::Got(_)) && !definite(&e) => {
+                    p.stale.insert(key, e);
+                }
+                r => {
+                    if matches!(r, Read::Got(_)) {
+                        p.updated_at = Some(chrono::Local::now().format("%H:%M").to_string());
+                    }
+                    *slot(p) = r;
+                    p.stale.remove(&key);
+                }
+            }
+        });
+    }
+
+    /// The soft "Couldn't refresh" beside the title's Refresh: the last
+    /// failure, while nothing is being read.
+    fn stale_note(&self, theme: &gpui_kit::component::Theme, cx: &App) -> Option<AnyElement> {
+        let log = if self.kind == Kind::Logs { self.log_view.as_ref().and_then(|v| v.read(cx).stale().map(String::from)) } else { None };
+        let e = log.or_else(|| self.stale.values().next().cloned()).or_else(|| ui::debug_stale().filter(|_| self.has_data()))?;
+        (self.in_flight == 0).then(|| ui::stale_note(theme, "remote-stale", &e, self.updated_at.as_deref()))
+    }
+
+    fn fetch_raw<T: Send + 'static>(
         &mut self,
         cx: &mut Context<Self>,
         work: impl FnOnce() -> Result<T, String> + Send + 'static,
@@ -1623,7 +1716,7 @@ impl RemotePages {
         }
         self.file_checks.insert(env.clone(), Read::Loading);
         let inst = self.inst.clone();
-        self.fetch(cx, move || remote::file_exists(&inst, &path), move |p, r| {
+        self.fetch_raw(cx, move || remote::file_exists(&inst, &path), move |p, r| {
             p.file_checks.insert(env, r);
         });
         cx.notify();
@@ -2138,6 +2231,7 @@ impl Render for RemotePages {
         let reload = crate::ui::refresh_button("remote-reload", self.in_flight > 0, window, move |_, cx| {
             me.update(cx, |this, cx| this.reload(cx)).ok();
         });
+        let reload = h_flex().gap_3().items_center().min_h(px(32.)).children(self.stale_note(&theme, cx)).child(reload);
         ui::page_with(&theme, title, summary, reload).child(body).into_any_element()
     }
 }

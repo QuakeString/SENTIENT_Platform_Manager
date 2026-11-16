@@ -682,6 +682,7 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
             }
             return Ok(());
         }
+        Err(e) if is_not_admin(&e) => return Err(e),
         Ok(Agent::Own) | Err(_) => reuse::found(&inst.id).is_some(),
     };
     if det.os == Os::Windows {
@@ -916,6 +917,40 @@ pub fn needs_setup(e: &str) -> bool {
     e == NOT_SET_UP || reuse::is_offer(e)
 }
 
+/// What the agent prints on Windows when the account is not an
+/// administrator (crate::headless::run).
+const NOT_ELEVATED: &str = "Run this from an elevated prompt";
+
+/// Whether a job's answer is the agent's refusal for want of rights.
+fn not_elevated(out: &str) -> bool {
+    out.contains(NOT_ELEVATED)
+}
+
+/// A Windows account that is not an administrator: every job refuses, in
+/// words of its own; this says it plainly, whichever way it came back.
+fn rights_answer(inst: &Instance, r: Result<String, String>) -> Result<String, String> {
+    match r {
+        Ok(out) | Err(out) if is_windows(inst) && not_elevated(&out) => Err(not_admin(inst)),
+        r => r,
+    }
+}
+
+/// The Windows account the instance signs in with is not an administrator.
+pub fn not_admin(inst: &Instance) -> String {
+    not_admin_message(&inst.user, &inst.host)
+}
+
+pub fn not_admin_message(user: &str, host: &str) -> String {
+    format!(
+        "The account {user} on {host} is not an administrator. The Platform Manager needs an administrator account there: add it to the Administrators group, or use an administrator account for this instance."
+    )
+}
+
+/// Whether an error is [`not_admin`].
+pub fn is_not_admin(e: &str) -> bool {
+    e.contains(" is not an administrator. The Platform Manager needs an administrator account there")
+}
+
 /// The server's state, from its own Platform Manager (`--job status-json`).
 pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {
     #[cfg(debug_assertions)]
@@ -1009,6 +1044,21 @@ pub struct RemoteBackups {
     pub free: Option<u64>,
 }
 
+/// No JSON line came back: say what did (the last lines it printed), or
+/// that it printed nothing at all, instead of only "no answer".
+fn no_answer(out: &str) -> String {
+    let lines: Vec<&str> = out.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if lines.is_empty() {
+        failed(
+            "The server's Platform Manager printed nothing for this request.",
+            "It may have stopped at once (a missing file or a blocked program), or it is a windowed build that was not waited for. Run Set up again; if it stays, run it there by hand with --job status-json and look at what it says.",
+        )
+    } else {
+        let tail = lines[lines.len().saturating_sub(6)..].join("\n");
+        failed("The server's Platform Manager answered, but not with the data asked for. What it printed:", &tail)
+    }
+}
+
 /// Ask the server's Platform Manager for `job` (as administrator) and read
 /// the one JSON line it prints.
 fn read_json<T: serde::de::DeserializeOwned>(inst: &Instance, job: &str) -> Result<T, String> {
@@ -1017,7 +1067,7 @@ fn read_json<T: serde::de::DeserializeOwned>(inst: &Instance, job: &str) -> Resu
     if out.lines().any(|l| l.trim() == "null") {
         return Err(NOT_ADDED.into());
     }
-    let line = out.lines().rev().find(|l| { let t = l.trim_start(); t.starts_with('{') || t.starts_with('[') }).ok_or("The server's Platform Manager gave no answer. Try again; if it stays, Show details on the job, or run Set up again.")?;
+    let line = out.lines().rev().find(|l| { let t = l.trim_start(); t.starts_with('{') || t.starts_with('[') }).ok_or_else(|| no_answer(&out))?;
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 
@@ -1347,10 +1397,14 @@ pub fn is_windows(inst: &Instance) -> bool {
 /// and return what it printed.
 fn spm_job(inst: &Instance, job: &str) -> Result<String, String> {
     let r = if is_windows(inst) {
-        win::exe(inst).and_then(|exe| win::ps(inst, &format!("& '{}' --job {job}", exe.replace('\'', "''"))))
+        // Piped, so PowerShell waits for it and reads its output even when
+        // it is the windowed build (an installed Platform Manager); its
+        // errors folded into the output.
+        win::exe(inst).and_then(|exe| win::ps(inst, &format!("& '{}' --job {job} 2>&1 | ForEach-Object {{ \"$_\" }}", exe.replace('\'', "''"))))
     } else {
         agent_run(inst, &format!("--job {job}"))
     };
+    let r = rights_answer(inst, r);
     // An agent that does not know the job answers with its usage text: that
     // text goes to the activity log, the pages say the agent is out of date.
     r.map_err(|e| {
@@ -1441,7 +1495,7 @@ pub fn licence_api(inst: &Instance, req: &crate::licence::Request) -> Result<cra
     let out = spm_job(inst, &format!("licence-api --request-file '{}'", file.replace('\'', "")));
     remove_file(inst, &file);
     let out = out?;
-    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's agent gave no answer.")?;
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or_else(|| no_answer(&out))?;
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 
@@ -1717,11 +1771,15 @@ mod win {
         let out = ps(
             inst,
             &format!(
-                "if (Test-Path -PathType Leaf '{EXE}') {{ '@@OWN' }} else {{ {}; \
+                "if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators')) {{ '@@NOTADMIN'; exit 0 }}; \
+                 if (Test-Path -PathType Leaf '{EXE}') {{ '@@OWN' }} else {{ {}; \
                  if ($i) {{ '@@INSTALLED ' + $i; & $i --job agent-info 2>&1 | ForEach-Object {{ \"$_\" }} }} else {{ '@@NONE' }} }}; exit 0",
                 reuse::windows_find_script()
             ),
         )?;
+        if out.lines().any(|l| l.trim() == "@@NOTADMIN") || not_elevated(&out) {
+            return Err(not_admin(inst));
+        }
         Ok(reuse::parse_probe(&out))
     }
 
@@ -1770,7 +1828,10 @@ mod win {
             Agent::Own => EXE.to_string(),
             Agent::Installed(path) => path,
         };
-        let out = ps(inst, &format!("& '{}' --job status-json", exe.replace('\'', "''")))?;
+        let out = ps(inst, &format!("& '{}' --job status-json 2>&1 | ForEach-Object {{ \"$_\" }}", exe.replace('\'', "''")))?;
+        if not_elevated(&out) {
+            return Err(not_admin(inst));
+        }
         let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's Platform Manager gave no status.")?;
         let mut st: RemoteStatus = serde_json::from_str(line).map_err(|e| format!("unexpected status from the server: {e}"))?;
         st.running_job = running_job(inst);
@@ -2277,6 +2338,23 @@ mod tests {
     }
 
     #[test]
+    fn a_windows_account_without_administrator_rights_is_named() {
+        let mut inst = Instance { id: "w".into(), name: "w".into(), color: PALETTE[0].into(), os: Os::Windows, host: "plant-pc".into(), port: 22, user: "operator".into(), auth: Auth::Password, key_file: None, key_has_passphrase: false, host_key: None, detected: None };
+        let want = "The account operator on plant-pc is not an administrator. The Platform Manager needs an administrator account there: add it to the Administrators group, or use an administrator account for this instance.";
+        // The agent's refusal, on stdout (piped 2>&1) or as the error.
+        let piped = "sentient-platform-manager.exe : Run this from an elevated prompt (Run as administrator).".to_string();
+        assert_eq!(rights_answer(&inst, Ok(piped.clone())).unwrap_err(), want);
+        assert_eq!(rights_answer(&inst, Err(piped.clone())).unwrap_err(), want);
+        assert!(is_not_admin(want) && !needs_setup(want));
+        // Other answers pass through.
+        assert_eq!(rights_answer(&inst, Ok("{\"installed\":true}".into())).unwrap(), "{\"installed\":true}");
+        assert_eq!(rights_answer(&inst, Err("timed out".into())).unwrap_err(), "timed out");
+        // Linux has its own sudo messages.
+        inst.os = Os::Linux;
+        assert_eq!(rights_answer(&inst, Ok(piped.clone())).unwrap(), piped);
+    }
+
+    #[test]
     fn a_missing_agent_says_why_and_what_to_do() {
         let e = NoAgent::NotPublished { system: System::Windows, version: "0.8.0-rc12".into() }.message();
         let (head, details) = split_failure(&e);
@@ -2473,7 +2551,7 @@ pub fn restore_history(inst: &Instance) -> Result<Vec<crate::restore_flow::Entry
         return std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()));
     }
     let out = spm_job(inst, "restore-history-json")?;
-    let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or("The server's Platform Manager gave no answer.")?;
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or_else(|| no_answer(&out))?;
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 
@@ -2797,7 +2875,7 @@ pub fn backups_in(inst: &Instance, folder: &str) -> Result<Vec<crate::backups::E
         return serde_json::from_str::<RemoteBackups>(&t.to_string_lossy()).map(|b| b.list).map_err(|e| e.to_string());
     }
     let out = spm_job(inst, &format!("backup-list {}", job_arg(folder)?))?;
-    let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or("The server's Platform Manager gave no answer.")?;
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or_else(|| no_answer(&out))?;
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 

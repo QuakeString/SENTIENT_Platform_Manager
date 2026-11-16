@@ -235,7 +235,7 @@ async fn run_watched(
         ));
     }
     // Rows that never travel, even when an older backup holds them: the
-    // server's own licence state (categories::NOT_CARRIED).
+    // server's own licence state and clock anchor (categories::NOT_CARRIED).
     let toc: Vec<String> = toc.into_iter().filter(|l| !is_not_carried_data_entry(l)).collect();
     // Configuration only: the latest values are telemetry too.
     let toc: Vec<String> = if opts.scope == Scope::Configuration {
@@ -302,7 +302,7 @@ fn is_latest_data_entry(line: &str) -> bool {
 }
 
 /// A table-of-contents line restoring the rows of a table that never
-/// travels (`license_state`).
+/// travels (`license_state`, `license_time_anchor`).
 fn is_not_carried_data_entry(line: &str) -> bool {
     let Some((_, rest)) = line.split_once("; ") else { return false };
     let t: Vec<&str> = rest.split_whitespace().collect();
@@ -967,13 +967,13 @@ mod tests {
         "4792; 0 0 INDEX ATTACH public ts_kv_2026_10_pkey sentient",
     ];
 
-    /// An older backup may hold license_state rows: the restore leaves them
-    /// out, and keeps the licence rows and the table itself.
+    /// An older backup may hold license_state and license_time_anchor rows:
+    /// the restore leaves them out, and keeps the licence rows and the tables.
     #[test]
     fn a_restore_leaves_out_the_licence_state_rows() {
         assert!(is_not_carried_data_entry("4520; 0 20401 TABLE DATA public license_state sentient"));
         assert!(!is_not_carried_data_entry("4519; 0 20390 TABLE DATA public license sentient"));
-        assert!(!is_not_carried_data_entry("4521; 0 20410 TABLE DATA public license_time_anchor sentient"));
+        assert!(is_not_carried_data_entry("4521; 0 20410 TABLE DATA public license_time_anchor sentient"));
         assert!(!is_not_carried_data_entry("402; 1259 20401 TABLE public license_state sentient"));
         assert!(!is_not_carried_data_entry("5310; 2606 20402 CONSTRAINT public license_state license_state_pkey sentient"));
     }
