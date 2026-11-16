@@ -621,7 +621,7 @@ impl UpdatePage {
                             crate::ui::button("manager-install")
                                 .primary()
                                 .label(if installing { "Updating…" } else { "Update and restart" })
-                                .disabled(installing)
+                                .disabled(installing || (o.unsigned && o.signing_started))
                                 .on_click(cx.listener(|this, _, _, cx| this.start_manager_update(cx))),
                         )
                     })
@@ -683,7 +683,7 @@ impl UpdatePage {
                     crate::ui::button("sentient-update")
                         .primary()
                         .label(format!("Update to {}", o.version))
-                        .disabled(first || busy)
+                        .disabled(first || busy || (!docker && o.unsigned && o.signing_started))
                         .on_click(cx.listener(|this, _, _, cx| this.start_sentient_update(cx))),
                 );
                 row = row.child(crate::ui::button("sentient-notes").outline().label("What's new").on_click(cx.listener(|this, _, _, cx| this.show_notes(Product::Sentient, cx))));

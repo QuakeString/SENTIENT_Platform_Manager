@@ -230,6 +230,33 @@ pub struct Found {
 /// `installed` is SENTIENT's version here (None when it is not installed);
 /// `native` says whether this computer needs a package for its system.
 pub fn check(channel: Channel, installed: Option<String>, native: bool) -> Found {
+    // Renders: offers without a signature, before signing began
+    // ("unsigned") or after ("refused").
+    #[cfg(debug_assertions)]
+    if let Ok(kind) = std::env::var("SPM_DEBUG_UNSIGNED_OFFER") {
+        let offer = |version: &str| Offer {
+            version: version.into(),
+            tag: version.into(),
+            date: "2026-11-14".into(),
+            notes: String::new(),
+            page: String::new(),
+            installer: Some(releases::Asset { name: "SENTIENT-Setup-manager".into(), browser_download_url: String::new(), size: 1, digest: None }),
+            sha256: None,
+            signature: None,
+            unsigned: true,
+            signing_started: kind == "refused",
+            between: Vec::new(),
+        };
+        return Found {
+            sentient: Ok(installed.is_some().then(|| offer("4.4.0.2"))),
+            manager: Ok(Some(offer("0.9.0"))),
+            sentient_candidate: None,
+            manager_candidate: None,
+            gateway: Ok(None),
+            gateway_installed: None,
+            at: now(),
+        };
+    }
     // One list serves both products: they share the repository.
     let all = releases::fetch(releases::SENTIENT_REPO);
     let (sentient, sentient_candidate) = match (&installed, &all) {
