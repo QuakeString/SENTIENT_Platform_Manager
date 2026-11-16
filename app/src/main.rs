@@ -19,6 +19,7 @@ mod win_frame;
 mod agent;
 #[cfg(feature = "gui")]
 mod assets;
+mod authenticode;
 mod backup_jobs;
 mod backups;
 mod catalog;

@@ -81,12 +81,22 @@ pub fn downloads_dir(version: &str) -> PathBuf {
     base.join(version)
 }
 
-/// Download `version` (or the latest) as a package folder.
+/// Download `version` (or the latest) as a package folder. The manifest's
+/// signature is checked first (crate::signing's rule; an unsigned release
+/// from before signing began is used with a warning), then every file by
+/// the SHA-256 the manifest gives.
 pub fn download(version: Option<&str>, sink: &ProgressFn) -> Result<(String, PathBuf), String> {
-    let m = match version {
-        Some(v) => manifest::fetch(&manifest::release_url(v))?,
-        None => latest()?,
+    let feed = releases::fetch(releases::SENTIENT_REPO).ok();
+    let started = crate::updates::signing_started(feed.as_deref(), sentient_installer_core::signing::Product::Sentient);
+    let url = match version {
+        Some(v) => manifest::release_url(v),
+        None => manifest::LATEST.to_string(),
     };
+    let (m, trust) = manifest::fetch_signed(&url, started)?;
+    m.wanted()?;
+    if let Some(w) = trust.warning(&format!("SENTIENT {}", m.version)) {
+        sink(sentient_installer_core::progress::Progress::Log { line: w });
+    }
     let dir = m.download_package(sink, &downloads_dir(&m.version))?;
     Ok((m.version, dir))
 }

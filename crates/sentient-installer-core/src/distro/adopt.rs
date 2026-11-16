@@ -989,7 +989,7 @@ mod tests {
             assert!(is_running(c.http()));
         }
 
-        /// His st-dev case: the record still names a temporary override the
+        /// A dev box case: the record still names a temporary override the
         /// stack was once brought up with (since deleted); the containers'
         /// labels name only the real file now. The plan lists what the
         /// containers name, and the new compose file is the Platform

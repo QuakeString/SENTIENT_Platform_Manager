@@ -574,7 +574,7 @@ pub fn run_as(record: &InstallationRecord, prefs: &BackupPrefs, passphrase: Opti
         .map_err(|e| e.to_string())?
         .block_on(backup::run(&pg, &opts, bridge(sink.clone())))
         .map_err(|e| e.to_string())?;
-    crate::secrets_key::save_beside(record, &summary.output, &sink);
+    crate::secrets_key::save_beside(record, &summary.output, opts.passphrase.as_deref(), &sink);
     crate::dbstatus::record_backup(&summary.output);
 
     sink(Progress::Step { name: STEP_CHECK.into() });

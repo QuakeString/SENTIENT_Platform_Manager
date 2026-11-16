@@ -82,14 +82,35 @@ pub fn direct_url(url: &str) -> String {
     format!("https://drive.usercontent.google.com/download?id={id}&export=download&confirm=t")
 }
 
+/// The manifest at `url`, unchecked: for showing what a release holds.
+/// Downloads go through [`fetch_signed`].
 pub fn fetch(url: &str) -> Result<Manifest, String> {
-    let body = crate::net::agent().get(url)
+    parse(&fetch_body(url)?)
+}
+
+fn fetch_body(url: &str) -> Result<String, String> {
+    crate::net::agent().get(url)
         .call()
         .map_err(|e| format!("Could not fetch the release manifest: {e}"))?
         .into_string()
-        .map_err(|e| format!("Could not read the release manifest: {e}"))?;
-    serde_json::from_str(&body)
+        .map_err(|e| format!("Could not read the release manifest: {e}"))
+}
+
+fn parse(body: &str) -> Result<Manifest, String> {
+    serde_json::from_str(body)
         .map_err(|e| format!("The release manifest is not valid JSON: {e}"))
+}
+
+/// The manifest at `url`, its signature (`<url>.minisig`) checked by the
+/// rule of [`crate::signing`]: the files it lists are then checked by
+/// their SHA-256. `signing_started`: the feed (or this computer) has seen
+/// a signed SENTIENT release.
+pub fn fetch_signed(url: &str, signing_started: bool) -> Result<(Manifest, crate::signing::Trust), String> {
+    let body = fetch_body(url)?;
+    let signature = crate::signing::fetch_signature(&format!("{url}.minisig"))?;
+    let m = parse(&body)?;
+    let trust = crate::signing::check(&format!("SENTIENT {}", m.version), body.as_bytes(), signature.as_deref(), signing_started)?;
+    Ok((m, trust))
 }
 
 /// Lower-case hex SHA-256 of a file.

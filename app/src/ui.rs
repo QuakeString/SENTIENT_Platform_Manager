@@ -1212,7 +1212,7 @@ pub fn refresh_button(id: &'static str, busy: bool, window: &mut Window, on: imp
         })
 }
 
-/// `/home/mz/…/sentient-platform-manager`: a long text cut in the middle to
+/// `/home/ops/…/sentient-platform-manager`: a long text cut in the middle to
 /// `max` characters, keeping both ends.
 pub fn middle_ellipsis(s: &str, max: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
@@ -1470,7 +1470,7 @@ pub fn skeleton_service_rows(theme: &Theme, key: &'static str, n: usize) -> Vec<
 mod info_tests {
     use super::info_lines;
 
-    /// A remote job that ends with a long note (SUNOIL's takeover): read as
+    /// A remote job that ends with a long note (a takeover): read as
     /// a done message, its first sentence and the rest, never as an error.
     #[test]
     fn a_long_success_note_stays_a_note() {

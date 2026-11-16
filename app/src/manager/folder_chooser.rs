@@ -68,7 +68,7 @@ impl Target {
 /// What the page knows when it opens the chooser.
 pub struct Opening {
     pub target: Target,
-    /// "INVENIA IIoT", or "this computer".
+    /// "Fabrikam IIoT", or "this computer".
     pub on: String,
     /// The backup folder in use.
     pub current: PathBuf,

@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Pull requests check Windows only (st-dev runs the Linux tests before
+        # Pull requests check Windows only (the build machine runs the Linux tests before
         # every push); master pushes run both.
         os: ${{ github.event_name == 'pull_request' && fromJSON('["windows-latest"]') || fromJSON('["ubuntu-latest", "windows-latest"]') }}
     steps:

@@ -41,6 +41,9 @@ serde_json = "1"
 # SENTIENT's secrets key check (AES-256-GCM, as dao/src/secrets.rs seals it).
 aes-gcm = "0.10"
 base64 = "0.22"
+# The secrets key beside an encrypted backup, sealed with its passphrase as
+# the backup is (sentient-backup-core uses the same age).
+age = "0.10"
 # SENTIENT's licence REST API (crate::licence); the version the core crates use.
 ureq = "2"
 # The support file (crate::support).
@@ -50,7 +53,7 @@ png = { version = "0.17", optional = true }
 
 # Database password in Windows Credential Manager (see src/secrets.rs).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Security_WinTrust", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 raw-window-handle = "0.6"
 
 # The tray (crate::tray): StatusNotifierItem over D-Bus on Linux (KDE, and

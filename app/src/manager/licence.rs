@@ -50,7 +50,7 @@ enum Panel {
 
 pub struct LicencePage {
     target: Target,
-    /// "INVENIA IIoT", or "this computer".
+    /// "Fabrikam IIoT", or "this computer".
     name: String,
     view: View,
     open: Option<Panel>,

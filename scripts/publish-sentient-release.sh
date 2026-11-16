@@ -154,8 +154,13 @@ PY
     curl -fsS "${auth[@]}" -H "Content-Type: application/octet-stream" --data-binary "@$dir/$f" "$upload?name=$f" >/dev/null
   done
   # The manifest last: until it lists the new files nobody downloads them.
-  old_id=$(printf '%s' "$existing" | python3 -c 'import json,sys; print(next(a["id"] for a in json.load(sys.stdin)["assets"] if a["name"]=="manifest.json"))')
-  curl -fsS "${auth[@]}" -X DELETE "$api/releases/assets/$old_id"
+  # Its signature goes with it (the old one would not match the new manifest).
+  "$here/sign-release.sh" "$dir/manifest.json"
+  for asset in manifest.json manifest.json.minisig; do
+    old_id=$(printf '%s' "$existing" | python3 -c 'import json,sys; print(next((a["id"] for a in json.load(sys.stdin)["assets"] if a["name"]==sys.argv[1]), ""))' "$asset")
+    [ -n "$old_id" ] && curl -fsS "${auth[@]}" -X DELETE "$api/releases/assets/$old_id"
+  done
+  curl -fsS "${auth[@]}" -H "Content-Type: application/octet-stream" --data-binary "@$dir/manifest.json.minisig" "$upload?name=manifest.json.minisig" >/dev/null
   curl -fsS "${auth[@]}" -H "Content-Type: application/octet-stream" --data-binary "@$dir/manifest.json" "$upload?name=manifest.json" >/dev/null
   rm -f "$dir/manifest.old.json" "$dir/binaries.jsonl"
   echo "added to https://github.com/$repo/releases/tag/$version: ${new[*]}"
@@ -185,6 +190,9 @@ print(json.dumps({"product": "SENTIENT", "version": version,
 PY
 rm -f "$dir/binaries.jsonl"
 echo "manifest:"; cat "$dir/manifest.json"
+# Signed with the release key (scripts/sign-release.sh): the Platform Manager
+# checks it before it downloads anything the manifest lists.
+"$here/sign-release.sh" "$dir/manifest.json"
 
 # The release page: the changelog section, then what to download.
 if [ -n "$body_notes" ]; then
@@ -197,13 +205,13 @@ if [ -n "$body_notes" ]; then
     esac
   done
   [ -n "$docker_image" ] && downloads+="- Docker: \`$docker_image\`"$'\n'
-  downloads+="- \`manifest.json\` lists every file with its SHA-256. Install and update with the SENTIENT Platform Manager."
+  downloads+="- \`manifest.json\` lists every file with its SHA-256, and \`manifest.json.minisig\` is its signature (minisign, the key in the Platform Manager's packaging/release-signing.pub). Install and update with the SENTIENT Platform Manager."
   body_notes+=$'\n\n'"$downloads"
 fi
 body=$(python3 -c 'import json,sys; print(json.dumps({"tag_name": sys.argv[1], "target_commitish": "main", "name": "SENTIENT " + sys.argv[1], "body": sys.argv[3] or sys.argv[2] or "SENTIENT " + sys.argv[1], "make_latest": "true"}))' "$version" "$notes" "$body_notes")
 release=$(curl -fsS "${auth[@]}" -X POST "$api/releases" -d "$body")
 upload=$(printf '%s' "$release" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_url"].split("{")[0])')
-for f in "${files[@]}" manifest.json; do
+for f in "${files[@]}" manifest.json.minisig manifest.json; do
   echo "uploading $f ($(du -h "$dir/$f" | cut -f1))"
   curl -fsS "${auth[@]}" -H "Content-Type: application/octet-stream" --data-binary "@$dir/$f" "$upload?name=$f" >/dev/null
 done

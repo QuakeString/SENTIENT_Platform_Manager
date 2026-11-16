@@ -2130,6 +2130,9 @@ fn canned_offer() -> crate::updates::Offer {
         page: String::new(),
         installer: None,
         sha256: None,
+        signature: None,
+        unsigned: false,
+        signing_started: true,
         between: vec![
             n("4.4.0.2", "2026-11-14", "Request a demo or buy a licence from inside SENTIENT, and editor fixes.", vec![
                 ("Added", vec!["Licence: Request demo licence and Buy licence open dialogs inside SENTIENT."]),
