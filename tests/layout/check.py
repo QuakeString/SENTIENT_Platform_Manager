@@ -290,7 +290,9 @@ def main():
             bad.append(f"card {l:.0f}-{r:.0f} x {t:.0f}-{b:.0f}: {len(hits)} px in its right padding, first at ({x / scale:.0f}, {y / scale:.0f})")
     # Row dividers: one continuous line per row.
     if not dialog:
-        bad.extend(broken_dividers(im, panels, scale, top_bar, frame_probes(log, "chart")))
+        # A row of outlined buttons' top or bottom edges is not a divider
+        # either: the rows inside a button's box are left out like a chart's.
+        bad.extend(broken_dividers(im, panels, scale, top_bar, frame_probes(log, "chart") + frame_probes(log, "button")))
     # The menu's selected row opens into the page: no edge line between
     # its curves (the page's colour all across the menu's edge there).
     sel = menu_selection(log)
