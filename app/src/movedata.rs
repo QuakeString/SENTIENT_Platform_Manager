@@ -338,3 +338,19 @@ pub mod debug {
         Some(Ok(Estimate { moves: list, down_secs: total, rate_mb_s: rate }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn moves_travel_as_one_argument() {
+        let m = vec![Move { store: Store::Ch, to: "/mnt/disk-c/sentient/clickhouse".into() }, Move { store: Store::Pg, to: "/mnt/disk a/pg".into() }];
+        let a = moves_arg(&m);
+        assert_eq!(a, "ch=/mnt/disk-c/sentient/clickhouse,pg=/mnt/disk a/pg");
+        assert_eq!(parse_moves(&a).unwrap(), m);
+        assert!(parse_moves("xx=/a").is_err());
+        let lines = vec!["x".to_string(), format!("{}{}", move_data::OUTCOME_MARK, r#"{"ended":"moved","reason":null,"failed_step":null,"locations":{"ch":"/x"},"old_copies":[],"backups_dir":null,"rows":[],"down_secs":3}"#)];
+        assert_eq!(outcome_in(&lines).unwrap().ended, move_data::Ended::Moved);
+    }
+}

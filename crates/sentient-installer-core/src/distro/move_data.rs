@@ -1666,6 +1666,41 @@ mod move_e2e {
 
     #[test]
     #[ignore]
+    fn cancel_during_the_copy_puts_it_back() {
+        let mut s = Stack::up(8, Flavor::Stock);
+        let pg0 = s.pg_rows();
+        // A big file, so the copy takes a while.
+        let pg_place = s.places().into_iter().find(|p| p.store == Store::Pg).unwrap().path;
+        helper_capture(&s.cfg, &helper_image(&s.cfg), &format!("dd if=/dev/urandom of={}/spm-big bs=1M count=1500 2>/dev/null", h(&pg_place))).unwrap();
+        let to = format!("{}/pg", s.dir);
+        let cfg = s.cfg.clone();
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let a2 = asked.clone();
+        let sink: ProgressFn = std::sync::Arc::new(move |p| {
+            if let Progress::Step { name } = &p {
+                if name.starts_with("Copying") && !a2.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    let c = cfg.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        request_cancel(&c).unwrap();
+                    });
+                }
+            }
+            eprintln!("  {p:?}");
+        });
+        let out = run(sink, &s.cfg, &[Move { store: Store::Pg, to: to.clone() }], None);
+        assert_eq!(out.ended, Ended::SwitchedBack, "{out:?}");
+        assert!(out.reason.as_deref().unwrap_or("").contains("Cancelled"), "{out:?}");
+        s.saved(&out);
+        assert_eq!(s.device(&s.cfg.names().vol_pg), None);
+        assert_eq!(s.pg_rows(), pg0);
+        assert!(is_running_port(s.cfg.http_port));
+        assert!(!std::path::Path::new(&cancel_file(&s.cfg)).exists(), "the request is cleared");
+        s.down();
+    }
+
+    #[test]
+    #[ignore]
     fn takeover_keeps_a_moved_volume_bound() {
         let mut s = Stack::up(7, Flavor::Stock);
         let to = format!("{}/pg", s.dir);

@@ -1279,7 +1279,7 @@ impl Render for SettingsPage {
         let active = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0);
         let _ = page;
         layout(&theme, tabs, active, v_flex()
-            .gap(px(14.))
+            .gap(px(ui::GAP))
             .children(foreign)
             .children(applybar)
             .children(problems.into_iter().map(|p| div().text_sm().text_color(theme.danger).child(p)))

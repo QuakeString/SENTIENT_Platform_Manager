@@ -1544,6 +1544,16 @@ impl RemotePages {
             Some(format!("{}\n\nVariable: {}. Built-in value: {default}.", st.help, st.env))
         };
         if self.settings_tab < 4 {
+            // Screens and the layout test: the Data locations card first,
+            // where it shows without scrolling.
+            if self.settings_tab == 1 && cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_MOVEDATA_FIRST").is_some() {
+                let inst = self.inst.clone();
+                let card = self.locations.get_or_insert_with(|| {
+                    let windows = crate::remote::is_windows(&inst);
+                    cx.new(|cx| super::movedata::LocationsCard::new(crate::movedata::Target::Remote(inst.clone()), inst.name.clone(), windows, cx))
+                });
+                col = col.child(card.clone());
+            }
             let mut sec = local::section(&theme, local::TAB_TITLES[self.settings_tab], None);
             for key in local::TAB_KEYS[self.settings_tab] {
                 let Some(st) = all.iter().find(|s| s.env == *key) else { continue };
@@ -1552,7 +1562,7 @@ impl RemotePages {
             }
             col = col.child(sec);
             // Database: where each store keeps its data, each with its Move….
-            if self.settings_tab == 1 {
+            if self.settings_tab == 1 && !(cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_MOVEDATA_FIRST").is_some()) {
                 let inst = self.inst.clone();
                 let card = self.locations.get_or_insert_with(|| {
                     let windows = crate::remote::is_windows(&inst);

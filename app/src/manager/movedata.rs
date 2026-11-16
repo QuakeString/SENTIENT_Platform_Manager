@@ -194,8 +194,8 @@ fn kv(theme: &gpui_kit::component::Theme, first: bool, label: &'static str, valu
         .py(px(8.))
         .text_sm()
         .when(!first, |r| r.border_t_1().border_color(theme.border))
-        .child(div().w(px(186.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
-        .child(h_flex().flex_1().min_w_0().flex_wrap().gap_x_2().items_center().child(value))
+        .child(div().w(px(if ui::narrow() { 120. } else { 186. })).flex_shrink_0().text_color(theme.muted_foreground).child(label))
+        .child(div().flex_1().min_w_0().child(value))
 }
 
 fn card_title(title: impl Into<SharedString>, right: Option<AnyElement>) -> Div {
@@ -1026,7 +1026,7 @@ impl MoveFlow {
             .when(!b.why.is_empty(), |c| c.child(div().text_sm().child(b.why.clone())))
             .when(!b.fixes.is_empty(), |c| {
                 c.child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child("To fix it"))
-                    .child(v_flex().gap(px(6.)).pl(px(4.)).text_sm().children(b.fixes.iter().enumerate().map(|(i, f)| h_flex().gap_2().child(div().text_color(theme.muted_foreground).child(format!("{}.", i + 1))).child(f.clone()))))
+                    .child(v_flex().gap(px(6.)).pl(px(4.)).text_sm().children(b.fixes.iter().enumerate().map(|(i, f)| h_flex().gap_2().items_start().child(div().flex_shrink_0().text_color(theme.muted_foreground).child(format!("{}.", i + 1))).child(div().flex_1().min_w_0().child(f.clone())))))
             })
             .child(
                 h_flex()
@@ -1196,11 +1196,12 @@ impl MoveFlow {
                 (Some(Read::Failed(e)), _) => div().text_color(theme.danger).child(e.clone()).into_any_element(),
                 (_, Some(_)) if !stops => div().child("SENTIENT keeps running").into_any_element(),
                 (_, Some(secs)) => h_flex()
-                    .gap_2()
+                    .gap_x_2()
                     .flex_wrap()
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child(move_data::about(secs)))
+                    .items_center()
+                    .child(div().flex_shrink_0().font_weight(FontWeight::SEMIBOLD).child(move_data::about(secs)))
                     .when(moves.len() == 1, |r| {
-                        r.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!("{} at about {:.0} MB/s, measured on these disks", size_label(self.needed(moves[0].store)), rate.unwrap_or(0.))))
+                        r.child(div().min_w_0().text_size(px(13.)).text_color(theme.muted_foreground).child(format!("{} at about {:.0} MB/s, measured on these disks", size_label(self.needed(moves[0].store)), rate.unwrap_or(0.))))
                     })
                     .into_any_element(),
                 _ => ui::skeleton_line(theme, "md-est", 180.).into_any_element(),
@@ -1215,12 +1216,24 @@ impl MoveFlow {
                 .iter()
                 .filter(|p| p.store != m.store)
                 .map(|p| match (p.store, p.bind) {
+                    (Store::Pg, true) if self.windows => format!("PostgreSQL in {}", p.path),
                     (Store::Pg, true) | (Store::Ch, true) => format!("{} on {}", p.store.label(), p.mount.clone().unwrap_or_default()),
                     (s, _) => s.label().to_string().replace("Backups", "backups"),
                 })
                 .collect();
             let named = place.is_some_and(|p| !p.bind);
-            let old = if named { format!("Kept in Docker's folder on {from} until you remove it") } else { format!("Kept on {from} until you remove it") };
+            let old = if self.windows {
+                format!("None: WSL moves the disk file itself, so it leaves {from}")
+            } else if named {
+                format!("Kept in Docker's folder on {from} until you remove it")
+            } else {
+                format!("Kept on {from} until you remove it")
+            };
+            let moves_text = if self.windows && m.store == Store::Ch {
+                format!("The WSL disk ext4.vhdx of the account sentient-clickhouse, {} (the whole file, not only the data)", size_label(self.needed(m.store)))
+            } else {
+                format!("{}, {}, from {from}", store_label(m.store, self.windows), size_label(self.needed(m.store)))
+            };
             let vol = place.map(|p| p.volume.clone()).unwrap_or_default();
             let steps = plan_steps(&moves, ov, self.windows);
             let other_db = [Store::Pg, Store::Ch].into_iter().find(|s| *s != m.store && m.store.is_database() && self.movable().contains(s));
@@ -1228,7 +1241,7 @@ impl MoveFlow {
                 .child(card_title(format!("Move {} to {}", store_label(m.store, self.windows), m.to), None))
                 .child(
                     v_flex()
-                        .child(kv(theme, true, "Moves", div().child(format!("{}, {}, from {from}", store_label(m.store, self.windows), size_label(self.needed(m.store))))))
+                        .child(kv(theme, true, "Moves", div().child(moves_text)))
                         .child(kv(theme, false, "Stays", div().child(stays.join(", "))))
                         .child(kv(theme, false, "SENTIENT is down", down_el(theme)))
                         .child(kv(theme, false, "The old copy", div().child(old))),
@@ -1509,7 +1522,7 @@ fn plan_steps(moves: &[Move], ov: &Overview, windows: bool) -> Vec<(String, Stri
             (format!("Copy ext4.vhdx to {to} and compare SHA-256"), "Copying".into()),
             ("Point the distribution at the new file (wsl --manage sentient --move; export and import on WSL before 2.0)".into(), "Pointing".into()),
             ("Start ClickHouse, then the SENTIENT service".into(), "Starting".into()),
-            ("Check SENTIENT answers and ClickHouse holds the same rows".into(), "Checking".into()),
+            ("Check SENTIENT and ClickHouse answer".into(), "Checking".into()),
         ];
     }
     if stops {
