@@ -15,6 +15,8 @@ pub(crate) mod remote_pages;
 mod repair;
 mod takeover;
 pub(crate) mod jobview;
+mod licence;
+mod licence_card;
 pub(crate) mod settings;
 pub(crate) mod session;
 pub(crate) mod setup_guide;
@@ -58,11 +60,13 @@ enum Page {
     About,
     /// Statistics: in the menu after Status, and opened from the top bar's monitors.
     Statistics,
+    /// SENTIENT's licence, directly above Platform settings.
+    Licence,
 }
 
 impl Page {
     /// The menu, in its order: Platform settings last.
-    const ALL: [Page; 10] = [
+    const ALL: [Page; 11] = [
         Page::Status,
         Page::Statistics,
         Page::Control,
@@ -72,6 +76,7 @@ impl Page {
         Page::Backup,
         Page::Migration,
         Page::Repair,
+        Page::Licence,
         Page::Settings,
     ];
 
@@ -89,6 +94,7 @@ impl Page {
             Page::Instances => "instances",
             Page::About => "about",
             Page::Statistics => "statistics",
+            Page::Licence => "licence",
         }
     }
 
@@ -106,6 +112,7 @@ impl Page {
             Page::Instances => "Instances",
             Page::About => "About and preferences",
             Page::Statistics => "Statistics",
+            Page::Licence => "Licence",
         }
     }
 
@@ -124,6 +131,7 @@ impl Page {
             Page::Instances => "server",
             Page::About => "info",
             Page::Statistics => "chart-line",
+            Page::Licence => "key",
         })
     }
 }
@@ -153,6 +161,8 @@ pub struct Manager {
     remote_pages: Option<Entity<remote_pages::RemotePages>>,
     /// Statistics of the open instance (None: this computer).
     stats: Option<(Option<String>, Entity<stats::StatsPage>)>,
+    /// The Licence page, for the open instance (None: this computer).
+    licence: Option<(Option<String>, Entity<licence::LicencePage>)>,
     /// Takes the keyboard while a dialog is open (Escape closes it).
     modal_focus: FocusHandle,
     /// The instance switcher's menu is open.
@@ -269,6 +279,7 @@ impl Manager {
             remote_monitor: None,
             remote_pages: None,
             stats: None,
+            licence: None,
             modal_focus: cx.focus_handle(),
             strip: strip.clone(),
             switcher_open: false,
@@ -1507,6 +1518,26 @@ impl Manager {
             }
             return self.stats.as_ref().map(|(_, p)| p.clone().into_any_element()).unwrap_or_else(|| div().into_any_element());
         }
+        // Licence: the same view for this computer and a server.
+        if self.page == Page::Licence {
+            let key = self.open_remote.clone();
+            if self.licence.as_ref().is_none_or(|(k, _)| *k != key) {
+                let (target, name) = match key.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
+                    Some(inst) => {
+                        let n = inst.name.clone();
+                        (crate::licence::Target::Remote(inst), n)
+                    }
+                    None => (crate::licence::Target::Local(record.clone()), "this computer".to_string()),
+                };
+                let page = cx.new(|cx| licence::LicencePage::new(target, name, window, cx));
+                self._subscriptions.push(cx.subscribe(&page, |this, _, _: &licence::GoSettings, cx| {
+                    this.page = Page::Settings;
+                    cx.notify();
+                }));
+                self.licence = Some((key, page));
+            }
+            return self.licence.as_ref().map(|(_, p)| p.clone().into_any_element()).unwrap_or_else(|| div().into_any_element());
+        }
         if let Some(r) = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
             let kind = match self.page {
                 Page::Status => Some(remote_pages::Kind::Status),
@@ -1652,7 +1683,7 @@ impl Manager {
                 self.settings.clone().unwrap().into_any_element()
             }
             // Handled at the top of content().
-            Page::Statistics => div().into_any_element(),
+            Page::Statistics | Page::Licence => div().into_any_element(),
             Page::About => {
                 if self.about.is_none() {
                     let updates = self.updates.clone();
