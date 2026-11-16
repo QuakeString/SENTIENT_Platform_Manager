@@ -1174,8 +1174,8 @@ impl RestoreFlow {
                 let mut r = vec![
                     h_flex().flex_wrap().gap(px(6.)).items_baseline().child(div().child(d.disk.clone())).child(div().text_size(px(12.5)).text_color(theme.muted_foreground).child(d.detail.clone())).into_any_element(),
                     div().text_size(px(13.)).child(if uses.is_empty() { "—".into() } else { uses }).into_any_element(),
-                    div().w_full().text_right().font_features(ui::tabular()).child(gb(d.need)).into_any_element(),
-                    div().w_full().text_right().font_features(ui::tabular()).when(!ok, |x| x.text_color(theme.danger)).child(d.free.map(gb).unwrap_or_else(|| "?".into())).into_any_element(),
+                    div().w_full().text_right().whitespace_nowrap().font_features(ui::tabular()).child(gb(d.need)).into_any_element(),
+                    div().w_full().text_right().whitespace_nowrap().font_features(ui::tabular()).when(!ok, |x| x.text_color(theme.danger)).child(d.free.map(gb).unwrap_or_else(|| "?".into())).into_any_element(),
                 ];
                 if short {
                     r.push(div().w_full().text_right().font_features(ui::tabular()).text_color(if ok { theme.success_foreground } else { theme.danger }).child(if ok { "✓".to_string() } else { gb(d.short(p.min_free)) }).into_any_element());
@@ -1375,15 +1375,26 @@ impl RestoreFlow {
                     seg.into_any_element()
                 }
             };
+            if ui::narrow() {
+                // Narrow: one block per setting, the choice under its values.
+                rows.push(vec![v_flex()
+                    .gap_1()
+                    .child(div().font_weight(FontWeight::MEDIUM).child(r.label.clone()))
+                    .child(div().text_size(px(12.5)).child(format!("In the backup: {} · Here: {}", r.backup, r.here)))
+                    .child(h_flex().child(choice))
+                    .child(div().text_size(px(12.5)).text_color(theme.muted_foreground).child(r.why.clone()))
+                    .into_any_element()]);
+                continue;
+            }
             rows.push(vec![txt(r.label.clone()), div().text_size(px(12.5)).child(r.backup.clone()).into_any_element(), div().text_size(px(12.5)).child(r.here.clone()).into_any_element(), choice, div().text_size(px(12.5)).text_color(theme.muted_foreground).child(r.why.clone()).into_any_element()]);
         }
-        if !p.recorded {
+        if !p.recorded && !ui::narrow() {
             rows.push(vec![txt("Ports, URL, TLS, environment, gateways"), muted(theme, "Not recorded").into_any_element(), txt("As now"), muted(theme, "Keep current").into_any_element(), muted(theme, "Nothing to compare with").into_any_element()]);
         }
         if rows.is_empty() {
             c = c.child(ui::outcome(theme, Tone::Good, "Every recorded setting is the same as here."));
         } else {
-            c = c.child(table(theme, &[1.0, 1.25, 1.25, 1.75, 1.35], &["Setting", "In the backup", &format!("On {here_cap}"), "Use", "Why"], rows, 13.));
+            c = c.child(if ui::narrow() { table(theme, &[1.0], &["Setting"], rows, 13.) } else { table(theme, &[1.0, 1.25, 1.25, 1.75, 1.35], &["Setting", "In the backup", &format!("On {here_cap}"), "Use", "Why"], rows, 13.) });
         }
         let mut out = v_flex().gap(px(ui::GAP));
         let mut ok = true;
@@ -2848,7 +2859,7 @@ pub(crate) mod canned {
         settings.push(row("files:reports", "Report files", "/var/lib/sentient/reports", "/mnt/disk-a/sentient/reports", SettingKind::Choice { backup_default: false }, "Paths of this machine"));
         Precheck {
             disks,
-            min_free: 2_000_000_000,
+            min_free: 2 << 30,
             estimate: sentient_backup_core::restore_scope::Estimate { total_secs: if windows { 21 * 60 } else { 18 * 60 }, downtime_secs: if windows { 120 } else { 60 } },
             restored_bytes: g(if windows { 9.3 } else { 9.2 }),
             upgrade: Some("Schema upgrade 30 → 31 (SENTIENT 4.3.0.58 → 4.4.0.2)".into()),

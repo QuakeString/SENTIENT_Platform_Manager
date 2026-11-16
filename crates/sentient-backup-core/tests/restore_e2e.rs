@@ -484,7 +484,7 @@ async fn restore_across_types() {
         let mk_watch = |reads: Arc<AtomicUsize>| {
             let mut w = SpaceWatch::new(move || {
                 let n = reads.fetch_add(1, Ordering::SeqCst);
-                vec![DiskFree { label: "/mnt/disk-a (PostgreSQL)".into(), free: if n >= 2 { 1_900_000_000 } else { 50_000_000_000 } }]
+                vec![DiskFree { label: "/mnt/disk-a (PostgreSQL)".into(), free: if n >= 2 { 1_946 << 20 } else { 50_000_000_000 } }]
             });
             w.every = std::time::Duration::from_millis(30);
             w

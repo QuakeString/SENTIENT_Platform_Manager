@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// The safe level: a restore stops when a disk it uses falls under it.
-pub const DEFAULT_MIN_FREE: u64 = 2_000_000_000;
+pub const DEFAULT_MIN_FREE: u64 = 2 << 30;
 
 /// How often the watch reads the disks.
 pub const DEFAULT_EVERY: Duration = Duration::from_secs(10);
@@ -104,15 +104,17 @@ pub fn stopped_message(d: &DiskFree, min_free: u64) -> String {
     format!("Stopped: {} fell to {} free, under the safe level of {}.", d.label, gb(d.free), gb(min_free))
 }
 
-/// Bytes as the operator reads them: "1.9 GB", "2 GB", "640 MB".
+/// Bytes as the operator reads them, in the units the Platform Manager
+/// shows everywhere (1 GB = 1024³ bytes): "1.9 GB", "2 GB", "640 MB".
 pub fn gb(b: u64) -> String {
-    let g = b as f64 / 1e9;
+    const G: f64 = (1u64 << 30) as f64;
+    let g = b as f64 / G;
     if g >= 10.0 || (g - g.round()).abs() < 0.05 && g >= 1.0 {
         format!("{} GB", g.round() as u64)
     } else if g >= 1.0 {
         format!("{g:.1} GB")
     } else {
-        format!("{} MB", (b as f64 / 1e6).round() as u64)
+        format!("{} MB", (b as f64 / (1u64 << 20) as f64).round() as u64)
     }
 }
 
@@ -134,7 +136,7 @@ mod tests {
         let g = w.start();
         std::thread::sleep(Duration::from_millis(60));
         assert!(g.tripped().is_none());
-        free.store(1_900_000_000, Ordering::Relaxed);
+        free.store(1_900 << 20, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(400));
         assert_eq!(g.tripped().as_deref(), Some("Stopped: /mnt/disk-a (PostgreSQL) fell to 1.9 GB free, under the safe level of 2 GB."));
         assert!(matches!(g.check(), Err(crate::Error::SpaceLow(_))));
@@ -143,9 +145,9 @@ mod tests {
 
     #[test]
     fn sizes_read_plainly() {
-        assert_eq!(gb(1_900_000_000), "1.9 GB");
-        assert_eq!(gb(2_000_000_000), "2 GB");
-        assert_eq!(gb(64_100_000_000), "64 GB");
-        assert_eq!(gb(640_000_000), "640 MB");
+        assert_eq!(gb(1_946 << 20), "1.9 GB");
+        assert_eq!(gb(2 << 30), "2 GB");
+        assert_eq!(gb(64 << 30), "64 GB");
+        assert_eq!(gb(640 << 20), "640 MB");
     }
 }
