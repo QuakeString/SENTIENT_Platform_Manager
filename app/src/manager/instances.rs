@@ -688,7 +688,8 @@ impl InstancesPage {
         if !det.os_name.is_empty() {
             sub.push_str(&format!(" · {}", det.os_name));
         }
-        if !det.install.is_empty() {
+        // "none": no SENTIENT found there, nothing to name.
+        if !det.install.is_empty() && !det.install.eq_ignore_ascii_case("none") {
             sub.push_str(&format!(", {}", det.install));
         }
         let mut facts = quick_facts(&theme, status.as_ref(), Some(&det));

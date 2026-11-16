@@ -918,7 +918,7 @@ impl RemotePages {
         let det = self.inst.detected.clone().unwrap_or_default();
         ui::panel(&theme)
             .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Sentient, 30.)).child(ui::pill(&theme, Tone::Neutral, "Not added")))
-            .child(div().text_sm().text_color(theme.muted_foreground).child(if det.install.is_empty() {
+            .child(div().text_sm().text_color(theme.muted_foreground).child(if det.install.is_empty() || det.install.eq_ignore_ascii_case("none") {
                 "The server agent is set up; no SENTIENT on this server is added to the Platform Manager. Add existing finds a SENTIENT that runs on the server (in Docker, or installed some other way). Nothing on it is changed.".to_string()
             } else {
                 format!("SENTIENT was found on this server ({}). Add existing lets the Platform Manager look after it. Nothing on it is changed.", det.install)
