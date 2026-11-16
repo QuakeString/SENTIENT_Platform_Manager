@@ -109,7 +109,7 @@ fn open_now(local: bool, load: LoadPlan, check: CheckPassword, run: RunTakeOver,
             d.reload(cx);
             d
         });
-        crate::modal::open(crate::modal::Modal { title: "Take over the compose file".into(), body: view.into(), width: 620., on_close: None }, cx);
+        crate::modal::open(crate::modal::Modal { title: "Take over the compose file".into(), body: view.into(), width: 620., icon: None, on_close: None }, cx);
     });
     if let Err(e) = opened {
         crate::ui::show_error("The compose file could not be taken over", format!("The dialog could not open: {e}"), cx);

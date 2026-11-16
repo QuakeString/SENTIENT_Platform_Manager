@@ -447,7 +447,8 @@ done"#
             rewrite.replace("FILE_ARG", "args+=(\"$a\")")
         ),
     )?;
-    // pg_restore also takes files (the archive, a list): copied in first.
+    // pg_restore also takes files (the archive, a list): copied in first
+    // (quietly; `docker cp -q` needs Docker 23, Debian 12 ships 20.10).
     write_host_file(
         &sink,
         &restore,
@@ -455,7 +456,7 @@ done"#
             "#!/bin/bash\n# pg_restore in the {pg} container (written by the Platform Manager)\n{}\nexec docker exec -i -e PGPASSWORD=\"$PGPASSWORD\" {pg} pg_restore \"${{args[@]}}\"\n",
             rewrite.replace(
                 "FILE_ARG",
-                &format!("if [ -f \"$a\" ]; then b=/tmp/spm-$(basename \"$a\"); docker cp -q \"$a\" {pg}:\"$b\"; args+=(\"$b\"); else args+=(\"$a\"); fi")
+                &format!("if [ -f \"$a\" ]; then b=/tmp/spm-$(basename \"$a\"); docker cp \"$a\" {pg}:\"$b\" >/dev/null; args+=(\"$b\"); else args+=(\"$a\"); fi")
             )
         ),
     )?;

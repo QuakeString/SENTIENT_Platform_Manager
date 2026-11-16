@@ -795,7 +795,7 @@ pub fn record_backup(file: &std::path::Path) {
 /// made here is used only when the folder cannot be read.
 pub fn last_backup() -> Option<LastBackup> {
     let prefs = crate::backups::BackupPrefs::load();
-    if let Some(e) = crate::backups::list(&prefs.folder).into_iter().next() {
+    if let Some(e) = crate::backups::list_all(&prefs).into_iter().next() {
         let at = chrono::NaiveDateTime::parse_from_str(&e.made, "%Y-%m-%d %H:%M")
             .ok()
             .and_then(|t| t.and_local_timezone(chrono::Local).single())

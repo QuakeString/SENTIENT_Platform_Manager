@@ -104,7 +104,7 @@ pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedStr
     }
     let text = text.into();
     let view = cx.new(|_| ErrorBody(text, retry));
-    crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 560., on_close: None }, cx);
+    crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 560., icon: None, on_close: None }, cx);
 }
 
 /// What finished, in the shared dialog: the message as plain lines (a
@@ -123,7 +123,7 @@ pub fn show_info(title: impl Into<SharedString>, text: impl Into<SharedString>, 
         }
     }
     let view = cx.new(|_| InfoBody(text.into()));
-    crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 560., on_close: None }, cx);
+    crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 560., icon: None, on_close: None }, cx);
 }
 
 /// A success message as a first sentence and the rest (a note to read),

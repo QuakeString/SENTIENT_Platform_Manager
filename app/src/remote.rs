@@ -399,6 +399,12 @@ enum Admin {
     No,
 }
 
+/// Whether sudo on the server wants a password nobody kept yet (one
+/// connection; blocking).
+pub fn sudo_needs_password(inst: &Instance) -> bool {
+    matches!(probe_admin(inst), Admin::NeedsPassword(_))
+}
+
 /// Find out with one connection whether sudo works for the account.
 fn probe_admin(inst: &Instance) -> Admin {
     if inst.user == "root" {
@@ -829,6 +835,12 @@ pub struct RemoteBackups {
     /// What an automatic backup includes (an older agent sends none).
     #[serde(default)]
     pub preset: crate::backups::Preset,
+    /// How much telemetry history a backup takes (an older agent sends none).
+    #[serde(default)]
+    pub history: crate::backups::History,
+    /// Free space where the folder is (an older agent sends none).
+    #[serde(default)]
+    pub free: Option<u64>,
 }
 
 /// Ask the server's Platform Manager for `job` (as administrator) and read
@@ -920,6 +932,47 @@ pub fn backups(inst: &Instance) -> Result<RemoteBackups, String> {
         return serde_json::from_str(&t.to_string_lossy()).map_err(|e| e.to_string());
     }
     read_json(inst, "backups-json")
+}
+
+/// A path or name for a job's command line: one argument, quoted for the
+/// server's shell (a quote in it is refused, never stripped).
+fn job_arg(a: &str) -> Result<String, String> {
+    if a.contains(['\'', '"', '\n']) {
+        return Err(format!("{a} has a quote in it; pick a folder without one."));
+    }
+    Ok(format!("'{a}'"))
+}
+
+/// The backup folder chooser on the server (crate::backups::dir_list there).
+pub fn dir_list(inst: &Instance, path: &str) -> Result<crate::backups::DirList, String> {
+    #[cfg(debug_assertions)]
+    if let Some(secs) = std::env::var("SPM_DEBUG_REMOTE_SLOW").ok().and_then(|s| s.parse::<u64>().ok()) {
+        std::thread::sleep(std::time::Duration::from_secs(secs));
+    }
+    #[cfg(debug_assertions)]
+    if let Some(l) = debug_dirs(path) {
+        return l;
+    }
+    read_json(inst, &format!("dir-list {}", job_arg(path)?))
+}
+
+/// Screens: canned folders, a JSON object of path → DirList
+/// (SPM_DEBUG_REMOTE_DIRS names the file); a path missing there fails.
+#[cfg(debug_assertions)]
+fn debug_dirs(path: &str) -> Option<Result<crate::backups::DirList, String>> {
+    let file = std::env::var_os("SPM_DEBUG_REMOTE_DIRS")?;
+    let all: std::collections::HashMap<String, crate::backups::DirList> = serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+    Some(all.get(path).cloned().ok_or_else(|| format!("{path} cannot be opened: No such file or directory")))
+}
+
+/// Make the folder `name` in `path` on the server; the new folder, listed.
+pub fn dir_mkdir(inst: &Instance, path: &str, name: &str) -> Result<crate::backups::DirList, String> {
+    read_json(inst, &format!("dir-mkdir {} {}", job_arg(path)?, job_arg(name)?))
+}
+
+/// Make the folder writable for the backup job on the server (as root).
+pub fn dir_make_writable(inst: &Instance, path: &str) -> Result<crate::backups::DirList, String> {
+    read_json(inst, &format!("dir-make-writable {}", job_arg(path)?))
 }
 
 /// The server's processor, memory and disk now (the top bar while it is

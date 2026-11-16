@@ -7,6 +7,7 @@
 mod about;
 pub(crate) mod backup;
 pub(crate) mod control;
+pub(crate) mod folder_chooser;
 mod gateway;
 mod instances;
 pub(crate) mod logs;
@@ -335,7 +336,7 @@ impl Manager {
                     }
                 }
                 let view = cx.new(|_| Sheet);
-                crate::modal::open(crate::modal::Modal { title: "Switches".into(), body: view.into(), width: 360., on_close: None }, cx);
+                crate::modal::open(crate::modal::Modal { title: "Switches".into(), body: view.into(), width: 360., icon: None, on_close: None }, cx);
             }
             // Screens: the takeover dialog with a canned plan.
             if let Ok(kind) = std::env::var("SPM_DEBUG_TAKEOVER") {
@@ -396,7 +397,7 @@ impl Manager {
             }
             if std::env::var_os("SPM_DEBUG_LOG_DIALOG").is_some() {
                 let view = cx.new(|cx| logs::LogView::file(crate::jobs::activity_log(), _window, cx));
-                crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., on_close: None }, cx);
+                crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., icon: None, on_close: None }, cx);
             }
         }
         // Screens: a job in the progress strip (SPM_DEBUG_STRIP=running|failed|done).

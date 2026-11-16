@@ -279,7 +279,7 @@ impl Render for AboutPage {
                         // outside program that may fail silently.
                         let path = log_path.clone();
                         let view = cx.new(|cx| crate::manager::logs::LogView::file(path, window, cx));
-                        crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., on_close: None }, cx);
+                        crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., icon: None, on_close: None }, cx);
                     }))
                     .child(
                         tile(&theme, "about-support", IconName::ArrowDown, "Create a support file", if self.making { "Collecting…" } else { "Logs, versions and settings in one file. Passwords are left out." })
