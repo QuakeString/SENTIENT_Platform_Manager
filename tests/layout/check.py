@@ -327,7 +327,7 @@ def main():
     frame_lines = last_frame_lines(log)
     btns = [tuple(float(v) for v in l.split()[2:]) for l in frame_lines if l.startswith("LAYOUT button ")]
     for l in frame_lines:
-        if l.startswith("LAYOUT card-actions "):
+        if l.startswith("LAYOUT card-actions ") or l.startswith("LAYOUT header-actions "):
             fl, fr, ft, fb = (float(v) for v in l.split()[2:])
             inside = [b for b in btns if b[0] >= fl - 1 and b[1] <= fr + 1 and b[2] >= ft - 1 and b[3] <= fb + 1]
             if inside and max(b[1] for b in inside) < fr - 1.5:

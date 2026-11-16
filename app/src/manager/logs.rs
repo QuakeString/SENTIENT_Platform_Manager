@@ -432,6 +432,14 @@ impl Render for LogView {
                     .gap(crate::ui::button_gap())
                     .flex_wrap()
                     .items_center()
+                    .relative()
+                    .child(ui::layout_probe("header-actions"))
+                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!(
+                        "{} · {}",
+                        if count == 1 { "1 line".to_string() } else { format!("{count} lines") },
+                        logsource::zone_label()
+                    )))
+                    .child(div().flex_1())
                     .child(div().w(px(280.)).child(Input::new(&self.filter)))
                     .child(Checkbox::new("log-follow").label("Follow").checked(self.follow).on_change(cx.listener(|v, on: &bool, _, cx| {
                         v.follow = *on;
@@ -443,13 +451,7 @@ impl Render for LogView {
                     })))
                     .child(crate::ui::probed(crate::ui::button("log-refresh").outline().label("Refresh").on_click(cx.listener(|v, _, _, cx| v.start(cx)))))
                     .child(crate::ui::probed(crate::ui::button("log-copy").outline().label(if selected_n > 0 { format!("Copy {selected_n}") } else { "Copy".into() }).on_click(cx.listener(|v, _, _, cx| v.copy(cx)))))
-                    .child(crate::ui::probed(save))
-                    .child(div().flex_1())
-                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!(
-                        "{} · {}",
-                        if count == 1 { "1 line".to_string() } else { format!("{count} lines") },
-                        logsource::zone_label()
-                    ))),
+                    .child(crate::ui::probed(save)),
             );
         let narrow = ui::narrow();
         // The level column only when the log has levels (SENTIENT's and the

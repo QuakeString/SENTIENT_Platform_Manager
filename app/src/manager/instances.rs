@@ -1380,6 +1380,7 @@ impl Render for InstancesPage {
                 h_flex()
                     .relative()
                     .child(probe)
+                    .child(ui::layout_probe("header-actions"))
                     .gap_3()
                     .items_center()
                     .child(v_flex().flex_1().min_w_0().gap_0p5().child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Instances")).child(div().text_sm().text_color(theme.muted_foreground).child(summary)))

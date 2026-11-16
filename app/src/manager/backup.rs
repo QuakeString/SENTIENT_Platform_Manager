@@ -1081,9 +1081,11 @@ impl BackupPage {
         let now_tip = estimate.map(|(t, _)| t).unwrap_or_else(|| "A backup now, with what the card says.".into());
         let mut list = ui::panel(theme).gap_0().child(
             h_flex()
+                .relative()
                 .gap(crate::ui::button_gap())
                 .pb_2()
                 .items_center()
+                .child(ui::layout_probe("header-actions"))
                 .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child("Backups"))
                 .child(crate::ui::probed(crate::ui::button("add-backup").ghost().label("Add a file…").tooltip("Add a backup file from elsewhere to the folder.").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx)))))
                 .child(crate::ui::probed(crate::ui::button("restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))

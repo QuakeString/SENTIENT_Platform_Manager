@@ -1459,9 +1459,11 @@ impl RemotePages {
         // The Backups table.
         let mut list = ui::panel(&theme).gap_0().child(
             h_flex()
+                .relative()
                 .gap(crate::ui::button_gap())
                 .pb_2()
                 .items_center()
+                .child(ui::layout_probe("header-actions"))
                 .child(div().flex_1().min_w_0().child(self.section_title(&theme, "Backups", "backups", cx)))
                 .child(crate::ui::probed(crate::ui::button("r-restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
                 .child(crate::ui::probed(crate::ui::button("r-backup").outline().label("Back up now").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx))))),
