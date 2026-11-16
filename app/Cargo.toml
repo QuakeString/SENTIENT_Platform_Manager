@@ -61,3 +61,8 @@ notify-rust = { version = "4", optional = true }
 version = "0.26"
 optional = true
 default-features = false
+
+# GPUI's Linux platform with the SENTIENT fixes for the see-through menu
+# (vendor/gpui-pre-linux/SENTIENT-PATCHES.md).
+[patch.crates-io]
+gpui-pre-linux = { path = "vendor/gpui-pre-linux" }

@@ -32,6 +32,23 @@ const EXTRA: &[(&str, &[u8])] = &[
     ("icons/sliders-horizontal.svg", include_bytes!("../assets/icons/sliders-horizontal.svg")),
     ("icons/trash.svg", include_bytes!("../assets/icons/trash.svg")),
     ("icons/wrench.svg", include_bytes!("../assets/icons/wrench.svg")),
+    // The menu's icons, drawn heavier (stroke 2.75 for 2) to sit with the
+    // labels' weight.
+    ("icons/menu/activity.svg", include_bytes!("../assets/icons/menu/activity.svg")),
+    ("icons/menu/archive.svg", include_bytes!("../assets/icons/menu/archive.svg")),
+    ("icons/menu/arrow-left-right.svg", include_bytes!("../assets/icons/menu/arrow-left-right.svg")),
+    ("icons/menu/chart-line.svg", include_bytes!("../assets/icons/menu/chart-line.svg")),
+    ("icons/menu/info.svg", include_bytes!("../assets/icons/menu/info.svg")),
+    ("icons/menu/network.svg", include_bytes!("../assets/icons/menu/network.svg")),
+    ("icons/menu/panel-left-close.svg", include_bytes!("../assets/icons/menu/panel-left-close.svg")),
+    ("icons/menu/panel-left-open.svg", include_bytes!("../assets/icons/menu/panel-left-open.svg")),
+    ("icons/menu/power.svg", include_bytes!("../assets/icons/menu/power.svg")),
+    ("icons/menu/refresh-cw.svg", include_bytes!("../assets/icons/menu/refresh-cw.svg")),
+    ("icons/menu/server.svg", include_bytes!("../assets/icons/menu/server.svg")),
+    ("icons/menu/settings.svg", include_bytes!("../assets/icons/menu/settings.svg")),
+    ("icons/menu/sliders-horizontal.svg", include_bytes!("../assets/icons/menu/sliders-horizontal.svg")),
+    ("icons/menu/square-terminal.svg", include_bytes!("../assets/icons/menu/square-terminal.svg")),
+    ("icons/menu/wrench.svg", include_bytes!("../assets/icons/menu/wrench.svg")),
     // Product and brand logos (logos/: simple-icons, CC0, see
     // LICENSE-SIMPLE-ICONS.md; SENTIENT's own marks; Windows from SENTIENT's UI).
     ("logos/almalinux.svg", include_bytes!("../assets/logos/almalinux.svg")),

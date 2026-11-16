@@ -110,21 +110,22 @@ impl Page {
         }
     }
 
+    /// The menu's icon: the heavier set (assets/icons/menu).
     fn icon(self) -> Icon {
-        match self {
-            Page::Status => Icon::new(Lucide::Activity),
-            Page::Control => Icon::new(Lucide::Power),
-            Page::Logs => Icon::new(IconName::SquareTerminal),
-            Page::Update => Icon::new(IconName::RefreshCw),
-            Page::Gateway => Icon::new(Lucide::Network),
-            Page::Backup => Icon::new(Lucide::Archive),
-            Page::Migration => Icon::new(Lucide::ArrowLeftRight),
-            Page::Settings => Icon::new(IconName::Settings),
-            Page::Repair => Icon::new(Lucide::Wrench),
-            Page::Instances => Icon::new(Lucide::Server),
-            Page::About => Icon::new(IconName::Info),
-            Page::Statistics => Icon::new(Lucide::ChartLine),
-        }
+        shell::menu_icon(match self {
+            Page::Status => "activity",
+            Page::Control => "power",
+            Page::Logs => "square-terminal",
+            Page::Update => "refresh-cw",
+            Page::Gateway => "network",
+            Page::Backup => "archive",
+            Page::Migration => "arrow-left-right",
+            Page::Settings => "settings",
+            Page::Repair => "wrench",
+            Page::Instances => "server",
+            Page::About => "info",
+            Page::Statistics => "chart-line",
+        })
     }
 }
 
@@ -197,6 +198,26 @@ pub fn saved_events() -> Vec<strip::Event> {
 
 impl Manager {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // OpenGL (no Vulkan driver): the window cannot be translucent, so
+        // the menu is solid and About says why.
+        if cfg!(target_os = "linux") {
+            let gl = _window.gpu_specs().is_some_and(|g| g.driver_info.contains("Core Profile") || g.driver_info.contains("OpenGL"));
+            shell::set_gl_only(gl);
+            if gl {
+                _window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+            }
+        }
+        // Why the menu is solid or not (SPM_DEBUG_BLUR=1).
+        if std::env::var_os("SPM_DEBUG_BLUR").is_some() {
+            eprintln!(
+                "BLUR supported={} on={} wayland={:?} desktop={:?} gpu={:?}",
+                shell::see_through_supported(),
+                shell::see_through(),
+                std::env::var_os("WAYLAND_DISPLAY"),
+                std::env::var("XDG_CURRENT_DESKTOP").ok(),
+                _window.gpu_specs()
+            );
+        }
         // `--page migration` (from Setup's Change database).
         let args: Vec<String> = std::env::args().collect();
         // Without --page: the page it was left on.
@@ -663,7 +684,7 @@ impl Manager {
             });
         let max_h = (f32::from(self.window_h.get()) * 0.6).max(260.);
         deferred(
-            div().absolute().top(px(36. + 10.)).right(px(-6.)).child(
+            div().absolute().top(px(32. + 10.)).right(px(-6.)).child(
                 div()
                     .relative()
                     .w(px(w))
@@ -793,7 +814,7 @@ impl Manager {
                 .gap(px(7.))
                 .items_center()
                 .text_size(px(13.))
-                .child(meter_icon(label).size(px(18.)).text_color(muted_fg))
+                .child(meter_icon(label).size(px(16.)).text_color(muted_fg))
                 .when(wide, |r| {
                     r.child(
                         div().w(px(36.)).child(ui::segment_bar(fg.opacity(0.14), 5., &[(if high { warn_fill } else { meter_fill }, fraction.clamp(0.0, 1.0))])),
@@ -811,7 +832,7 @@ impl Manager {
         // room, job or not: the monitors are laid out the same either way.
         // The bar's padding, the switcher (dot, name, address, chevron,
         // REMOTE), the theme button and the bell, and the gaps between.
-        let mut room = width - 36. - (text_w(&instance) + 14. + 10. + 16. + 10. + 24. + 14.) - if remote.is_some() { 64. } else { 0. } - (36. + 14.) - (36. + 14.) - if self.strip.read(cx).active() { strip::CHIP_MIN } else { 0. };
+        let mut room = width - 36. - (text_w(&instance) + 14. + 10. + 16. + 10. + 24. + 14.) - if remote.is_some() { 64. } else { 0. } - (32. + 14.) - (32. + 14.) - if self.strip.read(cx).active() { strip::CHIP_MIN } else { 0. };
 
         let mut fits = |need: f32| {
             let ok = room >= need;
@@ -842,9 +863,9 @@ impl Manager {
             // 16 px apart.
             let bar = if wide { 36. + 7. } else { 0. };
             let slot = |w: &str| f32::from(ui::slot_width(w, 13.));
-            let cpu = fits(16. + 18. + 7. + slot("100%") + bar);
-            let mem = cpu && fits(16. + 18. + 7. + slot(&mem_widest) + bar);
-            let disk = mem && fits(16. + 18. + 7. + slot(&disk_widest) + bar);
+            let cpu = fits(16. + 16. + 7. + slot("100%") + bar);
+            let mem = cpu && fits(16. + 16. + 7. + slot(&mem_widest) + bar);
+            let disk = mem && fits(16. + 16. + 7. + slot(&disk_widest) + bar);
             (cpu, mem, disk)
         };
         // What the monitors leave between the switcher and themselves: the
@@ -858,7 +879,7 @@ impl Manager {
                     .gap(px(7.))
                     .items_center()
                     .text_size(px(13.))
-                    .child(meter_icon(label).size(px(18.)).text_color(muted_fg))
+                    .child(meter_icon(label).size(px(16.)).text_color(muted_fg))
                     .when(wide, |r| r.child(div().w(px(36.)).h(px(5.)).rounded_full().bg(fg.opacity(0.14))))
                     .child(div().w(ui::slot_width(widest, 12.5)).flex().items_center().child(div().w(relative(0.75)).h(px(10.)).rounded(px(5.)).bg(fg.opacity(0.22))))
             };
@@ -921,7 +942,7 @@ impl Manager {
         let bell_open = self.bell_open;
         let bell = div()
             .id("bell")
-            .size(px(36.))
+            .size(px(32.))
             .flex()
             .items_center()
             .justify_center()
@@ -929,7 +950,7 @@ impl Manager {
             .cursor_pointer()
             .when(bell_open, |b| b.bg(ic.opacity(0.16)))
             .hover(move |b| b.bg(ic.opacity(0.16)))
-            .child(Icon::new(IconName::Bell).text_color(fg).size(px(22.)))
+            .child(Icon::new(IconName::Bell).text_color(fg).size(px(20.)))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.bell_open = !this.bell_open;
                 cx.notify();
@@ -941,7 +962,7 @@ impl Manager {
             .id("top-bar")
             .relative()
             .children(line)
-            .h(px(72.))
+            .h(px(shell::BAR_H))
             .flex_shrink_0()
             .pl(px(20.))
             .pr(px(16.))
@@ -963,7 +984,7 @@ impl Manager {
                     .items_center()
                     .min_w_0()
                     .overflow_hidden()
-                    .h(px(40.))
+                    .h(px(36.))
                     .px(px(12.))
                     .rounded(theme_radius)
                     .cursor_pointer()
@@ -1068,7 +1089,7 @@ impl Manager {
                         }),
                     });
                     let close = this.clone();
-                    deferred(div().absolute().top(px(40. + 10.)).left_0().child(ui::popover_menu(&menu_theme, "switcher-popover", 320., rows, true, px(24.), move |_, cx| {
+                    deferred(div().absolute().top(px(36. + 10.)).left_0().child(ui::popover_menu(&menu_theme, "switcher-popover", 320., rows, true, px(24.), move |_, cx| {
                         close.update(cx, |m, cx| {
                             m.switcher_open = false;
                             cx.notify();
@@ -1412,7 +1433,7 @@ impl Manager {
         let icon_of = shell::theme_icon;
         let button = div()
             .id("theme")
-            .size(px(36.))
+            .size(px(32.))
             .flex()
             .items_center()
             .justify_center()
@@ -1421,7 +1442,7 @@ impl Manager {
             .text_color(theme.foreground)
             .when(open, |b| b.bg(tint.opacity(0.16)))
             .when(!open, |b| b.hover(move |b| b.bg(tint.opacity(0.16))))
-            .child(icon_of(choice).size(px(21.)))
+            .child(icon_of(choice).size(px(19.)))
             .when(!open, |b| b.tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Theme").build(window, cx)))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.theme_open = !this.theme_open;
@@ -1452,7 +1473,7 @@ impl Manager {
                 .collect();
             let close = cx.entity().downgrade();
             deferred(
-                div().absolute().top(px(36. + 10.)).right(px(-8.)).child(ui::popover_menu(
+                div().absolute().top(px(32. + 10.)).right(px(-8.)).child(ui::popover_menu(
                     &theme,
                     "theme-popover",
                     200.,
@@ -1748,7 +1769,7 @@ impl Render for Manager {
         }
         let content = self.content(window, cx);
         self.run_pending(cx);
-        let layer = crate::modal::layer(window, cx, menu_w, 72.);
+        let layer = crate::modal::layer(window, cx, menu_w, shell::BAR_H);
         if layer.is_some() && window.focused(cx).is_none() {
             window.focus(&self.modal_focus, cx);
         }

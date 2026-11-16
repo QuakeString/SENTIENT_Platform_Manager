@@ -316,6 +316,9 @@ impl Strip {
                     .left_0()
                     .right_0()
                     .h(px(3.))
+                    // The moving part starts left of the bar: clip it, or it
+                    // draws over the menu (his rc12-19 screenshot).
+                    .overflow_hidden()
                     .bg(accent.opacity(0.25))
                     .child(
                         div()
@@ -343,6 +346,7 @@ impl Strip {
                 .left_0()
                 .right_0()
                 .h(px(3.))
+                .overflow_hidden()
                 .bg(accent.opacity(0.25))
                 .child(match (running, job.percent()) {
                     // The width glides to each new percentage (300 ms).

@@ -15,7 +15,7 @@ there is any.
 import sys
 from PIL import Image
 
-PAD, PAGE_PAD, TOL, MIN_PIXELS = 18, 24, 28, 3
+PAD, PAGE_PAD, TOL, MIN_PIXELS = 16, 18, 28, 3
 
 
 def frame_panels(log):
@@ -49,6 +49,12 @@ def frame_panels(log):
     return (w, h), keep, dialog or bool(overlays)
 
 
+def menu_selection(log):
+    lines = open(log, errors="replace").read().splitlines()
+    sels = [l.split()[2:] for l in lines if l.startswith("LAYOUT menu-sel ")]
+    return tuple(float(x) for x in sels[-1]) if sels else None
+
+
 def differs(a, b):
     return max(abs(a[i] - b[i]) for i in range(3)) > TOL
 
@@ -62,8 +68,8 @@ def main():
         print(f"{png}: no layout lines (SPM_DEBUG_LAYOUT not on?)")
         return 1
     bad = []
-    # The bar over the page (the shell's 72 px).
-    top_bar = 72 * scale
+    # The bar over the page (the shell's 60 px).
+    top_bar = 60 * scale
     for (l, r, t, b) in panels:
         L, R, T, B = (v * scale for v in (l, r, t, b))
         if R <= 0 or L >= W or B <= top_bar or T >= H or R - L < 80 * scale:
@@ -77,6 +83,18 @@ def main():
         if len(hits) >= MIN_PIXELS:
             x, y = hits[0]
             bad.append(f"card {l:.0f}-{r:.0f} x {t:.0f}-{b:.0f}: {len(hits)} px in its right padding, first at ({x / scale:.0f}, {y / scale:.0f})")
+    # The menu's selected row opens into the page: no edge line between
+    # its curves (the page's colour all across the menu's edge there).
+    sel = menu_selection(log)
+    if sel and not dialog:
+        l, edge, t, b = sel
+        ref = im.getpixel((int(edge * scale + 6 * scale), int((t + b) / 2 * scale)))
+        ys = range(int((t + 3) * scale), int((b - 3) * scale))
+        xs = range(int(edge * scale) - 3, int(edge * scale) + 3)
+        hits = [(x, y) for y in ys for x in xs if 0 <= x < W and differs(im.getpixel((x, y)), ref)]
+        if len(hits) >= MIN_PIXELS:
+            x, y = hits[0]
+            bad.append(f"menu edge: {len(hits)} px of line inside the selected row's opening, first at ({x / scale:.1f}, {y / scale:.1f})")
     # The bar's own right padding (16 px): nothing in it at any width.
     bx0, bx1 = int(W - 13 * scale), int(W - 3 * scale)
     bref = im.getpixel((W - int(8 * scale), int(4 * scale)))
