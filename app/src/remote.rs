@@ -1678,6 +1678,14 @@ fn agent_file(system: System, sink: &ProgressFn) -> Result<PathBuf, String> {
     released_agent(system, sink).map_err(|e| e.message())
 }
 
+/// The agents this program carries, each written out (`--job agents`).
+pub fn carried_agents() -> Vec<(System, Result<Option<PathBuf>, String>)> {
+    [System::Linux(Arch::X86_64), System::Linux(Arch::Aarch64), System::Windows]
+        .into_iter()
+        .map(|s| (s, embedded_agent(s).map(|b| write_out(agent_name(s), b)).transpose()))
+        .collect()
+}
+
 /// Write a carried agent out (crate::updates::prefs_dir/remote-builds), once
 /// per version and build.
 fn write_out(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {

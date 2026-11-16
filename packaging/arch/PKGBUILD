@@ -30,12 +30,33 @@ build() {
   export CARGO_TARGET_DIR="${SPM_CARGO_TARGET_DIR:-$srcdir/target}"
   export RUSTUP_TOOLCHAIN=stable
   unset CARGO_ENCODED_RUSTFLAGS LDFLAGS CFLAGS CXXFLAGS
-  # The server agent first: the same job code without the window, static
-  # (musl), so it runs on any Linux server without desktop libraries. The
-  # program carries it (build.rs) and copies it to servers it manages.
-  CC_x86_64_unknown_linux_musl=musl-gcc \
-    cargo build --release --locked --no-default-features --target x86_64-unknown-linux-musl
-  export SPM_LINUX_AGENT="$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/release/sentient-platform-manager"
+  # The server agents first: the same job code without the window, static
+  # (musl) for Linux so it runs on any server without desktop libraries.
+  # The program carries every one (build.rs) and copies the right one to
+  # the servers it manages. SPM_PREBUILT_AGENTS names a folder of agents
+  # built elsewhere (build-cached.sh: the Windows and ARM64 ones need cross
+  # toolchains Arch's rust does not ship; CI: its agents job), by their
+  # release names; the x86_64 Linux one is built here when it is not there.
+  local a="${SPM_PREBUILT_AGENTS:-/nonexistent}"
+  if [ -f "$a/sentient-platform-manager-agent-linux-x86_64" ]; then
+    export SPM_LINUX_AGENT="$a/sentient-platform-manager-agent-linux-x86_64"
+  else
+    CC_x86_64_unknown_linux_musl=musl-gcc \
+      cargo build --release --locked --no-default-features --target x86_64-unknown-linux-musl
+    export SPM_LINUX_AGENT="$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/release/sentient-platform-manager"
+  fi
+  local name var
+  for name in sentient-platform-manager-agent-linux-aarch64:SPM_LINUX_AARCH64_AGENT \
+              sentient-platform-manager-agent-windows-x86_64.exe:SPM_WINDOWS_AGENT; do
+    var=${name#*:}; name=${name%%:*}
+    if [ -f "$a/$name" ]; then
+      export "$var=$a/$name"
+    else
+      unset "$var"
+      echo "warning: no $name: this package will not carry it (servers of that kind need a published release to download it from)" >&2
+    fi
+  done
+  echo "Server agents carried: linux-x86_64=${SPM_LINUX_AGENT} linux-aarch64=${SPM_LINUX_AARCH64_AGENT:-none} windows=${SPM_WINDOWS_AGENT:-none}"
   cargo build --release --locked
 }
 
