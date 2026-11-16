@@ -147,7 +147,7 @@ pub const ICON_X: f32 = 32.;
 const MENU_PAD: f32 = 8.;
 /// Unfolded, the selection keeps a wider margin from the window's edge (his
 /// D1 note: too little room on its left); the icons stay on ICON_X.
-const MENU_PAD_OPEN: f32 = 14.;
+const MENU_PAD_OPEN: f32 = 16.;
 /// A row's icon size and its left padding inside the row (icon centre at ICON_X).
 const ICON: f32 = 18.;
 fn row_pl(pad: f32) -> f32 {
