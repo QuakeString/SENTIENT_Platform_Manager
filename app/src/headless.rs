@@ -39,7 +39,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|configuration> | backup-verify <backup> | backup-delete <backup> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
+use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
 
 /// A console for the output: release builds on Windows have none of their
@@ -252,6 +252,49 @@ pub fn run(args: &[String]) -> i32 {
             }
         };
     }
+    // The backup folder chooser (crate::manager::backup_folder): a folder's
+    // folders, free space and whether backups can go there; make one; make
+    // one writable for the account that runs the manager (as root). One JSON
+    // line: the folder as listed (dir-make-writable: after the change).
+    if job == "dir-list" || job == "dir-mkdir" || job == "dir-make-writable" {
+        let r = (|| -> Result<crate::backups::DirList, String> {
+            let path = std::path::PathBuf::from(args.get(1).ok_or(USAGE)?);
+            match job {
+                "dir-mkdir" => {
+                    let name = args.get(2).map(String::as_str).filter(|n| !n.is_empty() && !n.contains(['/', '\\']) && *n != "." && *n != "..").ok_or("Not a folder name.")?;
+                    let made = path.join(name);
+                    std::fs::create_dir(&made).map_err(|e| format!("{name} cannot be made in {}: {e}", path.display()))?;
+                    crate::backups::dir_list(&made)
+                }
+                "dir-make-writable" => {
+                    crate::backups::make_writable(&path, args.get(2).and_then(|u| u.parse().ok()))?;
+                    crate::backups::dir_list(&path)
+                }
+                _ => crate::backups::dir_list(&path),
+            }
+        })();
+        return match r {
+            Ok(l) => {
+                println!("{}", serde_json::to_string(&l).unwrap_or_default());
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+    }
+    // SENTIENT's licence functions, called here for the window
+    // (crate::licence): the request in a file, removed once read.
+    if job == "licence-api" {
+        return match args.windows(2).find(|w| w[0] == "--request-file") {
+            Some(w) => crate::licence::agent_job(&w[1]),
+            None => {
+                eprintln!("{USAGE}");
+                2
+            }
+        };
+    }
     // What a remote instance's card shows (crate::remote::status): one JSON line.
     if job == "status-json" {
         println!("{}", serde_json::to_string(&status_json(InstallationRecord::load().as_ref())).unwrap_or_default());
@@ -278,7 +321,7 @@ pub fn run(args: &[String]) -> i32 {
             "settings-json" => serde_json::to_string(&crate::settings::current(&record)),
             _ => {
                 let prefs = crate::backups::BackupPrefs::load();
-                serde_json::to_string(&crate::remote::RemoteBackups { folder: prefs.folder.clone(), daily_at: prefs.daily_at.clone(), keep: prefs.keep, list: crate::backups::list(&prefs.folder), preset: prefs.preset })
+                serde_json::to_string(&crate::remote::RemoteBackups { folder: prefs.folder.clone(), daily_at: prefs.daily_at.clone(), keep: prefs.keep, list: crate::backups::list_all(&prefs), preset: prefs.preset, history: prefs.history, free: crate::backups::free_space(&prefs.folder) })
             }
         };
         println!("{}", line.unwrap_or_default());
@@ -688,9 +731,10 @@ pub fn run(args: &[String]) -> i32 {
                     _ => return Err(format!("Not a time: {at}")),
                 };
                 prefs.keep = keep;
-                prefs.preset = match include {
-                    "everything" => crate::backups::Preset::Everything,
-                    "configuration" => crate::backups::Preset::Configuration,
+                (prefs.preset, prefs.history) = match include {
+                    "everything" => (crate::backups::Preset::Everything, crate::backups::History::All),
+                    "last90" => (crate::backups::Preset::Everything, crate::backups::History::LastDays(90)),
+                    "configuration" => (crate::backups::Preset::Configuration, prefs.history),
                     _ => return Err(format!("Not a choice: {include}")),
                 };
                 prefs.save().and_then(|_| crate::backups::apply_schedule(&prefs)).map(|_| {
@@ -704,11 +748,16 @@ pub fn run(args: &[String]) -> i32 {
             })(),
             _ => Err(USAGE.into()),
         },
+        // Change the backup folder; the backups there move along or stay.
+        "backup-folder" => match (args.get(1), args.get(2).map(String::as_str)) {
+            (Some(folder), Some(how @ ("move" | "leave"))) => crate::backups::set_folder(std::path::Path::new(folder), how == "move", &sink).map(|message| sink(Progress::Done { message })),
+            _ => Err(USAGE.into()),
+        },
         // Check or delete one backup in the backup folder (only there).
         "backup-verify" | "backup-delete" => match args.get(1) {
             Some(file) => {
                 let prefs = crate::backups::BackupPrefs::load();
-                match crate::backups::list(&prefs.folder).into_iter().find(|e| e.path == std::path::Path::new(file)) {
+                match crate::backups::list_all(&prefs).into_iter().find(|e| e.path == std::path::Path::new(file)) {
                     None => Err(format!("{file} is not a backup in {}.", prefs.folder.display())),
                     Some(e) if job == "backup-delete" => crate::backups::delete(&e.path).map(|_| sink(Progress::Done { message: format!("{} is deleted.", e.name) })),
                     Some(e) => crate::backups::check(&e.path, None).and_then(|r| {
@@ -822,10 +871,13 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
     // Without administrator rights the database's size needs a password
     // prompt (native Linux): leave it out rather than ask.
     let db = if crate::dbstatus::needs_admin(record) && !crate::rootjob::is_root() { crate::dbstatus::DbStatus::default() } else { crate::dbstatus::read(record) };
+    // The licence's one-word state, read-only from the database (same
+    // rights as the size above).
+    let licence = if crate::dbstatus::needs_admin(record) && !crate::rootjob::is_root() { None } else { crate::licence::read_tile(record) };
     let database_bytes = db.pg.as_ref().map(|p| p.db_bytes + db.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0));
     let mon = crate::sysmon::sample(&record.state_dir);
     let prefs = crate::backups::BackupPrefs::load();
-    let last_backup = crate::backups::list(&prefs.folder).first().map(|e| e.made.clone());
+    let last_backup = crate::backups::list_all(&prefs).first().map(|e| e.made.clone());
     let uptime = sysinfo::System::uptime();
     crate::remote::RemoteStatus {
         installed: snap.installed,
@@ -841,6 +893,7 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
         http_port: Some(record.stack.http_port),
         vanished_files: record.stack.vanished_files(),
         external_compose: record.engine == crate::installation::Engine::Docker && record.stack.external.is_some(),
+        licence,
     }
 }
 

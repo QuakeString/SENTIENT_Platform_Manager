@@ -84,6 +84,8 @@ pub struct Strip {
     opened_for_failure: bool,
     /// Small saves under way (`quiet`): the line runs, nothing else.
     quiet: usize,
+    /// The chip's panel (a job with one, the Files transfers) is open.
+    panel_open: bool,
     _observe: Option<Subscription>,
     _hide: Option<Task<()>>,
 }
@@ -105,7 +107,7 @@ pub fn install(cx: &mut App) -> Entity<Strip> {
     if let Some(s) = cx.try_global::<StripSlot>() {
         return s.0.clone();
     }
-    let strip = cx.new(|_| Strip { events: load_events(), retries: Default::default(), light_bar: std::cell::Cell::new(false), window_w: std::cell::Cell::new(1100.), slot_w: std::cell::Cell::new(400.), job: None, label: None, finished_at: None, opened_for_failure: false, quiet: 0, _observe: None, _hide: None });
+    let strip = cx.new(|_| Strip { events: load_events(), retries: Default::default(), light_bar: std::cell::Cell::new(false), window_w: std::cell::Cell::new(1100.), slot_w: std::cell::Cell::new(400.), job: None, label: None, finished_at: None, opened_for_failure: false, quiet: 0, panel_open: cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_STRIP_PANEL").is_some(), _observe: None, _hide: None });
     cx.set_global(StripSlot(strip.clone()));
     strip
 }
@@ -221,7 +223,7 @@ impl Strip {
 fn open_details(job: Entity<Job>, label: Option<SharedString>, cx: &mut App) {
     let title = label.clone().unwrap_or_else(|| "Details".into());
     let view = cx.new(|cx| JobDetails::new(job, cx));
-    crate::modal::open(crate::modal::Modal { title, body: view.into(), width: 760., on_close: None }, cx);
+    crate::modal::open(crate::modal::Modal { title, body: view.into(), width: 760., icon: None, on_close: None }, cx);
 }
 
 impl Strip {
@@ -316,6 +318,9 @@ impl Strip {
                     .left_0()
                     .right_0()
                     .h(px(3.))
+                    // The moving part starts left of the bar: clip it, or it
+                    // draws over the menu (his rc12-19 screenshot).
+                    .overflow_hidden()
                     .bg(accent.opacity(0.25))
                     .child(
                         div()
@@ -343,6 +348,7 @@ impl Strip {
                 .left_0()
                 .right_0()
                 .h(px(3.))
+                .overflow_hidden()
                 .bg(accent.opacity(0.25))
                 .child(match (running, job.percent()) {
                     // The width glides to each new percentage (300 ms).
@@ -385,6 +391,63 @@ impl Render for Strip {
             JobState::Idle => return div().into_any_element(),
         };
         let label = self.label.clone();
+        // A job with its own chip text and panel (the Files transfers): the
+        // chip is a button that opens the panel under it.
+        if let (Some((chip, panel)), true) = (job.chip(), running) {
+            let open = self.panel_open;
+            let theme = cx.theme().clone();
+            let text = chip(cx);
+            return div()
+                .relative()
+                .child(
+                    h_flex()
+                        .id("progress-strip")
+                        .relative()
+                        .child(crate::ui::layout_probe("chip"))
+                        .min_w_0()
+                        .max_w(px(self.slot_w.get().max(CHIP_MIN).min(560.)))
+                        .overflow_hidden()
+                        .h(px(28.))
+                        .px(px(12.))
+                        .gap_2()
+                        .items_center()
+                        .rounded(px(14.))
+                        .bg(black().opacity(if self.light_bar.get() { 0.10 } else { 0.22 }))
+                        .when(open, |c| c.bg(black().opacity(if self.light_bar.get() { 0.16 } else { 0.30 })))
+                        .text_size(px(13.))
+                        .cursor_pointer()
+                        .child(gpui_kit::component::Icon::new(IconName::ArrowRight).small())
+                        .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(text))
+                        .on_click(cx.listener(|s, _, _, cx| {
+                            s.panel_open = !s.panel_open;
+                            cx.notify();
+                        })),
+                )
+                .when(open, |c| {
+                    c.child(deferred(
+                        div().absolute().top(px(28. + 10.)).right(px(-120.)).child(
+                            v_flex()
+                                .id("strip-panel")
+                                .relative()
+                                .child(crate::ui::layout_probe("overlay"))
+                                .occlude()
+                                .w(px(400.))
+                                .rounded(px(crate::ui::PANEL_RADIUS))
+                                .bg(theme.popover)
+                                .text_color(theme.popover_foreground)
+                                .border_1()
+                                .border_color(theme.border)
+                                .shadow_lg()
+                                .child(panel)
+                                .on_mouse_down_out(cx.listener(|s, _, _, cx| {
+                                    s.panel_open = false;
+                                    cx.notify();
+                                })),
+                        ),
+                    ))
+                })
+                .into_any_element();
+        }
         // What fits the slot: name + time + Details, then time + Details,
         // then the time alone; the chip never reaches the monitors.
         let slot = (self.slot_w.get() - 16.).max(CHIP_MIN - 16.);

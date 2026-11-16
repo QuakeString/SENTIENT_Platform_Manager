@@ -59,6 +59,10 @@ pub struct BackupPrefs {
     /// A second copy of each backup here (another disk, a network folder).
     #[serde(default)]
     pub copy_to: Option<PathBuf>,
+    /// Folders used before, whose backups were left there: still listed,
+    /// restorable, and counted by Keep.
+    #[serde(default)]
+    pub old_folders: Vec<PathBuf>,
 }
 
 fn four() -> u64 {
@@ -78,7 +82,7 @@ pub fn default_folder() -> PathBuf {
 
 impl Default for BackupPrefs {
     fn default() -> Self {
-        BackupPrefs { folder: default_folder(), preset: Preset::Everything, history: History::All, part_gb: 4, daily_at: None, keep: 7, copy_to: None }
+        BackupPrefs { folder: default_folder(), preset: Preset::Everything, history: History::All, part_gb: 4, daily_at: None, keep: 7, copy_to: None, old_folders: Vec::new() }
     }
 }
 
@@ -209,6 +213,9 @@ pub struct Entry {
     pub made: String,
     pub automatic: bool,
     pub check: Option<CheckRecord>,
+    /// In a folder used before (B5's "Old folder").
+    #[serde(default)]
+    pub old_folder: bool,
 }
 
 /// The backups in `folder`, newest first.
@@ -239,11 +246,214 @@ pub fn list(folder: &Path) -> Vec<Entry> {
                 check: check_of(&base),
                 name,
                 path: base,
+                old_folder: false,
             },
         ));
     }
     out.sort_by(|a, b| b.0.cmp(&a.0));
     out.into_iter().map(|(_, e)| e).collect()
+}
+
+/// Every backup: the folder's and those left in folders used before,
+/// newest first.
+pub fn list_all(prefs: &BackupPrefs) -> Vec<Entry> {
+    let mut all = list(&prefs.folder);
+    for old in prefs.old_folders.iter().filter(|o| **o != prefs.folder) {
+        all.extend(list(old).into_iter().map(|mut e| {
+            e.old_folder = true;
+            e
+        }));
+    }
+    all.sort_by(|a, b| b.made.cmp(&a.made));
+    all
+}
+
+/// Change the backup folder. `move_old`: the backups in the folder used
+/// until now move with it (files, parts, checksums and their checks);
+/// else they stay where they are, still listed and restorable.
+pub fn set_folder(new: &Path, move_old: bool, sink: &ProgressFn) -> Result<String, String> {
+    let mut prefs = BackupPrefs::load();
+    let old = prefs.folder.clone();
+    if old == new {
+        return Ok("The backup folder is unchanged.".into());
+    }
+    std::fs::create_dir_all(new).map_err(|e| format!("{} cannot be made: {e}", new.display()))?;
+    check_writable(new).map_err(|why| format!("{}: {why}", new.display()))?;
+    let here = list(&old);
+    if move_old {
+        for e in &here {
+            sink(Progress::Step { name: format!("Moving {}", e.name) });
+            move_backup(&e.path, new)?;
+        }
+    } else if !here.is_empty() && !prefs.old_folders.contains(&old) {
+        prefs.old_folders.push(old.clone());
+    }
+    prefs.old_folders.retain(|f| f != new);
+    prefs.folder = new.to_path_buf();
+    prefs.save()?;
+    Ok(match (move_old, here.len()) {
+        (_, 0) => format!("Backups now go to {}.", new.display()),
+        (true, n) => format!("Backups now go to {}; {n} moved there.", new.display()),
+        (false, n) => format!("Backups now go to {}; {n} stay in {}.", new.display(), old.display()),
+    })
+}
+
+/// One backup's files (the file or its parts, its .sha256) into `folder`,
+/// renamed where they can be, else copied and removed; its check moves too.
+fn move_backup(base: &Path, folder: &Path) -> Result<(), String> {
+    let (_, mut files) = sentient_backup_core::parts::resolve(base).map_err(|e| e.to_string())?;
+    let sidecar = PathBuf::from(format!("{}.sha256", base.display()));
+    if sidecar.is_file() {
+        files.push(sidecar);
+    }
+    for f in &files {
+        let to = folder.join(f.file_name().ok_or("no file name")?);
+        if std::fs::rename(f, &to).is_err() {
+            std::fs::copy(f, &to).map_err(|e| format!("{} could not be copied: {e}", f.display()))?;
+            std::fs::remove_file(f).map_err(|e| format!("{} could not be removed after copying: {e}", f.display()))?;
+        }
+    }
+    let new_base = folder.join(base.file_name().ok_or("no file name")?);
+    if let Some(c) = check_of(base) {
+        store_check(&new_base, c);
+    }
+    Ok(())
+}
+
+/// Whether the backup job can write in `dir` (a file is made and removed);
+/// why not, in plain words.
+pub fn check_writable(dir: &Path) -> Result<(), String> {
+    probe_writable(dir).map_err(|(why, _)| why)
+}
+
+/// [`check_writable`], and whether giving the folder to the account would
+/// fix it (permissions: yes; a read-only disk: no).
+fn probe_writable(dir: &Path) -> Result<(), (String, bool)> {
+    let probe = dir.join(format!(".spm-write-test-{}", std::process::id()));
+    match std::fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err((owner_why(dir), true)),
+        Err(e) if e.raw_os_error() == Some(30) => Err(("the disk is read-only.".into(), false)),
+        Err(e) => Err((e.to_string(), false)),
+    }
+}
+
+fn owner_why(dir: &Path) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(m) = std::fs::metadata(dir) {
+            let who = if m.uid() == 0 { "root".to_string() } else { format!("user {}", m.uid()) };
+            return format!("the folder belongs to {who}.");
+        }
+    }
+    let _ = dir;
+    "the folder does not allow it.".into()
+}
+
+/// Make `dir` writable for the account `uid` (or the one that asked for
+/// administrator rights: pkexec's or sudo's caller): it becomes that
+/// account's, folders above it untouched. Run as root.
+pub fn make_writable(dir: &Path, uid: Option<u32>) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let uid = uid
+            .or_else(|| std::env::var("PKEXEC_UID").ok().and_then(|u| u.parse().ok()))
+            .or_else(|| std::env::var("SUDO_UID").ok().and_then(|u| u.parse().ok()));
+        let Some(uid) = uid else {
+            // Root itself asked: root writes everywhere already.
+            return check_writable(dir);
+        };
+        let out = std::process::Command::new("chown").arg(uid.to_string()).arg(dir).output().map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(format!("{} could not be given to user {uid}: {}", dir.display(), String::from_utf8_lossy(&out.stderr).trim()));
+        }
+        let _ = std::process::Command::new("chmod").arg("u+rwx").arg(dir).status();
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = uid;
+        check_writable(dir)
+    }
+}
+
+/// Free space on the disk that holds `p`.
+pub fn free_space(p: &Path) -> Option<u64> {
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    disks.list().iter().filter(|d| p.starts_with(d.mount_point())).max_by_key(|d| d.mount_point().as_os_str().len()).map(|d| d.available_space())
+}
+
+/// A folder as the chooser shows it (B2): its folders with their free space,
+/// whether backups can be written there, and where to jump.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirList {
+    pub path: PathBuf,
+    pub parent: Option<PathBuf>,
+    /// Sub-folders: name and the free space where they are.
+    pub dirs: Vec<(String, u64)>,
+    /// Ok, or why not (B3).
+    pub writable: Result<(), String>,
+    /// Why not is a permission that "Make it writable…" fixes (not a
+    /// read-only disk).
+    #[serde(default)]
+    pub fixable: bool,
+    pub free: u64,
+    /// Home, the current backup folder, and mounted disks: (label, path).
+    pub shortcuts: Vec<(String, PathBuf)>,
+}
+
+pub fn dir_list(path: &Path) -> Result<DirList, String> {
+    let rd = std::fs::read_dir(path).map_err(|e| format!("{} cannot be opened: {e}", path.display()))?;
+    let free = free_space(path).unwrap_or(0);
+    let mut dirs: Vec<(String, u64)> = rd
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| !n.starts_with('.'))
+        .map(|n| {
+            let f = free_space(&path.join(&n)).unwrap_or(free);
+            (n, f)
+        })
+        .collect();
+    dirs.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    let prefs = BackupPrefs::load();
+    let mut shortcuts: Vec<(String, PathBuf)> = Vec::new();
+    if let Some(h) = home_dir() {
+        shortcuts.push(("Home".into(), h));
+    }
+    shortcuts.push(("Current backup folder".into(), prefs.folder.clone()));
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    for d in disks.list() {
+        let m = d.mount_point().to_path_buf();
+        let s = m.to_string_lossy().to_string();
+        let usb = d.is_removable() || s.starts_with("/media/") || s.starts_with("/run/media/");
+        let interesting = cfg!(windows) || usb || s.starts_with("/mnt/") || s.starts_with("/srv") || s.starts_with("/data");
+        if interesting && !shortcuts.iter().any(|(_, p)| *p == m) {
+            shortcuts.push((if usb { "USB disk".into() } else { s.clone() }, m));
+        }
+    }
+    let (writable, fixable) = match probe_writable(path) {
+        Ok(()) => (Ok(()), false),
+        Err((why, fix)) => (Err(why), fix),
+    };
+    Ok(DirList { path: path.to_path_buf(), parent: path.parent().map(Path::to_path_buf), dirs, writable, fixable, free, shortcuts })
+}
+
+/// Home: the signed-in account's, also when the agent runs through sudo on
+/// a server (sudo sets HOME to root's).
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(unix)]
+    if let Some(user) = std::env::var("SUDO_USER").ok().filter(|u| !u.is_empty() && u != "root") {
+        let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+        if let Some(home) = passwd.lines().map(|l| l.split(':').collect::<Vec<_>>()).find(|f| f.len() > 5 && f[0] == user).map(|f| PathBuf::from(f[5])) {
+            return Some(home);
+        }
+    }
+    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
 }
 
 /// Delete a backup: its file or parts and its `.sha256`.
@@ -370,7 +580,8 @@ pub fn run(record: &InstallationRecord, prefs: &BackupPrefs, passphrase: Option<
     }
     if automatic {
         sink(Progress::Step { name: STEP_PRUNE.into() });
-        for old in list(&prefs.folder).into_iter().filter(|e| e.automatic).skip(prefs.keep.max(1) as usize) {
+        // Keep counts the backups in folders used before too.
+        for old in list_all(prefs).into_iter().filter(|e| e.automatic).skip(prefs.keep.max(1) as usize) {
             let _ = delete(&old.path);
         }
     }

@@ -44,6 +44,7 @@ mod log_level;
 mod logsource;
 mod kept;
 mod leftovers;
+mod licence;
 #[cfg(feature = "gui")]
 mod maintenance;
 #[cfg(feature = "gui")]
@@ -65,6 +66,8 @@ mod rootjob;
 mod secrets;
 mod secrets_key;
 mod self_install;
+#[cfg(feature = "gui")]
+mod sftp;
 mod sentient_admin;
 mod settings;
 #[cfg(feature = "gui")]
@@ -169,11 +172,21 @@ fn window_options_manager(cx: &mut gpui_kit::App) -> WindowOptions {
 /// The Platform Manager's window (crate::bg_app opens it, again after a close).
 #[cfg(feature = "gui")]
 pub(crate) fn open_manager_window(options: WindowOptions, cx: &mut gpui_kit::App) -> anyhow::Result<(gpui_kit::AnyWindowHandle, gpui_kit::Entity<manager::Manager>)> {
-    gpui_kit::open_window(options, cx, |window, cx| {
+    let opened = gpui_kit::open_window(options, cx, |window, cx| {
         #[cfg(windows)]
         win_icon::use_manager_icon(window);
         cx.new(|cx| manager::Manager::new(window, cx))
-    })
+    })?;
+    // The toolkit's root paints the theme's background over the whole
+    // window, which hid the see-through menu everywhere: the manager paints
+    // its own (opaque unless see-through), so the root stays clear.
+    let _ = opened.0.update(cx, |_, window, cx| {
+        gpui_kit::base::Root::update(window, cx, |root, _, _| {
+            use gpui_kit::Styled as _;
+            root.style().background = Some(gpui_kit::transparent_black().into());
+        });
+    });
+    Ok(opened)
 }
 
 #[cfg(feature = "gui")]

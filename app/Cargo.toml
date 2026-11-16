@@ -41,6 +41,8 @@ serde_json = "1"
 # SENTIENT's secrets key check (AES-256-GCM, as dao/src/secrets.rs seals it).
 aes-gcm = "0.10"
 base64 = "0.22"
+# SENTIENT's licence REST API (crate::licence); the version the core crates use.
+ureq = "2"
 # The support file (crate::support).
 tar = "0.4"
 # The tray icon's pixels (crate::tray).
@@ -61,3 +63,8 @@ notify-rust = { version = "4", optional = true }
 version = "0.26"
 optional = true
 default-features = false
+
+# GPUI's Linux platform with the SENTIENT fixes for the see-through menu
+# (vendor/gpui-pre-linux/SENTIENT-PATCHES.md).
+[patch.crates-io]
+gpui-pre-linux = { path = "vendor/gpui-pre-linux" }

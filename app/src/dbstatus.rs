@@ -427,6 +427,11 @@ fn passwords(record: &InstallationRecord) -> Result<(String, String), String> {
     }
 }
 
+/// SENTIENT's database password (crate::licence reads the licence's state).
+pub fn db_password(record: &InstallationRecord) -> Result<String, String> {
+    passwords(record).map(|(db, _)| db)
+}
+
 /// Whether reading asks for the administrator password (native Linux): the
 /// screen then reads only when asked, not on a timer.
 pub fn needs_admin(record: &InstallationRecord) -> bool {
@@ -795,7 +800,7 @@ pub fn record_backup(file: &std::path::Path) {
 /// made here is used only when the folder cannot be read.
 pub fn last_backup() -> Option<LastBackup> {
     let prefs = crate::backups::BackupPrefs::load();
-    if let Some(e) = crate::backups::list(&prefs.folder).into_iter().next() {
+    if let Some(e) = crate::backups::list_all(&prefs).into_iter().next() {
         let at = chrono::NaiveDateTime::parse_from_str(&e.made, "%Y-%m-%d %H:%M")
             .ok()
             .and_then(|t| t.and_local_timezone(chrono::Local).single())

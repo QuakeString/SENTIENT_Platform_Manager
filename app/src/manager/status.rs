@@ -446,7 +446,7 @@ impl Render for StatusPage {
         let services = self.snapshot.as_ref().map(|s| s.services.clone()).unwrap_or_default();
         let st = &record.stack;
         // The newest backup in the backup folder failed its check.
-        let damaged = crate::backups::list(&crate::backups::BackupPrefs::load().folder)
+        let damaged = crate::backups::list_all(&crate::backups::BackupPrefs::load())
             .into_iter()
             .next()
             .filter(|e| e.check.as_ref().is_some_and(|c| !c.ok));
@@ -623,7 +623,7 @@ impl BrokenParts {
             v.reload(cx);
             v
         });
-        crate::modal::open(crate::modal::Modal { title: "ClickHouse parts set aside".into(), body: view.into(), width: 640., on_close: None }, cx);
+        crate::modal::open(crate::modal::Modal { title: "ClickHouse parts set aside".into(), body: view.into(), width: 640., icon: None, on_close: None }, cx);
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {

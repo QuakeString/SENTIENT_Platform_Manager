@@ -13,8 +13,8 @@ set -u
 BIN=${1:?binary}; OUT=${2:?out dir}; PROFILE=${3:-}
 HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$OUT"
-PAGES_LOCAL="status statistics control logs update gateway backup migration repair settings instances about"
-PAGES_REMOTE="status statistics control logs update gateway backup migration repair settings"
+PAGES_LOCAL="status statistics control logs files update gateway backup migration repair licence settings instances about"
+PAGES_REMOTE="status statistics control logs files update gateway backup migration repair licence settings"
 WIDTHS=${WIDTHS:-"560 900 1200"}; SCALES=${SCALES:-"1 1.5"}; THEMES=${THEMES:-"light dark"}
 JOBS=${JOBS:-4}
 one() { # where page width scale theme [dialog env]
@@ -45,7 +45,9 @@ one() { # where page width scale theme [dialog env]
   DISPLAY=$d import -window root "$OUT/$name.png" 2>/dev/null
   kill $ap 2>/dev/null; sleep 1; kill -9 $ap 2>/dev/null; kill $xp 2>/dev/null
   rm -rf "$x"
-  python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
+  # The page's overflow, and the menu's icons on x = 32 (folded below
+  # 1000 px, unfolded above).
+  { python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" && python3 "$HERE/icons.py" "$OUT/$name.log"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
 }
 export -f one; export OUT HERE BIN PROFILE LOADING_PROFILE INSTANCE WAIT SPM_INSTALLATION_RECORD 2>/dev/null
 list=()

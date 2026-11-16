@@ -57,7 +57,7 @@ impl AboutPage {
                 theme,
                 "Start at sign-in",
                 Some("In the background, with the tray icon; the window opens when you click it."),
-                Switch::new("bg-signin").checked(p.show_tray && p.start_at_signin).disabled(!p.show_tray).on_click(set(|p, v| p.start_at_signin = v)),
+                Switch::new("bg-signin").checked(p.show_tray && crate::background::autostart_on()).disabled(!p.show_tray).on_click(set(|p, v| p.start_at_signin = v)),
             )
             .into_any_element(),
             pref_row(
@@ -234,7 +234,7 @@ impl Render for AboutPage {
             .child(pref_row(
                 &theme,
                 "See-through menu",
-                Some(if supported { "Shows the desktop blurred behind the menu, on KDE Plasma (Wayland) and Windows." } else { crate::manager::shell::SEE_THROUGH_WHY }),
+                Some(crate::manager::shell::see_through_why_not().unwrap_or("Shows the desktop blurred behind the menu (KDE Plasma, Hyprland, picom, Windows). On X11 a change shows after the Platform Manager starts again.")),
                 see_through,
             ));
         let prefs = ui::panel(&theme)
@@ -279,7 +279,7 @@ impl Render for AboutPage {
                         // outside program that may fail silently.
                         let path = log_path.clone();
                         let view = cx.new(|cx| crate::manager::logs::LogView::file(path, window, cx));
-                        crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., on_close: None }, cx);
+                        crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., icon: None, on_close: None }, cx);
                     }))
                     .child(
                         tile(&theme, "about-support", IconName::ArrowDown, "Create a support file", if self.making { "Collecting…" } else { "Logs, versions and settings in one file. Passwords are left out." })
@@ -315,8 +315,7 @@ impl Render for AboutPage {
             .min_w_0()
             .h_full()
             .overflow_y_scroll()
-            .px(px(24.))
-            .py(px(20.))
+            .p(px(crate::ui::PAGE_PAD))
             .bg(theme.muted)
             .items_center()
             .child(

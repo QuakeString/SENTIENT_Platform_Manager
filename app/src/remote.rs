@@ -224,7 +224,13 @@ pub fn askpass() -> i32 {
 /// An ssh command for `inst` running `remote` there. `once` is a secret to
 /// use instead of the stored one (before it is saved).
 pub fn ssh(inst: &Instance, remote: &str, once: Option<&str>) -> Command {
+    ssh_with(inst, &[], remote, once)
+}
+
+/// [`ssh`] with options before the host (`-s` for a subsystem).
+fn ssh_with(inst: &Instance, before_host: &[&str], remote: &str, once: Option<&str>) -> Command {
     let mut c = Command::new("ssh");
+    c.args(before_host);
     c.args(["-p", &inst.port.to_string()])
         .args(["-o", &format!("UserKnownHostsFile={}", known_hosts().display())])
         .args(["-o", "StrictHostKeyChecking=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "-o", "ConnectTimeout=12"])
@@ -281,7 +287,7 @@ pub fn run(inst: &Instance, remote: &str, once: Option<&str>) -> Result<String, 
 pub const FORGOTTEN: &str = "The passphrase or password is not kept on this computer (no keyring). Enter it again with Edit.";
 
 /// ssh's messages in plain words.
-fn explain(err: &str) -> Option<String> {
+pub(crate) fn explain(err: &str) -> Option<String> {
     let e = err.to_lowercase();
     Some(if e.contains("remote host identification has changed") || e.contains("host key verification failed") {
         "The server's key is not the one accepted before. The connection was refused: if the server was reinstalled, remove and add the instance again; otherwise someone may be in between.".into()
@@ -397,6 +403,46 @@ enum Admin {
     NeedsPassword(String),
     /// No sudo for this account at all.
     No,
+}
+
+/// Whether sudo on the server wants a password nobody kept yet (one
+/// connection; blocking).
+pub fn sudo_needs_password(inst: &Instance) -> bool {
+    matches!(probe_admin(inst), Admin::NeedsPassword(_))
+}
+
+/// The Files page's SFTP session (crate::sftp): `ssh -s sftp` with the
+/// instance's sign-in, or, as administrator, the server's sftp-server
+/// through sudo (its password, when one is kept, goes first on standard
+/// input). Pipes set; spawn it and hand it to `Sftp::start`.
+pub fn sftp_command(inst: &Instance, admin: bool) -> (Command, Option<String>) {
+    let (mut c, pw) = if admin && inst.user != "root" {
+        let pw = sudo_password(inst);
+        let script = format!(
+            "for p in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/lib/ssh/sftp-server /usr/libexec/sftp-server /usr/lib/sftp-server; do if [ -x \"$p\" ]; then exec {}\"$p\"; fi; done; echo 'The server has no sftp-server program.' >&2; exit 127",
+            sudo(inst, pw.is_some())
+        );
+        (ssh_with(inst, &[], &script, None), pw)
+    } else {
+        (ssh_with(inst, &["-s"], "sftp", None), None)
+    };
+    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    (c, pw)
+}
+
+/// Delete a file or a whole folder tree on the server in one command
+/// (Files, after its confirm): `rm -rf` on Linux, as administrator with
+/// `admin`; Remove-Item on Windows. Refuses the root and empty paths.
+pub fn remove_tree(inst: &Instance, path: &str, admin: bool) -> Result<(), String> {
+    let p = path.trim();
+    if p.is_empty() || p == "/" || p.trim_end_matches(['/', '\\']).is_empty() || (p.len() <= 3 && p.ends_with(":\\")) {
+        return Err(format!("{path} cannot be deleted from here."));
+    }
+    if is_windows(inst) {
+        return win::ps(inst, &format!("Remove-Item -LiteralPath '{}' -Recurse -Force -ErrorAction Stop", p.replace('\'', "''"))).map(|_| ());
+    }
+    let cmd = format!("rm -rf -- '{}'", p.replace('\'', "'\\''"));
+    if admin && inst.user != "root" { sudo_run(inst, &cmd, None) } else { run(inst, &cmd, None) }.map(|_| ())
 }
 
 /// Find out with one connection whether sudo works for the account.
@@ -808,6 +854,10 @@ pub struct RemoteStatus {
     /// database type need the takeover first.
     #[serde(default)]
     pub external_compose: bool,
+    /// The licence's one-word state, read-only from SENTIENT's database
+    /// (crate::licence::read_tile); None: not read (an older agent too).
+    #[serde(default)]
+    pub licence: Option<crate::licence::TileLicence>,
 }
 
 /// One service or container on the server (Status and Control).
@@ -829,6 +879,12 @@ pub struct RemoteBackups {
     /// What an automatic backup includes (an older agent sends none).
     #[serde(default)]
     pub preset: crate::backups::Preset,
+    /// How much telemetry history a backup takes (an older agent sends none).
+    #[serde(default)]
+    pub history: crate::backups::History,
+    /// Free space where the folder is (an older agent sends none).
+    #[serde(default)]
+    pub free: Option<u64>,
 }
 
 /// Ask the server's Platform Manager for `job` (as administrator) and read
@@ -920,6 +976,47 @@ pub fn backups(inst: &Instance) -> Result<RemoteBackups, String> {
         return serde_json::from_str(&t.to_string_lossy()).map_err(|e| e.to_string());
     }
     read_json(inst, "backups-json")
+}
+
+/// A path or name for a job's command line: one argument, quoted for the
+/// server's shell (a quote in it is refused, never stripped).
+fn job_arg(a: &str) -> Result<String, String> {
+    if a.contains(['\'', '"', '\n']) {
+        return Err(format!("{a} has a quote in it; pick a folder without one."));
+    }
+    Ok(format!("'{a}'"))
+}
+
+/// The backup folder chooser on the server (crate::backups::dir_list there).
+pub fn dir_list(inst: &Instance, path: &str) -> Result<crate::backups::DirList, String> {
+    #[cfg(debug_assertions)]
+    if let Some(secs) = std::env::var("SPM_DEBUG_REMOTE_SLOW").ok().and_then(|s| s.parse::<u64>().ok()) {
+        std::thread::sleep(std::time::Duration::from_secs(secs));
+    }
+    #[cfg(debug_assertions)]
+    if let Some(l) = debug_dirs(path) {
+        return l;
+    }
+    read_json(inst, &format!("dir-list {}", job_arg(path)?))
+}
+
+/// Screens: canned folders, a JSON object of path → DirList
+/// (SPM_DEBUG_REMOTE_DIRS names the file); a path missing there fails.
+#[cfg(debug_assertions)]
+fn debug_dirs(path: &str) -> Option<Result<crate::backups::DirList, String>> {
+    let file = std::env::var_os("SPM_DEBUG_REMOTE_DIRS")?;
+    let all: std::collections::HashMap<String, crate::backups::DirList> = serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+    Some(all.get(path).cloned().ok_or_else(|| format!("{path} cannot be opened: No such file or directory")))
+}
+
+/// Make the folder `name` in `path` on the server; the new folder, listed.
+pub fn dir_mkdir(inst: &Instance, path: &str, name: &str) -> Result<crate::backups::DirList, String> {
+    read_json(inst, &format!("dir-mkdir {} {}", job_arg(path)?, job_arg(name)?))
+}
+
+/// Make the folder writable for the backup job on the server (as root).
+pub fn dir_make_writable(inst: &Instance, path: &str) -> Result<crate::backups::DirList, String> {
+    read_json(inst, &format!("dir-make-writable {}", job_arg(path)?))
 }
 
 /// The server's processor, memory and disk now (the top bar while it is
@@ -1179,6 +1276,21 @@ pub fn check_takeover_password(inst: &Instance, ch: bool, password: &str) -> Res
     let r = spm_job(inst, &format!("takeover-check-password{} --db-password-file '{}'", if ch { " --clickhouse" } else { "" }, file.replace('\'', ""))).map(|_| ());
     remove_file(inst, &file);
     r
+}
+
+/// One call to SENTIENT's licence functions on the server, made there by
+/// its agent (crate::licence::agent_job). The request (it may hold the
+/// sign-in token or password) goes in a file only the account reads; the
+/// agent removes it once read, and so does this, in case it never ran.
+pub fn licence_api(inst: &Instance, req: &crate::licence::Request) -> Result<crate::licence::Reply, String> {
+    let text = serde_json::to_string(req).map_err(|e| e.to_string())?;
+    let file = format!("{}/.spm-licence-{}", home(inst)?.trim_end_matches('/'), chrono::Utc::now().timestamp_millis());
+    put_text(inst, &file, &text)?;
+    let out = spm_job(inst, &format!("licence-api --request-file '{}'", file.replace('\'', "")));
+    remove_file(inst, &file);
+    let out = out?;
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's agent gave no answer.")?;
+    serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 
 /// Whether a migration could start on the server now (crate::migration::

@@ -1370,9 +1370,8 @@ pub(crate) fn layout(theme: &gpui_kit::component::Theme, nav: Div, active: usize
                 .min_w_0()
                 .h_full()
                 .overflow_y_scroll()
-                .px(px(24.))
-                .py(px(20.))
-                .gap(px(16.))
+                .p(px(crate::ui::PAGE_PAD))
+                .gap(px(crate::ui::GAP))
                 .child(
                     v_flex()
                         .gap_0p5()
