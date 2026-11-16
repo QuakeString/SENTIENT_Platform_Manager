@@ -461,6 +461,8 @@ impl Render for GatewayPage {
                         h_flex()
                             .gap(crate::ui::button_gap())
                             .flex_wrap()
+                            // A wrapped line ends at the right too.
+                            .justify_end()
                             .items_center()
                             .child(crate::ui::probed(crate::ui::button("gw-remove").danger().label("Remove the Gateway…").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.open_remove(cx)))))
                             .when(outside, |r| {

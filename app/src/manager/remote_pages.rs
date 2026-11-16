@@ -2076,6 +2076,8 @@ impl RemotePages {
             h_flex()
                 .gap(crate::ui::button_gap())
                 .flex_wrap()
+                // A wrapped line ends at the right too.
+                .justify_end()
                 .items_center()
                 .child(crate::ui::probed(crate::ui::button("r-gw-remove").danger().label("Remove the Gateway…").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx)))))
                 .when(outside, |r| {
