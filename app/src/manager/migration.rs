@@ -22,7 +22,8 @@ pub struct RecordChanged;
 pub struct MigrationPage {
     record: Option<InstallationRecord>,
     state: Option<MigrationState>,
-    target: Option<usize>,
+    /// The type picked to change to (None: the current one is selected).
+    target: Option<Flavor>,
     confirm: bool,
     job: Entity<Job>,
     /// What earlier changes kept; None while it is being read.
@@ -43,19 +44,54 @@ impl EventEmitter<RecordChanged> for MigrationPage {}
 fn describe(flavor: Flavor, windows: bool) -> &'static str {
     match flavor {
         Flavor::Stock => "Everything in PostgreSQL. Simplest; suits small sites.",
-        Flavor::Timescaledb => "PostgreSQL with TimescaleDB: history compressed and in time chunks.",
+        Flavor::Timescaledb => "History compressed and kept in time chunks inside PostgreSQL.",
         Flavor::Clickhouse if windows => "History in ClickHouse (Docker in WSL2), everything else in PostgreSQL. For large sites.",
         Flavor::Clickhouse => "History in ClickHouse, everything else in PostgreSQL. For large sites.",
     }
 }
 
-/// The database types to change to, as choice cards. Shared with a remote
-/// server's Migration.
-pub(crate) fn target_cards(theme: &gpui_kit::component::Theme, id: &str, targets: &[Flavor], selected: Option<usize>, windows: bool, pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
-    v_flex().gap_2().children(targets.iter().enumerate().map(|(i, f)| {
+/// All three database types as choice cards (the approved mockup, A1-A3):
+/// the one SENTIENT runs on carries "Current" and is selected until another
+/// is picked; `allowed` are the ones it can change to; `locked` (a job, the
+/// compose file not ours yet) leaves only the current one lit. Shared with
+/// a remote server's Migration.
+pub(crate) fn type_cards(
+    theme: &gpui_kit::component::Theme,
+    id: &str,
+    current: Option<Flavor>,
+    picked: Option<Flavor>,
+    allowed: &[Flavor],
+    locked: bool,
+    windows: bool,
+    pick: std::rc::Rc<dyn Fn(Option<Flavor>, &mut App)>,
+) -> Div {
+    let selected = picked.or(current);
+    v_flex().gap_2().children([Flavor::Stock, Flavor::Timescaledb, Flavor::Clickhouse].into_iter().map(|f| {
+        let is_current = current == Some(f);
+        let enabled = is_current || (!locked && allowed.contains(&f));
+        let title = h_flex()
+            .gap_2()
+            .items_center()
+            .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child(flavor_label(f)))
+            .when(is_current, |t| t.child(ui::pill(theme, Tone::Neutral, "Current").text_size(px(12.))))
+            .into_any_element();
         let pick = pick.clone();
-        ui::radio_card(theme, SharedString::from(format!("{id}target-{i}")), flavor_label(*f), describe(*f, windows), selected == Some(i)).on_click(move |_, _, cx| pick(i, cx))
+        ui::radio_card_el(theme, SharedString::from(format!("{id}type-{}", f.as_str())), title, describe(f, windows), selected == Some(f), enabled)
+            .when(!enabled, |c| c.opacity(0.5))
+            .when(enabled, |c| c.on_click(move |_, _, cx| pick(if is_current { None } else { Some(f) }, cx)))
     }))
+}
+
+/// Under the button: why it is off, when it is.
+pub(crate) fn change_hint(theme: &gpui_kit::component::Theme, external: bool, picked: bool) -> Option<Div> {
+    let text = if external {
+        "Take over the compose file first."
+    } else if !picked {
+        "Pick another type to change to it."
+    } else {
+        return None;
+    };
+    Some(div().text_sm().text_color(theme.muted_foreground).child(text))
 }
 
 /// What changing the database does, step by step.
@@ -211,7 +247,7 @@ impl MigrationPage {
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
-        let Some(target) = self.target.and_then(|i| self.targets().get(i).copied()) else { return };
+        let Some(target) = self.target else { return };
         self.migrate_to(target, cx);
     }
 
@@ -363,7 +399,7 @@ impl Render for MigrationPage {
         let page = ui::page(
             &theme,
             "Migration",
-            "Change the database type. Every row of history is copied and checked; nothing is deleted.",
+            "",
         );
         if let Some(view) = self.job_view(cx) {
             return page.child(view);
@@ -379,34 +415,32 @@ impl Render for MigrationPage {
         // A compose file the Platform Manager did not write: known before
         // any check, the change stays off until it is taken over.
         let external = record.engine == crate::installation::Engine::Docker && record.stack.external.is_some();
-        let chosen = self.target.and_then(|i| targets.as_ref().ok()?.get(i).copied());
+        let chosen = self.target;
 
         let main = match &targets {
             Err(why) => ui::panel(&theme)
                 .child(ui::fact(&theme, "Database", flavor_label(current)))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(*why)),
             Ok(targets) => ui::panel(&theme)
-                .child(ui::fact(&theme, "Database now", flavor_label(current)))
-                .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Change to"))
+                .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Database type"))
                 .child({
-                    let locked = busy || unfinished.is_some();
+                    let locked = busy || unfinished.is_some() || external;
                     let this = cx.entity().downgrade();
-                    target_cards(&theme, "", targets, self.target, cfg!(windows), std::rc::Rc::new(move |i, cx| {
-                        if !locked {
-                            this.update(cx, |this, cx| {
-                                this.target = Some(i);
-                                this.confirm = false;
-                                this.preflight = crate::manager::remote_pages::Preflight::Idle;
-                                cx.notify();
-                            })
-                            .ok();
-                        }
+                    type_cards(&theme, "", Some(current), self.target, targets, locked, cfg!(windows), std::rc::Rc::new(move |f, cx| {
+                        this.update(cx, |this, cx| {
+                            this.target = f;
+                            this.confirm = false;
+                            this.preflight = crate::manager::remote_pages::Preflight::Idle;
+                            cx.notify();
+                        })
+                        .ok();
                     }))
                 })
-                .child(steps_text(&theme, cfg!(windows) && chosen == Some(Flavor::Clickhouse)))
+                .when(chosen.is_some(), |p| p.child(steps_text(&theme, cfg!(windows) && chosen == Some(Flavor::Clickhouse))))
                 .child(
                     h_flex()
-                        .gap_2()
+                        .gap_3()
+                        .items_center()
                         .when(!self.confirm, |r| {
                             r.child(
                                 crate::ui::button("migrate")
@@ -417,6 +451,7 @@ impl Render for MigrationPage {
                                     .loading(self.preflight == crate::manager::remote_pages::Preflight::Checking)
                                     .on_click(cx.listener(|this, _, _, cx| this.check(cx))),
                             )
+                            .children(change_hint(&theme, external, chosen.is_some()))
                         })
                         .when(self.confirm, |r| {
                             r.child(

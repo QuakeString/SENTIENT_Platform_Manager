@@ -180,7 +180,8 @@ pub struct RemotePages {
     inputs: Vec<(String, Entity<InputState>)>,
     gateway: Read<std::collections::HashMap<String, String>>,
     /// Migration's chosen target (an index into the types other than the one now).
-    target: Option<usize>,
+    /// Migration: the type picked to change to (None: the current one).
+    target: Option<sentient_installer_core::stack::Flavor>,
     /// Migration: Change was pressed; the confirmation shows.
     migrate_confirm: bool,
     /// The migration's preflight (crate::migration::preflight on the server):
@@ -1275,13 +1276,20 @@ impl RemotePages {
             let name2 = name.clone();
             list = list.child(
                 crate::manager::backup::entry_row_with(&theme, i, e, true)
-                    .when(!damaged, |r| {
-                        r.child(crate::ui::button(SharedString::from(format!("r-restore-{}", e.name))).outline().label("Restore…").disabled(busy).on_click(cx.listener(move |this, _, window, cx| this.confirm_restore(p1.clone(), name.clone(), window, cx))))
-                    })
-                    .child(crate::ui::button(SharedString::from(format!("r-verify-{}", e.name))).outline().label("Verify").disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
-                        this.run_job("Verifying the backup", vec!["backup-verify".into(), p2.clone()], cx);
-                    })))
-                    .child(crate::ui::button(SharedString::from(format!("r-delete-{}", e.name))).outline().text_color(theme.danger).label("Delete").disabled(busy).on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), name2.clone(), window, cx)))),
+                    .child(crate::manager::backup::action_slot(
+                        crate::manager::backup::SLOT_RESTORE,
+                        (!damaged).then(|| crate::ui::button(SharedString::from(format!("r-restore-{}", e.name))).outline().label("Restore…").disabled(busy).on_click(cx.listener(move |this, _, window, cx| this.confirm_restore(p1.clone(), name.clone(), window, cx))).into_any_element()),
+                    ))
+                    .child(crate::manager::backup::action_slot(
+                        crate::manager::backup::SLOT_VERIFY,
+                        Some(crate::ui::button(SharedString::from(format!("r-verify-{}", e.name))).outline().label("Verify").disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
+                            this.run_job("Verifying the backup", vec!["backup-verify".into(), p2.clone()], cx);
+                        })).into_any_element()),
+                    ))
+                    .child(crate::manager::backup::action_slot(
+                        crate::manager::backup::SLOT_DELETE,
+                        Some(crate::ui::button(SharedString::from(format!("r-delete-{}", e.name))).outline().text_color(theme.danger).label("Delete").disabled(busy).on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), name2.clone(), window, cx))).into_any_element()),
+                    )),
             );
         }
         v_flex().gap_4().child(now).child(auto).child(list)
@@ -1420,10 +1428,12 @@ impl RemotePages {
             }
             col = col.child(table);
         }
-        // The same category list and heading as this computer's.
+        // The same category list and heading as this computer's; on a narrow
+        // window the list sits above the page.
         h_flex()
             .gap_4()
             .items_start()
+            .when(ui::narrow(), |r| r.flex_col().items_stretch())
             .child(nav)
             .child(
                 v_flex()
@@ -1522,7 +1532,7 @@ impl RemotePages {
         let all = [Flavor::Stock, Flavor::Timescaledb, Flavor::Clickhouse];
         let now = all.into_iter().find(|f| crate::installation::flavor_label(*f) == current);
         let targets: Vec<Flavor> = all.into_iter().filter(|f| Some(*f) != now).collect();
-        let chosen = self.target.and_then(|i| targets.get(i).copied());
+        let chosen = self.target.filter(|f| Some(*f) != now);
         let this = cx.entity().downgrade();
         // Why it cannot start now: a page notice above the card.
         let external = self.status.got().is_some_and(|s| s.external_compose);
@@ -1534,13 +1544,14 @@ impl RemotePages {
             Preflight::Failed(why) => Some(preflight_notice(&theme, why, None)),
             _ => None,
         };
+        // Until the status says which type runs, nothing can be picked.
+        let locked = busy || external || now.is_none();
         v_flex().gap_4().children(notice).child(ui::panel(&theme)
-            .child(ui::fact(&theme, "Database now", if current.is_empty() { "Reading…".to_string() } else { current.clone() }))
-            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Change to"))
-            .child(crate::manager::migration::target_cards(&theme, "r-", &targets, self.target, crate::remote::is_windows(&self.inst), std::rc::Rc::new(move |i, cx| {
+            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Database type"))
+            .child(crate::manager::migration::type_cards(&theme, "r-", now, chosen, &targets, locked, crate::remote::is_windows(&self.inst), std::rc::Rc::new(move |f, cx| {
                 this.update(cx, |p, cx| {
                     if !p.job.read(cx).is_running() {
-                        p.target = Some(i);
+                        p.target = f;
                         p.migrate_confirm = false;
                         p.preflight = Preflight::Idle;
                         cx.notify();
@@ -1548,10 +1559,11 @@ impl RemotePages {
                 })
                 .ok();
             })))
-            .child(crate::manager::migration::steps_text(&theme, false))
+            .when(chosen.is_some(), |p| p.child(crate::manager::migration::steps_text(&theme, false)))
             .child(
                 h_flex()
-                    .gap_2()
+                    .gap_3()
+                    .items_center()
                     .when(!self.migrate_confirm, |r| {
                         r.child(
                             crate::ui::button("r-migrate")
@@ -1562,6 +1574,7 @@ impl RemotePages {
                                 .loading(self.preflight == Preflight::Checking)
                                 .on_click(cx.listener(|this, _, _, cx| this.check_migration(cx))),
                         )
+                        .children(crate::manager::migration::change_hint(&theme, external, chosen.is_some()))
                     })
                     .when_some(chosen.filter(|_| self.migrate_confirm), |r, f| {
                         r.child(
@@ -1613,8 +1626,7 @@ impl RemotePages {
             let current = self.status.got().map(|s| s.database.clone()).unwrap_or_default();
             let all = [Flavor::Stock, Flavor::Timescaledb, Flavor::Clickhouse];
             let now = all.into_iter().find(|f| crate::installation::flavor_label(*f) == current);
-            let targets: Vec<Flavor> = all.into_iter().filter(|f| Some(*f) != now).collect();
-            self.pending_migrate = self.target.and_then(|i| targets.get(i)).map(|f| f.as_str().to_string());
+            self.pending_migrate = self.target.filter(|f| Some(*f) != now).map(|f| f.as_str().to_string());
         } else {
             self.pending_migrate = None;
         }
@@ -1828,7 +1840,7 @@ impl Render for RemotePages {
             Kind::Update => ("Update", "A newer SENTIENT for this server, from the update channel."),
             Kind::Backup => ("Backup and restore", "The backups on this server."),
             Kind::Settings => ("Platform settings", "SENTIENT's settings on this server."),
-            Kind::Migration => ("Migration", "Move this server's SENTIENT to another database type."),
+            Kind::Migration => ("Migration", ""),
             Kind::Repair => ("Repair and uninstall", "Write the services and their configuration again on this server."),
             Kind::Gateway => ("Gateway", "The Sentient Gateway on this server."),
         };

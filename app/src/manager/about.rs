@@ -263,7 +263,8 @@ impl Render for AboutPage {
             .min_w_0()
             .h_full()
             .overflow_y_scroll()
-            .p_4()
+            .px(px(24.))
+            .py(px(20.))
             .bg(theme.muted)
             .items_center()
             .child(

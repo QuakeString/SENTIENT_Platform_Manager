@@ -531,7 +531,7 @@ impl Manager {
                                 .items_center()
                                 .min_w_0()
                                 // Unread: a dot before the title, away from the ×.
-                                .when(unread, |c| c.child(div().flex_shrink_0().size(px(7.)).rounded_full().bg(theme.danger)))
+                                .when(unread, |c| c.child(div().flex_shrink_0().size(px(7.)).rounded_full().bg(icon_color)))
                                 .child(div().min_w_0().text_sm().font_weight(if unread { FontWeight::SEMIBOLD } else { FontWeight::NORMAL }).overflow_hidden().whitespace_nowrap().text_ellipsis().child(title)),
                         )
                         .child(div().text_size(px(13.)).text_color(theme.muted_foreground).overflow_hidden().whitespace_nowrap().text_ellipsis().child(detail))
@@ -1324,23 +1324,27 @@ impl Manager {
 
     fn nav(&self, rail: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let items = Page::ALL.into_iter().map(|page| {
-            let active = page == self.page;
-            // The mockup's menu item: muted text, the open page tinted in
-            // the primary colour and medium weight.
+        // The mockup's menu item (the spec for the shell): the label in the
+        // text colour, only the 18 px icon muted; 8 x 12 padding, 12 px
+        // gap, radius 8; the open page teal on the tint, its icon too.
+        let item = |id: &'static str, icon: Icon, active: bool| {
             h_flex()
-                .id(page.id())
-                .gap(px(9.))
+                .id(id)
+                .gap(px(12.))
                 .when(rail, |r| r.justify_center().px_2())
-                .when(!rail, |r| r.px(px(11.)))
-                .py(px(7.))
-                .rounded(px(7.))
+                .when(!rail, |r| r.px(px(12.)))
+                .py(px(8.))
+                .rounded(px(8.))
                 .cursor_pointer()
                 .text_sm()
-                .text_color(theme.muted_foreground)
-                .when(active, |row| row.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground).font_weight(FontWeight::MEDIUM))
-                .when(!active, |row| row.hover(|row| row.bg(theme.list_hover).text_color(theme.foreground)))
-                .child(page.icon().size(px(17.)))
+                .text_color(theme.foreground)
+                .when(active, |row| row.bg(theme.sidebar_accent).text_color(theme.primary).font_weight(FontWeight::MEDIUM))
+                .when(!active, |row| row.hover(|row| row.bg(theme.list_hover)))
+                .child(icon.size(px(18.)).text_color(if active { theme.primary } else { theme.muted_foreground }))
+        };
+        let items = Page::ALL.into_iter().map(|page| {
+            let active = page == self.page;
+            item(page.id(), page.icon(), active)
                 .when(!rail, |r| r.child(page.title()))
                 .when(rail, |r| r.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(page.title()).build(window, cx)))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1353,8 +1357,10 @@ impl Manager {
             .when(!rail, |n| n.w(px(NAV_W)))
             .h_full()
             .flex_shrink_0()
-            .p_3()
-            .gap_1()
+            .pt(px(12.))
+            .px(px(10.))
+            .pb(px(8.))
+            .gap(px(2.))
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.sidebar_border)
@@ -1365,24 +1371,12 @@ impl Manager {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .gap_1()
+                    .gap(px(2.))
                     .children(items)
-                    .child(div().my_1().h(px(1.)).flex_shrink_0().bg(theme.sidebar_border))
+                    .child(div().my(px(6.)).mx(px(2.)).h(px(1.)).flex_shrink_0().bg(theme.sidebar_border))
                     .child({
                 let active = self.page == Page::Instances;
-                h_flex()
-                    .id("instances")
-                    .gap(px(9.))
-                    .when(rail, |r| r.justify_center().px_2())
-                    .when(!rail, |r| r.px(px(11.)))
-                    .py(px(7.))
-                    .rounded(px(7.))
-                    .cursor_pointer()
-                    .text_sm()
-                    .text_color(theme.muted_foreground)
-                    .when(active, |row| row.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground).font_weight(FontWeight::MEDIUM))
-                    .when(!active, |row| row.hover(|row| row.bg(theme.list_hover).text_color(theme.foreground)))
-                    .child(Page::Instances.icon().size(px(17.)))
+                item("instances", Page::Instances.icon(), active)
                     .when(!rail, |r| r.child(Page::Instances.title()))
                     .when(rail, |r| r.tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Instances").build(window, cx)))
                     .when(!self.remotes.is_empty() && !rail, |r| r.child(div().flex_1()).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child((self.remotes.len() + 1).to_string())))
@@ -1396,9 +1390,10 @@ impl Manager {
                 h_flex()
                     .flex_shrink_0()
                     .when(rail, |r| r.flex_col().px_0())
-                    .when(!rail, |r| r.px_2())
-                    .pt_2()
-                    .gap_1()
+                    .when(!rail, |r| r.px(px(6.)))
+                    .pt(px(10.))
+                    .pb(px(2.))
+                    .gap(px(6.))
                     .items_center()
                     .border_t_1()
                     .border_color(theme.sidebar_border)
@@ -1425,7 +1420,7 @@ impl Manager {
                             .text_color(if on { theme.primary } else { theme.muted_foreground })
                             .when(on, |b| b.bg(theme.primary.opacity(0.10)))
                             .when(!on, |b| b.hover(|b| b.bg(theme.list_hover)))
-                            .child(Icon::new(IconName::Info).size_4())
+                            .child(Icon::new(IconName::Info).size(px(18.)))
                             .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("About and preferences").build(window, cx))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.page = Page::About;
@@ -1459,7 +1454,7 @@ impl Manager {
             .text_color(if open { theme.primary } else { theme.muted_foreground })
             .when(open, |b| b.bg(theme.primary.opacity(0.10)))
             .when(!open, |b| b.hover(|b| b.bg(theme.list_hover)))
-            .child(icon_of(choice).size_4())
+            .child(icon_of(choice).size(px(18.)))
             .when(!open, |b| b.tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Theme").build(window, cx)))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.theme_open = !this.theme_open;
@@ -1762,6 +1757,11 @@ impl Render for Manager {
         let top = self.top_bar(width, cx);
         let nav = self.nav(width < RAIL_BELOW, cx);
         let notices = self.notices(cx);
+        // Layout tests: the probes' lines after this mark are this frame's.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
+            eprintln!("LAYOUT-FRAME {:.0} {:.0}", f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
+        }
         let content = self.content(window, cx);
         self.run_pending(cx);
         let rail = width < RAIL_BELOW;
@@ -1810,7 +1810,7 @@ impl Render for Manager {
 pub(crate) const RAIL_BELOW: f32 = 960.;
 
 /// The menu's width (the mockup's 188 px at its 12.5 px text, for 14 px).
-pub(crate) const NAV_W: f32 = 210.;
+pub(crate) const NAV_W: f32 = 228.;
 
 /// ", released 2026-10-24", or nothing.
 fn dated(date: &str) -> String {
