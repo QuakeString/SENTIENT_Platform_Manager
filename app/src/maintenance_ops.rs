@@ -125,22 +125,22 @@ pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: P
     if !keep_data {
         crate::secrets::forget_all();
     }
-    step(&sink, "Removing shortcuts and the Platform Manager");
-    self_install::remove_shortcuts();
+    // The Platform Manager stays (removing it is its own action): only
+    // SENTIENT's shortcuts go.
+    step(&sink, "Removing SENTIENT's shortcuts");
+    self_install::remove_sentient_shortcuts();
     // The kiosk shortcuts (shared and, from earlier managers, per account),
     // and what opening SENTIENT left in each account.
     sentient_installer_core::kiosk::remove_shortcuts(&sink, &record.state_dir);
     sentient_installer_core::kiosk::remove_user_data(&sink);
-    // Every shortcut and sign-in file in the record's manifest and at the
-    // known paths, SENTIENT's and the Platform Manager's (which goes too),
-    // in the home of whoever asked (this job may run as root).
+    // Every SENTIENT shortcut and sign-in file in the record's manifest and
+    // at the known paths, in the home of whoever asked (this job may run as
+    // root). The Platform Manager's own entries stay.
     crate::shortcuts::remove(crate::shortcuts::Owner::Sentient, &record.shortcuts, &sink);
-    crate::shortcuts::remove(crate::shortcuts::Owner::Manager, &record.shortcuts, &sink);
-    let _ = crate::background::set_autostart(false);
     // The task that starts SENTIENT a set time after Windows.
     #[cfg(windows)]
     sentient_installer_core::native::remove_start_task();
-    // The operator screen's sign-in entry would start a manager that is gone.
+    // The operator screen's sign-in entry would open a SENTIENT that is gone.
     if sentient_installer_core::kiosk::open_at_signin().is_some() {
         let _ = sentient_installer_core::kiosk::set_open_at_signin(&sentient_installer_core::progress::noop(), &self_install::manager_exe(), None);
     }
@@ -148,17 +148,21 @@ pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: P
     if sentient_installer_core::autologin::set_by_manager() {
         let _ = sentient_installer_core::autologin::set(&sink, None);
     }
-    self_install::remove_manager_entry();
+    // SENTIENT's Apps & features entry went with it (Windows): the
+    // Platform Manager, which stays, gets its own back.
+    self_install::register_manager_entry(&self_install::manager_exe());
     self_install::remove_record(&crate::installation::record_path());
-    self_install::remove_manager_later();
-    sink(Progress::Done {
-        message: if keep_data {
-            "SENTIENT is removed. The database was kept and can be reused by a new install.".into()
-        } else {
-            "SENTIENT and its data are removed.".into()
-        },
-    });
+    sink(Progress::Done { message: uninstall_done(keep_data).into() });
     Ok(())
+}
+
+/// What an uninstall says when it is done. The Platform Manager stays.
+pub(crate) fn uninstall_done(keep_data: bool) -> &'static str {
+    if keep_data {
+        "SENTIENT is removed. The database was kept and can be reused by a new install. The Platform Manager stays."
+    } else {
+        "SENTIENT and its data are removed. The Platform Manager stays."
+    }
 }
 
 /// Remove a Platform Manager installed without SENTIENT: shortcuts, its Apps

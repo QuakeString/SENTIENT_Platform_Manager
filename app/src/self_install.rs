@@ -213,6 +213,16 @@ mod imp {
         }
     }
 
+    /// SENTIENT's own shortcuts (uninstalling SENTIENT; the Platform
+    /// Manager's stay).
+    pub fn remove_sentient_shortcuts() {
+        for folder in [DESKTOP, START_MENU] {
+            let _ = std::fs::remove_file(format!(r"{folder}\SENTIENT.url"));
+        }
+    }
+
+    /// The Platform Manager's shortcuts and the `spm` command, and
+    /// SENTIENT's web shortcuts that would be left without it.
     pub fn remove_shortcuts() {
         for folder in [DESKTOP, START_MENU] {
             let _ = std::fs::remove_file(format!(r"{folder}\{PRODUCT}.lnk"));
@@ -438,6 +448,9 @@ mod imp {
         let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
         (out.status.success() && !name.is_empty()).then_some(name)
     }
+
+    /// Linux: SENTIENT's menu entry is crate::shortcuts' (Owner::Sentient).
+    pub fn remove_sentient_shortcuts() {}
 
     /// The command in /usr/local/bin. The menu entries and icons are
     /// crate::shortcuts' (by owner, with the menus refreshed after).

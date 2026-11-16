@@ -187,7 +187,7 @@ fn run_job(args: &[String]) -> i32 {
         let sink = if json { json_printer() } else { printer() };
         let result = if job == "remove-manager" {
             if InstallationRecord::load().is_some() {
-                Err("SENTIENT is installed: uninstall it instead (--job uninstall), which removes the Platform Manager too.".into())
+                Err("SENTIENT is installed: uninstall it first (--job uninstall), then remove the Platform Manager.".into())
             } else {
                 crate::maintenance_ops::run_remove_manager(sink)
             }

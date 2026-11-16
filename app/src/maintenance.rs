@@ -69,7 +69,7 @@ impl Action {
         match self {
             Action::Repair => "Re-register the services and restore missing program files. Data and settings are kept.",
             Action::ChangeDatabase => "Move to another database type, history included. Opens the Platform Manager's Migration screen.",
-            Action::Uninstall => "Stop and remove SENTIENT and the Platform Manager. You choose whether to keep the data.",
+            Action::Uninstall => "Stop and remove SENTIENT. The Platform Manager stays. You choose whether to keep the data.",
         }
     }
 
@@ -252,12 +252,12 @@ impl Maintenance {
                 ),
                 _ if keep => (
                     "Uninstall SENTIENT?",
-                    "SENTIENT and the Platform Manager are removed. The database is kept.",
+                    "SENTIENT is removed. The database is kept. The Platform Manager stays.",
                     "Uninstall",
                 ),
                 _ => (
                     "Uninstall SENTIENT and delete its data?",
-                    "SENTIENT, the Platform Manager, PostgreSQL and every database are removed. This can't be undone.",
+                    "SENTIENT, PostgreSQL and every database are removed. This can't be undone. The Platform Manager stays.",
                     "Delete everything",
                 ),
             };
