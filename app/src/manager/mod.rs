@@ -46,8 +46,9 @@ use crate::theme;
 use crate::ui;
 use crate::sysmon::Monitor;
 use crate::updates::UpdateState;
+use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Page {
     Status,
     Logs,
@@ -159,17 +160,29 @@ pub struct Manager {
     remotes: Vec<crate::remote::Instance>,
     /// The remote instance that is open (None: this computer).
     open_remote: Option<String>,
-    /// That instance's processor, memory and disk (None until read, or
-    /// when it does not answer).
+    /// That instance's processor, memory and disk (None until read; the
+    /// last reading while a new one fails, see `remote_monitor_stale`).
     remote_monitor: Option<Monitor>,
-    /// The pages of the open remote instance.
-    remote_pages: Option<Entity<remote_pages::RemotePages>>,
-    /// Statistics of the open instance (None: this computer).
-    stats: Option<(Option<String>, Entity<stats::StatsPage>)>,
-    /// The Licence page, for the open instance (None: this computer).
-    licence: Option<(Option<String>, Entity<licence::LicencePage>)>,
-    /// Files, for the instance open when it was made (None: this computer).
-    files: Option<(Option<String>, Entity<files::FilesPage>)>,
+    /// The last reading failed: `remote_monitor` is the one before.
+    remote_monitor_stale: bool,
+    /// Each remote instance's last monitor reading, shown at once when it is
+    /// opened again (memory only, this run).
+    monitor_cache: HashMap<String, Monitor>,
+    /// Counts the instance switches: a monitor loop of an earlier opening
+    /// stops (and its reading is dropped) when this has moved on.
+    open_gen: u64,
+    /// The pages opened since the last switch: one kept from before is
+    /// read again (in the background) the first time it shows.
+    fresh: HashSet<Page>,
+    /// The pages of every remote instance opened in this run, by id: shown
+    /// again with what they read, and read again behind it.
+    remote_pages: HashMap<String, Entity<remote_pages::RemotePages>>,
+    /// Statistics, by instance (None: this computer), kept for the run.
+    stats: HashMap<Option<String>, Entity<stats::StatsPage>>,
+    /// The Licence page, by instance (None: this computer).
+    licence: HashMap<Option<String>, Entity<licence::LicencePage>>,
+    /// Files, by the instance open when it was made (None: this computer).
+    files: HashMap<Option<String>, Entity<files::FilesPage>>,
     /// Takes the keyboard while a dialog is open (Escape closes it).
     modal_focus: FocusHandle,
     /// The instance switcher's menu is open.
@@ -214,6 +227,21 @@ pub struct Manager {
     move_gen: usize,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
+}
+
+/// Switch timing (SPM_DEBUG_SWITCH=1): when the last switch started, for
+/// the frames that follow it.
+thread_local!(static SWITCH_AT: std::cell::Cell<Option<(std::time::Instant, u32)>> = const { std::cell::Cell::new(None) });
+
+/// Logs how long open_instance itself took (work on the UI thread).
+struct SwitchTiming(std::time::Instant, Option<String>);
+impl Drop for SwitchTiming {
+    fn drop(&mut self) {
+        if std::env::var_os("SPM_DEBUG_SWITCH").is_some() {
+            eprintln!("SWITCH start to={} open_instance_ms={:.2}", self.1.as_deref().unwrap_or("local"), self.0.elapsed().as_secs_f64() * 1000.);
+            SWITCH_AT.with(|s| s.set(Some((self.0, 0))));
+        }
+    }
 }
 
 /// The bell's events as saved (the tray's menu reads them without a window).
@@ -287,10 +315,14 @@ impl Manager {
             remotes: crate::remote::load(),
             open_remote: None,
             remote_monitor: None,
-            remote_pages: None,
-            stats: None,
-            licence: None,
-            files: None,
+            remote_monitor_stale: false,
+            monitor_cache: HashMap::new(),
+            open_gen: 0,
+            fresh: HashSet::new(),
+            remote_pages: HashMap::new(),
+            stats: HashMap::new(),
+            licence: HashMap::new(),
+            files: HashMap::new(),
             modal_focus: cx.focus_handle(),
             strip: strip.clone(),
             switcher_open: false,
@@ -833,7 +865,7 @@ impl Manager {
         // while the server is being read or does not answer.
         let status_green: Hsla = rgb(0x3ddc84).into();
         let serving = match &remote {
-            Some(r) => self.remote_pages.as_ref().and_then(|p| p.read(cx).serving()).or_else(|| crate::bg_app::serving(Some(&r.id), cx)),
+            Some(r) => self.remote_pages.get(&r.id).and_then(|p| p.read(cx).serving()).or_else(|| crate::bg_app::serving(Some(&r.id), cx)),
             None => crate::bg_app::serving(None, cx),
         };
         // The dot is the open instance's health (the mockup's S8): green
@@ -843,7 +875,7 @@ impl Manager {
         let installed = remote.is_some() || self.record.is_some();
         let (state_dot, state_why): (Hsla, &'static str) = if !installed {
             (rgb(0x94a3b8).into(), "SENTIENT isn't installed on this computer")
-        } else if remote.is_some() && self.remote_monitor.is_none() {
+        } else if remote.is_some() && (self.remote_monitor.is_none() || self.remote_monitor_stale) {
             (rgb(0x94a3b8).into(), "The server does not answer, or is being read")
         } else if serving == Some(false) {
             (rgb(0xef4444).into(), "SENTIENT is stopped")
@@ -1209,22 +1241,55 @@ impl Manager {
     /// Switch to an instance (None: this computer). Remote instances are
     /// worked on from their card on Instances for now.
     fn open_instance(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+        let t0 = std::time::Instant::now();
+        let _timing = SwitchTiming(t0, id.clone());
         if id.is_some() {
             self.page = Page::Status;
         }
+        // The pages kept for the instance being left stop their own
+        // reading (logs, statistics) until it is opened again.
+        let left = self.open_remote.clone();
+        if left != id {
+            if let Some(p) = left.as_ref().and_then(|l| self.remote_pages.get(l)).cloned() {
+                p.update(cx, |p, cx| p.set_hidden(true, cx));
+            }
+            if let Some(p) = self.stats.get(&left).cloned() {
+                p.update(cx, |p, _| p.set_paused(true));
+            }
+        }
         self.open_remote = id.clone();
-        self.remote_monitor = None;
-        self.remote_pages = None;
+        self.open_gen += 1;
+        self.fresh.clear();
+        // The top bar shows the last reading at once (none on a first open).
+        self.remote_monitor = id.as_ref().and_then(|id| self.monitor_cache.get(id).copied());
+        self.remote_monitor_stale = false;
+        if id.is_none() {
+            for page in self.status.clone() {
+                page.update(cx, |p, cx| p.refresh(cx));
+            }
+        }
         if let Some(inst) = id.as_ref().and_then(|id| self.remotes.iter().find(|r| &r.id == id)).cloned() {
-            // Read it every few seconds while it stays open.
+            // Read it every few seconds while it stays open. Each reading is
+            // for this instance and this opening (`gen`): one that comes
+            // back after a switch is dropped.
+            let gen = self.open_gen;
             let task = cx.spawn(async move |this, cx| loop {
                 let i = inst.clone();
                 let m = cx.background_executor().spawn(async move { crate::remote::monitor(&i).ok() }).await;
                 let still_open = this
                     .update(cx, |page, cx| {
-                        let open = page.open_remote.as_deref() == Some(inst.id.as_str());
+                        let open = page.open_gen == gen && page.open_remote.as_deref() == Some(inst.id.as_str());
                         if open {
-                            page.remote_monitor = m;
+                            match m {
+                                Some(m) => {
+                                    page.remote_monitor = Some(m);
+                                    page.remote_monitor_stale = false;
+                                    page.monitor_cache.insert(inst.id.clone(), m);
+                                }
+                                // No answer: the last reading stays, the
+                                // dot says it does not answer.
+                                None => page.remote_monitor_stale = true,
+                            }
                             cx.notify();
                         }
                         open
@@ -1244,6 +1309,21 @@ impl Manager {
             });
         }
         cx.notify();
+    }
+
+    /// The instance list changed: what is kept for an instance that went,
+    /// or whose connection changed, goes too.
+    fn prune_kept(&mut self, before: &[crate::remote::Instance]) {
+        let same = |a: &crate::remote::Instance| self.remotes.iter().any(|b| b.id == a.id && serde_json::to_string(a).ok() == serde_json::to_string(b).ok());
+        let gone: Vec<String> = before.iter().filter(|a| !same(a)).map(|a| a.id.clone()).collect();
+        for id in gone {
+            self.remote_pages.remove(&id);
+            self.monitor_cache.remove(&id);
+            let k = Some(id);
+            self.stats.remove(&k);
+            self.licence.remove(&k);
+            self.files.remove(&k);
+        }
     }
 
     /// The Update screen, made when first needed.
@@ -1478,10 +1558,9 @@ impl Manager {
                 }
             }
             Some(id) => {
-                if self.open_remote.as_ref() == Some(&id) {
-                    for page in self.remote_pages.clone() {
-                        page.update(cx, |p, cx| p.after_job(cx));
-                    }
+                // A kept page of an instance not open now reads again too.
+                if let Some(page) = self.remote_pages.get(&id).cloned() {
+                    page.update(cx, |p, cx| p.after_job(cx));
                 }
             }
         }
@@ -1581,44 +1660,77 @@ impl Manager {
             }
         }
         // Statistics: the same view for this computer and a server.
+        // Files, Statistics and Licence: one page per instance, kept for the
+        // run; one kept from before reads again the first time it shows
+        // after a switch.
+        let again = self.fresh.insert(self.page);
         if self.page == Page::Files {
             let key = self.open_remote.clone();
-            if self.files.as_ref().is_none_or(|(k, _)| *k != key) {
-                let inst = key.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned();
-                self.files = Some((key, cx.new(|cx| files::FilesPage::new(inst, cx))));
-            }
-            return self.files.as_ref().map(|(_, p)| p.clone().into_any_element()).unwrap_or_else(|| div().into_any_element());
+            let page = match self.files.get(&key).cloned() {
+                Some(p) => {
+                    if again {
+                        p.update(cx, |p, cx| p.reshow(cx));
+                    }
+                    p
+                }
+                None => {
+                    let inst = key.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned();
+                    let p = cx.new(|cx| files::FilesPage::new(inst, cx));
+                    self.files.insert(key, p.clone());
+                    p
+                }
+            };
+            return page.into_any_element();
         }
         if self.page == Page::Statistics {
             let key = self.open_remote.clone();
-            if self.stats.as_ref().is_none_or(|(k, _)| *k != key) {
-                let src = match key.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
-                    Some(inst) => stats::Source::Remote(inst),
-                    None => stats::Source::Local(record.clone()),
-                };
-                self.stats = Some((key, cx.new(|cx| stats::StatsPage::new(src, cx))));
-            }
-            return self.stats.as_ref().map(|(_, p)| p.clone().into_any_element()).unwrap_or_else(|| div().into_any_element());
+            let page = match self.stats.get(&key).cloned() {
+                Some(p) => {
+                    if again {
+                        p.update(cx, |p, cx| p.reshow(cx));
+                    }
+                    p
+                }
+                None => {
+                    let src = match key.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
+                        Some(inst) => stats::Source::Remote(inst),
+                        None => stats::Source::Local(record.clone()),
+                    };
+                    let p = cx.new(|cx| stats::StatsPage::new(src, cx));
+                    self.stats.insert(key, p.clone());
+                    p
+                }
+            };
+            return page.into_any_element();
         }
         // Licence: the same view for this computer and a server.
         if self.page == Page::Licence {
             let key = self.open_remote.clone();
-            if self.licence.as_ref().is_none_or(|(k, _)| *k != key) {
-                let (target, name) = match key.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
-                    Some(inst) => {
-                        let n = inst.name.clone();
-                        (crate::licence::Target::Remote(inst), n)
+            let page = match self.licence.get(&key).cloned() {
+                Some(p) => {
+                    if again {
+                        p.update(cx, |p, cx| p.reshow(cx));
                     }
-                    None => (crate::licence::Target::Local(record.clone()), "this computer".to_string()),
-                };
-                let page = cx.new(|cx| licence::LicencePage::new(target, name, window, cx));
-                self._subscriptions.push(cx.subscribe(&page, |this, _, _: &licence::GoSettings, cx| {
-                    this.page = Page::Settings;
-                    cx.notify();
-                }));
-                self.licence = Some((key, page));
-            }
-            return self.licence.as_ref().map(|(_, p)| p.clone().into_any_element()).unwrap_or_else(|| div().into_any_element());
+                    p
+                }
+                None => {
+                    let (target, name) = match key.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
+                        Some(inst) => {
+                            let n = inst.name.clone();
+                            (crate::licence::Target::Remote(inst), n)
+                        }
+                        None => (crate::licence::Target::Local(record.clone()), "this computer".to_string()),
+                    };
+                    let page = cx.new(|cx| licence::LicencePage::new(target, name, window, cx));
+                    self._subscriptions.push(cx.subscribe(&page, |this, _, _: &licence::GoSettings, cx| {
+                        this.page = Page::Settings;
+                        cx.notify();
+                    }));
+                    self.licence.insert(key, page.clone());
+                    page
+                }
+            };
+            return page.into_any_element();
         }
         if let Some(r) = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
             let kind = match self.page {
@@ -1633,15 +1745,17 @@ impl Manager {
                 _ => None,
             };
             if let Some(kind) = kind {
-                let page = match &self.remote_pages {
+                let page = match self.remote_pages.get(&r.id).cloned() {
+                    // Kept from an earlier opening: what it read shows at
+                    // once, read again behind it.
                     Some(p) => {
-                        p.update(cx, |p, cx| p.show(kind, cx));
-                        p.clone()
+                        p.update(cx, |p, cx| if again { p.reshow(kind, cx) } else { p.show(kind, cx) });
+                        p
                     }
                     None => {
                         let updates = self.updates.clone();
                         let p = cx.new(|cx| remote_pages::RemotePages::new(r.clone(), kind, updates, window, cx));
-                        self.remote_pages = Some(p.clone());
+                        self.remote_pages.insert(r.id.clone(), p.clone());
                         p
                     }
                 };
@@ -1680,7 +1794,8 @@ impl Manager {
                         this.open_instance(e.0.clone(), cx);
                     }));
                     self._subscriptions.push(cx.subscribe(&page, |this, _, _: &instances::ListChanged, cx| {
-                        this.remotes = crate::remote::load();
+                        let before = std::mem::replace(&mut this.remotes, crate::remote::load());
+                        this.prune_kept(&before);
                         if this.open_remote.as_ref().is_some_and(|id| !this.remotes.iter().any(|r| &r.id == id)) {
                             this.open_remote = None;
                         }
@@ -1903,6 +2018,24 @@ impl Manager {
             eprintln!("LAYOUT-FRAME {:.0} {:.0}", f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
         }
         let content = self.content(window, cx);
+        // Switch timing: each frame after a switch until the page shows
+        // its data (render done, and the next frame's start ≈ presented).
+        if let Some((t0, n)) = SWITCH_AT.with(|s| s.get()) {
+            let data = match &self.open_remote {
+                Some(id) => self.remote_pages.get(id).is_some_and(|p| p.read(cx).has_data()),
+                None => self.page != Page::Status || self.status.as_ref().is_some_and(|p| p.read(cx).has_data()),
+            };
+            let ms = t0.elapsed().as_secs_f64() * 1000.;
+            eprintln!("SWITCH frame={} render_ms={ms:.2} data={data}", n + 1);
+            if data {
+                SWITCH_AT.with(|s| s.set(None));
+                window.on_next_frame(move |_, _| eprintln!("SWITCH next_frame_ms={:.2}", t0.elapsed().as_secs_f64() * 1000.));
+            } else if n < 400 {
+                SWITCH_AT.with(|s| s.set(Some((t0, n + 1))));
+            } else {
+                SWITCH_AT.with(|s| s.set(None));
+            }
+        }
         self.run_pending(cx);
         let layer = crate::modal::layer(window, cx, menu_w, shell::BAR_H);
         if layer.is_some() && window.focused(cx).is_none() {

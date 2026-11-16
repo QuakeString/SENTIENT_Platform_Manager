@@ -108,6 +108,13 @@ struct Pane {
     rename: Option<(String, Entity<InputState>)>,
     new_folder: Option<Entity<InputState>>,
     seq: u64,
+    /// Every folder listed in this run, by path: shown at once when it is
+    /// opened again, while it is listed again behind it.
+    seen: std::collections::HashMap<String, Listing>,
+    /// A re-list failed while the listing read before still shows.
+    stale: Option<String>,
+    /// When the listing last came back (HH:MM).
+    updated_at: Option<String>,
     /// Size, Modified, Owner widths (dragged in the header).
     cols: [f32; 3],
     /// The pane's width as last drawn (which columns fit).
@@ -132,6 +139,9 @@ impl Pane {
             rename: None,
             new_folder: None,
             seq: 0,
+            seen: Default::default(),
+            stale: None,
+            updated_at: None,
             cols: COLS,
             width: Rc::new(std::cell::Cell::new(0.)),
         }
@@ -309,6 +319,16 @@ impl FilesPage {
         self._tasks.push(task);
     }
 
+    /// Shown again after another instance was open: both sides are listed
+    /// again behind what shows.
+    pub fn reshow(&mut self, cx: &mut Context<Self>) {
+        for side in 0..2 {
+            if !self.panes[side].loading {
+                self.reload(side, cx);
+            }
+        }
+    }
+
     /// List `path` (empty: home), and pick `select` in it.
     fn load(&mut self, side: usize, path: String, select: Option<String>, cx: &mut Context<Self>) {
         let pane = &mut self.panes[side];
@@ -320,6 +340,15 @@ impl FilesPage {
         let seq = pane.seq;
         pane.loading = true;
         pane.error = None;
+        // A folder listed before shows at once (its selection starts afresh).
+        if let Some(l) = pane.seen.get(&path).filter(|l| pane.listing.as_ref().is_none_or(|c| c.path != l.path)).cloned() {
+            pane.selected.clear();
+            pane.anchor = None;
+            pane.rename = None;
+            pane.path = l.path.clone();
+            pane.listing = Some(l);
+        }
+        let asked = path.clone();
         let first = pane.shortcuts.is_empty();
         self.run(
             side,
@@ -351,8 +380,17 @@ impl FilesPage {
                         if let Some(s) = select.filter(|s| names.contains(s)) {
                             pane.selected = [s].into();
                         }
+                        pane.seen.insert(l.path.clone(), l.clone());
+                        if !asked.is_empty() && asked != l.path {
+                            pane.seen.insert(asked, l.clone());
+                        }
+                        pane.stale = None;
+                        pane.updated_at = Some(chrono::Local::now().format("%H:%M").to_string());
                         pane.listing = Some(l);
                     }
+                    // The folder shown is the one asked for: it stays,
+                    // said softly to be stale.
+                    Err(e) if pane.listing.as_ref().is_some_and(|l| l.path == asked) => pane.stale = Some(e),
                     Err(e) => pane.error = Some(e),
                 }
                 cx.notify();
@@ -1145,12 +1183,20 @@ impl Render for FilesPage {
             let names: Vec<String> = self.panes[0].selected.iter().cloned().collect();
             div().absolute().top(px(250.)).left(px(120.)).child(drag_card(&theme, &names, false))
         });
-        let refresh = crate::ui::button("f-reload").outline().icon(IconName::RefreshCw).tooltip(if single { "Read the folder again" } else { "Read both sides again" }).on_click(cx.listener(|this, _, _, cx| {
-            this.reload(0, cx);
-            if !this.single {
-                this.reload(1, cx);
-            }
-        }));
+        let me = cx.entity().downgrade();
+        let shown = if single { 1 } else { 2 };
+        let busy = self.panes[..shown].iter().any(|p| p.loading);
+        let refresh = crate::ui::refresh_button("f-reload", busy, window, move |_, cx| {
+            me.update(cx, |this, cx| {
+                this.reload(0, cx);
+                if !this.single {
+                    this.reload(1, cx);
+                }
+            })
+            .ok();
+        });
+        let dbg = ui::debug_stale();
+        let stale = self.panes[..shown].iter().find_map(|p| p.stale.as_deref().map(|e| (e, p.updated_at.as_deref()))).or(dbg.as_deref().map(|e| (e, Some("21:05")))).filter(|_| !busy).map(|(e, at)| ui::stale_note(&theme, "files-stale", e, at));
         let panes = if single {
             v_flex().flex_1().min_h_0().child(left).into_any_element()
         } else if narrow {
@@ -1220,7 +1266,7 @@ impl Render for FilesPage {
             .gap(px(ui::GAP))
             .bg(theme.muted)
             .when(narrow, |p| p.overflow_y_scroll())
-            .child(h_flex().min_h(px(32.)).items_center().child(div().flex_1().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Files")).child(refresh))
+            .child(h_flex().min_h(px(32.)).items_center().child(div().flex_1().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Files")).child(h_flex().gap_3().items_center().children(stale).child(refresh)))
             .child(panes);
         // The short note, bottom centre over the page (fades in).
         let toast = self.toast.as_ref().map(|(text, _)| {

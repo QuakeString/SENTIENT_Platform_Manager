@@ -249,6 +249,31 @@ pub fn page_with(theme: &Theme, title: &'static str, summary: &'static str, acti
     )
 }
 
+/// A refresh that failed while the page keeps what it read before: a muted
+/// "Couldn't refresh · last updated HH:MM" beside the title's Refresh, the
+/// reason in its (i). One line, cut rather than wrapped.
+/// Screens: every page with data shows its stale note (SPM_DEBUG_STALE=<why>).
+pub fn debug_stale() -> Option<String> {
+    if cfg!(debug_assertions) { std::env::var("SPM_DEBUG_STALE").ok() } else { None }
+}
+
+pub fn stale_note(theme: &Theme, id: &'static str, why: &str, at: Option<&str>) -> AnyElement {
+    let text = match at {
+        Some(t) => format!("Couldn't refresh · last updated {t}"),
+        None => "Couldn't refresh".to_string(),
+    };
+    h_flex()
+        .gap_1()
+        .items_center()
+        .min_w_0()
+        .flex_shrink(1.)
+        .text_sm()
+        .text_color(theme.muted_foreground)
+        .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(text))
+        .child(info(SharedString::from(id), SharedString::from(why.to_string())))
+        .into_any_element()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Good,

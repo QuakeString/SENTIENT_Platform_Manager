@@ -220,8 +220,14 @@ impl StatusPage {
         page
     }
 
-    /// Read the services now (after an action), apart from the poll.
-    fn refresh(&mut self, cx: &mut Context<Self>) {
+    /// Switch timing (SPM_DEBUG_SWITCH): the page shows what it read.
+    pub(crate) fn has_data(&self) -> bool {
+        self.snapshot.is_some() || (self.record.is_none() && self.found.is_some())
+    }
+
+    /// Read the services now (after an action, or shown again), apart from
+    /// the poll.
+    pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         let task = cx.spawn(async move |this, cx| {
             let snapshot = cx.background_executor().spawn(async move { record.platform().snapshot() }).await;
