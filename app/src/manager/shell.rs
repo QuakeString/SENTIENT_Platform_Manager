@@ -231,6 +231,25 @@ pub(crate) fn row_probe(id: &'static str) -> impl IntoElement {
     .inset_0()
 }
 
+/// Layout tests: the row drawn selected, by its page id (`LAYOUT menu-on
+/// <id> l r t b`; check.py holds it to the route's `LAYOUT-NAV selected=`).
+fn selected_probe(id: &'static str) -> impl IntoElement {
+    let on = cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_LAYOUT").is_some();
+    div().absolute().inset_0().when(on, move |d| {
+        d.child(
+            canvas(
+                move |b, _, _| {
+                    let (l, r) = (f32::from(b.origin.x), f32::from(b.origin.x + b.size.width));
+                    let (t, bt) = (f32::from(b.origin.y), f32::from(b.origin.y + b.size.height));
+                    eprintln!("LAYOUT menu-on {id} {l:.0} {r:.0} {t:.0} {bt:.0}");
+                },
+                |_, _, _, _| {},
+            )
+            .size_full(),
+        )
+    })
+}
+
 /// Notes the menu's edges.
 /// Open over the page, the page's edge is the rail slot's (`slot`).
 pub(crate) fn menu_probe(left_pad: f32, slot: Option<f32>) -> impl IntoElement {
@@ -428,7 +447,10 @@ impl Manager {
         let overlay_t = if overlay { ((menu_w - MENU_FOLDED_W) / (MENU_W - MENU_FOLDED_W)).clamp(0., 1.) } else { 0. };
         self.overlay_t.set(overlay_t);
         let motion = !ui::reduce_motion();
-        let active: &'static str = if self.page == Page::Instances { "instances" } else if self.page == Page::About { "about" } else { self.page.id() };
+        // The page whose row is selected: a sub-flow's parent while it
+        // shows (Manager::menu_page).
+        let current = self.menu_page();
+        let active: &'static str = current.id();
         let left_pad = if rail { MENU_PAD } else { MENU_PAD_OPEN };
         // The selected row's name: the primary colour; in dark lifted 40 %
         // toward white. Teal on the dark selection was 5:1 against 9.6:1
@@ -459,12 +481,13 @@ impl Manager {
                 .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))
                 .child(row_probe(id))
                 .child(ui::layout_probe("menu-row"))
+                .when(on, |r| r.child(selected_probe(id)))
                 .child(div().relative().flex_shrink_0().child(icon.size(px(ICON)).text_color(if on { theme.primary } else { theme.muted_foreground })).child(ui::layout_probe("menu-icon")))
                 .when(!rail, |r| r.child(div().relative().whitespace_nowrap().opacity(names).child(title.clone()).child(ui::layout_probe(if on { "menu-label-on" } else { "menu-label" }))))
                 .when(rail, move |r| r.tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(title.clone()).build(w, cx)))
         };
         let items = Page::ALL.into_iter().map(|page| {
-            row(page.id(), page.icon(), page.title().into(), page == self.page)
+            row(page.id(), page.icon(), page.title().into(), page == current)
                 // Files is new in this release (the mockup's pill).
                 .when(page == Page::Files && !rail, |r| {
                     r.child(div().flex_1()).child(div().px(px(7.)).rounded_full().bg(theme.muted).text_size(px(11.)).text_color(theme.muted_foreground).child("New"))
@@ -484,7 +507,7 @@ impl Manager {
                 });
             }))
         });
-        let instances = row("instances", Page::Instances.icon(), Page::Instances.title().into(), self.page == Page::Instances)
+        let instances = row("instances", Page::Instances.icon(), Page::Instances.title().into(), current == Page::Instances)
             .when(!self.remotes.is_empty() && !rail, |r| {
                 r.child(div().flex_1()).child(div().relative().text_size(px(13.)).text_color(theme.muted_foreground).child((self.remotes.len() + 1).to_string()))
             })
@@ -601,7 +624,7 @@ impl Manager {
         // when one is waiting; the preferences button (About and
         // preferences).
         let footer = {
-            let on = self.page == Page::About;
+            let on = current == Page::About;
             let update = self.updates.read(cx).notices().1.is_some();
             let prefs = div()
                 .id("prefs")

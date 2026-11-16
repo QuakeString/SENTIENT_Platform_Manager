@@ -144,8 +144,40 @@ impl Page {
     }
 }
 
+/// A sub-flow: a wizard, sheet or detail view that takes the place of the
+/// page it was opened from ("Move data to another disk" from Migration,
+/// Status, Backup and restore or Platform settings). It belongs to that
+/// page: the menu keeps the page selected while the flow shows, the flow
+/// shows whenever the page is open on its instance, and the flow's back
+/// arrow (or Cancel, Done) closes it onto that page again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubKind {
+    MoveData,
+}
+
+impl SubKind {
+    fn id(self) -> &'static str {
+        match self {
+            SubKind::MoveData => "movedata",
+        }
+    }
+}
+
+/// The open sub-flow and the page (and instance) it was opened from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SubFlow {
+    kind: SubKind,
+    parent: Page,
+    instance: Option<String>,
+    /// Which opening of the flow (its entity): the same one asked for again
+    /// shows its own parent instead of moving to this page.
+    token: u64,
+}
+
 pub struct Manager {
     page: Page,
+    /// The sub-flow open over a page, if any (see [`SubFlow`]).
+    sub: Option<SubFlow>,
     record: Option<InstallationRecord>,
     status: Option<Entity<status::StatusPage>>,
     logs: Option<Entity<logs::LogsPage>>,
@@ -224,7 +256,8 @@ pub struct Manager {
     /// (crate::background): `backup`, `control:<verb>`.
     pending: Option<String>,
     /// The "Move data to another disk" flow last seen opened
-    /// (movedata::generation): a new one shows Platform settings.
+    /// (movedata::generation): a new opening is a sub-flow of the page it
+    /// was opened from.
     move_gen: usize,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
@@ -302,6 +335,7 @@ impl Manager {
         let found_notice = record.is_some() && crate::updates::take_found_installation();
         let mut manager = Self {
             page,
+            sub: None,
             record,
             status: None,
             logs: None,
@@ -361,9 +395,11 @@ impl Manager {
             manager.open_instance(Some(id), cx);
             manager.page = page;
         }
-        // Screens: "Move data to another disk" at a frame of its mockup.
+        // Screens: "Move data to another disk" at a frame of its mockup, or
+        // (layout tests) at a step of the wizard with the canned server
+        // (SPM_DEBUG_MOVE_STEP=what|disk|folder|plan|run), over `--page`.
         #[cfg(debug_assertions)]
-        if std::env::var("SPM_DEBUG_MOVEDATA_FRAME").is_ok_and(|f| !matches!(f.as_str(), "M1" | "M2" | "M3" | "M13" | "M14")) {
+        if std::env::var("SPM_DEBUG_MOVEDATA_FRAME").is_ok_and(|f| !matches!(f.as_str(), "M1" | "M2" | "M3" | "M13" | "M14")) || std::env::var_os("SPM_DEBUG_MOVE_STEP").is_some() {
             let target = match manager.open_remote.as_ref().and_then(|id| manager.remotes.iter().find(|r| &r.id == id)).cloned() {
                 Some(inst) => crate::movedata::Target::Remote(inst),
                 None => crate::movedata::Target::Local,
@@ -1405,6 +1441,43 @@ impl Manager {
         }
     }
 
+    /// Open a sub-flow over the page it was opened from: the page shown now,
+    /// or, opened from another sub-flow, that one's parent. Opened again
+    /// (a move still running elsewhere), it shows its own parent.
+    fn open_sub(&mut self, kind: SubKind, token: u64) {
+        let instance = self.open_remote.clone();
+        if let Some(s) = self.sub.as_ref().filter(|s| s.kind == kind && s.instance == instance && s.token == token) {
+            self.page = s.parent;
+            return;
+        }
+        let parent = self.menu_page();
+        self.sub = Some(SubFlow { kind, parent, instance, token });
+        self.page = parent;
+    }
+
+    /// The sub-flow shown now: open on this page and instance.
+    fn shown_sub(&self) -> Option<&SubFlow> {
+        self.sub.as_ref().filter(|s| s.parent == self.page && s.instance == self.open_remote)
+    }
+
+    /// The menu row to select: a sub-flow's parent page while it shows, or
+    /// the page itself.
+    fn menu_page(&self) -> Page {
+        self.shown_sub().map(|s| s.parent).unwrap_or(self.page)
+    }
+
+    /// A sub-flow that closed itself (its back arrow on the first step,
+    /// Cancel, Done) is forgotten; its parent page shows again.
+    fn drop_closed_sub(&mut self, cx: &App) {
+        let Some(s) = &self.sub else { return };
+        let open = match s.kind {
+            SubKind::MoveData => movedata::shown(s.instance.as_ref(), cx).is_some(),
+        };
+        if !open {
+            self.sub = None;
+        }
+    }
+
     /// The Update screen, made when first needed.
     fn update_page(&mut self, cx: &mut Context<Self>) -> Entity<update::UpdatePage> {
         let record = self.record.clone();
@@ -1732,10 +1805,14 @@ impl Manager {
 
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let record = self.record.clone();
-        // "Move data to another disk", in Platform settings' place while open.
-        if self.page == Page::Settings {
-            if let Some(flow) = movedata::shown(self.open_remote.as_ref(), cx) {
-                return flow.into_any_element();
+        // A sub-flow in its parent page's place while open.
+        if let Some(sub) = self.shown_sub().cloned() {
+            match sub.kind {
+                SubKind::MoveData => {
+                    if let Some(flow) = movedata::shown(sub.instance.as_ref(), cx) {
+                        return flow.into_any_element();
+                    }
+                }
             }
         }
         // Statistics: the same view for this computer and a server.
@@ -2052,15 +2129,16 @@ impl Manager {
                 self.page = p;
             }
         }
-        // "Move data to another disk" was opened (Platform settings shows
-        // it), or asked for another page.
+        // "Move data to another disk" was opened (a sub-flow of the page it
+        // was opened from), or asked for another page.
         let gen = movedata::generation(cx);
         if gen != self.move_gen {
             self.move_gen = gen;
-            if gen != 0 {
-                self.page = Page::Settings;
+            if let Some(token) = movedata::open_flow(self.open_remote.as_ref(), cx) {
+                self.open_sub(SubKind::MoveData, token);
             }
         }
+        self.drop_closed_sub(cx);
         if let Some(p) = movedata::take_go() {
             self.page = match p {
                 "files" => Page::Files,
@@ -2092,6 +2170,17 @@ impl Manager {
         #[cfg(debug_assertions)]
         if std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
             eprintln!("LAYOUT-FRAME {:.0} {:.0}", f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
+            // The route: the page, the sub-flow shown over it and its parent,
+            // and the menu row that should be selected (check.py compares
+            // it with the row drawn selected, `LAYOUT menu-on`).
+            let sub = self.shown_sub();
+            eprintln!(
+                "LAYOUT-NAV page={} sub={} parent={} selected={}",
+                self.page.id(),
+                sub.map(|s| s.kind.id()).unwrap_or("-"),
+                sub.map(|s| s.parent.id()).unwrap_or("-"),
+                self.menu_page().id()
+            );
         }
         let content = self.content(window, cx);
         // Switch timing: each frame after a switch until the page shows

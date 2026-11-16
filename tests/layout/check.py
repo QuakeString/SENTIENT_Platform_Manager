@@ -92,6 +92,53 @@ def bar_controls(log):
     return [tuple(float(x) for x in l.split()[2:]) for l in lines[start + 1:end] if l.startswith("LAYOUT bar-ctrl ")]
 
 
+def menu_route(log):
+    """The menu's selection in the last complete frame: what the route says
+    (`LAYOUT-NAV page= sub= parent= selected=`, printed right after the
+    frame mark) and the rows drawn selected (`LAYOUT menu-on <id> ...`).
+    Returns (route dict or None, [selected row ids])."""
+    lines = open(log, errors="replace").read().splitlines()
+    marks = [i for i, l in enumerate(lines) if l.startswith("LAYOUT-FRAME ")]
+    if not marks:
+        return None, []
+    start = marks[-2] if len(marks) > 1 else marks[-1]
+    end = marks[-1] if len(marks) > 1 else len(lines)
+    route, rows = None, []
+    for l in lines[start + 1:end]:
+        if l.startswith("LAYOUT-NAV "):
+            route = dict(kv.split("=", 1) for kv in l.split()[1:])
+        elif l.startswith("LAYOUT menu-on "):
+            rows.append(l.split()[2])
+    return route, sorted(set(rows))
+
+
+def route_findings(log):
+    """A sub-flow keeps the menu on the page it was opened from: the row
+    drawn selected is the route's, and with a sub-flow open that is its
+    parent. EXPECT_SUB / EXPECT_MENU (run.sh, for a sub-flow's renders):
+    that sub-flow is open and that page's row is the one selected."""
+    route, rows = menu_route(log)
+    out = []
+    want_sub, want_menu = os.environ.get("EXPECT_SUB"), os.environ.get("EXPECT_MENU")
+    if route is None:
+        if want_sub or want_menu:
+            out.append("menu: no LAYOUT-NAV line in the frame")
+        return out
+    sel = route.get("selected")
+    if route.get("sub", "-") != "-" and sel != route.get("parent"):
+        out.append(f"menu: {sel} selected while the sub-flow {route.get('sub')} of {route.get('parent')} is open")
+    if rows and rows != [sel]:
+        out.append(f"menu: row(s) {', '.join(rows)} drawn selected, the route says {sel}")
+    if want_sub and route.get("sub") != want_sub:
+        out.append(f"menu: sub-flow {route.get('sub')} open, expected {want_sub}")
+    if want_menu:
+        if sel != want_menu:
+            out.append(f"menu: {sel} selected, expected {want_menu}")
+        if rows != [want_menu]:
+            out.append(f"menu: row(s) {', '.join(rows) or 'none'} drawn selected, expected {want_menu}")
+    return out
+
+
 PAGE_GAP = 18.0
 
 
@@ -270,6 +317,8 @@ def main():
         print(f"{png}: no layout lines (SPM_DEBUG_LAYOUT not on?)")
         return 1
     bad = []
+    # The menu's selected row follows the route (a sub-flow: its parent).
+    bad.extend(route_findings(log))
     # The bar over the page (the shell's 60 px).
     top_bar = 60 * scale
     # A window with a bar under the page (Setup's buttons) reports where the

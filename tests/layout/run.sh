@@ -10,6 +10,8 @@
 #
 # fields.py checks the settings card's fields line up and its Apply bar sits
 # at the card's bottom (PENDING sets the states shown with the bar).
+# MOVE_STEPS (default: every step of "Move data to another disk") and
+# MOVE_WIDTHS add that wizard's renders; empty MOVE_STEPS leaves them out.
 #
 # Needs Xvfb and ImageMagick's import. Exit status 1 on any finding.
 set -u
@@ -57,7 +59,9 @@ one() { # where page width scale theme [dialog env]
   # The page's overflow, and the menu's icons on x = 32 (folded below
   # 1000 px, unfolded above).
   local only=(); [ "$where" = setup ] && only=(buttons)
-  { python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" "${only[@]}" && { [ "$where" = setup ] || python3 "$HERE/icons.py" "$OUT/$name.log"; } && python3 "$HERE/fields.py" "$OUT/$name.log" "$dlg"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
+  # A sub-flow's render: it is open, and the menu keeps its parent page.
+  local expect=(); case "$dlg" in SPM_DEBUG_MOVE_STEP=*) expect=(EXPECT_SUB=movedata EXPECT_MENU="$page");; esac
+  { env "${expect[@]}" python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" "${only[@]}" && { [ "$where" = setup ] || python3 "$HERE/icons.py" "$OUT/$name.log"; } && python3 "$HERE/fields.py" "$OUT/$name.log" "$dlg"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
 }
 export -f one; export OUT HERE BIN PROFILE LOADING_PROFILE INSTANCE WAIT SPM_INSTALLATION_RECORD HOVER_INFO 2>/dev/null
 list=()
@@ -67,6 +71,11 @@ DIALOGS=${DIALOGS-"SPM_DEBUG_TAKEOVER=found SPM_DEBUG_LOG_DIALOG=1 SPM_DEBUG_PAR
 for g in $DIALOGS; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local status $w $s $t $g"); done; done; done; done
 # Add instance with its Setup guide open (Linux and Windows servers).
 for g in ${GUIDES-SPM_DEBUG_ADD_GUIDE=linux SPM_DEBUG_ADD_GUIDE=windows}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local instances $w $s $t $g"); done; done; done; done
+# "Move data to another disk" at each step, a sub-flow of Migration (the
+# canned server; the menu must keep Migration selected), from the minimum
+# width up through the narrow and rail layouts.
+MOVE_WIDTHS=${MOVE_WIDTHS:-"560 760 960 1200"}
+for g in ${MOVE_STEPS-SPM_DEBUG_MOVE_STEP=what SPM_DEBUG_MOVE_STEP=disk SPM_DEBUG_MOVE_STEP=folder SPM_DEBUG_MOVE_STEP=plan SPM_DEBUG_MOVE_STEP=run}; do for w in $MOVE_WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local migration $w $s $t $g"); done; done; done; done
 # Setup's window (its first step): the buttons' gaps only.
 [ "${SETUP:-1}" = 1 ] && for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("setup setup $w $s $t"); done; done; done
 if [ -n "${LOADING_PROFILE:-}" ]; then
