@@ -597,7 +597,7 @@ impl InstancesPage {
         let busy = self.job.read(cx).is_running();
         let refreshing = self.refreshing.contains(&id);
         let status = self.statuses.get(&id).cloned();
-        let (tone, state) = state_of(status.as_ref(), refreshing);
+        let (mut tone, mut state) = state_of(status.as_ref(), refreshing);
         let can_work = matches!(&status, Some(Ok(s)) if s.installed) && !busy;
         let can_read = matches!(&status, Some(Ok(s)) if s.installed);
         let not_set_up = matches!(&status, Some(Err(e)) if remote::needs_setup(e));
@@ -605,6 +605,15 @@ impl InstancesPage {
         // card offers to use it (the server's pages offer both choices).
         let use_installed = matches!(&status, Some(Err(e)) if remote::reuse::is_offer(e))
             && remote::reuse::found(&id).is_some_and(|f| remote::reuse::fit(&f.info, &remote::reuse::AgentInfo::this()) == remote::reuse::Fit::Compatible);
+        // Found and usable: say so, not "Not set up" (the older/newer note
+        // is the line under it).
+        if use_installed {
+            if let Some(f) = remote::reuse::found(&id) {
+                let v = if f.info.version.is_empty() { String::new() } else { format!(" {}", f.info.version) };
+                state = format!("Platform Manager{v} found");
+                tone = Tone::Neutral;
+            }
+        }
         let this = cx.entity().downgrade();
         let more = crate::ui::button(SharedString::from(format!("more-{id}"))).outline().w(px(28.)).h(px(28.)).icon(gpui_kit::component::Icon::new(IconName::Ellipsis).size(px(18.)).text_color(cx.theme().foreground)).tooltip("Work on this instance").dropdown_menu({
             let (this, id) = (this.clone(), id.clone());
@@ -641,7 +650,7 @@ impl InstancesPage {
                 move |this, _, _, cx| this.refresh(&id, cx)
             })).into_any_element()
         } else if use_installed {
-            crate::ui::button(SharedString::from(format!("use-installed-{id}"))).primary().h(px(28.)).label("Use it anyway").disabled(busy).on_click(cx.listener({
+            crate::ui::button(SharedString::from(format!("use-installed-{id}"))).primary().h(px(28.)).label("Use it").disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.use_installed(&id, cx)
             })).into_any_element()

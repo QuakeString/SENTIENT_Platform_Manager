@@ -2390,20 +2390,22 @@ mod tests {
         let user = c.find("$HOME/.local/share").unwrap();
         assert!(own < sys && sys < user, "{c}");
         assert!(c.contains(&format!("sudo -n sh -c '{} --job status-json'", reuse::LINUX_OWN)), "{c}");
-        // Run by a shell, the choice picks the right program.
-        let dir = std::env::temp_dir().join(format!("spm-pick-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let pick = pick_system_agent().replace(reuse::LINUX_OWN, &dir.join("own").display().to_string()).replace(REMOTE_SPM, &dir.join("sys").display().to_string());
-        let out = |s: &str| String::from_utf8(Command::new("sh").arg("-c").arg(format!("{s} echo $A")).output().unwrap().stdout).unwrap();
-        assert!(out(&pick).trim().ends_with("/sys"));
-        std::fs::write(dir.join("own"), "").unwrap();
+        // Run by a shell, the choice picks the right program. The script is
+        // the Linux server's (POSIX sh, exec bits, / paths): run it only on a
+        // unix host; the command-line checks above run everywhere.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            let dir = std::env::temp_dir().join(format!("spm-pick-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&dir);
+            let pick = pick_system_agent().replace(reuse::LINUX_OWN, &dir.join("own").display().to_string()).replace(REMOTE_SPM, &dir.join("sys").display().to_string());
+            let out = |s: &str| String::from_utf8(Command::new("sh").arg("-c").arg(format!("{s} echo $A")).output().unwrap().stdout).unwrap();
+            assert!(out(&pick).trim().ends_with("/sys"));
+            std::fs::write(dir.join("own"), "").unwrap();
             std::fs::set_permissions(dir.join("own"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(out(&pick).trim().ends_with("/own"));
+            let _ = std::fs::remove_dir_all(&dir);
         }
-        assert!(out(&pick).trim().ends_with("/own"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// An installed Platform Manager on the test bed is used as the agent,

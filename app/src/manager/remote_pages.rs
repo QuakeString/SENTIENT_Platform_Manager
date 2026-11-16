@@ -2130,7 +2130,7 @@ impl RemotePages {
             .child(if usable {
                 h_flex()
                     .gap_2()
-                    .child(crate::ui::button("r-use-installed").primary().label("Use it anyway").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.use_installed(cx))))
+                    .child(crate::ui::button("r-use-installed").primary().label("Use it").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.use_installed(cx))))
                     .child(set_up(false))
             } else if not_set_up || installed {
                 h_flex().gap_2().child(set_up(true))
