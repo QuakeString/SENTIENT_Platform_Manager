@@ -255,7 +255,7 @@ impl SettingsPage {
             new_name,
             new_value,
             search,
-            tab: Tab::Platform,
+            tab: super::session::load().settings_tab.and_then(|i| Tab::ALL.get(i).copied()).unwrap_or(Tab::Platform),
             group: None,
             changed_only: false,
             show_names: false,
@@ -1220,6 +1220,7 @@ impl Render for SettingsPage {
         let tabs = tab_bar(&theme, "", Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0), std::rc::Rc::new(move |i, cx| {
             this.update(cx, |p, cx| {
                 p.tab = Tab::ALL[i];
+                super::session::set_settings_tab(i);
                 cx.notify();
             })
             .ok();

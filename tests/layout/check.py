@@ -22,18 +22,31 @@ def frame_panels(log):
     lines = open(log, errors="replace").read().splitlines()
     marks = [i for i, l in enumerate(lines) if l.startswith("LAYOUT-FRAME ")]
     if not marks:
-        return None, []
+        return None, [], False
     # The last complete frame: from the last mark but one when the last
     # frame may still be printing, else the last mark.
     start = marks[-2] if len(marks) > 1 else marks[-1]
     end = marks[-1] if len(marks) > 1 else len(lines)
     w, h = (float(x) for x in lines[start].split()[1:3])
     panels = []
+    dialog = False
     for l in lines[start + 1:end]:
         p = l.split()
-        if len(p) == 6 and p[0] == "LAYOUT" and p[1] == "panel":
-            panels.append(tuple(float(x) for x in p[2:]))
-    return (w, h), sorted(set(panels))
+        # Cards, and dialogs' bodies (both keep 18-20 px inside their edge).
+        if len(p) == 6 and p[0] == "LAYOUT" and p[1] in ("panel", "dialog", "overlay"):
+            panels.append((p[1],) + tuple(float(x) for x in p[2:]))
+            dialog = dialog or p[1] == "dialog"
+    panels = sorted(set(panels))
+    # A dialog open: only its body counts (the page under it is covered).
+    # A floating panel (the bell, a popover): the cards it covers are skipped.
+    overlays = [q[1:] for q in panels if q[0] == "overlay"]
+    def covered(c):
+        return any(not (c[1] <= o[0] or c[0] >= o[1] or c[3] <= o[2] or c[2] >= o[3]) for o in overlays)
+    if dialog:
+        keep = [q[1:] for q in panels if q[0] == "dialog"]
+    else:
+        keep = [q[1:] for q in panels if q[0] == "panel" and not covered(q[1:])]
+    return (w, h), keep, dialog or bool(overlays)
 
 
 def differs(a, b):
@@ -44,12 +57,13 @@ def main():
     png, log, scale = sys.argv[1], sys.argv[2], float(sys.argv[3])
     im = Image.open(png).convert("RGB")
     W, H = im.size
-    size, panels = frame_panels(log)
+    size, panels, dialog = frame_panels(log)
     if size is None:
         print(f"{png}: no layout lines (SPM_DEBUG_LAYOUT not on?)")
         return 1
     bad = []
-    top_bar = 42 * scale
+    # The bar over the page (the shell's 72 px).
+    top_bar = 72 * scale
     for (l, r, t, b) in panels:
         L, R, T, B = (v * scale for v in (l, r, t, b))
         if R <= 0 or L >= W or B <= top_bar or T >= H or R - L < 80 * scale:
@@ -63,7 +77,19 @@ def main():
         if len(hits) >= MIN_PIXELS:
             x, y = hits[0]
             bad.append(f"card {l:.0f}-{r:.0f} x {t:.0f}-{b:.0f}: {len(hits)} px in its right padding, first at ({x / scale:.0f}, {y / scale:.0f})")
-    # The page's right margin, below the top bar.
+    # The bar's own right padding (16 px): nothing in it at any width.
+    bx0, bx1 = int(W - 13 * scale), int(W - 3 * scale)
+    bref = im.getpixel((W - int(8 * scale), int(4 * scale)))
+    bhits = [(x, y) for y in range(int(6 * scale), int(top_bar - 6 * scale), 2) for x in range(bx0, bx1) if differs(im.getpixel((x, y)), bref)]
+    if len(bhits) >= MIN_PIXELS:
+        x, y = bhits[0]
+        bad.append(f"bar edge: {len(bhits)} px in its right padding, first at ({x / scale:.0f}, {y / scale:.0f})")
+    # The page's right margin, below the top bar (not with a dialog open:
+    # a wide one covers it).
+    if dialog:
+        for b in bad:
+            print(f"{png.split('/')[-1]}: {b}")
+        return 1 if bad else 0
     x0, x1 = int(W - (PAGE_PAD - 3) * scale), int(W - 3 * scale)
     ref = im.getpixel((W - int(PAGE_PAD * scale / 2), H - int(6 * scale)))
     hits = [(x, y) for y in range(int(top_bar + 60 * scale), H - int(4 * scale), 2) for x in range(x0, x1) if differs(im.getpixel((x, y)), ref)]
