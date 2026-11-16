@@ -879,7 +879,7 @@ impl RemotePages {
                 .child(ui::card_fact_loading(theme, "Runs as", 70.))
                 .child(ui::card_fact_loading(theme, "Server", 220.))
                 .child(ui::card_fact_loading(theme, "Server agent", 160.))
-                .children(ui::card_foot(theme, control_buttons_loading(theme)))
+                .children(ui::card_actions(theme, control_buttons_loading(theme)))
         };
         let services = || {
             ui::panel(theme)
@@ -1040,7 +1040,7 @@ impl RemotePages {
                                     AgentRefresh::Idle => r,
                                 }),
                         )
-                        .children(ui::card_foot(&theme, controls));
+                        .children(ui::card_actions(&theme, controls));
                 col = col.child(ui::card_pair(card, services));
             }
         }
@@ -2069,20 +2069,13 @@ impl RemotePages {
         } else {
             Vec::new()
         };
-        p.children(ui::card_foot(
+        p.children(ui::card_actions(
             &theme,
             h_flex()
                 .gap(crate::ui::button_gap())
                 .flex_wrap()
                 .items_center()
-                .children(services.into_iter().map(crate::ui::probed))
-                .child(crate::ui::probed(crate::manager::status::logs_button("r-gw-", |_, _, cx| {
-                    crate::logsource::request(crate::logsource::Source::Gateway);
-                    cx.refresh_windows();
-                })))
-                .when(updatable, |r| {
-                    r.child(crate::ui::probed(crate::ui::button("r-gw-update").primary().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx)))))
-                })
+                .child(crate::ui::probed(crate::ui::button("r-gw-remove").danger().label("Remove the Gateway…").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx)))))
                 .when(outside, |r| {
                     r.child(crate::ui::probed(
                         h_flex().gap_1().items_center().child(crate::ui::button("r-gw-adopt").outline().label("Manage it here").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Recording the gateway", vec!["gateway-adopt".into()], cx)))).child(ui::info(
@@ -2091,8 +2084,14 @@ impl RemotePages {
                         )),
                     ))
                 })
-                .child(div().flex_1())
-                .child(crate::ui::probed(crate::ui::button("r-gw-remove").danger().label("Remove the Gateway…").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx))))),
+                .child(crate::ui::probed(crate::manager::status::logs_button("r-gw-", |_, _, cx| {
+                    crate::logsource::request(crate::logsource::Source::Gateway);
+                    cx.refresh_windows();
+                })))
+                .children(services.into_iter().map(crate::ui::probed))
+                .when(updatable, |r| {
+                    r.child(crate::ui::probed(crate::ui::button("r-gw-update").primary().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx)))))
+                }),
         ))
     }
 

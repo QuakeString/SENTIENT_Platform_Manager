@@ -1472,7 +1472,7 @@ pub(crate) fn table_row(theme: &gpui_kit::component::Theme, narrow: bool, i: usi
         action: std::rc::Rc::new(move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(path.clone()))),
     });
     items.push(crate::ui::RowMenuItem::Divider);
-    items.push(crate::ui::RowMenuItem::Item { label: "Delete…".into(), icon: Some(IconName::Delete), action: delete });
+    items.push(crate::ui::RowMenuItem::Danger { label: "Delete…".into(), icon: IconName::Delete, action: delete });
     let menu = crate::ui::row_menu(format!("bk-row-{i}"), "More", busy, items);
     // Restore… on every row, visible; off for a damaged backup.
     let damaged = restore.is_none();

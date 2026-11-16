@@ -456,17 +456,13 @@ impl Render for GatewayPage {
                     };
                     let running = Some(crate::manager::status::Running { serving: status.running, any_up: status.running });
                     let services = if controllable { crate::manager::status::service_buttons(&theme, "gw-", busy, running, "Stop", act("start"), act("restart"), act("stop")) } else { Vec::new() };
-                    ui::card_foot(
+                    ui::card_actions(
                         &theme,
                         h_flex()
                             .gap(crate::ui::button_gap())
                             .flex_wrap()
                             .items_center()
-                            .children(services.into_iter().map(crate::ui::probed))
-                            .child(crate::ui::probed(crate::manager::status::logs_button("gw-", |_, _, cx| {
-                                crate::logsource::request(crate::logsource::Source::Gateway);
-                                cx.refresh_windows();
-                            })))
+                            .child(crate::ui::probed(crate::ui::button("gw-remove").danger().label("Remove the Gateway…").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.open_remove(cx)))))
                             .when(outside, |r| {
                                 r.child(crate::ui::probed(
                                     h_flex().gap_1().items_center().child(crate::ui::button("gw-adopt").outline().label("Manage it here").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.adopt(cx)))).child(ui::info(
@@ -475,8 +471,11 @@ impl Render for GatewayPage {
                                     )),
                                 ))
                             })
-                            .child(div().flex_1())
-                            .child(crate::ui::probed(crate::ui::button("gw-remove").danger().label("Remove the Gateway…").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.open_remove(cx))))),
+                            .child(crate::ui::probed(crate::manager::status::logs_button("gw-", |_, _, cx| {
+                                crate::logsource::request(crate::logsource::Source::Gateway);
+                                cx.refresh_windows();
+                            })))
+                            .children(services.into_iter().map(crate::ui::probed)),
                     )
                 })
                 .children(outcome.clone().map(|(tone, m)| ui::outcome(&theme, tone, m)))

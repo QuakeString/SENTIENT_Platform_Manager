@@ -641,7 +641,7 @@ impl Render for StatusPage {
                 }
                 None => ui::card_fact(&theme, "Installed in", record.install_dir.display().to_string()),
             })
-            .children(ui::card_foot(
+            .children(ui::card_actions(
                 &theme,
                 control_buttons(
                     &theme,
@@ -922,7 +922,7 @@ pub(crate) struct Running {
     pub any_up: bool,
 }
 
-/// The SENTIENT card's Start, Stop… and Restart, in that order here and on
+/// The SENTIENT card's Restart, Stop… and Start, in that order here and on
 /// a server. Start is the primary action while SENTIENT is stopped (Open
 /// SENTIENT is while it runs); actions that do not apply are off; Stop
 /// hovers red. `running`: None while not known.
@@ -968,9 +968,10 @@ pub(crate) fn service_buttons(
     // one height (check.py, svc-button).
     let probe = |b: AnyElement| div().relative().child(b).child(ui::layout_probe("svc-button")).into_any_element();
     vec![
-        probe(btn("start", "Start", IconName::Play, down, !serving).on_click(move |_, w, cx| start(w, cx)).into_any_element()),
-        probe(btn("stop", stop_label, IconName::Square, false, any_up).hover_colors(bg, border, fg).on_click(move |_, w, cx| stop(w, cx)).into_any_element()),
+        // Secondary first, Start (the primary while stopped) rightmost.
         probe(btn("restart", "Restart", IconName::RotateCw, false, any_up).on_click(move |_, w, cx| restart(w, cx)).into_any_element()),
+        probe(btn("stop", stop_label, IconName::Square, false, any_up).hover_colors(bg, border, fg).on_click(move |_, w, cx| stop(w, cx)).into_any_element()),
+        probe(btn("start", "Start", IconName::Play, down, !serving).on_click(move |_, w, cx| start(w, cx)).into_any_element()),
     ]
 }
 

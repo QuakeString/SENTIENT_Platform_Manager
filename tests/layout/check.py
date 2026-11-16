@@ -322,6 +322,16 @@ def main():
     # One gap between the buttons of a group (dialogs included).
     for (l, r, t, b), g in button_gaps(log):
         bad.append(f"button gap: {g:.2f} px after the button at x {l:.0f}-{r:.0f}, y {t:.0f}-{b:.0f}, not {BUTTON_GAP:.0f}")
+    # Commit actions in a card foot (ui::card_actions): the buttons end at
+    # the foot's right edge (SPM's rule: actions on the right).
+    frame_lines = last_frame_lines(log)
+    btns = [tuple(float(v) for v in l.split()[2:]) for l in frame_lines if l.startswith("LAYOUT button ")]
+    for l in frame_lines:
+        if l.startswith("LAYOUT card-actions "):
+            fl, fr, ft, fb = (float(v) for v in l.split()[2:])
+            inside = [b for b in btns if b[0] >= fl - 1 and b[1] <= fr + 1 and b[2] >= ft - 1 and b[3] <= fb + 1]
+            if inside and max(b[1] for b in inside) < fr - 1.5:
+                bad.append(f"card actions end at x {max(b[1] for b in inside):.0f}, not at the foot's right edge {fr:.0f}")
     # Service controls (Start, Stop, Restart, Logs on every service card,
     # status.rs service_buttons): all one height, the app's 28 px buttons
     # (the toolkit's; 40 px is the top bar's controls).

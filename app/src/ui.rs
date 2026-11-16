@@ -355,6 +355,23 @@ pub fn card_foot(theme: &Theme, content: impl IntoElement) -> [Div; 2] {
     [div().flex_1(), div().pt_3().border_t_1().border_color(theme.border).child(content)]
 }
 
+/// A card's action buttons in its foot: the divider above, the buttons at
+/// the right end (SPM's rule: actions on the right; secondary first, the
+/// primary rightmost). check.py holds every such row to the right edge
+/// (card-actions probe).
+pub fn card_actions(theme: &Theme, buttons: impl IntoElement) -> [Div; 2] {
+    [
+        div().flex_1(),
+        div()
+            .relative()
+            .pt_3()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(gpui_kit::component::h_flex().w_full().justify_end().child(buttons))
+            .child(layout_probe("card-actions")),
+    ]
+}
+
 /// A fact with its explanation behind an (i), never as a line of text.
 pub fn fact_help(theme: &Theme, label: &'static str, value: impl Into<SharedString>, help: impl Into<SharedString>) -> Div {
     let help: SharedString = help.into();
@@ -1610,6 +1627,9 @@ pub fn enter_moves_on<T: 'static>(
 /// One entry of a row's [`row_menu`].
 pub enum RowMenuItem {
     Item { label: SharedString, icon: Option<gpui_kit::component::IconName>, action: std::rc::Rc<dyn Fn(&mut Window, &mut App)> },
+    /// A destructive action (Delete…): its icon and label in the danger
+    /// colour; it still asks first.
+    Danger { label: SharedString, icon: gpui_kit::component::IconName, action: std::rc::Rc<dyn Fn(&mut Window, &mut App)> },
     Divider,
 }
 
@@ -1637,6 +1657,21 @@ pub fn row_menu(id: impl Into<SharedString>, tip: &'static str, disabled: bool, 
                         if let Some(i) = icon {
                             item = item.icon(gpui_kit::component::Icon::new(i.clone()));
                         }
+                        menu.item(item)
+                    }
+                    RowMenuItem::Danger { label, icon, action } => {
+                        let a = action.clone();
+                        let (label, icon) = (label.clone(), icon.clone());
+                        let item = PopupMenuItem::element(move |_, cx| {
+                            let red = cx.theme().danger;
+                            gpui_kit::component::h_flex()
+                                .gap_2()
+                                .items_center()
+                                .text_color(red)
+                                .child(gpui_kit::component::Icon::new(icon.clone()).text_color(red))
+                                .child(label.clone())
+                        })
+                        .on_click(move |_, window, cx| a(window, cx));
                         menu.item(item)
                     }
                 };

@@ -681,7 +681,9 @@ mod port_owner_tests {
         // Nobody known: another port, and the command that shows who.
         let c = ports_check(&wanted, &[(8080, "HTTP".into(), None, Some(8081)), (5432, "PostgreSQL".into(), None, None)]);
         assert_eq!(actions(&c), vec![("Use 8081 for HTTP".into(), FixAction::UsePort { port: 8080, instead: 8081 })]);
-        assert!(c.fixes.iter().any(|f| matches!(f, Fix::Command { command, .. } if command.contains(":5432"))));
+        // The command that shows who holds it: ss here, Get-NetTCPConnection on Windows.
+        let shows = if cfg!(windows) { "-LocalPort 5432" } else { ":5432" };
+        assert!(c.fixes.iter().any(|f| matches!(f, Fix::Command { command, .. } if command.contains(shows))));
         // Its server is the PostgreSQL row's too: acted on there only.
         let pg = existing_pg_check(&PgService::LeftoverRunning(gone.clone()), None, "/var/lib/postgres/data", Some(5433));
         let mut o = owner_of("postgres".into(), Some(812), None, Some("postgresql.service".into()), Some(&gone));
