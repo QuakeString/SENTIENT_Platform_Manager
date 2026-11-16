@@ -40,7 +40,7 @@ use crate::installation::InstallationRecord;
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | movedata-json | movedata-check <store> <folder> | movedata-estimate <store=folder,…> | move-data <store=folder,…> | move-data-remove-old <folder> | move-data-cancel | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
 use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
-gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
+gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart> | gateway-remove [--delete-data] [--remove-image] | gateway-adopt";
 
 /// A console for the output: release builds on Windows have none of their
 /// own, so use the one the job was started from.
@@ -117,8 +117,11 @@ pub fn run(args: &[String]) -> i32 {
             "gateway-status" => {
                 let s = gateway::status();
                 let kind = s.kind();
+                // Values with spaces in them are %20-escaped (the line splits on spaces).
+                let esc = |v: Option<String>| v.unwrap_or_default().replace('%', "%25").replace(' ', "%20");
+                let recorded = crate::gateway_record::load().is_some_and(|r| r.is(&s));
                 println!(
-                    "installed={} version={} running={} host={} port={} page={} container={} managed={} kind={} service={} process={}",
+                    "installed={} version={} running={} host={} port={} page={} container={} managed={} kind={} service={} process={} image={} compose={} project={} volumes={} package={} recorded={recorded}",
                     s.installed,
                     s.version.unwrap_or_default(),
                     s.running,
@@ -129,10 +132,28 @@ pub fn run(args: &[String]) -> i32 {
                     s.managed,
                     kind,
                     s.service.clone().unwrap_or_default(),
-                    s.process.clone().unwrap_or_default().replace(' ', "")
+                    s.process.clone().unwrap_or_default().replace(' ', ""),
+                    esc(s.image.clone()),
+                    esc(s.compose_dir.clone()),
+                    esc(s.compose_project.clone()),
+                    esc(Some(s.volumes.join(","))),
+                    esc(s.package.clone()),
                 );
                 Ok(())
             }
+            // Remove the gateway found here (as root: the Gateway page runs
+            // it through rootjob; a server's agent runs as root).
+            "gateway-remove" => {
+                let keep = !args.iter().any(|a| a == "--delete-data");
+                let image = args.iter().any(|a| a == "--remove-image");
+                gateway::remove(&sink, keep, image).map(|msg| {
+                    if let Err(e) = crate::gateway_record::save(None) {
+                        sink(sentient_installer_core::progress::Progress::Log { line: format!("The gateway's record was not cleared: {e}") });
+                    }
+                    sink(sentient_installer_core::progress::Progress::Done { message: msg });
+                })
+            }
+            "gateway-adopt" => crate::gateway_record::adopt().map(|msg| sink(sentient_installer_core::progress::Progress::Done { message: msg })),
             "gateway-install" => match (args.get(1), args.get(2).and_then(|p| p.parse().ok())) {
                 (Some(host), Some(port)) => newest().and_then(|offer| {
                     let settings = gateway::Settings {

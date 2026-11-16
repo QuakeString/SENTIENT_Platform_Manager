@@ -539,7 +539,12 @@ impl RemotePages {
                 self.inputs.clear();
                 self.fetch(cx, move || remote::settings(&inst), |p, r| p.settings = r);
             }
-            Kind::Migration | Kind::Repair => self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r),
+            Kind::Migration => self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r),
+            Kind::Repair => {
+                let i2 = inst.clone();
+                self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r);
+                self.fetch(cx, move || remote::gateway(&i2), |p, r| p.gateway = r);
+            }
             Kind::Gateway => self.fetch(cx, move || remote::gateway(&inst), |p, r| p.gateway = r),
         }
     }
@@ -1860,12 +1865,25 @@ impl RemotePages {
                 )
                 .child(h_flex().child(self.take_over_button("r-take-over", busy, cx)))
         });
+        // The Gateway choice, when the server has one.
+        let gw = self.gateway.got().filter(|g| g.get("installed").is_some_and(|v| v == "true")).map(|g| {
+            let get = |k: &str| g.get(k).cloned().unwrap_or_default();
+            let target = crate::manager::gateway::RemoveTarget::of_remote(&get, self.inst.name.clone());
+            let line = crate::manager::gateway::runs_as(&get("kind"), &target.name, get("managed") == "true", get("recorded") == "true");
+            let button = crate::ui::button("r-repair-gw-remove")
+                .danger()
+                .label("Remove the Gateway…")
+                .disabled(busy)
+                .on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx)))
+                .into_any_element();
+            crate::manager::gateway::remove_panel(&theme, "r-repair-gw", line, button)
+        });
         v_flex().gap(px(ui::GAP)).children(take_over).child(ui::panel(&theme)
             .child(div().font_weight(FontWeight::MEDIUM).child("Repair"))
             .child(div().text_sm().text_color(theme.muted_foreground).child(
                 "For a SENTIENT that does not start or a service that went missing: the services and their configuration are written again from this installation's record, and SENTIENT is started. Data and settings are kept.",
             ))
-            .child(h_flex().child(crate::ui::button("r-repair").outline().label("Repair").disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job("Repairing", vec!["repair".into()], cx))))))
+            .child(h_flex().child(crate::ui::button("r-repair").outline().label("Repair").disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job("Repairing", vec!["repair".into()], cx)))))).children(gw)
     }
 
     fn gateway_page(&self, cx: &mut Context<Self>) -> Div {
@@ -1907,13 +1925,13 @@ impl RemotePages {
             );
         }
         let kind = get("kind");
-        let runs_as = match kind.as_str() {
-            "docker" => format!("Docker container {}", get("container")),
-            "service" => format!("Service {}", get("service")),
-            "process" => format!("A process ({}), started outside a service", get("process")),
-            "windows-service" => "Windows service".to_string(),
-            _ => "Not known".to_string(),
-        };
+        let recorded = get("recorded") == "true";
+        let managed = get("managed") == "true";
+        let target = crate::manager::gateway::RemoveTarget::of_remote(&get, self.inst.name.clone());
+        let runs_as = if kind.is_empty() { "Not known".to_string() } else { crate::manager::gateway::runs_as(&kind, &target.name, managed, recorded) };
+        let outside = !managed && !recorded && kind != "windows-service" && !kind.is_empty();
+        let compose = get("compose");
+        let volumes = get("volumes");
         // A row only when it has a value.
         let host = get("host");
         let version = get("version");
@@ -1922,6 +1940,11 @@ impl RemotePages {
             .when(!version.is_empty(), |p| p.child(ui::fact(&theme, "Version", version.clone())))
             .when(!kind.is_empty(), |p| p.child(ui::fact(&theme, "Runs as", runs_as.clone())))
             .when(!host.is_empty(), |p| p.child(ui::fact(&theme, "Connects to", format!("{host}:{}", get("port")))))
+            .when(!compose.is_empty(), |p| {
+                let proj = get("project");
+                p.child(ui::fact(&theme, "Compose", if proj.is_empty() { compose.clone() } else { format!("{proj}, in {compose}") }))
+            })
+            .when(!volumes.is_empty(), |p| p.child(ui::fact(&theme, "Volumes", volumes.replace(',', ", "))))
             .when(!page.is_empty(), |p| {
                 p.child(if page == "off" {
                     ui::fact_help(&theme, "Web page", "Off", "The gateway's own web page is off. In a container it is turned on with ST_GW_UI=on.")
@@ -1949,8 +1972,38 @@ impl RemotePages {
                 }))
                 .when(updatable, |r| {
                     r.child(crate::ui::button("r-gw-update").primary().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx))))
-                }),
+                })
+                .when(outside, |r| {
+                    r.child(
+                        h_flex().gap_1().items_center().child(crate::ui::button("r-gw-adopt").outline().label("Manage it here").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Recording the gateway", vec!["gateway-adopt".into()], cx)))).child(ui::info(
+                            "r-gw-adopt-help".into(),
+                            "Records this gateway as the one the Platform Manager manages on this server. Nothing about it changes: the container, its compose file and its volumes stay as they are.".into(),
+                        )),
+                    )
+                })
+                .child(div().flex_1())
+                .child(crate::ui::button("r-gw-remove").danger().label("Remove the Gateway…").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx)))),
         )
+    }
+
+    /// "Remove the Gateway…" on the server: the same dialog as here, then
+    /// the agent's gateway-remove job (it runs as root there).
+    pub(crate) fn open_gateway_remove(&mut self, target: crate::manager::gateway::RemoveTarget, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        crate::manager::gateway::open_remove_dialog(
+            target,
+            std::rc::Rc::new(move |keep, image, cx: &mut App| {
+                let mut args = vec!["gateway-remove".to_string()];
+                if !keep {
+                    args.push("--delete-data".into());
+                }
+                if image {
+                    args.push("--remove-image".into());
+                }
+                this.update(cx, |p, cx| p.run_job("Removing the gateway", args, cx)).ok();
+            }),
+            cx,
+        );
     }
 
     /// One calm panel for a server that is not set up or cannot be reached:

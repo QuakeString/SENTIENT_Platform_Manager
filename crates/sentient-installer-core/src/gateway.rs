@@ -50,6 +50,16 @@ pub struct Status {
     /// a plain process no service started (crate::distro::gateway_native).
     pub service: Option<String>,
     pub process: Option<String>,
+    /// A container: its image as it was started, and the compose project
+    /// and folder it came from (its labels), and its named volumes.
+    pub image: Option<String>,
+    pub compose_project: Option<String>,
+    pub compose_dir: Option<String>,
+    pub volumes: Vec<String>,
+    /// A service or program: the program's path, and the package it came
+    /// from (None: installed by hand).
+    pub program: Option<String>,
+    pub package: Option<String>,
 }
 
 impl Status {
@@ -252,6 +262,32 @@ fn service_program(qc: &str) -> Option<String> {
     (!p.is_empty()).then_some(p)
 }
 
+/// Remove the Sentient Gateway found here (status()): a container of ours,
+/// our systemd unit and program (or package), or the SentientGateway
+/// service. `keep_data` keeps its configuration and local buffer (a
+/// container's volumes; a dated folder otherwise); `remove_image` also
+/// removes a container's image. Never touches anything that is not the
+/// gateway's: each kind checks it again before it changes anything.
+/// Gives the closing message.
+pub fn remove(sink: &ProgressFn, keep_data: bool, remove_image: bool) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        if windows::status().installed {
+            return windows::remove(sink, keep_data);
+        }
+        crate::distro::gateway_docker::remove(sink, keep_data, remove_image)
+    }
+    #[cfg(not(windows))]
+    {
+        if crate::distro::gateway_docker::status().installed {
+            crate::distro::gateway_docker::remove(sink, keep_data, remove_image)
+        } else {
+            let _ = remove_image;
+            crate::distro::gateway_native::remove(sink, keep_data)
+        }
+    }
+}
+
 /// `sentient-gateway 4.13.0` → `4.13.0`.
 pub fn parse_version(out: &str) -> Option<String> {
     out.lines()
@@ -426,6 +462,55 @@ mod windows {
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
         Err(format!("The gateway service did not {action} within 30 seconds."))
+    }
+
+    /// The gateway's own uninstaller (Inno Setup's), else the service and
+    /// the program folder by hand. The configuration and data in
+    /// ProgramData are moved to a dated folder, or deleted.
+    pub fn remove(sink: &ProgressFn, keep_data: bool) -> Result<String, String> {
+        let s = status();
+        if !s.installed {
+            return Err("There is no Sentient Gateway on this computer.".into());
+        }
+        let dir = exe().parent().map(PathBuf::from).unwrap_or_default();
+        if !is_gateway_program(&exe().to_string_lossy()) {
+            return Err("The gateway's program was not found; nothing was removed.".into());
+        }
+        step(sink, "Stopping the gateway service");
+        let _ = crate::sys::output("sc.exe", &["stop", SERVICE]);
+        for _ in 0..30 {
+            if !status().running {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        let pd = std::env::var_os("ProgramData").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+        let data = pd.join("Sentient Gateway");
+        let kept = pd.join(format!("Sentient Gateway kept {}", chrono::Local::now().format("%Y-%m-%d %H%M%S")));
+        if data.is_dir() {
+            if keep_data {
+                std::fs::rename(&data, &kept).map_err(|e| format!("keep {}: {e}", data.display()))?;
+            }
+        }
+        step(sink, "Removing the Sentient Gateway");
+        let uninstaller = dir.join("unins000.exe");
+        if uninstaller.is_file() {
+            match crate::sys::output_limited(&uninstaller.to_string_lossy(), &["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"], std::time::Duration::from_secs(300)) {
+                Some((true, _, _)) => {}
+                _ => return Err("The gateway's uninstaller stopped.".into()),
+            }
+        } else {
+            let _ = crate::sys::output("sc.exe", &["delete", SERVICE]);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        if !keep_data && data.is_dir() {
+            let _ = std::fs::remove_dir_all(&data);
+        }
+        Ok(if keep_data && kept.is_dir() {
+            format!("The Sentient Gateway is removed. Its configuration and data are kept in {}.", kept.display())
+        } else {
+            "The Sentient Gateway is removed.".to_string()
+        })
     }
 
     fn download(url: &str, to: &std::path::Path) -> Result<(), String> {

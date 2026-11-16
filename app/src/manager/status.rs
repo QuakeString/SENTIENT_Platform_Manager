@@ -175,7 +175,7 @@ impl StatusPage {
             cx.notify();
         });
         let gateway_poll = cx.spawn(async move |this, cx| loop {
-            let status = cx.background_executor().spawn(async { sentient_installer_core::gateway::status() }).await;
+            let status = cx.background_executor().spawn(async { crate::manager::gateway::local_status() }).await;
             if this.update(cx, |p, cx| { p.gateway = Some(status); cx.notify(); }).is_err() {
                 break;
             }

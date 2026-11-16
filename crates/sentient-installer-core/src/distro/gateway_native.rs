@@ -172,6 +172,15 @@ fn package_version() -> Option<String> {
         .filter(|v| !v.is_empty() && !v.contains(' '))
 }
 
+/// The package a file belongs to, when it is the gateway's package.
+fn owner(path: &str) -> Option<String> {
+    let name = out("pacman", &["-Qqo", path])
+        .or_else(|| out("dpkg-query", &["-S", path]).map(|o| o.split(':').next().unwrap_or_default().to_string()))
+        .or_else(|| out("rpm", &["-qf", "--qf", "%{NAME}", path]))?;
+    let name = name.trim().to_string();
+    (name == PACKAGE).then_some(name)
+}
+
 fn host_port() -> (Option<String>, Option<u16>) {
     FILES.iter().find_map(|f| std::fs::read_to_string(f).ok()).map(|t| crate::gateway::host_of(&t)).unwrap_or((None, None))
 }
@@ -181,18 +190,121 @@ pub fn status() -> Status {
         let running = out("systemctl", &["is-active", &f.unit]).is_some_and(|s| s.trim() == "active");
         let (host, port) = host_port();
         let version = f.version.or_else(|| (f.unit == UNIT).then(package_version).flatten());
-        return Status { installed: true, version, running, host, port, service: Some(f.unit), ..Status::default() };
+        let package = owner(&f.program);
+        return Status { installed: true, version, running, host, port, service: Some(f.unit), program: Some(f.program), package, ..Status::default() };
     }
     if let Some((program, version)) = process() {
         let (host, port) = host_port();
-        return Status { installed: true, version: Some(version), running: true, host, port, process: Some(program), ..Status::default() };
+        let package = owner(&program);
+        return Status { installed: true, version: Some(version), running: true, host, port, process: Some(program.clone()), program: Some(program), package, ..Status::default() };
     }
     // The program installed, neither a service nor running.
     if let Some((program, version)) = installed_program() {
         let (host, port) = host_port();
-        return Status { installed: true, version: Some(version), running: false, host, port, process: Some(program), ..Status::default() };
+        let package = owner(&program);
+        return Status { installed: true, version: Some(version), running: false, host, port, process: Some(program.clone()), program: Some(program), package, ..Status::default() };
     }
     Status::default()
+}
+
+/// The folders the gateway's package keeps its configuration and its local
+/// buffer in (tmpfiles.conf in the gateway repository).
+pub const DATA_DIRS: [&str; 2] = ["/etc/sentient-gateway", "/var/lib/sentient-gateway"];
+
+/// The dated folder the configuration and data are kept in on removal.
+pub fn kept_dir(now: &str) -> String {
+    format!("/var/backups/sentient-gateway-{now}")
+}
+
+/// The shell script that removes the gateway found as `s` (status()): run
+/// as root. Every step names only the gateway's own unit, program, package
+/// and folders, and the unit is checked to run our program again first.
+pub fn removal_script(s: &Status, keep_data: bool, now: &str) -> Result<String, String> {
+    use crate::exec::shq as q;
+    let program = s.program.clone().ok_or("The gateway's program was not found.")?;
+    if !is_our_program(&program) {
+        return Err(format!("{program} is not the Sentient Gateway's program; nothing was removed."));
+    }
+    let mut lines = vec!["set -e".to_string()];
+    if let Some(unit) = &s.service {
+        // ExecStart must still name our program.
+        lines.push(format!(
+            "exec_start=$(systemctl show -p ExecStart --value {u}); case \"$exec_start\" in *{p}*) ;; *) echo {u} does not run {p}, nothing was removed >&2; exit 3 ;; esac",
+            u = q(unit),
+            p = q(&program)
+        ));
+        lines.push(format!("systemctl disable --now {} || systemctl stop {} || true", q(unit), q(unit)));
+    } else if s.running {
+        return Err("The gateway runs as a plain process that no service started: stop it first, then remove it.".into());
+    }
+    if keep_data {
+        let dir = kept_dir(now);
+        lines.push(format!("mkdir -p {}", q(&dir)));
+        for d in DATA_DIRS {
+            let name = d.trim_start_matches('/').replace('/', "-");
+            lines.push(format!("if [ -d {d} ]; then mv {d} {}/{name}; fi", q(&dir)));
+        }
+    }
+    match (&s.package, &s.service) {
+        (Some(pkg), _) => {
+            let pkg = q(pkg);
+            lines.push(format!(
+                "if command -v pacman >/dev/null 2>&1; then pacman -R --noconfirm {pkg}; \
+                 elif command -v apt-get >/dev/null 2>&1; then DEBIAN_FRONTEND=noninteractive apt-get remove -y {pkg}; \
+                 elif command -v dnf >/dev/null 2>&1; then dnf remove -y {pkg}; \
+                 else rpm -e {pkg}; fi"
+            ));
+        }
+        (None, Some(unit)) => {
+            // Installed by hand: the unit file (only one under systemd's
+            // folders) with its drop-ins, then the program.
+            lines.push(format!(
+                "f=$(systemctl show -p FragmentPath --value {u}); case \"$f\" in /etc/systemd/system/*|/usr/local/lib/systemd/system/*|/usr/lib/systemd/system/*|/lib/systemd/system/*) rm -f \"$f\" ;; esac",
+                u = q(unit)
+            ));
+            lines.push(format!("rm -rf {}", q(&format!("/etc/systemd/system/{unit}.d"))));
+            lines.push(format!("rm -f {}", q(&program)));
+        }
+        (None, None) => lines.push(format!("rm -f {}", q(&program))),
+    }
+    if !keep_data {
+        for d in DATA_DIRS {
+            lines.push(format!("rm -rf {d}"));
+        }
+    }
+    if s.service.is_some() {
+        lines.push("systemctl daemon-reload || true".into());
+        lines.push(format!("systemctl reset-failed {} 2>/dev/null || true", q(s.service.as_deref().unwrap_or_default())));
+    }
+    Ok(lines.join("\n"))
+}
+
+/// Remove the gateway found here (this process is root: the job runs
+/// through rootjob, or as the server's agent).
+pub fn remove(sink: &ProgressFn, keep_data: bool) -> Result<String, String> {
+    let s = status();
+    if !s.installed {
+        return Err("There is no Sentient Gateway on this computer.".into());
+    }
+    let now = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let script = removal_script(&s, keep_data, &now)?;
+    sink(Progress::Step { name: format!("Removing the Sentient Gateway ({})", s.service.clone().or(s.program.clone()).unwrap_or_default()) });
+    let o = Command::new("sh").args(["-c", &script]).output().map_err(|e| format!("sh: {e}"))?;
+    for l in String::from_utf8_lossy(&o.stdout).lines() {
+        sink(Progress::Log { line: l.to_string() });
+    }
+    if !o.status.success() {
+        return Err(format!("The gateway was not removed: {}", String::from_utf8_lossy(&o.stderr).trim()));
+    }
+    if status().installed {
+        return Err("The removal finished, but a gateway is still found.".into());
+    }
+    let any_kept = keep_data && DATA_DIRS.iter().any(|d| Path::new(&format!("{}/{}", kept_dir(&now), d.trim_start_matches('/').replace('/', "-"))).exists());
+    Ok(if any_kept {
+        format!("The Sentient Gateway is removed. Its configuration and data are kept in {}.", kept_dir(&now))
+    } else {
+        "The Sentient Gateway is removed.".to_string()
+    })
 }
 
 pub fn control(sink: &ProgressFn, action: &str) -> Result<(), String> {
@@ -269,5 +381,40 @@ sshd.service                                 disabled        disabled\n";
         assert_eq!(pick_process(ps), Some(("77".into(), "/usr/local/bin/sentient-gateway".into())));
         assert_eq!(pick_process(" 1 python3 -m thingsboard_gateway.tb_gateway\n 40 /usr/lib/systemd/systemd-journal-gatewayd\n"), None);
         assert_eq!(pick_process(" 2 bash\n"), None);
+    }
+
+    #[test]
+    fn removal_refuses_anything_but_our_program() {
+        // The journal gateway as it was once shown: never removed.
+        let journal = Status {
+            installed: true,
+            service: Some("systemd-journal-gatewayd.service".into()),
+            program: Some("/usr/lib/systemd/systemd-journal-gatewayd".into()),
+            ..Status::default()
+        };
+        assert!(removal_script(&journal, true, "20261116-210000").is_err());
+        assert!(removal_script(&Status { installed: true, service: Some(UNIT.into()), ..Status::default() }, true, "x").is_err());
+    }
+
+    #[test]
+    fn removal_of_a_unit_by_hand() {
+        let s = Status {
+            installed: true,
+            service: Some("plant-gw.service".into()),
+            program: Some("/opt/sentient-gateway/bin/sentient-gateway".into()),
+            ..Status::default()
+        };
+        let keep = removal_script(&s, true, "20261116-210000").unwrap();
+        assert!(keep.contains("in *'/opt/sentient-gateway/bin/sentient-gateway'*) ;;"));
+        assert!(keep.contains("systemctl disable --now 'plant-gw.service'"));
+        assert!(keep.contains("mv /etc/sentient-gateway '/var/backups/sentient-gateway-20261116-210000'/etc-sentient-gateway"));
+        assert!(keep.contains("rm -f '/opt/sentient-gateway/bin/sentient-gateway'"));
+        assert!(!keep.contains("rm -rf /var/lib/sentient-gateway"));
+        let delete = removal_script(&s, false, "x").unwrap();
+        assert!(delete.contains("rm -rf /var/lib/sentient-gateway") && !delete.contains("mkdir -p"));
+        // The package's: its package manager removes it.
+        let pkg = Status { package: Some(PACKAGE.into()), service: Some(UNIT.into()), program: Some("/usr/bin/sentient-gateway".into()), ..s };
+        let p = removal_script(&pkg, true, "x").unwrap();
+        assert!(p.contains("pacman -R --noconfirm 'sentient-gateway'") && !p.contains("rm -f '/usr/bin/sentient-gateway'"));
     }
 }

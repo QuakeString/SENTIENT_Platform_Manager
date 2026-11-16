@@ -25,6 +25,7 @@ mod dbstatus;
 #[cfg(feature = "gui")]
 mod earlier;
 mod elevate;
+mod gateway_record;
 mod headless;
 mod installation;
 #[cfg(feature = "gui")]

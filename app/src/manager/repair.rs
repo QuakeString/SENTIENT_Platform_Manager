@@ -22,10 +22,15 @@ enum Action {
     Repair,
     Uninstall,
     TakeOver,
+    RemoveGateway,
 }
 
 pub struct RepairPage {
     record: Option<InstallationRecord>,
+    /// The Sentient Gateway here (its removal is offered too).
+    gateway: Option<sentient_installer_core::gateway::Status>,
+    gateway_record: Option<crate::gateway_record::GatewayRecord>,
+    _gateway_poll: Task<()>,
     keep_data: bool,
     running: Option<Action>,
     job: Entity<Job>,
@@ -44,7 +49,69 @@ impl RepairPage {
             }
             cx.notify();
         });
-        Self { record, keep_data: true, running: None, job, _observe }
+        let _gateway_poll = cx.spawn(async move |this, cx| loop {
+            let (status, rec) = cx.background_executor().spawn(async { (crate::manager::gateway::local_status(), crate::gateway_record::load()) }).await;
+            if this.update(cx, |p, cx| { p.gateway = Some(status); p.gateway_record = rec; cx.notify(); }).is_err() {
+                break;
+            }
+            cx.background_executor().timer(std::time::Duration::from_secs(10)).await;
+        });
+        Self { record, gateway: None, gateway_record: None, _gateway_poll, keep_data: true, running: None, job, _observe }
+    }
+
+    /// The Gateway choice, when there is a gateway here.
+    fn gateway_panel(&self, theme: &gpui_kit::component::Theme, busy: bool, cx: &mut Context<Self>) -> Option<Div> {
+        let g = self.gateway.clone().filter(|g| g.installed)?;
+        let target = crate::manager::gateway::RemoveTarget::of(&g, None);
+        let recorded = self.gateway_record.as_ref().is_some_and(|r| r.is(&g));
+        let line = crate::manager::gateway::runs_as(g.kind(), &target.name, g.managed, recorded);
+        let has_record = self.gateway_record.is_some();
+        let button = crate::ui::button("repair-gw-remove")
+            .danger()
+            .label("Remove the Gateway…")
+            .disabled(busy)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let page = cx.entity().downgrade();
+                let (g2, has_record) = (g.clone(), has_record);
+                crate::manager::gateway::open_remove_dialog(
+                    target.clone(),
+                    std::rc::Rc::new(move |keep, image, cx: &mut App| {
+                        let g = g2.clone();
+                        page.update(cx, |p, cx| p.remove_gateway(g, has_record, keep, image, cx)).ok();
+                    }),
+                    cx,
+                );
+                let _ = this;
+            }))
+            .into_any_element();
+        Some(crate::manager::gateway::remove_panel(theme, "repair-gw", line, button))
+    }
+
+    fn remove_gateway(&mut self, g: sentient_installer_core::gateway::Status, has_record: bool, keep: bool, image: bool, cx: &mut Context<Self>) {
+        self.running = Some(Action::RemoveGateway);
+        let as_root = cfg!(target_os = "linux") && !crate::rootjob::is_root() && (g.container.is_none() || has_record);
+        self.job.update(cx, |job, cx| {
+            job.start(
+                move |sink| {
+                    if as_root {
+                        let mut args = vec!["gateway-remove".to_string()];
+                        if !keep {
+                            args.push("--delete-data".into());
+                        }
+                        if image {
+                            args.push("--remove-image".into());
+                        }
+                        crate::rootjob::run(&args, &sink).map(|_| ())
+                    } else {
+                        let msg = sentient_installer_core::gateway::remove(&sink, keep, image)?;
+                        let _ = crate::gateway_record::save(None);
+                        sink(sentient_installer_core::progress::Progress::Done { message: msg });
+                        Ok(())
+                    }
+                },
+                cx,
+            )
+        });
     }
 
     /// The plan for confirmation (crate::manager::takeover), then the takeover.
@@ -109,8 +176,8 @@ impl RepairPage {
                 "SENTIENT and the Platform Manager are removed. The database is kept and can be used by a new install.",
                 "Uninstall",
             ),
-            // Confirmed in its own dialog (open_take_over).
-            Action::TakeOver => return,
+            // Confirmed in their own dialogs.
+            Action::TakeOver | Action::RemoveGateway => return,
             Action::Uninstall => (
                 "Uninstall SENTIENT and delete its data?",
                 "SENTIENT, the Platform Manager, the databases and everything kept are removed. This can't be undone.",
@@ -127,6 +194,20 @@ impl RepairPage {
     }
 }
 
+impl RepairPage {
+    /// The gateway's removal: how it ended.
+    fn gateway_outcome(&self, theme: &gpui_kit::component::Theme, cx: &App) -> Option<Div> {
+        if self.running != Some(Action::RemoveGateway) {
+            return None;
+        }
+        match self.job.read(cx).state() {
+            JobState::Done(m) => Some(ui::outcome(theme, Tone::Good, m.clone())),
+            JobState::Failed(m) => Some(ui::outcome(theme, Tone::Bad, m.clone())),
+            _ => None,
+        }
+    }
+}
+
 impl Render for RepairPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
@@ -138,7 +219,9 @@ impl Render for RepairPage {
         if self.record.is_none() {
             // Without SENTIENT, Repair keeps one thing: removing the
             // Platform Manager itself.
-            return page.child(ui::not_installed(&theme)).child(
+            let gw = self.gateway_panel(&theme, self.job.read(cx).is_running(), cx);
+            let gw_outcome = self.gateway_outcome(&theme, cx);
+            return page.child(ui::not_installed(&theme)).children(gw).children(gw_outcome).child(
                 ui::panel(&theme)
                     .child(div().font_weight(FontWeight::MEDIUM).child("Remove the Platform Manager"))
                     .child(
@@ -160,6 +243,8 @@ impl Render for RepairPage {
             _ => None,
         };
         let done = busy || uninstalled;
+        let gw = self.gateway_panel(&theme, done, cx);
+        let gw_outcome = self.gateway_outcome(&theme, cx);
         let external = self.record.as_ref().and_then(|r| r.stack.external.clone()).filter(|_| self.record.as_ref().is_some_and(|r| r.engine == crate::installation::Engine::Docker));
 
         page.when_some(external, |page, ext| {
@@ -207,6 +292,8 @@ impl Render for RepairPage {
                     ),
                 ),
         )
+        .children(gw)
+        .children(gw_outcome)
         .child(
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Uninstall"))
