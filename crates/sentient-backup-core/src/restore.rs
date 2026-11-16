@@ -234,6 +234,9 @@ async fn run_watched(
             into.store().label()
         ));
     }
+    // Rows that never travel, even when an older backup holds them: the
+    // server's own licence state (categories::NOT_CARRIED).
+    let toc: Vec<String> = toc.into_iter().filter(|l| !is_not_carried_data_entry(l)).collect();
     // Configuration only: the latest values are telemetry too.
     let toc: Vec<String> = if opts.scope == Scope::Configuration {
         toc.into_iter().filter(|l| !is_latest_data_entry(l)).collect()
@@ -296,6 +299,14 @@ fn is_latest_data_entry(line: &str) -> bool {
     let t: Vec<&str> = rest.split_whitespace().collect();
     // "<oid> <oid> TABLE DATA public ts_kv_latest owner"
     t.len() >= 6 && t[2] == "TABLE" && t[3] == "DATA" && t[5] == "ts_kv_latest"
+}
+
+/// A table-of-contents line restoring the rows of a table that never
+/// travels (`license_state`).
+fn is_not_carried_data_entry(line: &str) -> bool {
+    let Some((_, rest)) = line.split_once("; ") else { return false };
+    let t: Vec<&str> = rest.split_whitespace().collect();
+    t.len() >= 6 && t[2] == "TABLE" && t[3] == "DATA" && t[4] == "public" && crate::categories::is_not_carried(t[5])
 }
 
 /// The original restore: the dump, then telemetry where it was backed up from.
@@ -955,6 +966,17 @@ mod tests {
         "4703; 2606 21701 CONSTRAINT public ts_kv_2026_10 ts_kv_2026_10_pkey sentient",
         "4792; 0 0 INDEX ATTACH public ts_kv_2026_10_pkey sentient",
     ];
+
+    /// An older backup may hold license_state rows: the restore leaves them
+    /// out, and keeps the licence rows and the table itself.
+    #[test]
+    fn a_restore_leaves_out_the_licence_state_rows() {
+        assert!(is_not_carried_data_entry("4520; 0 20401 TABLE DATA public license_state sentient"));
+        assert!(!is_not_carried_data_entry("4519; 0 20390 TABLE DATA public license sentient"));
+        assert!(!is_not_carried_data_entry("4521; 0 20410 TABLE DATA public license_time_anchor sentient"));
+        assert!(!is_not_carried_data_entry("402; 1259 20401 TABLE public license_state sentient"));
+        assert!(!is_not_carried_data_entry("5310; 2606 20402 CONSTRAINT public license_state license_state_pkey sentient"));
+    }
 
     #[test]
     fn filters_only_the_backed_up_telemetry_store() {

@@ -243,9 +243,10 @@ pub fn catalog() -> &'static [Category] {
             default_selected: false,
             locked: false,
             kind: Db,
+            // license_state is NOT_CARRIED (below), checked before this prefix.
             tables: &[Prefix("license")],
             file_store: None,
-            notes: "Machine-bound (anti-piracy HW tuple). Off by default so a portable backup doesn't carry a license that won't validate on the target host.",
+            notes: "Machine-bound. Off by default so a portable backup doesn't carry a license that won't validate on the target host. The licence's own state on the server (its grace timer) never travels.",
         },
         // MUST be last — the catch-all.
         Category {
@@ -261,6 +262,21 @@ pub fn catalog() -> &'static [Category] {
     ]
 }
 
+/// Tables whose rows never travel in a backup, whatever is selected: the
+/// server's own licence state (`license_state`: the over-limit grace timer
+/// and its integrity hash). It belongs to the server it was written on;
+/// restoring an older copy would move that timer. The table itself (its
+/// schema) is still dumped and restored, empty; the server fills it again.
+pub const NOT_CARRIED: &[TableMatch] = &[TableMatch::Exact("license_state")];
+
+/// The pseudo-category id [`category_for_table`] gives a [`NOT_CARRIED`] table.
+pub const NOT_CARRIED_ID: &str = "not_carried";
+
+/// True when `table`'s rows are never backed up or restored.
+pub fn is_not_carried(table: &str) -> bool {
+    NOT_CARRIED.iter().any(|m| m.matches(table))
+}
+
 /// The Configuration catch-all category.
 pub fn configuration() -> &'static Category {
     catalog()
@@ -272,6 +288,9 @@ pub fn configuration() -> &'static Category {
 /// Return the id of the category a table belongs to (first non-config match,
 /// else Configuration).
 pub fn category_for_table(table: &str) -> &'static str {
+    if is_not_carried(table) {
+        return NOT_CARRIED_ID;
+    }
     for c in catalog() {
         if c.kind == CategoryKind::Configuration {
             continue;
@@ -301,7 +320,8 @@ mod tests {
         assert_eq!(category_for_table("alarm_comment_2026_07"), "alarms");
         assert_eq!(category_for_table("audit_log_2026_07"), "audit_event_logs");
         assert_eq!(category_for_table("report_2026"), "reports");
-        assert_eq!(category_for_table("license_state"), "licensing");
+        assert_eq!(category_for_table("license"), "licensing");
+        assert_eq!(category_for_table("license_time_anchor"), "licensing");
         // config rules must NOT be swallowed by the notifications history category
         assert_eq!(category_for_table("notification_rule"), "configuration");
         assert_eq!(category_for_table("notification"), "notifications");
@@ -309,5 +329,17 @@ mod tests {
         // unknown/new table → configuration catch-all
         assert_eq!(category_for_table("some_future_table"), "configuration");
         assert_eq!(category_for_table("device"), "configuration");
+    }
+
+    /// The licence rows go with the licensing category; the server's own
+    /// licence state goes with nothing, and not with the configuration
+    /// catch-all either.
+    #[test]
+    fn license_state_is_never_carried() {
+        assert_eq!(category_for_table("license_state"), NOT_CARRIED_ID);
+        assert!(is_not_carried("license_state"));
+        assert!(!is_not_carried("license"));
+        assert!(!is_not_carried("license_state_audit"));
+        assert!(catalog().iter().all(|c| c.id != NOT_CARRIED_ID));
     }
 }
