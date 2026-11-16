@@ -575,7 +575,7 @@ pub fn inspect(input: &Path, passphrase: Option<&str>) -> Result<Manifest> {
     let mut e = entries
         .next()
         .ok_or_else(|| Error::msg("this file is not a SENTIENT backup (it is empty)"))?
-        .map_err(|e| Error::msg(format!("this file is not a SENTIENT backup ({e})")))?;
+        .map_err(|_| Error::msg("this file is not a SENTIENT backup (it is not a backup archive)"))?;
     let path = e.path().map_err(|e| Error::msg(e.to_string()))?.to_string_lossy().into_owned();
     if path != "manifest.json" {
         return Err(Error::msg("this file is not a SENTIENT backup (no manifest at its start)"));

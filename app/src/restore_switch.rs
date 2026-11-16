@@ -102,6 +102,14 @@ fn ch_database_exists(ch: &ChConn, name: &str) -> Result<bool, String> {
 }
 
 fn wait_answering(port: u16) -> bool {
+    // Click tests: SPM_DEBUG_FAIL_SWITCH=<marker file> makes the first wait
+    // (on the restored data) fail once, so the swap back shows; the file
+    // is removed by it.
+    #[cfg(debug_assertions)]
+    if let Some(f) = std::env::var_os("SPM_DEBUG_FAIL_SWITCH").filter(|f| std::path::Path::new(f).exists()) {
+        let _ = std::fs::remove_file(f);
+        return false;
+    }
     for _ in 0..90 {
         if sentient_installer_core::native::http_answers(port) {
             return true;

@@ -713,7 +713,6 @@ pub async fn orphans(live: &ConnConfig, input: &Path, passphrase: Option<&str>, 
     let with_telemetry: Vec<String> = pg.query("SELECT DISTINCT entity_id::text FROM ts_kv_latest", &[]).await?.iter().map(|r| r.get(0)).collect();
     let mut missing: Vec<String> = with_telemetry.into_iter().filter(|id| !known.contains(id)).collect();
     missing.sort();
-    let total = missing.len();
     let mut names: std::collections::HashMap<String, String> = Default::default();
     for t in ["device", "asset"] {
         if table_exists(&pg, t).await? {
@@ -722,8 +721,11 @@ pub async fn orphans(live: &ConnConfig, input: &Path, passphrase: Option<&str>, 
             }
         }
     }
-    let mut out: Vec<String> = missing.iter().map(|id| names.get(id).cloned().unwrap_or_else(|| id.clone())).collect();
+    // Only devices and assets: SENTIENT's own system telemetry (a node's
+    // id, different on every server) is no one's to lose.
+    let mut out: Vec<String> = missing.iter().filter_map(|id| names.get(id).cloned()).collect();
     out.sort();
+    let total = out.len();
     out.truncate(limit);
     Ok((out, total))
 }

@@ -59,7 +59,7 @@ pub fn is_data(line: &str) -> bool {
 /// A message as a sentence, so another can follow it.
 fn sentence(e: &str) -> String {
     let e = e.trim_end();
-    if e.ends_with(['.', '!', '?', ')']) { e.to_string() } else { format!("{e}.") }
+    if e.ends_with(['.', '!', '?']) { e.to_string() } else { format!("{e}.") }
 }
 
 fn step(sink: &ProgressFn, name: &str) {
@@ -620,7 +620,27 @@ fn disk_rows(entries: Vec<(&str, Place, Vec<(String, u64)>)>) -> Vec<DiskRow> {
 
 /// The probe the free-space watch reads: every disk of the restore.
 fn probe(places: Vec<(String, Place)>) -> impl Fn() -> Vec<DiskFree> + Send + Sync + 'static {
-    move || places.iter().filter_map(|(label, p)| measure(p).map(|(dev, mount, free)| DiskFree { label: format!("{} ({})", if mount.is_empty() { dev } else { mount }, label), free })).collect()
+    // A container's df names the wrong mount point (busybox): the host's
+    // mount point of the same device names the disk.
+    #[cfg(not(windows))]
+    let mounts = host_mounts();
+    #[cfg(windows)]
+    let mounts: HashMap<String, String> = HashMap::new();
+    move || {
+        places
+            .iter()
+            .filter_map(|(label, p)| {
+                measure(p).map(|(dev, mount, free)| {
+                    let disk = match p {
+                        Place::Container(..) => mounts.get(&dev).cloned().unwrap_or(dev),
+                        Place::Host(_) if !mount.is_empty() => mount,
+                        Place::Host(_) => dev,
+                    };
+                    DiskFree { label: format!("{disk} ({label})"), free }
+                })
+            })
+            .collect()
+    }
 }
 
 /// Labels of the catalog settings, by name.
@@ -1368,7 +1388,7 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
         entry.aside = None;
     }
     let kept = if req.delete_old {
-        String::new()
+        entry.safety.as_ref().map(|s| format!(" The safety backup {s} holds the data from before.")).unwrap_or_default()
     } else {
         format!(" The data from before is kept as {aside}{}.", entry.safety.as_ref().map(|s| format!(", and as the safety backup {s}")).unwrap_or_default())
     };
