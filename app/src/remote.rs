@@ -187,6 +187,13 @@ pub fn secret(id: &str) -> Option<String> {
 pub fn forget_secret(id: &str) {
     forget_one(&sudo_key(id));
     forget_one(id);
+    // The instance's SENTIENT sign-in (Licence) goes with it.
+    crate::licence::forget_stored(id);
+}
+
+/// Forget one kept secret by its name.
+pub fn forget_named(name: &str) {
+    forget_one(name);
 }
 
 fn forget_one(id: &str) {

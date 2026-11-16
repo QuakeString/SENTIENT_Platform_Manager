@@ -59,6 +59,8 @@ pub struct LicencePage {
     password: Entity<InputState>,
     key: Entity<InputState>,
     signing_in: bool,
+    /// Remember me: keep the password too (on by default).
+    remember: bool,
     sign_in_error: Option<String>,
     /// A read is under way (the Refresh button turns).
     reading: bool,
@@ -84,7 +86,7 @@ impl LicencePage {
         let password = cx.new(|cx| InputState::new(window, cx).masked(true));
         let key = cx.new(|cx| InputState::new(window, cx).placeholder("Enter your licence key"));
         // The last administrator signed in here, as a start.
-        if let Some(s) = crate::licence::last_email(&target.key()) {
+        if let Some(s) = crate::licence::email_for(&target.key()) {
             email.update(cx, |i, cx| i.set_value(s, window, cx));
         }
         let mut page = Self {
@@ -97,6 +99,7 @@ impl LicencePage {
             password,
             key,
             signing_in: false,
+            remember: true,
             sign_in_error: None,
             reading: false,
             note: None,
@@ -135,11 +138,40 @@ impl LicencePage {
                     Ok((true, false)) => p.view = View::Stopped,
                     Ok((true, true)) => match crate::licence::session(&p.target.key()) {
                         Some(s) => p.load(s.token, cx),
+                        // Signed in before: sign in again from what is kept
+                        // (refresh token, then Remember me), without asking.
+                        None if crate::licence::stored(&p.target.key()).is_some() => p.silent(cx),
                         None => p.view = View::SignIn,
                     },
                     Err(e) => p.view = View::Failed(e),
                 }
                 p.debug_open(cx);
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+        cx.notify();
+    }
+
+    /// Sign in from what is kept; the form (email filled in, the reason
+    /// shown) only when that fails.
+    fn silent(&mut self, cx: &mut Context<Self>) {
+        self.view = View::Loading;
+        self.reading = true;
+        let target = self.target.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let got = cx.background_executor().spawn(async move { target.silent_sign_in() }).await;
+            this.update(cx, |p, cx| {
+                p.reading = false;
+                match got {
+                    Ok(s) => p.load(s.token, cx),
+                    Err(e) if e == crate::remote::AGENT_OLD => p.view = View::AgentOld,
+                    Err(e) => {
+                        p.sign_in_error = (!e.is_empty()).then_some(e);
+                        p.view = View::SignIn;
+                    }
+                }
                 cx.notify();
             })
             .ok();
@@ -164,8 +196,13 @@ impl LicencePage {
                     Ok(r) => p.view = View::Ready(Box::new(r)),
                     Err(e) if e == crate::licence::SESSION_ENDED => {
                         crate::licence::end_session(&key);
-                        p.sign_in_error = Some(e);
-                        p.view = View::SignIn;
+                        // The token ran out: renew it from what is kept.
+                        if crate::licence::stored(&key).is_some() {
+                            p.silent(cx);
+                        } else {
+                            p.sign_in_error = Some(e);
+                            p.view = View::SignIn;
+                        }
                     }
                     Err(e) if e == crate::remote::AGENT_OLD => p.view = View::AgentOld,
                     Err(e) => p.view = View::Failed(e),
@@ -199,14 +236,19 @@ impl LicencePage {
         self.sign_in_error = None;
         self.password.update(cx, |i, cx| i.set_value("", window, cx));
         let target = self.target.clone();
+        let remember = self.remember;
         let task = cx.spawn(async move |this, cx| {
-            let e2 = email.clone();
-            let got = cx.background_executor().spawn(async move { target.sign_in(&e2, &password) }).await;
+            let (e2, pw) = (email.clone(), password.clone());
+            let got = cx.background_executor().spawn(async move { target.sign_in(&e2, &pw) }).await;
             this.update(cx, |p, cx| {
                 p.signing_in = false;
                 match got {
-                    Ok(token) => {
-                        crate::licence::set_session(&p.target.key(), &email, &token);
+                    Ok((token, refresh)) => {
+                        let key = p.target.key();
+                        crate::licence::set_session(&key, &email, &token);
+                        // Kept for the next start: the refresh token always,
+                        // the password only with Remember me (off removes it).
+                        crate::licence::store(&key, &crate::licence::Stored { email: email.clone(), password: remember.then(|| password.clone()), refresh });
                         p.load(token, cx);
                     }
                     Err(e) if e == crate::remote::AGENT_OLD => p.view = View::AgentOld,
@@ -222,6 +264,7 @@ impl LicencePage {
 
     fn sign_out(&mut self, cx: &mut Context<Self>) {
         crate::licence::end_session(&self.target.key());
+        crate::licence::forget_stored(&self.target.key());
         self.view = View::SignIn;
         self.open = None;
         self.menu = false;
@@ -431,7 +474,7 @@ impl ActionDialog {
                 .spawn(async move {
                     // The password again: a fresh sign-in, so a forgotten
                     // open session cannot change the licence.
-                    let token = target.sign_in(&email, &password)?;
+                    let (token, _) = target.sign_in(&email, &password)?;
                     crate::licence::set_session(&key, &email, &token);
                     match act {
                         Act::Activate(k) => target.activate(&token, &k).map(|_| format!("The licence is active on {name}.")),
@@ -653,9 +696,19 @@ impl LicencePage {
                     .child(icon("shield").size(px(22.)).text_color(theme.primary))
                     .child(div().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child("Sign in to manage the licence")),
             )
-            .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Use the SENTIENT system administrator of {}. The password is not saved.", self.name)))
+            .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Use the SENTIENT system administrator of {}.", self.name)))
             .child(field("Email", Input::new(&self.email).disabled(self.signing_in).into_any_element()))
             .child(field("Password", Input::new(&self.password).mask_toggle().disabled(self.signing_in).into_any_element()))
+            .child(
+                gpui_kit::component::checkbox::Checkbox::new("licence-remember")
+                    .label("Remember me")
+                    .checked(self.remember)
+                    .disabled(self.signing_in)
+                    .on_change(cx.listener(|p, v: &bool, _, cx| {
+                        p.remember = *v;
+                        cx.notify();
+                    })),
+            )
             .when_some(self.sign_in_error.clone(), |c, e| c.child(ui::outcome(theme, Tone::Bad, e)))
             .child(
                 h_flex()

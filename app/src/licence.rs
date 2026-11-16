@@ -3,8 +3,10 @@
 //! SENTIENT's licence, through SENTIENT's own licence functions (its REST
 //! API, `/api/license/*`, the same calls its Licence page makes). Every call
 //! is made as the SENTIENT system administrator: the page signs in with
-//! SENTIENT's normal sign-in (`/api/auth/login`, lockout included) and keeps
-//! the session in memory only, never the password.
+//! SENTIENT's normal sign-in (`/api/auth/login`, lockout included). The
+//! refresh token, and with "Remember me" the email and password, are kept
+//! per instance in the OS secret store (a 0600 file where Linux has no
+//! keyring), so a restart signs in again without asking.
 //!
 //! On this computer the calls go to SENTIENT's web port on 127.0.0.1; on a
 //! remote instance the server's agent makes them there (`--job licence-api`,
@@ -29,7 +31,6 @@ pub const DEMO_URL: &str = "https://license.invenia.in/request-demo";
 pub const BUY_URL: &str = "https://license.invenia.in/buy";
 
 /// A session ends after this long without a call.
-pub const IDLE: Duration = Duration::from_secs(15 * 60);
 
 // ---------------------------------------------------------------------------
 // What SENTIENT answers (camelCase, as its UI reads it)
@@ -415,8 +416,8 @@ impl Target {
         }
     }
 
-    /// Sign in as `email`: SENTIENT's token. Blocking.
-    pub fn sign_in(&self, email: &str, password: &str) -> Result<String, String> {
+    /// Sign in as `email`: SENTIENT's token and refresh token. Blocking.
+    pub fn sign_in(&self, email: &str, password: &str) -> Result<(String, Option<String>), String> {
         let reply = self.send(&Request {
             method: "POST".into(),
             path: "/api/auth/login".into(),
@@ -435,7 +436,56 @@ impl Target {
         if v.get("scope").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
             return Err("This administrator signs in with a second factor (2FA), which the Platform Manager cannot do. Use another system administrator, or SENTIENT's own Licence page.".into());
         }
-        v.get("token").and_then(Value::as_str).map(str::to_string).ok_or_else(|| "SENTIENT gave no sign-in token.".into())
+        let token = v.get("token").and_then(Value::as_str).map(str::to_string).ok_or_else(|| "SENTIENT gave no sign-in token.".to_string())?;
+        Ok((token, v.get("refreshToken").and_then(Value::as_str).map(str::to_string)))
+    }
+
+    /// A new token from a refresh token (SENTIENT's /api/auth/token).
+    /// Blocking.
+    pub fn renew(&self, refresh: &str) -> Result<(String, Option<String>), String> {
+        let reply = self.send(&Request {
+            method: "POST".into(),
+            path: "/api/auth/token".into(),
+            token: None,
+            body: Some(serde_json::json!({ "refreshToken": refresh })),
+            file: None,
+        })?;
+        if !(200..300).contains(&reply.status) {
+            return Err(reply.message());
+        }
+        let v: Value = reply.json()?;
+        let token = v.get("token").and_then(Value::as_str).map(str::to_string).ok_or_else(|| "SENTIENT gave no token.".to_string())?;
+        Ok((token, v.get("refreshToken").and_then(Value::as_str).map(str::to_string)))
+    }
+
+    /// Sign in without asking, from what is kept for this instance: the
+    /// refresh token first, then (Remember me) the email and password.
+    /// The session is set; the reason when neither works. Blocking.
+    pub fn silent_sign_in(&self) -> Result<Session, String> {
+        let key = self.key();
+        let Some(mut kept) = stored(&key) else { return Err(String::new()) };
+        if let Some(r) = kept.refresh.clone() {
+            if let Ok((token, refresh)) = self.renew(&r) {
+                if refresh.is_some() {
+                    kept.refresh = refresh;
+                    store(&key, &kept);
+                }
+                set_session(&key, &kept.email, &token);
+                return peek_session(&key).ok_or_else(String::new);
+            }
+        }
+        match kept.password.clone() {
+            Some(pw) => match self.sign_in(&kept.email, &pw) {
+                Ok((token, refresh)) => {
+                    kept.refresh = refresh;
+                    store(&key, &kept);
+                    set_session(&key, &kept.email, &token);
+                    peek_session(&key).ok_or_else(String::new)
+                }
+                Err(e) => Err(format!("The saved password was refused: {e}")),
+            },
+            None => Err("Your sign-in has expired. Sign in again.".into()),
+        }
     }
 
     fn get<T: serde::de::DeserializeOwned>(&self, token: &str, method: &str, path: &str, body: Option<Value>) -> Result<T, String> {
@@ -506,19 +556,15 @@ pub struct Session {
 
 static SESSIONS: Mutex<Option<HashMap<String, Session>>> = Mutex::new(None);
 
-/// The session for `key`, if it has not been idle for [`IDLE`]; a call
-/// marks it used.
+/// The session for `key` (kept until Sign out or the app quits; the
+/// next start signs in again from what is kept); a call marks it used.
 pub fn session(key: &str) -> Option<Session> {
     let mut g = SESSIONS.lock().ok()?;
     let map = g.get_or_insert_with(HashMap::new);
     match map.get_mut(key) {
-        Some(s) if s.last.elapsed() < IDLE => {
+        Some(s) => {
             s.last = Instant::now();
             Some(s.clone())
-        }
-        Some(_) => {
-            map.remove(key);
-            None
         }
         None => None,
     }
@@ -527,7 +573,7 @@ pub fn session(key: &str) -> Option<Session> {
 /// The session for `key` without marking it used (drawing the page).
 pub fn peek_session(key: &str) -> Option<Session> {
     let g = SESSIONS.lock().ok()?;
-    g.as_ref()?.get(key).filter(|s| s.last.elapsed() < IDLE).cloned()
+    g.as_ref()?.get(key).cloned()
 }
 
 /// The administrator last signed in for `key` (in memory), to fill in.
@@ -544,6 +590,110 @@ pub fn set_session(key: &str, email: &str, token: &str) {
     if let Ok(mut g) = SESSIONS.lock() {
         g.get_or_insert_with(HashMap::new).insert(key.to_string(), Session { email: email.into(), token: token.into(), last: Instant::now() });
     }
+}
+
+/// What is kept for an instance's sign-in, in the OS secret store (the
+/// keyring on Linux, DPAPI on Windows; crate::remote::set_secret): the
+/// email, the refresh token, and with Remember me the password. Never in
+/// session.json, logs or backups.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Stored {
+    pub email: String,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub refresh: Option<String>,
+}
+
+fn stored_name(key: &str) -> String {
+    format!("licence-{key}")
+}
+
+pub fn stored(key: &str) -> Option<Stored> {
+    let text = crate::remote::secret(&stored_name(key)).or_else(|| file_store::read(&stored_name(key)))?;
+    serde_json::from_str(&text).ok()
+}
+
+pub fn store(key: &str, kept: &Stored) {
+    let Ok(t) = serde_json::to_string(kept) else { return };
+    let name = stored_name(key);
+    crate::remote::set_secret(&name, &t);
+    // Linux without a keyring (no secret-tool, or no Secret Service): the
+    // keyring call keeps it for this session only; a file only this account
+    // can read keeps it across restarts.
+    if cfg!(not(windows)) && !file_store::keyring_has(&name) {
+        file_store::write(&name, &t);
+    }
+}
+
+pub fn forget_stored(key: &str) {
+    let name = stored_name(key);
+    crate::remote::forget_named(&name);
+    file_store::remove(&name);
+}
+
+/// The fallback for a Linux desktop without a keyring: one file per name,
+/// mode 0600 in a 0700 folder of the Platform Manager's settings.
+mod file_store {
+    use std::path::PathBuf;
+
+    fn dir() -> PathBuf {
+        crate::updates::prefs_dir().join("secrets")
+    }
+
+    fn path(name: &str) -> PathBuf {
+        dir().join(format!("{}.json", name.replace(['/', '\\', '.'], "_")))
+    }
+
+    pub fn keyring_has(name: &str) -> bool {
+        #[cfg(not(windows))]
+        {
+            std::process::Command::new("secret-tool")
+                .args(["lookup", "service", "sentient-platform-manager", "instance", name])
+                .output()
+                .is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
+        }
+        #[cfg(windows)]
+        {
+            let _ = name;
+            true
+        }
+    }
+
+    pub fn write(name: &str, text: &str) {
+        let d = dir();
+        if std::fs::create_dir_all(&d).is_err() {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+            let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700));
+            let p = path(name);
+            let _ = std::fs::remove_file(&p);
+            if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&p) {
+                use std::io::Write as _;
+                let _ = f.write_all(text.as_bytes());
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = text;
+        }
+    }
+
+    pub fn read(name: &str) -> Option<String> {
+        std::fs::read_to_string(path(name)).ok()
+    }
+
+    pub fn remove(name: &str) {
+        let _ = std::fs::remove_file(path(name));
+    }
+}
+
+/// The email to fill in: this session's, else the kept one.
+pub fn email_for(key: &str) -> Option<String> {
+    last_email(key).or_else(|| stored(key).map(|k| k.email).filter(|e| !e.is_empty()))
 }
 
 pub fn end_session(key: &str) {
@@ -670,6 +820,14 @@ mod debug {
         let c = canned()?;
         let ok = |v: Option<&Value>| Ok(Reply { status: 200, body: v.cloned().unwrap_or(Value::Null).to_string() });
         Some(match req.path.as_str() {
+            "/api/auth/token" => {
+                let r = req.body.as_ref().and_then(|b| b.get("refreshToken")).and_then(Value::as_str).unwrap_or("");
+                if r == "revoked" {
+                    Ok(Reply { status: 401, body: r#"{"message":"Invalid refresh token"}"#.into() })
+                } else {
+                    Ok(Reply { status: 200, body: r#"{"token":"debug","refreshToken":"debug"}"#.into() })
+                }
+            }
             "/api/auth/login" => {
                 let pw = req.body.as_ref().and_then(|b| b.get("password")).and_then(Value::as_str).unwrap_or("");
                 if pw == "wrong" {
