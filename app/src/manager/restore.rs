@@ -896,9 +896,8 @@ impl RestoreFlow {
                     .child(div().flex_shrink_0().text_sm().font_features(ui::tabular()).child(if total > 0 { format!("{} of {}", gb(read), gb(total)) } else { "Reading…".into() })),
             );
             let mut lines = v_flex().gap_0();
-            for (n, (label, _, mark)) in parts.iter().enumerate() {
-                let sub = (*mark == StepMark::Done && n > 0).then(|| "SHA-256 matches".to_string());
-                lines = lines.child(check_line(theme, *mark, label.clone(), sub));
+            for (label, mark, sub) in condense(&parts) {
+                lines = lines.child(check_line(theme, mark, label, sub));
             }
             c = c.child(lines);
             return (c, false);
@@ -969,7 +968,8 @@ impl RestoreFlow {
                     cx.notify();
                 })).into_any_element());
             }
-            let parts = card(theme, "Parts", None).child(v_flex().children(i.parts.iter().map(|p| check_line(theme, if p.ok { StepMark::Done } else { StepMark::Failed }, p.label.clone(), Some(if p.ok { "matches".into() } else { "does not match".into() })))).children(i.missing.iter().map(|m| check_line(theme, StepMark::Failed, sentient_backup_core::restore::member_label(m), Some("missing".into())))));
+            let marks: Vec<(String, u64, StepMark)> = i.parts.iter().map(|p| (p.label.clone(), p.bytes, if p.ok { StepMark::Done } else { StepMark::Failed })).collect();
+            let parts = card(theme, "Parts", None).child(v_flex().children(condense(&marks).into_iter().map(|(l, m, sub)| check_line(theme, m, l, Some(if m == StepMark::Failed { "does not match".into() } else { sub.map(|s| s.replace("SHA-256 matches", "match")).unwrap_or_else(|| "matches".into()) })))).children(i.missing.iter().map(|m| check_line(theme, StepMark::Failed, sentient_backup_core::restore::member_label(m), Some("missing".into())))));
             return (
                 v_flex()
                     .gap(px(ui::GAP))
@@ -1117,6 +1117,42 @@ impl RestoreFlow {
         );
         (c, self.place == 0)
     }
+}
+
+/// The check's lines, short: a run of three or more telemetry months
+/// already checked reads as one line, and the parts still to come after
+/// the next two as "and N more".
+fn condense(parts: &[(String, u64, StepMark)]) -> Vec<(String, StepMark, Option<String>)> {
+    const T: &str = "Telemetry history, ";
+    let mut out: Vec<(String, StepMark, Option<String>)> = Vec::new();
+    let mut i = 0;
+    let mut todo = 0usize;
+    while i < parts.len() {
+        let (label, _, mark) = &parts[i];
+        if *mark == StepMark::Done && label.starts_with(T) {
+            let mut j = i;
+            while j < parts.len() && parts[j].2 == StepMark::Done && parts[j].0.starts_with(T) {
+                j += 1;
+            }
+            if j - i >= 3 {
+                out.push((format!("{T}{} – {}", &parts[i].0[T.len()..], &parts[j - 1].0[T.len()..]), StepMark::Done, Some(format!("{} parts, SHA-256 matches", j - i))));
+                i = j;
+                continue;
+            }
+        }
+        if *mark == StepMark::Todo {
+            todo += 1;
+            if todo > 2 {
+                let rest = parts.len() - i;
+                out.push((format!("and {rest} more part{}", if rest == 1 { "" } else { "s" }), StepMark::Todo, None));
+                break;
+            }
+        }
+        let sub = (*mark == StepMark::Done && i > 0).then(|| "SHA-256 matches".to_string());
+        out.push((label.clone(), *mark, sub));
+        i += 1;
+    }
+    out
 }
 
 fn capital(s: &str) -> String {
@@ -2553,7 +2589,7 @@ pub fn history_card(theme: &gpui_kit::component::Theme, target: &Target, entries
                                 .when_some(e.source.as_ref().and_then(|s| s.strip_prefix("copied ")).and_then(|s| s.split(',').next()).map(str::to_string), |r, s| r.child(div().flex_shrink_0().text_size(px(12.5)).text_color(theme.muted_foreground).child(s))),
                         )
                         .when(!narrow, |r| r.child(div().w(px(160.)).flex_shrink_0().text_size(px(13.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(e.by.clone())))
-                        .child(div().w(px(110.)).flex_shrink_0().child(result_pill(theme, e.result)))
+                        .child(h_flex().w(px(110.)).flex_shrink_0().child(result_pill(theme, e.result)))
                         .child(h_flex().w(px(56.)).flex_shrink_0().justify_end().child(ui::button(SharedString::from(format!("rh-log-{i}"))).ghost().small().label("Log").on_click(move |_, _, cx| HistoryDialog::open(t.clone(), e2.clone(), cx)))),
                 );
             }
