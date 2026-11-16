@@ -789,7 +789,7 @@ impl BackupPage {
                     run = run
                         .child(
                             h_flex()
-                                .gap_2()
+                                .gap(crate::ui::button_gap())
                                 .items_center()
                                 .child(div().flex_1().child(ui::outcome(theme, Tone::Good, format!("Backup finished and checked: {name}, {}.", crate::dbstatus::bytes_label(m.bytes)))))
                                 .child(crate::ui::button("open-folder").outline().label("Open folder").on_click(move |_, _, cx| ui::open_url(&folder, cx))),
@@ -802,7 +802,7 @@ impl BackupPage {
                                 "Whole file SHA-256",
                                 None,
                                 h_flex()
-                                    .gap_2()
+                                    .gap(crate::ui::button_gap())
                                     .child(div().text_sm().font_family(theme.mono_font_family.clone()).child(short))
                                     .child(crate::ui::button("copy-hash").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(whole.clone())))),
                             )
@@ -1036,7 +1036,7 @@ impl BackupPage {
             Some("A second disk or a network folder, in case this computer fails."),
             h_flex()
                 .min_w_0()
-                .gap_2()
+                .gap(crate::ui::button_gap())
                 .items_center()
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().when(p.copy_to.is_some(), |d| d.font_family(theme.mono_font_family.clone()).text_size(px(13.5))).when(p.copy_to.is_none(), |d| d.text_color(theme.muted_foreground)).child(p.copy_to.as_ref().map(|d| d.display().to_string()).unwrap_or_else(|| "Nowhere".into())))
                 .when(p.copy_to.is_some(), |r| {
@@ -1081,14 +1081,14 @@ impl BackupPage {
         let now_tip = estimate.map(|(t, _)| t).unwrap_or_else(|| "A backup now, with what the card says.".into());
         let mut list = ui::panel(theme).gap_0().child(
             h_flex()
-                .gap_2()
+                .gap(crate::ui::button_gap())
                 .pb_2()
                 .items_center()
                 .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child("Backups"))
-                .child(crate::ui::button("add-backup").ghost().label("Add a file…").tooltip("Add a backup file from elsewhere to the folder.").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx))))
-                .child(crate::ui::button("restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx))))
+                .child(crate::ui::probed(crate::ui::button("add-backup").ghost().label("Add a file…").tooltip("Add a backup file from elsewhere to the folder.").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx)))))
+                .child(crate::ui::probed(crate::ui::button("restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
                 .when(!self.choose, |r| {
-                    r.child(crate::ui::button("backup-now").outline().label(if busy { "Backing up…" } else { "Back up now" }).tooltip(now_tip).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_preset_backup(cx))))
+                    r.child(crate::ui::probed(crate::ui::button("backup-now").outline().label(if busy { "Backing up…" } else { "Back up now" }).tooltip(now_tip).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_preset_backup(cx)))))
                 }),
         );
         if let Some(t) = low {
@@ -1241,7 +1241,7 @@ impl Render for BackupPage {
                     .child(h_flex().gap_2().items_center().child(div().w_80().child(Input::new(&self.passphrase).mask_toggle())).children(key_plain_note(&theme, self.passphrase.read(cx).value().is_empty())))
                     .child(
                         h_flex()
-                            .gap_3()
+                            .gap(crate::ui::button_gap())
                             .items_center()
                             .child(
                                 crate::ui::button("output")
@@ -1335,7 +1335,7 @@ pub(crate) fn card_row(theme: &gpui_kit::component::Theme, narrow: bool, label: 
     if narrow {
         return line(v_flex().py(px(8.)).gap_1())
             .child(label_el)
-            .child(h_flex().min_w_0().gap_2().items_center().child(h_flex().flex_1().min_w_0().gap_2().items_center().child(value)).children(action));
+            .child(h_flex().min_w_0().gap(crate::ui::button_gap()).items_center().child(h_flex().flex_1().min_w_0().gap_2().items_center().child(value)).children(action));
     }
     // One divider under the whole row, label to action (his rc12-22 note:
     // a line per column left a gap before the action).
@@ -1521,8 +1521,14 @@ pub(crate) fn table_row(theme: &gpui_kit::component::Theme, narrow: bool, i: usi
                 .child(small_pill(theme, tone, text))
                 .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)),
         )
-        .child(h_flex().w(px(if narrow { COL_RESTORE_NARROW } else { COL_RESTORE })).flex_shrink_0().justify_end().child(restore_btn))
-        .child(h_flex().w(px(COL_MENU)).flex_shrink_0().justify_end().child(menu))
+        // Restore… and the menu: one button group at the row's end (the
+        // header's two columns' width).
+        .child(
+            ui::button_group(vec![restore_btn.into_any_element(), menu.into_any_element()])
+                .w(px(if narrow { COL_RESTORE_NARROW } else { COL_RESTORE }) + px(COL_MENU))
+                .flex_shrink_0()
+                .justify_end(),
+        )
 }
 
 /// The table's pills: smaller than the page's.

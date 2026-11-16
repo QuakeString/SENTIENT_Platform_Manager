@@ -64,7 +64,8 @@ def main():
     findings = []
     for f in sorted(os.listdir(out)):
         m = re.match(r"(.*)-(\d+)-x([\d.]+)-(light|dark)\.log$", f)
-        if not m or "-SPM_DEBUG" in f:
+        # Setup's window has its own step list, not the manager's menu.
+        if not m or "-SPM_DEBUG" in f or f.startswith("setup-"):
             continue
         png = os.path.join(out, f[:-4] + ".png")
         if not os.path.exists(png):

@@ -186,18 +186,18 @@ impl Render for AboutPage {
                 )
                 .child(
                     h_flex()
-                        .gap_2()
+                        .gap(crate::ui::button_gap())
                         .flex_wrap()
                         .items_center()
                         .when_some(state, |r, (tone, text)| r.child(ui::pill(&theme, tone, text)))
-                        .child(crate::ui::button("about-notes").outline().label("What's new").on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew))))
-                        .child(
+                        .child(crate::ui::probed(crate::ui::button("about-notes").outline().label("What's new").on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew)))))
+                        .child(crate::ui::probed(
                             crate::ui::button("about-check")
                                 .outline()
                                 .label(if checking { "Checking…" } else { "Check for updates" })
                                 .disabled(checking)
                                 .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))),
-                        ),
+                        )),
                 ),
         );
         let channels = ui::seg_track(&theme).children(Channel::ALL.into_iter().map(|c| {
@@ -297,7 +297,7 @@ impl Render for AboutPage {
             let copy = path.clone();
             h_flex()
                 .max_w_full()
-                .gap_2()
+                .gap(crate::ui::button_gap())
                 .items_center()
                 .justify_center()
                 .text_size(px(13.))

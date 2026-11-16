@@ -1182,7 +1182,7 @@ impl Installer {
             .flex_shrink_0()
             .px(px(ui::PAGE_PAD))
             .py(px(14.))
-            .gap_2()
+            .gap(crate::ui::button_gap())
             .items_center()
             .bg(theme.background)
             .border_t_1()
@@ -1208,26 +1208,26 @@ impl Installer {
                 (None, None) => bar.child(div().flex_1()),
             })
             .when(self.step < FINISH, |bar| {
-                bar.child(
+                bar.child(crate::ui::probed(
                     crate::ui::button("cancel")
                         .outline()
                         .h(h)
                         .px_4()
                         .label("Cancel")
                         .on_click(cx.listener(|this, _, window, cx| this.confirm_cancel(window, cx))),
-                )
+                ))
             })
             .when(self.step > 0 && self.step < INSTALL, |bar| {
-                bar.child(
+                bar.child(crate::ui::probed(
                     crate::ui::button("back")
                         .outline()
                         .h(h)
                         .px_4()
                         .label("Back")
                         .on_click(cx.listener(|this, _, _, cx| this.go(this.previous_shown(this.step), cx))),
-                )
+                ))
             })
-            .child(
+            .child(crate::ui::probed(
                 crate::ui::button("next")
                     .primary()
                     .h(h)
@@ -1235,7 +1235,7 @@ impl Installer {
                     .label(next_label)
                     .disabled((self.step == INSTALL && !failed) || blocked.is_some())
                     .on_click(cx.listener(|this, _, window, cx| this.next(window, cx))),
-            )
+            ))
     }
 }
 

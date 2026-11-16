@@ -788,7 +788,7 @@ impl FilesPage {
         let title = h_flex()
             .h(px(52.))
             .px(px(PANE_PX))
-            .gap_2()
+            .gap(crate::ui::button_gap())
             .items_center()
             .child(match &p.place {
                 Place::Local => Icon::empty().path("icons/monitor.svg").size_4().text_color(theme.muted_foreground).into_any_element(),
@@ -796,7 +796,7 @@ impl FilesPage {
             })
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::MEDIUM).child(p.label()))
             .when(p.admin, |r| r.child(ui::pill(&theme, Tone::Warn, "Administrator").text_size(px(12.))))
-            .child(
+            .child(crate::ui::probed(
                 crate::ui::button(SharedString::from(format!("f-new-{side}")))
                     .ghost()
                     .small()
@@ -804,8 +804,8 @@ impl FilesPage {
                     .tooltip("New folder")
                     .disabled(!writable)
                     .on_click(cx.listener(move |this, _, window, cx| this.start_new_folder(side, window, cx))),
-            )
-            .child(crate::ui::button(SharedString::from(format!("f-reload-{side}"))).ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(move |this, _, _, cx| this.reload(side, cx))));
+            ))
+            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-reload-{side}"))).ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(move |this, _, _, cx| this.reload(side, cx)))));
 
         // Where: the path's parts, each a way back.
         let crumbs = p.place.crumbs(&p.path);
@@ -972,18 +972,18 @@ impl FilesPage {
                 h_flex()
                     .h(px(40.))
                     .px(px(PANE_PX))
-                    .gap_2()
+                    .gap(crate::ui::button_gap())
                     .items_center()
                     .child(file_icon(true).size_4().text_color(folder_color()))
                     .child(div().flex_1().child(Input::new(input).small()))
-                    .child(crate::ui::button(SharedString::from(format!("f-make-{side}"))).primary().small().label("Make").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-make-{side}"))).primary().small().label("Make").on_click(cx.listener(move |this, _, _, cx| {
                         let name = this.panes[side].new_folder.as_ref().map(|i| i.read(cx).value().trim().to_string()).unwrap_or_default();
                         this.make_folder(side, name, cx);
-                    })))
-                    .child(crate::ui::button(SharedString::from(format!("f-make-no-{side}"))).ghost().small().label("Cancel").on_click(cx.listener(move |this, _, _, cx| {
+                    }))))
+                    .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-make-no-{side}"))).ghost().small().label("Cancel").on_click(cx.listener(move |this, _, _, cx| {
                         this.panes[side].new_folder = None;
                         cx.notify();
-                    }))),
+                    })))),
             );
         }
         if p.loading && p.listing.is_none() {
@@ -1097,7 +1097,7 @@ impl FilesPage {
         let foot = h_flex()
             .min_h(px(56.))
             .px(px(PANE_PX))
-            .gap_3()
+            .gap(crate::ui::button_gap())
             .items_center()
             .border_t_1()
             .border_color(theme.border)
@@ -1361,11 +1361,11 @@ impl Render for DeleteFooter {
         let _ = cx;
         h_flex()
             .w_full()
-            .gap_2()
+            .gap(crate::ui::button_gap())
             .justify_end()
-            .child(crate::ui::button("del-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx)))
+            .child(crate::ui::probed(crate::ui::button("del-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
             // The mockup's solid red (the kit's danger is a tint).
-            .child(
+            .child(crate::ui::probed(
                 div()
                     .id("del-go")
                     .h(px(32.))
@@ -1385,7 +1385,7 @@ impl Render for DeleteFooter {
                         crate::modal::close(cx);
                         me.update(cx, |p, cx| p.delete(side, cx)).ok();
                     }),
-            )
+            ))
     }
 }
 

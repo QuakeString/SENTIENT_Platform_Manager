@@ -429,7 +429,7 @@ impl Render for LogView {
             .child(h_flex().gap_3().flex_wrap().items_center().when(!self.single, |r| r.child(sources)).child(levels))
             .child(
                 h_flex()
-                    .gap_3()
+                    .gap(crate::ui::button_gap())
                     .flex_wrap()
                     .items_center()
                     .child(div().w(px(280.)).child(Input::new(&self.filter)))
@@ -441,9 +441,9 @@ impl Render for LogView {
                         }
                         cx.notify();
                     })))
-                    .child(crate::ui::button("log-refresh").outline().label("Refresh").on_click(cx.listener(|v, _, _, cx| v.start(cx))))
-                    .child(crate::ui::button("log-copy").outline().label(if selected_n > 0 { format!("Copy {selected_n}") } else { "Copy".into() }).on_click(cx.listener(|v, _, _, cx| v.copy(cx))))
-                    .child(save)
+                    .child(crate::ui::probed(crate::ui::button("log-refresh").outline().label("Refresh").on_click(cx.listener(|v, _, _, cx| v.start(cx)))))
+                    .child(crate::ui::probed(crate::ui::button("log-copy").outline().label(if selected_n > 0 { format!("Copy {selected_n}") } else { "Copy".into() }).on_click(cx.listener(|v, _, _, cx| v.copy(cx)))))
+                    .child(crate::ui::probed(save))
                     .child(div().flex_1())
                     .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!(
                         "{} · {}",

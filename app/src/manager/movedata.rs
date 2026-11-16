@@ -894,13 +894,13 @@ impl MoveFlow {
 
     fn footer(&self, primary: Option<AnyElement>, cx: &mut Context<Self>) -> Div {
         h_flex()
-            .gap_2()
+            .gap(crate::ui::button_gap())
             .items_center()
             .mt_auto()
-            .child(ui::button("md-back").outline().label("Back").on_click(cx.listener(|me, _, _, cx| me.back(cx))))
+            .child(crate::ui::probed(ui::button("md-back").outline().label("Back").on_click(cx.listener(|me, _, _, cx| me.back(cx)))))
             .child(div().flex_1())
-            .child(ui::button("md-cancel").ghost().label("Cancel").on_click(|_, _, cx| close(cx)))
-            .children(primary)
+            .child(crate::ui::probed(ui::button("md-cancel").ghost().label("Cancel").on_click(|_, _, cx| close(cx))))
+            .children(primary.map(ui::probed))
     }
 
     fn what(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
@@ -1030,9 +1030,9 @@ impl MoveFlow {
             })
             .child(
                 h_flex()
-                    .gap_2()
+                    .gap(crate::ui::button_gap())
                     .flex_wrap()
-                    .child(ui::button("md-pick-another").primary().label(if matches!(stage, Stage::Folder(_)) { "Pick another folder" } else { "Pick another disk" }).on_click(cx.listener(move |me, _, _, cx| {
+                    .child(crate::ui::probed(ui::button("md-pick-another").primary().label(if matches!(stage, Stage::Folder(_)) { "Pick another folder" } else { "Pick another disk" }).on_click(cx.listener(move |me, _, _, cx| {
                         if let Stage::Disk(i) = me.stage {
                             let s = me.chosen[i];
                             if let Some(p) = me.picks.get_mut(&s) {
@@ -1040,8 +1040,8 @@ impl MoveFlow {
                             }
                         }
                         cx.notify();
-                    })))
-                    .when(too_small, |r| r.child(ui::button("md-free-space").outline().icon(Icon::new(Lucide::Folder)).label("Free space in Files").on_click(|_, _, cx| go("files", cx)))),
+                    }))))
+                    .when(too_small, |r| r.child(crate::ui::probed(ui::button("md-free-space").outline().icon(Icon::new(Lucide::Folder)).label("Free space in Files").on_click(|_, _, cx| go("files", cx))))),
             )
     }
 
@@ -1351,7 +1351,7 @@ impl MoveFlow {
                 card = card.child(rows);
                 card = card.child(
                     h_flex()
-                        .gap_3()
+                        .gap(crate::ui::button_gap())
                         .items_center()
                         .flex_wrap()
                         .child(ui::button("md-run-cancel").outline().label("Cancel").on_click(cx.listener(|me, _, _, cx| me.cancel_run(cx))))
@@ -1386,7 +1386,7 @@ impl MoveFlow {
                 let mine: Vec<move_data::OldCopy> = outcome.as_ref().map(|o| o.old_copies.iter().filter(|c| !c.partial && self.moves.iter().any(|m| m.store == c.store)).cloned().collect()).unwrap_or_default();
                 let newest = mine.iter().map(|c| c.at.clone()).max().unwrap_or_default();
                 let old: Vec<move_data::OldCopy> = mine.into_iter().filter(|c| c.at == newest).collect();
-                let mut row = h_flex().gap_3().items_center().flex_wrap();
+                let mut row = h_flex().gap(crate::ui::button_gap()).items_center().flex_wrap();
                 if let Some(c) = old.first().filter(|_| !self.removed) {
                     let paths: Vec<String> = old.iter().map(|c| c.path.clone()).collect();
                     let at = ov.disks.iter().filter(|d| c.path.starts_with(&d.mount)).max_by_key(|d| d.mount.len()).map(|d| d.mount.clone()).unwrap_or_else(|| c.path.clone());
@@ -1448,16 +1448,16 @@ impl MoveFlow {
                 let partial: Option<String> = outcome.as_ref().and_then(|o| o.old_copies.iter().find(|c| c.partial && self.moves.iter().any(|m| m.to.trim_end_matches('/') == c.path.trim_end_matches('/')))).map(|c| c.path.clone());
                 card = card.child(
                     h_flex()
-                        .gap_2()
+                        .gap(crate::ui::button_gap())
                         .flex_wrap()
                         .when_some(partial.filter(|_| !self.removed), |r, p| {
-                            r.child(ui::button("md-rm-partial").outline().icon(Icon::empty().path("icons/trash.svg")).label("Remove the partial copy…").loading(self.removing).on_click(cx.listener(move |me, _, window, cx| me.remove_copy(vec![p.clone()], window, cx))))
+                            r.child(crate::ui::probed(ui::button("md-rm-partial").outline().icon(Icon::empty().path("icons/trash.svg")).label("Remove the partial copy…").loading(self.removing).on_click(cx.listener(move |me, _, window, cx| me.remove_copy(vec![p.clone()], window, cx)))))
                         })
-                        .child(ui::button("md-try-other").primary().label("Try another disk").on_click(cx.listener(|me, _, _, cx| me.try_again(cx))))
-                        .child(ui::button("md-show-log").outline().label(if self.show_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|me, _, _, cx| {
+                        .child(crate::ui::probed(ui::button("md-try-other").primary().label("Try another disk").on_click(cx.listener(|me, _, _, cx| me.try_again(cx)))))
+                        .child(crate::ui::probed(ui::button("md-show-log").outline().label(if self.show_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|me, _, _, cx| {
                             me.show_log = !me.show_log;
                             cx.notify();
-                        }))),
+                        })))),
                 );
             }
         }

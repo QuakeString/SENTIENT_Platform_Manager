@@ -260,18 +260,18 @@ impl Render for TakeOverDialog {
                 let this = cx.entity().downgrade();
                 return body.child(ui::notice(&theme, Tone::Bad, format!("What taking it over would do could not be read.\n{e}"))).child(
                     h_flex()
-                        .gap_2()
+                        .gap(crate::ui::button_gap())
                         .justify_end()
-                        .child(crate::ui::button("to-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+                        .child(crate::ui::probed(crate::ui::button("to-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))))
                         .when_some(sudo, |r, inst| {
-                            r.child(crate::ui::button("to-sudo").outline().label("Enter the sudo password…").on_click(move |_, _, cx| {
+                            r.child(crate::ui::probed(crate::ui::button("to-sudo").outline().label("Enter the sudo password…").on_click(move |_, _, cx| {
                                 let this = this.clone();
                                 crate::manager::remote_pages::ask_sudo_password(inst.clone(), std::rc::Rc::new(move |cx: &mut App| {
                                     this.update(cx, |d, cx| d.reload(cx)).ok();
                                 }), cx);
-                            }))
+                            })))
                         })
-                        .child(crate::ui::button("to-retry").primary().label("Retry").on_click(cx.listener(|d, _, _, cx| d.reload(cx)))),
+                        .child(crate::ui::probed(crate::ui::button("to-retry").primary().label("Retry").on_click(cx.listener(|d, _, _, cx| d.reload(cx))))),
                 );
             }
             Plan::Got(p) => p.clone(),
@@ -313,16 +313,16 @@ impl Render for TakeOverDialog {
             .child(div().text_size(px(12.5)).text_color(theme.muted_foreground).mt_2().child(format!("Another compose file on {place}")))
             .child(
                 h_flex()
-                    .gap_2()
+                    .gap(crate::ui::button_gap())
                     .items_center()
                     .child(div().flex_1().min_w_0().child(Input::new(&self.input)))
-                    .when(self.local, |r| r.child(crate::ui::button("to-choose").outline().label("Choose…").on_click(cx.listener(|d, _, _, cx| d.choose(cx)))))
-                    .child(crate::ui::button("to-use-file").outline().label("Use this file").on_click(cx.listener(|d, _, _, cx| d.use_file(cx))))
+                    .when(self.local, |r| r.child(crate::ui::probed(crate::ui::button("to-choose").outline().label("Choose…").on_click(cx.listener(|d, _, _, cx| d.choose(cx))))))
+                    .child(crate::ui::probed(crate::ui::button("to-use-file").outline().label("Use this file").on_click(cx.listener(|d, _, _, cx| d.use_file(cx)))))
                     .when(self.compose.is_some(), |r| {
-                        r.child(crate::ui::button("to-labels").ghost().label("Back to the labels' file").on_click(cx.listener(|d, _, _, cx| {
+                        r.child(crate::ui::probed(crate::ui::button("to-labels").ghost().label("Back to the labels' file").on_click(cx.listener(|d, _, _, cx| {
                             d.compose = None;
                             d.reload(cx);
-                        })))
+                        }))))
                     }),
             );
         if needs_rebuild {
@@ -420,11 +420,11 @@ impl Render for TakeOverDialog {
             h_flex()
                 .relative()
                 .child(ui::layout_probe("button"))
-                .gap_2()
+                .gap(crate::ui::button_gap())
                 .justify_end()
                 .mt_1()
-                .child(crate::ui::button("to-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx)))
-                .child(crate::ui::button("to-go").primary().label("Take over").disabled(!can_go).on_click(cx.listener(|d, _, _, cx| {
+                .child(crate::ui::probed(crate::ui::button("to-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
+                .child(crate::ui::probed(crate::ui::button("to-go").primary().label("Take over").disabled(!can_go).on_click(cx.listener(|d, _, _, cx| {
                     let compose = d.compose.clone();
                     let (db, ch) = match &d.plan {
                         Plan::Got(p) => (p.needs_password, p.needs_ch_password),
@@ -434,7 +434,7 @@ impl Render for TakeOverDialog {
                     let run = d.run.clone();
                     crate::modal::close(cx);
                     run(compose, creds, cx);
-                }))),
+                })))),
         )
     }
 }

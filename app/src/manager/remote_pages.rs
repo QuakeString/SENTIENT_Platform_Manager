@@ -93,11 +93,11 @@ fn ask_sudo_password_now(inst: Instance, then: std::rc::Rc<dyn Fn(&mut App)>, cx
                 .child(Input::new(&self.input).mask_toggle())
                 .child(
                     h_flex()
-                        .gap_2()
+                        .gap(crate::ui::button_gap())
                         .justify_end()
                         // An account without sudo: the agent goes in its home
                         // folder (crate::remote::choose_user_install).
-                        .child(crate::ui::button("sudo-none").label("This account has no sudo").on_click(cx.listener(|p, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("sudo-none").label("This account has no sudo").on_click(cx.listener(|p, _, _, cx| {
                             let inst = p.inst.clone();
                             let then = p.then.clone();
                             crate::modal::close(cx);
@@ -109,10 +109,10 @@ fn ask_sudo_password_now(inst: Instance, then: std::rc::Rc<dyn Fn(&mut App)>, cx
                                 });
                             })
                             .detach();
-                        })))
+                        }))))
                         .child(div().flex_1())
-                        .child(crate::ui::button("sudo-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx)))
-                        .child(crate::ui::button("sudo-save").primary().label("Save and retry").on_click(cx.listener(|p, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("sudo-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
+                        .child(crate::ui::probed(crate::ui::button("sudo-save").primary().label("Save and retry").on_click(cx.listener(|p, _, _, cx| {
                             let pw = p.input.read(cx).value().to_string();
                             if pw.is_empty() {
                                 return;
@@ -120,7 +120,7 @@ fn ask_sudo_password_now(inst: Instance, then: std::rc::Rc<dyn Fn(&mut App)>, cx
                             remote::set_secret(&remote::sudo_key(&p.inst.id), &pw);
                             crate::modal::close(cx);
                             (p.then)(cx);
-                        }))),
+                        })))),
                 )
         }
     }
@@ -755,7 +755,7 @@ impl RemotePages {
                 let args = args.clone();
                 Some(
                     h_flex()
-                        .gap_2()
+                        .gap(crate::ui::button_gap())
                         .items_center()
                         .min_w_0()
                         .child(div().min_w_0().text_sm().text_color(theme.danger).overflow_hidden().whitespace_nowrap().text_ellipsis().child(format!("Not saved: {e}")))
@@ -1232,7 +1232,7 @@ impl RemotePages {
                 let v2 = v.clone();
                 p.child(
                     h_flex()
-                        .gap_2()
+                        .gap(crate::ui::button_gap())
                         .items_center()
                         .flex_wrap()
                         .px_3()
@@ -1240,14 +1240,14 @@ impl RemotePages {
                         .rounded(theme.radius)
                         .bg(theme.secondary)
                         .child(div().flex_1().min_w(px(220.)).text_sm().child(format!("Install SENTIENT {v} on this server instead of {installed}?")))
-                        .child(crate::ui::button("r-pick-go").primary().label(format!("Install {v}")).disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("r-pick-go").primary().label(format!("Install {v}")).disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
                             this.pick = None;
                             this.run_job("Updating SENTIENT", vec!["update".into(), "--version".into(), v2.clone()], cx);
-                        })))
-                        .child(crate::ui::button("r-pick-no").ghost().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                        }))))
+                        .child(crate::ui::probed(crate::ui::button("r-pick-no").ghost().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
                             this.pick = None;
                             cx.notify();
-                        }))),
+                        })))),
                 )
             })
             .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(
@@ -1452,12 +1452,12 @@ impl RemotePages {
         // The Backups table.
         let mut list = ui::panel(&theme).gap_0().child(
             h_flex()
-                .gap_3()
+                .gap(crate::ui::button_gap())
                 .pb_2()
                 .items_center()
                 .child(div().flex_1().min_w_0().child(self.section_title(&theme, "Backups", "backups", cx)))
-                .child(crate::ui::button("r-restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx))))
-                .child(crate::ui::button("r-backup").outline().label("Back up now").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx)))),
+                .child(crate::ui::probed(crate::ui::button("r-restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
+                .child(crate::ui::probed(crate::ui::button("r-backup").outline().label("Back up now").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx))))),
         );
         if b.list.is_empty() {
             list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder. Restore from… can still take a file from this computer or another instance."));
@@ -1585,7 +1585,7 @@ impl RemotePages {
             let n = changed.len();
             col = col.child(
                 h_flex()
-                    .gap_3()
+                    .gap(crate::ui::button_gap())
                     .items_center()
                     .p_3()
                     .rounded(theme.radius)
@@ -1593,11 +1593,11 @@ impl RemotePages {
                     .border_color(theme.primary)
                     .bg(theme.accent)
                     .child(div().flex_1().text_sm().child(format!("{n} change{} to apply on {}. SENTIENT restarts when a setting needs it.", if n == 1 { "" } else { "s" }, self.inst.name)))
-                    .child(crate::ui::button("r-set-undo").ghost().label("Undo").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button("r-set-undo").ghost().label("Undo").on_click(cx.listener(|this, _, _, cx| {
                         this.inputs.clear();
                         cx.notify();
-                    })))
-                    .child(crate::ui::button("r-set-apply").primary().label("Apply").disabled(busy || external || self.status.got().is_none()).on_click(cx.listener(move |this, _, _, cx| this.apply_settings(all.clone(), cx)))),
+                    }))))
+                    .child(crate::ui::probed(crate::ui::button("r-set-apply").primary().label("Apply").disabled(busy || external || self.status.got().is_none()).on_click(cx.listener(move |this, _, _, cx| this.apply_settings(all.clone(), cx))))),
             );
         }
         // The same tabs, rows and Advanced table as this computer's
@@ -2049,33 +2049,33 @@ impl RemotePages {
         let controllable = kind != "process";
         let updatable = (kind == "docker" && get("managed") == "true") || kind == "windows-service";
         let act = |id: &'static str, label: &'static str, action: &'static str| {
-            crate::ui::button(id).outline().label(label).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.run_job("Gateway", vec!["gateway-control".into(), action.into()], cx)))
+            crate::ui::probed(crate::ui::button(id).outline().label(label).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.run_job("Gateway", vec!["gateway-control".into(), action.into()], cx))))
         };
         p.child(
             h_flex()
-                .gap_2()
+                .gap(crate::ui::button_gap())
                 .flex_wrap()
                 .when(controllable, |r| {
                     r.when(!running, |r| r.child(act("r-gw-start", "Start", "start")))
                         .when(running, |r| r.child(act("r-gw-stop", "Stop", "stop")).child(act("r-gw-restart", "Restart", "restart")))
                 })
-                .child(crate::ui::button("r-gw-logs").outline().label("Logs").on_click(|_, _, cx| {
+                .child(crate::ui::probed(crate::ui::button("r-gw-logs").outline().label("Logs").on_click(|_, _, cx| {
                     crate::logsource::request(crate::logsource::Source::Gateway);
                     cx.refresh_windows();
-                }))
+                })))
                 .when(updatable, |r| {
-                    r.child(crate::ui::button("r-gw-update").primary().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx))))
+                    r.child(crate::ui::probed(crate::ui::button("r-gw-update").primary().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx)))))
                 })
                 .when(outside, |r| {
-                    r.child(
+                    r.child(crate::ui::probed(
                         h_flex().gap_1().items_center().child(crate::ui::button("r-gw-adopt").outline().label("Manage it here").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Recording the gateway", vec!["gateway-adopt".into()], cx)))).child(ui::info(
                             "r-gw-adopt-help".into(),
                             "Records this gateway as the one the Platform Manager manages on this server. Nothing about it changes: the container, its compose file and its volumes stay as they are.".into(),
                         )),
-                    )
+                    ))
                 })
                 .child(div().flex_1())
-                .child(crate::ui::button("r-gw-remove").danger().label("Remove the Gateway…").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx)))),
+                .child(crate::ui::probed(crate::ui::button("r-gw-remove").danger().label("Remove the Gateway…").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx))))),
         )
     }
 
@@ -2128,14 +2128,14 @@ impl RemotePages {
                 e.clone()
             }))
             .child(if usable {
-                h_flex()
-                    .gap_2()
-                    .child(crate::ui::button("r-use-installed").primary().label("Use it").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.use_installed(cx))))
-                    .child(set_up(false))
+                ui::button_group(vec![
+                    crate::ui::button("r-use-installed").primary().label("Use it").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.use_installed(cx))).into_any_element(),
+                    set_up(false).into_any_element(),
+                ])
             } else if not_set_up || installed {
-                h_flex().gap_2().child(set_up(true))
+                h_flex().child(set_up(true))
             } else {
-                h_flex().gap_2().child(crate::ui::button("r-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
+                h_flex().child(crate::ui::button("r-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
                     this.ready = Read::Loading;
                     this.reload(cx);
                 })))

@@ -198,8 +198,61 @@ def broken_dividers(im, panels, scale, top_bar, charts=()):
     return out
 
 
+BUTTON_GAP = 12.0
+
+
+def button_gaps(log):
+    """One gap between buttons (theme::BUTTON_GAP): buttons whose centres
+    are on one line (within 2 px) and that sit side by side less than 40 px
+    apart form a run; every gap in a run must be BUTTON_GAP (within half a
+    pixel). Returns (left button's box, gap) pairs that are off."""
+    lines = open(log, errors="replace").read().splitlines()
+    marks = [i for i, l in enumerate(lines) if l.startswith("LAYOUT-FRAME ")]
+    if not marks:
+        return []
+    start = marks[-2] if len(marks) > 1 else marks[-1]
+    end = marks[-1] if len(marks) > 1 else len(lines)
+    frame = [l.split() for l in lines[start + 1:end]]
+    boxes = sorted({tuple(float(x) for x in p[2:6]) for p in frame if len(p) == 6 and p[:2] == ["LAYOUT", "button"]})
+    # A dialog open: only its own buttons (the page's lie under it). A
+    # floating panel: the page's buttons it covers are left out.
+    def inside(b, o):
+        return b[0] >= o[0] - 0.5 and b[1] <= o[1] + 0.5 and b[2] >= o[2] - 0.5 and b[3] <= o[3] + 0.5
+    def meets(b, o):
+        return not (b[1] <= o[0] or b[0] >= o[1] or b[3] <= o[2] or b[2] >= o[3])
+    modals = [tuple(float(x) for x in p[2:6]) for p in frame if len(p) == 6 and p[:2] == ["LAYOUT", "modal"]]
+    overlays = [tuple(float(x) for x in p[2:6]) for p in frame if len(p) == 6 and p[:2] == ["LAYOUT", "overlay"]]
+    if modals:
+        # The dialog is drawn after the page: its buttons' lines come after
+        # its own (a page button under it can lie inside its box).
+        at = max(i for i, p in enumerate(frame) if len(p) == 6 and p[:2] == ["LAYOUT", "modal"])
+        mine = {tuple(float(x) for x in p[2:6]) for p in frame[at:] if len(p) == 6 and p[:2] == ["LAYOUT", "button"]}
+        boxes = [b for b in boxes if b in mine and any(inside(b, m) for m in modals)]
+    elif overlays:
+        boxes = [b for b in boxes if any(inside(b, o) for o in overlays) or not any(meets(b, o) for o in overlays)]
+    off = []
+    for a in boxes:
+        mid = (a[2] + a[3]) / 2
+        right = [b for b in boxes if b is not a and abs((b[2] + b[3]) / 2 - mid) <= 2 and b[0] >= a[1] - 0.5 and b[0] - a[1] < 40]
+        if not right:
+            continue
+        g = min(b[0] for b in right) - a[1]
+        if abs(g - BUTTON_GAP) > 0.5:
+            off.append((a, g))
+    return off
+
+
 def main():
     png, log, scale = sys.argv[1], sys.argv[2], float(sys.argv[3])
+    # Setup's window: only the buttons' gaps (its own layout is not the
+    # manager's pages).
+    if sys.argv[4:] == ["buttons"]:
+        bad = [f"button gap: {g:.2f} px after the button at x {l:.0f}-{r:.0f}, y {t:.0f}-{b:.0f}, not {BUTTON_GAP:.0f}" for (l, r, t, b), g in button_gaps(log)]
+        if not any(l.startswith("LAYOUT button ") for l in open(log, errors="replace")):
+            bad.append("no buttons reported")
+        for b in bad:
+            print(f"{png.split('/')[-1]}: {b}")
+        return 1 if bad else 0
     im = Image.open(png).convert("RGB")
     W, H = im.size
     size, panels, dialog = frame_panels(log)
@@ -237,7 +290,9 @@ def main():
             bad.append(f"card {l:.0f}-{r:.0f} x {t:.0f}-{b:.0f}: {len(hits)} px in its right padding, first at ({x / scale:.0f}, {y / scale:.0f})")
     # Row dividers: one continuous line per row.
     if not dialog:
-        bad.extend(broken_dividers(im, panels, scale, top_bar, frame_probes(log, "chart")))
+        # A row of outlined buttons' top or bottom edges is not a divider
+        # either: the rows inside a button's box are left out like a chart's.
+        bad.extend(broken_dividers(im, panels, scale, top_bar, frame_probes(log, "chart") + frame_probes(log, "button")))
     # The menu's selected row opens into the page: no edge line between
     # its curves (the page's colour all across the menu's edge there).
     sel = menu_selection(log)
@@ -254,6 +309,9 @@ def main():
     if not dialog and os.environ.get("SPM_CHECK_GAPS", "1") == "1":
         for what, g in page_gaps(log, size, panels):
             bad.append(f"page gap: {what} is {g:.1f} px, not {PAGE_GAP:.0f}")
+    # One gap between the buttons of a group (dialogs included).
+    for (l, r, t, b), g in button_gaps(log):
+        bad.append(f"button gap: {g:.2f} px after the button at x {l:.0f}-{r:.0f}, y {t:.0f}-{b:.0f}, not {BUTTON_GAP:.0f}")
     # Menu icons (an open popup or context menu): at least 18 px.
     for l in open(log, errors="replace").read().splitlines():
         if l.startswith("LAYOUT menu-item-icon "):

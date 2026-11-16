@@ -580,16 +580,16 @@ impl Render for JobDetails {
             )
             .child(
                 h_flex()
-                    .gap_2()
+                    .gap(crate::ui::button_gap())
                     .justify_end()
-                    .child(crate::ui::button("job-details-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))))
+                    .child(crate::ui::probed(crate::ui::button("job-details-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone())))))
                     .when_some(retry.clone(), |r, retry| {
-                        r.child(crate::ui::button("job-details-retry").outline().label(again).on_click(move |_, _, cx| {
+                        r.child(crate::ui::probed(crate::ui::button("job-details-retry").outline().label(again).on_click(move |_, _, cx| {
                             crate::modal::close(cx);
                             retry(cx);
-                        }))
+                        })))
                     })
-                    .child(crate::ui::button("job-details-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx))),
+                    .child(crate::ui::probed(crate::ui::button("job-details-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx)))),
             )
     }
 }

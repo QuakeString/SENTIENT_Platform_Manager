@@ -369,12 +369,12 @@ impl EarlierPage {
                 }))
                 .into_any_element(),
             h_flex()
-                .gap_2()
-                .child(crate::ui::button("remove-fresh").danger().label("Remove and install fresh").disabled(!self.understood).on_click(cx.listener(|this, _, _, cx| this.start(Run::Remove, cx))))
-                .child(crate::ui::button("back").outline().label("Back").on_click(cx.listener(|this, _, _, cx| {
+                .gap(crate::ui::button_gap())
+                .child(crate::ui::probed(crate::ui::button("remove-fresh").danger().label("Remove and install fresh").disabled(!self.understood).on_click(cx.listener(|this, _, _, cx| this.start(Run::Remove, cx)))))
+                .child(crate::ui::probed(crate::ui::button("back").outline().label("Back").on_click(cx.listener(|this, _, _, cx| {
                     this.screen = Screen::Choices;
                     cx.notify();
-                })))
+                }))))
                 .into_any_element(),
         ]
     }
@@ -421,33 +421,33 @@ impl EarlierPage {
         match finished {
             Some(false) => out.push(
                 h_flex()
-                    .gap_2()
+                    .gap(crate::ui::button_gap())
                     .when(run == Run::Repair, |r| {
-                        r.child(crate::ui::button("fresh-after-repair").primary().label("Remove it and install fresh").on_click(cx.listener(|this, _, _, cx| {
+                        r.child(crate::ui::probed(crate::ui::button("fresh-after-repair").primary().label("Remove it and install fresh").on_click(cx.listener(|this, _, _, cx| {
                             this.screen = Screen::ConfirmRemove;
                             this.understood = false;
                             cx.notify();
-                        })))
+                        }))))
                     })
-                    .when(run != Run::Repair, |r| r.child(crate::ui::button("retry").primary().label("Try again").on_click(cx.listener(move |this, _, _, cx| this.start(run, cx)))))
-                    .child(crate::ui::button("log").outline().label(if self.show_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
+                    .when(run != Run::Repair, |r| r.child(crate::ui::probed(crate::ui::button("retry").primary().label("Try again").on_click(cx.listener(move |this, _, _, cx| this.start(run, cx))))))
+                    .child(crate::ui::probed(crate::ui::button("log").outline().label(if self.show_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
                         this.show_log = !this.show_log;
                         cx.notify();
-                    })))
-                    .child(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window()))
+                    }))))
+                    .child(crate::ui::probed(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window())))
                     .into_any_element(),
             ),
             Some(true) if run == Run::Repair => out.push(
                 h_flex()
-                    .gap_2()
-                    .child(crate::ui::button("open").primary().label("Open the Platform Manager").on_click(|_, window, _| {
+                    .gap(crate::ui::button_gap())
+                    .child(crate::ui::probed(crate::ui::button("open").primary().label("Open the Platform Manager").on_click(|_, window, _| {
                         let exe = crate::self_install::manager_exe();
                         let exe = if exe.exists() { exe } else { std::env::current_exe().unwrap_or(exe) };
                         if std::process::Command::new(&exe).arg("--manager").spawn().is_ok() {
                             window.remove_window();
                         }
-                    }))
-                    .child(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window()))
+                    })))
+                    .child(crate::ui::probed(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window())))
                     .into_any_element(),
             ),
             _ => {}

@@ -574,11 +574,11 @@ impl Render for ActionDialog {
         };
         body.child(
             h_flex()
-                .gap_2()
+                .gap(crate::ui::button_gap())
                 .justify_end()
                 .pt_1()
-                .child(ui::button("licence-act-cancel").outline().label("Cancel").disabled(self.busy).on_click(|_, _, cx| crate::modal::close(cx)))
-                .child(ok_button),
+                .child(crate::ui::probed(ui::button("licence-act-cancel").outline().label("Cancel").disabled(self.busy).on_click(|_, _, cx| crate::modal::close(cx))))
+                .child(crate::ui::probed(ok_button)),
         )
     }
 }
@@ -693,7 +693,7 @@ impl LicencePage {
         let dbg = ui::debug_stale().filter(|_| !matches!(self.view, View::Checking | View::Loading));
         let stale = self.stale.as_deref().or(dbg.as_deref()).filter(|_| !self.reading).map(|e| ui::stale_note(&theme, "licence-stale", e, self.updated_at.as_deref()));
         h_flex()
-            .gap_3()
+            .gap(crate::ui::button_gap())
             .items_center()
             .children(stale)
             .when_some(signed, |r, s| {
@@ -707,9 +707,9 @@ impl LicencePage {
                         .child(icon("user").size(px(16.)).text_color(theme.muted_foreground))
                         .child(div().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().child(s.email.clone())),
                 )
-                .child(ui::button("licence-sign-out").outline().label("Sign out").on_click(cx.listener(|p, _, _, cx| p.sign_out(cx))))
+                .child(crate::ui::probed(ui::button("licence-sign-out").outline().label("Sign out").on_click(cx.listener(|p, _, _, cx| p.sign_out(cx)))))
             })
-            .child(refresh)
+            .child(crate::ui::probed(refresh))
             .into_any_element()
     }
 
@@ -742,7 +742,7 @@ impl LicencePage {
             .child(
                 h_flex()
                     .flex_wrap()
-                    .gap_2()
+                    .gap(crate::ui::button_gap())
                     .items_center()
                     .child(
                         div().relative().flex_shrink_0().child(
@@ -987,7 +987,7 @@ impl LicencePage {
                 .w(px(w))
                 .child(h_flex().gap_2().items_center().child(div().flex_1().min_w_0().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child(title)).child(ui::pill(theme, Tone::Neutral, "Not licensed").text_size(px(12.)).py(px(0.))))
                 .child(
-                    h_flex().gap(px(10.)).items_center().child(div().flex_1().min_w_0().child(Input::new(&self.key))).child(div().relative().flex_shrink_0().child(ui::button("licence-activate").primary().label("Activate…").on_click(cx.listener(|p, _, window, cx| {
+                    h_flex().gap(px(10.)).items_center().child(div().flex_1().min_w_0().child(Input::new(&self.key))).child(ui::probed(ui::button("licence-activate").primary().label("Activate…").on_click(cx.listener(|p, _, window, cx| {
                         let key = p.key.read(cx).value().trim().to_string();
                         if key.is_empty() {
                             p.note = Some((Tone::Bad, "Enter the licence key first.".into()));
@@ -1000,22 +1000,22 @@ impl LicencePage {
                 .child(
                     h_flex()
                         .flex_wrap()
-                        .gap(px(10.))
+                        .gap(crate::ui::button_gap())
                         .items_center()
                         .child(div().text_sm().text_color(theme.muted_foreground).child("Or import a licence key from a file:"))
-                        .child(div().relative().flex_shrink_0().child(ui::button("licence-import").outline().icon(icon("file")).label("Import key file…").on_click(cx.listener(|p, _, window, cx| p.choose_key_file(window, cx))))),
+                        .child(ui::probed(ui::button("licence-import").outline().icon(icon("file")).label("Import key file…").on_click(cx.listener(|p, _, window, cx| p.choose_key_file(window, cx))))),
                 )
                 .child(
                     h_flex()
                         .flex_wrap()
-                        .gap(px(10.))
+                        .gap(crate::ui::button_gap())
                         .items_center()
                         .pt(px(12.))
                         .border_t_1()
                         .border_color(theme.border)
                         .child(div().text_sm().text_color(theme.muted_foreground).child("No key yet?"))
-                        .child(div().relative().flex_shrink_0().child(ui::button("licence-demo").outline().icon(icon("mail")).label("Request a demo licence").on_click(|_, _, cx| ui::open_url(crate::licence::DEMO_URL, cx))))
-                        .child(div().relative().flex_shrink_0().child(ui::button("licence-buy").outline().icon(icon("cart")).label("Buy a licence").on_click(|_, _, cx| ui::open_url(crate::licence::BUY_URL, cx)))),
+                        .child(ui::probed(ui::button("licence-demo").outline().icon(icon("mail")).label("Request a demo licence").on_click(|_, _, cx| ui::open_url(crate::licence::DEMO_URL, cx))))
+                        .child(ui::probed(ui::button("licence-buy").outline().icon(icon("cart")).label("Buy a licence").on_click(|_, _, cx| ui::open_url(crate::licence::BUY_URL, cx)))),
                 ),
         )
     }

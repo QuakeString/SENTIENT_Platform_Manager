@@ -553,7 +553,7 @@ fn resolve(inst: &Instance) -> Result<Agent, String> {
         let out = run(
             inst,
             &format!(
-                "if [ -x {own} ]; then echo @@OWN; elif [ -x {REMOTE_SPM} ]; then echo '@@INSTALLED {REMOTE_SPM}'; {REMOTE_SPM} --job agent-info 2>&1; \
+                "if [ -x {own} ]; then echo @@OWN; elif [ -x {REMOTE_SPM} ]; then echo '@@INSTALLED {REMOTE_SPM}'; {REMOTE_SPM} --job agent-info 2>&1 || true; \
                  elif [ -x \"{USER_SPM}\" ]; then echo @@OWN; else echo @@NONE; fi",
                 own = reuse::LINUX_OWN
             ),

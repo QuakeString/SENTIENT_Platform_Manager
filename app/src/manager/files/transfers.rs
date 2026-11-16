@@ -808,21 +808,21 @@ impl Render for AskFooter {
         let (v1, v2) = (self.v.clone(), self.v.clone());
         h_flex()
             .w_full()
-            .gap_2()
+            .gap(crate::ui::button_gap())
             .justify_end()
-            .child(crate::ui::button("ask-cancel").outline().label("Cancel copy").on_click(move |_, _, cx| {
+            .child(crate::ui::probed(crate::ui::button("ask-cancel").outline().label("Cancel copy").on_click(move |_, _, cx| {
                 let t = v1.read(cx).t.clone();
                 crate::modal::close(cx);
                 t.update(cx, |t, cx| t.answer(None, cx));
-            }))
-            .child(crate::ui::button("ask-go").primary().label("Continue").on_click(move |_, _, cx| {
+            })))
+            .child(crate::ui::probed(crate::ui::button("ask-go").primary().label("Continue").on_click(move |_, _, cx| {
                 let (t, c, rest) = {
                     let v = v2.read(cx);
                     (v.t.clone(), v.choice, v.rest)
                 };
                 crate::modal::close(cx);
                 t.update(cx, |t, cx| t.answer(Some((c, rest)), cx));
-            }))
+            })))
     }
 }
 

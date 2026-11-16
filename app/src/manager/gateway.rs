@@ -336,10 +336,10 @@ impl Render for RemoveDialog {
             })
             .child(
                 h_flex()
-                    .gap_2()
+                    .gap(crate::ui::button_gap())
                     .justify_end()
-                    .child(crate::ui::button("gw-remove-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx)))
-                    .child(
+                    .child(crate::ui::probed(crate::ui::button("gw-remove-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
+                    .child(crate::ui::probed(
                         h_flex()
                             .id("gw-remove-ok")
                             .h(px(32.))
@@ -357,7 +357,7 @@ impl Render for RemoveDialog {
                                 crate::modal::close(cx);
                                 on_ok(keep, image, cx);
                             }),
-                    ),
+                    )),
             )
     }
 }
@@ -448,27 +448,27 @@ impl Render for GatewayPage {
                 })
                 .child(
                     h_flex()
-                        .gap_2()
+                        .gap(crate::ui::button_gap())
                         .flex_wrap()
                         .when(controllable, |r| {
-                            r.child(crate::ui::button("gw-start").outline().label("Start").disabled(busy || status.running).on_click(cx.listener(|p, _, _, cx| p.control("start", cx))))
-                                .child(crate::ui::button("gw-stop").outline().label("Stop").disabled(busy || !status.running).on_click(cx.listener(|p, _, _, cx| p.control("stop", cx))))
-                                .child(crate::ui::button("gw-restart").outline().label("Restart").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.control("restart", cx))))
+                            r.child(crate::ui::probed(crate::ui::button("gw-start").outline().label("Start").disabled(busy || status.running).on_click(cx.listener(|p, _, _, cx| p.control("start", cx)))))
+                                .child(crate::ui::probed(crate::ui::button("gw-stop").outline().label("Stop").disabled(busy || !status.running).on_click(cx.listener(|p, _, _, cx| p.control("stop", cx)))))
+                                .child(crate::ui::probed(crate::ui::button("gw-restart").outline().label("Restart").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.control("restart", cx)))))
                         })
-                        .child(crate::ui::button("gw-logs").outline().label("Logs").on_click(|_, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("gw-logs").outline().label("Logs").on_click(|_, _, cx| {
                             crate::logsource::request(crate::logsource::Source::Gateway);
                             cx.refresh_windows();
-                        }))
+                        })))
                         .when(outside, |r| {
-                            r.child(
+                            r.child(crate::ui::probed(
                                 h_flex().gap_1().items_center().child(crate::ui::button("gw-adopt").outline().label("Manage it here").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.adopt(cx)))).child(ui::info(
                                     "gw-adopt-help".into(),
                                     "Records this gateway as the one the Platform Manager manages: it lists it, starts and stops it, and offers its removal. Nothing about it changes: the container, its compose file and its volumes stay as they are.".into(),
                                 )),
-                            )
+                            ))
                         })
                         .child(div().flex_1())
-                        .child(crate::ui::button("gw-remove").danger().label("Remove the Gateway…").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.open_remove(cx)))),
+                        .child(crate::ui::probed(crate::ui::button("gw-remove").danger().label("Remove the Gateway…").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.open_remove(cx))))),
                 )
                 .children(outcome.clone().map(|(tone, m)| ui::outcome(&theme, tone, m)))
                 .child(match (&newer, &newest) {
