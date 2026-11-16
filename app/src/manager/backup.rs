@@ -181,9 +181,28 @@ impl BackupPage {
             }),
             cx.observe(&restore, |_, _, cx| cx.notify()),
         ];
-        for input in [&schedule_time, &keep] {
-            _observe.push(cx.subscribe(input, |_, _, _: &gpui_kit::component::input::InputEvent, cx| cx.notify()));
-        }
+        _observe.push(cx.subscribe(&schedule_time, |_, _, _: &gpui_kit::component::input::InputEvent, cx| cx.notify()));
+        // Keep: saved on Enter or when the field is left (1 to 365).
+        _observe.push(cx.subscribe_in(&keep, window, |page: &mut Self, input, e: &gpui_kit::component::input::InputEvent, window, cx| {
+            use gpui_kit::component::input::InputEvent;
+            if matches!(e, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                match keep_value(&input.read(cx).value()) {
+                    Some(k) => {
+                        if input.read(cx).value().trim() != k.to_string() {
+                            input.update(cx, |s, cx| s.set_value(k.to_string(), window, cx));
+                        }
+                        if k != page.prefs.keep {
+                            page.save_prefs(true, cx);
+                        }
+                    }
+                    None => {
+                        let k = page.prefs.keep.to_string();
+                        input.update(cx, |s, cx| s.set_value(k, window, cx));
+                    }
+                }
+            }
+            cx.notify();
+        }));
         // Split files over: saved on Enter or when the field is left.
         _observe.push(cx.subscribe(&part_gb, |page: &mut Self, input, e: &gpui_kit::component::input::InputEvent, cx| {
             use gpui_kit::component::input::InputEvent;
@@ -680,7 +699,7 @@ impl BackupPage {
             let t = self.schedule_time.read(cx).value().trim().to_string();
             let t = if t.is_empty() { "23:30".to_string() } else { t };
             self.prefs.daily_at = self.auto_on.then_some(t);
-            self.prefs.keep = self.keep.read(cx).value().trim().parse().unwrap_or(7).max(1);
+            self.prefs.keep = keep_value(&self.keep.read(cx).value()).unwrap_or(self.prefs.keep);
             self.prefs.part_gb = self.part_gb.read(cx).value().trim().parse().unwrap_or(4);
         }
         let prefs = self.prefs.clone();
@@ -1186,17 +1205,7 @@ impl BackupPage {
                         }),
                 )
         }, None, false);
-        let keep_row = card_row(theme, narrow, "Keep", Some("Older automatic backups are deleted, across the folder and any folder used before."), {
-            let keep = self.keep.read(cx).value().trim().parse::<u32>().unwrap_or(7);
-            let this = cx.entity().downgrade();
-            keep_menu(theme, "keep", keep, busy, move |k, window, cx| {
-                this.update(cx, |p, cx| {
-                    p.keep.update(cx, |s, cx| s.set_value(k.to_string(), window, cx));
-                    p.save_prefs(true, cx);
-                })
-                .ok();
-            })
-        }, None, false);
+        let keep_row = card_row(theme, narrow, "Keep", Some("Older automatic backups are deleted, across the folder and any folder used before."), keep_field(theme, &self.keep, busy), None, false);
         let seg_theme = cx.theme().clone();
         let what = match (p.preset, p.history) {
             (Preset::Configuration, _) => "configuration",
@@ -1479,22 +1488,21 @@ fn check_time(at: &str) -> String {
         .unwrap_or_else(|_| at.get(..16).unwrap_or(at).replace('T', " "))
 }
 
-/// "Keep: 7 backups", chosen from a list. Shared with a remote server's.
-pub(crate) fn keep_menu(theme: &gpui_kit::component::Theme, id: &'static str, keep: u32, disabled: bool, pick: impl Fn(u32, &mut Window, &mut App) + 'static) -> impl IntoElement {
-    let pick = std::rc::Rc::new(pick);
-    // The mockup: the number in a box, "backups" after it.
+/// Keep: how many backups, typed (the mockup's number field, 1 to 365),
+/// "backups" after it. Saved by the caller on Enter or when the field is
+/// left ([`keep_value`]). Shared with a remote server's.
+pub(crate) fn keep_field(theme: &gpui_kit::component::Theme, state: &Entity<InputState>, disabled: bool) -> Div {
     h_flex()
         .gap_2()
         .items_center()
-        .child(crate::ui::button(id).outline().disabled(disabled).label(keep.to_string()).icon(IconName::ChevronDown).dropdown_menu(move |menu, _, _| {
-            let mut menu = menu;
-            for k in [3u32, 7, 14, 30, 60] {
-                let pick = pick.clone();
-                menu = menu.item(PopupMenuItem::new(format!("{k} backups")).checked(k == keep).on_click(move |_, window, cx| pick(k, window, cx)));
-            }
-            menu
-        }))
+        .child(div().w(px(72.)).child(Input::new(state).disabled(disabled)))
         .child(div().text_sm().text_color(theme.muted_foreground).child("backups"))
+}
+
+/// The number typed in a Keep field, kept between 1 and 365; None when it
+/// is not a number.
+pub(crate) fn keep_value(text: &str) -> Option<u32> {
+    text.trim().parse::<u32>().ok().map(|k| k.clamp(1, 365))
 }
 
 // -- B1: the Backup card and the Backups table (this computer and a server) --

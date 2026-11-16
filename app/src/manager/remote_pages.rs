@@ -230,6 +230,8 @@ pub struct RemotePages {
     scroll: ScrollHandle,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
+    /// The Backup card's Keep field (made at the first draw of the page).
+    keep_input: Option<Entity<InputState>>,
 }
 
 impl RemotePages {
@@ -321,6 +323,7 @@ impl RemotePages {
             scroll: ScrollHandle::new(),
             _tasks: Vec::new(),
             _subscriptions: subs,
+            keep_input: None,
         };
         // Development aid: open Platform settings on a tab (screens).
         #[cfg(debug_assertions)]
@@ -1191,6 +1194,46 @@ impl RemotePages {
         });
     }
 
+    /// The Keep field: made once, following the server's value while it is
+    /// not being edited; saved on Enter or when it is left.
+    fn ensure_keep_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Read::Got(b) = &self.backups else { return };
+        let keep = b.keep;
+        if let Some(input) = &self.keep_input {
+            let focused = input.read(cx).focus_handle(cx).is_focused(window);
+            if !focused && input.read(cx).value().trim() != keep.to_string() && self.saving.is_none() {
+                input.update(cx, |s, cx| s.set_value(keep.to_string(), window, cx));
+            }
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(keep.to_string()));
+        self._subscriptions.push(cx.subscribe_in(&input, window, |p: &mut Self, input, e: &InputEvent, window, cx| {
+            if !matches!(e, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                return;
+            }
+            let Read::Got(b) = &p.backups else { return };
+            let (now, at, include) = (
+                b.keep,
+                b.daily_at.clone().unwrap_or_else(|| "off".into()),
+                match (b.preset, b.history) {
+                    (crate::backups::Preset::Configuration, _) => "configuration",
+                    (_, crate::backups::History::LastDays(_)) => "last90",
+                    _ => "everything",
+                },
+            );
+            match crate::manager::backup::keep_value(&input.read(cx).value()) {
+                Some(k) => {
+                    input.update(cx, |s, cx| s.set_value(k.to_string(), window, cx));
+                    if k != now {
+                        p.run_quiet("auto", vec!["backup-auto".into(), at, k.to_string(), include.into()], cx);
+                    }
+                }
+                None => input.update(cx, |s, cx| s.set_value(now.to_string(), window, cx)),
+            }
+        }));
+        self.keep_input = Some(input);
+    }
+
     /// B2–B4: the folder chooser on the server; the choice is saved there
     /// (the backups in the old folder moved along or left).
     fn open_folder_chooser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1276,12 +1319,10 @@ impl RemotePages {
                         }),
                 )
         }, None, false);
-        let keep_row = bk::card_row(&theme, narrow, "Keep", Some("Older backups are deleted, across the folder and any folder used before."), {
-            let (t1, this1) = (if on { time.clone() } else { "off".into() }, this.clone());
-            bk::keep_menu(&theme, "r-auto-keep", keep, busy, move |k, _, cx| {
-                this1.update(cx, |p, cx| p.run_quiet("auto", save(t1.clone(), k, include), cx)).ok();
-            })
-        }, None, false);
+        let keep_row = match &self.keep_input {
+            Some(input) => bk::card_row(&theme, narrow, "Keep", Some("Older backups are deleted, across the folder and any folder used before."), bk::keep_field(&theme, input, busy), None, false),
+            None => bk::card_row(&theme, narrow, "Keep", None, div().text_sm().child(format!("{keep} backups")), None, false),
+        };
         let what_row = bk::card_row(
             &theme,
             narrow,
@@ -1955,6 +1996,7 @@ impl Render for RemotePages {
             Kind::Logs => self.logs_page(window, cx),
             Kind::Update => self.update_page(cx),
             Kind::Backup => {
+                self.ensure_keep_input(window, cx);
                 // Screens: a row's Restore or Delete confirmation open
                 // (SPM_DEBUG_BACKUP_DIALOG=restore|delete), or the folder
                 // chooser (=folder).
