@@ -379,7 +379,9 @@ pub fn info(id: SharedString, help: SharedString) -> impl IntoElement {
         .rounded(px(5.))
         .cursor_default()
         .hover(|d| d.bg(black().opacity(0.06)))
+        .relative()
         .child(InfoIcon)
+        .child(layout_probe("info-icon"))
         .tooltip(move |_, cx| cx.new(|_| InfoTip(help.clone())).into())
 }
 
@@ -403,9 +405,11 @@ struct InfoTip(SharedString);
 impl Render for InfoTip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dark = cx.theme().mode.is_dark();
-        // Inverted against the window, so it never reads as one more panel:
-        // light on the dark theme, dark on the light one.
-        let (bg, fg, border) = if dark { (rgb(0xeef3f5), rgb(0x16211f), rgb(0xffffff)) } else { (rgb(0x1f2a30), rgb(0xffffff), rgb(0x1f2a30)) };
+        // The toolkit tooltip's tokens (the popover surface, its text, the
+        // border), so every hover help in SPM looks alike in both themes
+        // (the (i) was inverted before: a light box on the dark theme).
+        // tests/layout/tooltips.sh holds this block free of literal colours.
+        let (bg, fg, border) = (cx.theme().tokens.popover, cx.theme().popover_foreground, cx.theme().border);
         // Laid out at its smallest size, so the width is set: the longest
         // line's length, at most 320 px.
         let longest = self.0.lines().map(|l| l.chars().count()).max().unwrap_or(0) as f32;
@@ -1425,8 +1429,17 @@ pub fn skeleton_block_r(theme: &Theme, key: impl Into<SharedString>, w: Length, 
     let _key: SharedString = key.into();
     let dark = theme.mode.is_dark();
     let base = if dark { theme.foreground.opacity(0.08) } else { theme.foreground.opacity(0.07) };
-    // A few per cent lighter than the bone, at the band's middle only.
-    let light = if dark { gpui_kit::white().opacity(0.07) } else { gpui_kit::white().opacity(0.6) };
+    // The band, lighter than the bone at its middle. In dark 16 % white
+    // (7 % read as no shimmer at all on the dark cards, his rc12-24 note);
+    // tint.py holds the band's contrast in dark to at least light's.
+    let light = if dark { gpui_kit::white().opacity(0.16) } else { gpui_kit::white().opacity(0.6) };
+    if cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
+        let c = |h: Hsla| {
+            let r = h.to_rgb();
+            format!("{:.0} {:.0} {:.0} {:.3}", r.r * 255., r.g * 255., r.b * 255., r.a)
+        };
+        eprintln!("LAYOUT skeleton-colors {} {} {}", c(theme.background), c(base), c(light));
+    }
     // Its width is the most it takes: it shrinks with its row and never
     // runs past its parent (a narrow window, a narrow card).
     div().relative().overflow_hidden().w(w).max_w_full().min_w_0().h(px(h)).flex_shrink(1.).rounded(px(radius)).bg(base).when(!reduced_motion(), |d| {

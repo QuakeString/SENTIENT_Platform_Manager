@@ -43,6 +43,11 @@ one() { # where page width scale theme [dialog env]
     SPM_INSTALLATION_RECORD=${SPM_INSTALLATION_RECORD:-/nonexistent} SPM_DEBUG_LAYOUT=1 SPM_REDUCED_MOTION=1 \
     "$BIN" "${mode[@]}" "${inst[@]}" 2>"$OUT/$name.log" >/dev/null & local ap=$!
   sleep "$wait"
+  # HOVER_INFO=1: the pointer on the page's first (i), its tooltip open.
+  if [ -n "${HOVER_INFO:-}" ]; then
+    local at; at=$(grep '^LAYOUT info-icon ' "$OUT/$name.log" | tail -1 | awk -v s="$sc" '{printf "%d %d", ($3+$4)/2*s, ($5+$6)/2*s}')
+    [ -n "$at" ] && { DISPLAY=$d xdotool mousemove $at; sleep 2; }
+  fi
   DISPLAY=$d import -window root "$OUT/$name.png" 2>/dev/null
   kill $ap 2>/dev/null; sleep 1; kill -9 $ap 2>/dev/null; kill $xp 2>/dev/null
   rm -rf "$x"
@@ -51,7 +56,7 @@ one() { # where page width scale theme [dialog env]
   local only=(); [ "$where" = setup ] && only=(buttons)
   { python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" "${only[@]}" && { [ "$where" = setup ] || python3 "$HERE/icons.py" "$OUT/$name.log"; }; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
 }
-export -f one; export OUT HERE BIN PROFILE LOADING_PROFILE INSTANCE WAIT SPM_INSTALLATION_RECORD 2>/dev/null
+export -f one; export OUT HERE BIN PROFILE LOADING_PROFILE INSTANCE WAIT SPM_INSTALLATION_RECORD HOVER_INFO 2>/dev/null
 list=()
 for p in $PAGES_LOCAL; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local $p $w $s $t"); done; done; done; done
 # Dialogs and panels, opened by their debug hooks (this computer).
@@ -76,4 +81,6 @@ echo "layout test: $((total - fails))/$total passed"
 python3 "$HERE/labels.py" "$OUT" | tee "$OUT/labels.txt"; labels=${PIPESTATUS[0]}
 # The top bar's instance tint as faint in dark as in light (tint.py).
 python3 "$HERE/tint.py" "$OUT" | tee "$OUT/tint.txt"; tint=${PIPESTATUS[0]}
-[ "$fails" -eq 0 ] && [ "$labels" -eq 0 ] && [ "$tint" -eq 0 ]
+# Every tooltip the shared one, with theme colours (tooltips.sh).
+"$HERE/tooltips.sh" | tee "$OUT/tooltips.txt"; tips=${PIPESTATUS[0]}
+[ "$fails" -eq 0 ] && [ "$labels" -eq 0 ] && [ "$tint" -eq 0 ] && [ "$tips" -eq 0 ]

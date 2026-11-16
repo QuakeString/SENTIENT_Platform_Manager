@@ -85,10 +85,28 @@ def tile_findings(lines, png, name, findings):
     return n
 
 
+def over(top, a, under):
+    return tuple(t * a + u * (1 - a) for t, u in zip(top, under))
+
+
+def shimmer_de(lines):
+    """The skeleton band's colour difference from its block (the logged
+    card, block and band colours composited), or None."""
+    hits = [l.split()[2:] for l in lines if l.startswith("LAYOUT skeleton-colors ")]
+    if not hits:
+        return None
+    v = [float(x) for x in hits[-1]]
+    card = tuple(v[0:3])
+    block = over(tuple(v[4:7]), v[7], card)
+    band = over(tuple(v[8:11]), v[11], block)
+    return de(block, band)
+
+
 def main():
     out = sys.argv[1]
     seen = {}
     findings, compared, tiles = [], 0, 0
+    shimmer = {}
     for f in sorted(os.listdir(out)):
         m = re.match(r"(.*-\d+-x[\d.]+)-(light|dark)\.log$", f)
         if not m or not os.path.exists(os.path.join(out, f[:-4] + ".png")):
@@ -96,6 +114,9 @@ def main():
         lines = open(os.path.join(out, f), errors="replace").read().splitlines()
         bar, edge = last(lines, "LAYOUT top-bar "), last(lines, "LAYOUT menu-edge ")
         tiles += tile_findings(lines, os.path.join(out, f[:-4] + ".png"), f[:-4], findings)
+        sh = shimmer_de(lines)
+        if sh is not None:
+            shimmer.setdefault(m.group(1), {})[m.group(2)] = sh
         if not bar or not edge:
             continue
         sc = float(re.search(r"-x([\d.]+)$", m.group(1)).group(1))
@@ -110,6 +131,10 @@ def main():
             lt, dk = v["light"], v["dark"]
             if abs(dk - lt) > max(3.0, 0.25 * lt):
                 findings.append(f"{name}: bar tint dE {dk:.1f} in dark, {lt:.1f} in light")
+    # The loading shimmer's band at least as visible in dark as in light.
+    for name, v in sorted(shimmer.items()):
+        if "light" in v and "dark" in v and v["dark"] + 0.5 < v["light"]:
+            findings.append(f"{name}: skeleton shimmer dE {v['dark']:.1f} in dark, {v['light']:.1f} in light")
     for x in findings:
         print(x)
     print(f"tint.py: {compared} light/dark pairs compared, {tiles} instance tiles, {len(findings)} findings")
