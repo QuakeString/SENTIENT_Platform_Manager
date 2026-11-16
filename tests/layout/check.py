@@ -19,6 +19,14 @@ from PIL import Image
 PAD, PAGE_PAD, TOL, MIN_PIXELS = 16, 18, 28, 3
 
 
+def last_frame_lines(log):
+    lines = open(log, errors="replace").read().splitlines()
+    marks = [i for i, l in enumerate(lines) if l.startswith("LAYOUT-FRAME ")]
+    if len(marks) < 2:
+        return lines
+    return lines[marks[-2] + 1:marks[-1]]
+
+
 def frame_panels(log):
     lines = open(log, errors="replace").read().splitlines()
     marks = [i for i, l in enumerate(lines) if l.startswith("LAYOUT-FRAME ")]
@@ -312,7 +320,14 @@ def main():
     # One gap between the buttons of a group (dialogs included).
     for (l, r, t, b), g in button_gaps(log):
         bad.append(f"button gap: {g:.2f} px after the button at x {l:.0f}-{r:.0f}, y {t:.0f}-{b:.0f}, not {BUTTON_GAP:.0f}")
-    # Menu icons (an open popup or context menu): at least 18 px.
+    # Service controls (Start, Stop, Restart, Logs on every service card,
+    # status.rs service_buttons): all one height, the app's 28 px buttons
+    # (the toolkit's; 40 px is the top bar's controls).
+    svc = [tuple(float(v) for v in l.split()[2:]) for l in last_frame_lines(log) if l.startswith("LAYOUT svc-button ")]
+    for x0, x1, y0, y1 in svc:
+        if abs((y1 - y0) - 28.0) > 0.6:
+            bad.append(f"service button {y1 - y0:.2f} px tall at x {x0:.0f}, y {y0:.0f}, not 28")
+        # Menu icons (an open popup or context menu): at least 18 px.
     for l in open(log, errors="replace").read().splitlines():
         if l.startswith("LAYOUT menu-item-icon "):
             x0, x1, y0, y1 = (float(v) for v in l.split()[2:])

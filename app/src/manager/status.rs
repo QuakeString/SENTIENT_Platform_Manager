@@ -935,6 +935,26 @@ pub(crate) fn control_buttons(
     restart: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
     stop: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
 ) -> Div {
+    ui::button_row(service_buttons(theme, id, busy, running, "Stop…", start, restart, stop))
+}
+
+/// Start, Stop and Restart of a service, the one row every service card
+/// uses (SENTIENT, the Gateway, here and on a server): icons, the app's
+/// button height and gap, the actions that do not apply off, Stop hovering
+/// red. `stop_label` is "Stop…" where Stop asks first. Put them in a
+/// [`ui::card_foot`] (the divider above) with the card's other buttons
+/// after them.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn service_buttons(
+    theme: &gpui_kit::component::Theme,
+    id: &str,
+    busy: bool,
+    running: Option<Running>,
+    stop_label: &'static str,
+    start: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+    restart: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+    stop: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+) -> Vec<AnyElement> {
     use gpui_kit::component::{Icon, IconName};
     let serving = running.is_some_and(|r| r.serving);
     let any_up = running.is_some_and(|r| r.any_up);
@@ -944,11 +964,20 @@ pub(crate) fn control_buttons(
         if primary { b.primary() } else { b.outline() }
     };
     let (bg, border, fg) = ui::stop_hover(theme);
-    ui::button_row(vec![
-        btn("start", "Start", IconName::Play, down, !serving).on_click(move |_, w, cx| start(w, cx)).into_any_element(),
-        btn("stop", "Stop…", IconName::Square, false, any_up).hover_colors(bg, border, fg).on_click(move |_, w, cx| stop(w, cx)).into_any_element(),
-        btn("restart", "Restart", IconName::RotateCw, false, any_up).on_click(move |_, w, cx| restart(w, cx)).into_any_element(),
-    ])
+    // Each with a probe: the gate holds every service row's buttons to
+    // one height (check.py, svc-button).
+    let probe = |b: AnyElement| div().relative().child(b).child(ui::layout_probe("svc-button")).into_any_element();
+    vec![
+        probe(btn("start", "Start", IconName::Play, down, !serving).on_click(move |_, w, cx| start(w, cx)).into_any_element()),
+        probe(btn("stop", stop_label, IconName::Square, false, any_up).hover_colors(bg, border, fg).on_click(move |_, w, cx| stop(w, cx)).into_any_element()),
+        probe(btn("restart", "Restart", IconName::RotateCw, false, any_up).on_click(move |_, w, cx| restart(w, cx)).into_any_element()),
+    ]
+}
+
+/// The Logs button beside a service's controls (the same height, an icon).
+pub(crate) fn logs_button(id: &str, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> AnyElement {
+    let b = crate::ui::button(SharedString::from(format!("{id}logs"))).outline().label("Logs").icon(gpui_kit::component::Icon::new(gpui_kit::component::IconName::File)).on_click(on_click);
+    div().relative().child(b).child(ui::layout_probe("svc-button")).into_any_element()
 }
 
 /// What the database details may offer, each where the page can do it.

@@ -2003,7 +2003,7 @@ impl RemotePages {
                 .items_center()
                 .child(ui::product_logo(ui::Product::Gateway, 24.))
                 .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
-                .child(if !installed { ui::pill(&theme, Tone::Neutral, "Not installed") } else if running { ui::pill(&theme, Tone::Good, "Running") } else { ui::pill(&theme, Tone::Bad, "Stopped") }),
+                .child(if !installed { ui::pill(&theme, Tone::Neutral, "Not installed") } else if running { ui::pill(&theme, Tone::Good, "Gateway is running") } else { ui::pill(&theme, Tone::Bad, "Gateway is stopped") }),
         );
         if !installed {
             // The pill says it; the how-to and what was looked for are behind an (i).
@@ -2055,18 +2055,26 @@ impl RemotePages {
         // A plain process has no service to start it again: no controls.
         let controllable = kind != "process";
         let updatable = (kind == "docker" && get("managed") == "true") || kind == "windows-service";
-        let act = |id: &'static str, label: &'static str, action: &'static str| {
-            crate::ui::probed(crate::ui::button(id).outline().label(label).disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.run_job("Gateway", vec!["gateway-control".into(), action.into()], cx))))
+        let this = cx.entity().downgrade();
+        let act = |action: &'static str| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
+            let this = this.clone();
+            std::rc::Rc::new(move |_, cx| {
+                this.update(cx, |p, cx| p.run_job("Gateway", vec!["gateway-control".into(), action.into()], cx)).ok();
+            })
         };
-        p.child(
+        let services = if controllable {
+            crate::manager::status::service_buttons(&theme, "r-gw-", busy, Some(crate::manager::status::Running { serving: running, any_up: running }), "Stop", act("start"), act("restart"), act("stop"))
+        } else {
+            Vec::new()
+        };
+        p.children(ui::card_foot(
+            &theme,
             h_flex()
                 .gap(crate::ui::button_gap())
                 .flex_wrap()
-                .when(controllable, |r| {
-                    r.when(!running, |r| r.child(act("r-gw-start", "Start", "start")))
-                        .when(running, |r| r.child(act("r-gw-stop", "Stop", "stop")).child(act("r-gw-restart", "Restart", "restart")))
-                })
-                .child(crate::ui::probed(crate::ui::button("r-gw-logs").outline().label("Logs").on_click(|_, _, cx| {
+                .items_center()
+                .children(services.into_iter().map(crate::ui::probed))
+                .child(crate::ui::probed(crate::manager::status::logs_button("r-gw-", |_, _, cx| {
                     crate::logsource::request(crate::logsource::Source::Gateway);
                     cx.refresh_windows();
                 })))
@@ -2083,7 +2091,7 @@ impl RemotePages {
                 })
                 .child(div().flex_1())
                 .child(crate::ui::probed(crate::ui::button("r-gw-remove").danger().label("Remove the Gateway…").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx))))),
-        )
+        ))
     }
 
     /// "Remove the Gateway…" on the server: the same dialog as here, then
