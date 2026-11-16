@@ -430,6 +430,21 @@ pub fn sftp_command(inst: &Instance, admin: bool) -> (Command, Option<String>) {
     (c, pw)
 }
 
+/// Delete a file or a whole folder tree on the server in one command
+/// (Files, after its confirm): `rm -rf` on Linux, as administrator with
+/// `admin`; Remove-Item on Windows. Refuses the root and empty paths.
+pub fn remove_tree(inst: &Instance, path: &str, admin: bool) -> Result<(), String> {
+    let p = path.trim();
+    if p.is_empty() || p == "/" || p.trim_end_matches(['/', '\\']).is_empty() || (p.len() <= 3 && p.ends_with(":\\")) {
+        return Err(format!("{path} cannot be deleted from here."));
+    }
+    if is_windows(inst) {
+        return win::ps(inst, &format!("Remove-Item -LiteralPath '{}' -Recurse -Force -ErrorAction Stop", p.replace('\'', "''"))).map(|_| ());
+    }
+    let cmd = format!("rm -rf -- '{}'", p.replace('\'', "'\\''"));
+    if admin && inst.user != "root" { sudo_run(inst, &cmd, None) } else { run(inst, &cmd, None) }.map(|_| ())
+}
+
 /// Find out with one connection whether sudo works for the account.
 fn probe_admin(inst: &Instance) -> Admin {
     if inst.user == "root" {

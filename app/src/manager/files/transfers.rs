@@ -140,13 +140,15 @@ pub fn get(cx: &mut App) -> Entity<Transfers> {
         });
         Transfers { items: Vec::new(), shared: Arc::new(Shared::default()), job: job.clone(), asking: false, next_id: 1, next_batch: 1, _poll: None, _observe: observe }
     });
-    let (t1, panel) = (t.clone(), cx.new(|cx| Panel { t: t.clone(), _o: cx.observe(&t, |_, _, cx| cx.notify()) }));
-    let p2 = panel.clone();
+    let (t1, panel) = (t.clone(), cx.new(|cx| Panel { t: t.clone(), in_dialog: false, _o: cx.observe(&t, |_, _, cx| cx.notify()) }));
+    let t2 = t.clone();
     job.update(cx, |j, _| {
         j.set_chip(std::rc::Rc::new(move |cx| t1.read(cx).chip_text()), panel.into());
         // Once it ended, the chip's Details shows the same list.
         j.set_details(std::rc::Rc::new(move |cx| {
-            crate::modal::open(crate::modal::Modal { title: "Transfers".into(), body: p2.clone().into(), width: 440., icon: None, on_close: None }, cx);
+            let t3 = t2.clone();
+            let body = cx.new(|cx| Panel { t: t3.clone(), in_dialog: true, _o: cx.observe(&t3, |_, _, cx| cx.notify()) });
+            crate::modal::open(crate::modal::Modal { title: "Transfers".into(), body: body.into(), width: 440., icon: None, on_close: None }, cx);
         }));
     });
     cx.set_global(Slot(t.clone()));
@@ -602,6 +604,8 @@ fn same_unit(done: u64, total: u64) -> String {
 
 struct Panel {
     t: Entity<Transfers>,
+    /// In the shared dialog its title is the header: no second one here.
+    in_dialog: bool,
     _o: Subscription,
 }
 
@@ -615,13 +619,12 @@ impl Render for Panel {
         let theme = cx.theme().clone();
         let items = self.t.read(cx).items.clone();
         let t = self.t.clone();
+        let in_dialog = self.in_dialog;
         let header = h_flex()
-            .h(px(52.))
-            .px(px(16.))
+            .when(!in_dialog, |h| h.h(px(52.)).px(px(16.)).border_b_1().border_color(theme.border))
+            .when(in_dialog, |h| h.pb_2())
             .items_center()
-            .border_b_1()
-            .border_color(theme.border)
-            .child(div().flex_1().font_weight(FontWeight::MEDIUM).child("Transfers"))
+            .child(div().flex_1().when(!in_dialog, |d| d.font_weight(FontWeight::MEDIUM).child("Transfers")))
             .child(crate::ui::button("tr-clear").ghost().small().text_color(theme.primary).label("Clear finished").on_click({
                 let t = t.clone();
                 move |_, _, cx| t.update(cx, |t, cx| t.clear_finished(cx))

@@ -303,6 +303,8 @@ fn probe(inst: &Instance) -> Probe {
 pub struct RemoteFs {
     s: Sftp,
     p: Probe,
+    inst: Instance,
+    admin: bool,
 }
 
 impl RemoteFs {
@@ -319,7 +321,7 @@ impl RemoteFs {
         if admin {
             p.uid = 0;
         }
-        Ok(RemoteFs { s, p })
+        Ok(RemoteFs { s, p, inst: inst.clone(), admin })
     }
 }
 
@@ -360,15 +362,9 @@ impl Fs for RemoteFs {
         if !a.is_dir() {
             return Ok(self.s.remove(path)?);
         }
-        for e in self.s.list(path)? {
-            let p = sftp::join(path, &e.name);
-            if e.attrs.is_dir() && !e.attrs.is_link() {
-                self.remove_tree(&p)?;
-            } else {
-                self.s.remove(&p)?;
-            }
-        }
-        Ok(self.s.rmdir(path)?)
+        // A folder: one command on the server, not file by file over SFTP
+        // (a big tree took minutes); as administrator when the pane is.
+        crate::remote::remove_tree(&self.inst, path, self.admin)
     }
 
     fn rename(&mut self, from: &str, to: &str) -> Result<(), String> {
