@@ -80,6 +80,12 @@ def main():
             continue
         ref = im.getpixel((int(R - PAD * scale / 2), y0))
         hits = [(x, y) for y in range(y0, y1, 2) for x in range(x0, x1) if differs(im.getpixel((x, y)), ref)]
+        # A scrolling body's scrollbar track: one or two full-height columns
+        # of the same line, not content.
+        cols = {x for x, _ in hits}
+        rows = len(range(y0, y1, 2))
+        if hits and len(cols) <= 2 * max(1, int(scale)) and len(hits) >= 0.8 * rows * len(cols):
+            hits = []
         if len(hits) >= MIN_PIXELS:
             x, y = hits[0]
             bad.append(f"card {l:.0f}-{r:.0f} x {t:.0f}-{b:.0f}: {len(hits)} px in its right padding, first at ({x / scale:.0f}, {y / scale:.0f})")
