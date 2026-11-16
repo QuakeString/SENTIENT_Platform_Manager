@@ -59,7 +59,7 @@ pub fn summary(file: &Path, passphrase: Option<&str>) -> Result<Summary, Unreada
     Ok(from_manifest(file, file_bytes, encrypted, &manifest))
 }
 
-fn from_manifest(file: &Path, file_bytes: u64, encrypted: bool, m: &Manifest) -> Summary {
+pub(crate) fn from_manifest(file: &Path, file_bytes: u64, encrypted: bool, m: &Manifest) -> Summary {
     let database_type = m.source.database_type.clone().unwrap_or_else(|| {
         if m.clickhouse.is_some() {
             "PostgreSQL + ClickHouse".into()
@@ -170,7 +170,7 @@ pub fn planned_steps(delete_old: bool) -> Vec<String> {
 }
 
 /// Steps of a nested call as log lines, so the checklist keeps its own.
-fn nested(sink: &ProgressFn) -> ProgressFn {
+pub(crate) fn nested(sink: &ProgressFn) -> ProgressFn {
     let sink = sink.clone();
     std::sync::Arc::new(move |p| match p {
         Progress::Step { name } => sink(Progress::Log { line: format!(">> {name}") }),

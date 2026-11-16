@@ -32,6 +32,11 @@ fn bridge(sink: ProgressFn) -> bk::ProgressFn {
     })
 }
 
+/// [`bridge`], for the restore flow (crate::restore_flow).
+pub fn bridge_pub(sink: ProgressFn) -> bk::ProgressFn {
+    bridge(sink)
+}
+
 fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, String> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -52,7 +57,7 @@ pub fn origin(record: &InstallationRecord, pg: &db::ConnConfig) -> sentient_back
         schema_version: crate::restore_switch::schema_version_now(pg).ok(),
         database_type: Some(crate::installation::flavor_label(record.flavor()).to_string()),
         host: host_name(),
-        platform: None,
+        platform: Some(crate::restore_flow::platform_info(record)),
     }
 }
 

@@ -756,6 +756,12 @@ pub fn member_label(path: &str) -> String {
 /// Read the whole backup and compare every part with its checksum, without
 /// restoring or keeping anything. Blocking.
 pub fn check(input: &Path, passphrase: Option<&str>) -> Result<CheckReport> {
+    check_with(input, passphrase, |_, _| {})
+}
+
+/// [`check`], calling `each(member, bytes)` as each part has been read
+/// (a check step that shows its progress part by part).
+pub fn check_with(input: &Path, passphrase: Option<&str>, mut each: impl FnMut(&str, u64)) -> Result<CheckReport> {
     use sha2::{Digest, Sha256};
     let files = crate::parts::check_sidecar(input)?;
     let (base, f) = crate::parts::open(input)?;
@@ -801,6 +807,7 @@ pub fn check(input: &Path, passphrase: Option<&str>) -> Result<CheckReport> {
             }
         }
         let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        each(&path, bytes);
         seen.insert(path, (if broken { String::new() } else { hex }, bytes));
         if broken {
             break;
