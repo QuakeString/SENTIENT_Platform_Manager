@@ -85,7 +85,20 @@ impl RepairPage {
                 if action == Action::Uninstall && !keep {
                     args.push("--delete-data".into());
                 }
-                job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx)
+                job.start(
+                    move |sink| {
+                        crate::rootjob::run(&args, &sink)?;
+                        // The root job cleaned by the record's manifest; this
+                        // account's own copies (older installs) and its menu
+                        // cache are cleaned as this account.
+                        if action == Action::Uninstall {
+                            crate::shortcuts::remove(crate::shortcuts::Owner::Sentient, &[], &sink);
+                            crate::shortcuts::remove(crate::shortcuts::Owner::Manager, &[], &sink);
+                        }
+                        Ok(())
+                    },
+                    cx,
+                )
             } else {
                 match action {
                     Action::Repair => job.start(move |sink| crate::maintenance_ops::run_repair(record, sink), cx),

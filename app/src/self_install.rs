@@ -146,15 +146,20 @@ mod imp {
     }
 
     pub fn create_shortcuts(manager: &Path, url: &str, s: &Shortcuts) -> Result<(), String> {
+        use crate::shortcuts::{Owner, note};
         if s.start_menu {
             start_menu_entry(manager)?;
             web_shortcut(START_MENU, "SENTIENT", url)?;
+            note(Owner::Manager, [PathBuf::from(super::start_menu_links(START_MENU).0)]);
+            note(Owner::Sentient, [PathBuf::from(format!(r"{START_MENU}\SENTIENT.url"))]);
         }
         if s.desktop_manager {
             shortcut(manager, DESKTOP, PRODUCT, "--manager")?;
+            note(Owner::Manager, [PathBuf::from(format!(r"{DESKTOP}\{PRODUCT}.lnk"))]);
         }
         if s.desktop_sentient {
             web_shortcut(DESKTOP, "SENTIENT", url)?;
+            note(Owner::Sentient, [PathBuf::from(format!(r"{DESKTOP}\SENTIENT.url"))]);
         }
         Ok(())
     }
@@ -330,6 +335,10 @@ mod imp {
         );
         run(&noop(), &script)?;
         let _ = std::fs::remove_dir_all(&icons);
+        crate::shortcuts::note(
+            crate::shortcuts::Owner::Manager,
+            ICONS.iter().map(|(size, _)| PathBuf::from(format!("{HICOLOR}/{size}/apps/sentient-platform-manager.{}", if *size == "scalable" { "svg" } else { "png" }))),
+        );
         Ok(target)
     }
 
@@ -370,7 +379,15 @@ mod imp {
             ));
         }
         script.push_str("command -v update-desktop-database >/dev/null && update-desktop-database -q || true\n");
-        run(&noop(), &script)
+        run(&noop(), &script)?;
+        use crate::shortcuts::{Owner, note};
+        if s.start_menu {
+            note(Owner::Manager, [PathBuf::from(format!("{APPS}/sentient-platform-manager.desktop"))]);
+        }
+        if s.desktop_sentient || s.start_menu {
+            note(Owner::Sentient, [PathBuf::from(format!("{APPS}/sentient.desktop"))]);
+        }
+        Ok(())
     }
 
     pub fn restore_menu_entry(manager: &Path) {
@@ -396,7 +413,9 @@ mod imp {
             "set -e\ncat > {APPS}/sentient-platform-manager.desktop <<'EOF'\n{}EOF\n\
              command -v update-desktop-database >/dev/null && update-desktop-database -q || true\n",
             manager_entry(super::PRODUCT, manager, "Run, update and back up SENTIENT")
-        ))
+        ))?;
+        crate::shortcuts::note(crate::shortcuts::Owner::Manager, [PathBuf::from(format!("{APPS}/sentient-platform-manager.desktop"))]);
+        Ok(())
     }
 
     /// Linux has no Apps & features list.
@@ -420,14 +439,13 @@ mod imp {
         (out.status.success() && !name.is_empty()).then_some(name)
     }
 
+    /// The command in /usr/local/bin. The menu entries and icons are
+    /// crate::shortcuts' (by owner, with the menus refreshed after).
     pub fn remove_shortcuts() {
-        // The package ships the menu entry and icon itself.
-        let files = if pacman_package().is_some() {
-            format!("{APPS}/sentient.desktop {BIN}")
-        } else {
-            format!("{APPS}/sentient-platform-manager.desktop {APPS}/sentient.desktop {HICOLOR}/*/apps/sentient-platform-manager.png {HICOLOR}/scalable/apps/sentient-platform-manager.svg {BIN}")
-        };
-        let _ = run(&noop(), &format!("rm -f {files}"));
+        // A package ships its own command.
+        if pacman_package().is_none() && Path::new(BIN).symlink_metadata().is_ok() {
+            let _ = run(&noop(), &format!("rm -f {BIN}"));
+        }
     }
 
     pub fn remove_manager_later() {
@@ -483,8 +501,9 @@ mod imp {
 pub fn refresh_operator_screen(sink: &sentient_installer_core::progress::ProgressFn) {
     if sentient_installer_core::kiosk::shortcut_exists() {
         if let Some(record) = crate::installation::InstallationRecord::load() {
-            if let Err(e) = sentient_installer_core::kiosk::create_shortcut(sink, &manager_exe(), &record.state_dir) {
-                sink(sentient_installer_core::progress::Progress::Log { line: format!("The kiosk shortcut was not renewed: {e}") });
+            match sentient_installer_core::kiosk::create_shortcut(sink, &manager_exe(), &record.state_dir) {
+                Ok(()) => crate::shortcuts::remember(crate::shortcuts::Owner::Sentient, sentient_installer_core::kiosk::shortcut_paths()),
+                Err(e) => sink(sentient_installer_core::progress::Progress::Log { line: format!("The kiosk shortcut was not renewed: {e}") }),
             }
         }
     }
@@ -495,6 +514,9 @@ pub fn refresh_operator_screen(sink: &sentient_installer_core::progress::Progres
 /// otherwise the screen waits after a reboot for a SENTIENT nobody starts.
 pub fn set_open_at_signin(sink: &sentient_installer_core::progress::ProgressFn, mode: Option<bool>) -> Result<(), String> {
     sentient_installer_core::kiosk::set_open_at_signin(sink, &manager_exe(), mode)?;
+    if mode.is_some() {
+        crate::shortcuts::remember(crate::shortcuts::Owner::Sentient, sentient_installer_core::kiosk::signin_entry_path().into_iter().collect());
+    }
     #[cfg(windows)]
     if mode.is_some() && !autostart().is_some_and(|(on, _)| on) {
         set_autostart(true, sentient_installer_core::native::DEFAULT_START_DELAY_SECS)?;

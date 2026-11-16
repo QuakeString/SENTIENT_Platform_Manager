@@ -70,6 +70,7 @@ mod rootjob;
 mod secrets;
 mod secrets_key;
 mod self_install;
+mod shortcuts;
 #[cfg(feature = "gui")]
 mod sftp;
 mod sentient_admin;

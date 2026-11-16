@@ -193,6 +193,10 @@ fn rand_u128() -> u128 {
 pub fn set_autostart(on: bool) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let r = imp::set_autostart(on, &exe);
+    #[cfg(not(windows))]
+    if on && r.is_ok() {
+        crate::shortcuts::remember(crate::shortcuts::Owner::Manager, imp::entry().into_iter().collect());
+    }
     AUTOSTART.store(if r.is_ok() { on } else { imp::present() }, std::sync::atomic::Ordering::Relaxed);
     r
 }
@@ -209,7 +213,7 @@ pub fn autostart_on() -> bool {
 mod imp {
     use std::path::{Path, PathBuf};
 
-    fn entry() -> Option<PathBuf> {
+    pub(super) fn entry() -> Option<PathBuf> {
         let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
         Some(config.join("autostart").join("sentient-platform-manager.desktop"))
     }

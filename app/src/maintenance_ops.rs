@@ -131,6 +131,12 @@ pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: P
     // and what opening SENTIENT left in each account.
     sentient_installer_core::kiosk::remove_shortcuts(&sink, &record.state_dir);
     sentient_installer_core::kiosk::remove_user_data(&sink);
+    // Every shortcut and sign-in file in the record's manifest and at the
+    // known paths, SENTIENT's and the Platform Manager's (which goes too),
+    // in the home of whoever asked (this job may run as root).
+    crate::shortcuts::remove(crate::shortcuts::Owner::Sentient, &record.shortcuts, &sink);
+    crate::shortcuts::remove(crate::shortcuts::Owner::Manager, &record.shortcuts, &sink);
+    let _ = crate::background::set_autostart(false);
     // The task that starts SENTIENT a set time after Windows.
     #[cfg(windows)]
     sentient_installer_core::native::remove_start_task();
@@ -160,6 +166,14 @@ pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: P
 pub(crate) fn run_remove_manager(sink: ProgressFn) -> Result<(), String> {
     step(&sink, "Removing the Platform Manager");
     self_install::remove_shortcuts();
+    // Its menu entry, icons and tray autostart.
+    crate::shortcuts::remove(crate::shortcuts::Owner::Manager, &[], &sink);
+    let _ = crate::background::set_autostart(false);
+    // With no SENTIENT here, a kiosk shortcut an earlier uninstall left
+    // behind starts this program, which is going: it goes too.
+    if crate::installation::InstallationRecord::load().is_none() {
+        crate::shortcuts::remove(crate::shortcuts::Owner::Sentient, &[], &sink);
+    }
     self_install::remove_manager_entry();
     self_install::remove_manager_later();
     sink(Progress::Done { message: "The Platform Manager is removed.".into() });

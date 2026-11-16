@@ -51,6 +51,10 @@ pub struct InstallationRecord {
     /// offers what earlier ones did not set up.
     #[serde(default)]
     pub changes_done: Vec<String>,
+    /// Every file made for shortcuts and for starting at sign-in
+    /// (crate::shortcuts), so uninstall removes exactly those.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shortcuts: Vec<crate::shortcuts::Entry>,
 }
 
 impl InstallationRecord {
@@ -142,6 +146,7 @@ impl InstallationRecord {
             installed_at: String::new(),
             kiosk: None,
             changes_done: Vec::new(),
+            shortcuts: Vec::new(),
         };
         record.native_config()
     }

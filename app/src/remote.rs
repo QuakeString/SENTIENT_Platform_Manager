@@ -1969,6 +1969,7 @@ mod tests {
             installed_at: "2026-11-15T00:00:00Z".into(),
             kiosk: None,
             changes_done: Vec::new(),
+            shortcuts: Vec::new(),
         };
         let dir = std::env::temp_dir().join(format!("spm-e2e-bk-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

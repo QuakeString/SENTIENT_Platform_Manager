@@ -139,6 +139,7 @@ impl InstallPlan {
             installed_at: chrono::Utc::now().to_rfc3339(),
             kiosk: Some(self.shortcuts.kiosk),
             changes_done: crate::changes::all_ids(),
+            shortcuts: crate::shortcuts::noted(),
         }
     }
 }
@@ -412,9 +413,11 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
     self_install::create_shortcuts(&manager, &url, &plan.shortcuts)?;
     if plan.shortcuts.kiosk {
         sentient_installer_core::kiosk::create_shortcut(&sink, &manager, &plan.state_dir())?;
+        crate::shortcuts::note(crate::shortcuts::Owner::Sentient, sentient_installer_core::kiosk::shortcut_paths());
     }
     if plan.shortcuts.open_at_signin {
         sentient_installer_core::kiosk::set_open_at_signin(&sink, &manager, Some(true))?;
+        crate::shortcuts::note(crate::shortcuts::Owner::Sentient, sentient_installer_core::kiosk::signin_entry_path());
     }
     if !plan.shortcuts.auto_signin.is_empty() {
         let password = if plan.auto_signin_password.is_empty() {
