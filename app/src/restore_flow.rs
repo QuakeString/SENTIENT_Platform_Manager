@@ -1451,4 +1451,20 @@ mod tests {
         assert!(!row.ok(2_000_000_000));
         assert_eq!(row.short(0), 4_900_000_000);
     }
+
+    /// The watch on a real disk with less free than the safe level
+    /// (SPM_SMALL_DISK=/boot/efi, say): it reads it with df and trips.
+    #[test]
+    #[ignore]
+    fn the_watch_trips_on_a_real_small_disk() {
+        let path = std::env::var("SPM_SMALL_DISK").expect("SPM_SMALL_DISK");
+        let mut w = SpaceWatch::new(probe(vec![("temporary files".into(), Place::Host(PathBuf::from(&path)))]));
+        w.every = std::time::Duration::from_millis(50);
+        let g = w.start();
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        let m = g.tripped().expect("tripped");
+        eprintln!("{m}");
+        assert!(m.starts_with(&format!("Stopped: {path} (temporary files) fell to")), "{m}");
+        g.stop();
+    }
 }

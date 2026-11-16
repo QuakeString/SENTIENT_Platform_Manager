@@ -2407,13 +2407,24 @@ mod restore_live {
         run(&inst, &format!("head -c 12000000 {path} > {path}.part && rm {path}"), None).unwrap();
         let path = upload_backup(&inst, &local, "/tmp/spme/up", &|_, _| {}).expect("resumed upload");
         assert!(run(&inst, &format!("sha256sum {path}"), None).unwrap().starts_with(&mine));
-        // Another instance: the same server as source, both ways.
-        assert!(reaches(&inst, &inst));
-        for (way, folder) in [(CopyWay::ThroughHere, "/tmp/spme/copy"), (CopyWay::Direct, "/tmp/spme/copy2")] {
-            run(&inst, &format!("mkdir -p {folder}"), None).unwrap();
-            let p = copy_between(&inst, &inst, file, folder, way, &|_, _| {}).expect("copy");
-            assert_eq!(remote_size(&inst, &p), remote_size(&inst, file));
-            eprintln!("copy {way:?}: {p}");
+        // Another instance: the same server as the source. Through this
+        // computer works; server to server needs the source to reach the
+        // target's address, which inside the test bed (a port mapped on
+        // this computer) it does not: the check says so and the copy fails
+        // with the plain advice, leaving no key behind.
+        run(&inst, "mkdir -p /tmp/spme/copy /tmp/spme/copy2", None).unwrap();
+        let p = copy_between(&inst, &inst, file, "/tmp/spme/copy", CopyWay::ThroughHere, &|_, _| {}).expect("copy through here");
+        assert_eq!(remote_size(&inst, &p), remote_size(&inst, file));
+        eprintln!("copy through this computer: {p}");
+        let reach = reaches(&inst, &inst);
+        eprintln!("reaches itself at {}:{}: {reach}", inst.host, inst.port);
+        match copy_between(&inst, &inst, file, "/tmp/spme/copy2", CopyWay::Direct, &|_, _| {}) {
+            Ok(p) => assert!(reach && remote_size(&inst, &p) == remote_size(&inst, file)),
+            Err(e) => {
+                assert!(!reach && e.contains("Copy through this computer instead"), "{e}");
+                assert!(!run(&inst, "grep -c spm-restore-copy ~/.ssh/authorized_keys || true", None).unwrap().trim().starts_with('1'));
+                eprintln!("direct copy refused as expected: {e}");
+            }
         }
         // Down to this computer.
         let got = download_backup(&inst, file, &dir, &|_, _| {}).expect("download");
