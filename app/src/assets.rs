@@ -16,6 +16,7 @@ const EXTRA: &[(&str, &[u8])] = &[
     ("icons/arrow-left-right.svg", include_bytes!("../assets/icons/arrow-left-right.svg")),
     ("icons/chart-line.svg", include_bytes!("../assets/icons/chart-line.svg")),
     ("icons/clipboard.svg", include_bytes!("../assets/icons/clipboard.svg")),
+    ("icons/scissors.svg", include_bytes!("../assets/icons/scissors.svg")),
     ("icons/contrast.svg", include_bytes!("../assets/icons/contrast.svg")),
     ("icons/database.svg", include_bytes!("../assets/icons/database.svg")),
     ("icons/download.svg", include_bytes!("../assets/icons/download.svg")),
