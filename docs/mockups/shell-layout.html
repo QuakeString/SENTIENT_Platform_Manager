@@ -258,12 +258,13 @@ section{display:flex;flex-direction:column;gap:10px}
 .seg .on{background:var(--tint);color:var(--primary);font-weight:500}
 /* selected-item dimple options */
 .win.dimA .menu{padding-right:0;padding-left:16px}
-.win.dimA .it:not(.on),.win.dimA .menu hr{margin-right:10px}
+.win.dimA .it:not(.on){margin-right:10px}
+.win.dimA .menu hr{margin:14px 10px 14px 2px}
 .win.dimA .it.on{padding-right:22px}
-.win.dimA .it.on{background:var(--page);border-radius:10px 0 0 10px;margin-right:-1px;z-index:2;color:var(--primary)}
-.win.dimA .it.on::before,.win.dimA .it.on::after{content:"";position:absolute;right:0;width:12px;height:12px;pointer-events:none}
-.win.dimA .it.on::before{top:-12px;background:radial-gradient(circle at 0 0,transparent 11.5px,var(--page) 12px)}
-.win.dimA .it.on::after{bottom:-12px;background:radial-gradient(circle at 0 100%,transparent 11.5px,var(--page) 12px)}
+.win.dimA .it.on{background:var(--page);border:1px solid var(--border);border-right:0;border-radius:10px 0 0 10px;margin-right:-1px;z-index:2;color:var(--primary)}
+.win.dimA .it.on::before,.win.dimA .it.on::after{content:"";position:absolute;right:0;width:13px;height:13px;pointer-events:none}
+.win.dimA .it.on::before{top:-14px;background:radial-gradient(circle at 0 0,transparent 11.6px,var(--border) 12px,var(--border) 12.6px,var(--page) 13px)}
+.win.dimA .it.on::after{bottom:-14px;background:radial-gradient(circle at 0 100%,transparent 11.6px,var(--border) 12px,var(--border) 12.6px,var(--page) 13px)}
 </style>
 
 <main>
