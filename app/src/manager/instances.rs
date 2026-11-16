@@ -1482,7 +1482,7 @@ fn grid_card(
     let dark = theme.mode.is_dark();
     let c = rgb(remote::parse_hex(color).unwrap_or(0x187074));
     let card = theme.background.to_rgb();
-    let head = mix(c, card, if dark { 0.42 } else { 0.26 });
+    let head = mix(c, card, crate::theme::bar_tint(dark));
     let body = mix(c, card, if dark { 0.13 } else { 0.07 });
     let fg = theme.foreground.to_rgb();
     // The state keeps its meaning (green, red, amber) but in the tile's

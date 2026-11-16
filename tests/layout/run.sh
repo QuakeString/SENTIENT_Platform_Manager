@@ -70,4 +70,6 @@ echo "layout test: $((total - fails))/$total passed"
 # Across renders: a selected menu label the same size as unselected, one row
 # pitch, the space under the brand row (labels.py).
 python3 "$HERE/labels.py" "$OUT" | tee "$OUT/labels.txt"; labels=${PIPESTATUS[0]}
-[ "$fails" -eq 0 ] && [ "$labels" -eq 0 ]
+# The top bar's instance tint as faint in dark as in light (tint.py).
+python3 "$HERE/tint.py" "$OUT" | tee "$OUT/tint.txt"; tint=${PIPESTATUS[0]}
+[ "$fails" -eq 0 ] && [ "$labels" -eq 0 ] && [ "$tint" -eq 0 ]

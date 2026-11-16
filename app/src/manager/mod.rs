@@ -814,7 +814,7 @@ impl Manager {
         let menu_theme = cx.theme().clone();
         let remote = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned();
         // The bar is tinted like the tile headers: the instance's colour
-        // mixed into the card colour (26 % light, 42 % dark), the theme's
+        // mixed into the card colour (theme::bar_tint), the theme's
         // own text on it (the approved shell mockup).
         let ic: Hsla = match &remote {
             Some(r) => rgb(crate::remote::parse_hex(&r.color).unwrap_or(0x187074)).into(),
@@ -822,7 +822,7 @@ impl Manager {
         };
         // Switching instance: the tint cross-fades to the new colour.
         let ic = ui::tween_color("bar-ic", ic, 250, window);
-        let bg: Hsla = menu_theme.background.blend(ic.opacity(if dark { 0.42 } else { 0.26 }));
+        let bg: Hsla = menu_theme.background.blend(ic.opacity(theme::bar_tint(dark)));
         let fg: Hsla = menu_theme.foreground;
         let muted_fg: Hsla = menu_theme.muted_foreground;
         let (name, address): (String, Option<String>) = match (&remote, &self.record) {
@@ -832,8 +832,8 @@ impl Manager {
         };
         let instance = format!("{name} {}", address.clone().unwrap_or_default());
         let light_bar = !dark;
-        // The switcher's pill: the instance's colour at 14 %.
-        let inset: Hsla = ic.opacity(0.14);
+        // The switcher's pill: the instance's colour over the bar.
+        let inset: Hsla = ic.opacity(theme::bar_inset(dark));
         // The open instance's state: green when SENTIENT runs, red when it
         // is stopped (the page's last reading, else the checker's), amber
         // while the server is being read or does not answer.
@@ -986,7 +986,7 @@ impl Manager {
                 .px(px(10.))
                 .rounded(px(theme::BAR_CTRL_RADIUS))
                 .cursor_pointer()
-                .hover(move |d| d.bg(ic.opacity(theme::BAR_CTRL_HOVER)))
+                .hover(move |d| d.bg(ic.opacity(theme::bar_ctrl_hover(dark))))
                 .when(show_cpu, |r| r.child(meter("m-cpu", "CPU", "100%", format!("{:.0}%", m.cpu), g_cpu, m.cpu_high())))
                 .when(show_mem, |r| r.child(meter(
                     "m-mem",
@@ -1027,8 +1027,8 @@ impl Manager {
             .rounded(px(8.))
             .cursor_pointer()
             .rounded(px(theme::BAR_CTRL_RADIUS))
-            .when(bell_open, |b| b.bg(ic.opacity(theme::BAR_CTRL_HOVER)))
-            .hover(move |b| b.bg(ic.opacity(theme::BAR_CTRL_HOVER)))
+            .when(bell_open, |b| b.bg(ic.opacity(theme::bar_ctrl_hover(dark))))
+            .hover(move |b| b.bg(ic.opacity(theme::bar_ctrl_hover(dark))))
             .child(Icon::new(IconName::Bell).text_color(fg).size(px(20.)))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.bell_open = !this.bell_open;
@@ -1040,6 +1040,7 @@ impl Manager {
         h_flex()
             .id("top-bar")
             .relative()
+            .child(ui::layout_probe("top-bar"))
             .children(line)
             .h(px(shell::BAR_H))
             .flex_shrink_0()
@@ -1056,7 +1057,7 @@ impl Manager {
                 // border; hover one step darker (the text keeps its contrast).
                 // Its menu is the app's popover, like the theme menu.
                 let open = self.switcher_open;
-                let hover_inset: Hsla = ic.opacity(theme::BAR_CTRL_HOVER);
+                let hover_inset: Hsla = ic.opacity(theme::bar_ctrl_hover(dark));
                 let chip = div()
                     .id("switcher")
                     .flex()
@@ -1506,6 +1507,7 @@ impl Manager {
     /// choice (sun, moon, half circle for Follow system); a popover below it
     /// with the three.
     fn theme_button(&self, tint: Hsla, cx: &mut Context<Self>) -> impl IntoElement {
+        let dark = theme::is_dark(cx);
         let theme = cx.theme().clone();
         let choice = theme::Choice::saved();
         let open = self.theme_open;
@@ -1522,8 +1524,8 @@ impl Manager {
             .cursor_pointer()
             .text_color(theme.foreground)
             .rounded(px(theme::BAR_CTRL_RADIUS))
-            .when(open, |b| b.bg(tint.opacity(theme::BAR_CTRL_HOVER)))
-            .when(!open, |b| b.hover(move |b| b.bg(tint.opacity(theme::BAR_CTRL_HOVER))))
+            .when(open, |b| b.bg(tint.opacity(theme::bar_ctrl_hover(dark))))
+            .when(!open, |b| b.hover(move |b| b.bg(tint.opacity(theme::bar_ctrl_hover(dark)))))
             .child(icon_of(choice).size(px(19.)))
             .when(!open, |b| b.tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Theme").build(window, cx)))
             .on_click(cx.listener(|this, _, _, cx| {
