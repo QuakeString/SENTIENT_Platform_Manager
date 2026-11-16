@@ -157,6 +157,8 @@ impl BackupPage {
             cx.observe(&restore, |_, _, cx| cx.notify()),
         ];
         _observe.push(cx.subscribe(&schedule_time, |_, _, _: &gpui_kit::component::input::InputEvent, cx| cx.notify()));
+        // The note beside an empty passphrase comes and goes with it.
+        _observe.push(cx.subscribe(&passphrase, |_, _, _: &gpui_kit::component::input::InputEvent, cx| cx.notify()));
         // Keep: saved on Enter or when the field is left (1 to 365).
         _observe.push(cx.subscribe_in(&keep, window, |page: &mut Self, input, e: &gpui_kit::component::input::InputEvent, window, cx| {
             use gpui_kit::component::input::InputEvent;
@@ -372,7 +374,7 @@ impl BackupPage {
                     let summary = block_on(backup::run(&conn, &opts, bridge(sink.clone())))?
                         .map_err(|e| e.to_string())?;
                     if let Some(record) = &record {
-                        crate::secrets_key::save_beside(record, &summary.output, &sink);
+                        crate::secrets_key::save_beside(record, &summary.output, opts.passphrase.as_deref(), &sink);
                     }
                     // For the Status screen's "Last backup".
                     crate::dbstatus::record_backup(&summary.output);
@@ -1015,7 +1017,16 @@ impl BackupPage {
             None,
             false,
         );
-        let pass_row = card_row(theme, narrow, "Encrypt", Some("A passphrase for Back up now; without it the file cannot be read. Automatic backups are not encrypted."), div().w(px(260.)).child(Input::new(&self.passphrase).mask_toggle()), None, false);
+        let pass_empty = self.passphrase.read(cx).value().is_empty();
+        let pass_row = card_row(
+            theme,
+            narrow,
+            "Encrypt",
+            Some("A passphrase for Back up now; without it the file cannot be read. Automatic backups are not encrypted."),
+            h_flex().min_w_0().flex_wrap().gap_2().items_center().child(div().w(px(260.)).child(Input::new(&self.passphrase).mask_toggle())).children(key_plain_note(theme, pass_empty)),
+            None,
+            false,
+        );
         let copy_row = card_row(
             theme,
             narrow,
@@ -1225,7 +1236,7 @@ impl Render for BackupPage {
                             )
                             .when(self.telemetry == 1, |r| r.child(div().w_20().child(Input::new(&self.telemetry_days)))),
                     )
-                    .child(div().w_80().child(Input::new(&self.passphrase).mask_toggle()))
+                    .child(h_flex().gap_2().items_center().child(div().w_80().child(Input::new(&self.passphrase).mask_toggle())).children(key_plain_note(&theme, self.passphrase.read(cx).value().is_empty())))
                     .child(
                         h_flex()
                             .gap_3()
@@ -1292,6 +1303,23 @@ const CARD_ACTION_W: f32 = 118.;
 
 /// A Backup card row: label, value, and an action column whose line is
 /// drawn apart from the row's (the mockup). `last`: no line under it.
+/// Beside an empty passphrase: SENTIENT's secrets key goes beside the
+/// backup as a plain file. With a passphrase it is encrypted with it.
+fn key_plain_note(theme: &gpui_kit::component::Theme, pass_empty: bool) -> Option<AnyElement> {
+    pass_empty.then(|| {
+        h_flex()
+            .flex_shrink_0()
+            .gap_1()
+            .items_center()
+            .child(ui::pill(theme, Tone::Warn, "Key not encrypted"))
+            .child(ui::info(
+                "key-plain".into(),
+                "Without a passphrase, SENTIENT's secrets key (it opens the stored mail, SMS and integration passwords) is saved beside the backup as a plain file, readable by this account only. Keep it apart from the backup when the backup leaves this computer. With a passphrase, the key is encrypted with it too.".into(),
+            ))
+            .into_any_element()
+    })
+}
+
 pub(crate) fn card_row(theme: &gpui_kit::component::Theme, narrow: bool, label: &'static str, help: Option<&'static str>, value: impl IntoElement, action: Option<AnyElement>, last: bool) -> Div {
     let line = |d: Div| if last { d } else { d.border_b_1().border_color(theme.border) };
     let label_el = h_flex()

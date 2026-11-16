@@ -83,7 +83,7 @@ pub fn backup(record: &InstallationRecord, output: &Path, sink: ProgressFn) -> R
         part_size: None,
     };
     let summary = block_on(backup::run(&setup.pg(), &opts, bridge(sink.clone())))?.map_err(|e| e.to_string())?;
-    crate::secrets_key::save_beside(record, output, &sink);
+    crate::secrets_key::save_beside(record, output, opts.passphrase.as_deref(), &sink);
     sink(Progress::Done {
         message: format!(
             "Saved {} ({}), checksum {}…",
@@ -120,7 +120,7 @@ pub fn restore_with(record: &InstallationRecord, input: &Path, target: &str, key
             ("reports".into(), record.state_dir.join("reports")),
             ("vc-repos".into(), record.state_dir.join("vc-repos")),
         ],
-        passphrase,
+        passphrase: passphrase.clone(),
         clickhouse: ch_target.clone(),
         telemetry_into: Some(crate::migration::telemetry_into(record)?),
         ..Default::default()
@@ -139,7 +139,7 @@ pub fn restore_with(record: &InstallationRecord, input: &Path, target: &str, key
         restore::run(&conn, &opts, bridge(sink.clone())).await.map_err(|e| e.to_string())
     })??;
     crate::restore_switch::match_schema(record, &live, &setup.ch().password, target, &sink)?;
-    crate::secrets_key::after_restore(&live, target, input, key, &sink)?;
+    crate::secrets_key::after_restore(&live, target, input, key, passphrase.as_deref(), &sink)?;
     sink(Progress::Done {
         message: format!("Restored into {target}. Put it into service with --job use-restored {target}."),
     });

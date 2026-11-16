@@ -1325,7 +1325,7 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
     }
 
     step(sink, STEP_SCHEMA);
-    if let Err(e) = crate::restore_switch::match_schema(record, &live, &setup.ch().password, &target, &nested(sink)).and_then(|_| crate::secrets_key::after_restore(&live, &target, &req.file, None, &nested(sink))) {
+    if let Err(e) = crate::restore_switch::match_schema(record, &live, &setup.ch().password, &target, &nested(sink)).and_then(|_| crate::secrets_key::after_restore(&live, &target, &req.file, None, passphrase.as_deref(), &nested(sink))) {
         fail_at(entry, STEP_SCHEMA);
         drop_restored(&setup, &target, sink);
         return Err(format!("{} Nothing on this instance changed. The half-restored database was removed.", sentence(&e)));

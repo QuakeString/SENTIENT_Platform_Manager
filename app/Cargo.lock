@@ -6475,6 +6475,7 @@ name = "sentient-platform-manager"
 version = "0.8.0"
 dependencies = [
  "aes-gcm",
+ "age",
  "anyhow",
  "argon2",
  "base64 0.22.1",
