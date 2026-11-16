@@ -1,7 +1,7 @@
 // Copyright © 2016-2026 The SENTIENT Authors
 
 //! The Restore flow on the Backup page, for this computer and for a server
-//! (docs/mockups/restore.html, lanes R, X and B): "Restore from…" with its
+//! (the restore mockup, lanes R, X and B): "Restore from…" with its
 //! three sources, then in the page Check, What, Where, Pre-check, Settings
 //! and Confirm, the run in the page and the progress strip, and its end:
 //! done, failed before the switch (resume), rolled back, or stopped by the

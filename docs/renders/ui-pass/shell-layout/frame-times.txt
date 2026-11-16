@@ -1,2 +1,0 @@
-x1 (Xvfb, llvmpipe, debug build): 100 animated frames; interval median 48.0 ms, p95 49.8, max 78.8
-x2 (Xvfb, llvmpipe, debug build): 86 animated frames; interval median 48.0 ms, p95 80.3, max 96.5
