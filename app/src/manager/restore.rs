@@ -88,6 +88,14 @@ impl Target {
         }
     }
 
+    /// Move data to another disk on the same instance (X3, B2).
+    fn open_move_data(&self, window: &mut Window, cx: &mut App) {
+        match self {
+            Target::Here(_) => crate::manager::movedata::open(crate::movedata::Target::Local, "This computer", None, window, cx),
+            Target::Server(i) => crate::manager::movedata::open(crate::movedata::Target::Remote(i.clone()), i.name.clone(), None, window, cx),
+        }
+    }
+
     fn chooser_target(&self) -> crate::manager::folder_chooser::Target {
         match self {
             Target::Here(_) => crate::manager::folder_chooser::Target::Local,
@@ -1263,8 +1271,7 @@ impl RestoreFlow {
             let mut acts2: Vec<AnyElement> = vec![
                 h_flex().gap_1().items_center().child(ui::button("rs-free-files").outline().icon(IconName::Folder).label("Free space in Files").on_click(cx.listener(|f, _, _, cx| f.leave(Some("files"), cx)))).child(ui::info("rs-free-files-i".into(), format!("Opens Files on {here} at the largest folders on {}.", d.disk).into())).into_any_element(),
                 ui::button("rs-move-data").outline().icon(icon("move-disk")).label("Move data to another disk…").on_click(cx.listener(|f, _, window, cx| {
-                    // TODO(worker A): wire the M lane's move-data flow here.
-                    crate::manager::movedata::open(f.target.chooser_target(), window, cx);
+                    f.target.open_move_data(window, cx);
                 })).into_any_element(),
             ];
             if safety_here {
@@ -1818,8 +1825,7 @@ impl RestoreFlow {
                 c = c.child(ui::button_row(vec![
                     ui::button("rs-free-files").outline().icon(IconName::Folder).label("Free space in Files").on_click(cx.listener(|f, _, _, cx| f.leave(Some("files"), cx))).into_any_element(),
                     ui::button("rs-move-data").outline().icon(icon("move-disk")).label("Move data to another disk…").on_click(cx.listener(|f, _, window, cx| {
-                        // TODO(worker A): wire the M lane's move-data flow here.
-                        crate::manager::movedata::open(f.target.chooser_target(), window, cx);
+                            f.target.open_move_data(window, cx);
                     })).into_any_element(),
                     ui::button("rs-again").outline().label("Start again").on_click(cx.listener(|f, _, _, cx| f.start_run(false, cx))).into_any_element(),
                     back_btn("rs-back-page", "Back", cx),

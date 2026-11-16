@@ -654,3 +654,97 @@ mod tests {
         assert!(s.find(r#"rm -f "$D/stop.request" "$D/stop.done""#).unwrap() < wait);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Moving ClickHouse's WSL disk (Move data to another disk)
+// ---------------------------------------------------------------------------
+
+/// Where the distro's disk (ext4.vhdx) was moved to, when it was; else the
+/// folder Setup imported it into (`<work dir>\distro`).
+#[cfg(windows)]
+pub fn disk_dir() -> PathBuf {
+    std::fs::read_to_string(work_dir().join("disk-location.txt"))
+        .ok()
+        .map(|s| PathBuf::from(s.trim()))
+        .filter(|p| p.join("ext4.vhdx").exists())
+        .unwrap_or_else(|| work_dir().join("distro"))
+}
+
+/// The request [`move_disk_here`] reads (the agent's command line carries no
+/// paths: Windows' quoting would mangle them).
+#[cfg(windows)]
+pub fn move_request_path() -> PathBuf {
+    work_dir().join("move-disk.txt")
+}
+
+#[cfg(windows)]
+fn wsl_out(args: &[&str]) -> Result<String, String> {
+    match sys::output("wsl.exe", args) {
+        Some((true, out, _)) => Ok(sys::decode(&out)),
+        Some((false, out, err)) => Err(format!("{} {}", sys::decode(&err).trim(), sys::decode(&out).trim()).trim().to_string()),
+        None => Err("could not run wsl.exe".into()),
+    }
+}
+
+#[cfg(windows)]
+fn sha256_of(path: &Path) -> Result<String, String> {
+    powershell(&format!("(Get-FileHash -Algorithm SHA256 -LiteralPath '{}').Hash", path.display().to_string().replace('\'', "''")), &[]).map(|s| s.trim().to_string())
+}
+
+/// Run as the account (agent job `move-disk`): move the distro's disk to the
+/// folder in [`move_request_path`] with `wsl --manage sentient --move`, or by
+/// export and import where WSL is older than 2.0, and check the file is the
+/// same (SHA-256 before and after). The distro is shut down first; the
+/// caller stopped ClickHouse cleanly before.
+#[cfg(windows)]
+pub fn move_disk_here(sink: &ProgressFn) -> Result<(), String> {
+    let dest = std::fs::read_to_string(move_request_path()).map_err(|e| format!("read the move request: {e}"))?;
+    let _ = std::fs::remove_file(move_request_path());
+    let dest = PathBuf::from(dest.trim());
+    let src_dir = disk_dir();
+    let src = src_dir.join("ext4.vhdx");
+    if !src.exists() {
+        return Err(format!("ClickHouse's disk is not at {}", src.display()));
+    }
+    std::fs::create_dir_all(&dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
+    sink(Progress::Step { name: "Shutting down the WSL distribution sentient".into() });
+    let _ = wsl_out(&["--terminate", crate::distro::DISTRO]);
+    sink(Progress::Step { name: format!("Copying ext4.vhdx to {} and comparing SHA-256", dest.display()) });
+    let before = sha256_of(&src)?;
+    sink(Progress::Log { line: format!("SHA-256 before: {before}") });
+    sink(Progress::Step { name: "Pointing the distribution at the new file".into() });
+    let d = dest.display().to_string();
+    match wsl_out(&["--manage", crate::distro::DISTRO, "--move", &d]) {
+        Ok(_) => {
+            let after = sha256_of(&dest.join("ext4.vhdx"))?;
+            sink(Progress::Log { line: format!("SHA-256 after: {after}") });
+            if after != before {
+                let back = src_dir.display().to_string();
+                let _ = wsl_out(&["--manage", crate::distro::DISTRO, "--move", &back]);
+                return Err("The moved disk did not match the original (SHA-256); it was moved back.".into());
+            }
+        }
+        Err(e) if e.contains("--manage") || e.to_lowercase().contains("invalid command") || e.to_lowercase().contains("unknown") => {
+            // WSL before 2.0: export, unregister, import at the new place;
+            // the old place again if the import fails.
+            sink(Progress::Log { line: "This WSL has no --manage --move: exporting and importing instead.".into() });
+            let tar = dest.join("sentient-move.tar");
+            let t = tar.display().to_string();
+            wsl_out(&["--export", crate::distro::DISTRO, &t])?;
+            wsl_out(&["--unregister", crate::distro::DISTRO])?;
+            if let Err(e) = wsl_out(&["--import", crate::distro::DISTRO, &d, &t, "--version", "2"]) {
+                let back = src_dir.display().to_string();
+                let again = wsl_out(&["--import", crate::distro::DISTRO, &back, &t, "--version", "2"]);
+                return Err(match again {
+                    Ok(_) => format!("The import at {d} failed ({e}); the distribution is back at {back}."),
+                    Err(e2) => format!("The import at {d} failed ({e}), and at {back} too ({e2}). The exported disk is kept as {t}."),
+                });
+            }
+            let _ = std::fs::remove_file(&tar);
+        }
+        Err(e) => return Err(format!("wsl --manage --move failed: {e}")),
+    }
+    std::fs::write(work_dir().join("disk-location.txt"), dest.display().to_string()).map_err(|e| e.to_string())?;
+    sink(Progress::Done { message: format!("ClickHouse's disk is in {}", dest.display()) });
+    Ok(())
+}

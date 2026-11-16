@@ -246,6 +246,8 @@ pub struct RemotePages {
     restore_pending: Option<crate::manager::restore::Source>,
     /// The restores on this server (R1).
     restores: Read<Vec<crate::restore_flow::Entry>>,
+    /// Platform settings › Database: where each store keeps its data.
+    locations: Option<Entity<super::movedata::LocationsCard>>,
 }
 
 impl RemotePages {
@@ -341,6 +343,7 @@ impl RemotePages {
             restore_flow: None,
             restore_pending: None,
             restores: Read::Loading,
+            locations: None,
         };
         #[cfg(debug_assertions)]
         if let (Ok(frame), Kind::Backup) = (std::env::var("SPM_DEBUG_RESTORE"), kind) {
@@ -466,6 +469,9 @@ impl RemotePages {
     }
 
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
+        if let Some(l) = self.locations.clone() {
+            l.update(cx, |l, cx| l.reload(cx));
+        }
         let inst = self.inst.clone();
         self.fetch(cx, move || remote::ready(&inst), |p, r| p.ready = r);
         // Every page needs to know whether a SENTIENT is added there.
@@ -963,6 +969,12 @@ impl RemotePages {
                     None,
                     last,
                     crate::manager::status::DbActions {
+                        move_data: Some({
+                            let inst = self.inst.clone();
+                            std::rc::Rc::new(move |window: &mut Window, cx: &mut App| {
+                                crate::manager::movedata::open(crate::movedata::Target::Remote(inst.clone()), inst.name.clone(), None, window, cx)
+                            })
+                        }),
                         set_limit: None,
                         remove_kept: None,
                         back_up: Some(back_up),
@@ -1540,6 +1552,16 @@ impl RemotePages {
             Some(format!("{}\n\nVariable: {}. Built-in value: {default}.", st.help, st.env))
         };
         if self.settings_tab < 4 {
+            // Screens and the layout test: the Data locations card first,
+            // where it shows without scrolling.
+            if self.settings_tab == 1 && cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_MOVEDATA_FIRST").is_some() {
+                let inst = self.inst.clone();
+                let card = self.locations.get_or_insert_with(|| {
+                    let windows = crate::remote::is_windows(&inst);
+                    cx.new(|cx| super::movedata::LocationsCard::new(crate::movedata::Target::Remote(inst.clone()), inst.name.clone(), windows, cx))
+                });
+                col = col.child(card.clone());
+            }
             let mut sec = local::section(&theme, local::TAB_TITLES[self.settings_tab], None);
             for key in local::TAB_KEYS[self.settings_tab] {
                 let Some(st) = all.iter().find(|s| s.env == *key) else { continue };
@@ -1547,6 +1569,15 @@ impl RemotePages {
                 sec = sec.child(local::row(&theme, st.short_label(), help(st), changed.contains(&st.env), field));
             }
             col = col.child(sec);
+            // Database: where each store keeps its data, each with its Move….
+            if self.settings_tab == 1 && !(cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_MOVEDATA_FIRST").is_some()) {
+                let inst = self.inst.clone();
+                let card = self.locations.get_or_insert_with(|| {
+                    let windows = crate::remote::is_windows(&inst);
+                    cx.new(|cx| super::movedata::LocationsCard::new(crate::movedata::Target::Remote(inst.clone()), inst.name.clone(), windows, cx))
+                });
+                col = col.child(card.clone());
+            }
         } else {
             let mut table = ui::panel(&theme).gap_0().overflow_hidden().child(local::table_header(&theme));
             for st in &all {
@@ -1725,7 +1756,13 @@ impl RemotePages {
                             cx.notify();
                         })))
                     }),
-            ))
+            )
+            .child({
+                let inst = self.inst.clone();
+                crate::manager::migration::move_data_card(&theme, "r-", std::rc::Rc::new(move |window, cx| {
+                    crate::manager::movedata::open(crate::movedata::Target::Remote(inst.clone()), inst.name.clone(), None, window, cx)
+                }))
+            }))
     }
 
     /// The preflight on the server, then the confirmation.

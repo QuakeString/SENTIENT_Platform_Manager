@@ -55,6 +55,9 @@ mod modal;
 mod chooser;
 mod maintenance_ops;
 mod migration;
+mod movedata;
+#[cfg(windows)]
+mod movedata_win;
 mod mode;
 mod notes;
 mod online;

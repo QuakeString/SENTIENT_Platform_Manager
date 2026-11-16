@@ -82,6 +82,38 @@ pub(crate) fn type_cards(
     }))
 }
 
+/// The fourth card (mockup M2): moving the data to another disk, below the
+/// database types. Opens the same flow as Platform settings › Database.
+pub(crate) fn move_data_card(theme: &gpui_kit::component::Theme, id: &str, open: std::rc::Rc<dyn Fn(&mut Window, &mut App)>) -> Div {
+    v_flex()
+        .gap(px(10.))
+        .pt(px(10.))
+        .border_t_1()
+        .border_color(theme.border)
+        .child(div().text_sm().text_color(theme.muted_foreground).child("Data location"))
+        .child(
+            h_flex()
+                .gap(px(12.))
+                .items_start()
+                .px(px(16.))
+                .py(px(14.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.background)
+                .child(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::HardDrive).size(px(18.)).mt(px(2.)).text_color(theme.primary))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_0p5()
+                        .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child("Move data to another disk"))
+                        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("PostgreSQL, ClickHouse, SENTIENT files or backups, each to its own disk or folder.")),
+                )
+                .child(ui::button(SharedString::from(format!("{id}move-data"))).outline().label("Choose…").on_click(move |_, window, cx| open(window, cx))),
+        )
+}
+
 /// Under the button: why it is off, when it is.
 pub(crate) fn change_hint(theme: &gpui_kit::component::Theme, external: bool, picked: bool) -> Option<Div> {
     let text = if external {
@@ -472,7 +504,12 @@ impl Render for MigrationPage {
                                     })),
                             )
                         }),
-                ),
+                )
+                .when(crate::movedata::unsupported(record).is_none(), |p| {
+                    p.child(move_data_card(&theme, "", std::rc::Rc::new(|window, cx| {
+                        crate::manager::movedata::open(crate::movedata::Target::Local, "This computer", None, window, cx)
+                    })))
+                }),
         };
 
         let preflight_failed = match &self.preflight {

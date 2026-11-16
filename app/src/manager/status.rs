@@ -332,6 +332,9 @@ impl StatusPage {
             Some(crate::dbstatus::growth_per_day()),
             last_backup,
             DbActions {
+                move_data: (crate::movedata::unsupported(record).is_none()).then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
+                    std::rc::Rc::new(|window, cx| crate::manager::movedata::open(crate::movedata::Target::Local, "This computer", None, window, cx))
+                }),
                 set_limit: Some(go(Go::Settings)),
                 remove_kept: Some(go(Go::Migration)),
                 back_up: Some(go(Go::Backup)),
@@ -775,6 +778,8 @@ pub(crate) struct DbActions {
     pub back_up: Option<std::rc::Rc<dyn Fn(&mut App)>>,
     /// Open the list of ClickHouse parts set aside.
     pub broken_parts: Option<std::rc::Rc<dyn Fn(&mut App)>>,
+    /// Open "Move data to another disk" (the low-disk warning's first way out).
+    pub move_data: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>,
 }
 
 /// Reads the parts set aside; restores (true) or deletes them.
@@ -987,6 +992,15 @@ pub(crate) fn db_details(
                 .text_color(fg)
                 .text_sm()
                 .child(div().flex_1().min_w(px(240.)).child(format!("{drive} is almost full ({} free).{when}", bytes_label(f))))
+                .when_some(actions.move_data.clone(), |r, open| {
+                    r.child(
+                        crate::ui::button("low-move")
+                            .primary()
+                            .icon(gpui_kit::component::Icon::empty().path("icons/move-data.svg"))
+                            .label("Move data to another disk…")
+                            .on_click(move |_, window, cx| open(window, cx)),
+                    )
+                })
                 .when(db.hybrid && actions.set_limit.is_some(), |r| {
                     let set_limit = actions.set_limit.clone().unwrap();
                     r.child(crate::ui::button("low-limit").outline().label("Set a history limit…").on_click({ let f = set_limit.clone(); move |_, _, cx| f(cx) }))

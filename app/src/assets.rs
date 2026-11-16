@@ -34,6 +34,8 @@ const EXTRA: &[(&str, &[u8])] = &[
     ("icons/hard-drive-download.svg", include_bytes!("../assets/icons/hard-drive-download.svg")),
     ("icons/key-round.svg", include_bytes!("../assets/icons/key-round.svg")),
     ("icons/monitor.svg", include_bytes!("../assets/icons/monitor.svg")),
+    // Move data to another disk (crate::manager::movedata): a disk and an arrow.
+    ("icons/move-data.svg", include_bytes!("../assets/icons/move-data.svg")),
     ("icons/pencil.svg", include_bytes!("../assets/icons/pencil.svg")),
     ("icons/power.svg", include_bytes!("../assets/icons/power.svg")),
     ("icons/scroll-text.svg", include_bytes!("../assets/icons/scroll-text.svg")),

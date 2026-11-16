@@ -12,6 +12,8 @@
 //! - `unregister`: delete the distro and with it ClickHouse's data.
 //! - `harden`: add the crash-safe ClickHouse settings to an install made
 //!   before them, and restart ClickHouse.
+//! - `move-disk`: move the distro's disk to another folder (Move data to
+//!   another disk).
 
 #[cfg(windows)]
 pub fn run(job: &str) -> i32 {
@@ -61,6 +63,9 @@ pub fn run(job: &str) -> i32 {
                 Err(e) => Err(e),
             }
         }
+        // Move data to another disk: the distro's disk to the folder in
+        // the request file (crate::movedata_win).
+        "move-disk" => sentient_installer_core::clickhouse_wsl::move_disk_here(&sink),
         other => Err(format!("unknown agent job {other}")),
     };
     agent_finish(&result);

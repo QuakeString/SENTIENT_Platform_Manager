@@ -85,6 +85,12 @@ struct Fields {
     /// Seconds SENTIENT waits after Windows starts (with autostart).
     start_delay: Entity<InputState>,
     search: Entity<InputState>,
+    /// Docker: Advanced data locations (mockup M14). Empty: Docker's own
+    /// folder. One folder for every store, or one per store.
+    loc_one: Entity<InputState>,
+    loc_pg: Entity<InputState>,
+    loc_ch: Entity<InputState>,
+    loc_data: Entity<InputState>,
 }
 
 pub struct Installer {
@@ -108,6 +114,8 @@ pub struct Installer {
     /// One input per catalog setting, created with the wizard.
     settings: HashMap<String, Entity<InputState>>,
     autostart: bool,
+    /// Docker: a data place per store (else one folder for all).
+    loc_per_store: bool,
     desktop_sentient: bool,
     desktop_manager: bool,
     start_menu: bool,
@@ -164,6 +172,13 @@ fn input(window: &mut Window, cx: &mut Context<Installer>, value: &str) -> Entit
     cx.new(|cx| InputState::new(window, cx).default_value(value))
 }
 
+/// A data location field (empty: Docker's own folder); screens fill it
+/// from `debug_env`.
+fn loc_input(window: &mut Window, cx: &mut Context<Installer>, debug_env: &str) -> Entity<InputState> {
+    let value = if cfg!(debug_assertions) { std::env::var(debug_env).unwrap_or_default() } else { String::new() };
+    cx.new(|cx| InputState::new(window, cx).placeholder("Docker's own folder").default_value(value))
+}
+
 fn secret(window: &mut Window, cx: &mut Context<Installer>) -> Entity<InputState> {
     cx.new(|cx| InputState::new(window, cx).masked(true))
 }
@@ -204,6 +219,10 @@ impl Installer {
             search: cx.new(|cx| {
                 InputState::new(window, cx).placeholder("Search by name or variable, e.g. batch or RULE_ENGINE")
             }),
+            loc_one: loc_input(window, cx, "SPM_DEBUG_LOC_ONE"),
+            loc_pg: loc_input(window, cx, "SPM_DEBUG_LOC_PG"),
+            loc_ch: loc_input(window, cx, "SPM_DEBUG_LOC_CH"),
+            loc_data: loc_input(window, cx, "SPM_DEBUG_LOC_DATA"),
         };
         let groups = catalog::groups();
         let ram_mb = catalog::total_ram_mb();
@@ -256,6 +275,7 @@ impl Installer {
             recommended,
             settings,
             autostart: true,
+            loc_per_store: false,
             desktop_sentient: true,
             desktop_manager: true,
             start_menu: true,
@@ -319,6 +339,7 @@ impl Installer {
         if let Some(step) = std::env::var("SPM_WIZARD_STEP").ok().and_then(|s| s.parse::<usize>().ok()) {
             this.step = step.min(FINISH);
             this.flavor = Some(Flavor::Timescaledb);
+            this.loc_per_store = std::env::var_os("SPM_DEBUG_LOC_PG").is_some();
         }
         this
     }
@@ -453,7 +474,7 @@ impl Installer {
                 }
                 Some(_) => Ok(()),
             },
-            2 if self.engine == Engine::Docker => Ok(()),
+            2 if self.engine == Engine::Docker => self.locations(cx).map(|_| ()),
             2 if self.bundle.is_none() && !self.can_download() => Err(
                 "A native install needs SENTIENT's program files: connect to the internet (they are downloaded), or unzip the SENTIENT package and run SENTIENT-Setup from that folder, or choose Docker, which pulls the image.".into(),
             ),
@@ -673,6 +694,34 @@ impl Installer {
             .collect()
     }
 
+    /// Docker: the folders the data volumes are bound to (none: Docker's
+    /// own folder).
+    fn locations(&self, cx: &App) -> Result<sentient_installer_core::distro::Locations, String> {
+        let f = &self.fields;
+        let full = |s: String, what: &str| -> Result<Option<String>, String> {
+            let t = s.trim().trim_end_matches('/').to_string();
+            if t.is_empty() {
+                Ok(None)
+            } else if !t.starts_with('/') || t.contains(['\'', '"', ',']) {
+                Err(format!("{what}: give a full folder path such as /mnt/disk-a/sentient, without quotes or commas."))
+            } else {
+                Ok(Some(t))
+            }
+        };
+        if self.loc_per_store {
+            Ok(sentient_installer_core::distro::Locations {
+                pg: full(self.value(&f.loc_pg, cx), "PostgreSQL")?,
+                ch: full(self.value(&f.loc_ch, cx), "ClickHouse")?,
+                data: full(self.value(&f.loc_data, cx), "SENTIENT files")?,
+            })
+        } else {
+            Ok(match full(self.value(&f.loc_one, cx), "Data folder")? {
+                Some(dir) => sentient_installer_core::distro::Locations::under(&dir, true),
+                None => Default::default(),
+            })
+        }
+    }
+
     fn plan(&self, cx: &App) -> Result<plan::InstallPlan, String> {
         let f = &self.fields;
         let mut stack = DeployConfig {
@@ -701,6 +750,12 @@ impl Installer {
             }
         }
         stack.tuning.instance_id = format!("sentient-{}", native::generate_secret().get(..8).unwrap_or("01"));
+        if self.engine == Engine::Docker {
+            stack.locations = self.locations(cx)?;
+            if !stack.flavor.uses_clickhouse() {
+                stack.locations.ch = None;
+            }
+        }
         Ok(plan::InstallPlan {
             engine: self.engine,
             sentient_version: match (&self.bundle, &self.online) {

@@ -37,7 +37,7 @@ use sentient_installer_core::native::safe_update::RollbackPoint;
 
 use crate::installation::InstallationRecord;
 
-const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | \
+const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | movedata-json | movedata-check <store> <folder> | movedata-estimate <store=folder,…> | move-data <store=folder,…> | move-data-remove-old <folder> | move-data-cancel | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
 use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
@@ -331,6 +331,11 @@ pub fn run(args: &[String]) -> i32 {
             }
         };
     }
+    // Moving data to another disk (crate::movedata): where each store is
+    // and the disks, a folder checked, the downtime; one JSON line each.
+    if let Some(code) = crate::movedata::data_job(job, args) {
+        return code;
+    }
     // What a remote instance's card shows (crate::remote::status): one JSON line.
     if job == "status-json" {
         println!("{}", serde_json::to_string(&status_json(InstallationRecord::load().as_ref())).unwrap_or_default());
@@ -572,6 +577,14 @@ pub fn run(args: &[String]) -> i32 {
             None => Err(USAGE.into()),
         },
         "resume-migration" => crate::migration::resume(record, sink.clone()),
+        "move-data" => match args.get(1) {
+            Some(a) => crate::movedata::parse_moves(a).and_then(|m| crate::movedata::local_run(&m, sink.clone())),
+            None => Err(USAGE.into()),
+        },
+        "move-data-remove-old" => match args.get(1) {
+            Some(path) => crate::movedata::local_remove_old(path, sink.clone()),
+            None => Err(USAGE.into()),
+        },
         "update" => {
             let accept = args.iter().any(|a| a == "--accept-breaking");
             // --version <v>: that published release (a package downloaded and
