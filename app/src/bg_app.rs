@@ -459,7 +459,7 @@ mod tests {
     }
 }
 
-fn desktop_notification(summary: &str, body: &str) {
+pub(crate) fn desktop_notification(summary: &str, body: &str) {
     #[cfg(target_os = "linux")]
     {
         let _ = notify_rust::Notification::new().appname("SENTIENT Platform Manager").icon("sentient-platform-manager").summary(summary).body(body).show();

@@ -1227,7 +1227,7 @@ pub fn control_stack(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Resu
             ));
         }
     }
-    sink(Progress::Done { message: format!("{action}: done.") });
+    sink(Progress::Done { message: crate::stack_order::done_message(action, &[]) });
     Ok(())
 }
 

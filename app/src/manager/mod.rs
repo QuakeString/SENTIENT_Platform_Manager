@@ -1951,7 +1951,7 @@ impl Manager {
                     "stop" => "stop",
                     _ => "restart",
                 };
-                cx.defer(move |cx| page.update(cx, |c, cx| c.run(verb, false, cx)));
+                cx.defer(move |cx| page.update(cx, |c, cx| c.run_from_tray(verb, cx)));
             }
         }
     }

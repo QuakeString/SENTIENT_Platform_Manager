@@ -113,6 +113,28 @@ pub fn docker_commands(action: &str, external: bool) -> Result<Vec<&'static str>
     }
 }
 
+/// What a finished action says: the state, and why PostgreSQL stays
+/// running when it does (the tray's notification shows the same).
+pub fn done_message(action: &str, steps: &[Step]) -> String {
+    let state = match action {
+        "stop" => "SENTIENT is stopped.",
+        "start" => "SENTIENT is running.",
+        _ => "SENTIENT was restarted.",
+    };
+    match steps.iter().find_map(|s| match s {
+        Step::KeepPostgres(why) => Some(why),
+        _ => None,
+    }) {
+        Some(why) => format!("{state} {why}"),
+        None => state.to_string(),
+    }
+}
+
+/// The Done message's PostgreSQL part, if any ("PostgreSQL stays running: …").
+pub fn kept_postgres_note(message: &str) -> Option<&str> {
+    message.find("PostgreSQL stays running").map(|i| &message[i..])
+}
+
 /// Wait up to `secs` for `ready`, once a second.
 pub fn wait_until(secs: u32, mut ready: impl FnMut() -> bool) -> bool {
     for _ in 0..secs {
@@ -179,6 +201,17 @@ mod tests {
         // A restart keeps it as well, and still starts it (a no-op when up).
         let r = plan("restart", false, Some("x".into())).unwrap();
         assert!(!r.contains(&Stop(Postgres)) && r.contains(&Start(Postgres)));
+    }
+
+    #[test]
+    fn the_done_message_says_when_postgres_stays() {
+        let kept = plan("stop", true, keep_postgres(&Ok(vec!["erp".into()]), false)).unwrap();
+        let m = done_message("stop", &kept);
+        assert_eq!(m, "SENTIENT is stopped. PostgreSQL stays running: it also holds erp.");
+        assert_eq!(kept_postgres_note(&m), Some("PostgreSQL stays running: it also holds erp."));
+        let m = done_message("restart", &plan("restart", false, None).unwrap());
+        assert_eq!(m, "SENTIENT was restarted.");
+        assert_eq!(kept_postgres_note(&m), None);
     }
 
     #[test]

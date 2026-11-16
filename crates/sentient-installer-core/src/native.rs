@@ -1638,7 +1638,7 @@ pub fn control_stack(sink: ProgressFn, cfg: &NativeConfig, action: &str, stop_sh
         for s in &windows_steps(&steps) {
             run_windows_step(&sink, cfg, s)?;
         }
-        sink(Progress::Done { message: format!("{action}: done.") });
+        sink(Progress::Done { message: crate::stack_order::done_message(action, &steps) });
         Ok(())
     }
 }

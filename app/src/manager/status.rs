@@ -38,6 +38,9 @@ pub struct StatusPage {
     svc_busy: Option<String>,
     /// SENTIENT's start, stop or restart while it runs (the pill says so).
     stack_action: Option<&'static str>,
+    /// That action came from the tray (its result is also a desktop
+    /// notification).
+    from_tray: bool,
     /// SENTIENT's version as shown ("4.4.0.2 (image tag latest)").
     shown_version: Option<String>,
     /// The gateway on this computer (None while looking).
@@ -171,8 +174,21 @@ impl StatusPage {
         let _job_observe = cx.observe(&job, |page: &mut Self, job, cx| {
             // An action ended: read the services again at once.
             if !job.read(cx).is_running() && matches!(job.read(cx).state(), JobState::Done(_) | JobState::Failed(_)) {
+                // A stop or restart that kept a shared PostgreSQL running
+                // says so in the bell, and from the tray as a notification.
+                if let (Some(_), JobState::Done(m)) = (page.stack_action, job.read(cx).state()) {
+                    if let Some(note) = sentient_installer_core::stack_order::kept_postgres_note(m) {
+                        let state = m[..m.len() - note.len()].trim().trim_end_matches('.').to_string();
+                        let note = note.to_string();
+                        if page.from_tray {
+                            crate::bg_app::desktop_notification(&format!("This computer: {state}"), &note);
+                        }
+                        crate::manager::strip::push_condition(None, false, "PostgreSQL stays running".into(), note, cx);
+                    }
+                }
                 page.svc_busy = None;
                 page.stack_action = None;
+                page.from_tray = false;
                 page.refresh(cx);
             }
             cx.notify();
@@ -192,6 +208,7 @@ impl StatusPage {
             job,
             svc_busy: None,
             stack_action: None,
+            from_tray: false,
             shown_version: None,
             gateway: None,
             updates,
@@ -259,6 +276,13 @@ impl StatusPage {
             job.start(move |sink| platform.control_stack(sink, action, stop_shared_pg), cx)
         });
         cx.notify();
+    }
+
+    /// The tray's Start, Stop or Restart: no dialog, so a shared PostgreSQL
+    /// stays running (the notification says so).
+    pub(crate) fn run_from_tray(&mut self, action: &'static str, cx: &mut Context<Self>) {
+        self.run(action, false, cx);
+        self.from_tray = true;
     }
 
     /// One service's own start, stop or restart.

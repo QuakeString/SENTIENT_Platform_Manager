@@ -1113,6 +1113,9 @@ pub fn control_stack(sink: ProgressFn, cfg: &NativeConfig, action: &str, stop_sh
         None
     };
     let steps = order::plan(action, cfg.flavor.uses_clickhouse(), keep)?;
+    if action != "stop" && !unit_exists(APP_UNIT) {
+        return Err(format!("{APP_UNIT}.service is not installed: Repair writes it again."));
+    }
     step(&sink, match action {
         "start" => "Starting SENTIENT and its databases",
         "stop" => "Stopping SENTIENT and its databases",
@@ -1129,7 +1132,7 @@ pub fn control_stack(sink: ProgressFn, cfg: &NativeConfig, action: &str, stop_sh
             ));
         }
     }
-    sink(Progress::Done { message: format!("{action}: done.") });
+    sink(Progress::Done { message: order::done_message(action, &steps) });
     Ok(())
 }
 
