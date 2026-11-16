@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use gpui_kit::component::{ActiveTheme, Disableable as _, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Disableable as _, button::ButtonVariants as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -544,7 +544,7 @@ fn figure(theme: &gpui_kit::component::Theme, name: &'static str, big: String, u
                 .child(div().text_sm().text_color(theme.muted_foreground).whitespace_nowrap().child(unit)),
         )
         .child(
-            div().mt(px(7.)).h(px(5.)).rounded_full().bg(theme.secondary).when_some(bar, |d, (f, high)| d.child(div().h_full().rounded_full().w(relative(f.clamp(0., 1.))).bg(if high { warn } else { theme.primary }))).when(bar.is_none(), |d| d.invisible()),
+            div().mt(px(7.)).child(ui::segment_bar(theme.secondary, 5., &bar.map(|(f, high)| vec![(if high { warn } else { theme.primary }, f.clamp(0., 1.))]).unwrap_or_default())).when(bar.is_none(), |d| d.invisible()),
         )
         .child(div().mt(px(5.)).text_size(px(12.)).text_color(theme.muted_foreground).overflow_hidden().whitespace_nowrap().text_ellipsis().child(line))
 }
@@ -555,7 +555,7 @@ const MEM_W: f32 = 124.;
 const RESTART_W: f32 = 58.;
 
 fn mini_bar(theme: &gpui_kit::component::Theme, f: f32) -> Div {
-    div().w(px(56.)).flex_shrink_0().h(px(5.)).rounded_full().bg(theme.secondary).child(div().h_full().rounded_full().w(relative(f.clamp(0., 1.))).bg(theme.primary))
+    div().w(px(56.)).flex_shrink_0().child(ui::segment_bar(theme.secondary, 5., &[(theme.primary, f.clamp(0., 1.))]))
 }
 
 impl Render for StatsPage {
@@ -573,10 +573,14 @@ impl Render for StatsPage {
         for r in Range::ALL {
             seg = seg.child(ui::seg_item(&theme, SharedString::from(format!("range-{}", r.label())), r.label(), self.range == r).on_click(cx.listener(move |p, _, _, cx| p.pick(r, cx))));
         }
-        let refresh = crate::ui::button("stats-refresh").ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(|p, _, _, cx| {
-            p.start(cx);
-            p.read_day(cx);
-        }));
+        let me = cx.entity().downgrade();
+        let refresh = crate::ui::refresh_button("stats-refresh", false, window, move |_, cx| {
+            me.update(cx, |p, cx| {
+                p.start(cx);
+                p.read_day(cx);
+            })
+            .ok();
+        });
         // Title only; the range and Read again at its right, under it when narrow.
         let header = h_flex()
             .flex_wrap()

@@ -68,6 +68,9 @@ pub struct InstancesPage {
     /// Read again once the refresh under way ends.
     refresh_again: HashSet<String>,
     refreshing: HashSet<String>,
+    /// The tile grid's own width as laid out (the last frame's), so the
+    /// tiles fill exactly the width the title row has.
+    grid_w: std::rc::Rc<std::cell::Cell<f32>>,
     form: Option<Form>,
     job: Entity<Job>,
     /// (instance id, what runs) of the job shown.
@@ -114,6 +117,7 @@ impl InstancesPage {
             list: remote::load(),
             statuses: HashMap::new(),
             refreshing: HashSet::new(),
+            grid_w: Default::default(),
             refresh_again: HashSet::new(),
             form: None,
             job,
@@ -1147,6 +1151,24 @@ impl Render for InstancesPage {
         }
         let parts: Vec<String> = named.iter().filter(|(_, c)| *c > 0).map(|(l, c)| format!("{c} {l}")).collect();
         let n = all.len();
+        // The title row's width, measured: the grid takes exactly it, so the
+        // button's right edge and the last tile's are one.
+        let grid_w = self.grid_w.clone();
+        let probe = canvas(
+            move |bounds, window, _| {
+                let w = f32::from(bounds.size.width);
+                if (grid_w.get() - w).abs() > 0.5 {
+                    grid_w.set(w);
+                    window.refresh();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .h(px(1.));
         let summary = format!("Every SENTIENT this program looks after. {n} instance{}: {}.", if n == 1 { "" } else { "s" }, parts.join(", "));
         v_flex()
             .id("page")
@@ -1159,6 +1181,8 @@ impl Render for InstancesPage {
             .bg(theme.muted)
             .child(
                 h_flex()
+                    .relative()
+                    .child(probe)
                     .gap_3()
                     .items_center()
                     .child(v_flex().flex_1().min_w_0().gap_0p5().child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child("Instances")).child(div().text_sm().text_color(theme.muted_foreground).child(summary)))
@@ -1167,22 +1191,37 @@ impl Render for InstancesPage {
                     }),
             )
             .child({
-                // The cards fill the page: as many columns as fit (one on
-                // narrow windows), all the same width.
+                // The cards fill the page: as many columns as fit at
+                // CARD_MIN_W (one on a narrow window), stretched equally so a
+                // row spans the full width with the same 12 px gaps. The width
+                // is the grid's own, measured, so its right edge is the title
+                // row's (an estimate from the window is used for the first
+                // frame only).
                 let width = f32::from(window.viewport_size().width);
                 let rail = width < crate::manager::RAIL_BELOW;
-                let inner = width - if rail { 64. } else { crate::manager::NAV_W } - 32.;
+                let measured = self.grid_w.get();
+                let inner = if measured > 0. { measured } else { width - if rail { 64. } else { crate::manager::NAV_W } - 32. };
                 let cols = ((inner + 12.) / (CARD_MIN_W + 12.)).floor().max(1.);
-                // Tiles keep their size (at most CARD_MAX_W) and the row
-                // starts at the left: two instances are two tiles, not halves.
-                let card_w = ((inner - 12. * (cols - 1.)) / cols).floor().min(CARD_MAX_W);
-                // One tile per row: the column sits in the middle.
-                h_flex()
-                    .when(cols <= 1., |r| r.justify_center())
-                    .flex_wrap()
-                    .gap(px(12.))
-                    .items_stretch()
-                    .children(std::iter::once(local).chain(cards).map(|c| v_flex().w(px(card_w)).flex_shrink_0().child(c)))
+                // Explicit rows of `cols` tiles sharing the row equally (no
+                // wrapping, so no rounding can push a tile to the next row); a
+                // short last row keeps the same tile width with empty slots.
+                let cols = cols as usize;
+                let mut tiles: Vec<AnyElement> = std::iter::once(local).chain(cards).collect();
+                let mut rows = v_flex().gap(px(12.));
+                while !tiles.is_empty() {
+                    let rest = tiles.split_off(cols.min(tiles.len()));
+                    let n = tiles.len();
+                    let mut row = h_flex().w_full().gap(px(12.)).items_stretch();
+                    for t in tiles {
+                        row = row.child(v_flex().flex_1().flex_basis(px(0.)).min_w_0().child(t));
+                    }
+                    for _ in n..cols {
+                        row = row.child(div().flex_1().flex_basis(px(0.)).min_w_0());
+                    }
+                    rows = rows.child(row);
+                    tiles = rest;
+                }
+                rows
             })
     }
 }
@@ -1190,8 +1229,7 @@ impl Render for InstancesPage {
 /// The key for this computer's status.
 const LOCAL: &str = "@local";
 /// The narrowest a card gets before the grid drops a column.
-const CARD_MIN_W: f32 = 250.;
-const CARD_MAX_W: f32 = 300.;
+const CARD_MIN_W: f32 = 340.;
 /// "Open" and "Open now" share one width, so Edit and Remove stay put.
 const OPEN_W: f32 = 78.;
 

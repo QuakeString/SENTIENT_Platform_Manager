@@ -82,6 +82,8 @@ pub struct Strip {
     label: Option<SharedString>,
     finished_at: Option<Instant>,
     opened_for_failure: bool,
+    /// Small saves under way (`quiet`): the line runs, nothing else.
+    quiet: usize,
     _observe: Option<Subscription>,
     _hide: Option<Task<()>>,
 }
@@ -103,9 +105,20 @@ pub fn install(cx: &mut App) -> Entity<Strip> {
     if let Some(s) = cx.try_global::<StripSlot>() {
         return s.0.clone();
     }
-    let strip = cx.new(|_| Strip { events: load_events(), retries: Default::default(), light_bar: std::cell::Cell::new(false), window_w: std::cell::Cell::new(1100.), slot_w: std::cell::Cell::new(400.), job: None, label: None, finished_at: None, opened_for_failure: false, _observe: None, _hide: None });
+    let strip = cx.new(|_| Strip { events: load_events(), retries: Default::default(), light_bar: std::cell::Cell::new(false), window_w: std::cell::Cell::new(1100.), slot_w: std::cell::Cell::new(400.), job: None, label: None, finished_at: None, opened_for_failure: false, quiet: 0, _observe: None, _hide: None });
     cx.set_global(StripSlot(strip.clone()));
     strip
+}
+
+/// A small save (a setting, a delete) started (`true`) or ended: the thin
+/// line under the top bar runs meanwhile, with no chip and nothing in the
+/// bell; its page says Saved or what went wrong.
+pub fn quiet(started: bool, cx: &mut App) {
+    let strip = install(cx);
+    strip.update(cx, |s, cx| {
+        s.quiet = if started { s.quiet + 1 } else { s.quiet.saturating_sub(1) };
+        cx.notify();
+    });
 }
 
 /// A job is running (closing the window then minimizes it instead).
@@ -293,8 +306,30 @@ impl Strip {
     /// The progress line under the top bar: (fraction or None while it
     /// cannot say, its colour), or nothing when no job is shown.
     pub fn line(&self, cx: &App) -> Option<AnyElement> {
-        let job = self.job.as_ref()?.read(cx);
         let theme = cx.theme();
+        if self.job.is_none() && self.quiet > 0 {
+            let accent = theme.primary;
+            return Some(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(3.))
+                    .bg(accent.opacity(0.25))
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .h_full()
+                            .w(relative(0.25))
+                            .bg(accent)
+                            .with_animation("strip-quiet", Animation::new(Duration::from_millis(1400)).repeat(), |d, t| d.left(relative(-0.25 + t * 1.25))),
+                    )
+                    .into_any_element(),
+            );
+        }
+        let job = self.job.as_ref()?.read(cx);
         let (running, accent) = match job.state() {
             JobState::Running => (true, theme.primary),
             JobState::Done(_) => (false, theme.success_foreground),

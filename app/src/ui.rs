@@ -941,6 +941,103 @@ pub fn button(id: impl Into<gpui_kit::ElementId>) -> gpui_kit::component::button
     gpui_kit::component::button::Button::new(id).font_weight(FontWeight::MEDIUM)
 }
 
+/// A bar of coloured parts in a rounded track (the disk's PostgreSQL,
+/// ClickHouse, other files; the rest is the track). Both ends are rounded
+/// alike whatever the widths: the parts are drawn as layers that all start
+/// at the left end with the track's own curve (the widest underneath), each
+/// at least as wide as the bar is tall, so a sliver still shows the curve;
+/// the right end is rounded only when the parts fill the bar.
+pub fn segment_bar(track: Hsla, h: f32, parts: &[(Hsla, f32)]) -> Div {
+    let r = px(h / 2.);
+    let mut cum = 0.;
+    let mut layers: Vec<(Hsla, f32)> = Vec::new();
+    for (c, f) in parts {
+        if *f <= 0. {
+            continue;
+        }
+        cum = (cum + f).min(1.);
+        layers.push((*c, cum));
+    }
+    div()
+        .relative()
+        .w_full()
+        .h(px(h))
+        .rounded(r)
+        .bg(track)
+        .children(layers.into_iter().rev().map(move |(c, end)| {
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left_0()
+                .w(relative(end))
+                .min_w(px(h))
+                .rounded_l(r)
+                .when(end >= 0.999, |d| d.rounded_r(r))
+                .bg(c)
+        }))
+}
+
+/// One full turn of the Refresh icon.
+const REFRESH_TURN: f32 = 0.9;
+
+thread_local! {
+    /// Refresh buttons spinning now: when each started, and when it is to
+    /// stop (set once the reading ended: the end of that turn).
+    static SPINS: std::cell::RefCell<std::collections::HashMap<&'static str, (std::time::Instant, Option<std::time::Instant>)>> = Default::default();
+}
+
+/// A page's Refresh: a standard-size outline icon button (as tall as the
+/// other buttons), its icon at 16 px, "Refresh" as its tooltip. One for
+/// every page, so they all look and sit alike. On a click the icon turns at
+/// a steady speed while `busy` (at least one full turn, so a quick read
+/// still shows), then stops upright; it cannot be clicked meanwhile.
+pub fn refresh_button(id: &'static str, busy: bool, window: &mut Window, on: impl Fn(&mut Window, &mut App) + 'static) -> gpui_kit::component::button::Button {
+    use gpui_kit::component::Disableable as _;
+    let now = std::time::Instant::now();
+    let turn = std::time::Duration::from_secs_f32(REFRESH_TURN);
+    let start = SPINS.with(|s| {
+        let mut s = s.borrow_mut();
+        if busy {
+            let e = s.entry(id).or_insert((now, None));
+            e.1 = None;
+        }
+        let (start, stop) = s.get(id).copied()?;
+        let stop = match stop {
+            Some(t) => t,
+            None if busy => return Some(start),
+            None => {
+                // Busy no more: on at least one turn, to the end of this one.
+                let e = now.duration_since(start).as_secs_f32().max(REFRESH_TURN);
+                let t = start + turn.mul_f32((e / REFRESH_TURN).ceil());
+                s.insert(id, (start, Some(t)));
+                t
+            }
+        };
+        if now >= stop {
+            s.remove(id);
+            None
+        } else {
+            Some(start)
+        }
+    });
+    let angle = start.map(|t| (now.duration_since(t).as_secs_f32() % REFRESH_TURN) / REFRESH_TURN * std::f32::consts::TAU).unwrap_or(0.);
+    if start.is_some() {
+        window.request_animation_frame();
+    }
+    button(id)
+        .outline()
+        .icon(gpui_kit::component::Icon::new(gpui_kit::component::IconName::RefreshCw).rotate(radians(angle)))
+        .tooltip("Refresh")
+        .disabled(start.is_some())
+        .on_click(move |_, window, cx| {
+            SPINS.with(|s| {
+                s.borrow_mut().entry(id).or_insert((std::time::Instant::now(), None));
+            });
+            on(window, cx);
+        })
+}
+
 /// `/home/mz/…/sentient-platform-manager`: a long text cut in the middle to
 /// `max` characters, keeping both ends.
 pub fn middle_ellipsis(s: &str, max: usize) -> String {

@@ -163,7 +163,19 @@ fn store_check(file: &Path, rec: CheckRecord) {
 
 /// Check a backup now and remember the result. Blocking.
 pub fn check(file: &Path, passphrase: Option<&str>) -> Result<sentient_backup_core::restore::CheckReport, String> {
-    let report = sentient_backup_core::restore::check(file, passphrase).map_err(|e| e.to_string())?;
+    // A file that cannot even be read through is damaged too: recorded as
+    // a failed check (red in the list), not only as the job's error.
+    let report = match sentient_backup_core::restore::check(file, passphrase) {
+        Ok(r) => r,
+        // Without the passphrase an encrypted backup cannot be read either:
+        // that says nothing about the file.
+        Err(e) if e.to_string().to_lowercase().contains("passphrase") => return Err(e.to_string()),
+        Err(e) => {
+            let summary = format!("Damaged: the file cannot be read through ({e}).");
+            store_check(file, CheckRecord { at: chrono::Local::now().to_rfc3339(), ok: false, summary: summary.clone() });
+            return Err(summary);
+        }
+    };
     let n = report.members.len() + report.missing.len();
     let summary = if report.ok() {
         format!("All {n} parts match.")
