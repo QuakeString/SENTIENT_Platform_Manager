@@ -933,7 +933,8 @@ pub fn service_rows(
                         .flex_wrap()
                         .gap_x_2()
                         .gap_y_0p5()
-                        .child(piece(div()).child(SharedString::from(plain.unwrap_or(&name).to_string())))
+                        // The plain name wraps rather than being cut.
+                        .child(div().min_w_0().child(SharedString::from(plain.unwrap_or(&name).to_string())))
                         .when(plain.is_some(), |r| {
                             r.child(piece(div()).text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(name.clone()))
                         }),
