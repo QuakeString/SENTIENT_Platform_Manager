@@ -8,9 +8,14 @@
 //! key able to decrypt. A database restored on another installation is
 //! unreadable without the key it was made with, so:
 //!
-//! - a backup saves the key file beside the archive (`<backup>.sentient-key`);
+//! - a backup saves the key file beside the archive (`<backup>.sentient-key`):
+//!   encrypted with the backup's passphrase (age, as the backup itself) when
+//!   the backup is encrypted, else as the plain file (0600 on Unix), which
+//!   the backup page warns about;
 //! - a restore notes on the restored database which key file goes with it
-//!   (the one beside the backup), without needing administrator rights;
+//!   (the one beside the backup), without needing administrator rights; an
+//!   encrypted one is opened with the backup's passphrase and kept, plain
+//!   and private, in this program's own folder for the switch;
 //! - putting the restored data into service installs that key when the
 //!   running one cannot open the data: ahead of the running key, which stays
 //!   in the file so the data kept from before still opens.
@@ -30,6 +35,64 @@ use crate::installation::{Engine, InstallationRecord};
 /// The key file saved beside a backup: `<backup>.sentient-key`.
 pub fn beside(backup: &Path) -> PathBuf {
     backup.with_extension("sentient-key")
+}
+
+/// What an age file starts with (the binary format the backup uses too).
+const AGE_MAGIC: &[u8] = b"age-encryption.org/";
+
+/// The key file text sealed with `passphrase` (age, scrypt), as the backup.
+pub fn seal(text: &str, passphrase: &str) -> Result<Vec<u8>, String> {
+    use std::io::Write as _;
+    let enc = age::Encryptor::with_user_passphrase(age::secrecy::Secret::new(passphrase.to_owned()));
+    let mut out = Vec::new();
+    let mut w = enc.wrap_output(&mut out).map_err(|e| format!("encrypt the secrets key: {e}"))?;
+    w.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+    w.finish().map_err(|e| format!("encrypt the secrets key: {e}"))?;
+    Ok(out)
+}
+
+/// Whether a key file's bytes are the encrypted form.
+fn is_sealed(bytes: &[u8]) -> bool {
+    bytes.starts_with(AGE_MAGIC)
+}
+
+/// A key file's text from its bytes: the plain form as it is (older
+/// backups, unencrypted ones), the encrypted one opened with `passphrase`.
+pub fn open_key(bytes: &[u8], passphrase: Option<&str>) -> Result<String, String> {
+    if !is_sealed(bytes) {
+        return String::from_utf8(bytes.to_vec()).map_err(|_| "the secrets key file is not text".to_string());
+    }
+    let pw = passphrase.ok_or("the secrets key beside the backup is encrypted with the backup's passphrase; give the passphrase")?;
+    let d = match age::Decryptor::new(bytes).map_err(|e| format!("read the secrets key: {e}"))? {
+        age::Decryptor::Passphrase(d) => d,
+        _ => return Err("the secrets key file is not encrypted with a passphrase".into()),
+    };
+    let mut r = d.decrypt(&age::secrecy::Secret::new(pw.to_owned()), None).map_err(|_| "the backup's passphrase does not open its secrets key file".to_string())?;
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut r, &mut text).map_err(|e| format!("read the secrets key: {e}"))?;
+    Ok(text)
+}
+
+/// Write `bytes` to `path`, readable by this account only.
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = std::fs::remove_file(path);
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+        f.write_all(bytes)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, bytes)
+    }
+}
+
+/// Where the opened key of an encrypted backup waits for the switch of
+/// `target`: this program's own folder, not beside the backup.
+fn opened_key_path(target: &str) -> PathBuf {
+    crate::updates::prefs_dir().join("restore-keys").join(format!("{target}.sentient-key"))
 }
 
 const KEY_CHECK_SETTING: &str = "secretsKeyCheck";
@@ -181,25 +244,29 @@ fn check_value(pg: &ConnConfig) -> Result<Option<String>, String> {
     })?
 }
 
-/// After a backup: the key file beside it. Never fails the backup; says why
-/// when the key could not be saved.
-pub fn save_beside(record: &InstallationRecord, backup: &Path, sink: &ProgressFn) {
+/// After a backup: the key file beside it, encrypted with `passphrase` when
+/// the backup is. Never fails the backup; says why when the key could not
+/// be saved.
+pub fn save_beside(record: &InstallationRecord, backup: &Path, passphrase: Option<&str>, sink: &ProgressFn) {
     let log = |line: String| sink(Progress::Log { line });
     match read(record) {
         Ok(Some(text)) => {
             let path = beside(backup);
-            let written = std::fs::write(&path, text).map_err(|e| e.to_string());
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-            }
-            match written {
-                Ok(()) => log(format!(
-                    "SENTIENT's secrets key: {}. It opens the stored passwords in this backup; keep it with the backup, and apart from it when the backup leaves this computer.",
+            let bytes = match passphrase {
+                Some(pw) => seal(&text, pw),
+                None => Ok(text.into_bytes()),
+            };
+            let written = bytes.and_then(|b| write_private(&path, &b).map_err(|e| e.to_string()));
+            match (written, passphrase.is_some()) {
+                (Ok(()), true) => log(format!(
+                    "SENTIENT's secrets key: {}, encrypted with the backup's passphrase. It opens the stored passwords in this backup; keep it with the backup.",
                     path.display()
                 )),
-                Err(e) => log(format!("SENTIENT's secrets key was not saved ({e}).")),
+                (Ok(()), false) => log(format!(
+                    "SENTIENT's secrets key: {}, not encrypted (the backup has no passphrase). It opens the stored passwords in this backup; keep it with the backup, and apart from it when the backup leaves this computer.",
+                    path.display()
+                )),
+                (Err(e), _) => log(format!("SENTIENT's secrets key was not saved ({e}).")),
             }
         }
         // A SENTIENT older than its secrets store has no key; one with its key
@@ -212,11 +279,21 @@ pub fn save_beside(record: &InstallationRecord, backup: &Path, sink: &ProgressFn
 /// After a restore into `target` from `backup`: note the key file that goes
 /// with it, when there is one that opens it. `key` is a key file the operator
 /// chose; otherwise the one beside the backup.
-pub fn after_restore(live: &ConnConfig, target: &str, backup: &Path, key: Option<&Path>, sink: &ProgressFn) -> Result<(), String> {
+/// `passphrase`: the backup's, which also opens an encrypted key file.
+pub fn after_restore(live: &ConnConfig, target: &str, backup: &Path, key: Option<&Path>, passphrase: Option<&str>, sink: &ProgressFn) -> Result<(), String> {
     let restored = ConnConfig { dbname: target.to_string(), ..live.clone() };
     let Some(check) = check_value(&restored)? else { return Ok(()) };
     let key_path = key.map(Path::to_path_buf).unwrap_or_else(|| beside(backup));
-    let key_text = std::fs::read_to_string(&key_path).ok();
+    let bytes = std::fs::read(&key_path).ok();
+    let sealed = bytes.as_deref().is_some_and(is_sealed);
+    let key_text = match bytes.as_deref().map(|b| open_key(b, passphrase)) {
+        Some(Err(e)) => {
+            sink(Progress::Log { line: format!("{}: {e}. If the stored passwords do not open after the switch, use the key file the backup was made with.", key_path.display()) });
+            return Ok(());
+        }
+        Some(Ok(t)) => Some(t),
+        None => None,
+    };
     if !key_text.as_deref().is_some_and(|k| opens(k, &check)) {
         sink(Progress::Log {
             line: if key_text.is_some() {
@@ -227,6 +304,23 @@ pub fn after_restore(live: &ConnConfig, target: &str, backup: &Path, key: Option
         });
         return Ok(());
     }
+    // An encrypted key is opened once, here; the switch reads the plain
+    // copy from this program's own folder.
+    let key_path = if sealed {
+        let at = opened_key_path(target);
+        if let Some(dir) = at.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+        write_private(&at, key_text.as_deref().unwrap_or_default().as_bytes()).map_err(|e| format!("{}: {e}", at.display()))?;
+        at
+    } else {
+        key_path
+    };
     let path = std::fs::canonicalize(&key_path).unwrap_or(key_path);
     // Windows canonical paths carry the \\?\ prefix; the plain form reads the same.
     let path = PathBuf::from(path.display().to_string().trim_start_matches(r"\\?\"));
@@ -317,6 +411,37 @@ mod tests {
         assert!(!opens(&format!("{}\n", enc(&a)), &check));
         assert!(opens(&format!("{}\n{}\n", enc(&a), enc(&b)), &check));
         assert!(!opens("not base64\n", &check));
+    }
+
+    /// An encrypted backup's key: sealed with its passphrase, opened with it,
+    /// refused without it or with another; an older plain key file reads
+    /// as it is.
+    #[test]
+    fn the_key_beside_an_encrypted_backup_is_sealed_with_its_passphrase() {
+        let text = format!("{}\n", base64::engine::general_purpose::STANDARD.encode([3u8; 32]));
+        let sealed_file = seal(&text, "correct horse").unwrap();
+        assert!(is_sealed(&sealed_file));
+        assert!(!String::from_utf8_lossy(&sealed_file).contains(text.trim()));
+        assert_eq!(open_key(&sealed_file, Some("correct horse")).unwrap(), text);
+        assert!(open_key(&sealed_file, None).unwrap_err().contains("give the passphrase"));
+        assert!(open_key(&sealed_file, Some("wrong")).unwrap_err().contains("does not open"));
+        // The old plain form.
+        assert_eq!(open_key(text.as_bytes(), None).unwrap(), text);
+        assert_eq!(open_key(text.as_bytes(), Some("ignored")).unwrap(), text);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_key_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("spm-key-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("x.sentient-key");
+        std::fs::write(&p, "old").unwrap();
+        write_private(&p, b"new").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "new");
+        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -54,6 +54,8 @@ impl Target {
         match self {
             Target::Local => {
                 if cfg!(unix) && !crate::rootjob::is_root() {
+                    // Pressed by the user: it may ask for the password, once.
+                    let _action = sentient_installer_core::elevation::user_action();
                     crate::rootjob::run(&["dir-make-writable".to_string(), path.to_string()], &sentient_installer_core::progress::noop())?;
                 } else {
                     crate::backups::make_writable(Path::new(path), None)?;
@@ -68,7 +70,7 @@ impl Target {
 /// What the page knows when it opens the chooser.
 pub struct Opening {
     pub target: Target,
-    /// "INVENIA IIoT", or "this computer".
+    /// "Fabrikam IIoT", or "this computer".
     pub on: String,
     /// The backup folder in use.
     pub current: PathBuf,

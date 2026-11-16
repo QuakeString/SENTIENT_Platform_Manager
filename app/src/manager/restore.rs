@@ -1,7 +1,7 @@
 // Copyright © 2016-2026 The SENTIENT Authors
 
 //! The Restore flow on the Backup page, for this computer and for a server
-//! (docs/mockups/restore.html, lanes R, X and B): "Restore from…" with its
+//! (the restore mockup, lanes R, X and B): "Restore from…" with its
 //! three sources, then in the page Check, What, Where, Pre-check, Settings
 //! and Confirm, the run in the page and the progress strip, and its end:
 //! done, failed before the switch (resume), rolled back, or stopped by the
@@ -61,7 +61,7 @@ impl Target {
         }
     }
 
-    /// "INVENIA IIoT", or "this instance" for this computer.
+    /// "Fabrikam IIoT", or "this instance" for this computer.
     fn instance_name(&self) -> String {
         match self {
             Target::Here(_) => "this instance".into(),
@@ -2744,10 +2744,10 @@ pub(crate) mod canned {
 
     pub fn source(frame: &str) -> Source {
         if frame == "R10e" {
-            return Source { file: "/var/backups/sentient/sentient-2026-11-10_config.sentient-backup".into(), sub: "sentient-2026-11-10_config from INVENIA IIoT".into(), note: None };
+            return Source { file: "/var/backups/sentient/sentient-2026-11-10_config.sentient-backup".into(), sub: "sentient-2026-11-10_config from Fabrikam IIoT".into(), note: None };
         }
         if frame == "R13w" {
-            return Source { file: "C:\\ProgramData\\SENTIENT\\backups\\sentient-2026-11-14_1712.sentient-backup".into(), sub: "sentient-2026-11-14_1712 from INVENIA IIoT".into(), note: None };
+            return Source { file: "C:\\ProgramData\\SENTIENT\\backups\\sentient-2026-11-14_1712.sentient-backup".into(), sub: "sentient-2026-11-14_1712 from Fabrikam IIoT".into(), note: None };
         }
         Source { file: "/var/backups/sentient/sentient-2026-11-14_1712.sentient-backup".into(), sub: "sentient-2026-11-14_1712 from Plant B".into(), note: Some("copied from Plant B, server to server".into()) }
     }
@@ -2807,7 +2807,7 @@ pub(crate) mod canned {
                 sentient_version: "4.4.0.2".into(),
                 schema_version: Some(31),
                 database_type: "PostgreSQL + ClickHouse".into(),
-                host: Some(if windows { "PLANT-B" } else { "IIOT-01" }.into()),
+                host: Some(if windows { "PLANT-B" } else { "FAB-01" }.into()),
                 windows,
                 native: windows,
                 http_port: 8080,
@@ -2858,8 +2858,8 @@ pub(crate) mod canned {
         if !old {
             settings.extend([
                 row("port:mqtt", "MQTT port", "1883", "21883", SettingKind::Choice { backup_default: false }, "Tied to this machine and its firewall"),
-                row("public_url", "Public URL", "https://plantb.local", "https://iiot.invenia.in", SettingKind::Choice { backup_default: false }, "Devices and links reach this server by its own name"),
-                row("tls", "TLS certificate", "plantb.local, until 3 Mar 2027", "iiot.invenia.in, until 9 Jan 2027", SettingKind::Choice { backup_default: false }, "A certificate belongs to the host name"),
+                row("public_url", "Public URL", "https://plantb.local", "https://iiot.fabrikam.example", SettingKind::Choice { backup_default: false }, "Devices and links reach this server by its own name"),
+                row("tls", "TLS certificate", "plantb.local, until 3 Mar 2027", "iiot.fabrikam.example, until 9 Jan 2027", SettingKind::Choice { backup_default: false }, "A certificate belongs to the host name"),
                 row("REPORT_TZ", "Time zone (reports)", "Asia/Kolkata", "UTC", SettingKind::Choice { backup_default: true }, "A setting of the plant, not the machine"),
                 row("AUDIT_LOG_TTL_DAYS", "Telemetry retention", "365 days", "90 days", SettingKind::Choice { backup_default: true }, "Kept data would be cut to 90 days otherwise"),
                 row("licence", "Licence", "Active, bound to PLANT-B", "Active, bound to this server", SettingKind::Locked, "Bound to the hardware: not carried over"),
@@ -2933,7 +2933,7 @@ pub(crate) mod canned {
             _ => {
                 let steps = [rf::STEP_SAFETY, rf::STEP_CHECK, rf::STEP_RESTORE, rf::STEP_SCHEMA, rf::STEP_SWITCH];
                 let log = |l: &str| sink(Progress::Log { line: l.into() });
-                let mut entry = Entry { id: "20261116110200".into(), at: "2026-11-16T05:32:00Z".into(), backup: "sentient-2026-11-14_1712".into(), source: Some("copied from Plant B, server to server".into()), by: "mz on MZ-LAPTOP".into(), scope: "Everything".into(), safety: Some("sentient-before-restore-2026-11-16_1102".into()), manager: "0.8.0".into(), ..Default::default() };
+                let mut entry = Entry { id: "20261116110200".into(), at: "2026-11-16T05:32:00Z".into(), backup: "sentient-2026-11-14_1712".into(), source: Some("copied from Plant B, server to server".into()), by: "ops on OPS-LAPTOP".into(), scope: "Everything".into(), safety: Some("sentient-before-restore-2026-11-16_1102".into()), manager: "0.8.0".into(), ..Default::default() };
                 sink(Progress::Step { name: steps[0].into() });
                 log("/var/backups/sentient/sentient-before-restore-2026-11-16_1102.sentient-backup · 2.9 GB, checked");
                 sink(Progress::Step { name: steps[1].into() });
@@ -2953,12 +2953,12 @@ pub(crate) mod canned {
                         let stop = frame == "X3";
                         if stop {
                             entry.result = Result_::Stopped;
-                            entry.message = "Stopped: /mnt/disk-a (PostgreSQL) fell to 1.9 GB free, under the safe level of 2 GB. Something else is writing there (sentient-postgres WAL grew 12 GB). Nothing on INVENIA IIoT changed; the half-restored database was removed.".into();
+                            entry.message = "Stopped: /mnt/disk-a (PostgreSQL) fell to 1.9 GB free, under the safe level of 2 GB. Something else is writing there (sentient-postgres WAL grew 12 GB). Nothing on Fabrikam IIoT changed; the half-restored database was removed.".into();
                         } else {
                             log("pg_restore: error: could not extend file \"base/16384/2619\"");
                             log("pg_restore: error: No space left on device");
                             entry.result = Result_::Failed;
-                            entry.message = "pg_restore failed: could not extend file \"base/16384/2619\": No space left on device. Nothing on INVENIA IIoT changed: SENTIENT runs on its own data. The half-restored database was removed.".into();
+                            entry.message = "pg_restore failed: could not extend file \"base/16384/2619\": No space left on device. Nothing on Fabrikam IIoT changed: SENTIENT runs on its own data. The half-restored database was removed.".into();
                         }
                         entry.failed_step = Some(rf::STEP_RESTORE.into());
                         sink(rf::data_line("result", &entry));
@@ -3044,7 +3044,7 @@ pub(crate) mod canned {
                 at: "2026-11-14T12:10:00Z".into(),
                 backup: "sentient-2026-11-14_1712".into(),
                 source: Some("copied from Plant B, server to server".into()),
-                by: "mz on MZ-LAPTOP".into(),
+                by: "ops on OPS-LAPTOP".into(),
                 scope: "Everything".into(),
                 result: Result_::Done,
                 message: "SENTIENT answered on the restored data after 48 s.".into(),
@@ -3092,7 +3092,7 @@ pub(crate) mod canned {
             }
             _ => {
                 d.tab = 2;
-                d.src = d.instances.iter().find(|i| i.name != "INVENIA IIoT").cloned().or_else(|| d.instances.first().cloned());
+                d.src = d.instances.iter().find(|i| i.id != "tb3").cloned().or_else(|| d.instances.first().cloned());
                 match frame {
                     "R6l" => d.src_list = Read::Loading,
                     "B8" => d.src_list = Read::Failed("did not answer".into()),

@@ -160,6 +160,10 @@ fn exclude_data_args(sel: &Selection, ts_kv_partitions: &[String]) -> Vec<String
     for p in ts_kv_partitions {
         args.push(format!("--exclude-table-data={p}"));
     }
+    // The server's own licence state never travels (categories::NOT_CARRIED).
+    for m in crate::categories::NOT_CARRIED {
+        args.push(format!("--exclude-table-data={}", m.pg_pattern()));
+    }
     for c in catalog() {
         if c.kind == CategoryKind::Configuration
             || c.kind == CategoryKind::TelemetryHistorical
@@ -515,4 +519,21 @@ fn write_tar<W: std::io::Write>(w: W, manifest: &Manifest, members: &[StagedMemb
             .map_err(|e| Error::msg(e.to_string()))?;
     }
     tar.into_inner().map_err(|e| Error::msg(e.to_string()))
+}
+
+#[cfg(test)]
+mod exclude_tests {
+    use super::*;
+
+    /// A full backup still carries the licence rows, never the server's own
+    /// licence state; without the licensing category neither travels.
+    #[test]
+    fn the_licence_state_rows_never_go_in_a_backup() {
+        let full = exclude_data_args(&Selection::full(), &[]);
+        assert!(full.contains(&"--exclude-table-data=public.license_state".to_string()));
+        assert!(full.contains(&"--exclude-table-data=public.license_time_anchor".to_string()));
+        assert!(!full.iter().any(|a| a == "--exclude-table-data=public.license*"));
+        let without = exclude_data_args(&Selection::skipping(&["licensing".into()]), &[]);
+        assert!(without.contains(&"--exclude-table-data=public.license*".to_string()));
+    }
 }

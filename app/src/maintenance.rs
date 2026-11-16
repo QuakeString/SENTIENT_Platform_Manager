@@ -834,6 +834,14 @@ fn capitalise(s: &str) -> String {
 
 impl Render for Maintenance {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Windows 10: the app's caption and rounded corners (crate::win_frame).
+        let root = self.render_root(window, cx).into_any_element();
+        crate::win_frame::frame(crate::mode::AppMode::Maintenance.window_title(), root, window, cx)
+    }
+}
+
+impl Maintenance {
+    fn render_root(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The shared dialogs over the whole window (crate::modal).
         let layer = crate::modal::layer(window, cx, 0., 0.);
         let body = self.body(cx);

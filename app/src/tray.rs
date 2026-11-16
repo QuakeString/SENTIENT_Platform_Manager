@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn the_menu_follows_the_model() {
-        let mut m = Model { instances: vec![("bsmpl".into(), "BSMPL".into())], ..Default::default() };
+        let mut m = Model { instances: vec![("contoso".into(), "Contoso Edge".into())], ..Default::default() };
         let l = labels(&items(&m));
         assert_eq!(l.first().map(String::as_str), Some("Open SENTIENT Platform Manager"));
         assert_eq!(l.last().map(String::as_str), Some("Exit"));
@@ -413,11 +413,11 @@ mod tests {
         let Some(Item::Sub { items: notes, .. }) = it.iter().find(|i| matches!(i, Item::Sub { label, .. } if label.starts_with("Notifications"))) else { panic!() };
         assert!(matches!(&notes[0], Item::Action { cmd: Command::Action(a), error: true, label, .. } if a == "notification:7" && label == "This computer: Backing up failed"));
         // A condition comes first, marked, and counts.
-        m.conditions = vec![("bsmpl".into(), "BSMPL: SENTIENT stopped".into())];
+        m.conditions = vec![("contoso".into(), "Contoso Edge: SENTIENT stopped".into())];
         let it = items(&m);
         let Some(Item::Sub { label, items: notes }) = it.iter().find(|i| matches!(i, Item::Sub { label, .. } if label.starts_with("Notifications"))) else { panic!() };
         assert_eq!(label, "Notifications (3)");
-        assert!(matches!(&notes[0], Item::Action { warn: true, cmd: Command::Action(a), .. } if a == "instance:bsmpl"));
+        assert!(matches!(&notes[0], Item::Action { warn: true, cmd: Command::Action(a), .. } if a == "instance:contoso"));
         assert!(matches!(&notes[1], Item::Separator));
     }
 

@@ -346,7 +346,7 @@ pub struct Request {
     /// Platform settings taken from the backup (by catalog name).
     #[serde(default)]
     pub use_from_backup: Vec<String>,
-    /// Who runs it: "mz on MZ-LAPTOP".
+    /// Who runs it: "ops on OPS-LAPTOP".
     #[serde(default)]
     pub by: String,
     /// Where the file came from: "copied from Plant B, server to server".
@@ -1044,7 +1044,7 @@ fn state_path() -> PathBuf {
     crate::installation::record_path().with_file_name("restore-state.json")
 }
 
-/// Who runs a restore from here: "mz on MZ-LAPTOP".
+/// Who runs a restore from here: "ops on OPS-LAPTOP".
 pub fn by_here() -> String {
     let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "someone".into());
     format!("{user} on {}", crate::backup_jobs::host_name().unwrap_or_else(|| "this computer".into()))
@@ -1325,7 +1325,7 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
     }
 
     step(sink, STEP_SCHEMA);
-    if let Err(e) = crate::restore_switch::match_schema(record, &live, &setup.ch().password, &target, &nested(sink)).and_then(|_| crate::secrets_key::after_restore(&live, &target, &req.file, None, &nested(sink))) {
+    if let Err(e) = crate::restore_switch::match_schema(record, &live, &setup.ch().password, &target, &nested(sink)).and_then(|_| crate::secrets_key::after_restore(&live, &target, &req.file, None, passphrase.as_deref(), &nested(sink))) {
         fail_at(entry, STEP_SCHEMA);
         drop_restored(&setup, &target, sink);
         return Err(format!("{} Nothing on this instance changed. The half-restored database was removed.", sentence(&e)));

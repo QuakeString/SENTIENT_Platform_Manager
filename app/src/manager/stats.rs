@@ -108,6 +108,15 @@ pub struct StatsPage {
     /// The last 24 hours, for the database's growth and "Disk full in".
     day: Vec<Sample>,
     live_err: Option<String>,
+    /// Its instance is not the open one (a kept page): no reading meanwhile.
+    paused: bool,
+    /// A read asked for (shown again, Refresh) has not come back yet: the
+    /// Refresh icon turns.
+    refreshing: bool,
+    /// The last re-read failed while what was read before still shows.
+    stale: Option<String>,
+    /// When a reading last came back (HH:MM).
+    updated_at: Option<String>,
     /// (chart, point) under the pointer.
     hover: Option<(usize, usize)>,
     /// Each chart's plot bounds, for the pointer.
@@ -139,6 +148,10 @@ impl StatsPage {
             hist: None,
             day: Vec::new(),
             live_err: None,
+            paused: false,
+            refreshing: false,
+            stale: None,
+            updated_at: None,
             hover: None,
             plots: (0..6).map(|_| Rc::new(Cell::new(Bounds::default()))).collect(),
             job: cx.new(|_| crate::jobs::Job::new()),
@@ -151,11 +164,36 @@ impl StatsPage {
         p
     }
 
+    /// Hidden behind another instance: no reading until shown again.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
+    /// Shown again after another instance was open: what was read stays
+    /// and is read again behind it.
+    pub fn reshow(&mut self, cx: &mut Context<Self>) {
+        self.paused = false;
+        self.read_again(cx);
+    }
+
+    /// Read again now, keeping what shows (the Refresh icon turns).
+    fn read_again(&mut self, cx: &mut Context<Self>) {
+        self.refreshing = true;
+        self.restart(false, cx);
+        self.read_day(cx);
+        cx.notify();
+    }
+
     /// Read now and then on the range's rhythm, while the page is shown.
     fn start(&mut self, cx: &mut Context<Self>) {
+        self.restart(true, cx);
+    }
+
+    /// `clear`: a new range, whose history is not read yet.
+    fn restart(&mut self, clear: bool, cx: &mut Context<Self>) {
         let src = self.src.clone();
         let range = self.range;
-        if range != Range::Live {
+        if range != Range::Live && clear {
             self.hist = None;
         }
         // 20 seconds without a first reading: say so, with Retry.
@@ -173,13 +211,15 @@ impl StatsPage {
         self._poll = Some(cx.spawn(async move |this, cx| {
             let mut first = true;
             loop {
-                if first || OPEN.load(Ordering::Relaxed) {
+                let Ok(paused) = this.update(cx, |p, _| p.paused) else { break };
+                if first || (OPEN.load(Ordering::Relaxed) && !paused) {
                     first = false;
                     let s = src.clone();
                     if range == Range::Live {
                         let got = cx.background_executor().spawn(async move { s.live() }).await;
                         let ok = this
                             .update(cx, |p, cx| {
+                                p.refreshing = false;
                                 match got {
                                     Ok(sample) => {
                                         p.live.push(sample);
@@ -187,7 +227,12 @@ impl StatsPage {
                                             p.live.remove(0);
                                         }
                                         p.live_err = None;
+                                        p.stale = None;
+                                        p.updated_at = Some(chrono::Local::now().format("%H:%M").to_string());
                                     }
+                                    // With readings shown: they stay, said
+                                    // softly to be stale.
+                                    Err(e) if !p.live.is_empty() => p.stale = Some(e),
                                     Err(e) => p.live_err = Some(e),
                                 }
                                 cx.notify();
@@ -203,7 +248,18 @@ impl StatsPage {
                         let got = cx.background_executor().spawn(async move { s.history(range.secs()) }).await;
                         let now = cx.background_executor().spawn(async move { s2.live() }).await;
                         if this.update(cx, |p, cx| {
-                            p.hist = Some(got);
+                            p.refreshing = false;
+                            match got {
+                                // A failed re-read keeps the history shown.
+                                Err(e) if matches!(p.hist, Some(Ok(_))) => p.stale = Some(e),
+                                got => {
+                                    if got.is_ok() {
+                                        p.stale = None;
+                                        p.updated_at = Some(chrono::Local::now().format("%H:%M").to_string());
+                                    }
+                                    p.hist = Some(got);
+                                }
+                            }
                             if let Ok(sample) = now {
                                 p.live.push(sample);
                                 if p.live.len() > LIVE_KEEP {
@@ -574,13 +630,11 @@ impl Render for StatsPage {
             seg = seg.child(ui::seg_item(&theme, SharedString::from(format!("range-{}", r.label())), r.label(), self.range == r).on_click(cx.listener(move |p, _, _, cx| p.pick(r, cx))));
         }
         let me = cx.entity().downgrade();
-        let refresh = crate::ui::refresh_button("stats-refresh", false, window, move |_, cx| {
-            me.update(cx, |p, cx| {
-                p.start(cx);
-                p.read_day(cx);
-            })
-            .ok();
+        let refresh = crate::ui::refresh_button("stats-refresh", self.refreshing, window, move |_, cx| {
+            me.update(cx, |p, cx| p.read_again(cx)).ok();
         });
+        let dbg = ui::debug_stale().filter(|_| !self.live.is_empty());
+        let stale = self.stale.as_deref().or(dbg.as_deref()).filter(|_| !self.refreshing).map(|e| ui::stale_note(&theme, "stats-stale", e, self.updated_at.as_deref()));
         // Title only; the range and Read again at its right, under it when narrow.
         let header = h_flex()
             .flex_wrap()
@@ -588,6 +642,8 @@ impl Render for StatsPage {
             .items_center()
             .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Statistics"))
             .child(div().flex_1())
+            // The stale note wraps on its own: the range and Refresh never move.
+            .children(stale.map(|n| div().max_w_full().child(n)))
             .child(h_flex().gap_2().items_center().child(seg).child(refresh));
 
         let latest = self.live.last().cloned().or_else(|| self.points().last().cloned());

@@ -33,6 +33,9 @@ pub struct Session {
     /// Files: each pane's Size, Modified and Owner column widths.
     #[serde(default)]
     pub files_cols: Option<[[f32; 3]; 2]>,
+    /// Files: the last folder open per place ("local" or an instance id).
+    #[serde(default)]
+    pub files_dirs: std::collections::BTreeMap<String, String>,
 }
 
 fn path() -> std::path::PathBuf {
@@ -78,6 +81,22 @@ pub fn set_files(split: f32, cols: [[f32; 3]; 2]) {
         if s.saved.as_ref() == Some(&s.current) {
             return;
         }
+        if let Ok(t) = serde_json::to_string_pretty(&s.current) {
+            let _ = std::fs::create_dir_all(crate::updates::prefs_dir());
+            let _ = std::fs::write(path(), t);
+        }
+        s.saved = Some(s.current.clone());
+        s.written = Some(Instant::now());
+    });
+}
+
+/// Files: the folder last open on `place` (written at once).
+pub fn set_files_dir(place: &str, dir: &str) {
+    with(|s| {
+        if s.current.files_dirs.get(place).map(String::as_str) == Some(dir) {
+            return;
+        }
+        s.current.files_dirs.insert(place.to_string(), dir.to_string());
         if let Ok(t) = serde_json::to_string_pretty(&s.current) {
             let _ = std::fs::create_dir_all(crate::updates::prefs_dir());
             let _ = std::fs::write(path(), t);

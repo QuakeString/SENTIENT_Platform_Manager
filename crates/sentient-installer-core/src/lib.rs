@@ -9,6 +9,8 @@ pub mod checks;
 /// hidden service account so it runs from boot.
 pub mod clickhouse_wsl;
 pub mod distro;
+/// One administrator elevation per job (a root helper fed over a pipe).
+pub mod elevation;
 pub(crate) mod exec;
 pub mod stack;
 pub mod stack_order;
@@ -28,6 +30,7 @@ pub mod net;
 pub mod native_linux;
 pub mod progress;
 pub mod releases;
+pub mod signing;
 pub mod vcrt;
 /// Running a script as root from a desktop session (pkexec, else `sudo -n`).
 #[cfg(unix)]

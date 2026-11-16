@@ -350,7 +350,14 @@ impl SettingsPage {
         self.admin_busy = true;
         self.admin_result = None;
         let task = cx.spawn(async move |this, cx| {
-            let r = cx.background_executor().spawn(async move { work(&record) }).await;
+            let r = cx
+                .background_executor()
+                .spawn(async move {
+                    // A button the user pressed: it may ask for the password, once.
+                    let _action = sentient_installer_core::elevation::user_action();
+                    work(&record)
+                })
+                .await;
             this.update(cx, |page, cx| {
                 page.admin_busy = false;
                 page.admin_result = Some(match r {

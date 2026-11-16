@@ -2,7 +2,7 @@
 
 //! The global progress strip: while a job runs anywhere in the Platform
 //! Manager, its name, time and Details sit in the top bar ("Stopping
-//! ClickHouse on ST-DEV · 0:06 · Details") and a thin progress line runs
+//! ClickHouse on DEV-01 · 0:06 · Details") and a thin progress line runs
 //! along the bar's bottom edge. Both live inside the bar, so nothing on the
 //! page moves. Pages never insert a progress or log panel of their own.
 //!
@@ -289,7 +289,7 @@ impl Strip {
         let samples = [
             (true, "Stopping ClickHouse failed", "ClickHouse did not stop within 30 seconds.", Some("plantb"), "Plant B server", "#6b4fa0"),
             (false, "Backing up: done", "Backup finished and checked: sentient-2026-11-15-0200, 5.0 GB.", None, "This computer", "#187074"),
-            (true, "Updating the server agent failed", "The agent could not be put in place at /opt/sentient-platform-manager (as administrator).", Some("iiot"), "INVENIA IIoT", "#1f9d4d"),
+            (true, "Updating the server agent failed", "The agent could not be put in place at /opt/sentient-platform-manager (as administrator).", Some("fabrikam"), "Fabrikam IIoT", "#1f9d4d"),
             (false, "Updating SENTIENT: done", "SENTIENT 4.4.0.2 is running.", Some("plantb"), "Plant B server", "#6b4fa0"),
         ];
         self.events = (0..n)
@@ -556,6 +556,10 @@ impl Render for JobDetails {
             JobState::Idle => div(),
         };
         let retry = matches!(job.state(), JobState::Failed(_)).then(|| job.retry()).flatten();
+        let again = match job.state() {
+            JobState::Failed(m) => crate::ui::retry_label(m, "Retry"),
+            _ => "Retry",
+        };
         let lines: Vec<SharedString> = job.steps().iter().map(|s| SharedString::from(format!("▸ {s}"))).chain(job.log().iter().cloned()).collect();
         let text = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         v_flex()
@@ -580,7 +584,7 @@ impl Render for JobDetails {
                     .justify_end()
                     .child(crate::ui::button("job-details-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))))
                     .when_some(retry.clone(), |r, retry| {
-                        r.child(crate::ui::button("job-details-retry").outline().label("Retry").on_click(move |_, _, cx| {
+                        r.child(crate::ui::button("job-details-retry").outline().label(again).on_click(move |_, _, cx| {
                             crate::modal::close(cx);
                             retry(cx);
                         }))

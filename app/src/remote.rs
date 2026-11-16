@@ -345,7 +345,7 @@ pub fn trust(keys: &str) -> Result<(), String> {
 
 /// Forget a server's keys (the instance is removed).
 pub fn untrust(host: &str, port: u16) {
-    let pattern = if port == 22 { host.to_string() } else { format!("[{host}]:{port}") };
+    let pattern = host_pattern(host, port);
     let _ = Command::new("ssh-keygen").args(["-R", &pattern, "-f", &known_hosts().display().to_string()]).output();
 }
 
@@ -549,8 +549,8 @@ static DEBUG_AGENT_UPDATED: std::sync::atomic::AtomicBool = std::sync::atomic::A
 fn debug_plan(compose: Option<&str>) -> sentient_installer_core::distro::adopt::TakeOverPlan {
     sentient_installer_core::distro::adopt::TakeOverPlan {
         project: "sentient".into(),
-        files: vec![(compose.unwrap_or("/home/sunoil/sentient/docker-compose.yml").to_string(), true)],
-        env_files: vec![("/home/sunoil/sentient/.env".into(), true)],
+        files: vec![(compose.unwrap_or("/home/northwind/sentient/docker-compose.yml").to_string(), true)],
+        env_files: vec![("/home/northwind/sentient/.env".into(), true)],
         containers: vec!["sentient".into(), "sentient-postgres".into()],
         image: "quakestring/sentient:4.4.0.1".into(),
         volumes: vec!["sentient_data".into(), "sentient_pg".into()],
@@ -894,6 +894,21 @@ pub struct RemoteBackups {
     pub free: Option<u64>,
 }
 
+/// No JSON line came back: say what did (the last lines it printed), or
+/// that it printed nothing at all, instead of only "no answer".
+fn no_answer(out: &str) -> String {
+    let lines: Vec<&str> = out.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if lines.is_empty() {
+        failed(
+            "The server's Platform Manager printed nothing for this request.",
+            "It may have stopped at once (a missing file or a blocked program), or it is a windowed build that was not waited for. Run Set up again; if it stays, run it there by hand with --job status-json and look at what it says.",
+        )
+    } else {
+        let tail = lines[lines.len().saturating_sub(6)..].join("\n");
+        failed("The server's Platform Manager answered, but not with the data asked for. What it printed:", &tail)
+    }
+}
+
 /// Ask the server's Platform Manager for `job` (as administrator) and read
 /// the one JSON line it prints.
 fn read_json<T: serde::de::DeserializeOwned>(inst: &Instance, job: &str) -> Result<T, String> {
@@ -902,7 +917,7 @@ fn read_json<T: serde::de::DeserializeOwned>(inst: &Instance, job: &str) -> Resu
     if out.lines().any(|l| l.trim() == "null") {
         return Err(NOT_ADDED.into());
     }
-    let line = out.lines().rev().find(|l| { let t = l.trim_start(); t.starts_with('{') || t.starts_with('[') }).ok_or("The server's Platform Manager gave no answer. Try again; if it stays, Show details on the job, or run Set up again.")?;
+    let line = out.lines().rev().find(|l| { let t = l.trim_start(); t.starts_with('{') || t.starts_with('[') }).ok_or_else(|| no_answer(&out))?;
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 
@@ -1259,7 +1274,10 @@ pub fn is_windows(inst: &Instance) -> bool {
 /// and return what it printed.
 fn spm_job(inst: &Instance, job: &str) -> Result<String, String> {
     let r = if is_windows(inst) {
-        win::ps(inst, &format!("& '{}' --job {job}", win::EXE))
+        // Piped, so PowerShell waits for it and reads its output even when
+        // it is the windowed build (an installed Platform Manager); its
+        // errors folded into the output.
+        win::ps(inst, &format!("& '{}' --job {job} 2>&1 | ForEach-Object {{ \"$_\" }}", win::EXE))
     } else {
         agent_run(inst, &format!("--job {job}"))
     };
@@ -1348,7 +1366,7 @@ pub fn licence_api(inst: &Instance, req: &crate::licence::Request) -> Result<cra
     let out = spm_job(inst, &format!("licence-api --request-file '{}'", file.replace('\'', "")));
     remove_file(inst, &file);
     let out = out?;
-    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's agent gave no answer.")?;
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or_else(|| no_answer(&out))?;
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 
@@ -2093,7 +2111,7 @@ pub fn restore_history(inst: &Instance) -> Result<Vec<crate::restore_flow::Entry
         return std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()));
     }
     let out = spm_job(inst, "restore-history-json")?;
-    let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or("The server's Platform Manager gave no answer.")?;
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or_else(|| no_answer(&out))?;
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 
@@ -2298,7 +2316,54 @@ fn pipe_copy(src: &Instance, dst: &Instance, path: &str, part: &str) -> Result<(
 /// The source sends the file itself: a key made for this one copy is
 /// allowed on the target (restricted) and given to the source, then both
 /// are removed.
+/// The host-key pattern known_hosts uses for `host` on `port`.
+fn host_pattern(host: &str, port: u16) -> String {
+    if port == 22 { host.to_string() } else { format!("[{host}]:{port}") }
+}
+
+/// The keys this Platform Manager pinned for `pattern`, from the output of
+/// `ssh-keygen -F <pattern>`, as plain `<pattern> <type> <key>` lines (a
+/// hashed host name is written out again; markers like @revoked are left).
+fn pinned_lines(found: &str, pattern: &str) -> String {
+    found
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('@'))
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            (f.len() >= 3).then(|| format!("{pattern} {} {}\n", f[1], f[2]))
+        })
+        .collect()
+}
+
+/// `dst`'s host keys as this Platform Manager pinned them.
+fn pinned_host_keys(dst: &Instance) -> Result<String, String> {
+    let pattern = host_pattern(&dst.host, dst.port);
+    let out = Command::new("ssh-keygen").args(["-F", &pattern, "-f"]).arg(known_hosts()).output().map_err(|e| format!("ssh-keygen: {e}"))?;
+    let lines = pinned_lines(&String::from_utf8_lossy(&out.stdout), &pattern);
+    if lines.is_empty() {
+        return Err(format!("This computer has no pinned host key for {0}, so the other server could not check whom it sends the backup to. Connect to {0} from here once, or copy through this computer instead.", dst.name));
+    }
+    Ok(lines)
+}
+
+/// The scp the source server runs: only `dst`'s pinned keys in a known_hosts
+/// file of their own (`known` on the source), checked strictly.
+fn direct_copy_command(dst: &Instance, key: &str, known: &str, path: &str, part: &str) -> String {
+    format!(
+        "scp -q -i {} -P {} -o StrictHostKeyChecking=yes -o UserKnownHostsFile={} -o GlobalKnownHostsFile=/dev/null -o BatchMode=yes {} {}",
+        shell_quote(key),
+        dst.port,
+        shell_quote(known),
+        shell_quote(path),
+        shell_quote(&format!("{}@{}:{}", dst.user, dst.host, part))
+    )
+}
+
 fn direct_copy(src: &Instance, dst: &Instance, path: &str, part: &str) -> Result<(), String> {
+    // Before anything is set up: the source checks dst's key against the one
+    // pinned here, or there is no copy.
+    let known_keys = pinned_host_keys(dst)?;
     let tag = format!("spm-restore-copy-{}", chrono::Utc::now().timestamp_millis());
     let dir = std::env::temp_dir().join(&tag);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -2313,28 +2378,49 @@ fn direct_copy(src: &Instance, dst: &Instance, path: &str, part: &str) -> Result
     let _ = std::fs::remove_dir_all(&dir);
     let cleanup = || {
         let _ = run(dst, &format!("sed -i '/{tag}/d' ~/.ssh/authorized_keys"), None);
-        let _ = run(src, &format!("rm -f ~/.{tag}"), None);
+        let _ = run(src, &format!("rm -f ~/.{tag} ~/.{tag}.known_hosts"), None);
     };
     let r = (|| -> Result<(), String> {
         run(dst, &format!("mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo {} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys", shell_quote(&format!("restrict {}", public.trim()))), None)?;
-        put_text(src, &format!("{}/.{tag}", home(src)?.trim_end_matches('/')), &private)?;
-        run(
-            src,
-            &format!(
-                "scp -q -i ~/.{tag} -P {} -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o BatchMode=yes {} {}@{}:{}",
-                dst.port,
-                shell_quote(path),
-                dst.user,
-                dst.host,
-                shell_quote(part)
-            ),
-            None,
-        )
-        .map(|_| ())
-        .map_err(|e| format!("{} could not send it to {} ({e}). Copy through this computer instead.", src.name, dst.name))
+        let base = home(src)?.trim_end_matches('/').to_string();
+        let (key_at, known_at) = (format!("{base}/.{tag}"), format!("{base}/.{tag}.known_hosts"));
+        put_text(src, &key_at, &private)?;
+        put_text(src, &known_at, &known_keys)?;
+        run(src, &direct_copy_command(dst, &key_at, &known_at, path, part), None)
+            .map(|_| ())
+            .map_err(|e| format!("{} could not send it to {} ({e}). Copy through this computer instead.", src.name, dst.name))
     })();
     cleanup();
     r
+}
+
+#[cfg(test)]
+mod direct_copy_tests {
+    use super::*;
+
+    fn dst(port: u16) -> Instance {
+        serde_json::from_value(serde_json::json!({"id": "b", "name": "Plant B", "color": "#6b4fa0", "host": "plantb.local", "port": port, "user": "ops"})).unwrap()
+    }
+
+    #[test]
+    fn the_source_checks_the_pinned_key_strictly() {
+        let c = direct_copy_command(&dst(2242), "/home/ops/.k", "/home/ops/.k.known_hosts", "/var/backups/a b.sentient-backup", "/var/backups/a b.part");
+        assert!(c.contains("-o StrictHostKeyChecking=yes"), "{c}");
+        assert!(c.contains("-o UserKnownHostsFile='/home/ops/.k.known_hosts'"), "{c}");
+        assert!(c.contains("-o GlobalKnownHostsFile=/dev/null"), "{c}");
+        assert!(!c.contains("accept-new") && !c.contains("UserKnownHostsFile=/dev/null"), "{c}");
+        assert!(c.contains("-P 2242"));
+        assert!(c.ends_with("'/var/backups/a b.sentient-backup' 'ops@plantb.local:/var/backups/a b.part'"), "{c}");
+    }
+
+    #[test]
+    fn pinned_keys_are_written_for_the_host_as_the_source_names_it() {
+        let found = "# Host [plantb.local]:2242 found: line 3\n|1|abc=|def= ssh-ed25519 AAAAC3Nz\n@revoked * ssh-rsa AAAAB3\n[plantb.local]:2242 ecdsa-sha2-nistp256 AAAAE2 comment\n";
+        assert_eq!(pinned_lines(found, "[plantb.local]:2242"), "[plantb.local]:2242 ssh-ed25519 AAAAC3Nz\n[plantb.local]:2242 ecdsa-sha2-nistp256 AAAAE2\n");
+        assert_eq!(pinned_lines("", "x"), "");
+        assert_eq!(host_pattern("plantb.local", 22), "plantb.local");
+        assert_eq!(host_pattern("10.0.0.5", 2242), "[10.0.0.5]:2242");
+    }
 }
 
 /// Ask the restore running on the server to stop before its switch.
@@ -2349,7 +2435,7 @@ pub fn backups_in(inst: &Instance, folder: &str) -> Result<Vec<crate::backups::E
         return serde_json::from_str::<RemoteBackups>(&t.to_string_lossy()).map(|b| b.list).map_err(|e| e.to_string());
     }
     let out = spm_job(inst, &format!("backup-list {}", job_arg(folder)?))?;
-    let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or("The server's Platform Manager gave no answer.")?;
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or_else(|| no_answer(&out))?;
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 

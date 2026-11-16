@@ -615,12 +615,13 @@ impl UpdatePage {
             if let Some(o) = &manager_offer {
                 let has_installer = o.installer.is_some();
                 row = row
+                    .children(signature_note(theme, o, "manager"))
                     .when(has_installer, |r| {
                         r.child(
                             crate::ui::button("manager-install")
                                 .primary()
                                 .label(if installing { "Updating…" } else { "Update and restart" })
-                                .disabled(installing)
+                                .disabled(installing || (o.unsigned && o.signing_started))
                                 .on_click(cx.listener(|this, _, _, cx| this.start_manager_update(cx))),
                         )
                     })
@@ -673,11 +674,16 @@ impl UpdatePage {
             }
             if let Some(o) = &sentient_offer {
                 let first = manager_offer.is_some();
+                // A Docker install pulls the image; the signed manifest is
+                // what a native one downloads.
+                if !docker {
+                    row = row.children(signature_note(theme, o, "sentient"));
+                }
                 row = row.child(
                     crate::ui::button("sentient-update")
                         .primary()
                         .label(format!("Update to {}", o.version))
-                        .disabled(first || busy)
+                        .disabled(first || busy || (!docker && o.unsigned && o.signing_started))
                         .on_click(cx.listener(|this, _, _, cx| this.start_sentient_update(cx))),
                 );
                 row = row.child(crate::ui::button("sentient-notes").outline().label("What's new").on_click(cx.listener(|this, _, _, cx| this.show_notes(Product::Sentient, cx))));
@@ -1005,4 +1011,27 @@ impl Render for NotesDialog {
                 .into_any_element()
             })
     }
+}
+
+/// Beside an offer of a release without a signature: "Unsigned release"
+/// while no signed release exists (it is used, with this warning), "Not
+/// signed" once one does (the update refuses it). crate::signing has the rule.
+fn signature_note(theme: &gpui_kit::component::Theme, o: &crate::updates::Offer, id: &'static str) -> Option<AnyElement> {
+    if !o.unsigned {
+        return None;
+    }
+    let (tone, text, help) = if o.signing_started {
+        (Tone::Bad, "Not signed", "This release has no signature while newer SENTIENT releases are signed, so it is not installed. Ask your supplier for a signed release.")
+    } else {
+        (Tone::Warn, "Unsigned release", "Published before SENTIENT releases were signed. Its download is checked against its published checksum, not against the release signature. Releases from now on are signed, and an unsigned one is then refused.")
+    };
+    Some(
+        h_flex()
+            .flex_shrink_0()
+            .gap_1()
+            .items_center()
+            .child(ui::pill(theme, tone, text))
+            .child(ui::info(SharedString::from(format!("sig-{id}")), help.into()))
+            .into_any_element(),
+    )
 }
