@@ -574,23 +574,23 @@ impl Installer {
                 .child(div().text_sm().child(where_))
                 .child(
                     h_flex()
-                        .gap_2()
-                        .child(choice("existing-keep", "Keep using it", keep).on_click(cx.listener(|this, _, _, cx| {
+                        .gap(crate::ui::button_gap())
+                        .child(crate::ui::probed(choice("existing-keep", "Keep using it", keep).on_click(cx.listener(|this, _, _, cx| {
                             this.keep_existing = true;
                             this.delete_existing = false;
                             cx.notify();
-                        })))
-                        .child(choice("existing-fresh", "Start fresh", !keep && !delete).on_click(cx.listener(|this, _, _, cx| {
+                        }))))
+                        .child(crate::ui::probed(choice("existing-fresh", "Start fresh", !keep && !delete).on_click(cx.listener(|this, _, _, cx| {
                             this.keep_existing = false;
                             this.delete_existing = false;
                             cx.notify();
-                        })))
+                        }))))
                         .when(native, |row| {
-                            row.child(choice("existing-delete", "Delete it", delete).on_click(cx.listener(|this, _, _, cx| {
+                            row.child(crate::ui::probed(choice("existing-delete", "Delete it", delete).on_click(cx.listener(|this, _, _, cx| {
                                 this.keep_existing = false;
                                 this.delete_existing = true;
                                 cx.notify();
-                            })))
+                            }))))
                         }),
                 )
                 .child(div().text_sm().text_color(theme.muted_foreground).child(if keep {
@@ -696,26 +696,26 @@ impl Installer {
                 .child(h_flex().gap_2().items_start().child(Icon::new(IconName::TriangleAlert).small()).child(div().min_w_0().child(text)))
                 .child(
                     h_flex()
-                        .gap_2()
+                        .gap(crate::ui::button_gap())
                         .items_center()
                         .pl_6()
                         .when_some(next, |row, next| {
                             let field = field.clone();
                             row.child(div().child(format!("{what} port for SENTIENT: {next} is free.")))
-                                .child(crate::ui::button(SharedString::from(format!("use-port-{port}"))).outline().label(format!("Use {next}")).on_click(cx.listener(
+                                .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("use-port-{port}"))).outline().label(format!("Use {next}")).on_click(cx.listener(
                                     move |this, _, window, cx| {
                                         field.update(cx, |state, cx| state.set_value(next.to_string(), window, cx));
                                         this.problem = None;
                                         cx.notify();
                                     },
-                                )))
+                                ))))
                         })
-                        .child(crate::ui::button(SharedString::from(format!("recheck-port-{port}"))).ghost().label("Check again").on_click(cx.listener(
+                        .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("recheck-port-{port}"))).ghost().label("Check again").on_click(cx.listener(
                             move |this, _, _, cx| {
                                 this.port_owners.remove(&port);
                                 cx.notify();
                             },
-                        ))),
+                        )))),
                 );
         }
         Some(panel)
@@ -1212,20 +1212,20 @@ impl Installer {
             )
             .child(
                 h_flex()
-                    .gap_2()
-                    .child(
+                    .gap(crate::ui::button_gap())
+                    .child(crate::ui::probed(
                         crate::ui::button("open-sentient")
                             .primary()
                             .label("Open SENTIENT")
                             .on_click(move |_, _, cx| ui::open_sentient(port, kiosk, cx)),
-                    )
-                    .child(crate::ui::button("open-manager").outline().label("Open Platform Manager").on_click(
+                    ))
+                    .child(crate::ui::probed(crate::ui::button("open-manager").outline().label("Open Platform Manager").on_click(
                         |_, _, _| {
                             let _ = std::process::Command::new(crate::self_install::manager_exe())
                                 .arg("--manager")
                                 .spawn();
                         },
-                    )),
+                    ))),
             )
     }
 }

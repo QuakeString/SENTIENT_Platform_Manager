@@ -147,16 +147,16 @@ impl Render for ChooserFooter {
         let c = self.chooser.read(cx);
         let (stage, usable, busy) = (c.stage, c.usable(), c.busy.is_some());
         let chooser = self.chooser.clone();
-        let row = h_flex().w_full().gap_2().justify_end().items_center();
+        let row = h_flex().w_full().gap(crate::ui::button_gap()).justify_end().items_center();
         match stage {
             Stage::Old(move_them) => {
                 let (c1, c2) = (chooser.clone(), chooser);
-                row.child(crate::ui::button("fc-back").outline().label("Back").on_click(move |_, _, cx| c1.update(cx, |this, cx| this.back(cx))))
-                    .child(crate::ui::button("fc-use-new").primary().label("Use the new folder").on_click(move |_, _, cx| c2.update(cx, |this, cx| this.finish(move_them, cx))))
+                row.child(crate::ui::probed(crate::ui::button("fc-back").outline().label("Back").on_click(move |_, _, cx| c1.update(cx, |this, cx| this.back(cx)))))
+                    .child(crate::ui::probed(crate::ui::button("fc-use-new").primary().label("Use the new folder").on_click(move |_, _, cx| c2.update(cx, |this, cx| this.finish(move_them, cx)))))
             }
             Stage::Choose => row
-                .child(crate::ui::button("fc-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx)))
-                .child(crate::ui::button("fc-use").primary().label("Use this folder").disabled(!usable || busy).on_click(move |_, _, cx| chooser.update(cx, |this, cx| this.use_it(cx)))),
+                .child(crate::ui::probed(crate::ui::button("fc-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
+                .child(crate::ui::probed(crate::ui::button("fc-use").primary().label("Use this folder").disabled(!usable || busy).on_click(move |_, _, cx| chooser.update(cx, |this, cx| this.use_it(cx))))),
         }
     }
 }
@@ -524,17 +524,17 @@ impl Render for FolderChooser {
                 h_flex()
                     .h(px(40.))
                     .px(px(10.))
-                    .gap_2()
+                    .gap(crate::ui::button_gap())
                     .items_center()
                     .border_b_1()
                     .border_color(theme.border)
                     .child(Icon::empty().path("icons/folder-fill.svg").size_4().text_color(folder_color()))
                     .child(div().flex_1().child(Input::new(input).small()))
-                    .child(crate::ui::button("fc-make").primary().small().label("Make").loading(busy == Some("mkdir")).on_click(cx.listener(|this, _, _, cx| this.make_folder(cx))))
-                    .child(crate::ui::button("fc-make-no").ghost().small().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button("fc-make").primary().small().label("Make").loading(busy == Some("mkdir")).on_click(cx.listener(|this, _, _, cx| this.make_folder(cx)))))
+                    .child(crate::ui::probed(crate::ui::button("fc-make-no").ghost().small().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
                         this.new_name = None;
                         cx.notify();
-                    }))),
+                    })))),
             );
         }
         if self.loading {

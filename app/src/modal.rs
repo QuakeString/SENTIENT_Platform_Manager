@@ -111,6 +111,8 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
         .border_1()
         .border_color(theme.border)
         .shadow_lg()
+        // The layout test's gap check: only the dialog's own buttons.
+        .child(crate::ui::layout_probe("modal"))
         .child(
             h_flex()
                 .h(px(48.))
@@ -248,10 +250,10 @@ impl Render for AlertBody {
             .child(div().text_sm().text_color(theme.muted_foreground).child(self.a.text.clone()))
             .child(
                 h_flex()
-                    .gap_2()
+                    .gap(crate::ui::button_gap())
                     .justify_end()
-                    .child(crate::ui::button("alert-cancel").outline().label("Cancel").on_click(|_, _, cx| close(cx)))
-                    .child(ok),
+                    .child(crate::ui::probed(crate::ui::button("alert-cancel").outline().label("Cancel").on_click(|_, _, cx| close(cx))))
+                    .child(crate::ui::probed(ok)),
             )
     }
 }

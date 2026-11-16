@@ -103,6 +103,11 @@ pub fn toggle(cx: &mut App) {
 /// window edge to the page content, the page's top, and under its title.
 pub const PAGE_GAP: f32 = 18.;
 
+/// The one gap between buttons in a group, labelled and icon buttons alike
+/// (Start/Stop/Restart, a service's icons, dialog footers, popovers), and
+/// between a button group and the text or pill beside it.
+pub const BUTTON_GAP: f32 = 12.;
+
 /// The top bar's controls (the instance switcher, the monitors, the theme
 /// button and the bell): one height, one radius, one hover tint (the
 /// instance's colour at this opacity), centred in the 60 px bar.

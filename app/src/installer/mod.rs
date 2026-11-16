@@ -1068,7 +1068,7 @@ impl Installer {
             .h_16()
             .flex_shrink_0()
             .px_8()
-            .gap_2()
+            .gap(crate::ui::button_gap())
             .items_center()
             .bg(theme.background)
             .border_t_1()
@@ -1094,28 +1094,28 @@ impl Installer {
                 (None, None) => bar.child(div().flex_1()),
             })
             .when(self.step < FINISH, |bar| {
-                bar.child(
+                bar.child(crate::ui::probed(
                     crate::ui::button("cancel")
                         .ghost()
                         .label("Cancel")
                         .on_click(cx.listener(|this, _, window, cx| this.confirm_cancel(window, cx))),
-                )
+                ))
             })
             .when(self.step > 0 && self.step < INSTALL, |bar| {
-                bar.child(
+                bar.child(crate::ui::probed(
                     crate::ui::button("back")
                         .outline()
                         .label("Back")
                         .on_click(cx.listener(|this, _, _, cx| this.go(this.previous_shown(this.step), cx))),
-                )
+                ))
             })
-            .child(
+            .child(crate::ui::probed(
                 crate::ui::button("next")
                     .primary()
                     .label(next_label)
                     .disabled((self.step == INSTALL && !failed) || blocked.is_some())
                     .on_click(cx.listener(|this, _, window, cx| this.next(window, cx))),
-            )
+            ))
     }
 }
 
@@ -1131,6 +1131,11 @@ impl Installer {
     fn render_root(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(earlier) = &self.earlier {
             return div().size_full().child(earlier.clone()).into_any_element();
+        }
+        // Layout tests: the probes' lines after this mark are this frame's.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
+            eprintln!("LAYOUT-FRAME {:.0} {:.0}", f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
         }
         let nav = self.steps_nav(cx);
         let footer = self.footer(cx);

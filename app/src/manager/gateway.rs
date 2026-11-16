@@ -195,10 +195,10 @@ impl Render for GatewayPage {
                 })
                 .child(
                     h_flex()
-                        .gap_2()
-                        .child(crate::ui::button("gw-start").outline().label("Start").disabled(busy || status.running).on_click(cx.listener(|p, _, _, cx| p.control("start", cx))))
-                        .child(crate::ui::button("gw-stop").outline().label("Stop").disabled(busy || !status.running).on_click(cx.listener(|p, _, _, cx| p.control("stop", cx))))
-                        .child(crate::ui::button("gw-restart").outline().label("Restart").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.control("restart", cx)))),
+                        .gap(crate::ui::button_gap())
+                        .child(crate::ui::probed(crate::ui::button("gw-start").outline().label("Start").disabled(busy || status.running).on_click(cx.listener(|p, _, _, cx| p.control("start", cx)))))
+                        .child(crate::ui::probed(crate::ui::button("gw-stop").outline().label("Stop").disabled(busy || !status.running).on_click(cx.listener(|p, _, _, cx| p.control("stop", cx)))))
+                        .child(crate::ui::probed(crate::ui::button("gw-restart").outline().label("Restart").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.control("restart", cx))))),
                 )
                 .child(match (&newer, &newest) {
                     (Some(o), _) => {
