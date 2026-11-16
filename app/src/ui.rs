@@ -1381,7 +1381,7 @@ pub fn layout_probe(name: &'static str) -> impl IntoElement {
                     let (t, b) = (f32::from(bounds.origin.y), f32::from(bounds.origin.y + bounds.size.height));
                     // Buttons to a hundredth: the gap check holds them to
                     // half a pixel at x1.
-                    if name == "button" {
+                    if name == "button" || name == "menu-item-icon" {
                         eprintln!("LAYOUT {name} {l:.2} {r:.2} {t:.2} {b:.2}");
                     } else {
                         eprintln!("LAYOUT {name} {l:.0} {r:.0} {t:.0} {b:.0}");

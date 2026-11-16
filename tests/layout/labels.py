@@ -11,7 +11,10 @@ menu-label[-on] l r t b` and `LAYOUT menu-row l r t b`). For each label,
 its ink height (cap or ascender top to descender bottom, sub-pixel from the
 anti-aliasing, logical px) is measured in the screenshot. Renders of the
 same width, scale and theme are grouped; a label's height when selected
-must equal its height unselected within 0.5 px. Rows: a 44 px pitch
+must equal its height unselected within 0.5 px; at a scale that puts the
+text between device pixels (x1.25, x1.75: scale * 2 not whole) within one
+device pixel, since the semibold descender then rounds a pixel differently
+from the medium one at the same font size (rc12-24, agreed with the owner). Rows: a 44 px pitch
 (40 px rows, 4 px apart) below the brand row's 16 px clear space.
 Prints findings and exits 1 if there are any.
 """
@@ -103,8 +106,10 @@ def main():
             if not v["on"] or not v["off"]:
                 continue
             off = sorted(h for h, _ in v["off"])[len(v["off"]) // 2]
+            sc = key[1]
+            tol = TOL if abs(sc * 2 - round(sc * 2)) < 1e-6 else max(TOL, 1 / sc + 0.01)
             for h, name in v["on"]:
-                if abs(h - off) > TOL:
+                if abs(h - off) > tol:
                     findings.append(f"{name}: selected label {i} is {h:.2f} px tall, unselected {off:.2f} px")
     for f in findings:
         print(f)
