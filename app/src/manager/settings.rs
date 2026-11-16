@@ -1,6 +1,6 @@
 // Copyright © 2016-2026 The SENTIENT Authors
 
-//! Settings, in five tabs instead of one list of environment variables:
+//! Settings, in six tabs instead of one list of environment variables:
 //!
 //! - Platform: log detail, the licence server, analytics, how SENTIENT
 //!   starts.
@@ -12,6 +12,8 @@
 //!   origins and device claiming.
 //! - Data retention: how long audit log, notifications and events are kept,
 //!   as plain choices.
+//! - Startup: the operator screen (open at sign-in, automatic sign-in) and,
+//!   on Windows, starting with Windows (crate::manager::startup).
 //! - Advanced: every variable, grouped and searchable, with its built-in
 //!   value and a reset; variables the list does not know can be added.
 //!
@@ -43,11 +45,40 @@ enum Tab {
     Database,
     Network,
     Retention,
+    Startup,
     Advanced,
 }
 
 impl Tab {
-    const ALL: [Tab; 5] = [Tab::Platform, Tab::Database, Tab::Network, Tab::Retention, Tab::Advanced];
+    const ALL: [Tab; 6] = [Tab::Platform, Tab::Database, Tab::Network, Tab::Retention, Tab::Startup, Tab::Advanced];
+
+    /// Its number in session.json: the remote pages' numbers (0 to 4, All
+    /// variables 4), Startup after them, so a saved tab means the same on
+    /// both and from before Startup existed.
+    fn session_index(self) -> usize {
+        match self {
+            Tab::Platform => 0,
+            Tab::Database => 1,
+            Tab::Network => 2,
+            Tab::Retention => 3,
+            Tab::Advanced => 4,
+            Tab::Startup => 5,
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Tab::Startup => STARTUP_TITLE,
+            t => TAB_TITLES[t.session_index()],
+        }
+    }
+
+    fn about(self) -> &'static str {
+        match self {
+            Tab::Startup => STARTUP_ABOUT,
+            t => TAB_ABOUT[t.session_index()],
+        }
+    }
 }
 
 /// PostgreSQL sized for the computer.
@@ -132,6 +163,8 @@ pub struct SettingsPage {
     new_value: Entity<InputState>,
     search: Entity<InputState>,
     tab: Tab,
+    /// The Startup tab (crate::manager::startup).
+    startup: Entity<super::startup::StartupPanel>,
     /// Advanced: the group shown (None: all), and only the ones set here.
     group: Option<String>,
     changed_only: bool,
@@ -255,7 +288,8 @@ impl SettingsPage {
             new_name,
             new_value,
             search,
-            tab: super::session::load().settings_tab.and_then(|i| Tab::ALL.get(i).copied()).unwrap_or(Tab::Platform),
+            tab: super::session::load().settings_tab.and_then(|i| Tab::ALL.into_iter().find(|t| t.session_index() == i)).unwrap_or(Tab::Platform),
+            startup: cx.new(|cx| super::startup::StartupPanel::new(window, cx)),
             group: None,
             changed_only: false,
             show_names: false,
@@ -718,7 +752,7 @@ impl SettingsPage {
                 .child(row(theme, "Address users open", Some("Where browsers open SENTIENT. The web port is under Network and certificates.".into()), false, div().text_sm().child(record.url())))
                 .child(row(theme, "Log detail", self.help("RUST_LOG"), self.is_changed("RUST_LOG", cx), self.choice("RUST_LOG", LOG_LEVELS, cx)))
                 .child(row(theme, "Analytics engine", self.help("ANALYTICS_ENABLED"), self.is_changed("ANALYTICS_ENABLED", cx), self.switch("ANALYTICS_ENABLED", cx)))
-                .child(row(theme, "Starts", Some("Start with Windows, the start delay and the operator screen are under Control.".into()), false, div().text_sm().child(start)))
+                .child(row(theme, "Starts", Some("Start with Windows, the start delay and the operator screen are under Startup.".into()), false, div().text_sm().child(start)))
                 .into_any_element(),
             section(theme, "Licence", None)
                 .child(self.catalog_row(theme, "LICENSE_SERVER_URL", 320., cx))
@@ -1217,10 +1251,11 @@ impl Render for SettingsPage {
         }
 
         let this = cx.entity().downgrade();
-        let tabs = tab_bar(&theme, "", Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0), std::rc::Rc::new(move |i, cx| {
+        let titles: Vec<&'static str> = Tab::ALL.iter().map(|t| t.title()).collect();
+        let tabs = tab_bar(&theme, "", &titles, Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0), std::rc::Rc::new(move |i, cx| {
             this.update(cx, |p, cx| {
                 p.tab = Tab::ALL[i];
-                super::session::set_settings_tab(i);
+                super::session::set_settings_tab(Tab::ALL[i].session_index());
                 cx.notify();
             })
             .ok();
@@ -1260,13 +1295,13 @@ impl Render for SettingsPage {
             Tab::Database => self.database(&theme, &record, cx),
             Tab::Network => self.network(&theme, cx),
             Tab::Retention => self.retention(&theme, cx),
+            Tab::Startup => vec![self.startup.clone().into_any_element()],
             Tab::Advanced => self.advanced(&theme, cx),
         };
 
-        let active = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0);
         let _ = page;
-        layout(&theme, tabs, active, v_flex()
-            .gap(px(14.))
+        layout(&theme, tabs, self.tab.title(), self.tab.about(), v_flex()
+            .gap(px(ui::GAP))
             .children(foreign)
             .children(applybar)
             .children(problems.into_iter().map(|p| div().text_sm().text_color(theme.danger).child(p)))
@@ -1297,7 +1332,12 @@ mod tests {
     }
 }
 
-/// The tab titles of Platform settings, in order.
+/// The Startup tab's title and line (this computer only).
+const STARTUP_TITLE: &str = "Startup";
+const STARTUP_ABOUT: &str = "What happens when this computer starts and someone signs in.";
+
+/// The tab titles of Platform settings a remote server has, in order; this
+/// computer's add Startup before All variables.
 pub(crate) const TAB_TITLES: [&str; 5] = ["General", "Database", "Network and certificates", "History and cleanup", "All variables"];
 
 /// What each category holds, under its title.
@@ -1320,7 +1360,7 @@ pub(crate) const TAB_KEYS: [&[&str]; 4] = [
 
 /// The categories of Platform settings, as a list on the left (the
 /// mockup's H2). Shared with a remote server's.
-pub(crate) fn tab_bar(theme: &gpui_kit::component::Theme, id: &str, active: usize, pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
+pub(crate) fn tab_bar(theme: &gpui_kit::component::Theme, id: &str, titles: &[&'static str], active: usize, pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
     // A narrow window: the categories as a wrapping row above the page,
     // which then has the whole width.
     let narrow = ui::narrow();
@@ -1329,7 +1369,7 @@ pub(crate) fn tab_bar(theme: &gpui_kit::component::Theme, id: &str, active: usiz
         .when(narrow, |d| d.flex_row().flex_wrap().w_full())
         .when(!narrow, |d| d.flex_col().w(px(190.)).min_w(px(132.)).flex_shrink(1.))
         .gap_0p5()
-        .children(TAB_TITLES.iter().enumerate().map(|(i, title)| {
+        .children(titles.iter().enumerate().map(|(i, title)| {
             let on = i == active;
             let pick = pick.clone();
             div()
@@ -1349,7 +1389,7 @@ pub(crate) fn tab_bar(theme: &gpui_kit::component::Theme, id: &str, active: usiz
 
 /// Platform settings laid out as the mockup's H2: the category list, then
 /// the open category's title, its line and its panels.
-pub(crate) fn layout(theme: &gpui_kit::component::Theme, nav: Div, active: usize, body: impl IntoElement) -> Stateful<Div> {
+pub(crate) fn layout(theme: &gpui_kit::component::Theme, nav: Div, title: &'static str, about: &'static str, body: impl IntoElement) -> Stateful<Div> {
     h_flex()
         .id("settings-page")
         .flex_1()
@@ -1359,7 +1399,7 @@ pub(crate) fn layout(theme: &gpui_kit::component::Theme, nav: Div, active: usize
         .bg(theme.muted)
         .when(ui::narrow(), |p| p.flex_col().items_stretch())
         .child(if ui::narrow() {
-            div().w_full().p_3().border_b_1().border_color(theme.border).child(nav)
+            div().w_full().p(px(ui::PAGE_PAD)).pb_0().child(nav)
         } else {
             v_flex().h_full().p_3().border_r_1().border_color(theme.border).child(nav)
         })
@@ -1375,8 +1415,8 @@ pub(crate) fn layout(theme: &gpui_kit::component::Theme, nav: Div, active: usize
                 .child(
                     v_flex()
                         .gap_0p5()
-                        .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child(TAB_TITLES[active.min(4)]))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(TAB_ABOUT[active.min(4)])),
+                        .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child(title))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(about)),
                 )
                 .child(body),
         )

@@ -860,7 +860,7 @@ pub struct RemoteStatus {
     pub licence: Option<crate::licence::TileLicence>,
 }
 
-/// One service or container on the server (Status and Control).
+/// One service or container on the server (Status).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RemoteService {
     pub name: String,
