@@ -123,6 +123,61 @@ def differs(a, b):
     return max(abs(a[i] - b[i]) for i in range(3)) > TOL
 
 
+def broken_dividers(im, panels, scale, top_bar):
+    """A card's horizontal row dividers are one continuous line each (his
+    rc12-22 note: a line per column left a gap before the action column).
+    A divider is a pixel row inside the card where at least half of the
+    inner width is one flat colour other than the card's; inside its first
+    and last pixel there may be no gap of 6 px or more of card colour."""
+    W, H = im.size
+    out = []
+    for (l, r, t, b) in panels:
+        L, R, T, B = (v * scale for v in (l, r, t, b))
+        if B <= top_bar or T >= H or R - L < 160 * scale:
+            continue
+        x0, x1 = int(L + PAD * scale), int(min(R - PAD * scale, W - 1))
+        span = x1 - x0
+        if span < 100:
+            continue
+        gap = 6 * scale
+        for y in range(int(max(T + 4 * scale, top_bar + 2)), int(min(B - 4 * scale, H - 1))):
+            bg = im.getpixel((int(L + 6 * scale), y))
+            px = [im.getpixel((x, y)) for x in range(x0, x1)]
+            # Dividers are faint (the theme border over the card): a finer
+            # threshold than the overflow check's.
+            near = lambda c, d: max(abs(a - b) for a, b in zip(c, d)) <= 6
+            off = [i for i, c in enumerate(px) if not near(c, bg)]
+            if len(off) < span * 0.5:
+                continue
+            # One flat colour: the most common differing colour covers most.
+            from collections import Counter
+            colour, n = Counter(px[i] for i in off).most_common(1)[0]
+            if n < len(off) * 0.8:
+                continue
+            on = [i for i in off if max(abs(a - b) for a, b in zip(px[i], colour)) <= 6]
+            # Thin: a few pixels above and below are the card's own colour
+            # (a filled banner or a field is not a divider).
+            d = max(2, int(3 * scale))
+            if y - d < 0 or y + d >= H:
+                continue
+            sample = on[:: max(1, len(on) // 40)]
+            thin = sum(1 for i in sample if near(im.getpixel((x0 + i, y - d)), bg) and near(im.getpixel((x0 + i, y + d)), bg))
+            if thin < len(sample) * 0.7:
+                continue
+            run_gap, worst, at = 0, 0, None
+            for i in range(on[0], on[-1] + 1):
+                if not near(px[i], bg):
+                    run_gap = 0
+                else:
+                    run_gap += 1
+                    if run_gap > worst:
+                        worst, at = run_gap, i
+            if worst >= gap:
+                out.append(f"card {l:.0f}-{r:.0f}: row divider at y {y / scale:.0f} broken by {worst / scale:.0f} px near x {(x0 + at) / scale:.0f}")
+                break
+    return out
+
+
 def main():
     png, log, scale = sys.argv[1], sys.argv[2], float(sys.argv[3])
     im = Image.open(png).convert("RGB")
@@ -153,6 +208,9 @@ def main():
         if len(hits) >= MIN_PIXELS:
             x, y = hits[0]
             bad.append(f"card {l:.0f}-{r:.0f} x {t:.0f}-{b:.0f}: {len(hits)} px in its right padding, first at ({x / scale:.0f}, {y / scale:.0f})")
+    # Row dividers: one continuous line per row.
+    if not dialog:
+        bad.extend(broken_dividers(im, panels, scale, top_bar))
     # The menu's selected row opens into the page: no edge line between
     # its curves (the page's colour all across the menu's edge there).
     sel = menu_selection(log)

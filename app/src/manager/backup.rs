@@ -1307,15 +1307,15 @@ pub(crate) fn card_row(theme: &gpui_kit::component::Theme, narrow: bool, label: 
             .child(label_el)
             .child(h_flex().min_w_0().gap_2().items_center().child(h_flex().flex_1().min_w_0().gap_2().items_center().child(value)).children(action));
     }
-    h_flex()
-        .items_stretch()
-        .gap(px(16.))
+    // One divider under the whole row, label to action (his rc12-22 note:
+    // a line per column left a gap before the action).
+    line(h_flex().items_stretch().gap(px(16.)))
         .child(
-            line(h_flex().flex_1().min_w_0().min_h(px(53.)).py(px(8.)).items_center().flex_wrap().gap_y_1())
+            h_flex().flex_1().min_w_0().min_h(px(53.)).py(px(8.)).items_center().flex_wrap().gap_y_1()
                 .child(label_el.w(px(CARD_LABEL_W)).flex_shrink_0())
                 .child(h_flex().flex_1().min_w_0().gap_2().items_center().child(value)),
         )
-        .child(line(h_flex().w(px(CARD_ACTION_W)).flex_shrink_0().items_center().justify_end()).children(action))
+        .child(h_flex().w(px(CARD_ACTION_W)).flex_shrink_0().items_center().justify_end().children(action))
 }
 
 /// The folder row's value: the path, its free space, and what the page
