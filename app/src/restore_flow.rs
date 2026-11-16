@@ -655,7 +655,7 @@ fn setting_label(key: &str) -> String {
 /// for how the plant runs. With the reason.
 fn classify(key: &str) -> (bool, &'static str) {
     let k = key.to_ascii_uppercase();
-    if k.starts_with("PORT:") || k.ends_with("_PORT") {
+    if k.starts_with("PORT:") || k.ends_with("_PORT") || k == "PORT" || k == "HOST" || k.ends_with("_HOST") {
         (false, "Tied to this machine and its firewall")
     } else if k.starts_with("PG:") {
         (false, "Sized for this machine's memory")
@@ -703,8 +703,8 @@ pub fn settings_rows(m: &Manifest, backup_type: &str, here: &Here, now: &Platfor
         }
         return (rows, same);
     };
-    let keys: std::collections::BTreeSet<&String> = p.settings.keys().chain(now.settings.keys()).collect();
-    for key in keys {
+    // Only what the backup recorded: a setting it does not name has nothing to take.
+    for key in p.settings.keys() {
         let (b, h) = (p.settings.get(key).cloned().unwrap_or_default(), now.settings.get(key).cloned().unwrap_or_default());
         if b == h {
             same += 1;
