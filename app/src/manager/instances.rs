@@ -800,7 +800,28 @@ impl InstancesPage {
                                 cx.notify();
                             }))),
                     )
-                    .child(crate::ui::button("os-guide").ghost().small().label("Setup guide").icon(IconName::BookOpen).when(f.guide, |b| { use gpui_kit::component::Selectable as _; b.selected(true) }).on_click(cx.listener(|this, _, _, cx| this.toggle_guide(cx))))
+                    // The mockup's teal ghost button: tint on hover; tint and a
+                    // thin border while the guide is open.
+                    .child(
+                        h_flex()
+                            .id("os-guide")
+                            .h(px(30.))
+                            .px(px(10.))
+                            .gap(px(6.))
+                            .items_center()
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(if f.guide { theme.border } else { gpui_kit::transparent_black() })
+                            .when(f.guide, |b| b.bg(theme.sidebar_accent))
+                            .when(!f.guide, |b| b.hover(|b| b.bg(theme.sidebar_accent)))
+                            .cursor_pointer()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.primary)
+                            .child(gpui_kit::component::Icon::new(IconName::BookOpen).size(px(16.)))
+                            .child("Setup guide")
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_guide(cx))),
+                    )
                     .into_any_element(),
             )).child(
                 // What connecting found (or will check) sits inside the
