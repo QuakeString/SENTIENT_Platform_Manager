@@ -427,6 +427,7 @@ impl InstancesPage {
         if let Some(inst) = self.instance(id) {
             remote::untrust(&inst.host, inst.port);
             remote::forget_secret(id);
+            remote::reuse::forget(id);
         }
         self.list.retain(|i| i.id != id);
         self.statuses.remove(id);
@@ -457,6 +458,19 @@ impl InstancesPage {
             )
         });
         cx.notify();
+    }
+
+    /// "Use it anyway": the Platform Manager installed on the server does
+    /// the jobs; then check it again.
+    fn use_installed(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(inst) = self.instance(id) else { return };
+        match remote::use_installed(&inst) {
+            Ok(()) => self.refresh(id, cx),
+            Err(e) => {
+                self.statuses.insert(id.to_string(), Err(e));
+                cx.notify();
+            }
+        }
     }
 
     /// Copy the Platform Manager to the server (the first time).
@@ -586,7 +600,11 @@ impl InstancesPage {
         let (tone, state) = state_of(status.as_ref(), refreshing);
         let can_work = matches!(&status, Some(Ok(s)) if s.installed) && !busy;
         let can_read = matches!(&status, Some(Ok(s)) if s.installed);
-        let not_set_up = matches!(&status, Some(Err(e)) if e == remote::NOT_SET_UP);
+        let not_set_up = matches!(&status, Some(Err(e)) if remote::needs_setup(e));
+        // An installed Platform Manager there that works the same way: the
+        // card offers to use it (the server's pages offer both choices).
+        let use_installed = matches!(&status, Some(Err(e)) if remote::reuse::is_offer(e))
+            && remote::reuse::found(&id).is_some_and(|f| remote::reuse::fit(&f.info, &remote::reuse::AgentInfo::this()) == remote::reuse::Fit::Compatible);
         let this = cx.entity().downgrade();
         let more = crate::ui::button(SharedString::from(format!("more-{id}"))).outline().w(px(28.)).h(px(28.)).icon(gpui_kit::component::Icon::new(IconName::Ellipsis).size(px(18.)).text_color(cx.theme().foreground)).tooltip("Work on this instance").dropdown_menu({
             let (this, id) = (this.clone(), id.clone());
@@ -615,12 +633,17 @@ impl InstancesPage {
                     .item(item(Lucide::RefreshCw, "Check again", true, Box::new(move |p, _, cx| p.refresh(&i4, cx))))
             }
         });
-        let unreachable = matches!(&status, Some(Err(e)) if e != remote::NOT_SET_UP && e != remote::FORGOTTEN && !e.contains("administrator rights"));
+        let unreachable = matches!(&status, Some(Err(e)) if !remote::needs_setup(e) && e != remote::FORGOTTEN && !e.contains("administrator rights"));
         let current = self.open.as_deref() == Some(id.as_str());
         let primary: AnyElement = if unreachable {
             crate::ui::button(SharedString::from(format!("retry-{id}"))).primary().h(px(28.)).label("Try again").loading(refreshing).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.refresh(&id, cx)
+            })).into_any_element()
+        } else if use_installed {
+            crate::ui::button(SharedString::from(format!("use-installed-{id}"))).primary().h(px(28.)).label("Use it anyway").disabled(busy).on_click(cx.listener({
+                let id = id.clone();
+                move |this, _, _, cx| this.use_installed(&id, cx)
             })).into_any_element()
         } else if not_set_up {
             crate::ui::button(SharedString::from(format!("setup-{id}"))).primary().h(px(28.)).label("Set up").disabled(busy).on_click(cx.listener({
@@ -1238,7 +1261,7 @@ impl Render for InstancesPage {
                 Some(Ok(s)) if s.installed && s.serving => 0,
                 Some(Ok(s)) if s.installed => 1,
                 Some(Ok(_)) => 2,
-                Some(Err(e)) if e == remote::NOT_SET_UP => 3,
+                Some(Err(e)) if remote::needs_setup(e) => 3,
                 Some(Err(e)) if e == remote::FORGOTTEN || e.contains("administrator rights") => 5,
                 Some(Err(_)) => 4,
                 None => 6,
@@ -1339,9 +1362,10 @@ fn state_of(status: Option<&Result<RemoteStatus, String>>, refreshing: bool) -> 
     let (t, s) = match status {
         None if refreshing => (Tone::Neutral, "Checking…"),
         None => (Tone::Neutral, "Not checked"),
-        Some(Err(e)) if e == remote::NOT_SET_UP => (Tone::Warn, "Not set up"),
+        Some(Err(e)) if remote::needs_setup(e) => (Tone::Warn, "Not set up"),
         Some(Err(e)) if e == remote::FORGOTTEN => (Tone::Warn, "Sign-in needed"),
         Some(Err(e)) if e.contains("administrator rights") => (Tone::Warn, "Needs sudo"),
+        Some(Err(e)) if remote::is_not_admin(e) => (Tone::Warn, "Not an administrator"),
         Some(Err(_)) => (Tone::Bad, "Not reachable"),
         Some(Ok(s)) if !s.installed => (Tone::Neutral, "No SENTIENT"),
         Some(Ok(s)) if s.serving => (Tone::Good, "Running"),
@@ -1407,7 +1431,7 @@ fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<Remote
                 .child(row("SENTIENT", "Not found".into(), false))
                 .when_some(s.disk_free, |c, d| c.child(row("Disk", format!("{} free", crate::dbstatus::bytes_label(d)), false)));
         }
-        Some(Err(e)) => col = col.child(div().text_sm().text_color(if e == remote::NOT_SET_UP || e == remote::FORGOTTEN { theme.foreground } else { theme.danger }).child(e.clone())),
+        Some(Err(e)) => col = col.child(div().text_sm().text_color(if remote::needs_setup(e) || e == remote::FORGOTTEN { theme.foreground } else { theme.danger }).child(e.clone())),
         // Still reading: the rows it will show, values as placeholders.
         None => {
             for (i, label) in ["SENTIENT", "Licence", "Database", "Disk", "Last backup", "Up for"].into_iter().enumerate() {

@@ -2100,28 +2100,58 @@ impl RemotePages {
     }
 
     /// One calm panel for a server that is not set up or cannot be reached:
-    /// what is the matter and the one thing that solves it.
+    /// what is the matter and the one thing that solves it. A Platform
+    /// Manager installed there (crate::remote::reuse) is offered as the agent
+    /// when it does the jobs the same way.
     fn gate_panel(&self, e: String, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
         let not_set_up = e == remote::NOT_SET_UP;
+        let installed = remote::reuse::is_offer(&e);
+        let usable = installed && remote::reuse::found(&self.inst.id).is_some_and(|f| remote::reuse::fit(&f.info, &remote::reuse::AgentInfo::this()) == remote::reuse::Fit::Compatible);
+        let title = if installed {
+            "Platform Manager installed on this server"
+        } else if not_set_up {
+            "Server agent not set up"
+        } else {
+            "The server does not answer"
+        };
+        let set_up = |primary: bool| {
+            let b = crate::ui::button("r-setup").label(if installed { "Set up the agent" } else { "Set up" }).loading(busy).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.set_up(cx)));
+            if primary { b.primary() } else { b.outline() }
+        };
         ui::panel(&theme)
-            .child(div().font_weight(FontWeight::MEDIUM).child(if not_set_up { "Server agent not set up" } else { "The server does not answer" }))
+            .child(div().font_weight(FontWeight::MEDIUM).child(title))
             .child(div().text_sm().text_color(theme.muted_foreground).child(if not_set_up {
                 "The Platform Manager works on a server through its server agent. Set up copies the matching agent over SSH and checks it; nothing else on the server changes.".to_string()
             } else {
                 e.clone()
             }))
-            .child(
-                h_flex().gap_2().child(if not_set_up {
-                    crate::ui::button("r-setup").primary().label("Set up").loading(busy).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.set_up(cx)))
-                } else {
-                    crate::ui::button("r-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
-                        this.ready = Read::Loading;
-                        this.reload(cx);
-                    }))
-                }),
-            )
+            .child(if usable {
+                h_flex()
+                    .gap_2()
+                    .child(crate::ui::button("r-use-installed").primary().label("Use it anyway").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.use_installed(cx))))
+                    .child(set_up(false))
+            } else if not_set_up || installed {
+                h_flex().gap_2().child(set_up(true))
+            } else {
+                h_flex().gap_2().child(crate::ui::button("r-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
+                    this.ready = Read::Loading;
+                    this.reload(cx);
+                })))
+            })
+    }
+
+    /// "Use it anyway": the installed Platform Manager does the jobs.
+    fn use_installed(&mut self, cx: &mut Context<Self>) {
+        match remote::use_installed(&self.inst) {
+            Ok(()) => {
+                self.ready = Read::Loading;
+                self.reload(cx);
+            }
+            Err(e) => self.ready = Read::Failed(e),
+        }
+        cx.notify();
     }
 
     fn set_up(&mut self, cx: &mut Context<Self>) {

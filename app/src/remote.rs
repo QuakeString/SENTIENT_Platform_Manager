@@ -26,6 +26,15 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use sentient_installer_core::progress::{Progress, ProgressFn};
 
+pub mod reuse;
+
+/// What the agent jobs mean (`--job …`, crate::headless), as one number:
+/// raised whenever a job is added, removed or answers differently, so a
+/// Platform Manager installed on a server is used as the agent only when it
+/// speaks the same jobs (crate::remote::reuse). A build too old to report it
+/// (no `--job agent-info`) counts as 0.
+pub const PROTOCOL: u32 = 1;
+
 /// The colours offered for a remote instance (this computer is SENTIENT teal).
 pub const PALETTE: [&str; 6] = ["#6b4fa0", "#b4541a", "#4d7c2a", "#a23b5c", "#8a6d1f", "#c2410c"];
 /// This computer's colour.
@@ -495,12 +504,93 @@ fn classify_admin(stdout: &str, stderr: &str, had_password: bool) -> Admin {
 /// Shell text that runs the agent with `args`: the system one as
 /// administrator when it is there, else the per-user one as the account.
 fn agent_cmd(inst: &Instance, args: &str, password: bool) -> String {
-    let sys = format!("{REMOTE_SPM} {args}");
+    let own = reuse::LINUX_OWN;
+    let quoted = |path: &str| format!("{path} {args}").replace('\'', "'\\''");
     format!(
-        "if [ -x {REMOTE_SPM} ]; then {}sh -c '{}'; elif [ -x \"{USER_SPM}\" ]; then echo {USER_MARK} >&2; \"{USER_SPM}\" {args}; else echo 'The server agent is not set up on this server.' >&2; exit 3; fi",
-        sudo(inst, password),
-        sys.replace('\'', "'\\''")
+        "if [ -x {own} ]; then {s}sh -c '{}'; elif [ -x {REMOTE_SPM} ]; then {s}sh -c '{}'; elif [ -x \"{USER_SPM}\" ]; then echo {USER_MARK} >&2; \"{USER_SPM}\" {args}; else echo 'The server agent is not set up on this server.' >&2; exit 3; fi",
+        quoted(own),
+        quoted(REMOTE_SPM),
+        s = sudo(inst, password),
     )
+}
+
+/// Shell text that sets `$A` to the system agent: this Platform Manager's
+/// own beside an installed one, else the one at REMOTE_SPM.
+fn pick_system_agent() -> String {
+    format!("A={REMOTE_SPM}; [ -x {own} ] && A={own};", own = reuse::LINUX_OWN)
+}
+
+/// Which program does an instance's jobs.
+#[derive(Debug, Clone, PartialEq)]
+enum Agent {
+    /// This Platform Manager's agent, set up earlier (or none yet: deploy).
+    Own,
+    /// A Platform Manager installed there, used as it is.
+    Installed(String),
+}
+
+/// Look on the server for the agent: this Platform Manager's own, or an
+/// installed Platform Manager that can do the jobs. Err: [`NOT_SET_UP`], an
+/// installed one that cannot be used as it is ([`reuse::offer_message`]),
+/// or why the server does not answer.
+fn resolve(inst: &Instance) -> Result<Agent, String> {
+    #[cfg(debug_assertions)]
+    if let Ok(kind) = std::env::var("SPM_DEBUG_REMOTE_INSTALLED") {
+        let ours = reuse::AgentInfo::this();
+        let theirs = match kind.as_str() {
+            "same" => ours.clone(),
+            "newer" => reuse::AgentInfo { version: "0.9.0".into(), commit: "1234567".into(), protocol: PROTOCOL + 1, window: true },
+            "old" => reuse::AgentInfo::default(),
+            _ => reuse::AgentInfo { version: "0.8.0-rc11".into(), commit: "1234567".into(), protocol: PROTOCOL, window: true },
+        };
+        let path = if is_windows(inst) { r"C:\Program Files\SENTIENT Platform Manager\SENTIENT Platform Manager.exe".to_string() } else { REMOTE_SPM.to_string() };
+        reuse::remember(&inst.id, Some(reuse::Installed { path: path.clone(), info: theirs.clone() }));
+        return if reuse::usable(&inst.id, &theirs) { Ok(Agent::Installed(path)) } else { Err(reuse::offer_message(&theirs, &ours)) };
+    }
+    let probe = if is_windows(inst) {
+        win::probe(inst)?
+    } else {
+        let out = run(
+            inst,
+            &format!(
+                "if [ -x {own} ]; then echo @@OWN; elif [ -x {REMOTE_SPM} ]; then echo '@@INSTALLED {REMOTE_SPM}'; {REMOTE_SPM} --job agent-info 2>&1; \
+                 elif [ -x \"{USER_SPM}\" ]; then echo @@OWN; else echo @@NONE; fi",
+                own = reuse::LINUX_OWN
+            ),
+            None,
+        )?;
+        match reuse::parse_probe(&out) {
+            // A bare agent at REMOTE_SPM (or one too old to say what it is)
+            // is this Platform Manager's own, from an earlier Set up.
+            reuse::Probe::Installed(i) if !i.info.window => reuse::Probe::Own,
+            p => p,
+        }
+    };
+    let agent = match probe {
+        reuse::Probe::Own => {
+            reuse::remember(&inst.id, None);
+            Ok(Agent::Own)
+        }
+        reuse::Probe::None => {
+            reuse::remember(&inst.id, None);
+            Err(NOT_SET_UP.to_string())
+        }
+        reuse::Probe::Installed(i) => {
+            reuse::remember(&inst.id, Some(i.clone()));
+            if reuse::usable(&inst.id, &i.info) { Ok(Agent::Installed(i.path)) } else { Err(reuse::offer_message(&i.info, &reuse::AgentInfo::this())) }
+        }
+    };
+    if let Ok(a) = &agent {
+        win::set_exe(&inst.id, a);
+    }
+    agent
+}
+
+/// "Use it anyway": the installed Platform Manager found on the server does
+/// the jobs from now on (for its version and build).
+pub fn use_installed(inst: &Instance) -> Result<(), String> {
+    let found = reuse::found(&inst.id).ok_or("No installed Platform Manager was found on this server. Check again.")?;
+    reuse::accept(&inst.id, &found.info)
 }
 
 /// The account has no sudo: the next Set up puts the agent in its home.
@@ -581,15 +671,34 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
         _ => {}
     }
     let det = inst.detected.clone().ok_or("Connect to the server first.")?;
+    // An installed Platform Manager that does the jobs: nothing to copy.
+    // One that cannot is left as it is, and this version's agent goes
+    // beside it (crate::remote::reuse).
+    let beside = match resolve(inst) {
+        Ok(Agent::Installed(path)) => {
+            sink(Progress::Log { line: format!("The Platform Manager installed on the server does the work ({path}).") });
+            if det.os != Os::Windows {
+                ensure_sampler(inst, sink, false);
+            }
+            return Ok(());
+        }
+        Err(e) if is_not_admin(&e) => return Err(e),
+        Ok(Agent::Own) | Err(_) => reuse::found(&inst.id).is_some(),
+    };
     if det.os == Os::Windows {
         return win::deploy(inst, sink);
     }
-    if det.arch != "x86_64" {
-        return Err(failed(&format!("No server agent for Linux on {} processors.", det.arch), ""));
-    }
-    let me = agent_file(false, sink)?;
+    let arch = match det.arch.as_str() {
+        "x86_64" | "amd64" => Arch::X86_64,
+        "aarch64" | "arm64" => Arch::Aarch64,
+        other => return Err(failed(&format!("There is no server agent for Linux on {other} processors. The agent runs on x86_64 and ARM64 (aarch64) servers."), "")),
+    };
+    let me = agent_file(System::Linux(arch), sink)?;
+    // Where it goes as administrator: REMOTE_SPM, or beside an installed
+    // Platform Manager there (never over it).
+    let target = if beside || run(inst, &format!("[ -x {} ] && echo yes || echo no", reuse::LINUX_OWN), None).is_ok_and(|o| o.trim() == "yes") { reuse::LINUX_OWN } else { REMOTE_SPM };
     let want = sentient_installer_core::manifest::sha256_file(&me)?;
-    let have = run(inst, &format!("if [ -x {REMOTE_SPM} ]; then sha256sum {REMOTE_SPM}; else sha256sum \"{USER_SPM}\"; fi 2>/dev/null | cut -d' ' -f1"), None).unwrap_or_default();
+    let have = run(inst, &format!("if [ -x {target} ]; then sha256sum {target}; else sha256sum \"{USER_SPM}\"; fi 2>/dev/null | cut -d' ' -f1"), None).unwrap_or_default();
     if have.trim() == want {
         sink(Progress::Log { line: "The Platform Manager on the server is up to date.".into() });
         ensure_sampler(inst, sink, false);
@@ -627,9 +736,12 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
     let user_chosen = run(inst, &format!("[ ! -e {REMOTE_SPM} ] && [ -d \"{USER_DIR}\" ] && echo yes || echo no"), None).is_ok_and(|o| o.trim() == "yes");
     match probe_admin(inst) {
         Admin::Yes => {
-            if let Err(e) = sudo_run(inst, &format!("install -D -m 0755 {staging} {REMOTE_SPM} && mkdir -p {REMOTE_JOBS}"), None) {
+            if let Err(e) = sudo_run(inst, &format!("install -D -m 0755 {staging} {target} && mkdir -p {REMOTE_JOBS}"), None) {
                 clean(inst);
-                return Err(failed(&format!("The agent could not be put in place at {REMOTE_SPM} (as administrator). The agent there is unchanged."), &e));
+                return Err(failed(&format!("The agent could not be put in place at {target} (as administrator). The agent there is unchanged."), &e));
+            }
+            if target == reuse::LINUX_OWN {
+                sink(Progress::Log { line: format!("This version's agent is set up beside the Platform Manager installed on the server, at {target}; the installed one is not changed.") });
             }
         }
         Admin::No => {
@@ -790,12 +902,7 @@ pub fn ready(inst: &Instance) -> Result<(), String> {
     if std::env::var_os("SPM_DEBUG_REMOTE_STATUS").is_some() {
         return status(inst).map(|_| ());
     }
-    let there = if is_windows(inst) {
-        win::ps(inst, &format!("Test-Path '{}'", win::EXE))?.trim() == "True"
-    } else {
-        run(inst, &format!("[ -x {REMOTE_SPM} ] || [ -x \"{USER_SPM}\" ] && echo yes || echo no"), None)?.trim() == "yes"
-    };
-    if there { Ok(()) } else { Err(NOT_SET_UP.into()) }
+    resolve(inst).map(|_| ())
 }
 
 /// What [`status`] says before the Platform Manager is on the server.
@@ -804,11 +911,56 @@ pub const NOT_ADDED: &str = "No SENTIENT is added on this server.";
 
 pub const NOT_SET_UP: &str = "The server agent is not set up on this server. Set up installs it, to read the server's state and work on it.";
 
+/// Whether an error means the agent needs setting up (or choosing): none on
+/// the server, or an installed Platform Manager not used as it is yet.
+pub fn needs_setup(e: &str) -> bool {
+    e == NOT_SET_UP || reuse::is_offer(e)
+}
+
+/// What the agent prints on Windows when the account is not an
+/// administrator (crate::headless::run).
+const NOT_ELEVATED: &str = "Run this from an elevated prompt";
+
+/// Whether a job's answer is the agent's refusal for want of rights.
+fn not_elevated(out: &str) -> bool {
+    out.contains(NOT_ELEVATED)
+}
+
+/// A Windows account that is not an administrator: every job refuses, in
+/// words of its own; this says it plainly, whichever way it came back.
+fn rights_answer(inst: &Instance, r: Result<String, String>) -> Result<String, String> {
+    match r {
+        Ok(out) | Err(out) if is_windows(inst) && not_elevated(&out) => Err(not_admin(inst)),
+        r => r,
+    }
+}
+
+/// The Windows account the instance signs in with is not an administrator.
+pub fn not_admin(inst: &Instance) -> String {
+    not_admin_message(&inst.user, &inst.host)
+}
+
+pub fn not_admin_message(user: &str, host: &str) -> String {
+    format!(
+        "The account {user} on {host} is not an administrator. The Platform Manager needs an administrator account there: add it to the Administrators group, or use an administrator account for this instance."
+    )
+}
+
+/// Whether an error is [`not_admin`].
+pub fn is_not_admin(e: &str) -> bool {
+    e.contains(" is not an administrator. The Platform Manager needs an administrator account there")
+}
+
 /// The server's state, from its own Platform Manager (`--job status-json`).
 pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {
     #[cfg(debug_assertions)]
     if let Some(secs) = std::env::var("SPM_DEBUG_REMOTE_SLOW").ok().and_then(|s| s.parse::<u64>().ok()) {
         std::thread::sleep(std::time::Duration::from_secs(secs));
+    }
+    // Screens: an installed Platform Manager found there (crate::remote::resolve).
+    #[cfg(debug_assertions)]
+    if std::env::var_os("SPM_DEBUG_REMOTE_INSTALLED").is_some() {
+        resolve(inst)?;
     }
     if is_windows(inst) {
         #[cfg(debug_assertions)]
@@ -826,9 +978,7 @@ pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {
             return Ok(s.clone());
         }
     }
-    if run(inst, &format!("[ -x {REMOTE_SPM} ] || [ -x \"{USER_SPM}\" ] && echo yes || echo no"), None)?.trim() != "yes" {
-        return Err(NOT_SET_UP.into());
-    }
+    resolve(inst)?;
     let out = spm_job(inst, "status-json")?;
     let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's Platform Manager gave no status.")?;
     let mut st: RemoteStatus = serde_json::from_str(line).map_err(|e| format!("unexpected status from the server: {e}"))?;
@@ -1075,7 +1225,7 @@ pub fn monitor(inst: &Instance) -> Result<crate::sysmon::Monitor, String> {
     if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_MONITOR") {
         return serde_json::from_str(&t.to_string_lossy()).map_err(|e| e.to_string());
     }
-    let out = if is_windows(inst) { spm_job(inst, "monitor-json")? } else { run(inst, &format!("A={REMOTE_SPM}; [ -x $A ] || A=\"{USER_SPM}\"; \"$A\" --job monitor-json"), None)? };
+    let out = if is_windows(inst) { spm_job(inst, "monitor-json")? } else { run(inst, &format!("{} [ -x $A ] || A=\"{USER_SPM}\"; \"$A\" --job monitor-json", pick_system_agent()), None)? };
     let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("no reading")?;
     serde_json::from_str(line).map_err(|e| e.to_string())
 }
@@ -1109,12 +1259,12 @@ pub fn start_job(inst: &Instance, args: &[&str]) -> Result<String, String> {
         return Err("Another job is still running on this server. Wait until it ends.".into());
     }
     let quoted: Vec<String> = args.iter().map(|a| format!("'{}'", a.replace('\'', ""))).collect();
-    let system = run(inst, &format!("[ -x {REMOTE_SPM} ] && echo yes || echo no"), None)?.trim() == "yes";
-    if system {
+    let system = run(inst, &format!("{} [ -x $A ] && echo \"$A\" || echo no", pick_system_agent()), None)?.trim().to_string();
+    if system != "no" {
         sudo_run(
             inst,
             &format!(
-                "mkdir -p {REMOTE_JOBS} && systemd-run --unit=spm-job-{id} --collect --property=StandardOutput=file:{REMOTE_JOBS}/{id}.log --property=StandardError=file:{REMOTE_JOBS}/{id}.err {REMOTE_SPM} --job --json {}",
+                "mkdir -p {REMOTE_JOBS} && systemd-run --unit=spm-job-{id} --collect --property=StandardOutput=file:{REMOTE_JOBS}/{id}.log --property=StandardError=file:{REMOTE_JOBS}/{id}.err {system} --job --json {}",
                 quoted.join(" ")
             ),
             None,
@@ -1252,15 +1402,21 @@ fn spm_job(inst: &Instance, job: &str) -> Result<String, String> {
         // Piped, so PowerShell waits for it and reads its output even when
         // it is the windowed build (an installed Platform Manager); its
         // errors folded into the output.
-        win::ps(inst, &format!("& '{}' --job {job} 2>&1 | ForEach-Object {{ \"$_\" }}", win::EXE))
+        win::exe(inst).and_then(|exe| win::ps(inst, &format!("& '{}' --job {job} 2>&1 | ForEach-Object {{ \"$_\" }}", exe.replace('\'', "''"))))
     } else {
         agent_run(inst, &format!("--job {job}"))
     };
+    let r = rights_answer(inst, r);
     // An agent that does not know the job answers with its usage text: that
     // text goes to the activity log, the pages say the agent is out of date.
     r.map_err(|e| {
         if e.contains("usage: --job") || e.contains("Unknown job") {
             crate::maintenance_ops::log_line(&format!("{}: the agent does not know \"{job}\" (out of date)", inst.name));
+            // An installed Platform Manager in use: Update agent sets up
+            // this version's own beside it.
+            if reuse::found(&inst.id).is_some() {
+                reuse::refuse(&inst.id);
+            }
             AGENT_OLD.to_string()
         } else {
             e
@@ -1398,16 +1554,110 @@ pub fn failed(headline: &str, details: &str) -> String {
 /// Where [`failed`] splits the headline from the details.
 pub const DETAILS: &str = "\n\nDetails: ";
 
-/// The agent's file name for a server's system.
-pub fn agent_name(windows: bool) -> &'static str {
-    if windows { "sentient-platform-manager-agent-windows-x86_64.exe" } else { "sentient-platform-manager-agent-linux-x86_64" }
+/// A server's processor, for its Linux agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arch {
+    X86_64,
+    Aarch64,
 }
 
-/// The server agent for Linux (static, no desktop libraries) or Windows:
-/// the one this package carries beside the program (`agents/`), else the
-/// one published with this version, checked against its SHA-256.
-fn agent_file(windows: bool, sink: &ProgressFn) -> Result<PathBuf, String> {
-    let name = agent_name(windows);
+/// The system a server agent is built for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum System {
+    Linux(Arch),
+    Windows,
+}
+
+impl System {
+    /// How the messages name it.
+    pub fn label(self) -> &'static str {
+        match self {
+            System::Linux(Arch::X86_64) => "Linux (x86_64)",
+            System::Linux(Arch::Aarch64) => "Linux (ARM64)",
+            System::Windows => "Windows",
+        }
+    }
+}
+
+/// The agent's file name for a server's system (as the release publishes it).
+pub fn agent_name(system: System) -> &'static str {
+    match system {
+        System::Linux(Arch::X86_64) => "sentient-platform-manager-agent-linux-x86_64",
+        System::Linux(Arch::Aarch64) => "sentient-platform-manager-agent-linux-aarch64",
+        System::Windows => "sentient-platform-manager-agent-windows-x86_64.exe",
+    }
+}
+
+/// Why no server agent could be had for a system: this package does not
+/// carry it, and the download (the fallback, for published releases) did
+/// not give one either. Its text names the cause and what to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoAgent {
+    /// This version is not a published release (a test or local build).
+    NotPublished { system: System, version: String },
+    /// The release is published without this system's agent.
+    NotInRelease { system: System, version: String },
+    /// The download failed (no connection, the release site refused…).
+    Download { system: System, version: String, error: String },
+    /// What was downloaded does not match its published checksum.
+    Checksum { system: System, version: String },
+}
+
+impl std::fmt::Display for NoAgent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let fix = |s: &System| format!("Install the Platform Manager on that computer, or use a Platform Manager package that includes the {} agent.", s.label());
+        match self {
+            NoAgent::NotPublished { system, version } => write!(
+                f,
+                "This package has no {} agent, and this build ({version}) is not a published release, so none can be downloaded. {}",
+                system.label(),
+                fix(system)
+            ),
+            NoAgent::NotInRelease { system, version } => write!(f, "This package has no {} agent, and the published release {version} has none either. {}", system.label(), fix(system)),
+            NoAgent::Download { system, version, .. } => write!(
+                f,
+                "This package has no {} agent, and the one published with {version} could not be downloaded. Check this computer's internet connection and try again. {}",
+                system.label(),
+                fix(system)
+            ),
+            NoAgent::Checksum { system, version } => write!(
+                f,
+                "This package has no {} agent, and the one downloaded for {version} does not match its published checksum, so it was not used. Try again. {}",
+                system.label(),
+                fix(system)
+            ),
+        }
+    }
+}
+
+impl NoAgent {
+    /// The message with the technical details behind "Show details".
+    pub fn message(&self) -> String {
+        let details = match self {
+            NoAgent::Download { error, .. } => error.clone(),
+            NoAgent::NotPublished { system, version } | NoAgent::NotInRelease { system, version } | NoAgent::Checksum { system, version } => {
+                format!("{} for Platform Manager {version}", agent_name(*system))
+            }
+        };
+        failed(&self.to_string(), &details)
+    }
+}
+
+/// The agent this build carries for `system` (build.rs).
+fn embedded_agent(system: System) -> Option<&'static [u8]> {
+    match system {
+        System::Linux(Arch::X86_64) => embedded::LINUX,
+        System::Linux(Arch::Aarch64) => embedded::LINUX_AARCH64,
+        System::Windows => embedded::WINDOWS,
+    }
+}
+
+/// The server agent for a system (Linux static, with no desktop
+/// libraries; Windows): the one beside the program (`agents/`), else the one
+/// this program carries, else, for a published release, the one published
+/// with this version, checked against its SHA-256.
+fn agent_file(system: System, sink: &ProgressFn) -> Result<PathBuf, String> {
+    let name = agent_name(system);
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(d) = std::env::var_os("SPM_AGENT_DIR") {
         dirs.push(PathBuf::from(d));
@@ -1420,21 +1670,34 @@ fn agent_file(windows: bool, sink: &ProgressFn) -> Result<PathBuf, String> {
         return Ok(found);
     }
     // Carried inside this program: written out once per version.
-    if let Some(bytes) = if windows { embedded::WINDOWS } else { embedded::LINUX } {
-        let dir = crate::updates::prefs_dir().join("remote-builds");
-        let file = dir.join(format!("{}-{name}", crate::updates::manager_version()));
-        if std::fs::metadata(&file).map(|m| m.len() as usize) .ok() != Some(bytes.len()) {
-            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            std::fs::write(&file, bytes).map_err(|e| format!("write {}: {e}", file.display()))?;
-        }
-        return Ok(file);
+    if let Some(bytes) = embedded_agent(system) {
+        return write_out(name, bytes);
     }
-    released_agent(name, sink).map_err(|e| {
-        failed(
-            "This Platform Manager package does not carry the server agent, and none could be downloaded for its version.",
-            &e,
-        )
-    })
+    #[cfg(debug_assertions)]
+    if std::env::var_os("SPM_DEBUG_NO_DOWNLOAD").is_some() {
+        return Err(NoAgent::NotPublished { system, version: crate::updates::manager_version().to_string() }.message());
+    }
+    released_agent(system, sink).map_err(|e| e.message())
+}
+
+/// The agents this program carries, each written out (`--job agents`).
+pub fn carried_agents() -> Vec<(System, Result<Option<PathBuf>, String>)> {
+    [System::Linux(Arch::X86_64), System::Linux(Arch::Aarch64), System::Windows]
+        .into_iter()
+        .map(|s| (s, embedded_agent(s).map(|b| write_out(agent_name(s), b)).transpose()))
+        .collect()
+}
+
+/// Write a carried agent out (crate::updates::prefs_dir/remote-builds), once
+/// per version and build.
+fn write_out(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let dir = crate::updates::prefs_dir().join("remote-builds");
+    let file = dir.join(format!("{}-{}-{name}", crate::updates::manager_version(), crate::updates::build_commit()));
+    if std::fs::metadata(&file).map(|m| m.len() as usize).ok() != Some(bytes.len()) {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        std::fs::write(&file, bytes).map_err(|e| format!("write {}: {e}", file.display()))?;
+    }
+    Ok(file)
 }
 
 /// The agents this build carries (build.rs).
@@ -1443,28 +1706,34 @@ mod embedded {
 }
 
 /// The agent published with this Platform Manager's version.
-fn released_agent(name: &str, sink: &ProgressFn) -> Result<PathBuf, String> {
+fn released_agent(system: System, sink: &ProgressFn) -> Result<PathBuf, NoAgent> {
     use sentient_installer_core::releases;
+    let name = agent_name(system);
     let version = crate::updates::manager_version().to_string();
+    let download = |error: String| NoAgent::Download { system, version: version.clone(), error };
     let dir = crate::updates::prefs_dir().join("remote-builds");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| download(e.to_string()))?;
     sink(Progress::Step { name: format!("Getting the server agent of Platform Manager {version}") });
-    let all = releases::fetch(releases::MANAGER_REPO)?;
+    let all = releases::fetch(releases::MANAGER_REPO).map_err(download)?;
     let r = all
         .iter()
         .find(|r| releases::is_manager(r) && releases::manager_version_of(r) == version)
-        .ok_or_else(|| format!("Platform Manager {version} is not published"))?;
-    let asset = r.assets.iter().find(|a| a.name == name).ok_or_else(|| format!("release {version} has no {name}"))?;
-    let sha = crate::updates::published_sha256(r, asset).ok_or("no published checksum")?;
+        .ok_or_else(|| NoAgent::NotPublished { system, version: version.clone() })?;
+    let asset = r.assets.iter().find(|a| a.name == name).ok_or_else(|| NoAgent::NotInRelease { system, version: version.clone() })?;
+    let sha = crate::updates::published_sha256(r, asset).ok_or_else(|| NoAgent::Checksum { system, version: version.clone() })?;
     let file = dir.join(format!("{version}-{name}"));
     let ok = |f: &Path| sentient_installer_core::manifest::sha256_file(f).is_ok_and(|h| h.eq_ignore_ascii_case(&sha));
     if !ok(&file) {
-        let resp = sentient_installer_core::net::agent().get(&asset.browser_download_url).set("User-Agent", "SENTIENT-Platform-Manager").call().map_err(|e| format!("download {name}: {e}"))?;
-        let mut out = std::fs::File::create(&file).map_err(|e| e.to_string())?;
-        std::io::copy(&mut resp.into_reader(), &mut out).map_err(|e| format!("download {name}: {e}"))?;
+        let resp = sentient_installer_core::net::agent()
+            .get(&asset.browser_download_url)
+            .set("User-Agent", "SENTIENT-Platform-Manager")
+            .call()
+            .map_err(|e| download(format!("download {name}: {e}")))?;
+        let mut out = std::fs::File::create(&file).map_err(|e| download(e.to_string()))?;
+        std::io::copy(&mut resp.into_reader(), &mut out).map_err(|e| download(format!("download {name}: {e}")))?;
         if !ok(&file) {
             let _ = std::fs::remove_file(&file);
-            return Err(format!("{name} does not match its published checksum"));
+            return Err(NoAgent::Checksum { system, version });
         }
     }
     Ok(file)
@@ -1481,6 +1750,49 @@ mod win {
     pub const EXE: &str = r"C:\ProgramData\SENTIENT\Platform Manager\remote\sentient-platform-manager.exe";
     const JOBS: &str = r"C:\ProgramData\SENTIENT\Platform Manager\remote\jobs";
 
+    /// The program each Windows instance's jobs run with, as last resolved
+    /// (crate::remote::resolve): this Platform Manager's own copy at EXE,
+    /// or the installed one.
+    static AGENT_EXE: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+    pub fn set_exe(id: &str, agent: &Agent) {
+        let exe = match agent {
+            Agent::Own => EXE.to_string(),
+            Agent::Installed(path) => path.clone(),
+        };
+        AGENT_EXE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(id.to_string(), exe);
+    }
+
+    /// The program to run jobs with (resolved once, then remembered).
+    pub fn exe(inst: &Instance) -> Result<String, String> {
+        let known = AGENT_EXE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(&inst.id).cloned());
+        match known {
+            Some(exe) => Ok(exe),
+            None => resolve(inst).map(|a| match a {
+                Agent::Own => EXE.to_string(),
+                Agent::Installed(path) => path,
+            }),
+        }
+    }
+
+    /// Look for this Platform Manager's own agent, else an installed
+    /// Platform Manager, and ask that one what it is (one connection).
+    pub fn probe(inst: &Instance) -> Result<reuse::Probe, String> {
+        let out = ps(
+            inst,
+            &format!(
+                "if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators')) {{ '@@NOTADMIN'; exit 0 }}; \
+                 if (Test-Path -PathType Leaf '{EXE}') {{ '@@OWN' }} else {{ {}; \
+                 if ($i) {{ '@@INSTALLED ' + $i; & $i --job agent-info 2>&1 | ForEach-Object {{ \"$_\" }} }} else {{ '@@NONE' }} }}; exit 0",
+                reuse::windows_find_script()
+            ),
+        )?;
+        if out.lines().any(|l| l.trim() == "@@NOTADMIN") || not_elevated(&out) {
+            return Err(not_admin(inst));
+        }
+        Ok(reuse::parse_probe(&out))
+    }
+
     /// Run a PowerShell script on the server (encoded, so no quoting
     /// passes through cmd).
     pub fn ps(inst: &Instance, script: &str) -> Result<String, String> {
@@ -1491,7 +1803,7 @@ mod win {
     }
 
     pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
-        let file = agent_file(true, sink)?;
+        let file = agent_file(System::Windows, sink)?;
         let want = sentient_installer_core::manifest::sha256_file(&file)?;
         let have = ps(inst, &format!("if (Test-Path '{EXE}') {{ (Get-FileHash -Algorithm SHA256 '{EXE}').Hash }}")).unwrap_or_default();
         if have.trim().eq_ignore_ascii_case(&want) {
@@ -1514,14 +1826,22 @@ mod win {
             return Err("The copy on the server does not match (checksum); nothing was replaced. Try again.".into());
         }
         ps(inst, &format!("Move-Item -Force '{upload}' '{EXE}'")).map_err(|e| super::failed("The agent could not be put in place. The agent there is unchanged.", &e))?;
+        set_exe(&inst.id, &Agent::Own);
+        if reuse::found(&inst.id).is_some() {
+            sink(Progress::Log { line: format!("This version's agent is set up beside the Platform Manager installed on the server, at {EXE}; the installed one is not changed.") });
+        }
         Ok(())
     }
 
     pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {
-        if ps(inst, &format!("Test-Path '{EXE}'"))?.trim() != "True" {
-            return Err(NOT_SET_UP.into());
+        let exe = match resolve(inst)? {
+            Agent::Own => EXE.to_string(),
+            Agent::Installed(path) => path,
+        };
+        let out = ps(inst, &format!("& '{}' --job status-json 2>&1 | ForEach-Object {{ \"$_\" }}", exe.replace('\'', "''")))?;
+        if not_elevated(&out) {
+            return Err(not_admin(inst));
         }
-        let out = ps(inst, &format!("& '{EXE}' --job status-json"))?;
         let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's Platform Manager gave no status.")?;
         let mut st: RemoteStatus = serde_json::from_str(line).map_err(|e| format!("unexpected status from the server: {e}"))?;
         st.running_job = running_job(inst);
@@ -1535,7 +1855,8 @@ mod win {
 
     pub fn start_job(inst: &Instance, id: &str, args: &[&str]) -> Result<(), String> {
         let quoted: Vec<String> = args.iter().map(|a| format!("\"{}\"", a.replace(['"', '\''], ""))).collect();
-        let cmdline = format!("/c \"\"{EXE}\" --job --json {} > \"{JOBS}\\{id}.log\" 2> \"{JOBS}\\{id}.err\"\"", quoted.join(" "));
+        let exe = exe(inst)?;
+        let cmdline = format!("/c \"\"{exe}\" --job --json {} > \"{JOBS}\\{id}.log\" 2> \"{JOBS}\\{id}.err\"\"", quoted.join(" "));
         let script = format!(
             "New-Item -ItemType Directory -Force '{JOBS}' | Out-Null; \
              if (Get-ScheduledTask -TaskName 'spm-job-*' -ErrorAction SilentlyContinue | Where-Object State -eq 'Running') {{ 'BUSY'; exit }}; \
@@ -1741,7 +2062,7 @@ mod tests {
         deploy(&inst, &sink).unwrap();
         // A staging file left by an earlier attempt never blocks a retry:
         // the complete one is used, a partial one is replaced.
-        let me = agent_file(false, &sink).unwrap();
+        let me = agent_file(System::Linux(Arch::X86_64), &sink).unwrap();
         let want = sentient_installer_core::manifest::sha256_file(&me).unwrap();
         let home = home(&inst).unwrap();
         let staging = format!("{}/.spm-upload-{}", home.trim_end_matches('/'), &want[..12]);
@@ -1775,7 +2096,7 @@ mod tests {
         assert!(ready(&inst).is_ok());
         deploy(&inst, &sink).unwrap();
         let there = run(&inst, &format!("sha256sum {REMOTE_SPM} | cut -d' ' -f1"), None).unwrap();
-        let here = sentient_installer_core::manifest::sha256_file(&agent_file(false, &sink).unwrap()).unwrap();
+        let here = sentient_installer_core::manifest::sha256_file(&agent_file(System::Linux(Arch::X86_64), &sink).unwrap()).unwrap();
         assert_eq!(there.trim(), here, "the older agent was replaced");
         // A detached job, followed to its end.
         let id = start_job(&inst, &["find-existing"]).unwrap();
@@ -2025,6 +2346,161 @@ mod tests {
         eprintln!("restore without a running stack: {e}");
         assert!(!e.is_empty());
         sudo_run(inst, "rm -f /var/lib/sentient-platform-manager/installation.json", None).unwrap();
+    }
+
+    #[test]
+    fn a_windows_account_without_administrator_rights_is_named() {
+        let mut inst = Instance { id: "w".into(), name: "w".into(), color: PALETTE[0].into(), os: Os::Windows, host: "plant-pc".into(), port: 22, user: "operator".into(), auth: Auth::Password, key_file: None, key_has_passphrase: false, host_key: None, detected: None };
+        let want = "The account operator on plant-pc is not an administrator. The Platform Manager needs an administrator account there: add it to the Administrators group, or use an administrator account for this instance.";
+        // The agent's refusal, on stdout (piped 2>&1) or as the error.
+        let piped = "sentient-platform-manager.exe : Run this from an elevated prompt (Run as administrator).".to_string();
+        assert_eq!(rights_answer(&inst, Ok(piped.clone())).unwrap_err(), want);
+        assert_eq!(rights_answer(&inst, Err(piped.clone())).unwrap_err(), want);
+        assert!(is_not_admin(want) && !needs_setup(want));
+        // Other answers pass through.
+        assert_eq!(rights_answer(&inst, Ok("{\"installed\":true}".into())).unwrap(), "{\"installed\":true}");
+        assert_eq!(rights_answer(&inst, Err("timed out".into())).unwrap_err(), "timed out");
+        // Linux has its own sudo messages.
+        inst.os = Os::Linux;
+        assert_eq!(rights_answer(&inst, Ok(piped.clone())).unwrap(), piped);
+    }
+
+    #[test]
+    fn a_missing_agent_says_why_and_what_to_do() {
+        let e = NoAgent::NotPublished { system: System::Windows, version: "0.8.0-rc12".into() }.message();
+        let (head, details) = split_failure(&e);
+        assert_eq!(
+            head,
+            "This package has no Windows agent, and this build (0.8.0-rc12) is not a published release, so none can be downloaded. Install the Platform Manager on that computer, or use a Platform Manager package that includes the Windows agent."
+        );
+        assert_eq!(details.as_deref(), Some("sentient-platform-manager-agent-windows-x86_64.exe for Platform Manager 0.8.0-rc12"));
+        let e = NoAgent::Download { system: System::Linux(Arch::Aarch64), version: "0.8.0".into(), error: "download: timed out".into() }.message();
+        assert!(e.starts_with("This package has no Linux (ARM64) agent, and the one published with 0.8.0 could not be downloaded."), "{e}");
+        assert!(e.ends_with("timed out"));
+    }
+
+    /// The agent command runs this Platform Manager's own agent beside an
+    /// installed one first, then the one at REMOTE_SPM, then the per-user one.
+    #[test]
+    fn the_own_agent_beside_an_installed_one_comes_first() {
+        let inst = Instance { id: "t".into(), name: "t".into(), color: PALETTE[0].into(), os: Os::Linux, host: "h".into(), port: 22, user: "ops".into(), auth: Auth::Key, key_file: None, key_has_passphrase: false, host_key: None, detected: None };
+        let c = agent_cmd(&inst, "--job status-json", false);
+        let own = c.find(reuse::LINUX_OWN).unwrap();
+        let sys = c.find(&format!("[ -x {REMOTE_SPM} ]")).unwrap();
+        let user = c.find("$HOME/.local/share").unwrap();
+        assert!(own < sys && sys < user, "{c}");
+        assert!(c.contains(&format!("sudo -n sh -c '{} --job status-json'", reuse::LINUX_OWN)), "{c}");
+        // Run by a shell, the choice picks the right program.
+        let dir = std::env::temp_dir().join(format!("spm-pick-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let pick = pick_system_agent().replace(reuse::LINUX_OWN, &dir.join("own").display().to_string()).replace(REMOTE_SPM, &dir.join("sys").display().to_string());
+        let out = |s: &str| String::from_utf8(Command::new("sh").arg("-c").arg(format!("{s} echo $A")).output().unwrap().stdout).unwrap();
+        assert!(out(&pick).trim().ends_with("/sys"));
+        std::fs::write(dir.join("own"), "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.join("own"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert!(out(&pick).trim().ends_with("/own"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An installed Platform Manager on the test bed is used as the agent,
+    /// offered when its version differs, and never replaced: SPM_E2E="port",
+    /// SPM_E2E_KEY, SPM_AGENT_DIR (this branch's static agent),
+    /// XDG_CONFIG_HOME scratch. The account needs sudo without a password.
+    /// The installed one is a stand-in at REMOTE_SPM that answers
+    /// agent-info as a full Platform Manager and runs this branch's agent
+    /// for everything else; what was there is put back at the end.
+    #[test]
+    #[ignore]
+    fn reuses_an_installed_manager_on_the_test_bed() {
+        let port: u16 = std::env::var("SPM_E2E").expect("SPM_E2E").parse().unwrap();
+        let mut inst = Instance {
+            id: format!("e2e-reuse-{port}"),
+            name: "e2e reuse".into(),
+            color: PALETTE[0].into(),
+            os: Os::Linux,
+            host: "127.0.0.1".into(),
+            port,
+            user: "ops".into(),
+            auth: Auth::Key,
+            key_file: Some(std::env::var("SPM_E2E_KEY").unwrap().into()),
+            key_has_passphrase: false,
+            host_key: None,
+            detected: None,
+        };
+        let (keys, fp) = scan("127.0.0.1", port).unwrap();
+        trust(&keys).unwrap();
+        inst.host_key = Some(fp);
+        inst.detected = Some(detect(&inst, None).unwrap());
+        let sink: ProgressFn = std::sync::Arc::new(|p| eprintln!("  {p:?}"));
+        let logs = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let logged: ProgressFn = {
+            let logs = logs.clone();
+            std::sync::Arc::new(move |p| {
+                if let Progress::Log { line } = &p {
+                    logs.lock().unwrap().push(line.clone());
+                }
+                eprintln!("  {p:?}");
+            })
+        };
+        let dir = "/opt/sentient-platform-manager";
+        let sh = |c: &str| sudo_run(&inst, c, None).unwrap();
+        sh(&format!("cp -a {REMOTE_SPM} {REMOTE_SPM}.r-bak && rm -rf /var/lib/sentient-platform-manager/agent"));
+        // This branch's agent, and the stand-in in front of it.
+        let me = agent_file(System::Linux(Arch::X86_64), &sink).unwrap();
+        let home = home(&inst).unwrap();
+        let staged = format!("{}/.spm-r-real", home.trim_end_matches('/'));
+        sftp_copy(&inst, &me, &staged).unwrap();
+        sh(&format!("install -m 0755 {staged} {dir}/spm-real && rm -f {staged}"));
+        sh(&format!("printf '#!/bin/sh\\nif [ \"$1 $2\" = \"--job agent-info\" ]; then cat {dir}/fake-info.json; exit 0; fi\\nexec {dir}/spm-real \"$@\"\\n' > {REMOTE_SPM} && chmod 755 {REMOTE_SPM}"));
+        let fake = |info: &reuse::AgentInfo| sh(&format!("printf '%s\\n' '{}' > {dir}/fake-info.json", serde_json::to_string(info).unwrap()));
+        let stand_in = run(&inst, &format!("sha256sum {REMOTE_SPM} | cut -d' ' -f1"), None).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let ours = reuse::AgentInfo::this();
+            // The same version: used as it is, nothing copied.
+            fake(&reuse::AgentInfo { window: true, ..ours.clone() });
+            ready(&inst).unwrap();
+            let st = status(&inst).unwrap();
+            eprintln!("status (installed, same): {st:?}");
+            deploy(&inst, &logged).unwrap();
+            assert!(logs.lock().unwrap().iter().any(|l| l.contains("installed on the server does the work")));
+            assert_eq!(run(&inst, &format!("[ -e {} ] && echo yes || echo no", reuse::LINUX_OWN), None).unwrap().trim(), "no");
+            // Another version, same protocol: offered, used once chosen.
+            fake(&reuse::AgentInfo { version: "0.0.1-rc1".into(), window: true, ..ours.clone() });
+            let e = ready(&inst).unwrap_err();
+            assert!(reuse::is_offer(&e) && e.contains("0.0.1-rc1, older than this one") && needs_setup(&e), "{e}");
+            assert_eq!(reuse::fit(&reuse::found(&inst.id).unwrap().info, &ours), reuse::Fit::Compatible);
+            use_installed(&inst).unwrap();
+            ready(&inst).unwrap();
+            status(&inst).unwrap();
+            // Another protocol: Set up puts this version's agent beside it.
+            fake(&reuse::AgentInfo { version: "9.0.0".into(), protocol: PROTOCOL + 1, window: true, ..ours.clone() });
+            let e = ready(&inst).unwrap_err();
+            assert!(reuse::is_offer(&e) && e.contains("newer than this one") && e.contains("beside it"), "{e}");
+            deploy(&inst, &logged).unwrap();
+            assert!(logs.lock().unwrap().iter().any(|l| l.contains("set up beside the Platform Manager installed")));
+            ready(&inst).unwrap();
+            // Jobs run with the own agent now (its agent-info is the real one),
+            // and the installed one is unchanged.
+            let info = reuse::parse_info(&spm_job(&inst, "agent-info").unwrap());
+            assert_eq!(info, reuse::AgentInfo { window: false, ..ours.clone() });
+            assert!(!status(&inst).unwrap().manager_version.is_empty());
+            let id = start_job(&inst, &["kept"]).unwrap();
+            follow(&inst, &id, &sink).unwrap();
+            assert_eq!(run(&inst, &format!("sha256sum {REMOTE_SPM} | cut -d' ' -f1"), None).unwrap(), stand_in);
+            // Deploying again finds the own agent up to date.
+            logs.lock().unwrap().clear();
+            deploy(&inst, &logged).unwrap();
+            assert!(logs.lock().unwrap().iter().any(|l| l.contains("up to date")), "{:?}", logs.lock().unwrap());
+        }));
+        sh(&format!("mv -f {REMOTE_SPM}.r-bak {REMOTE_SPM} && rm -f {dir}/spm-real {dir}/fake-info.json && rm -rf /var/lib/sentient-platform-manager/agent"));
+        reuse::forget(&inst.id);
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
     }
 
     #[test]
