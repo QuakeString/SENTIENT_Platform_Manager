@@ -145,9 +145,14 @@ pub const BAR_H: f32 = 60.;
 pub const ICON_X: f32 = 32.;
 /// The menu's left padding (the selection's left end), the same folded or not.
 const MENU_PAD: f32 = 8.;
+/// Unfolded, the selection keeps a wider margin from the window's edge (his
+/// D1 note: too little room on its left); the icons stay on ICON_X.
+const MENU_PAD_OPEN: f32 = 14.;
 /// A row's icon size and its left padding inside the row (icon centre at ICON_X).
 const ICON: f32 = 18.;
-const ROW_PL: f32 = ICON_X - MENU_PAD - ICON / 2.;
+fn row_pl(pad: f32) -> f32 {
+    ICON_X - pad - ICON / 2.
+}
 
 /// A menu icon from the heavier set (assets/icons/menu).
 pub fn menu_icon(name: &str) -> Icon {
@@ -362,7 +367,7 @@ impl Manager {
         let forced = width < FOLD_BELOW;
         let motion = !ui::reduce_motion();
         let active: &'static str = if self.page == Page::Instances { "instances" } else if self.page == Page::About { "about" } else { self.page.id() };
-        let left_pad = MENU_PAD;
+        let left_pad = if rail { MENU_PAD } else { MENU_PAD_OPEN };
         let row = |id: &'static str, icon: Icon, title: SharedString, on: bool| {
             h_flex()
                 .id(id)
@@ -370,7 +375,7 @@ impl Manager {
                 .h(px(ROW_H))
                 .flex_shrink_0()
                 .gap(px(12.))
-                .pl(px(ROW_PL))
+                .pl(px(row_pl(left_pad)))
                 .when(!rail, |r| r.pr(px(12.)).mr(px(10.)))
                 .rounded(px(8.))
                 .cursor_pointer()
