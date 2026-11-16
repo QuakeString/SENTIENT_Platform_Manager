@@ -381,6 +381,9 @@ impl Manager {
             }
             manager.bell_open = std::env::var_os("SPM_DEBUG_BELL").is_some();
             manager.switcher_open = std::env::var_os("SPM_DEBUG_SWITCHER").is_some();
+            if manager.switcher_open {
+                manager.instances_page(cx);
+            }
             if std::env::var_os("SPM_DEBUG_ERROR_DIALOG").is_some() {
                 crate::ui::show_error_with(
                     "The server agent could not be updated",
@@ -1155,6 +1158,10 @@ impl Manager {
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.switcher_open = !this.switcher_open;
+                        // The rows' dots: every server's state.
+                        if this.switcher_open {
+                            this.instances_page(cx);
+                        }
                         cx.notify();
                     }));
                 let popover = open.then(|| {
@@ -1179,11 +1186,34 @@ impl Manager {
                     if !self.remotes.is_empty() {
                         rows.push(ui::MenuRow::Divider);
                     }
+                    // Each row's dot is that server's state, as its card on
+                    // Instances shows it (the cached status), else what its
+                    // open pages last read; grey while not known. The
+                    // instance's own colour stays on its card and the bar.
+                    let card_tone = |id: &str, cx: &App| -> Option<ui::Tone> {
+                        if let Some(t) = self.instances.as_ref().and_then(|p| p.read(cx).tone_of(id)) {
+                            return Some(t);
+                        }
+                        let serving = self.remote_pages.get(id).and_then(|p| p.read(cx).serving()).or_else(|| crate::bg_app::serving(Some(id), cx));
+                        serving.map(|on| if on { ui::Tone::Good } else { ui::Tone::Bad })
+                    };
                     for r in &self.remotes {
-                        let c = crate::remote::parse_hex(&r.color).unwrap_or(0x187074);
+                        let tone = card_tone(&r.id, cx);
+                        let dot: Hsla = match tone {
+                            Some(ui::Tone::Good) => status_green,
+                            Some(ui::Tone::Warn) => rgb(0xf59e0b).into(),
+                            Some(ui::Tone::Bad) => rgb(0xef4444).into(),
+                            _ => rgb(0x94a3b8).into(),
+                        };
+                        let probe = match tone {
+                            Some(ui::Tone::Good) => "switch-dot-good",
+                            Some(ui::Tone::Warn) => "switch-dot-warn",
+                            Some(ui::Tone::Bad) => "switch-dot-bad",
+                            _ => "switch-dot-unknown",
+                        };
                         rows.push(ui::MenuRow::Item {
                             id: SharedString::from(format!("switch-{}", r.id)),
-                            icon: Some(div().size(px(10.)).mx(px(3.)).rounded_full().bg(rgb(c)).into_any_element()),
+                            icon: Some(div().relative().size(px(10.)).mx(px(3.)).rounded_full().bg(dot).child(ui::layout_probe(probe)).into_any_element()),
                             label: r.name.clone().into(),
                             secondary: Some(format!("{} over SSH", r.host).into()),
                             on: self.open_remote.as_deref() == Some(r.id.as_str()),
@@ -1252,6 +1282,35 @@ impl Manager {
 
     /// Switch to an instance (None: this computer). Remote instances are
     /// worked on from their card on Instances for now.
+    /// The Instances page, made the first time it is needed (shown, or the
+    /// switcher's state dots): it reads every server's state as it starts.
+    fn instances_page(&mut self, cx: &mut Context<Self>) -> Entity<instances::InstancesPage> {
+        if let Some(p) = &self.instances {
+            return p.clone();
+        }
+        let record = self.record.clone();
+            let open = self.open_remote.clone();
+            let page = cx.new(|cx| {
+                let mut p = instances::InstancesPage::new(record, cx);
+                // An instance opened before this page was first shown.
+                p.open = open;
+                p
+            });
+            self._subscriptions.push(cx.subscribe(&page, |this, _, e: &instances::OpenInstance, cx| {
+                this.open_instance(e.0.clone(), cx);
+            }));
+            self._subscriptions.push(cx.subscribe(&page, |this, _, _: &instances::ListChanged, cx| {
+                let before = std::mem::replace(&mut this.remotes, crate::remote::load());
+                this.prune_kept(&before);
+                if this.open_remote.as_ref().is_some_and(|id| !this.remotes.iter().any(|r| &r.id == id)) {
+                    this.open_remote = None;
+                }
+                cx.notify();
+            }));
+        self.instances = Some(page.clone());
+        page
+    }
+
     fn open_instance(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         let t0 = std::time::Instant::now();
         let _timing = SwitchTiming(t0, id.clone());
@@ -1793,30 +1852,7 @@ impl Manager {
             }
         }
         match self.page {
-            Page::Instances => {
-                if self.instances.is_none() {
-                    let open = self.open_remote.clone();
-                    let page = cx.new(|cx| {
-                        let mut p = instances::InstancesPage::new(record, cx);
-                        // An instance opened before this page was first shown.
-                        p.open = open;
-                        p
-                    });
-                    self._subscriptions.push(cx.subscribe(&page, |this, _, e: &instances::OpenInstance, cx| {
-                        this.open_instance(e.0.clone(), cx);
-                    }));
-                    self._subscriptions.push(cx.subscribe(&page, |this, _, _: &instances::ListChanged, cx| {
-                        let before = std::mem::replace(&mut this.remotes, crate::remote::load());
-                        this.prune_kept(&before);
-                        if this.open_remote.as_ref().is_some_and(|id| !this.remotes.iter().any(|r| &r.id == id)) {
-                            this.open_remote = None;
-                        }
-                        cx.notify();
-                    }));
-                    self.instances = Some(page);
-                }
-                self.instances.clone().unwrap().into_any_element()
-            }
+            Page::Instances => self.instances_page(cx).into_any_element(),
             Page::Status => {
                 if self.status.is_none() {
                     let updates = self.updates.clone();

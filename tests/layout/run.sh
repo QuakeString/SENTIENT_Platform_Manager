@@ -13,8 +13,8 @@ set -u
 BIN=${1:?binary}; OUT=${2:?out dir}; PROFILE=${3:-}
 HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$OUT"
-PAGES_LOCAL="status statistics logs files update gateway backup migration repair licence settings instances about"
-PAGES_REMOTE="status statistics logs files update gateway backup migration repair licence settings"
+PAGES_LOCAL=${PAGES_LOCAL-"status statistics logs files update gateway backup migration repair licence settings instances about"}
+PAGES_REMOTE=${PAGES_REMOTE-"status statistics logs files update gateway backup migration repair licence settings"}
 WIDTHS=${WIDTHS:-"560 900 1200"}; SCALES=${SCALES:-"1 1.5"}; THEMES=${THEMES:-"light dark"}
 JOBS=${JOBS:-4}
 one() { # where page width scale theme [dialog env]
@@ -55,12 +55,12 @@ export -f one; export OUT HERE BIN PROFILE LOADING_PROFILE INSTANCE WAIT SPM_INS
 list=()
 for p in $PAGES_LOCAL; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local $p $w $s $t"); done; done; done; done
 # Dialogs and panels, opened by their debug hooks (this computer).
-DIALOGS=${DIALOGS:-"SPM_DEBUG_TAKEOVER=found SPM_DEBUG_LOG_DIALOG=1 SPM_DEBUG_PARTS_DIALOG=1 SPM_DEBUG_BELL=1 SPM_DEBUG_SUDO_PROMPT=1 SPM_DEBUG_ERROR_DIALOG=1"}
+DIALOGS=${DIALOGS-"SPM_DEBUG_TAKEOVER=found SPM_DEBUG_LOG_DIALOG=1 SPM_DEBUG_PARTS_DIALOG=1 SPM_DEBUG_BELL=1 SPM_DEBUG_SUDO_PROMPT=1 SPM_DEBUG_ERROR_DIALOG=1"}
 for g in $DIALOGS; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local status $w $s $t $g"); done; done; done; done
 # Add instance with its Setup guide open (Linux and Windows servers).
-for g in SPM_DEBUG_ADD_GUIDE=linux SPM_DEBUG_ADD_GUIDE=windows; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local instances $w $s $t $g"); done; done; done; done
+for g in ${GUIDES-SPM_DEBUG_ADD_GUIDE=linux SPM_DEBUG_ADD_GUIDE=windows}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local instances $w $s $t $g"); done; done; done; done
 # Setup's window (its first step): the buttons' gaps only.
-for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("setup setup $w $s $t"); done; done; done
+[ "${SETUP:-1}" = 1 ] && for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("setup setup $w $s $t"); done; done; done
 if [ -n "${LOADING_PROFILE:-}" ]; then
   LW=${LOADING_WIDTHS:-560}; LS=${LOADING_SCALES:-1 1.5 2}
   for p in $PAGES_REMOTE; do for w in $LW; do for s in $LS; do for t in $THEMES; do list+=("loading $p $w $s $t"); done; done; done; done

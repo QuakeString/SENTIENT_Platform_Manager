@@ -292,11 +292,57 @@ pub fn run(inst: &Instance, remote: &str, once: Option<&str>) -> Result<String, 
     if out.status.success() {
         return Ok(stdout);
     }
-    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let err = clean_stderr(&String::from_utf8_lossy(&out.stderr));
     if once.is_none() && err.to_lowercase().contains("permission denied") && (inst.key_has_passphrase || inst.auth == Auth::Password) && secret(&inst.id).is_none() {
         return Err(FORGOTTEN.into());
     }
     Err(explain(&err).unwrap_or_else(|| if err.is_empty() { stdout.trim().to_string() } else { err }))
+}
+
+/// ssh's and PowerShell's error output with the noise taken out: OpenSSH's
+/// "** WARNING: connection is not using a post-quantum key exchange" lines,
+/// and PowerShell's CLIXML error records (`#< CLIXML <Objs …>`) decoded to
+/// their plain message lines (progress records dropped).
+pub(crate) fn clean_stderr(err: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for line in err.lines() {
+        let t = line.trim();
+        if t.starts_with("** ") && (t.contains("post-quantum") || t.contains("store now, decrypt later") || t.contains("may need to be upgraded") || t.contains("openssh.com/pq")) {
+            continue;
+        }
+        if t == "#< CLIXML" {
+            continue;
+        }
+        if t.starts_with("<Objs ") || t.contains("<S S=\"Error\">") {
+            out.extend(clixml_lines(t));
+            continue;
+        }
+        if !t.is_empty() {
+            out.push(t.to_string());
+        }
+    }
+    out.join("\n")
+}
+
+/// The `<S S="Error">…</S>` strings of a CLIXML record, unescaped
+/// (`_x000D__x000A_` line breaks, XML entities), as lines.
+fn clixml_lines(xml: &str) -> Vec<String> {
+    let mut text = String::new();
+    for part in xml.split("<S S=\"Error\">").skip(1) {
+        if let Some(s) = part.split("</S>").next() {
+            text.push_str(s);
+        }
+    }
+    let text = text
+        .replace("_x000D__x000A_", "\n")
+        .replace("_x000A_", "\n")
+        .replace("_x000D_", "")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&");
+    text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
 }
 
 /// The passphrase or password was kept only until the Platform Manager closed.
@@ -309,6 +355,8 @@ pub(crate) fn explain(err: &str) -> Option<String> {
         "The server's key is not the one accepted before. The connection was refused: if the server was reinstalled, remove and add the instance again; otherwise someone may be in between.".into()
     } else if e.contains("permission denied") {
         "The server refused the sign-in (user, key or password).".into()
+    } else if ["client_loop", "broken pipe", "connection reset", "closed by remote host", "timeout, server", "kex_exchange_identification"].iter().any(|w| e.contains(w)) {
+        "The connection to the server keeps dropping: the network or VPN between here and the server is losing packets. Check it, then try again.".into()
     } else if e.contains("connection timed out") || e.contains("operation timed out") {
         "The server did not answer (address, port or firewall).".into()
     } else if e.contains("connection refused") {
@@ -1852,12 +1900,41 @@ mod win {
             let _ = ps(inst, &format!("Remove-Item -Force -ErrorAction SilentlyContinue '{upload}'"));
             return Err("The copy on the server does not match (checksum); nothing was replaced. Try again.".into());
         }
-        ps(inst, &format!("Move-Item -Force '{upload}' '{EXE}'")).map_err(|e| super::failed("The agent could not be put in place. The agent there is unchanged.", &e))?;
+        // Windows PowerShell 5.1's Move-Item -Force does not replace a file
+        // ("Cannot create a file when that file already exists"): the old
+        // agent is renamed aside (a running exe can be), the new one moved
+        // in, the old one put back on a failure, and removed when it can be
+        // (a running one stays until the next deploy removes it).
+        let put = ps(inst, &replace_script(&upload, EXE)).map_err(|e| super::failed("The agent could not be put in place. The agent there is unchanged.", &e))?;
+        if !put.lines().any(|l| l.trim().eq_ignore_ascii_case(&want)) {
+            return Err(super::failed("The agent put in place does not match (checksum). Try again.", put.trim()));
+        }
         set_exe(&inst.id, &Agent::Own);
         if reuse::found(&inst.id).is_some() {
             sink(Progress::Log { line: format!("This version's agent is set up beside the Platform Manager installed on the server, at {EXE}; the installed one is not changed.") });
         }
         Ok(())
+    }
+
+    /// PowerShell that puts `from` in place of `to` on Windows PowerShell
+    /// 5.1 and later, then prints the new file's SHA-256.
+    pub(crate) fn replace_script(from: &str, to: &str) -> String {
+        let (f, t) = (from.replace('\'', "''"), to.replace('\'', "''"));
+        format!(
+            "$ErrorActionPreference='Stop'; $f='{f}'; $t='{t}'; \
+             Get-ChildItem -Force -ErrorAction SilentlyContinue -Path ($t + '.old*') | Remove-Item -Force -ErrorAction SilentlyContinue; \
+             $o = $null; \
+             try {{ \
+               if (Test-Path -LiteralPath $t -PathType Leaf) {{ $o = $t + '.old-' + [DateTime]::UtcNow.Ticks; Rename-Item -LiteralPath $t -NewName (Split-Path -Leaf $o) }}; \
+               Move-Item -LiteralPath $f -Destination $t \
+             }} catch {{ \
+               $m = $_.Exception.Message; \
+               if ($o -and (Test-Path -LiteralPath $o) -and -not (Test-Path -LiteralPath $t)) {{ Rename-Item -LiteralPath $o -NewName (Split-Path -Leaf $t) }}; \
+               [Console]::Error.WriteLine($m); exit 1 \
+             }}; \
+             if ($o) {{ Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $o }}; \
+             (Get-FileHash -Algorithm SHA256 -LiteralPath $t).Hash"
+        )
     }
 
     pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {
@@ -1970,6 +2047,22 @@ mod win {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stderr_noise_and_clixml_are_cleaned() {
+        let raw = "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n#< CLIXML\n<Objs Version=\"1.1.0.1\" xmlns=\"http://schemas.microsoft.com/powershell/2004/04\"><Obj S=\"progress\" RefId=\"0\"><TN RefId=\"0\"><T>System.Management.Automation.PSCustomObject</T></TN></Obj><S S=\"Error\">Move-Item : Cannot create a file when that file already exists._x000D__x000A_</S><S S=\"Error\">At line:1 char:40_x000D__x000A_</S></Objs>";
+        assert_eq!(clean_stderr(raw), "Move-Item : Cannot create a file when that file already exists.\nAt line:1 char:40");
+        assert_eq!(clean_stderr("ssh: connect to host x port 22: Connection timed out\n"), "ssh: connect to host x port 22: Connection timed out");
+    }
+
+    #[test]
+    fn the_windows_replace_renames_the_old_file_aside() {
+        let s = win::replace_script(r"C:\d\upload.exe", r"C:\d\it's.exe");
+        assert!(s.contains("Rename-Item -LiteralPath $t"));
+        assert!(!s.contains("Move-Item -Force"));
+        assert!(s.contains("$t='C:\\d\\it''s.exe'"));
+        assert!(s.ends_with("(Get-FileHash -Algorithm SHA256 -LiteralPath $t).Hash"));
+    }
 
     #[test]
     fn text_stays_readable_on_any_colour() {
@@ -2644,7 +2737,8 @@ fn sftp_path(inst: &Instance, path: &str) -> String {
 
 fn rename_remote(inst: &Instance, from: &str, to: &str) -> Result<(), String> {
     if is_windows(inst) {
-        win::ps(inst, &format!("Move-Item -Force -LiteralPath '{}' '{}'", from.replace('\'', "''"), to.replace('\'', "''"))).map(|_| ())
+        // Move-Item -Force does not replace a file on PowerShell 5.1.
+        win::ps(inst, &win::replace_script(from, to)).map(|_| ())
     } else {
         run(inst, &format!("mv -f {} {}", shell_quote(from), shell_quote(to)), None).map(|_| ())
     }

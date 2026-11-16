@@ -436,6 +436,12 @@ impl Manager {
         // smaller (his rc12-22 note); lifted it is 7.9:1. The icon keeps
         // the primary colour.
         let sel_label = selected_label(&theme);
+        // The names (text_sm, 0.875 rem) on whole device pixels: at ×1.25
+        // they fell between pixels, and the hinting then drew the semibold
+        // selected name 1-2 px taller than the medium ones (rc12-23 gate,
+        // labels.py).
+        let sf = window.scale_factor();
+        let name_size = px((0.875 * f32::from(window.rem_size()) * sf).round() / sf);
         let row = |id: &'static str, icon: Icon, title: SharedString, on: bool| {
             h_flex()
                 .id(id)
@@ -447,7 +453,7 @@ impl Manager {
                 .when(!rail, |r| r.pr(px(12.)).mr(px(10.)))
                 .rounded(px(8.))
                 .cursor_pointer()
-                .text_sm()
+                .text_size(name_size)
                 .text_color(if on { sel_label } else { theme.foreground })
                 .font_weight(if on { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
                 .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))

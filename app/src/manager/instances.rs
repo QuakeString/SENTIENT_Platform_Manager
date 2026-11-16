@@ -99,6 +99,13 @@ impl EventEmitter<OpenInstance> for InstancesPage {}
 impl EventEmitter<ListChanged> for InstancesPage {}
 
 impl InstancesPage {
+    /// A server's state as its card shows it (the switcher's dots), from
+    /// the cached status; None before it was first read.
+    pub fn tone_of(&self, id: &str) -> Option<Tone> {
+        let st = self.statuses.get(id)?;
+        Some(state_of(Some(st), false).0)
+    }
+
     pub fn new(local: Option<InstallationRecord>, cx: &mut Context<Self>) -> Self {
         let job = cx.new(|_| Job::new());
         // The error panel's "Ask for the password again": Try again.
@@ -1541,7 +1548,15 @@ fn grid_card(
     let c = rgb(remote::parse_hex(color).unwrap_or(0x187074));
     let card = theme.background.to_rgb();
     let head = mix(c, card, crate::theme::bar_tint(dark));
-    let body = mix(c, card, if dark { 0.13 } else { 0.07 });
+    // The body a third of the header's tint or less, close to the plain
+    // card, so a tile reads as a coloured header over a card (dark was
+    // 0.13 of 0.18: one solid block, his rc12-23 note). tint.py holds the
+    // body to half the header's colour difference in both themes.
+    let body = mix(c, card, if dark { 0.055 } else { 0.07 });
+    if cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
+        // The plain card colour, for tint.py's comparison.
+        eprintln!("LAYOUT inst-card-surface {:.0} {:.0} {:.0}", card.r * 255., card.g * 255., card.b * 255.);
+    }
     let fg = theme.foreground.to_rgb();
     // The state keeps its meaning (green, red, amber) but in the tile's
     // softer form; a neutral state takes the instance colour.
@@ -1565,21 +1580,25 @@ fn grid_card(
     let border_w = if current { 2. } else { 1. };
     let inner = ui::PANEL_RADIUS - border_w;
     v_flex()
+        .relative()
         .w_full()
         .flex_1()
         .rounded(px(ui::PANEL_RADIUS))
         .bg(body)
+        .child(ui::layout_probe("inst-card"))
         .border(px(border_w))
         .border_color(if current { Hsla::from(c) } else { theme.background.blend(theme.border) })
         .shadow(vec![BoxShadow { color: hsla(0., 0., 0., if dark { 0.35 } else { 0.10 }), offset: point(px(0.), px(1.)), blur_radius: px(3.), spread_radius: px(0.), inset: false }])
         .child(
             h_flex()
+                .relative()
                 .gap(px(9.))
                 .items_center()
                 .px(px(12.))
                 .py(px(9.))
                 .bg(head)
                 .rounded_t(px(inner))
+                .child(ui::layout_probe("inst-card-head"))
                 .child(os_tile_in(det, 26., c))
                 .child(
                     v_flex()

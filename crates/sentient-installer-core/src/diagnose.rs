@@ -416,8 +416,10 @@ pub struct Rule {
 /// The known causes, most specific first.
 pub const RULES: &[Rule] = &[
     Rule { id: "ssh-host-key", matches: ssh_host_key },
+    Rule { id: "ssh-network", matches: ssh_network },
     Rule { id: "auth-cancelled", matches: auth_cancelled },
     Rule { id: "not-admin", matches: not_admin },
+    Rule { id: "win-replace-file", matches: win_replace_file },
     Rule { id: "pg-old-major", matches: pg_old_major },
     Rule { id: "port-in-use", matches: port_in_use },
     Rule { id: "disk-full", matches: disk_full },
@@ -492,6 +494,75 @@ fn ssh_host_key(_: &Evidence, t: &str) -> Option<Diagnosis> {
         vec![
             steps("If the server was reinstalled or its SSH keys were regenerated: in the Platform Manager, remove the instance and add it again; it shows the new key's fingerprint to confirm (the Platform Manager keeps its own list of trusted keys). If not, ask the server's administrator before you do."),
             cmd("For your own ssh, remove the old key", remove),
+        ],
+    )
+}
+
+/// The connection to a server over SSH: no answer at all, or one that
+/// drops part-way (a lossy network or VPN tunnel).
+fn ssh_network(_: &Evidence, t: &str) -> Option<Diagnosis> {
+    let dropped = has(t, &["client_loop:", "closed by remote host", "Timeout, server", "kex_exchange_identification", "The connection to the server keeps dropping"]);
+    let silent = has(t, &["ssh: connect to host", "The server did not answer (address, port or firewall)", "did not answer as an SSH server"])
+        && has_ci(&t.to_ascii_lowercase(), &["timed out", "did not answer", "no route to host", "network is unreachable"]);
+    if !dropped && !silent {
+        return None;
+    }
+    // "ssh: connect to host 10.10.0.5 port 22: Connection timed out",
+    // "Connection to 10.10.0.5 closed by remote host."
+    let host = t
+        .lines()
+        .find_map(|l| {
+            let r = l.split("connect to host ").nth(1).or_else(|| l.split("Connection to ").nth(1)).or_else(|| l.split("Timeout, server ").nth(1))?;
+            let h = r.split_whitespace().next()?.trim_end_matches([':', '.']);
+            (!h.is_empty() && h != "the").then(|| h.to_string())
+        });
+    let name = host.clone().unwrap_or_else(|| "the server".into());
+    let mut fixes = vec![steps(
+        "Check the network between this computer and the server: a VPN or WireGuard tunnel that is down or losing packets, Wi-Fi, or a firewall. When the line is steady again, Retry.",
+    )];
+    if let Some(h) = &host {
+        fixes.push(cmd("See how many packets get through (more than a few percent lost is too many)", format!("ping -c 20 {h}")));
+    }
+    if dropped {
+        diag(
+            "ssh-network",
+            format!("The connection to {name} keeps dropping."),
+            "SSH connected, then the line went quiet or was cut part-way through: the network is losing packets or the connection is unstable. The server itself may be fine.",
+            fixes,
+        )
+    } else {
+        diag(
+            "ssh-network",
+            format!("{} does not answer on the network.", if host.is_some() { name } else { "The server".into() }),
+            "Nothing came back from its SSH port: the network or VPN is down, the address or port is wrong, or a firewall is in the way.",
+            fixes,
+        )
+    }
+}
+
+/// Windows PowerShell 5.1: a file moved onto one that exists (its
+/// Move-Item -Force does not replace files), or one in use.
+fn win_replace_file(_: &Evidence, t: &str) -> Option<Diagnosis> {
+    let exists = has(t, &["Cannot create a file when that file already exists"]);
+    let in_use = has(t, &["being used by another process"]);
+    if !exists && !in_use {
+        return None;
+    }
+    let agent = t.contains("sentient-platform-manager.exe") || t.contains("The agent could not be put in place");
+    diag(
+        "win-replace-file",
+        if agent { "The old agent on the Windows server could not be replaced." } else { "A file on the Windows server could not be replaced." },
+        if in_use {
+            "The file is in use by a program running on the server."
+        } else {
+            "Windows PowerShell 5.1 does not overwrite a file that is already there; older Platform Manager versions relied on that."
+        },
+        vec![
+            steps("Retry: this version renames the old file aside first and puts it back if anything fails. If it still fails, close any Platform Manager window open on the server, then Retry."),
+            cmd(
+                "Or remove the old agent on the server (in an administrator PowerShell there), then Set up",
+                "Remove-Item -Force 'C:\\ProgramData\\SENTIENT\\Platform Manager\\remote\\sentient-platform-manager.exe'",
+            ),
         ],
     )
 }
@@ -1191,6 +1262,31 @@ mod tests {
         let d = of("ssh exited with 255", "ssh-host-key-changed.txt");
         assert_eq!(d.id, "ssh-host-key");
         assert!(d.fixes.iter().any(|f| matches!(f, Fix::Command { command, .. } if command == "ssh-keygen -R '127.0.0.1'")));
+    }
+
+    #[test]
+    fn an_old_agent_that_would_not_move_is_named() {
+        let ev = Evidence::from_text("The agent could not be put in place. The agent there is unchanged.\n\nDetails: Move-Item : Cannot create a file when that file already exists.", &[]);
+        let d = diagnose(&ev);
+        assert_eq!(d.id, "win-replace-file");
+        assert_eq!(d.cause, "The old agent on the Windows server could not be replaced.");
+    }
+
+    #[test]
+    fn a_dropping_connection_is_named() {
+        let ev = Evidence::from_text("ssh exited with 255", &["client_loop: send disconnect: Broken pipe".into(), "Connection to 10.10.0.5 closed.".into()]);
+        let d = diagnose(&ev);
+        assert_eq!(d.id, "ssh-network");
+        assert_eq!(d.cause, "The connection to 10.10.0.5 keeps dropping.");
+        assert!(d.fixes.iter().any(|f| matches!(f, Fix::Command { command, .. } if command == "ping -c 20 10.10.0.5")));
+    }
+
+    #[test]
+    fn a_silent_server_is_named() {
+        let ev = Evidence::from_text("ssh: connect to host 10.10.0.7 port 22: Connection timed out", &[]);
+        let d = diagnose(&ev);
+        assert_eq!(d.id, "ssh-network");
+        assert_eq!(d.cause, "10.10.0.7 does not answer on the network.");
     }
 
     #[test]

@@ -9,7 +9,13 @@ For every run.sh render (`<name>-<width>-x<scale>-<theme>.log/.png`, with
 its right padding, mid-height) and the page's (just under the bar) are
 sampled and their CIELAB colour difference taken. The same render in light
 and in dark must differ by about the same amount: |dE dark - dE light| at
-most 25 % of the light value (3 at least). Prints findings, exits 1 on any.
+most 25 % of the light value (3 at least).
+
+Instance tiles (`LAYOUT inst-card`, `inst-card-head` and the plain card
+colour `inst-card-surface r g b`): the body's colour difference from the
+plain card is at most half the header's, in both themes, so
+a tile reads as a tinted header over a nearly plain card.
+Prints findings, exits 1 on any.
 """
 import os
 import re
@@ -40,15 +46,56 @@ def last(lines, key):
     return [float(x) for x in hits[-1][2:]] if hits else None
 
 
+def frame(lines):
+    marks = [i for i, l in enumerate(lines) if l.startswith("LAYOUT-FRAME ")]
+    if len(marks) < 2:
+        return lines
+    return lines[marks[-2] + 1:marks[-1]]
+
+
+def tile_findings(lines, png, name, findings):
+    """Per tile: dE(body, card) <= 0.5 * dE(header, card)."""
+    fr = frame(lines)
+    surf = [l.split()[2:5] for l in lines if l.startswith("LAYOUT inst-card-surface ")]
+    if not surf:
+        return 0
+    plain = tuple(int(float(x)) for x in surf[-1])
+    cards = [[float(x) for x in l.split()[2:6]] for l in fr if l.startswith("LAYOUT inst-card ")]
+    heads = [[float(x) for x in l.split()[2:6]] for l in fr if l.startswith("LAYOUT inst-card-head ")]
+    if not cards or not heads:
+        return 0
+    sc = float(re.search(r"-x([\d.]+)-(light|dark)$", name).group(1))
+    im = Image.open(png).convert("RGB")
+    n = 0
+    for c in cards:
+        hd = [h for h in heads if abs(h[0] - c[0]) < 4 and abs(h[2] - c[2]) < 4]
+        if not hd:
+            continue
+        l, r, t, b = c
+        h = hd[0]
+        if t * sc < 0 or b * sc > im.height or r * sc > im.width:
+            continue
+        px_ = lambda x, y: im.getpixel((int(x * sc), int(y * sc)))
+        head = px_(r - 5, h[2] + 4)
+        body = px_(l + 5, h[3] + 5)
+        dh, db = de(head, plain), de(body, plain)
+        n += 1
+        if dh > 1 and db > 0.5 * dh + 0.5:
+            findings.append(f"{name}: tile at {l:.0f},{t:.0f}: body dE {db:.1f}, header dE {dh:.1f} (body over half)")
+    return n
+
+
 def main():
     out = sys.argv[1]
     seen = {}
+    findings, compared, tiles = [], 0, 0
     for f in sorted(os.listdir(out)):
         m = re.match(r"(.*-\d+-x[\d.]+)-(light|dark)\.log$", f)
         if not m or not os.path.exists(os.path.join(out, f[:-4] + ".png")):
             continue
         lines = open(os.path.join(out, f), errors="replace").read().splitlines()
         bar, edge = last(lines, "LAYOUT top-bar "), last(lines, "LAYOUT menu-edge ")
+        tiles += tile_findings(lines, os.path.join(out, f[:-4] + ".png"), f[:-4], findings)
         if not bar or not edge:
             continue
         sc = float(re.search(r"-x([\d.]+)$", m.group(1)).group(1))
@@ -57,7 +104,6 @@ def main():
         bar_px = im.getpixel((int((r - 5) * sc), int((t + b) / 2 * sc)))
         page_px = im.getpixel((int((edge[0] + 6) * sc), int((b + 6) * sc)))
         seen.setdefault(m.group(1), {})[m.group(2)] = de(bar_px, page_px)
-    findings, compared = [], 0
     for name, v in sorted(seen.items()):
         if "light" in v and "dark" in v:
             compared += 1
@@ -66,7 +112,7 @@ def main():
                 findings.append(f"{name}: bar tint dE {dk:.1f} in dark, {lt:.1f} in light")
     for x in findings:
         print(x)
-    print(f"tint.py: {compared} light/dark pairs compared, {len(findings)} findings")
+    print(f"tint.py: {compared} light/dark pairs compared, {tiles} instance tiles, {len(findings)} findings")
     return 1 if findings else 0
 
 
