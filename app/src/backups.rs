@@ -254,6 +254,11 @@ pub fn list(folder: &Path) -> Vec<Entry> {
     out.into_iter().map(|(_, e)| e).collect()
 }
 
+/// "16 Nov, 02:00" from the list's "2026-11-16 02:00".
+pub fn short_made_label(made: &str) -> String {
+    chrono::NaiveDateTime::parse_from_str(made, "%Y-%m-%d %H:%M").map(|t| t.format("%-d %b, %H:%M").to_string()).unwrap_or_else(|_| made.to_string())
+}
+
 /// Every backup: the folder's and those left in folders used before,
 /// newest first.
 pub fn list_all(prefs: &BackupPrefs) -> Vec<Entry> {
@@ -513,10 +518,19 @@ pub const STEP_PRUNE: &str = "Removing automatic backups beyond the ones kept";
 
 /// Back up with `prefs` (and `passphrase` for a backup by hand). Blocking.
 pub fn run(record: &InstallationRecord, prefs: &BackupPrefs, passphrase: Option<String>, automatic: bool, sink: ProgressFn) -> Result<Made, String> {
+    run_as(record, prefs, passphrase, automatic, None, sink)
+}
+
+/// [`run`] into a file named `<name>.sentient-backup` (a restore's safety
+/// backup, `sentient-before-restore-<stamp>`).
+pub fn run_as(record: &InstallationRecord, prefs: &BackupPrefs, passphrase: Option<String>, automatic: bool, name: Option<&str>, sink: ProgressFn) -> Result<Made, String> {
     let setup = Setup::current(record)?;
     std::fs::create_dir_all(&prefs.folder).map_err(|e| format!("create {}: {e}", prefs.folder.display()))?;
     let stamp = chrono::Local::now().format("%Y-%m-%d_%H%M");
-    let output = prefs.folder.join(format!("{}sentient-{stamp}.sentient-backup", if automatic { "auto-" } else { "" }));
+    let output = match name {
+        Some(n) => prefs.folder.join(format!("{n}.sentient-backup")),
+        None => prefs.folder.join(format!("{}sentient-{stamp}.sentient-backup", if automatic { "auto-" } else { "" })),
+    };
     let mut selection = match prefs.preset {
         Preset::Everything => Selection::full(),
         Preset::Configuration => Selection { include: ["configuration".to_string()].into_iter().collect(), telemetry_days: None },

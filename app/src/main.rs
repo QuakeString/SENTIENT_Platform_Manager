@@ -55,12 +55,16 @@ mod modal;
 mod chooser;
 mod maintenance_ops;
 mod migration;
+mod movedata;
+#[cfg(windows)]
+mod movedata_win;
 mod mode;
 mod notes;
 mod online;
 mod open_client;
 mod remote;
 mod replace;
+mod restore_flow;
 mod restore_switch;
 mod rootjob;
 mod secrets;

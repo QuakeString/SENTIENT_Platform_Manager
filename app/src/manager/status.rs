@@ -1,6 +1,7 @@
 // Copyright © 2016-2026 The SENTIENT Authors
 
-//! Status: what is installed and whether each service is running. Refreshes
+//! Status: what is installed and whether each service is running, with
+//! Start, Stop and Restart for SENTIENT and for each service. Refreshes
 //! every few seconds while the screen is open. With nothing installed by the
 //! Platform Manager, it lists the SENTIENT already running here (installed
 //! some other way) and offers to manage it (crate::adopt).
@@ -31,8 +32,10 @@ pub struct StatusPage {
     /// looking.
     found: Option<Vec<Candidate>>,
     adopt_job: Entity<Job>,
-    /// Start, offered here while SENTIENT is stopped.
-    start_job: Entity<Job>,
+    /// SENTIENT's or one service's start, stop or restart.
+    job: Entity<Job>,
+    /// The service whose own action runs now.
+    svc_busy: Option<String>,
     /// SENTIENT's version as shown ("4.4.0.2 (image tag latest)").
     shown_version: Option<String>,
     /// The gateway on this computer (None while looking).
@@ -46,6 +49,7 @@ pub struct StatusPage {
     _poll: Option<Task<()>>,
     _tasks: Vec<Task<()>>,
     _observe: Subscription,
+    _job_observe: Subscription,
 }
 
 impl EventEmitter<RecordChanged> for StatusPage {}
@@ -161,7 +165,15 @@ impl StatusPage {
             }
             cx.notify();
         });
-        let start_job = cx.new(|_| Job::new());
+        let job = cx.new(|_| Job::new());
+        let _job_observe = cx.observe(&job, |page: &mut Self, job, cx| {
+            // An action ended: read the services again at once.
+            if !job.read(cx).is_running() && matches!(job.read(cx).state(), JobState::Done(_) | JobState::Failed(_)) {
+                page.svc_busy = None;
+                page.refresh(cx);
+            }
+            cx.notify();
+        });
         let gateway_poll = cx.spawn(async move |this, cx| loop {
             let status = cx.background_executor().spawn(async { sentient_installer_core::gateway::status() }).await;
             if this.update(cx, |p, cx| { p.gateway = Some(status); cx.notify(); }).is_err() {
@@ -174,7 +186,8 @@ impl StatusPage {
             snapshot: None,
             found: None,
             adopt_job,
-            start_job,
+            job,
+            svc_busy: None,
             shown_version: None,
             gateway: None,
             updates,
@@ -185,6 +198,7 @@ impl StatusPage {
             _poll: poll,
             _tasks: vec![gateway_poll],
             _observe,
+            _job_observe,
         };
         if page.record.is_none() {
             page.look_for_existing(cx);
@@ -206,13 +220,44 @@ impl StatusPage {
         page
     }
 
-    /// Start SENTIENT (offered while it is stopped).
-    fn start(&mut self, cx: &mut Context<Self>) {
+    /// Read the services now (after an action), apart from the poll.
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        let task = cx.spawn(async move |this, cx| {
+            let snapshot = cx.background_executor().spawn(async move { record.platform().snapshot() }).await;
+            this.update(cx, |page, cx| {
+                page.snapshot = Some(snapshot);
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
+    /// Start, stop or restart SENTIENT (also the tray's and the taskbar's).
+    pub(crate) fn run(&mut self, action: &'static str, cx: &mut Context<Self>) {
         let Some(record) = &self.record else { return };
         let platform = record.platform();
-        self.start_job.update(cx, |job, cx| {
-            job.set_label("Starting SENTIENT");
-            job.start(move |sink| platform.control(sink, "start"), cx)
+        self.job.update(cx, |job, cx| {
+            job.set_label(match action {
+                "start" => "Starting SENTIENT",
+                "stop" => "Stopping SENTIENT",
+                _ => "Restarting SENTIENT",
+            });
+            job.start(move |sink| platform.control(sink, action), cx)
+        });
+        cx.notify();
+    }
+
+    /// One service's own start, stop or restart.
+    fn run_service(&mut self, name: String, action: &'static str, cx: &mut Context<Self>) {
+        let Some(record) = &self.record else { return };
+        let platform = record.platform();
+        self.svc_busy = Some(name.clone());
+        let label = service_job_label(&name, action);
+        self.job.update(cx, |job, cx| {
+            job.set_label(label);
+            job.start(move |sink| platform.service_control(sink, &name, action), cx)
         });
         cx.notify();
     }
@@ -287,6 +332,9 @@ impl StatusPage {
             Some(crate::dbstatus::growth_per_day()),
             last_backup,
             DbActions {
+                move_data: (crate::movedata::unsupported(record).is_none()).then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
+                    std::rc::Rc::new(|window, cx| crate::manager::movedata::open(crate::movedata::Target::Local, "This computer", None, window, cx))
+                }),
                 set_limit: Some(go(Go::Settings)),
                 remove_kept: Some(go(Go::Migration)),
                 back_up: Some(go(Go::Backup)),
@@ -491,65 +539,93 @@ impl Render for StatusPage {
             )
         });
 
-        page.child(
-            ui::panel(&theme)
-                .child(
-                    // Narrow: the buttons go under the state, right-aligned.
-                    h_flex()
-                        .flex_wrap()
-                        .gap_3()
-                        .items_center()
-                        .child(ui::product_logo(ui::Product::Sentient, 30.))
-                        .child(ui::pill(&theme, tone, overall))
-                        .child(div().flex_1())
-                        .child(h_flex().ml_auto().gap_2().items_center().when(stopped, |r| {
-                            let starting = self.start_job.read(cx).is_running();
-                            r.child(crate::ui::button("status-start").primary().label("Start").loading(starting).disabled(starting).on_click(cx.listener(|this, _, _, cx| this.start(cx))))
-                        })
-                        .child(ui::open_sentient_button("open", !stopped, {
-                            let record = record.clone();
-                            // Asked on click: whether the kiosk shortcut is there reads the disk.
-                            move |_, _, cx| ui::open_sentient(record.stack.http_port, record.opens_as_kiosk(), cx)
-                        }))),
-                )
-                .child(ui::fact(&theme, "SENTIENT version", self.shown_version.clone().unwrap_or_else(|| record.sentient_version.clone())))
-                .child(ui::fact(&theme, "Database", flavor_label(record.flavor())))
-                .child(ui::fact(
+        let busy = self.job.read(cx).is_running();
+        let running = self.snapshot.as_ref().filter(|s| !s.services.is_empty()).map(|s| s.serving);
+        let this = cx.entity().downgrade();
+        let (t1, t2, t3) = (this.clone(), this.clone(), this.clone());
+        let sentient = ui::panel(&theme)
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .items_center()
+                    .child(ui::product_logo(ui::Product::Sentient, 30.))
+                    .child(ui::pill(&theme, tone, overall))
+                    .child(div().flex_1())
+                    .child(h_flex().ml_auto().child(ui::open_sentient_button("open", !stopped, {
+                        let record = record.clone();
+                        // Asked on click: whether the kiosk shortcut is there reads the disk.
+                        move |_, _, cx| ui::open_sentient(record.stack.http_port, record.opens_as_kiosk(), cx)
+                    }))),
+            )
+            .child(ui::card_fact(&theme, "SENTIENT version", self.shown_version.clone().unwrap_or_else(|| record.sentient_version.clone())))
+            .child(ui::card_fact(&theme, "Database", flavor_label(record.flavor())))
+            .child(ui::card_fact(
+                &theme,
+                "Runs as",
+                match record.engine {
+                    crate::installation::Engine::Native if cfg!(windows) => "Windows services",
+                    crate::installation::Engine::Native => "systemd services",
+                    crate::installation::Engine::Docker => "Docker containers",
+                },
+            ))
+            .child(ui::card_fact(&theme, "Address", record.url()))
+            .child(ui::card_fact(
+                &theme,
+                "Ports",
+                format!(
+                    "Web {} · MQTT {} / {} · CoAP {} / {} · PostgreSQL {}",
+                    st.http_port, st.mqtt_port, st.mqtts_port, st.coap_port, st.coaps_port, st.pg_port
+                ),
+            ))
+            .child(match &st.external {
+                // A temporary override that is gone since is left out: nothing needs it.
+                Some(ext) => {
+                    let gone = st.vanished_files();
+                    let files: Vec<&String> = ext.files.iter().filter(|f| !gone.contains(f)).collect();
+                    ui::card_fact(&theme, "Runs from", format!("a compose file the Platform Manager did not write ({})", files.iter().map(|f| f.as_str()).collect::<Vec<_>>().join(", ")))
+                }
+                None => ui::card_fact(&theme, "Installed in", record.install_dir.display().to_string()),
+            })
+            .children(ui::card_foot(
+                &theme,
+                control_buttons(
                     &theme,
-                    "Runs as",
-                    match record.engine {
-                        crate::installation::Engine::Native if cfg!(windows) => "Windows services",
-                        crate::installation::Engine::Native => "systemd services",
-                        crate::installation::Engine::Docker => "Docker containers",
-                    },
-                ))
-                .child(ui::fact(&theme, "Address", record.url()))
-                .child(ui::fact(
-                    &theme,
-                    "Ports",
-                    format!(
-                        "Web {} · MQTT {} / {} · CoAP {} / {} · PostgreSQL {}",
-                        st.http_port, st.mqtt_port, st.mqtts_port, st.coap_port, st.coaps_port, st.pg_port
-                    ),
-                ))
-                .child(match &st.external {
-                    // A temporary override that is gone since is left out: nothing needs it.
-                    Some(ext) => {
-                        let gone = st.vanished_files();
-                        let files: Vec<&String> = ext.files.iter().filter(|f| !gone.contains(f)).collect();
-                        ui::fact(&theme, "Runs from", format!("a compose file the Platform Manager did not write ({})", files.iter().map(|f| f.as_str()).collect::<Vec<_>>().join(", ")))
-                    }
-                    None => ui::fact(&theme, "Installed in", record.install_dir.display().to_string()),
-                }),
-        )
-        .child(
-            ui::panel(&theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child("Services"))
-                .gap_2()
-                .children(ui::service_rows(&theme, services.into_iter().map(|svc| (svc.name.into(), svc.running, svc.starting, svc.detail.into())), None)),
-        )
-        .child(self.db_panel(&theme, record, cx))
-        .child(self.gateway_card(&theme, cx))
+                    "",
+                    busy,
+                    running,
+                    std::rc::Rc::new(move |_, cx| {
+                        t1.update(cx, |p, cx| p.run("start", cx)).ok();
+                    }),
+                    std::rc::Rc::new(move |_, cx| {
+                        t2.update(cx, |p, cx| p.run("restart", cx)).ok();
+                    }),
+                    std::rc::Rc::new(move |w, cx| {
+                        let t3 = t3.clone();
+                        confirm_stop(w, cx, std::rc::Rc::new(move |cx| {
+                            t3.update(cx, |p, cx| p.run("stop", cx)).ok();
+                        }));
+                    }),
+                ),
+            ));
+        let act = service_act(self.snapshot.as_ref().is_some_and(|s| s.serving), std::rc::Rc::new(move |name, action, cx| {
+            this.update(cx, |p, cx| p.run_service(name, action, cx)).ok();
+        }));
+        let mut services_card = ui::panel(&theme).gap_2().child(services_title());
+        match &self.snapshot {
+            None => services_card = services_card.children(ui::skeleton_service_rows(&theme, "svc", 3)),
+            Some(_) => {
+                let up = services.iter().filter(|s| s.running).count();
+                let total = services.len();
+                services_card = services_card
+                    .children(ui::service_rows(&theme, services.into_iter().map(|svc| (svc.name.into(), svc.running, svc.starting, svc.detail.into())), (act, service_log(), self.svc_busy.clone())))
+                    .children(ui::card_foot(&theme, ui::services_foot(&theme, up, total)));
+            }
+        }
+
+        page.child(ui::card_pair(sentient, services_card))
+            .child(self.db_panel(&theme, record, cx))
+            .child(self.gateway_card(&theme, cx))
     }
 }
 
@@ -580,8 +656,8 @@ impl StatusPage {
                     .gap_3()
                     .items_center()
                     .text_sm()
-                    .child(ui::pill(theme, tone, pill))
-                    .child(div().flex_1().text_color(theme.muted_foreground).child(line))
+                    .child(ui::pill(theme, tone, pill).flex_shrink_0())
+                    .child(div().flex_1().min_w_0().text_color(theme.muted_foreground).child(line))
                     .child(
                         crate::ui::button("open-gateway")
                             .outline()
@@ -592,6 +668,109 @@ impl StatusPage {
     }
 }
 
+/// "Restarting Database (PostgreSQL)": a service action's job label.
+pub(crate) fn service_job_label(name: &str, action: &str) -> String {
+    let plain = ui::service_label(name).unwrap_or(name);
+    format!(
+        "{} {plain}",
+        match action {
+            "start" => "Starting",
+            "stop" => "Stopping",
+            _ => "Restarting",
+        }
+    )
+}
+
+/// The Services card's title, as tall as the SENTIENT card's header row.
+pub(crate) fn services_title() -> Div {
+    h_flex().min_h(px(32.)).items_center().child(div().font_weight(FontWeight::MEDIUM).child("Services"))
+}
+
+/// A service row's Logs: the Logs page on that service's source.
+pub(crate) fn service_log() -> ui::ServiceLog {
+    std::rc::Rc::new(|name, _, cx| {
+        crate::logsource::request(crate::logsource::of_service(name));
+        cx.refresh_windows();
+    })
+}
+
+/// A service row's Start, Stop and Restart, through `run`. Stopping or
+/// restarting a database while SENTIENT serves is confirmed first. The same
+/// here and on a server.
+pub(crate) fn service_act(serving: bool, run: std::rc::Rc<dyn Fn(String, &'static str, &mut App)>) -> ui::ServiceAct {
+    std::rc::Rc::new(move |name, action, window, cx| {
+        let name = name.to_string();
+        let plain = ui::service_label(&name).unwrap_or(&name).to_string();
+        let go: std::rc::Rc<dyn Fn(&mut App)> = std::rc::Rc::new({
+            let (run, name) = (run.clone(), name.clone());
+            move |cx| run(name.clone(), action, cx)
+        });
+        let n = name.to_lowercase();
+        if (n.contains("postgres") || n.contains("clickhouse")) && serving && action != "start" {
+            let title = format!("{} {plain}?", if action == "stop" { "Stop" } else { "Restart" });
+            crate::modal::alert(window, cx, move |d, _, _| {
+                let go = go.clone();
+                d.title(title.clone())
+                    .description("SENTIENT loses its database until it is back: devices and dashboards stop updating meanwhile.")
+                    .confirm()
+                    .ok_text(if action == "stop" { "Stop" } else { "Restart" })
+                    .on_ok(move |_, _, cx| {
+                        go(cx);
+                        true
+                    })
+            });
+        } else {
+            go(cx);
+        }
+    })
+}
+
+/// Stopping takes every device connection down, so it is confirmed. The
+/// same here and on a server.
+pub(crate) fn confirm_stop(window: &mut Window, cx: &mut App, stop: std::rc::Rc<dyn Fn(&mut App)>) {
+    crate::modal::alert(window, cx, move |dialog, _, _| {
+        let stop = stop.clone();
+        dialog
+            .title("Stop SENTIENT?")
+            .description("Devices lose their connection and dashboards stop updating until SENTIENT is started again.")
+            .confirm()
+            .ok_text("Stop")
+            .on_ok(move |_, _, cx| {
+                stop(cx);
+                true
+            })
+    });
+}
+
+/// The SENTIENT card's Start, Stop… and Restart, in that order here and on
+/// a server. Start is the primary action while SENTIENT is stopped (Open
+/// SENTIENT is while it runs); actions that do not apply are off; Stop
+/// hovers red. `running`: None while not known.
+pub(crate) fn control_buttons(
+    theme: &gpui_kit::component::Theme,
+    id: &str,
+    busy: bool,
+    running: Option<bool>,
+    start: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+    restart: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+    stop: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+) -> Div {
+    use gpui_kit::component::{Icon, IconName};
+    let up = running == Some(true);
+    let down = running == Some(false);
+    let btn = |key: &str, label: &'static str, icon: IconName, primary: bool, on: bool| {
+        let b = crate::ui::button(SharedString::from(format!("{id}{key}"))).label(label).icon(Icon::new(icon)).disabled(busy || running.is_none() || !on);
+        if primary { b.primary() } else { b.outline() }
+    };
+    let (bg, border, fg) = ui::stop_hover(theme);
+    h_flex()
+        .flex_wrap()
+        .gap_2()
+        .child(btn("start", "Start", IconName::Play, down, !up).on_click(move |_, w, cx| start(w, cx)))
+        .child(btn("stop", "Stop…", IconName::Square, false, !down).hover_colors(bg, border, fg).on_click(move |_, w, cx| stop(w, cx)))
+        .child(btn("restart", "Restart", IconName::RotateCw, false, !down).on_click(move |_, w, cx| restart(w, cx)))
+}
+
 /// What the database details may offer, each where the page can do it.
 pub(crate) struct DbActions {
     pub set_limit: Option<std::rc::Rc<dyn Fn(&mut App)>>,
@@ -599,6 +778,8 @@ pub(crate) struct DbActions {
     pub back_up: Option<std::rc::Rc<dyn Fn(&mut App)>>,
     /// Open the list of ClickHouse parts set aside.
     pub broken_parts: Option<std::rc::Rc<dyn Fn(&mut App)>>,
+    /// Open "Move data to another disk" (the low-disk warning's first way out).
+    pub move_data: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>,
 }
 
 /// Reads the parts set aside; restores (true) or deletes them.
@@ -811,6 +992,15 @@ pub(crate) fn db_details(
                 .text_color(fg)
                 .text_sm()
                 .child(div().flex_1().min_w(px(240.)).child(format!("{drive} is almost full ({} free).{when}", bytes_label(f))))
+                .when_some(actions.move_data.clone(), |r, open| {
+                    r.child(
+                        crate::ui::button("low-move")
+                            .primary()
+                            .icon(gpui_kit::component::Icon::empty().path("icons/move-data.svg"))
+                            .label("Move data to another disk…")
+                            .on_click(move |_, window, cx| open(window, cx)),
+                    )
+                })
                 .when(db.hybrid && actions.set_limit.is_some(), |r| {
                     let set_limit = actions.set_limit.clone().unwrap();
                     r.child(crate::ui::button("low-limit").outline().label("Set a history limit…").on_click({ let f = set_limit.clone(); move |_, _, cx| f(cx) }))

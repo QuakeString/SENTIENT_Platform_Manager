@@ -13,6 +13,11 @@ pub enum Error {
 
     #[error("{0}")]
     Msg(String),
+
+    /// The free-space watch stopped the restore (crate::space): a disk it
+    /// writes to fell under the safe level. The message names the disk.
+    #[error("{0}")]
+    SpaceLow(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -110,6 +110,8 @@ pub struct Origin {
     pub schema_version: Option<i64>,
     pub database_type: Option<String>,
     pub host: Option<String>,
+    /// The platform's settings (`manifest.platform`).
+    pub platform: Option<crate::manifest::PlatformInfo>,
 }
 
 impl Default for BackupOptions {
@@ -227,14 +229,15 @@ pub async fn run(cfg: &ConnConfig, opts: &BackupOptions, sink: ProgressFn) -> Re
             TelemetryMode::LastDays(d) => Some(chrono::Utc::now().timestamp_millis() - d as i64 * 86_400_000),
             _ => None,
         };
-        let range = db
-            .text("SELECT COALESCE(min(ts), 0)::text || ' ' || COALESCE(max(ts), 0)::text FROM ts_kv")
-            .await?
-            .unwrap_or_default();
-        let mut it = range.split_whitespace().map(|v| v.parse::<i64>().unwrap_or(0));
-        let (min_ts, max_ts) = (it.next().unwrap_or(0), it.next().unwrap_or(0));
-        let start = since_ms.map_or(min_ts, |s| s.max(min_ts));
-        for (label, from, to) in months_between(start, max_ts) {
+        // An empty ts_kv (a ClickHouse install keeps its history there) has
+        // no months: no member, rather than a "1970-01" one.
+        let range = db.text("SELECT min(ts)::text || ' ' || max(ts)::text FROM ts_kv").await?.unwrap_or_default();
+        let mut it = range.split_whitespace().filter_map(|v| v.parse::<i64>().ok());
+        let months = match (it.next(), it.next()) {
+            (Some(min_ts), Some(max_ts)) => months_between(since_ms.map_or(min_ts, |s| s.max(min_ts)), max_ts),
+            _ => Vec::new(),
+        };
+        for (label, from, to) in months {
             let lower = since_ms.map_or(from, |s| s.max(from));
             let sql = format!("COPY (SELECT * FROM ts_kv WHERE ts >= {lower} AND ts < {to}) TO STDOUT WITH (FORMAT binary)");
             let temp = opts.output.with_extension(format!("telemetry-{label}.tmp"));
@@ -354,6 +357,7 @@ pub async fn run(cfg: &ConnConfig, opts: &BackupOptions, sink: ProgressFn) -> Re
             EncryptionInfo::none()
         },
         clickhouse: ch_section,
+        platform: opts.origin.platform.clone(),
     };
     let files = write_archive(&opts.output, &manifest, &members, opts.passphrase.as_deref(), opts.part_size)?;
     for m in &members {

@@ -102,6 +102,14 @@ fn ch_database_exists(ch: &ChConn, name: &str) -> Result<bool, String> {
 }
 
 fn wait_answering(port: u16) -> bool {
+    // Click tests: SPM_DEBUG_FAIL_SWITCH=<marker file> makes the first wait
+    // (on the restored data) fail once, so the swap back shows; the file
+    // is removed by it.
+    #[cfg(debug_assertions)]
+    if let Some(f) = std::env::var_os("SPM_DEBUG_FAIL_SWITCH").filter(|f| std::path::Path::new(f).exists()) {
+        let _ = std::fs::remove_file(f);
+        return false;
+    }
     for _ in 0..90 {
         if sentient_installer_core::native::http_answers(port) {
             return true;
@@ -170,6 +178,13 @@ pub(crate) fn match_schema(
 /// Make SENTIENT use the restored database `name`. Returns the name the data
 /// from before is kept under.
 pub fn run(record: &InstallationRecord, name: &str, sink: ProgressFn) -> Result<String, String> {
+    run_with(record, name, true, sink)
+}
+
+/// [`run`]; `exchange_history` false keeps ClickHouse's history and latest
+/// values where they are (a configuration-only restore that keeps the
+/// telemetry): only PostgreSQL switches.
+pub fn run_with(record: &InstallationRecord, name: &str, exchange_history: bool, sink: ProgressFn) -> Result<String, String> {
     if !valid_name(name) {
         return Err(format!("'{name}' is not a database name this can use."));
     }
@@ -182,7 +197,7 @@ pub fn run(record: &InstallationRecord, name: &str, sink: ProgressFn) -> Result<
     if !block_on(database_exists(&pg, name))?? {
         return Err(format!("There is no PostgreSQL database called {name}; restore a backup into it first."));
     }
-    let ch = (setup.flavor() == Flavor::Clickhouse).then(|| setup.ch());
+    let ch = (exchange_history && setup.flavor() == Flavor::Clickhouse).then(|| setup.ch());
     if let Some(ch) = &ch {
         if !ch_database_exists(ch, name)? {
             return Err(format!(

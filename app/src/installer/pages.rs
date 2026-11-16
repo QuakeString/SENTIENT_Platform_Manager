@@ -368,10 +368,11 @@ impl Installer {
         let program = self.fields.install_dir.clone();
         let data = self.fields.data_dir.clone();
         if self.engine == Engine::Docker {
-            return v_flex().gap_4().max_w(px(640.)).child(lead(
+            return v_flex().gap_4().max_w(px(760.)).child(lead(
                 &theme,
-                "With Docker, SENTIENT and its databases keep their data in Docker volumes (st-pg-data, st-data, st-ch-data); there are no folders to choose. Make sure the disk that holds Docker's data has room for telemetry to grow.",
-            ));
+                "With Docker, SENTIENT and its databases keep their data in Docker volumes (st-pg-data, st-data, st-ch-data). They stay in Docker's own folder unless you give them a place below; put them on the disk with the most room, as telemetry grows.",
+            ))
+            .child(self.data_locations(&theme, cx));
         }
         if !cfg!(windows) {
             return v_flex()
@@ -406,6 +407,57 @@ impl Installer {
             .child(div().text_sm().text_color(theme.muted_foreground).child(
                 "Put the database folder on the disk with the most free space: telemetry grows over time.",
             ))
+    }
+
+    /// Docker: Advanced, data locations (mockup M14): one folder for
+    /// everything (Docker's own when empty), or a place per store; each
+    /// volume keeps its name and is bound to its folder.
+    fn data_locations(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Div {
+        let per = self.loc_per_store;
+        let seg = crate::ui::seg_track(theme)
+            .child(crate::ui::seg_item(theme, "loc-one", "One folder", !per).on_click(cx.listener(|this, _, _, cx| {
+                this.loc_per_store = false;
+                cx.notify();
+            })))
+            .child(crate::ui::seg_item(theme, "loc-per", "A place per store", per).on_click(cx.listener(|this, _, _, cx| {
+                this.loc_per_store = true;
+                cx.notify();
+            })));
+        let row = |label: &'static str, id: &'static str, field: Entity<InputState>, last: bool, cx: &mut Context<Self>| {
+            let f2 = field.clone();
+            h_flex()
+                .gap_3()
+                .items_center()
+                .py(px(8.))
+                .when(!last, |r| r.border_b_1().border_color(theme.border))
+                .child(div().w(px(150.)).flex_shrink_0().text_sm().text_color(theme.muted_foreground).child(label))
+                .child(div().flex_1().min_w_0().font_family(theme.mono_font_family.clone()).child(gpui_kit::component::input::Input::new(&field)))
+                .child(crate::ui::button(id).outline().icon(Icon::new(IconName::Folder)).label("Change…").on_click(cx.listener(move |this, _, window, cx| this.browse(f2.clone(), window, cx))))
+                .into_any_element()
+        };
+        let mut card = crate::ui::panel(theme)
+            .gap_0()
+            .child(div().pb_2().font_weight(FontWeight::MEDIUM).child("Advanced: data locations"))
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .py(px(8.))
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(h_flex().w(px(150.)).flex_shrink_0().gap_1().items_center().text_sm().text_color(theme.muted_foreground).child("Data").child(crate::ui::info(
+                        "loc-help".into(),
+                        "One folder keeps everything together (postgres, clickhouse and files under it; Docker's own folder when left empty); a place per store puts each database on its own disk. The volumes keep their names (st-pg-data, st-ch-data, st-data).".into(),
+                    )))
+                    .child(seg),
+            );
+        let (one, pg, ch, data) = (self.fields.loc_one.clone(), self.fields.loc_pg.clone(), self.fields.loc_ch.clone(), self.fields.loc_data.clone());
+        if per {
+            card = card.child(row("PostgreSQL", "loc-pg", pg, false, cx)).child(row("ClickHouse", "loc-ch", ch, false, cx)).child(row("SENTIENT files", "loc-data", data, true, cx));
+        } else {
+            card = card.child(row("Folder", "loc-one-dir", one, true, cx));
+        }
+        card
     }
 
     fn database(&mut self, cx: &mut Context<Self>) -> Div {

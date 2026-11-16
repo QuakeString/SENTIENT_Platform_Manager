@@ -195,7 +195,8 @@ fn row_probe(id: &'static str) -> impl IntoElement {
 }
 
 /// Notes the menu's edges.
-fn menu_probe(left_pad: f32) -> impl IntoElement {
+/// Open over the page, the page's edge is the rail slot's (`slot`).
+fn menu_probe(left_pad: f32, slot: Option<f32>) -> impl IntoElement {
     canvas(
         move |b, _, _| {
             ROWS.with(|r| {
@@ -207,7 +208,10 @@ fn menu_probe(left_pad: f32) -> impl IntoElement {
             });
             // The layout test measures the page's gaps from here.
             if cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
-                eprintln!("LAYOUT menu-edge {:.2}", f32::from(b.origin.x + b.size.width));
+                eprintln!("LAYOUT menu-edge {:.2}", slot.unwrap_or(f32::from(b.origin.x + b.size.width)));
+                if slot.is_some() {
+                    eprintln!("LAYOUT menu-overlay {:.2}", f32::from(b.origin.x + b.size.width));
+                }
             }
         },
         |_, _, _, _| {},
@@ -351,7 +355,8 @@ const PREFS: f32 = 32.;
 /// The menu's width, unfolded and folded.
 pub const MENU_W: f32 = 232.;
 pub const MENU_FOLDED_W: f32 = 64.;
-/// Below this window width the menu folds by itself.
+/// Below this window width the menu folds by itself (its unfold button
+/// then opens it over the page instead).
 pub const FOLD_BELOW: f32 = 1000.;
 
 impl Manager {
@@ -360,15 +365,20 @@ impl Manager {
         width < FOLD_BELOW || Appearance::get().folded
     }
 
-    pub(super) fn shell_menu(&self, width: f32, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn shell_menu(&self, width: f32, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         // Folding glides the width (the names fade with it); the layout is
         // the folded one once the menu is narrow.
-        let target_w = if Self::folded(width) { MENU_FOLDED_W } else { MENU_W };
+        let forced = width < FOLD_BELOW;
+        let target_w = if forced && self.menu_overlay { MENU_W } else if Self::folded(width) { MENU_FOLDED_W } else { MENU_W };
         let menu_w = ui::tween("menu-w", target_w, 200, window);
         let rail = menu_w < 150.;
         let names = ((menu_w - 150.) / (MENU_W - 150.)).clamp(0., 1.);
-        let forced = width < FOLD_BELOW;
+        // Narrow window: the menu opens over the page (and stays over it
+        // while it folds back), a rail-wide slot keeping the page still.
+        let overlay = forced && (self.menu_overlay || menu_w > MENU_FOLDED_W + 0.5);
+        let overlay_t = if overlay { ((menu_w - MENU_FOLDED_W) / (MENU_W - MENU_FOLDED_W)).clamp(0., 1.) } else { 0. };
+        self.overlay_t.set(overlay_t);
         let motion = !ui::reduce_motion();
         let active: &'static str = if self.page == Page::Instances { "instances" } else if self.page == Page::About { "about" } else { self.page.id() };
         let left_pad = if rail { MENU_PAD } else { MENU_PAD_OPEN };
@@ -400,6 +410,7 @@ impl Manager {
                 })
                 .on_click(cx.listener(move |this, _, _, cx| {
                 this.page = page;
+                this.menu_overlay = false;
                 cx.notify();
             }))
         });
@@ -409,6 +420,7 @@ impl Manager {
             })
             .on_click(cx.listener(|this, _, _, cx| {
                 this.page = Page::Instances;
+                this.menu_overlay = false;
                 cx.notify();
             }));
 
@@ -426,25 +438,31 @@ impl Manager {
                 .justify_center()
                 .rounded(px(8.))
                 .child(ui::layout_probe("menu-icon"))
-                .when(rail && !forced, |d| {
+                .when(rail, |d| {
                     d.cursor_pointer()
                         .on_hover(cx.listener(|this, h: &bool, _, cx| {
                             this.logo_hover = *h;
                             cx.notify();
                         }))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            Appearance::set(|a| a.folded = false);
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if forced {
+                                // Narrow: open it over the page; the
+                                // preference for wide windows stays.
+                                this.menu_overlay = true;
+                                window.focus(&this.modal_focus, cx);
+                            } else {
+                                Appearance::set(|a| a.folded = false);
+                            }
                             this.logo_hover = false;
                             cx.notify();
                         }))
                         .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Unfold menu").build(w, cx))
                 })
-                .when(rail && forced, |d| d.tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("The window is too narrow to unfold the menu").build(w, cx)))
                 // The swap cross-fades (150 ms, the app's ease-out): the logo
                 // fades and shrinks a little as the unfold button fades in,
                 // and back on leaving. Reduced motion: at once.
                 .child({
-                    let t = ui::tween("logo-swap", if rail && !forced && logo_hover { 1. } else { 0. }, 150, window);
+                    let t = ui::tween("logo-swap", if rail && logo_hover { 1. } else { 0. }, 150, window);
                     let logo_size = LOGO * (1. - 0.08 * t);
                     div()
                         .relative()
@@ -500,8 +518,12 @@ impl Manager {
                             .hover(|d| d.bg(theme.list_hover))
                             .child(menu_icon("panel-left-close").size(px(ICON)))
                             .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Fold menu").build(w, cx))
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                Appearance::set(|a| a.folded = true);
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if forced {
+                                    this.menu_overlay = false;
+                                } else {
+                                    Appearance::set(|a| a.folded = true);
+                                }
                                 cx.notify();
                             })),
                     )
@@ -535,6 +557,7 @@ impl Manager {
                 .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("About and preferences").build(w, cx))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.page = Page::About;
+                    this.menu_overlay = false;
                     cx.notify();
                 }));
             h_flex()
@@ -581,6 +604,7 @@ impl Manager {
                                                         .child("Update")
                                                         .on_click(cx.listener(|this, _, _, cx| {
                                                             this.page = Page::Update;
+                                                            this.menu_overlay = false;
                                                             cx.notify();
                                                         })),
                                                 )
@@ -592,8 +616,18 @@ impl Manager {
                 .child(prefs)
         };
 
-        let menu_bg = if see_through() { theme.sidebar.opacity(0.72) } else { theme.sidebar };
-        v_flex()
+        // Over the page the window's blur has only the page under it (GPUI
+        // cannot blur inside the window), so the open overlay is nearly
+        // solid to keep the names readable.
+        let menu_bg = if !see_through() {
+            theme.sidebar
+        } else if overlay {
+            theme.sidebar.opacity(0.72 + 0.24 * overlay_t)
+        } else {
+            theme.sidebar.opacity(0.72)
+        };
+        let dark = theme.mode.is_dark();
+        let menu = v_flex()
             .w(px(menu_w))
             .overflow_hidden()
             .h_full()
@@ -602,7 +636,7 @@ impl Manager {
             .bg(menu_bg)
             // No border: the selection canvas draws the edge (one shape
             // with the selected row's opening).
-            .child(menu_probe(left_pad))
+            .child(menu_probe(left_pad, overlay.then_some(MENU_FOLDED_W)))
             // Under the rows: the selection, joined to the page.
             .child(selection(active, theme.muted, theme.sidebar_border, motion))
             .child(brand)
@@ -622,7 +656,26 @@ impl Manager {
                     .child(div().mt(px(12.)).mb(px(12.)).ml(px(2.)).mr(px(10.)).h(px(1.)).flex_shrink_0().bg(theme.sidebar_border))
                     .child(instances),
             )
-            .child(footer)
+            .child(footer);
+        if !overlay {
+            return menu.into_any_element();
+        }
+        // Over the page: a soft shadow on its right edge; the slot keeps the
+        // rail's width so nothing beside it moves.
+        let shadow = BoxShadow {
+            color: black().opacity(overlay_t * if dark { 0.45 } else { 0.18 }),
+            offset: point(px(4.), px(0.)),
+            blur_radius: px(18.),
+            spread_radius: px(0.),
+            inset: false,
+        };
+        div()
+            .relative()
+            .h_full()
+            .w(px(MENU_FOLDED_W))
+            .flex_shrink_0()
+            .child(menu.absolute().top_0().left_0().shadow(vec![shadow]))
+            .into_any_element()
     }
 }
 

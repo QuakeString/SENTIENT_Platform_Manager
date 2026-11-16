@@ -334,7 +334,7 @@ fn level_word(l: Level) -> &'static str {
 
 impl Render for LogView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Opened from a Control row's "Logs": that source.
+        // Opened from a service row's "Logs" on Status: that source.
         if let Some(s) = logsource::take_pick() {
             self.pick = Some(s);
             self.selected.clear();

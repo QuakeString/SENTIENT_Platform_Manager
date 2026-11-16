@@ -20,6 +20,7 @@ pub const DISTRO: &str = "sentient";
 
 pub mod adopt;
 pub mod docker_ops;
+pub mod move_data;
 pub mod gateway_docker;
 #[cfg(not(windows))]
 pub mod gateway_native;
@@ -108,6 +109,60 @@ pub struct DeployConfig {
     /// same cluster must start after a takeover, never a new empty one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pgdata: Option<String>,
+    /// Where each data volume keeps its data when not in Docker's own
+    /// folder: a folder on the host the volume is bound to (driver_opts
+    /// type none, o bind, device <folder>), the volume's name kept
+    /// (move_data).
+    #[serde(default, skip_serializing_if = "Locations::is_empty")]
+    pub locations: Locations,
+    /// The places data was moved away from, kept until removed (move_data).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub old_copies: Vec<move_data::OldCopy>,
+}
+
+/// The host folders the data volumes are bound to; None: Docker's own
+/// folder (a plain named volume).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Locations {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pg: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+}
+
+impl Locations {
+    pub fn is_empty(&self) -> bool {
+        self.pg.is_none() && self.ch.is_none() && self.data.is_none()
+    }
+    pub fn get(&self, store: move_data::Store) -> Option<&String> {
+        match store {
+            move_data::Store::Pg => self.pg.as_ref(),
+            move_data::Store::Ch => self.ch.as_ref(),
+            move_data::Store::Data => self.data.as_ref(),
+            move_data::Store::Backups => None,
+        }
+    }
+    pub fn set(&mut self, store: move_data::Store, place: Option<String>) {
+        match store {
+            move_data::Store::Pg => self.pg = place,
+            move_data::Store::Ch => self.ch = place,
+            move_data::Store::Data => self.data = place,
+            move_data::Store::Backups => {}
+        }
+    }
+    /// Every store under one folder (`<dir>/postgres`, `/clickhouse`,
+    /// `/files`): Setup's "One folder".
+    pub fn under(dir: &str, clickhouse: bool) -> Self {
+        let d = dir.trim_end_matches('/');
+        Self {
+            pg: Some(format!("{d}/postgres")),
+            ch: clickhouse.then(|| format!("{d}/clickhouse")),
+            data: Some(format!("{d}/files")),
+        }
+    }
 }
 
 /// The compose project an adopted stack was started from, as Docker labels
@@ -156,6 +211,8 @@ impl Default for DeployConfig {
             names: None,
             db_loopback: false,
             pgdata: None,
+            locations: Locations::default(),
+            old_copies: Vec::new(),
         }
     }
 }
@@ -390,14 +447,25 @@ fn clickhouse_service(cfg: &DeployConfig) -> String {
     y
 }
 
+/// One entry of the top-level `volumes:`: the name pinned, and bound to a
+/// host folder when the store has one (the name stays; only its place
+/// changes).
+fn volume_def(key: &str, name: &str, place: Option<&String>) -> String {
+    let mut y = format!("  {key}:\n    name: {name}\n");
+    if let Some(dir) = place {
+        y.push_str(&format!("    driver: local\n    driver_opts:\n      type: none\n      o: bind\n      device: {}\n", yq(dir)));
+    }
+    y
+}
+
 /// A stack holding ClickHouse alone.
 pub fn compose_clickhouse_only(cfg: &DeployConfig) -> String {
     let n = cfg.names();
     format!(
-        "name: {}\n\nservices:\n{}volumes:\n  clickhouse_data:\n    name: {}\n",
+        "name: {}\n\nservices:\n{}volumes:\n{}",
         cfg.stack_name,
         clickhouse_service(cfg),
-        n.vol_ch
+        volume_def("clickhouse_data", &n.vol_ch, cfg.locations.ch.as_ref())
     )
 }
 
@@ -459,9 +527,11 @@ pub fn compose(cfg: &DeployConfig) -> String {
     ));
 
     // ---- volumes: names pinned so every invocation attaches the same data ----
-    y.push_str(&format!("volumes:\n  postgres_data:\n    name: {}\n  sentient_data:\n    name: {}\n", n.vol_pg, n.vol_data));
+    y.push_str("volumes:\n");
+    y.push_str(&volume_def("postgres_data", &n.vol_pg, cfg.locations.pg.as_ref()));
+    y.push_str(&volume_def("sentient_data", &n.vol_data, cfg.locations.data.as_ref()));
     if cfg.flavor.uses_clickhouse() {
-        y.push_str(&format!("  clickhouse_data:\n    name: {}\n", n.vol_ch));
+        y.push_str(&volume_def("clickhouse_data", &n.vol_ch, cfg.locations.ch.as_ref()));
     }
     y
 }
@@ -584,6 +654,16 @@ fn host_file_exists(path: &str) -> bool {
 }
 
 fn write_stack_files(sink: &ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
+    // A volume already bound to a folder keeps that folder, whatever the
+    // record says (a record saved before a move finished, an older one):
+    // compose would otherwise refuse the volume as changed.
+    let synced = move_data::with_actual_locations(cfg);
+    write_stack_files_exact(sink, &synced)
+}
+
+/// [`write_stack_files`] exactly as `cfg` says (the move engine, which
+/// changes the volumes itself).
+fn write_stack_files_exact(sink: &ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     if cfg.external.is_some() {
         return Err(EXTERNAL_COMPOSE.into());
     }
@@ -701,6 +781,10 @@ pub fn deploy_with(sink: ProgressFn, cfg: &DeployConfig, keep_existing: Option<b
 
     sink(Progress::Step { name: "Pulling SENTIENT images (first time, a few minutes)".into() });
     pull_images(&sink, cfg)?;
+    bail_if_cancelled!();
+
+    // Data locations chosen at Setup: the folders the volumes are bound to.
+    move_data::prepare_locations(&sink, cfg)?;
     bail_if_cancelled!();
 
     // The server validates the schema at boot and REFUSES to start on an

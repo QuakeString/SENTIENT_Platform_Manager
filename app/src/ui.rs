@@ -159,9 +159,9 @@ pub fn open_sentient(port: u16, kiosk: bool, cx: &mut App) {
 /// What the start delay does, for its (i).
 pub const START_DELAY_HELP: &str = "Seconds SENTIENT waits after Windows starts before it starts itself, its database first. \
 0 starts it together with Windows. A few seconds let other programs and the network settle first; an operator screen shows \
-\"SENTIENT is starting\" meanwhile. Change it later under Control.";
+\"SENTIENT is starting\" meanwhile. Change it later in Platform settings, under Startup.";
 
-/// "Start delay [ 15 ] seconds (i)": the installer's and Control's field.
+/// "Start delay [ 15 ] seconds (i)": the installer's and Startup's field.
 pub fn start_delay_row(theme: &Theme, state: &Entity<gpui_kit::component::input::InputState>) -> Div {
     use gpui_kit::component::{Sizable as _, button::ButtonVariants as _, input::Input, IconName};
     gpui_kit::component::h_flex()
@@ -277,6 +277,49 @@ pub fn fact(theme: &Theme, label: &'static str, value: impl Into<SharedString>) 
         .text_sm()
         .child(div().w(px(168.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
         .child(div().min_w_0().child(value.into()))
+}
+
+/// The label column of a card's facts where two cards share a row (Status).
+pub const CARD_LABEL_W: f32 = 130.;
+
+/// A label / value row in a half-width card: the 130 px label column.
+pub fn card_fact(theme: &Theme, label: &'static str, value: impl Into<SharedString>) -> Div {
+    h_flex()
+        .gap_4()
+        .text_sm()
+        .child(div().w(px(CARD_LABEL_W)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
+        .child(div().flex_1().min_w_0().child(value.into()))
+}
+
+/// [`card_fact`] while its value loads.
+pub fn card_fact_loading(theme: &Theme, label: &'static str, w: f32) -> Div {
+    h_flex()
+        .gap_4()
+        .text_sm()
+        .child(div().w(px(CARD_LABEL_W)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
+        .child(skeleton_line(theme, label, w))
+}
+
+/// Status's top row: the SENTIENT card and Services side by side at equal
+/// height, a page gap apart; one above the other in a window below
+/// SIDE_BY_SIDE_W.
+pub fn card_pair(left: Div, right: Div) -> Div {
+    if side_by_side() {
+        h_flex()
+            .w_full()
+            .items_stretch()
+            .gap(px(GAP))
+            .child(left.flex_1().min_w_0())
+            .child(right.flex_1().min_w_0())
+    } else {
+        v_flex().w_full().gap(px(GAP)).child(left).child(right)
+    }
+}
+
+/// A card's last block (its actions, its totals) under a hairline, at the
+/// card's foot when its neighbour is taller.
+pub fn card_foot(theme: &Theme, content: impl IntoElement) -> [Div; 2] {
+    [div().flex_1(), div().pt_3().border_t_1().border_color(theme.border).child(content)]
 }
 
 /// A fact with its explanation behind an (i), never as a line of text.
@@ -773,18 +816,39 @@ pub fn service_label(name: &str) -> Option<&'static str> {
     }
 }
 
-/// Per-row actions on the Control page: (service name, action) and
-/// (service name) for its log.
+/// Per-row actions on Status: (service name, action) and (service name)
+/// for its log.
 pub type ServiceAct = std::rc::Rc<dyn Fn(&str, &'static str, &mut Window, &mut App)>;
 pub type ServiceLog = std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)>;
 
-/// The Services panel's rows: state, plain name with the raw name muted, the
-/// detail faint; on Control also Start, Stop, Restart and Logs per row.
-/// The same on this computer and on a remote server.
+/// The hover of a Stop button: the danger tint, border and text.
+pub fn stop_hover(theme: &Theme) -> (Hsla, Hsla, Hsla) {
+    (theme.danger.opacity(0.14), theme.danger, theme.danger)
+}
+
+/// A service row's 32 px outline icon button with an 18 px icon and its
+/// name as the tooltip. It hovers teal, or red for Stop.
+pub fn svc_icon_button(theme: &Theme, id: SharedString, icon: gpui_kit::component::Icon, tip: &'static str, enabled: bool, stop: bool) -> gpui_kit::component::button::Button {
+    use gpui_kit::component::{Disableable as _, Sizable as _};
+    let (bg, border, fg) = if stop { stop_hover(theme) } else { (theme.primary.opacity(0.12), theme.primary, theme.primary) };
+    button(id)
+        .outline()
+        .with_size(px(32.))
+        .icon(icon)
+        .icon_size(px(18.))
+        .tooltip(tip)
+        .hover_colors(bg, border, fg)
+        .disabled(!enabled)
+}
+
+/// The Services card's rows: the state, the plain name, the unit or
+/// container name and its uptime (wrapping in a narrow card), then Start,
+/// Stop, Restart and Logs, always shown, those that do not apply off. The
+/// same on this computer and on a remote server.
 pub fn service_rows(
     theme: &Theme,
     services: impl IntoIterator<Item = (SharedString, bool, bool, SharedString)>,
-    actions: Option<(ServiceAct, ServiceLog, Option<String>)>,
+    actions: (ServiceAct, ServiceLog, Option<String>),
 ) -> Vec<Div> {
     // One order on every page: SENTIENT, Database, ClickHouse, Gateway.
     let rank = |n: &str| match service_label(n) {
@@ -794,6 +858,8 @@ pub fn service_rows(
         Some("Gateway") => 3,
         _ => 4,
     };
+    let (act, log, busy_name) = actions;
+    let any_busy = busy_name.is_some();
     let mut services: Vec<_> = services.into_iter().collect();
     services.sort_by_key(|(n, ..)| rank(n));
     services
@@ -801,64 +867,55 @@ pub fn service_rows(
         .map(|(name, running, starting, detail)| {
             let (tone, label) = if running { (Tone::Good, "Running") } else if starting { (Tone::Warn, "Starting") } else { (Tone::Bad, "Stopped") };
             let plain = service_label(&name);
-            let busy = actions.as_ref().and_then(|a| a.2.as_ref()).is_some_and(|b| *b == *name);
-            let any_busy = actions.as_ref().is_some_and(|a| a.2.is_some());
-            let narrow = narrow();
+            let busy = busy_name.as_ref().is_some_and(|b| *b == *name);
             let state_pill = if busy { pill(theme, Tone::Warn, "Working…") } else { pill(theme, tone, label) }.min_w(px(86.)).justify_center();
-            let raw = plain.is_some().then(|| div().min_w_0().overflow_hidden().text_ellipsis().text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(name.clone()));
-            let uptime = (!detail.is_empty()).then(|| div().min_w_0().overflow_hidden().text_ellipsis().text_color(theme.muted_foreground).child(SharedString::from(if narrow { detail.to_string() } else { format!("· {detail}") })));
-            // Wide: the names on the row; narrow: on the second line.
-            let (raw_in, raw, uptime_in, uptime) = if narrow { (None, raw, None, uptime) } else { (raw, None, uptime, None) };
-            let row = gpui_kit::component::h_flex()
-                .gap_4()
+            let piece = |d: Div| d.min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis();
+            let names = gpui_kit::component::h_flex()
+                .flex_1()
+                .min_w_0()
+                .flex_wrap()
+                .gap_x_2()
+                .gap_y_0p5()
+                .child(piece(div()).child(SharedString::from(plain.unwrap_or(&name).to_string())))
+                .when(plain.is_some(), |r| {
+                    r.child(piece(div()).text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(name.clone()))
+                })
+                .when(!detail.is_empty(), |r| r.child(piece(div()).text_color(theme.muted_foreground).child(SharedString::from(format!("· {detail}")))));
+            let icon = |action: &'static str, icon: gpui_kit::component::Icon, tip: &'static str, enabled: bool| {
+                let (act, n) = (act.clone(), name.to_string());
+                svc_icon_button(theme, SharedString::from(format!("svc-{action}-{name}")), icon, tip, enabled && !any_busy, action == "stop")
+                    .on_click(move |_, window, cx| act(&n, action, window, cx))
+            };
+            let (log, n) = (log.clone(), name.to_string());
+            gpui_kit::component::h_flex()
+                .gap_3()
                 .text_sm()
                 .items_center()
-                // The state column lines up with the fact labels; the names
-                // are cut with an ellipsis, never overlapped.
-                .child(if narrow { gpui_kit::component::h_flex().flex_shrink_0().child(state_pill) } else { gpui_kit::component::h_flex().w(px(168.)).flex_shrink_0().child(state_pill) })
+                .child(gpui_kit::component::h_flex().flex_shrink_0().child(state_pill))
+                .child(names)
                 .child(
                     gpui_kit::component::h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .gap_2()
-                        .child(div().min_w_0().overflow_hidden().text_ellipsis().child(SharedString::from(plain.unwrap_or(&name).to_string())))
-                        .children(raw_in)
-                        .children(uptime_in),
-                );
-            let row = row.when_some(actions.clone(), |r, (act, log, _)| {
-                    let icon = |id: &str, icon: gpui_kit::assets::IconName, tip: &'static str, enabled: bool, action: &'static str| {
-                        let (act, n) = (act.clone(), name.to_string());
-                        button(SharedString::from(format!("svc-{action}-{id}")))
-                            .ghost()
-                            .icon(gpui_kit::component::Icon::new(icon))
-                            .tooltip(tip)
-                            .when(!enabled || any_busy, |b| gpui_kit::component::Disableable::disabled(b, true))
-                            .on_click(move |_, window, cx| act(&n, action, window, cx))
-                    };
-                    let n = name.to_string();
-                    r.child(
-                        gpui_kit::component::h_flex()
-                            .gap_1()
-                            .flex_shrink_0()
-                            .child(icon(&name, gpui_kit::assets::IconName::Play, "Start", !running, "start"))
-                            .child(icon(&name, gpui_kit::assets::IconName::Square, "Stop", running, "stop"))
-                            .child(icon(&name, gpui_kit::assets::IconName::RotateCw, "Restart", running, "restart"))
-                            .child(button(SharedString::from(format!("svc-log-{name}"))).ghost().label("Logs").on_click(move |_, window, cx| log(&n, window, cx))),
-                    )
-                });
-            // Narrow: the unit or container name and its uptime on a second line.
-            if narrow && (raw.is_some() || uptime.is_some()) {
-                gpui_kit::component::v_flex()
-                    .gap_0p5()
-                    .child(row)
-                    .child(gpui_kit::component::h_flex().gap_2().text_sm().whitespace_nowrap().overflow_hidden().children(raw).children(uptime))
-            } else {
-                gpui_kit::component::v_flex().child(row)
-            }
+                        .gap_1()
+                        .flex_shrink_0()
+                        .child(icon("start", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Play), "Start", !running))
+                        .child(icon("stop", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Square), "Stop…", running))
+                        .child(icon("restart", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::RotateCw), "Restart", running))
+                        .child(
+                            svc_icon_button(theme, SharedString::from(format!("svc-log-{name}")), gpui_kit::component::Icon::empty().path("icons/file-text.svg"), "Logs", true, false)
+                                .on_click(move |_, window, cx| log(&n, window, cx)),
+                        ),
+                )
         })
         .collect()
+}
+
+/// The Services card's foot: "2 of 3 running".
+pub fn services_foot(theme: &Theme, running: usize, total: usize) -> Div {
+    gpui_kit::component::h_flex()
+        .items_center()
+        .text_size(px(13.))
+        .text_color(theme.muted_foreground)
+        .child(format!("{running} of {total} running"))
 }
 
 /// A popover's pointer under it, at `x` from its left: a 12 px wide
@@ -1228,6 +1285,20 @@ pub fn narrow() -> bool {
     NARROW.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The window width from which Status's two top cards share a row.
+pub const SIDE_BY_SIDE_W: f32 = 1100.;
+
+static SIDE_BY_SIDE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// The window is SIDE_BY_SIDE_W or wider (the manager sets it each frame).
+pub fn set_side_by_side(on: bool) {
+    SIDE_BY_SIDE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn side_by_side() -> bool {
+    SIDE_BY_SIDE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Screens and layout tests: an invisible child that reports its parent's
 /// bounds on stderr as `LAYOUT <name> left right` (SPM_DEBUG_LAYOUT set).
 pub fn layout_probe(name: &'static str) -> impl IntoElement {
@@ -1380,15 +1451,17 @@ pub fn skeleton_card(theme: &Theme, key: &'static str, title: Option<&'static st
     p
 }
 
-/// Service rows while they load: the state pill and the name as placeholders.
+/// Service rows while they load: the state pill, the name and the four
+/// buttons as placeholders.
 pub fn skeleton_service_rows(theme: &Theme, key: &'static str, n: usize) -> Vec<Div> {
     (0..n)
         .map(|i| {
             gpui_kit::component::h_flex()
-                .gap_4()
+                .gap_3()
                 .items_center()
-                .child(gpui_kit::component::h_flex().w(px(168.)).flex_shrink_0().child(skeleton_block(theme, format!("{key}-p{i}"), px(86.).into(), 25.)))
-                .child(skeleton_line(theme, format!("{key}-n{i}"), [260., 300., 240.][i % 3]))
+                .child(skeleton_block(theme, format!("{key}-p{i}"), px(86.).into(), 25.))
+                .child(skeleton_line(theme, format!("{key}-n{i}"), [200., 240., 180.][i % 3]))
+                .child(gpui_kit::component::h_flex().gap_1().flex_shrink_0().children((0..4).map(|b| skeleton_block_r(theme, format!("{key}-b{i}-{b}"), px(32.).into(), 32., 6.))))
         })
         .collect()
 }

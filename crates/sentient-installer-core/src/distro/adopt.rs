@@ -768,6 +768,9 @@ pub fn take_over(sink: ProgressFn, cfg: &DeployConfig, compose: Option<&str>) ->
         return Ok(cfg.clone());
     }
     let (plan, own) = take_over_plan(cfg, compose);
+    // Volumes bound to a folder (moved to another disk) stay bound there:
+    // the new file says so, and so does the configuration returned.
+    let own = super::move_data::with_actual_locations(&own);
     if plan.needs_password {
         return Err("The database password was not found; give it in the takeover dialog. Nothing was changed.".into());
     }

@@ -6,13 +6,15 @@
 
 mod about;
 pub(crate) mod backup;
-pub(crate) mod control;
+pub(crate) mod startup;
 pub(crate) mod files;
 pub(crate) mod folder_chooser;
 mod gateway;
 mod instances;
 pub(crate) mod logs;
 pub(crate) mod migration;
+pub(crate) mod movedata;
+pub(crate) mod restore;
 pub(crate) mod remote_pages;
 mod repair;
 mod takeover;
@@ -48,7 +50,6 @@ use crate::updates::UpdateState;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
     Status,
-    Control,
     Logs,
     /// Files on this computer and the open instance (SFTP).
     Files,
@@ -71,10 +72,9 @@ enum Page {
 
 impl Page {
     /// The menu, in its order: Platform settings last.
-    const ALL: [Page; 12] = [
+    const ALL: [Page; 11] = [
         Page::Status,
         Page::Statistics,
-        Page::Control,
         Page::Logs,
         Page::Files,
         Page::Update,
@@ -89,7 +89,6 @@ impl Page {
     fn id(self) -> &'static str {
         match self {
             Page::Status => "status",
-            Page::Control => "control",
             Page::Logs => "logs",
             Page::Files => "files",
             Page::Update => "update",
@@ -108,7 +107,6 @@ impl Page {
     fn title(self) -> &'static str {
         match self {
             Page::Status => "Status",
-            Page::Control => "Control",
             Page::Logs => "Logs",
             Page::Files => "Files",
             Page::Update => "Update",
@@ -128,7 +126,6 @@ impl Page {
     fn icon(self) -> Icon {
         shell::menu_icon(match self {
             Page::Status => "activity",
-            Page::Control => "power",
             Page::Logs => "square-terminal",
             Page::Files => "folder",
             Page::Update => "refresh-cw",
@@ -149,7 +146,6 @@ pub struct Manager {
     page: Page,
     record: Option<InstallationRecord>,
     status: Option<Entity<status::StatusPage>>,
-    control: Option<Entity<control::ControlPage>>,
     logs: Option<Entity<logs::LogsPage>>,
     update: Option<Entity<update::UpdatePage>>,
     gateway: Option<Entity<gateway::GatewayPage>>,
@@ -183,6 +179,12 @@ pub struct Manager {
     /// The folded menu's logo is under the pointer (it shows the unfold
     /// button then).
     logo_hover: bool,
+    /// Narrow window: the menu is open over the page (the logo's unfold
+    /// button there; the page does not move).
+    menu_overlay: bool,
+    /// How far that overlay is open (0..1, the scrim's strength), set by
+    /// the menu each frame.
+    overlay_t: std::cell::Cell<f32>,
     /// The bell's conditions: when each was first seen (its time), and the
     /// ones cleared with their × (until they change or go and come back).
     cond_since: std::cell::RefCell<std::collections::HashMap<String, i64>>,
@@ -207,6 +209,9 @@ pub struct Manager {
     /// A tray or taskbar action that runs on its page once the page exists
     /// (crate::background): `backup`, `control:<verb>`.
     pending: Option<String>,
+    /// The "Move data to another disk" flow last seen opened
+    /// (movedata::generation): a new one shows Platform settings.
+    move_gen: usize,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -242,7 +247,8 @@ impl Manager {
         let args: Vec<String> = std::env::args().collect();
         // Without --page: the page it was left on.
         let saved = session::load();
-        let page_of = |id: &str| Page::ALL.into_iter().chain([Page::Instances, Page::About]).find(|p| p.id() == id);
+        // Control is part of Status now: a session left there opens Status.
+        let page_of = |id: &str| if id == "control" { Some(Page::Status) } else { Page::ALL.into_iter().chain([Page::Instances, Page::About]).find(|p| p.id() == id) };
         let page_arg = args.windows(2).find(|w| w[0] == "--page").and_then(|w| page_of(&w[1]));
         let page = page_arg.or_else(|| saved.page.as_deref().and_then(page_of)).unwrap_or(Page::Status);
         let record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
@@ -275,7 +281,6 @@ impl Manager {
             page,
             record,
             status: None,
-            control: None,
             logs: None,
             update: None,
             gateway: None,
@@ -297,6 +302,8 @@ impl Manager {
             switcher_open: false,
             bell_open: false,
             logo_hover: false,
+            menu_overlay: false,
+            overlay_t: std::cell::Cell::new(0.),
             cond_since: Default::default(),
             cond_cleared: Default::default(),
             window_h: std::cell::Cell::new(720.),
@@ -306,6 +313,7 @@ impl Manager {
             updates,
             updated_from,
             pending: None,
+            move_gen: 0,
             found_notice,
             _subscriptions: subscriptions,
             _tasks: Vec::new(),
@@ -325,6 +333,19 @@ impl Manager {
         if let Some(id) = args.windows(2).find(|w| w[0] == "--instance").map(|w| w[1].clone()) {
             manager.open_instance(Some(id), cx);
             manager.page = page;
+        }
+        // Screens: "Move data to another disk" at a frame of its mockup.
+        #[cfg(debug_assertions)]
+        if std::env::var("SPM_DEBUG_MOVEDATA_FRAME").is_ok_and(|f| !matches!(f.as_str(), "M1" | "M2" | "M3" | "M13" | "M14")) {
+            let target = match manager.open_remote.as_ref().and_then(|id| manager.remotes.iter().find(|r| &r.id == id)).cloned() {
+                Some(inst) => crate::movedata::Target::Remote(inst),
+                None => crate::movedata::Target::Local,
+            };
+            let on = match &target {
+                crate::movedata::Target::Remote(i) => i.name.clone(),
+                crate::movedata::Target::Local => "This computer".to_string(),
+            };
+            movedata::open(target, on, None, _window, cx);
         }
         // Screens: the bell with canned events, the bell or switcher open.
         #[cfg(debug_assertions)]
@@ -575,8 +596,8 @@ impl Manager {
         let dark = theme::is_dark(cx);
         let row = |key: SharedString, icon: IconName, icon_color: Hsla, title: String, detail: String, meta: String, color: &str, unread: bool, clear: AnyElement| {
             let c = crate::remote::parse_hex(color).unwrap_or(0x187074);
-            let base = if dark { 0.14 } else { 0.08 };
-            let tint = base + if unread { 0.05 } else { 0. };
+            let base = if dark { 0.07 } else { 0.04 };
+            let tint = base + if unread { 0.02 } else { 0. };
             h_flex()
                 .id(key.clone())
                 .group(key)
@@ -589,7 +610,7 @@ impl Manager {
                 .rounded(px(8.))
                 .bg(icon_color.opacity(tint))
                 .cursor_pointer()
-                .hover(move |r| r.bg(icon_color.opacity(tint + 0.06)))
+                .hover(move |r| r.bg(icon_color.opacity(tint + 0.03)))
                 .child(Icon::new(icon).size_4().text_color(icon_color).mt(px(2.)))
                 .child(
                     v_flex()
@@ -720,7 +741,9 @@ impl Manager {
         // As tall as its entries, at most the window below the bar less
         // 24 px, and never over 560 px; the list scrolls inside, the header
         // stays (the 50 newest events are kept, crate::manager::strip).
-        let max_h = (f32::from(self.window_h.get()) - shell::BAR_H - 24.).min(560.).max(240.);
+        // Grows with its entries up to half the window (at least 240 px),
+        // and only then scrolls.
+        let max_h = (f32::from(self.window_h.get()) * 0.5).max(240.);
         // A long list: the panel takes its full height and the list scrolls
         // in it (a scrolling child has no height of its own to grow by).
         let full = 52. + n_rows as f32 * 82. > max_h;
@@ -734,6 +757,7 @@ impl Manager {
                             .id("bell-panel")
                             .relative()
                             .child(crate::ui::layout_probe("overlay"))
+                            .child(crate::ui::layout_probe("bell-panel"))
                             .occlude()
                             .p_2()
                             .min_h(px(240.))
@@ -757,7 +781,15 @@ impl Manager {
                                     .child(div().text_sm().text_color(theme.muted_foreground).child("No new notifications"))
                                     .into_any_element()
                             } else {
-                                div().id("bell-list").flex_1().min_h_0().child(list).overflow_y_scrollbar().into_any_element()
+                                // Short: the list as it is (the panel takes its height).
+                                // Long: the panel at its most, the list scrolling in
+                                // it, with room on the right so the scrollbar never
+                                // sits on the cards.
+                                if full {
+                                    div().id("bell-list").flex_1().min_h_0().child(div().pr(px(10.)).child(list)).overflow_y_scrollbar().into_any_element()
+                                } else {
+                                    div().id("bell-list").child(list).into_any_element()
+                                }
                             })
                             .on_mouse_down_out(move |_, _, cx| {
                                 close.update(cx, |m, cx| {
@@ -1422,7 +1454,6 @@ impl Manager {
             self.settings = None;
         }
         self.status = None;
-        self.control = None;
         self.logs = None;
         self.update = None;
         self.backup = None;
@@ -1547,6 +1578,12 @@ impl Manager {
 
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let record = self.record.clone();
+        // "Move data to another disk", in Platform settings' place while open.
+        if self.page == Page::Settings {
+            if let Some(flow) = movedata::shown(self.open_remote.as_ref(), cx) {
+                return flow.into_any_element();
+            }
+        }
         // Statistics: the same view for this computer and a server.
         if self.page == Page::Files {
             let key = self.open_remote.clone();
@@ -1590,7 +1627,6 @@ impl Manager {
         if let Some(r) = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
             let kind = match self.page {
                 Page::Status => Some(remote_pages::Kind::Status),
-                Page::Control => Some(remote_pages::Kind::Control),
                 Page::Logs => Some(remote_pages::Kind::Logs),
                 Page::Update => Some(remote_pages::Kind::Update),
                 Page::Backup => Some(remote_pages::Kind::Backup),
@@ -1620,7 +1656,7 @@ impl Manager {
                 return ui::page(&theme, self.page.title(), "")
                     .child(
                         ui::panel(&theme)
-                            .child(div().child(format!("{} is open. This page works on this computer only for now; Status, Control, Logs, Update and Backup and restore work on {}.", r.name, r.name)))
+                            .child(div().child(format!("{} is open. This page works on this computer only for now; Status, Logs, Update and Backup and restore work on {}.", r.name, r.name)))
                             .child(
                                 h_flex()
                                     .gap_2()
@@ -1683,11 +1719,6 @@ impl Manager {
                 }
                 self.status.clone().unwrap().into_any_element()
             }
-            Page::Control => self
-                .control
-                .get_or_insert_with(|| cx.new(|cx| control::ControlPage::new(record, window, cx)))
-                .clone()
-                .into_any_element(),
             Page::Logs => self
                 .logs
                 .get_or_insert_with(|| cx.new(|cx| logs::LogsPage::new(record, window, cx)))
@@ -1704,13 +1735,6 @@ impl Manager {
             Page::Backup => {
                 if self.backup.is_none() {
                     let page = cx.new(|cx| backup::BackupPage::new(record, window, cx));
-                    self._subscriptions.push(cx.subscribe(&page, |this, _, go: &backup::Go, cx| {
-                        this.page = match go {
-                            backup::Go::Update => Page::Update,
-                            backup::Go::Settings => Page::Settings,
-                        };
-                        cx.notify();
-                    }));
                     self.backup = Some(page);
                 }
                 self.backup.clone().unwrap().into_any_element()
@@ -1778,7 +1802,7 @@ impl Manager {
                     self.page = Page::Status;
                 } else if let Some(verb) = a.strip_prefix("control:") {
                     self.open_instance(None, cx);
-                    self.page = Page::Control;
+                    self.page = Page::Status;
                     self.pending = Some(format!("control:{verb}"));
                 }
             }
@@ -1795,7 +1819,7 @@ impl Manager {
                 cx.defer(move |cx| page.update(cx, |b, cx| b.run_preset_backup(cx)));
             }
         } else if let Some(verb) = p.strip_prefix("control:") {
-            if let Some(page) = self.control.clone() {
+            if let Some(page) = self.status.clone() {
                 self.pending = None;
                 let verb: &'static str = match verb {
                     "start" => "start",
@@ -1814,11 +1838,39 @@ impl Render for Manager {
         // fewer monitors in the top bar as it narrows.
         let width = f32::from(window.viewport_size().width);
         crate::ui::set_narrow(width < 760.);
+        crate::ui::set_side_by_side(width >= crate::ui::SIDE_BY_SIDE_W);
         self.window_h.set(f32::from(window.viewport_size().height));
         stats::set_open(self.page == Page::Statistics);
-        // A Control row's "Logs" asked for the Logs page.
+        // A service row's "Logs" asked for the Logs page.
         if crate::logsource::take_go() {
             self.page = Page::Logs;
+        }
+        // Widened past the fold while the menu is open over the page: it
+        // becomes the docked, unfolded menu.
+        if self.menu_overlay && width >= shell::FOLD_BELOW {
+            self.menu_overlay = false;
+            shell::Appearance::set(|a| a.folded = false);
+        }
+        // The Restore flow asked for another page (its blocks' buttons).
+        if let Some(id) = restore::take_go() {
+            if let Some(p) = Page::ALL.iter().copied().chain([Page::Instances, Page::About]).find(|p| p.id() == id) {
+                self.page = p;
+            }
+        }
+        // "Move data to another disk" was opened (Platform settings shows
+        // it), or asked for another page.
+        let gen = movedata::generation(cx);
+        if gen != self.move_gen {
+            self.move_gen = gen;
+            if gen != 0 {
+                self.page = Page::Settings;
+            }
+        }
+        if let Some(p) = movedata::take_go() {
+            self.page = match p {
+                "files" => Page::Files,
+                _ => self.page,
+            };
         }
         let menu_w = if Self::folded(width) { shell::MENU_FOLDED_W } else { shell::MENU_W };
         let top = self.top_bar(width - menu_w, window, cx);
@@ -1857,19 +1909,28 @@ impl Render for Manager {
             .relative()
             .track_focus(&self.modal_focus)
             // Escape closes the open dialog, from anywhere in the window.
-            .on_key_down(|e: &KeyDownEvent, window, cx| {
-                if e.keystroke.key == "escape" && cx.try_global::<crate::modal::ModalSlot>().is_some_and(|s| s.0.is_some()) {
-                    crate::modal::dismiss(window, cx);
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                if e.keystroke.key != "escape" {
+                    return;
                 }
-            })
+                if cx.try_global::<crate::modal::ModalSlot>().is_some_and(|s| s.0.is_some()) {
+                    crate::modal::dismiss(window, cx);
+                } else if this.menu_overlay {
+                    // Escape also closes the menu open over the page.
+                    this.menu_overlay = false;
+                    cx.notify();
+                }
+            }))
             .bg(if shell::see_through() { cx.theme().background.opacity(0.) } else { cx.theme().background })
             .text_color(cx.theme().foreground)
             .child(
                 // The shell: the menu the window's full height; beside it the
                 // bar over the page, then the page.
+                // Reversed, so the menu paints after the page: open over it
+                // in a narrow window, it stays on top.
                 h_flex()
                     .size_full()
-                    .child(nav)
+                    .flex_row_reverse()
                     .child(
                         v_flex()
                             .flex_1()
@@ -1894,8 +1955,27 @@ impl Render for Manager {
                                     )
                                     .into_any_element()
                                 }
+                            })
+                            // The menu open over the page: a faint scrim on
+                            // the page; a click on it closes the menu.
+                            .when(self.overlay_t.get() > 0.001, |c| {
+                                let dark = cx.theme().mode.is_dark();
+                                let t = self.overlay_t.get();
+                                c.child(
+                                    div()
+                                        .id("menu-scrim")
+                                        .absolute()
+                                        .inset_0()
+                                        .bg(gpui::black().opacity(t * if dark { 0.32 } else { 0.14 }))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                            this.menu_overlay = false;
+                                            cx.stop_propagation();
+                                            cx.notify();
+                                        })),
+                                )
                             }),
-                    ),
+                    )
+                    .child(nav),
             )
             .children(layer)
     }

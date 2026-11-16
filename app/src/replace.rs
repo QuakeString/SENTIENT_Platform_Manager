@@ -23,6 +23,7 @@ use crate::installation::{InstallationRecord, flavor_label};
 
 /// What a backup file says about itself.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // the whole summary travels; `--job replace` reads part of it
 pub struct Summary {
     pub file: PathBuf,
     pub file_bytes: u64,
@@ -59,7 +60,7 @@ pub fn summary(file: &Path, passphrase: Option<&str>) -> Result<Summary, Unreada
     Ok(from_manifest(file, file_bytes, encrypted, &manifest))
 }
 
-fn from_manifest(file: &Path, file_bytes: u64, encrypted: bool, m: &Manifest) -> Summary {
+pub(crate) fn from_manifest(file: &Path, file_bytes: u64, encrypted: bool, m: &Manifest) -> Summary {
     let database_type = m.source.database_type.clone().unwrap_or_else(|| {
         if m.clickhouse.is_some() {
             "PostgreSQL + ClickHouse".into()
@@ -96,6 +97,7 @@ fn from_manifest(file: &Path, file_bytes: u64, encrypted: bool, m: &Manifest) ->
 
 /// The backup against this installation.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)] // `--job replace` reads the refusal; the lines are for a window
 pub struct Check {
     pub type_line: String,
     pub version_line: String,
@@ -161,6 +163,7 @@ pub const STEP_RESTORE: &str = "Restoring the backup beside the live data (and c
 pub const STEP_SWITCH: &str = "Switching SENTIENT to the restored data and checking it answers";
 pub const STEP_DELETE: &str = "Deleting the previous data";
 
+#[cfg(test)]
 pub fn planned_steps(delete_old: bool) -> Vec<String> {
     let mut v = vec![STEP_CHECK.to_string(), STEP_RESTORE.to_string(), STEP_SWITCH.to_string()];
     if delete_old {
@@ -170,7 +173,7 @@ pub fn planned_steps(delete_old: bool) -> Vec<String> {
 }
 
 /// Steps of a nested call as log lines, so the checklist keeps its own.
-fn nested(sink: &ProgressFn) -> ProgressFn {
+pub(crate) fn nested(sink: &ProgressFn) -> ProgressFn {
     let sink = sink.clone();
     std::sync::Arc::new(move |p| match p {
         Progress::Step { name } => sink(Progress::Log { line: format!(">> {name}") }),
@@ -243,6 +246,7 @@ mod tests {
             file_stores: Vec::new(),
             encryption: EncryptionInfo::none(),
             clickhouse: ch.then(|| sentient_backup_core::clickhouse::ChSection { database: "s".into(), version: "24".into(), members: Vec::new() }),
+            platform: None,
         }
     }
 

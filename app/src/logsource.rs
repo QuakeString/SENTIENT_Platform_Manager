@@ -308,7 +308,7 @@ mod tests {
     }
 }
 
-/// "Logs" on a Control row: the source the Logs page opens on next, and
+/// "Logs" on a Status service row: the source the Logs page opens on next, and
 /// that the page should open.
 static PICK: std::sync::Mutex<Option<Source>> = std::sync::Mutex::new(None);
 static GO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

@@ -26,6 +26,58 @@ pub struct Manifest {
     /// Telemetry held in ClickHouse (PostgreSQL + ClickHouse installs).
     #[serde(default)]
     pub clickhouse: Option<crate::clickhouse::ChSection>,
+    /// The platform's settings when the backup was made, for a restore to
+    /// compare with where it goes. Never secrets. Absent in backups made
+    /// before they were recorded (Platform Manager 0.8.0 and earlier).
+    #[serde(default)]
+    pub platform: Option<PlatformInfo>,
+}
+
+/// Platform settings at backup time (`manifest.platform`). Never a secret,
+/// key or licence: names, ports, paths, expiry dates.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PlatformInfo {
+    /// Settings by the Platform Manager's catalog name: ports (`port:http`,
+    /// `port:mqtt`, …), SENTIENT's environment settings, PostgreSQL's
+    /// parameters (`pg:…`). Secret-looking names are never recorded.
+    #[serde(default)]
+    pub settings: std::collections::BTreeMap<String, String>,
+    /// The address devices and people reach SENTIENT by.
+    #[serde(default)]
+    pub public_url: Option<String>,
+    #[serde(default)]
+    pub tls: Option<TlsInfo>,
+    #[serde(default)]
+    pub licence: Option<LicenceInfo>,
+    /// Gateways that send to this SENTIENT: "name → host:port".
+    #[serde(default)]
+    pub gateways: Vec<String>,
+    /// Where file stores live on that machine, by store id.
+    #[serde(default)]
+    pub file_store_paths: std::collections::BTreeMap<String, String>,
+}
+
+/// The HTTPS certificate: its name, issuer and expiry (never the key).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TlsInfo {
+    pub name: String,
+    #[serde(default)]
+    pub issuer: Option<String>,
+    /// RFC 3339.
+    #[serde(default)]
+    pub expires: Option<String>,
+}
+
+/// The licence the instance had: its kind and the machine it is bound to
+/// (never the licence itself; a licence is bound to hardware).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LicenceInfo {
+    pub kind: String,
+    #[serde(default)]
+    pub bound_to: Option<String>,
+    /// A hash of the hardware binding, to tell whether it is this machine.
+    #[serde(default)]
+    pub hardware_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

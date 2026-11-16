@@ -37,9 +37,9 @@ use sentient_installer_core::native::safe_update::RollbackPoint;
 
 use crate::installation::InstallationRecord;
 
-const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | \
+const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | movedata-json | movedata-check <store> <folder> | movedata-estimate <store=folder,…> | move-data <store=folder,…> | move-data-remove-old <folder> | move-data-cancel | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
+use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
 
 /// A console for the output: release builds on Windows have none of their
@@ -62,7 +62,7 @@ fn printer() -> ProgressFn {
     Arc::new(|p| match p {
         Progress::Step { name } => println!("== {name}"),
         // Data lines of a root job (crate::kept::encode) are printed decoded.
-        Progress::Log { line } if line.starts_with("KEPT\t") || line.starts_with("ROLLBACK\t") || line.starts_with("FOUND\t") => {}
+        Progress::Log { line } if line.starts_with("KEPT\t") || line.starts_with("ROLLBACK\t") || line.starts_with("FOUND\t") || crate::restore_flow::is_data(&line) => {}
         Progress::Log { line } => println!("   {}", crate::maintenance_ops::strip_ansi(&line)),
         Progress::Percent { .. } => {}
         Progress::Done { message } => println!("✓ {message}"),
@@ -294,6 +294,47 @@ pub fn run(args: &[String]) -> i32 {
                 2
             }
         };
+    }
+    // The restore history (crate::restore_flow): one JSON line, and a run's log.
+    if job == "restore-history-json" {
+        println!("{}", serde_json::to_string(&crate::restore_flow::history()).unwrap_or_default());
+        return 0;
+    }
+    // Stop a running restore before its switch (crate::restore_flow).
+    if job == "restore-cancel" {
+        return match crate::restore_flow::request_cancel() {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+    }
+    // The backups in a folder other than the backup folder (Restore from…).
+    if job == "backup-list" {
+        let Some(folder) = args.get(1) else {
+            eprintln!("{USAGE}");
+            return 2;
+        };
+        println!("{}", serde_json::to_string(&crate::backups::list(std::path::Path::new(folder))).unwrap_or_default());
+        return 0;
+    }
+    if job == "restore-log" {
+        return match args.get(1).ok_or_else(|| USAGE.to_string()).and_then(|id| crate::restore_flow::log_text(id)) {
+            Ok(t) => {
+                print!("{t}");
+                0
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+    }
+    // Moving data to another disk (crate::movedata): where each store is
+    // and the disks, a folder checked, the downtime; one JSON line each.
+    if let Some(code) = crate::movedata::data_job(job, args) {
+        return code;
     }
     // What a remote instance's card shows (crate::remote::status): one JSON line.
     if job == "status-json" {
@@ -536,6 +577,14 @@ pub fn run(args: &[String]) -> i32 {
             None => Err(USAGE.into()),
         },
         "resume-migration" => crate::migration::resume(record, sink.clone()),
+        "move-data" => match args.get(1) {
+            Some(a) => crate::movedata::parse_moves(a).and_then(|m| crate::movedata::local_run(&m, sink.clone())),
+            None => Err(USAGE.into()),
+        },
+        "move-data-remove-old" => match args.get(1) {
+            Some(path) => crate::movedata::local_remove_old(path, sink.clone()),
+            None => Err(USAGE.into()),
+        },
         "update" => {
             let accept = args.iter().any(|a| a == "--accept-breaking");
             // --version <v>: that published release (a package downloaded and
@@ -611,6 +660,39 @@ pub fn run(args: &[String]) -> i32 {
             ),
             _ => Err(USAGE.into()),
         },
+        // The Restore flow (crate::restore_flow). Its answers are RESTORE lines.
+        "restore-inspect" => match args.get(1) {
+            Some(file) => {
+                let pass = passphrase_arg(args);
+                match crate::restore_flow::inspect(Some(&record), std::path::Path::new(file), pass.as_deref(), &sink) {
+                    Ok(i) => {
+                        sink(crate::restore_flow::data_line("inspect", &i));
+                        Ok(())
+                    }
+                    Err(u) => {
+                        sink(crate::restore_flow::data_line("unreadable", &u));
+                        Err(u.message())
+                    }
+                }
+            }
+            None => Err(USAGE.into()),
+        },
+        "restore-remove-db" => match args.get(1) {
+            Some(name) => crate::restore_flow::remove_restored(&record, name, &sink).map(|_| sink(Progress::Done { message: format!("{name} is removed.") })),
+            None => Err(USAGE.into()),
+        },
+        "restore-precheck" | "restore-run" => match args.get(1).map(|f| read_request(f)) {
+            Some(Ok(req)) => {
+                let pass = passphrase_arg(args);
+                if job == "restore-run" {
+                    crate::restore_flow::run(record, req, pass, sink.clone())
+                } else {
+                    crate::restore_flow::precheck(&record, &req, pass.as_deref(), &sink).map(|p| sink(crate::restore_flow::data_line("precheck", &p)))
+                }
+            }
+            Some(Err(e)) => Err(e),
+            None => Err(USAGE.into()),
+        },
         "use-restored" => match args.get(1) {
             Some(name) => crate::restore_switch::run(&record, name, sink.clone()).map(|_| ()),
             None => Err(USAGE.into()),
@@ -648,7 +730,7 @@ pub fn run(args: &[String]) -> i32 {
             crate::adopt::take_over_compose(record, compose.as_deref(), password.as_deref(), ch_password.as_deref(), sink.clone()).map(|_| ())
         }
         "repair" => crate::maintenance_ops::run_repair(record, sink.clone()),
-        // Start, stop or restart SENTIENT (a remote instance's Control).
+        // Start, stop or restart SENTIENT (a remote instance's Status).
         "control" => match args.get(1).map(String::as_str) {
             Some(a @ ("start" | "stop" | "restart")) => record.platform().control(sink.clone(), a),
             _ => Err(USAGE.into()),
@@ -907,4 +989,30 @@ fn print_log(text: String) -> i32 {
     }
     println!("{text}");
     0
+}
+
+/// A backup's passphrase: from a file only the account reads (removed at
+/// once), or from standard input; never from the command line.
+fn passphrase_arg(args: &[String]) -> Option<String> {
+    if let Some(w) = args.windows(2).find(|w| w[0] == "--passphrase-file") {
+        let p = std::fs::read_to_string(&w[1]).unwrap_or_default().trim_end_matches(['\r', '\n']).to_string();
+        let _ = std::fs::remove_file(&w[1]);
+        return Some(p).filter(|p| !p.is_empty());
+    }
+    if args.iter().any(|a| a == "--passphrase-stdin") {
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        return Some(line.trim_end_matches(['\r', '\n']).to_string()).filter(|p| !p.is_empty());
+    }
+    None
+}
+
+/// The Restore flow's request (crate::restore_flow::Request), from a file
+/// the window wrote; removed once read when it is a sent one (`.spm-restore-`).
+fn read_request(path: &str) -> Result<crate::restore_flow::Request, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
+    if std::path::Path::new(path).file_name().is_some_and(|n| n.to_string_lossy().starts_with(".spm-restore-")) {
+        let _ = std::fs::remove_file(path);
+    }
+    serde_json::from_str(&text).map_err(|e| format!("the restore request: {e}"))
 }

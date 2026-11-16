@@ -423,9 +423,9 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
             plan.auto_signin_password.clone()
         };
         // SENTIENT is installed by now; a refused password should not undo
-        // that, it can be entered again under Control.
+        // that, it can be entered again in Platform settings, under Startup.
         if let Err(e) = sentient_installer_core::autologin::set(&sink, Some((&plan.shortcuts.auto_signin, &password))) {
-            sink(Progress::Log { line: format!("Automatic sign-in was not turned on: {e} Turn it on under Control.") });
+            sink(Progress::Log { line: format!("Automatic sign-in was not turned on: {e} Turn it on in Platform settings, under Startup.") });
         }
     }
 
