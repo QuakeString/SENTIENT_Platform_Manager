@@ -258,13 +258,16 @@ section{display:flex;flex-direction:column;gap:10px}
 .seg .on{background:var(--tint);color:var(--primary);font-weight:500}
 /* selected-item dimple options */
 .win.dimA .menu{padding-right:0;padding-left:16px;padding-top:16px}
-.win.dimA .it:not(.on){margin-right:10px}
+.menu{position:relative}
+.win.dimA .it{margin-right:10px;z-index:2;cursor:pointer}
 .win.dimA .menu hr{margin:14px 10px 14px 2px}
-.win.dimA .it.on{padding-right:22px}
-.win.dimA .it.on{background:var(--page);border:1px solid var(--border);border-right:0;border-radius:10px 0 0 10px;margin-right:-1px;z-index:2;color:var(--primary)}
-.win.dimA .it.on::before,.win.dimA .it.on::after{content:"";position:absolute;right:0;width:14px;height:14px;pointer-events:none}
-.win.dimA .it.on::before{top:-14px;background:radial-gradient(circle at 0 0,transparent 12.9px,var(--border) 13.2px,var(--border) 13.8px,var(--page) 14.1px)}
-.win.dimA .it.on::after{bottom:-14px;background:radial-gradient(circle at 0 100%,transparent 12.9px,var(--border) 13.2px,var(--border) 13.8px,var(--page) 14.1px)}
+.win.dimA .it.on{background:transparent;color:var(--primary)}
+.win.dimA .it span,.win.dimA .it em{position:relative}
+.sel{display:none}
+.win.dimA .sel{display:block;position:absolute;left:16px;right:-1px;height:38px;top:var(--y,16px);z-index:1;box-sizing:border-box;background:var(--page);border:1px solid var(--border);border-right:0;border-radius:10px 0 0 10px;transition:top .22s cubic-bezier(.3,.7,.2,1)}
+.win.dimA .sel::before,.win.dimA .sel::after{content:"";position:absolute;right:0;width:14px;height:14px;pointer-events:none}
+.win.dimA .sel::before{top:-14px;background:radial-gradient(circle at 0 0,transparent 12.9px,var(--border) 13.2px,var(--border) 13.8px,var(--page) 14.1px)}
+.win.dimA .sel::after{bottom:-14px;background:radial-gradient(circle at 0 100%,transparent 12.9px,var(--border) 13.2px,var(--border) 13.8px,var(--page) 14.1px)}
 /* tinted bar, like the tile headers (his ask 2026-11-16 03:06Z) */
 .bar{--tb:color-mix(in srgb,var(--ic) var(--ht),var(--card));color:var(--text);background:color-mix(in srgb,var(--tb) 82%,transparent);box-shadow:0 1px 0 var(--border)}
 .bar .sw{background:color-mix(in srgb,var(--ic) 14%,transparent)}
@@ -287,7 +290,7 @@ section{display:flex;flex-direction:column;gap:10px}
   <div class="top">
     <div>
       <h1>Platform Manager: new layout</h1>
-      <p class="lead">Round 2. Menu panel full height with the logo on top; fold button beside the name, and when folded the logo unfolds on hover. The menu and the coloured bar are see-through with a blur, switchable in preferences. Page titles stay in the page. The switcher dot shows the instance's health.</p>
+      <p class="lead">Click the menu items in any window: the selection slides to the new row. Round 2. Menu panel full height with the logo on top; fold button beside the name, and when folded the logo unfolds on hover. The menu and the coloured bar are see-through with a blur, switchable in preferences. Page titles stay in the page. The switcher dot shows the instance's health.</p>
     </div>
     <div class="themes" role="group" aria-label="Theme"><button data-t="">System</button><button data-t="light">Light</button><button data-t="dark">Dark</button></div>
   </div>
@@ -383,7 +386,7 @@ function shell(o){
   return `<div class="desk${o.solid?' solid':''}"><div class="win${o.col?'':(o.dim==='B'?' dimB':' dimA')}${o.col?' col':''}${o.scrolled?' scrolled':''}${o.narrow?' narrow':''}" style="--ic:${o.color}">
    <div class="side">
      <div class="brand">${lg}<div class="bt"><b>SENTIENT</b><small>PLATFORM MANAGER</small></div>${o.col?'':`<span class="ib fb${o.foldHover?' hov':''}">${I.fold}${o.foldHover?'<div class="tipb">Fold menu</div>':''}</span>`}</div>
-     <div class="menu">${menu}<hr>${inst}</div>
+     <div class="menu"><div class="sel"></div>${menu}<hr>${inst}</div>
      <div class="foot"><div class="v"><img src="${ICON}" alt=""><div class="vt"><b>Platform Manager</b><span>0.8.0-rc12<em class="up" style="font-style:normal">Update</em></span></div></div><span class="ib pref${o.pref?' act':''}" title="About and preferences">${I.sliders}</span></div>
    </div>
    <div class="main">
@@ -456,5 +459,10 @@ put('s9',shell({...R,body:tiles(),themePop:true}));
 put('s7',shell({...R,page:'About',body:about(),pref:true}));
 const lg=(h,c,txt,name)=>`<div class="lg1"><div class="bar" style="--ic:${c}"><div class="sw"><span class="dot ${h}"></span><span class="os">${I.linux}</span>${name}${I.chevd}</div></div><p>${txt}</p></div>`;
 put('s8',`<div class="legend">${lg('','#7b4fb0','Green: everything is fine.','BSMPL SENTIENT')}${lg('warn','#7b4fb0','Amber: needs a look (disk low, backup old, update waiting on a restart).','BSMPL SENTIENT')}${lg('bad','#7b4fb0','Red: a fault (SENTIENT stopped, a database down, last backup failed).','BSMPL SENTIENT')}${lg('unk','#7b4fb0','Grey: not reachable, or still checking.','BSMPL SENTIENT')}</div>`);
+function placeSel(menu,anim){const on=menu.querySelector('.it.on');const sel=menu.querySelector('.sel');if(!on||!sel)return;
+  if(!anim){sel.style.transition='none';}sel.style.setProperty('--y',on.offsetTop+'px');if(!anim){sel.offsetHeight;sel.style.transition='';}}
+document.querySelectorAll('.win.dimA .menu').forEach(m=>{placeSel(m,false);
+  m.querySelectorAll('.it').forEach(it=>it.addEventListener('click',()=>{m.querySelectorAll('.it.on').forEach(x=>x.classList.remove('on'));it.classList.add('on');placeSel(m,true);}));});
+document.fonts&&document.fonts.ready.then(()=>document.querySelectorAll('.win.dimA .menu').forEach(m=>placeSel(m,false)));
 })();
 </script>
