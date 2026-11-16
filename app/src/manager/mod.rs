@@ -710,7 +710,7 @@ impl Manager {
             });
         let max_h = (f32::from(self.window_h.get()) * 0.6).max(260.);
         deferred(
-            div().absolute().top(px(32. + 10.)).right(px(-6.)).child(
+            div().absolute().top(px(theme::BAR_CTRL_H + 10.)).right(px(-6.)).child(
                 div()
                     .relative()
                     .w(px(w))
@@ -858,7 +858,7 @@ impl Manager {
         // room, job or not: the monitors are laid out the same either way.
         // The bar's padding, the switcher (dot, name, address, chevron,
         // REMOTE), the theme button and the bell, and the gaps between.
-        let mut room = width - 36. - (text_w(&instance) + 14. + 10. + 16. + 10. + 24. + 14.) - if remote.is_some() { 64. } else { 0. } - (32. + 14.) - (32. + 14.) - if self.strip.read(cx).active() { strip::CHIP_MIN } else { 0. };
+        let mut room = width - 36. - (text_w(&instance) + 14. + 10. + 16. + 10. + 24. + 14.) - if remote.is_some() { 64. } else { 0. } - (theme::BAR_CTRL_H + 14.) - (theme::BAR_CTRL_H + 14.) - if self.strip.read(cx).active() { strip::CHIP_MIN } else { 0. };
 
         let mut fits = |need: f32| {
             let ok = room >= need;
@@ -911,8 +911,9 @@ impl Manager {
             };
             h_flex()
                 .gap(px(16.))
-                .px_2()
-                .py_1()
+                .h(px(theme::BAR_CTRL_H))
+                .items_center()
+                .px(px(10.))
                 .when(show_cpu, |r| r.child(slot("CPU", "100%")))
                 .when(show_mem, |r| r.child(slot("Memory", &mem_widest)))
                 .when(show_disk, |r| r.child(slot("Disk", &disk_widest)))
@@ -931,12 +932,14 @@ impl Manager {
                 .id("monitor")
                 .relative()
                 .child(crate::ui::layout_probe("monitors"))
+                .child(crate::ui::layout_probe("bar-ctrl"))
                 .gap(px(16.))
-                .px_2()
-                .py_1()
-                .rounded(px(6.))
+                .h(px(theme::BAR_CTRL_H))
+                .items_center()
+                .px(px(10.))
+                .rounded(px(theme::BAR_CTRL_RADIUS))
                 .cursor_pointer()
-                .hover(move |d| d.bg(inset))
+                .hover(move |d| d.bg(ic.opacity(theme::BAR_CTRL_HOVER)))
                 .when(show_cpu, |r| r.child(meter("m-cpu", "CPU", "100%", format!("{:.0}%", m.cpu), g_cpu, m.cpu_high())))
                 .when(show_mem, |r| r.child(meter(
                     "m-mem",
@@ -968,14 +971,17 @@ impl Manager {
         let bell_open = self.bell_open;
         let bell = div()
             .id("bell")
-            .size(px(32.))
+            .relative()
+            .child(crate::ui::layout_probe("bar-ctrl"))
+            .size(px(theme::BAR_CTRL_H))
             .flex()
             .items_center()
             .justify_center()
             .rounded(px(8.))
             .cursor_pointer()
-            .when(bell_open, |b| b.bg(ic.opacity(0.16)))
-            .hover(move |b| b.bg(ic.opacity(0.16)))
+            .rounded(px(theme::BAR_CTRL_RADIUS))
+            .when(bell_open, |b| b.bg(ic.opacity(theme::BAR_CTRL_HOVER)))
+            .hover(move |b| b.bg(ic.opacity(theme::BAR_CTRL_HOVER)))
             .child(Icon::new(IconName::Bell).text_color(fg).size(px(20.)))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.bell_open = !this.bell_open;
@@ -1003,16 +1009,17 @@ impl Manager {
                 // border; hover one step darker (the text keeps its contrast).
                 // Its menu is the app's popover, like the theme menu.
                 let open = self.switcher_open;
-                let hover_inset: Hsla = ic.opacity(0.22);
+                let hover_inset: Hsla = ic.opacity(theme::BAR_CTRL_HOVER);
                 let chip = div()
                     .id("switcher")
                     .flex()
                     .items_center()
                     .min_w_0()
                     .overflow_hidden()
-                    .h(px(36.))
+                    .h(px(theme::BAR_CTRL_H))
                     .px(px(12.))
-                    .rounded(theme_radius)
+                    .rounded(px(theme::BAR_CTRL_RADIUS))
+                    .child(crate::ui::layout_probe("bar-ctrl"))
                     .cursor_pointer()
                     .text_color(fg)
                     .bg(if open { hover_inset } else { inset })
@@ -1115,7 +1122,7 @@ impl Manager {
                         }),
                     });
                     let close = this.clone();
-                    deferred(div().absolute().top(px(36. + 10.)).left_0().child(ui::popover_menu(&menu_theme, "switcher-popover", 320., rows, true, px(24.), move |_, cx| {
+                    deferred(div().absolute().top(px(theme::BAR_CTRL_H + 10.)).left_0().child(ui::popover_menu(&menu_theme, "switcher-popover", 320., rows, true, px(24.), move |_, cx| {
                         close.update(cx, |m, cx| {
                             m.switcher_open = false;
                             cx.notify();
@@ -1459,15 +1466,18 @@ impl Manager {
         let icon_of = shell::theme_icon;
         let button = div()
             .id("theme")
-            .size(px(32.))
+            .relative()
+            .child(crate::ui::layout_probe("bar-ctrl"))
+            .size(px(theme::BAR_CTRL_H))
             .flex()
             .items_center()
             .justify_center()
             .rounded(px(8.))
             .cursor_pointer()
             .text_color(theme.foreground)
-            .when(open, |b| b.bg(tint.opacity(0.16)))
-            .when(!open, |b| b.hover(move |b| b.bg(tint.opacity(0.16))))
+            .rounded(px(theme::BAR_CTRL_RADIUS))
+            .when(open, |b| b.bg(tint.opacity(theme::BAR_CTRL_HOVER)))
+            .when(!open, |b| b.hover(move |b| b.bg(tint.opacity(theme::BAR_CTRL_HOVER))))
             .child(icon_of(choice).size(px(19.)))
             .when(!open, |b| b.tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Theme").build(window, cx)))
             .on_click(cx.listener(|this, _, _, cx| {
@@ -1499,7 +1509,7 @@ impl Manager {
                 .collect();
             let close = cx.entity().downgrade();
             deferred(
-                div().absolute().top(px(32. + 10.)).right(px(-8.)).child(ui::popover_menu(
+                div().absolute().top(px(theme::BAR_CTRL_H + 10.)).right(px(-8.)).child(ui::popover_menu(
                     &theme,
                     "theme-popover",
                     200.,

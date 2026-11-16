@@ -99,6 +99,13 @@ pub fn toggle(cx: &mut App) {
     Theme::change(next, None, cx);
 }
 
+/// The top bar's controls (the instance switcher, the monitors, the theme
+/// button and the bell): one height, one radius, one hover tint (the
+/// instance's colour at this opacity), centred in the 60 px bar.
+pub const BAR_CTRL_H: f32 = 40.;
+pub const BAR_CTRL_RADIUS: f32 = 8.;
+pub const BAR_CTRL_HOVER: f32 = 0.22;
+
 pub fn is_dark(cx: &App) -> bool {
     Theme::global(cx).mode.is_dark()
 }

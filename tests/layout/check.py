@@ -55,6 +55,18 @@ def menu_selection(log):
     return tuple(float(x) for x in sels[-1]) if sels else None
 
 
+def bar_controls(log):
+    """The top bar's controls of the last complete frame (switcher, monitors,
+    theme, bell): their heights must be one."""
+    lines = open(log, errors="replace").read().splitlines()
+    marks = [i for i, l in enumerate(lines) if l.startswith("LAYOUT-FRAME ")]
+    if not marks:
+        return []
+    start = marks[-2] if len(marks) > 1 else marks[-1]
+    end = marks[-1] if len(marks) > 1 else len(lines)
+    return [tuple(float(x) for x in l.split()[2:]) for l in lines[start + 1:end] if l.startswith("LAYOUT bar-ctrl ")]
+
+
 def differs(a, b):
     return max(abs(a[i] - b[i]) for i in range(3)) > TOL
 
@@ -101,6 +113,15 @@ def main():
         if len(hits) >= MIN_PIXELS:
             x, y = hits[0]
             bad.append(f"menu edge: {len(hits)} px of line inside the selected row's opening, first at ({x / scale:.1f}, {y / scale:.1f})")
+    # One height for the top bar's controls (and centred in the bar).
+    ctrls = bar_controls(log)
+    if ctrls:
+        hs = sorted({round(b - t) for (l, r, t, b) in ctrls})
+        if len(hs) > 1:
+            bad.append(f"top bar controls: heights {hs} differ")
+        mids = sorted({round((t + b) / 2) for (l, r, t, b) in ctrls})
+        if len(mids) > 1:
+            bad.append(f"top bar controls: not on one centre line {mids}")
     # The bar's own right padding (16 px): nothing in it at any width.
     bx0, bx1 = int(W - 13 * scale), int(W - 3 * scale)
     bref = im.getpixel((W - int(8 * scale), int(4 * scale)))
