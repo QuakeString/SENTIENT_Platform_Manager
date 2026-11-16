@@ -239,6 +239,12 @@ impl Render for GatewayPage {
                             .into_any_element()
                     }
                     (None, Some(Err(e))) => div().text_sm().text_color(theme.muted_foreground).child(format!("Gateway updates: {e}")).into_any_element(),
+                    // Up to date only against a known version.
+                    (None, Some(Ok(_))) if status.version.is_none() => div()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child("Its version is not known, so updates cannot be checked.")
+                        .into_any_element(),
                     (None, Some(Ok(_))) => div()
                         .text_sm()
                         .text_color(theme.muted_foreground)

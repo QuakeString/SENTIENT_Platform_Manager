@@ -35,28 +35,82 @@ fn docker(args: &[&str]) -> Option<(bool, String)> {
     }
 }
 
-/// The gateway container: ours when it is there, else the first container
-/// of a gateway image.
-fn find() -> Option<(String, bool)> {
-    let (ok, out) = docker(&["ps", "-a", "--format", "{{.Names}}\t{{.Image}}"])?;
-    if !ok {
-        return None;
+/// One container, from `docker inspect` (inspect_format).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Container {
+    pub name: String,
+    /// The image it was created from, as named then (`.Config.Image`).
+    pub image: String,
+    /// `.Config.Entrypoint` as JSON (`["/usr/local/bin/sentient-gateway"]`).
+    pub entrypoint: String,
+}
+
+impl Container {
+    /// The Sentient Gateway: a gateway image of ours
+    /// (crate::gateway::is_gateway_image), or an image built from the
+    /// gateway's Dockerfile (its program is the entrypoint). Never by name.
+    pub fn is_ours(&self) -> bool {
+        crate::gateway::is_gateway_image(&self.image)
+            || serde_json::from_str::<Vec<String>>(&self.entrypoint)
+                .ok()
+                .and_then(|e| e.first().cloned())
+                .is_some_and(|p| crate::gateway::is_gateway_program(&p))
     }
-    let rows: Vec<(String, String)> = out
-        .lines()
-        .filter_map(|l| l.split_once('\t').map(|(n, i)| (n.trim().to_string(), i.trim().to_string())))
-        .collect();
-    if rows.iter().any(|(n, _)| n == CONTAINER) {
+}
+
+const INSPECT_FORMAT: &str = "{{.Name}}\t{{.Config.Image}}\t{{json .Config.Entrypoint}}";
+
+/// `docker inspect --format INSPECT_FORMAT` lines.
+pub fn parse_inspect(out: &str) -> Vec<Container> {
+    out.lines()
+        .filter_map(|l| {
+            let mut f = l.split('\t');
+            let name = f.next()?.trim().trim_start_matches('/').to_string();
+            let image = f.next()?.trim().to_string();
+            let entrypoint = f.next().unwrap_or("null").trim().to_string();
+            (!name.is_empty()).then_some(Container { name, image, entrypoint })
+        })
+        .collect()
+}
+
+/// The gateway among `all`: the one the Platform Manager starts, else the
+/// first other one of ours. (name, managed)
+pub fn pick(all: &[Container]) -> Option<(String, bool)> {
+    let ours: Vec<&Container> = all.iter().filter(|c| c.is_ours()).collect();
+    if ours.iter().any(|c| c.name == CONTAINER) {
         return Some((CONTAINER.to_string(), true));
     }
-    // Any gateway image; else a container named like a gateway (an image
-    // built or retagged locally).
-    let named = |n: &str| n.to_ascii_lowercase().contains("gateway") || n.contains("st-gw") || n.contains("st_gw");
-    rows.iter()
-        .find(|(_, image)| crate::gateway::is_gateway_image(image))
-        .or_else(|| rows.iter().find(|(_, image)| image.to_ascii_lowercase().contains("gateway")))
-        .or_else(|| rows.iter().find(|(n, _)| named(n)))
-        .map(|(n, _)| (n.clone(), false))
+    ours.first().map(|c| (c.name.clone(), false))
+}
+
+/// Every container, running or stopped.
+fn containers() -> Vec<Container> {
+    let Some((true, ids)) = docker(&["ps", "-aq"]) else {
+        return Vec::new();
+    };
+    let ids: Vec<&str> = ids.split_whitespace().collect();
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let mut args = vec!["inspect", "--format", INSPECT_FORMAT];
+    args.extend(ids);
+    match docker(&args) {
+        // A container removed between the two calls fails the call but
+        // prints the others.
+        Some((_, out)) => parse_inspect(&out),
+        None => Vec::new(),
+    }
+}
+
+/// The gateway container: ours when it is there, else the first container
+/// of the gateway.
+fn find() -> Option<(String, bool)> {
+    pick(&containers())
+}
+
+/// The gateway container's name, running or stopped.
+pub fn container() -> Option<String> {
+    find().map(|(n, _)| n)
 }
 
 pub fn status() -> Status {
@@ -171,5 +225,29 @@ pub fn control(sink: &ProgressFn, action: &str) -> Result<(), String> {
             Ok(())
         }
         _ => Err(format!("docker {verb} {name} failed.")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_gateway_container_by_image_or_program() {
+        let out = "/sentient\tquakestring/sentient:4.3.0.58\t[\"/app/entrypoint.sh\"]\n\
+/kong-gateway\tkong/kong-gateway:3.8\t[\"/entrypoint.sh\"]\n\
+/st-gateway\tquakestring/sentient-gateway-rs:latest\t[\"/usr/local/bin/sentient-gateway\"]\n";
+        let all = parse_inspect(out);
+        assert_eq!(all.len(), 3);
+        assert_eq!(pick(&all), Some(("st-gateway".into(), false)));
+        // A locally built image: its entrypoint is the gateway's program.
+        let local = parse_inspect("/plant-gw\tsha256:fdd9ed12884e\t[\"/usr/local/bin/sentient-gateway\"]\n");
+        assert_eq!(pick(&local), Some(("plant-gw".into(), false)));
+        // Named like a gateway, but not ours.
+        let other = parse_inspect("/sentient-gateway\tnginx:1.27\t[\"/docker-entrypoint.sh\"]\n/journal-gatewayd\tdebian:12\tnull\n");
+        assert_eq!(pick(&other), None);
+        // Ours, started by the Platform Manager, wins.
+        let both = parse_inspect("/st-gateway\tquakestring/sentient-gateway-rs:4.16.0\tnull\n/sentient-gateway\tquakestring/sentient-gateway-rs:4.16.2\tnull\n");
+        assert_eq!(pick(&both), Some(("sentient-gateway".into(), true)));
     }
 }

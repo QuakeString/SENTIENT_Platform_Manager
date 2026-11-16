@@ -24,7 +24,7 @@ pub const CONTAINER: &str = "sentient-gateway";
 
 /// What the detection looks at, in order (for support and the gateway
 /// page's (i)).
-pub const CHECKS: &str = "Docker containers whose image is quakestring/sentient-gateway* or contains \"gateway\", or whose name contains \"gateway\" or starts with st-gw; systemd units named sentient-gateway, st-gateway, thingsboard-gateway, tb-gateway or containing \"gateway\"; a running program sentient-gateway, st-gateway or thingsboard_gateway; the folders /opt/sentient-gateway and /etc/sentient-gateway.";
+pub const CHECKS: &str = "Docker containers, running or stopped, of the image quakestring/sentient-gateway-rs (or the older quakestring/sentient-gateway) or whose program is sentient-gateway; the systemd unit sentient-gateway.service, or any unit that runs a program sentient-gateway that answers as the gateway; a running sentient-gateway; /usr/bin, /usr/local/bin and /opt/sentient-gateway; on Windows the service SentientGateway.";
 
 #[cfg(windows)]
 const SERVICE: &str = "SentientGateway";
@@ -112,10 +112,22 @@ pub fn page_url(gateway_file: Option<&str>, env: &dyn Fn(&str) -> Option<String>
     Some(format!("{}://{reach}:{port}/", if loopback { "http" } else { "https" }))
 }
 
-/// A gateway image: the Rust gateway, or the Python one it replaces.
+/// A gateway image of ours: the Rust gateway, or the Python one it
+/// replaces (quakestring/sentient-gateway). Not other gateways
+/// (thingsboard/tb-gateway and the like).
 pub fn is_gateway_image(image: &str) -> bool {
+    let image = image.split('@').next().unwrap_or(image);
     let repo = image.rsplit_once(':').map(|(r, t)| if t.contains('/') { image } else { r }).unwrap_or(image);
-    repo.ends_with("sentient-gateway-rs") || repo.ends_with("sentient-gateway") || repo.ends_with("tb-gateway")
+    let name = repo.rsplit('/').next().unwrap_or(repo);
+    name == "sentient-gateway-rs" || name == "sentient-gateway"
+}
+
+/// A path whose file name is the gateway's program (`sentient-gateway`,
+/// `sentient-gateway.exe`). Only the whole file name counts, so
+/// systemd-journal-gatewayd and the like never are.
+pub fn is_gateway_program(path: &str) -> bool {
+    let name = path.trim().rsplit(['/', '\\']).next().unwrap_or_default();
+    name == "sentient-gateway" || name.eq_ignore_ascii_case("sentient-gateway.exe")
 }
 
 /// What to install with.
@@ -228,6 +240,18 @@ pub fn control(sink: &ProgressFn, action: &str) -> Result<(), String> {
     }
 }
 
+/// The program in `sc qc`'s BINARY_PATH_NAME line (quoted or not, with
+/// arguments after it).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn service_program(qc: &str) -> Option<String> {
+    let v = qc.lines().find_map(|l| l.trim().strip_prefix("BINARY_PATH_NAME").map(|r| r.trim_start().trim_start_matches(':').trim().to_string()))?;
+    let p = match v.strip_prefix('"') {
+        Some(r) => r.split('"').next().unwrap_or_default().to_string(),
+        None => v.split(".exe").next().map(|p| if v.contains(".exe") { format!("{p}.exe") } else { p.to_string() }).unwrap_or_default(),
+    };
+    (!p.is_empty()).then_some(p)
+}
+
 /// `sentient-gateway 4.13.0` → `4.13.0`.
 pub fn parse_version(out: &str) -> Option<String> {
     out.lines()
@@ -267,13 +291,18 @@ mod windows {
 
     pub fn status() -> Status {
         let query = crate::sys::output("sc.exe", &["query", SERVICE]);
-        let installed = matches!(query, Some((true, _, _))) || exe().exists();
+        // Our service only when it runs our program (sc qc's BINARY_PATH_NAME).
+        let program = crate::sys::output("sc.exe", &["qc", SERVICE]).and_then(|(ok, out, _)| ok.then(|| service_program(&crate::sys::decode(&out))).flatten());
+        let service = matches!(query, Some((true, _, _))) && program.as_deref().is_some_and(is_gateway_program);
+        let exe_path = program.filter(|p| service && std::path::Path::new(p).is_file()).map(PathBuf::from).unwrap_or_else(exe);
+        let version = crate::sys::output(&exe_path.to_string_lossy(), &["--version"])
+            .and_then(|(_, out, _)| parse_version(&crate::sys::decode(&out)));
+        // The program alone counts when it answers as the gateway.
+        let installed = service || version.is_some();
         if !installed {
             return Status::default();
         }
-        let running = matches!(&query, Some((true, out, _)) if crate::sys::decode(out).contains("RUNNING"));
-        let version = crate::sys::output(&exe().to_string_lossy(), &["--version"])
-            .and_then(|(_, out, _)| parse_version(&crate::sys::decode(&out)));
+        let running = service && matches!(&query, Some((true, out, _)) if crate::sys::decode(out).contains("RUNNING"));
         let file = std::fs::read_to_string(config_file()).ok();
         let (host, port) = file.as_deref().map(host_of).unwrap_or((None, None));
         // The service's own environment (ST_GW_UI, ST_GW_UI_LISTEN) wins
@@ -427,6 +456,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn windows_service_program() {
+        let qc = "SERVICE_NAME: SentientGateway\r\n        TYPE               : 10  WIN32_OWN_PROCESS\r\n        BINARY_PATH_NAME   : \"C:\\Program Files\\Sentient Gateway\\sentient-gateway.exe\" --service\r\n";
+        let p = service_program(qc).unwrap();
+        assert_eq!(p, "C:\\Program Files\\Sentient Gateway\\sentient-gateway.exe");
+        assert!(is_gateway_program(&p));
+        let other = "        BINARY_PATH_NAME   : C:\\tools\\other-gatewayd.exe -x\r\n";
+        assert!(!is_gateway_program(&service_program(other).unwrap()));
+    }
+
+    #[test]
     fn version_line() {
         assert_eq!(parse_version("sentient-gateway 4.13.0\n").as_deref(), Some("4.13.0"));
         assert_eq!(parse_version("something else"), None);
@@ -453,7 +492,11 @@ mod tests {
     fn gateway_images() {
         assert!(is_gateway_image("quakestring/sentient-gateway-rs:4.13.0"));
         assert!(is_gateway_image("quakestring/sentient-gateway:3.7.10"));
-        assert!(is_gateway_image("thingsboard/tb-gateway"));
+        assert!(is_gateway_image("sentient-gateway-rs:dev"));
+        assert!(is_gateway_image("registry.local:5000/quakestring/sentient-gateway-rs:4.16.2"));
+        assert!(!is_gateway_image("thingsboard/tb-gateway"));
+        assert!(!is_gateway_image("kong/kong-gateway:3.8"));
+        assert!(!is_gateway_image("my-sentient-gateway:1"));
         assert!(!is_gateway_image("quakestring/sentient:4.3.0.53"));
         assert!(!is_gateway_image("postgres:18"));
     }

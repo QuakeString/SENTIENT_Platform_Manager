@@ -642,7 +642,7 @@ impl StatusPage {
                 if g.running { "Running" } else { "Stopped" },
                 format!(
                     "Sentient Gateway {}{}{}",
-                    g.version.clone().unwrap_or_default(),
+                    g.version.clone().unwrap_or_else(|| "(version unknown)".into()),
                     g.host.as_ref().map(|h| format!(" · sends to {h}{}", g.port.map(|p| format!(":{p}")).unwrap_or_default())).unwrap_or_default(),
                     newer.as_ref().map(|o| format!(" · {} available", o.version)).unwrap_or_default()
                 ),
