@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn reads_the_kde_answer() {
-        assert_eq!(kde_answer("ua{sv} 0 1 \"uris\" as 1 \"file:///home/mz/.ssh/id%20rsa\""), Some(PathBuf::from("/home/mz/.ssh/id rsa")));
+        assert_eq!(kde_answer("ua{sv} 0 1 \"uris\" as 1 \"file:///home/ops/.ssh/id%20rsa\""), Some(PathBuf::from("/home/ops/.ssh/id rsa")));
         assert_eq!(kde_answer("ua{sv} 1 0"), None);
     }
 }

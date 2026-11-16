@@ -73,7 +73,7 @@ impl Place {
             Place::Remote(_) => sftp::parent(path),
         }
     }
-    /// The path's parts for the bar (C1: "home › mz › INVENIA"), each with
+    /// The path's parts for the bar (C1: "home › ops › exports"), each with
     /// the path it opens.
     pub fn crumbs(&self, path: &str) -> Vec<(String, String)> {
         let mut out = Vec::new();

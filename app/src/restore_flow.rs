@@ -346,7 +346,7 @@ pub struct Request {
     /// Platform settings taken from the backup (by catalog name).
     #[serde(default)]
     pub use_from_backup: Vec<String>,
-    /// Who runs it: "mz on MZ-LAPTOP".
+    /// Who runs it: "ops on OPS-LAPTOP".
     #[serde(default)]
     pub by: String,
     /// Where the file came from: "copied from Plant B, server to server".
@@ -1044,7 +1044,7 @@ fn state_path() -> PathBuf {
     crate::installation::record_path().with_file_name("restore-state.json")
 }
 
-/// Who runs a restore from here: "mz on MZ-LAPTOP".
+/// Who runs a restore from here: "ops on OPS-LAPTOP".
 pub fn by_here() -> String {
     let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "someone".into());
     format!("{user} on {}", crate::backup_jobs::host_name().unwrap_or_else(|| "this computer".into()))

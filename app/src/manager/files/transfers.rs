@@ -212,7 +212,7 @@ impl Transfers {
             name: name.into(),
             from: Place::Local,
             from_admin: false,
-            src: format!("/home/mz/INVENIA/{name}"),
+            src: format!("/home/ops/exports/{name}"),
             to: remote.clone(),
             to_admin: false,
             dest_dir: dir.into(),
@@ -226,7 +226,7 @@ impl Transfers {
         self.items = vec![
             mk(1, "gateway-4.16.2-linux-x86_64.tar.gz", 40_055_603, 16_882_000, St::Copying, "/opt/sentient"),
             mk(2, "plant-dashboard.json", 421_888, 0, St::Waiting, "/opt/sentient"),
-            mk(3, "sunoil-tags.csv", 90_112, 90_112, St::Done(now), "/opt/sentient/conf"),
+            mk(3, "northwind-tags.csv", 90_112, 90_112, St::Done(now), "/opt/sentient/conf"),
         ];
         if let Ok(mut run) = self.shared.run.lock() {
             *run = self.items.clone();

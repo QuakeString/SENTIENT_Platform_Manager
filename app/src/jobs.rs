@@ -33,7 +33,7 @@ pub struct Job {
     /// When the current step began.
     step_started: Option<std::time::Instant>,
     /// What the global progress strip calls it ("Stopping ClickHouse on
-    /// ST-DEV"); None: its current step.
+    /// DEV-01"); None: its current step.
     label: Option<SharedString>,
     /// What the strip's Details opens for this job (a page's own result
     /// view); None: the job's steps and output.

@@ -549,8 +549,8 @@ static DEBUG_AGENT_UPDATED: std::sync::atomic::AtomicBool = std::sync::atomic::A
 fn debug_plan(compose: Option<&str>) -> sentient_installer_core::distro::adopt::TakeOverPlan {
     sentient_installer_core::distro::adopt::TakeOverPlan {
         project: "sentient".into(),
-        files: vec![(compose.unwrap_or("/home/sunoil/sentient/docker-compose.yml").to_string(), true)],
-        env_files: vec![("/home/sunoil/sentient/.env".into(), true)],
+        files: vec![(compose.unwrap_or("/home/northwind/sentient/docker-compose.yml").to_string(), true)],
+        env_files: vec![("/home/northwind/sentient/.env".into(), true)],
         containers: vec!["sentient".into(), "sentient-postgres".into()],
         image: "quakestring/sentient:4.4.0.1".into(),
         volumes: vec!["sentient_data".into(), "sentient_pg".into()],
