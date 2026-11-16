@@ -436,20 +436,32 @@ impl Manager {
                         .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Unfold menu").build(w, cx))
                 })
                 .when(rail && forced, |d| d.tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("The window is too narrow to unfold the menu").build(w, cx)))
-                .child(if rail && !forced && logo_hover {
+                // The swap cross-fades (150 ms, the app's ease-out): the logo
+                // fades and shrinks a little as the unfold button fades in,
+                // and back on leaving. Reduced motion: at once.
+                .child({
+                    let t = ui::tween("logo-swap", if rail && !forced && logo_hover { 1. } else { 0. }, 150, window);
+                    let logo_size = LOGO * (1. - 0.08 * t);
                     div()
+                        .relative()
                         .size_full()
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(theme.border)
-                        .bg(theme.list_hover)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(menu_icon("panel-left-open").size(px(ICON)).text_color(theme.muted_foreground))
-                        .into_any_element()
-                } else {
-                    ui::product_logo(ui::Product::Manager, LOGO).into_any_element()
+                        .child(div().absolute().inset_0().flex().items_center().justify_center().opacity(1. - t).child(ui::product_logo(ui::Product::Manager, logo_size)))
+                        .when(t > 0.001, |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .bg(theme.list_hover)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .opacity(t)
+                                    .child(menu_icon("panel-left-open").size(px(ICON)).text_color(theme.muted_foreground)),
+                            )
+                        })
                 });
             h_flex()
                 .h(px(BAR_H))
