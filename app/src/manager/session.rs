@@ -158,7 +158,17 @@ pub fn window_bounds(cx: &App, min: Size<Pixels>) -> Option<WindowBounds> {
         size(px(w.clamp(mw, maxw.max(mw))), px(h.clamp(mh, maxh.max(mh))))
     };
     let bounds = match on {
-        Some(d) => Bounds { origin: point(px(x), px(y)), size: size(Some(&d)) },
+        // Kept on that screen whole: after a scaling change (100 % → 150 %)
+        // the saved place could leave it running off the right or bottom.
+        Some(d) => {
+            let sz = size(Some(&d));
+            let (dx, dy) = (f32::from(d.origin.x), f32::from(d.origin.y));
+            let (dw, dh) = (f32::from(d.size.width), f32::from(d.size.height));
+            let (w2, h2) = (f32::from(sz.width), f32::from(sz.height));
+            let nx = x.min(dx + dw - w2).max(dx);
+            let ny = y.min(dy + dh - h2).max(dy);
+            Bounds { origin: point(px(nx), px(ny)), size: sz }
+        }
         // Off every screen now: the saved size, centred.
         None => Bounds::centered(None, size(displays.first().map(|d| d.bounds()).as_ref()), cx),
     };
