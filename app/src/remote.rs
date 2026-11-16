@@ -1988,3 +1988,456 @@ mod tests {
         assert!(explain("something else").is_none());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Restore (crate::restore_flow): jobs, the upload from this computer, a
+// backup copied from another instance, the history
+// ---------------------------------------------------------------------------
+
+/// A file only the account reads on the server, for a job to take (a
+/// restore request, a passphrase): the job removes it once read.
+pub fn put_job_file(inst: &Instance, kind: &str, text: &str) -> Result<String, String> {
+    let sep = if is_windows(inst) { "\\" } else { "/" };
+    let file = format!("{}{sep}.spm-restore-{kind}-{}", home(inst)?.trim_end_matches(['/', '\\']), chrono::Utc::now().timestamp_millis());
+    put_text(inst, &file, text)?;
+    Ok(file)
+}
+
+/// The arguments of a restore job: `restore-inspect <file>` or
+/// `restore-precheck|restore-run <request>`, the passphrase in a file.
+pub fn restore_args(inst: &Instance, job: &str, req: &crate::restore_flow::Request, passphrase: Option<&str>) -> Result<Vec<String>, String> {
+    let mut args = vec![job.to_string()];
+    if job == "restore-inspect" {
+        args.push(req.file.display().to_string());
+    } else {
+        args.push(put_job_file(inst, "request", &serde_json::to_string(req).map_err(|e| e.to_string())?)?);
+    }
+    if let Some(p) = passphrase.filter(|p| !p.is_empty()) {
+        args.push("--passphrase-file".into());
+        args.push(put_job_file(inst, "pass", p)?);
+    }
+    Ok(args)
+}
+
+/// Run a job on the server and follow it to its end (the agent brought up
+/// to date first), as the pages' long jobs do. Blocking.
+pub fn run_followed(inst: &Instance, args: &[String], sink: &ProgressFn) -> Result<(), String> {
+    let updated = deploy(inst, sink);
+    if let Err(e) = &updated {
+        sink(Progress::Log { line: format!("The agent could not be updated: {}", split_failure(e).0) });
+    }
+    let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    match (start_job(inst, &a).and_then(|id| follow(inst, &id, sink)), updated) {
+        (Err(e), Err(u)) if e == AGENT_OLD || e.contains("usage: --job") => Err(failed("The agent on this server could not be updated, and the one there is too old for this.", &split_failure(&u).1.unwrap_or(u.clone()))),
+        (r, _) => r,
+    }
+}
+
+/// The restores on the server, newest first.
+pub fn restore_history(inst: &Instance) -> Result<Vec<crate::restore_flow::Entry>, String> {
+    #[cfg(debug_assertions)]
+    if let Some(p) = std::env::var_os("SPM_DEBUG_RESTORE_HISTORY") {
+        return std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()));
+    }
+    let out = spm_job(inst, "restore-history-json")?;
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or("The server's Platform Manager gave no answer.")?;
+    serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
+}
+
+/// One restore's log on the server.
+pub fn restore_log(inst: &Instance, id: &str) -> Result<String, String> {
+    #[cfg(debug_assertions)]
+    if let Some(t) = std::env::var_os("SPM_DEBUG_RESTORE_LOG") {
+        return Ok(t.to_string_lossy().replace("\\n", "\n"));
+    }
+    spm_job(inst, &format!("restore-log {}", job_arg(id)?))
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// The size of a file on the server (0 when it is not there).
+pub fn remote_size(inst: &Instance, path: &str) -> u64 {
+    let out = if is_windows(inst) {
+        win::ps(inst, &format!("if (Test-Path -LiteralPath '{0}') {{ (Get-Item -LiteralPath '{0}').Length }} else {{ 0 }}", path.replace('\'', "''")))
+    } else {
+        run(inst, &format!("stat -c %s {} 2>/dev/null || echo 0", shell_quote(path)), None)
+    };
+    out.ok().and_then(|o| o.trim().parse().ok()).unwrap_or(0)
+}
+
+/// Whether the account itself can write in `folder` on the server (the
+/// upload runs as the account, not as administrator).
+pub fn can_write(inst: &Instance, folder: &str) -> Result<bool, String> {
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("SPM_DEBUG_REMOTE_WRITABLE") {
+        return Ok(v != "no");
+    }
+    if is_windows(inst) {
+        let p = format!("{}\\.spm-write-test", folder.trim_end_matches('\\'));
+        return Ok(win::ps(inst, &format!("try {{ New-Item -Force -ItemType File -Path '{0}' | Out-Null; Remove-Item -Force '{0}'; 'yes' }} catch {{ 'no' }}", p.replace('\'', "''")))?.trim() == "yes");
+    }
+    Ok(run(inst, &format!("mkdir -p {0} 2>/dev/null; [ -w {0} ] && echo yes || echo no", shell_quote(folder)), None)?.trim() == "yes")
+}
+
+fn join_remote(inst: &Instance, folder: &str, name: &str) -> String {
+    if is_windows(inst) { format!("{}\\{name}", folder.trim_end_matches('\\')) } else { format!("{}/{name}", folder.trim_end_matches('/')) }
+}
+
+/// The sftp path of a server path (Windows: `/C:/…`).
+fn sftp_path(inst: &Instance, path: &str) -> String {
+    if is_windows(inst) { format!("/{}", path.replace('\\', "/")) } else { path.to_string() }
+}
+
+fn rename_remote(inst: &Instance, from: &str, to: &str) -> Result<(), String> {
+    if is_windows(inst) {
+        win::ps(inst, &format!("Move-Item -Force -LiteralPath '{}' '{}'", from.replace('\'', "''"), to.replace('\'', "''"))).map(|_| ())
+    } else {
+        run(inst, &format!("mv -f {} {}", shell_quote(from), shell_quote(to)), None).map(|_| ())
+    }
+}
+
+/// Watch a file on the server grow while `work` runs: `progress(sent)`
+/// every two seconds.
+fn with_progress<T>(inst: &Instance, path: &str, progress: &(dyn Fn(u64) + Sync), work: impl FnOnce() -> T) -> T {
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                progress(remote_size(inst, path));
+                for _ in 0..20 {
+                    if done.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+        });
+        let r = work();
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        r
+    })
+}
+
+/// Upload a backup from this computer into `folder` on the server, with its
+/// `.sha256` and its parts (R5). A broken upload goes on from where it
+/// stopped: the part already there (`<name>.part`) is kept and continued.
+/// Returns the file's path on the server. `progress(sent, total)`.
+pub fn upload_backup(inst: &Instance, local: &Path, folder: &str, progress: &(dyn Fn(u64, u64) + Sync)) -> Result<String, String> {
+    let (_, files) = sentient_backup_core::parts::resolve(local).map_err(|e| e.to_string())?;
+    let total: u64 = files.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum();
+    let mut before = 0u64;
+    for f in &files {
+        let name = f.file_name().ok_or("no file name")?.to_string_lossy().to_string();
+        let dest = join_remote(inst, folder, &name);
+        let part = format!("{dest}.part");
+        let len = std::fs::metadata(f).map(|m| m.len()).unwrap_or(0);
+        let base = before;
+        let r = with_progress(inst, &part, &|sent| progress(base + sent.min(len), total), || sftp_put(inst, f, &sftp_path(inst, &part)));
+        if let Err(e) = r {
+            let sent = remote_size(inst, &part);
+            return Err(format!("{}\n{}", UPLOAD_BROKE, serde_json::json!({"sent": base + sent, "total": total, "why": e})));
+        }
+        if remote_size(inst, &part) != len {
+            return Err(format!("{}\n{}", UPLOAD_BROKE, serde_json::json!({"sent": base + remote_size(inst, &part), "total": total, "why": "The size on the server does not match."})));
+        }
+        rename_remote(inst, &part, &dest)?;
+        before += len;
+        progress(before, total);
+    }
+    let sidecar = sentient_backup_core::parts::sidecar_path(local);
+    if sidecar.is_file() {
+        let name = sidecar.file_name().unwrap_or_default().to_string_lossy().to_string();
+        sftp_put(inst, &sidecar, &sftp_path(inst, &join_remote(inst, folder, &name)))?;
+    }
+    let key = crate::secrets_key::beside(local);
+    if key.is_file() {
+        let name = key.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let _ = sftp_put(inst, &key, &sftp_path(inst, &join_remote(inst, folder, &name)));
+    }
+    Ok(join_remote(inst, folder, &local.file_name().unwrap_or_default().to_string_lossy()))
+}
+
+/// The first line of an upload's error that went on part of the way; the
+/// second is JSON {sent, total, why}.
+pub const UPLOAD_BROKE: &str = "UPLOAD-BROKE";
+
+/// How a backup travels from another instance (R6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyWay {
+    /// The source sends it straight to the target over SSH.
+    Direct,
+    /// Down to this computer's pipe and up again, never stored here.
+    ThroughHere,
+}
+
+/// Whether `src` reaches `dst`'s SSH port (server to server copies).
+pub fn reaches(src: &Instance, dst: &Instance) -> bool {
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("SPM_DEBUG_REMOTE_REACHES") {
+        return v == "yes";
+    }
+    if is_windows(src) {
+        return win::ps(src, &format!("(Test-NetConnection -ComputerName '{}' -Port {} -WarningAction SilentlyContinue).TcpTestSucceeded", dst.host.replace('\'', ""), dst.port)).is_ok_and(|o| o.trim() == "True");
+    }
+    run(src, &format!("timeout 6 bash -c '</dev/tcp/{}/{}' 2>/dev/null && echo yes || echo no", dst.host.replace(['\'', ' '], ""), dst.port), None).is_ok_and(|o| o.trim() == "yes")
+}
+
+/// Copy a backup (and its `.sha256` and key file) from `src` into `folder`
+/// on `dst`. Returns its path on `dst`.
+pub fn copy_between(src: &Instance, dst: &Instance, path: &str, folder: &str, way: CopyWay, progress: &(dyn Fn(u64, u64) + Sync)) -> Result<String, String> {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
+    let dest = join_remote(dst, folder, &name);
+    let part = format!("{dest}.part");
+    let total = remote_size(src, path);
+    let windows = is_windows(src) || is_windows(dst);
+    let r = if windows {
+        // Through a file here: sftp down, then up (Windows has no cat to pipe).
+        let dir = std::env::temp_dir().join(format!("spm-copy-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let local = dir.join(&name);
+        let got = sftp_batch(src, &format!("get \"{}\" \"{}\"", sftp_path(src, path), local.display()));
+        let r = got.and_then(|_| with_progress(dst, &part, &|s| progress(s, total), || sftp_put(dst, &local, &sftp_path(dst, &part))));
+        let _ = std::fs::remove_dir_all(&dir);
+        r
+    } else {
+        match way {
+            CopyWay::ThroughHere => with_progress(dst, &part, &|s| progress(s, total), || pipe_copy(src, dst, path, &part)),
+            CopyWay::Direct => with_progress(dst, &part, &|s| progress(s, total), || direct_copy(src, dst, path, &part)),
+        }
+    };
+    r?;
+    if remote_size(dst, &part) != total {
+        return Err(format!("The copy on {} is {} bytes, the backup on {} {total}. Try again.", dst.name, remote_size(dst, &part), src.name));
+    }
+    rename_remote(dst, &part, &dest)?;
+    // The checksum file and the secrets key go along (small).
+    for extra in [format!("{path}.sha256"), path.trim_end_matches(".sentient-backup").to_string() + ".key"] {
+        if remote_size(src, &extra) > 0 {
+            let n = extra.rsplit(['/', '\\']).next().unwrap_or(&extra).to_string();
+            let text = if is_windows(src) { win::ps(src, &format!("Get-Content -Raw -LiteralPath '{}'", extra.replace('\'', "''"))) } else { run(src, &format!("cat {}", shell_quote(&extra)), None) };
+            if let Ok(t) = text {
+                let _ = put_text(dst, &join_remote(dst, folder, &n), &t);
+            }
+        }
+    }
+    Ok(dest)
+}
+
+/// `ssh src cat` into `ssh dst cat >>`, resuming a part already there.
+fn pipe_copy(src: &Instance, dst: &Instance, path: &str, part: &str) -> Result<(), String> {
+    let have = remote_size(dst, part);
+    let mut reader = ssh(src, &format!("tail -c +{} {}", have + 1, shell_quote(path)), None).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("start ssh: {e}"))?;
+    let out = reader.stdout.take().ok_or("no output")?;
+    let mut writer = ssh(dst, &format!("cat >> {}", shell_quote(part)), None).stdin(Stdio::from(out)).stderr(Stdio::piped()).spawn().map_err(|e| format!("start ssh: {e}"))?;
+    let w = writer.wait().map_err(|e| e.to_string())?;
+    let r = reader.wait_with_output().map_err(|e| e.to_string())?;
+    if !r.status.success() {
+        return Err(format!("Reading the backup on {} failed: {}", src.name, String::from_utf8_lossy(&r.stderr).trim()));
+    }
+    if !w.success() {
+        return Err(format!("Writing the copy on {} failed.", dst.name));
+    }
+    Ok(())
+}
+
+/// The source sends the file itself: a key made for this one copy is
+/// allowed on the target (restricted) and given to the source, then both
+/// are removed.
+fn direct_copy(src: &Instance, dst: &Instance, path: &str, part: &str) -> Result<(), String> {
+    let tag = format!("spm-restore-copy-{}", chrono::Utc::now().timestamp_millis());
+    let dir = std::env::temp_dir().join(&tag);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let key = dir.join("key");
+    let made = Command::new("ssh-keygen").args(["-q", "-t", "ed25519", "-N", "", "-C", &tag, "-f"]).arg(&key).output().map_err(|e| format!("ssh-keygen: {e}"))?;
+    if !made.status.success() {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err("A key for the copy could not be made on this computer.".into());
+    }
+    let public = std::fs::read_to_string(key.with_extension("pub")).map_err(|e| e.to_string())?;
+    let private = std::fs::read_to_string(&key).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_dir_all(&dir);
+    let cleanup = || {
+        let _ = run(dst, &format!("sed -i '/{tag}/d' ~/.ssh/authorized_keys"), None);
+        let _ = run(src, &format!("rm -f ~/.{tag}"), None);
+    };
+    let r = (|| -> Result<(), String> {
+        run(dst, &format!("mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo {} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys", shell_quote(&format!("restrict {}", public.trim()))), None)?;
+        put_text(src, &format!("{}/.{tag}", home(src)?.trim_end_matches('/')), &private)?;
+        run(
+            src,
+            &format!(
+                "scp -q -i ~/.{tag} -P {} -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o BatchMode=yes {} {}@{}:{}",
+                dst.port,
+                shell_quote(path),
+                dst.user,
+                dst.host,
+                shell_quote(part)
+            ),
+            None,
+        )
+        .map(|_| ())
+        .map_err(|e| format!("{} could not send it to {} ({e}). Copy through this computer instead.", src.name, dst.name))
+    })();
+    cleanup();
+    r
+}
+
+/// Ask the restore running on the server to stop before its switch.
+pub fn restore_cancel(inst: &Instance) -> Result<(), String> {
+    spm_job(inst, "restore-cancel").map(|_| ())
+}
+
+/// The backups in another folder on the server.
+pub fn backups_in(inst: &Instance, folder: &str) -> Result<Vec<crate::backups::Entry>, String> {
+    #[cfg(debug_assertions)]
+    if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_BACKUPS") {
+        return serde_json::from_str::<RemoteBackups>(&t.to_string_lossy()).map(|b| b.list).map_err(|e| e.to_string());
+    }
+    let out = spm_job(inst, &format!("backup-list {}", job_arg(folder)?))?;
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or("The server's Platform Manager gave no answer.")?;
+    serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
+}
+
+/// Copy a backup from a server into `folder` on this computer (another
+/// instance's backup restored here), with its `.sha256`.
+pub fn download_backup(src: &Instance, path: &str, folder: &Path, progress: &(dyn Fn(u64, u64) + Sync)) -> Result<PathBuf, String> {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
+    let total = remote_size(src, path);
+    std::fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    let dest = folder.join(&name);
+    let part = folder.join(format!("{name}.part"));
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let r = std::thread::scope(|s| {
+        s.spawn(|| {
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                progress(std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0), total);
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        });
+        let r = sftp_batch(src, &format!("reget \"{}\" \"{}\"", sftp_path(src, path), part.display())).or_else(|_| sftp_batch(src, &format!("get \"{}\" \"{}\"", sftp_path(src, path), part.display())));
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        r
+    });
+    r?;
+    if std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0) != total {
+        return Err("The copy here does not have the backup's size. Try again.".into());
+    }
+    std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
+    let _ = sftp_batch(src, &format!("get \"{}.sha256\" \"{}.sha256\"", sftp_path(src, path), dest.display()));
+    Ok(dest)
+}
+
+/// The restore jobs against the shared test bed (read-only there: a backup
+/// is made into /tmp, inspected, pre-checked, uploaded and copied; nothing
+/// is restored). SPM_E2E_RESTORE=<instance id>, XDG_CONFIG_HOME with the
+/// instances, SPM_AGENT_DIR with the static agent.
+#[cfg(test)]
+mod restore_live {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn restore_jobs_on_the_test_bed() {
+        let id = std::env::var("SPM_E2E_RESTORE").expect("SPM_E2E_RESTORE");
+        let inst = load().into_iter().find(|i| i.id == id).expect("instance");
+        let lines: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+        let l2 = lines.clone();
+        let sink: ProgressFn = std::sync::Arc::new(move |p| {
+            let line = match p {
+                Progress::Step { name } => format!(">> {name}"),
+                Progress::Log { line } => line,
+                Progress::Done { message } => format!("done: {message}"),
+                Progress::Error { message } => format!("error: {message}"),
+                _ => return,
+            };
+            l2.lock().unwrap().push(line);
+        });
+        let take = || std::mem::take(&mut *lines.lock().unwrap());
+        deploy(&inst, &sink).expect("deploy");
+        run(&inst, "rm -rf /tmp/spme && mkdir -p /tmp/spme/up /tmp/spme/copy && chmod 777 /tmp/spme /tmp/spme/up /tmp/spme/copy", None).unwrap();
+        // A small, well-formed backup (SPM_E2E_BACKUP, made by the test's
+        // script): the test bed's SENTIENT is a stand-in with no schema.
+        let fake = PathBuf::from(std::env::var("SPM_E2E_BACKUP").expect("SPM_E2E_BACKUP"));
+        let file = upload_backup(&inst, &fake, "/tmp/spme", &|_, _| {}).expect("first upload");
+        let file = file.as_str();
+        // Inspect: sound, the parts listed and checked.
+        let req = crate::restore_flow::Request { file: file.into(), ..Default::default() };
+        let args = restore_args(&inst, "restore-inspect", &req, None).unwrap();
+        run_followed(&inst, &args, &sink).expect("inspect");
+        let got = take();
+        let i: crate::restore_flow::Inspection = crate::restore_flow::read_data(&got, "inspect").expect("inspection");
+        assert!(i.sound(), "{:?}", i.parts);
+        assert!(got.iter().filter(|l| l.starts_with("PART\t")).count() > i.parts.len());
+        eprintln!("inspect: {} parts, {} bytes, here {:?}", i.parts.len(), i.file_bytes, i.here);
+        // Not a backup.
+        run(&inst, "echo nope > /tmp/spme/x.sentient-backup", None).unwrap();
+        let bad = crate::restore_flow::Request { file: "/tmp/spme/x.sentient-backup".into(), ..Default::default() };
+        let args = restore_args(&inst, "restore-inspect", &bad, None).unwrap();
+        assert!(run_followed(&inst, &args, &sink).is_err());
+        let u: crate::restore_flow::Unreadable = crate::restore_flow::read_data(&take(), "unreadable").expect("unreadable");
+        assert!(matches!(u, crate::restore_flow::Unreadable::NotABackup(_)), "{u:?}");
+        // Pre-check: configuration only with Keep (orphans), and everything.
+        for scope in [sentient_backup_core::restore_scope::Scope::Configuration, sentient_backup_core::restore_scope::Scope::Everything] {
+            let req = crate::restore_flow::Request { file: file.into(), scope: scope.clone(), keep_telemetry: true, safety_backup: true, ..Default::default() };
+            let args = restore_args(&inst, "restore-precheck", &req, None).unwrap();
+            if let Err(e) = run_followed(&inst, &args, &sink) {
+                panic!("precheck: {e}\n{}", take().join("\n"));
+            }
+            let p: crate::restore_flow::Precheck = crate::restore_flow::read_data(&take(), "precheck").expect("precheck answer");
+            eprintln!("precheck {scope:?}: disks {:?}\n  estimate {:?} upgrade {:?} settings {} same {} orphans {:?} live {:?}", p.disks, p.estimate, p.upgrade, p.settings.len(), p.same, p.orphans, p.live);
+            assert!(!p.disks.is_empty() && p.disks.iter().all(|d| d.free.is_some()));
+        }
+        // History answers (an empty list is fine).
+        let h = restore_history(&inst).expect("history");
+        eprintln!("history: {} entries", h.len());
+        // Upload from here, with resume: a partial part first.
+        let dir = std::env::temp_dir().join(format!("spme-up-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let local = dir.join("up.sentient-backup");
+        let data: Vec<u8> = (0..30_000_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&local, &data).unwrap();
+        put_text(&inst, "/tmp/spme/up/up.sentient-backup.part", "").unwrap();
+        run(&inst, "head -c 10000000 /dev/zero > /tmp/spme/up/up.sentient-backup.part.tmp; true", None).unwrap();
+        assert!(can_write(&inst, "/tmp/spme/up").unwrap());
+        assert!(!can_write(&inst, "/root/spme").unwrap_or(false));
+        let seen = std::sync::Mutex::new(Vec::new());
+        let path = upload_backup(&inst, &local, "/tmp/spme/up", &|s, t| seen.lock().unwrap().push((s, t))).expect("upload");
+        assert_eq!(remote_size(&inst, &path), data.len() as u64);
+        let sum = run(&inst, &format!("sha256sum {path}"), None).unwrap();
+        let mine = sentient_backup_core::util::sha256_file(&local).unwrap().0;
+        assert!(sum.starts_with(&mine), "{sum} vs {mine}");
+        let readings = seen.lock().unwrap().clone();
+        eprintln!("upload: {} progress readings, last {:?}", readings.len(), readings.last());
+        // Resume: cut the file on the server to a part and send again.
+        run(&inst, &format!("head -c 12000000 {path} > {path}.part && rm {path}"), None).unwrap();
+        let path = upload_backup(&inst, &local, "/tmp/spme/up", &|_, _| {}).expect("resumed upload");
+        assert!(run(&inst, &format!("sha256sum {path}"), None).unwrap().starts_with(&mine));
+        // Another instance: the same server as the source. Through this
+        // computer works; server to server needs the source to reach the
+        // target's address, which inside the test bed (a port mapped on
+        // this computer) it does not: the check says so and the copy fails
+        // with the plain advice, leaving no key behind.
+        run(&inst, "mkdir -p /tmp/spme/copy /tmp/spme/copy2", None).unwrap();
+        let p = copy_between(&inst, &inst, file, "/tmp/spme/copy", CopyWay::ThroughHere, &|_, _| {}).expect("copy through here");
+        assert_eq!(remote_size(&inst, &p), remote_size(&inst, file));
+        eprintln!("copy through this computer: {p}");
+        let reach = reaches(&inst, &inst);
+        eprintln!("reaches itself at {}:{}: {reach}", inst.host, inst.port);
+        match copy_between(&inst, &inst, file, "/tmp/spme/copy2", CopyWay::Direct, &|_, _| {}) {
+            Ok(p) => assert!(reach && remote_size(&inst, &p) == remote_size(&inst, file)),
+            Err(e) => {
+                assert!(!reach && e.contains("Copy through this computer instead"), "{e}");
+                assert!(!run(&inst, "grep -c spm-restore-copy ~/.ssh/authorized_keys || true", None).unwrap().trim().starts_with('1'));
+                eprintln!("direct copy refused as expected: {e}");
+            }
+        }
+        // Down to this computer.
+        let got = download_backup(&inst, file, &dir, &|_, _| {}).expect("download");
+        assert_eq!(std::fs::metadata(&got).unwrap().len(), remote_size(&inst, file));
+        let _ = run(&inst, "rm -rf /tmp/spme", None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+

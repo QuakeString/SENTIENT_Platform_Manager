@@ -22,6 +22,8 @@ pub mod parts;
 pub mod pg_tools;
 pub mod progress;
 pub mod restore;
+pub mod restore_scope;
+pub mod space;
 pub mod telemetry_move;
 pub mod util;
 

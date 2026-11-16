@@ -61,6 +61,7 @@ mod online;
 mod open_client;
 mod remote;
 mod replace;
+mod restore_flow;
 mod restore_switch;
 mod rootjob;
 mod secrets;

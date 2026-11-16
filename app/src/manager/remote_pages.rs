@@ -232,6 +232,12 @@ pub struct RemotePages {
     _subscriptions: Vec<Subscription>,
     /// The Backup card's Keep field (made at the first draw of the page).
     keep_input: Option<Entity<InputState>>,
+    /// The Restore flow, in place of the Backup page while it is open.
+    restore_flow: Option<Entity<crate::manager::restore::RestoreFlow>>,
+    /// A backup picked in Restore from…: the flow opens on the next draw.
+    restore_pending: Option<crate::manager::restore::Source>,
+    /// The restores on this server (R1).
+    restores: Read<Vec<crate::restore_flow::Entry>>,
 }
 
 impl RemotePages {
@@ -324,7 +330,14 @@ impl RemotePages {
             _tasks: Vec::new(),
             _subscriptions: subs,
             keep_input: None,
+            restore_flow: None,
+            restore_pending: None,
+            restores: Read::Loading,
         };
+        #[cfg(debug_assertions)]
+        if let (Ok(frame), Kind::Backup) = (std::env::var("SPM_DEBUG_RESTORE"), kind) {
+            p.restore_pending = Some(crate::manager::restore::canned::source(&frame));
+        }
         // Development aid: open Platform settings on a tab (screens).
         #[cfg(debug_assertions)]
         if let Ok(t) = std::env::var("SPM_SETTINGS_TAB") {
@@ -495,7 +508,21 @@ impl RemotePages {
                     |p, r| p.offer = r,
                 );
             }
-            Kind::Backup => self.fetch(cx, move || remote::backups(&inst), |p, r| p.backups = r),
+            Kind::Backup => {
+                let i2 = inst.clone();
+                self.fetch(cx, move || remote::backups(&i2), |p, r| p.backups = r);
+                self.fetch(
+                    cx,
+                    move || {
+                        #[cfg(debug_assertions)]
+                        if std::env::var("SPM_DEBUG_RESTORE_HISTORY").is_ok_and(|v| v == "canned") {
+                            return Ok(crate::manager::restore::canned::history());
+                        }
+                        remote::restore_history(&inst)
+                    },
+                    |p, r| p.restores = r,
+                );
+            }
             Kind::Settings => {
                 self.inputs.clear();
                 self.fetch(cx, move || remote::settings(&inst), |p, r| p.settings = r);
@@ -1171,18 +1198,6 @@ impl RemotePages {
             ))
     }
 
-    fn confirm_restore(&mut self, path: String, name: String, window: &mut Window, cx: &mut Context<Self>) {
-        let this = cx.entity().downgrade();
-        let text = format!("Users, passwords, devices and dashboards on {} will be those of {name}. Everything there now is replaced. SENTIENT stops for about a minute while it switches.", self.inst.name);
-        crate::modal::alert(window, cx, move |d, _, _| {
-            let (this, path) = (this.clone(), path.clone());
-            d.title("Replace this server's data?").description(text.clone()).confirm().ok_text("Replace").on_ok(move |_, _, cx| {
-                this.update(cx, |p, cx| p.run_job("Restoring", vec!["replace".into(), path.clone()], cx)).ok();
-                true
-            })
-        });
-    }
-
     fn confirm_delete(&mut self, path: String, name: String, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
         crate::modal::alert(window, cx, move |d, _, _| {
@@ -1252,6 +1267,7 @@ impl RemotePages {
                     let args = vec!["backup-folder".into(), dir.display().to_string(), if move_them { "move" } else { "leave" }.into()];
                     this.update(cx, |p, cx| p.run_quiet("folder", args, cx)).ok();
                 }),
+                title: None,
             },
             window,
             cx,
@@ -1383,10 +1399,11 @@ impl RemotePages {
                 .pb_2()
                 .items_center()
                 .child(div().flex_1().min_w_0().child(self.section_title(&theme, "Backups", "backups", cx)))
+                .child(crate::ui::button("r-restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx))))
                 .child(crate::ui::button("r-backup").outline().label("Back up now").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx)))),
         );
         if b.list.is_empty() {
-            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder."));
+            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder. Restore from… can still take a file from this computer or another instance."));
         } else {
             list = list.child(bk::table_header(&theme, narrow));
         }
@@ -1403,8 +1420,12 @@ impl RemotePages {
                 busy,
                 bk::RowActions {
                     restore: (!damaged).then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
-                        std::rc::Rc::new(move |window, cx| {
-                            t1.update(cx, |p, cx| p.confirm_restore(p1.clone(), name.clone(), window, cx)).ok();
+                        std::rc::Rc::new(move |_, cx| {
+                            t1.update(cx, |p, cx| {
+                                p.restore_pending = Some(crate::manager::restore::Source { file: std::path::PathBuf::from(&p1), sub: name.clone(), note: None });
+                                cx.notify();
+                            })
+                            .ok();
                         })
                     }),
                     verify: std::rc::Rc::new(move |_, cx| {
@@ -1416,7 +1437,47 @@ impl RemotePages {
                 },
             ));
         }
-        v_flex().gap(px(ui::GAP)).child(card).child(list)
+        let restores = match &self.restores {
+            Read::Loading => None,
+            Read::Got(l) => Some(Ok(l.clone())),
+            Read::Failed(e) => Some(Err(remote::split_failure(e).0)),
+        };
+        let history = crate::manager::restore::history_card(&theme, &crate::manager::restore::Target::Server(self.inst.clone()), restores.as_ref(), narrow);
+        v_flex().gap(px(ui::GAP)).child(list).child(history).child(card)
+    }
+
+    /// Restore from… (R4).
+    fn restore_from(&mut self, cx: &mut Context<Self>) {
+        let (folder, free) = match &self.backups {
+            Read::Got(b) => (b.folder.clone(), b.free),
+            _ => (crate::backups::default_folder(), None),
+        };
+        let this = cx.entity().downgrade();
+        crate::manager::restore::RestoreFrom::open(
+            crate::manager::restore::Target::Server(self.inst.clone()),
+            folder,
+            free,
+            std::rc::Rc::new(move |src, cx| {
+                this.update(cx, |p, cx| {
+                    p.restore_pending = Some(src);
+                    cx.notify();
+                })
+                .ok();
+            }),
+            cx,
+        );
+    }
+
+    /// The Restore flow for `src`, in place of the Backup page.
+    fn open_restore(&mut self, src: crate::manager::restore::Source, window: &mut Window, cx: &mut Context<Self>) {
+        let flow = cx.new(|cx| crate::manager::restore::RestoreFlow::new(crate::manager::restore::Target::Server(self.inst.clone()), src, window, cx));
+        self._subscriptions.push(cx.subscribe(&flow, |p: &mut Self, _, _: &crate::manager::restore::Leave, cx| {
+            p.restore_flow = None;
+            p.reload(cx);
+            cx.notify();
+        }));
+        self.restore_flow = Some(flow);
+        cx.notify();
     }
 
     // -- Settings, Migration, Repair, Gateway --------------------------------
@@ -1990,6 +2051,14 @@ impl Render for RemotePages {
             }
             Read::Got(()) => None,
         };
+        if self.kind == Kind::Backup && gate.is_none() {
+            if let Some(src) = self.restore_pending.take() {
+                self.open_restore(src, window, cx);
+            }
+            if let Some(flow) = &self.restore_flow {
+                return flow.clone().into_any_element();
+            }
+        }
         let body = if let Some(v) = self.job_view(cx) { v } else if let Some(g) = gate { g } else { match self.kind {
             Kind::Status => self.status_page(cx),
             Kind::Control => self.control_page(cx),
@@ -2011,7 +2080,21 @@ impl Render for RemotePages {
                                     "delete" => self.confirm_delete(path, e.name, window, cx),
                                     // The folder chooser (B2–B4).
                                     "folder" => self.open_folder_chooser(window, cx),
-                                    _ => self.confirm_restore(path, e.name, window, cx),
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    // The Restore from… dialog (R4–R6, B8, B9) and a restore's details (R3).
+                    static SHOWN_R: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                    if matches!(self.backups, Read::Got(_)) && !matches!(self.restores, Read::Loading) {
+                        if std::env::var("SPM_DEBUG_RESTORE_FROM").is_ok() && !SHOWN_R.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                            self.restore_from(cx);
+                        }
+                        if std::env::var("SPM_DEBUG_RESTORE_DETAILS").is_ok() && !SHOWN_R.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                            if let Read::Got(h) = &self.restores {
+                                if let Some(e) = h.first().cloned() {
+                                    crate::manager::restore::HistoryDialog::open(crate::manager::restore::Target::Server(self.inst.clone()), e, cx);
                                 }
                             }
                         }
@@ -2043,7 +2126,7 @@ impl Render for RemotePages {
         let reload = crate::ui::refresh_button("remote-reload", self.in_flight > 0, window, move |_, cx| {
             me.update(cx, |this, cx| this.reload(cx)).ok();
         });
-        ui::page_with(&theme, title, summary, reload).child(body)
+        ui::page_with(&theme, title, summary, reload).child(body).into_any_element()
     }
 }
 
