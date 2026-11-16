@@ -56,6 +56,12 @@ pub fn is_data(line: &str) -> bool {
     line.starts_with(DATA) || line.starts_with("PART\t")
 }
 
+/// A message as a sentence, so another can follow it.
+fn sentence(e: &str) -> String {
+    let e = e.trim_end();
+    if e.ends_with(['.', '!', '?', ')']) { e.to_string() } else { format!("{e}.") }
+}
+
 fn step(sink: &ProgressFn, name: &str) {
     sink(Progress::Step { name: name.into() });
 }
@@ -1041,6 +1047,26 @@ fn drop_restored(setup: &Setup, target: &str, sink: &ProgressFn) {
     }
 }
 
+/// Remove a restored database a run left (X2's "Remove the restored
+/// database…"): only a `<db>_restore_<stamp>` name, PostgreSQL and ClickHouse.
+pub fn remove_restored(record: &InstallationRecord, name: &str, sink: &ProgressFn) -> Result<(), String> {
+    let setup = Setup::current(record)?;
+    let live = setup.pg().dbname;
+    let ok = name.strip_prefix(&format!("{live}_restore_")).is_some_and(|s| (s.len() == 12 || s.len() == 14) && s.chars().all(|c| c.is_ascii_digit()));
+    if !ok {
+        return Err(format!("{name} is not a database a restore left."));
+    }
+    drop_restored(&setup, name, sink);
+    let still = block_on(async {
+        let admin = sentient_backup_core::db::ConnConfig { dbname: "postgres".into(), ..setup.pg() };
+        let db = sentient_backup_core::db::DbInspector::connect(&admin).await.ok()?;
+        db.text(&format!("SELECT count(*)::text FROM pg_database WHERE datname = '{name}'")).await.ok().flatten()
+    })
+    .ok()
+    .flatten();
+    if still.as_deref() == Some("0") { Ok(()) } else { Err(format!("{name} could not be removed.")) }
+}
+
 /// Run the restore (blocking). The history gets the run whatever happens.
 pub fn run(record: InstallationRecord, req: Request, passphrase: Option<String>, sink: ProgressFn) -> Result<(), String> {
     let started = std::time::Instant::now();
@@ -1209,14 +1235,16 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
                 let e = e.to_string();
                 stopped(&e, entry);
                 fail_at(entry, STEP_INTO_LIVE);
-                Err(format!("{} Nothing on this instance changed: the telemetry added so far was taken out again.", plain(e)))
+                Err(format!("{} Nothing on this instance changed: the telemetry added so far was taken out again.", sentence(&plain(e))))
             }
         };
     }
 
     // Beside the live data.
     step(sink, STEP_RESTORE);
-    let target = format!("{}_restore_{}", live.dbname, chrono::Local::now().format("%Y%m%d%H%M"));
+    // To the second: two restores in one minute must not meet (ClickHouse's
+    // history from before stays under this name after the exchange).
+    let target = format!("{}_restore_{}", live.dbname, chrono::Local::now().format("%Y%m%d%H%M%S"));
     let conn = sentient_backup_core::db::ConnConfig { dbname: target.clone(), ..live.clone() };
     let ch_target = ch_live.as_ref().map(|c| c.with_database(&target));
     let opts = sentient_backup_core::restore::RestoreOptions {
@@ -1253,7 +1281,7 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
         stopped(&e, entry);
         fail_at(entry, STEP_RESTORE);
         drop_restored(&setup, &target, sink);
-        return Err(format!("{} Nothing on this instance changed: SENTIENT runs on its own data. The half-restored database was removed.", plain(e)));
+        return Err(format!("{} Nothing on this instance changed: SENTIENT runs on its own data. The half-restored database was removed.", sentence(&plain(e))));
     }
     entry.restored_db = Some(target.clone());
 
@@ -1267,7 +1295,7 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
             stopped(&e, entry);
             fail_at(entry, STEP_KEEP);
             drop_restored(&setup, &target, sink);
-            return Err(format!("{} Nothing on this instance changed: SENTIENT runs on its own data. The half-restored database was removed.", plain(e)));
+            return Err(format!("{} Nothing on this instance changed: SENTIENT runs on its own data. The half-restored database was removed.", sentence(&plain(e))));
         }
     }
     if cancel_path().exists() {
@@ -1280,7 +1308,7 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
     if let Err(e) = crate::restore_switch::match_schema(record, &live, &setup.ch().password, &target, &nested(sink)).and_then(|_| crate::secrets_key::after_restore(&live, &target, &req.file, None, &nested(sink))) {
         fail_at(entry, STEP_SCHEMA);
         drop_restored(&setup, &target, sink);
-        return Err(format!("{e} Nothing on this instance changed. The half-restored database was removed."));
+        return Err(format!("{} Nothing on this instance changed. The half-restored database was removed.", sentence(&e)));
     }
 
     step(sink, STEP_SWITCH);
@@ -1330,6 +1358,11 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
         for item in crate::kept::list(record)?.iter().filter(|k| k.name == aside || k.name == target) {
             crate::kept::remove(record, item, nested(sink))?;
             freed += item.bytes.unwrap_or(0);
+        }
+        // ClickHouse's history from before is in the restored database's
+        // name after the exchange; the kept list does not show it.
+        if hybrid && !keep {
+            let _ = setup.ch().with_database("default").text(&format!("DROP DATABASE IF EXISTS `{target}`"));
         }
         notes.push(format!("The data from before was deleted ({} freed).", crate::dbstatus::bytes_label(freed.max(0) as u64)));
         entry.aside = None;
