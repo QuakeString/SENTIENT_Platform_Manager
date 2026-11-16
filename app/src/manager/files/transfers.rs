@@ -279,7 +279,8 @@ impl Transfers {
         let open: Vec<&Arc<Item>> = run.iter().filter(|i| !matches!(i.st(), St::Cancelled | St::Skipped)).collect();
         let total: u64 = open.iter().map(|i| i.total.load(Ordering::Relaxed)).sum();
         let done: u64 = open.iter().map(|i| i.done.load(Ordering::Relaxed)).sum();
-        let n = open.len();
+        // The count: what is still to copy.
+        let n = open.iter().filter(|i| matches!(i.st(), St::Waiting | St::Copying)).count().max(1);
         let pct = if total > 0 { format!(" · {}%", done * 100 / total) } else { String::new() };
         format!("Copying {n} item{}{pct}", if n == 1 { "" } else { "s" })
     }
