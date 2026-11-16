@@ -52,6 +52,7 @@ pub fn origin(record: &InstallationRecord, pg: &db::ConnConfig) -> sentient_back
         schema_version: crate::restore_switch::schema_version_now(pg).ok(),
         database_type: Some(crate::installation::flavor_label(record.flavor()).to_string()),
         host: host_name(),
+        platform: None,
     }
 }
 
@@ -117,6 +118,7 @@ pub fn restore_with(record: &InstallationRecord, input: &Path, target: &str, key
         passphrase,
         clickhouse: ch_target.clone(),
         telemetry_into: Some(crate::migration::telemetry_into(record)?),
+        ..Default::default()
     };
     block_on(async {
         sink(Progress::Step { name: format!("Creating the empty database {target}") });

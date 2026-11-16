@@ -332,6 +332,7 @@ async fn main() -> Result<()> {
                 passphrase: a.encrypt_password.clone(),
                 clickhouse: a.ch.conn(),
                 telemetry_into: None,
+                ..Default::default()
             };
             let s = restore::run(&ConnConfig::from(&a.conn), &opts, cli_sink()).await?;
             println!(

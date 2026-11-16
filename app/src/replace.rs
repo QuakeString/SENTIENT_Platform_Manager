@@ -243,6 +243,7 @@ mod tests {
             file_stores: Vec::new(),
             encryption: EncryptionInfo::none(),
             clickhouse: ch.then(|| sentient_backup_core::clickhouse::ChSection { database: "s".into(), version: "24".into(), members: Vec::new() }),
+            platform: None,
         }
     }
 

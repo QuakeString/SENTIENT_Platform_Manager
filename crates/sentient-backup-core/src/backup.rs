@@ -110,6 +110,8 @@ pub struct Origin {
     pub schema_version: Option<i64>,
     pub database_type: Option<String>,
     pub host: Option<String>,
+    /// The platform's settings (`manifest.platform`).
+    pub platform: Option<crate::manifest::PlatformInfo>,
 }
 
 impl Default for BackupOptions {
@@ -354,6 +356,7 @@ pub async fn run(cfg: &ConnConfig, opts: &BackupOptions, sink: ProgressFn) -> Re
             EncryptionInfo::none()
         },
         clickhouse: ch_section,
+        platform: opts.origin.platform.clone(),
     };
     let files = write_archive(&opts.output, &manifest, &members, opts.passphrase.as_deref(), opts.part_size)?;
     for m in &members {

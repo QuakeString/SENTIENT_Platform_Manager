@@ -18,7 +18,7 @@ use crate::util::sha256_file;
 
 const DUMP_MEMBER: &str = "db/dump.pgc.zst";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RestoreOptions {
     pub input: PathBuf,
     /// v1 is empty-DB-only; override for advanced use / testing.
@@ -35,6 +35,16 @@ pub struct RestoreOptions {
     /// converted (TimescaleDB, partitioned PostgreSQL and ClickHouse in any
     /// direction). `None` restores it as it was backed up.
     pub telemetry_into: Option<TelemetryInto>,
+    /// What to restore (crate::restore_scope). Everything by default.
+    /// Telemetry only and a date range go into the running database (`cfg`
+    /// is the live one, `clickhouse` the live ClickHouse), deduplicated.
+    pub scope: crate::restore_scope::Scope,
+    /// Members to leave out (a damaged month, B5): never read or checked.
+    pub skip_members: Vec<String>,
+    /// Stop cleanly when a disk the restore writes to runs low.
+    pub watch: Option<crate::space::SpaceWatch>,
+    /// Where the archive's members are unpacked (default: beside the file).
+    pub temp_dir: Option<PathBuf>,
 }
 
 /// How an installation keeps telemetry (SENTIENT's `ts_kv`).
