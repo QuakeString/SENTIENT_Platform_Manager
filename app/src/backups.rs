@@ -503,7 +503,9 @@ pub struct Made {
 fn bridge(sink: ProgressFn) -> bk::ProgressFn {
     std::sync::Arc::new(move |p| {
         sink(match p {
-            bk::Progress::Step { name, .. } => Progress::Log { line: format!(">> {name}") },
+            // The engine's steps: the job's plan names them
+            // (crate::jobplan::backup).
+            bk::Progress::Step { name, .. } => Progress::Step { name },
             bk::Progress::Log { line } => Progress::Log { line },
             bk::Progress::Percent { value } => Progress::Percent { value },
             bk::Progress::Done { message } => Progress::Log { line: message },
@@ -609,18 +611,6 @@ pub fn run_as(record: &InstallationRecord, prefs: &BackupPrefs, passphrase: Opti
         members: report.members.len(),
         copied_to,
     })
-}
-
-/// The steps a run shows.
-pub fn planned_steps(prefs: &BackupPrefs, automatic: bool) -> Vec<String> {
-    let mut v = vec![STEP_WRITE.to_string(), STEP_CHECK.to_string()];
-    if prefs.copy_to.is_some() {
-        v.push(STEP_COPY.into());
-    }
-    if automatic {
-        v.push(STEP_PRUNE.into());
-    }
-    v
 }
 
 // ---------------------------------------------------------------------------

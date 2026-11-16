@@ -57,6 +57,7 @@ pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result
             }
         }
     }
+    step(&sink, crate::jobplan::STEP_REPAIR);
     // SENTIENT first: it is what the repair is for, and on Linux Docker it
     // needs no administrator, so a dismissed password prompt for the
     // Platform Manager's files below does not leave it broken.
@@ -101,6 +102,7 @@ pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result
 }
 
 pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: ProgressFn) -> Result<(), String> {
+    step(&sink, crate::jobplan::STEP_UNINSTALL);
     match (record.engine, keep_data) {
         (Engine::Docker, true) => distro::remove_keeping_data(sink.clone(), &record.stack)?,
         (Engine::Docker, false) => distro::uninstall(sink.clone(), &record.stack)?,

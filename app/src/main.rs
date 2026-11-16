@@ -37,6 +37,7 @@ mod elevate;
 mod gateway_record;
 mod headless;
 mod installation;
+mod jobplan;
 #[cfg(feature = "gui")]
 mod installer;
 /// The server agent runs unattended installs from a plan too (no window).

@@ -475,6 +475,7 @@ impl RemotePages {
             job.set_retry(std::rc::Rc::new(move |cx: &mut App| {
                 me.update(cx, |p, cx| p.update_agent(cx)).ok();
             }));
+            // jobview: short (one step, followed in the progress strip).
             job.start(
                 move |sink| {
                     remote::deploy(&inst, &sink)?;
@@ -785,7 +786,17 @@ impl RemotePages {
         let me = cx.entity().downgrade();
         let (l2, a2) = (label.clone(), args.clone());
         let on_page = self.shown_job == Some(self.kind);
+        // Its steps from the first frame (crate::jobplan): reaching the
+        // server, then what the agent will do (its own list replaces these
+        // when it answers; an older agent's steps still fill them in).
+        let docker = inst.detected.as_ref().is_none_or(|d| d.install.eq_ignore_ascii_case("docker"));
+        let mut plan = crate::jobplan::guess(&args, docker, remote::is_windows(&inst));
+        let generic = plan.len() == 1;
+        if generic {
+            plan.push(sentient_installer_core::progress::PlanStep::new(label.clone()).weight(3.));
+        }
         self.job.update(cx, |job, cx| {
+            job.set_plan(plan);
             job.set_label(strip_label);
             job.set_on_page(on_page);
             job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
@@ -798,11 +809,14 @@ impl RemotePages {
                     // The agent is brought up to date first; when that fails
                     // the job still runs on the agent there, and only a job it
                     // does not know says the agent could not be updated.
+                    sink(sentient_installer_core::progress::Progress::Step { name: crate::jobplan::CONNECT.into() });
                     let updated = remote::deploy(&inst, &sink);
                     if let Err(e) = &updated {
                         sink(sentient_installer_core::progress::Progress::Log { line: format!("The agent could not be updated: {}", remote::split_failure(e).0) });
                     }
-                    sink(sentient_installer_core::progress::Progress::Step { name: label.to_string() });
+                    if generic {
+                        sink(sentient_installer_core::progress::Progress::Step { name: label.to_string() });
+                    }
                     let a: Vec<&str> = args.iter().map(String::as_str).collect();
                     let run = remote::start_job(&inst, &a).and_then(|id| remote::follow(&inst, &id, &sink));
                     match (run, updated) {
@@ -852,8 +866,8 @@ impl RemotePages {
             JobState::Failed(_) => job.retry().map(|r| crate::ui::button("job-retry").primary().label("Try again").on_click(move |_, _, cx| r(cx)).into_any_element()),
             _ => None,
         };
-        let stages: &[crate::manager::jobview::Stage] = if migrating && self.pending_migrate.is_none() { crate::manager::jobview::MIGRATION } else { &[] };
-        Some(crate::manager::jobview::view("rjob", title, stages, job, Some(back), retry, cx))
+        let _ = migrating;
+        Some(crate::manager::jobview::JobView::new("rjob", title, &self.job).actions(std::iter::once(back).chain(retry)).render(cx))
     }
 
     fn failed(theme: &gpui_kit::component::Theme, e: &str) -> Div {
@@ -1743,8 +1757,10 @@ impl RemotePages {
         let inst = self.inst.clone();
         self.job_label = Some(format!("Taking over the compose file on {}", inst.name).into());
         self.job.update(cx, |job, cx| {
+            job.set_plan(std::iter::once(crate::jobplan::connect()).chain(crate::jobplan::takeover()).collect());
             job.start(
                 move |sink| {
+                    sink(sentient_installer_core::progress::Progress::Step { name: crate::jobplan::CONNECT.into() });
                     remote::deploy(&inst, &sink)?;
                     let mut files = Vec::new();
                     for (flag, pw) in [("--db-password-file", &creds.db), ("--ch-password-file", &creds.ch)] {
@@ -1775,8 +1791,10 @@ impl RemotePages {
         let inst = self.inst.clone();
         self.job_label = Some(format!("Applying settings on {}", inst.name).into());
         self.job.update(cx, |job, cx| {
+            job.set_plan(vec![crate::jobplan::connect(), sentient_installer_core::progress::PlanStep::new("Applying the settings").detail("SENTIENT restarts where a setting needs it").weight(3.)]);
             job.start(
                 move |sink| {
+                    sink(sentient_installer_core::progress::Progress::Step { name: crate::jobplan::CONNECT.into() });
                     remote::deploy(&inst, &sink)?;
                     let file = format!("{}/.spm-settings.json", remote::home(&inst)?);
                     remote::put_text(&inst, &file, &serde_json::to_string(&values).map_err(|e| e.to_string())?)?;
@@ -2180,6 +2198,7 @@ impl RemotePages {
         let strip_label = format!("Setting up the server agent on {}", inst.name);
         self.job.update(cx, |job, cx| {
             job.set_label(strip_label);
+            // jobview: short (one step, followed in the progress strip).
             job.start(
                 move |sink| {
                     remote::deploy(&inst, &sink)?;

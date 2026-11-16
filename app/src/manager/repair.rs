@@ -93,6 +93,7 @@ impl RepairPage {
         self.running = Some(Action::RemoveGateway);
         let as_root = cfg!(target_os = "linux") && !crate::rootjob::is_root() && (g.container.is_none() || has_record);
         self.job.update(cx, |job, cx| {
+            // jobview: short (the gateway's removal, its result in its panel).
             job.start(
                 move |sink| {
                     if as_root {
@@ -138,6 +139,7 @@ impl RepairPage {
     fn take_over(&mut self, compose: Option<String>, creds: crate::manager::takeover::Creds, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         self.running = Some(Action::TakeOver);
+        self.job.update(cx, |job, _| job.set_plan(crate::jobplan::takeover()));
         self.job.update(cx, |job, cx| job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), creds.db.as_deref(), creds.ch.as_deref(), sink).map(|_| ()), cx));
     }
 
@@ -145,7 +147,13 @@ impl RepairPage {
         let Some(record) = self.record.clone() else { return };
         let keep = self.keep_data;
         self.running = Some(action);
+        // Its steps from the first frame (crate::jobplan).
+        let plan = match action {
+            Action::Repair => crate::jobplan::repair(crate::jobplan::Shape::of(&record), record.flavor() == sentient_installer_core::stack::Flavor::Clickhouse),
+            _ => crate::jobplan::uninstall(keep),
+        };
         self.job.update(cx, |job, cx| {
+            job.set_plan(plan);
             if crate::rootjob::needed(&record) {
                 let mut args = vec![match action {
                     Action::Repair => "repair".to_string(),
@@ -230,6 +238,9 @@ impl Render for RepairPage {
             "Repair and uninstall",
             "Write the services and their configuration again, or remove SENTIENT from this computer.",
         );
+        if let Some(view) = self.job_view(cx) {
+            return page.child(view);
+        }
         if self.record.is_none() {
             // Without SENTIENT, Repair keeps one thing: removing the
             // Platform Manager itself. Just after an uninstall from here,
@@ -350,5 +361,41 @@ impl Render for RepairPage {
                     .child(h_flex().child(crate::ui::button("close").primary().label("Close").on_click(|_, window, _| window.remove_window()))),
             )
         })
+    }
+}
+
+impl RepairPage {
+    /// Repair, Uninstall or the takeover, in place of the page
+    /// (crate::manager::jobview) until "Back to Repair and uninstall".
+    fn job_view(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let action = self.running.filter(|a| *a != Action::RemoveGateway)?;
+        let job = self.job.read(cx);
+        if matches!(job.state(), JobState::Idle) {
+            return None;
+        }
+        let title = match action {
+            Action::Repair => "Repairing SENTIENT",
+            Action::Uninstall if self.keep_data => "Uninstalling SENTIENT (the database is kept)",
+            Action::Uninstall => "Uninstalling SENTIENT and deleting its data",
+            _ => "Taking over the compose file",
+        };
+        let ended_uninstall = action == Action::Uninstall && matches!(job.state(), JobState::Done(_));
+        let back = crate::manager::jobview::back_button("repair-run-back", "Repair and uninstall", {
+            let me = cx.entity().downgrade();
+            move |_, cx| {
+                me.update(cx, |p, cx| {
+                    p.running = None;
+                    p.record = InstallationRecord::load();
+                    p.job.update(cx, |j, cx| j.reset(cx));
+                    cx.notify();
+                })
+                .ok();
+            }
+        });
+        let mut acts = vec![back];
+        if ended_uninstall {
+            acts.push(crate::ui::button("close").primary().label("Close").on_click(|_, window, _| window.remove_window()).into_any_element());
+        }
+        Some(crate::manager::jobview::JobView::new("repair-run", title, &self.job).actions(acts).render(cx))
     }
 }

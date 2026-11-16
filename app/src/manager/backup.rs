@@ -24,7 +24,6 @@ use gpui_kit::component::{
     checkbox::Checkbox,
     input::{Input, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
-    progress::Progress as ProgressBar,
     radio::RadioGroup,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -68,7 +67,9 @@ pub struct BackupPage {
     /// "Choose…": the tick list of parts (the earlier, by-hand backup).
     choose: bool,
     made: Option<crate::backups::Made>,
-    planned_backup: Vec<String>,
+    /// The backup's run is shown in place of the page (crate::manager::jobview)
+    /// until "Back to Backup and restore".
+    shown_run: bool,
     list: Vec<crate::backups::Entry>,
     /// The backup being checked, and what the check found.
     checked: Option<(PathBuf, Option<Result<sentient_backup_core::restore::CheckReport, String>>)>,
@@ -210,7 +211,7 @@ impl BackupPage {
             prefs,
             choose: false,
             made: None,
-            planned_backup: Vec::new(),
+            shown_run: false,
             checked: None,
             sizes: None,
             schedule_time,
@@ -365,7 +366,11 @@ impl BackupPage {
         let clickhouse = self.ch_conn(None, cx);
         let mut opts = BackupOptions { output, selection, file_stores, zstd_level: 10, passphrase, clickhouse, origin: Default::default(), part_size: None };
         let record = self.record.clone();
+        self.shown_run = true;
+        self.made = None;
         self.backup.update(cx, |job, cx| {
+            job.set_plan(crate::jobplan::backup_file());
+            job.set_label("Backing up");
             job.start(
                 move |sink| {
                     if let Some(r) = &record {
@@ -549,13 +554,16 @@ impl BackupPage {
         let Some(record) = self.record.clone() else { return };
         let prefs = self.prefs.clone();
         let pass = Some(self.passphrase.read(cx).value().to_string()).filter(|p| !p.is_empty());
-        self.planned_backup = crate::backups::planned_steps(&prefs, false);
         self.made = None;
+        self.shown_run = true;
+        let plan = crate::jobplan::backup(&prefs, false, pass.is_some());
         let made = cx.entity().downgrade();
         let (tx, rx) = std::sync::mpsc::channel::<crate::backups::Made>();
         let me = cx.entity();
         self.backup.update(cx, |job, cx| {
+            job.set_plan(plan);
             job.set_label("Backing up");
+            job.set_on_page(true);
             job.set_details(std::rc::Rc::new(move |cx| BackupDialog::open(me.clone(), false, "Backup".into(), cx)));
             job.start(
                 move |sink| {
@@ -762,39 +770,24 @@ impl BackupPage {
 }
 
 impl BackupPage {
-    /// J3/J4: a backup's run and its result (the strip's Details).
-    fn run_view(&self, theme: &gpui_kit::component::Theme, cx: &App) -> Option<Div> {
+    /// J3/J4: a backup's run and its result, in the shared job view: on the
+    /// page (`on_page` with its actions) and in the strip's Details.
+    fn run_view(&self, theme: &gpui_kit::component::Theme, actions: Vec<AnyElement>, cx: &App) -> Option<Div> {
         let job = self.backup.read(cx);
-        if !matches!(job.state(), JobState::Idle) {
-            let finished = match job.state() {
-                JobState::Done(_) => Some(true),
-                JobState::Failed(_) => Some(false),
-                _ => None,
-            };
-            let marked = ui::mark_steps(&self.planned_backup, job.steps(), finished);
-            let mut run = v_flex().gap_3();
-            match (finished, &self.made) {
-                (None, _) => {
-                    run = run
-                        .child(div().font_weight(FontWeight::MEDIUM).child(format!("Backing up to {}", self.prefs.folder.display())))
-                        .when_some(job.log().last().cloned(), |c, l| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(l)))
-                        .when_some(job.percent(), |c, v| c.child(ProgressBar::new("backup-progress").value(v)))
-                        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("SENTIENT keeps running during a backup."));
-                }
-                (Some(true), Some(m)) => {
-                    let name = m.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                    let whole = m.files.first().map(|(_, h, _)| h.clone()).unwrap_or_default();
-                    let short = if whole.len() > 16 { format!("{}…{}", &whole[..8], &whole[whole.len() - 8..]) } else { whole.clone() };
-                    let folder = self.prefs.folder.display().to_string();
-                    run = run
-                        .child(
-                            h_flex()
-                                .gap(crate::ui::button_gap())
-                                .items_center()
-                                .child(div().flex_1().child(ui::outcome(theme, Tone::Good, format!("Backup finished and checked: {name}, {}.", crate::dbstatus::bytes_label(m.bytes)))))
-                                .child(crate::ui::button("open-folder").outline().label("Open folder").on_click(move |_, _, cx| ui::open_url(&folder, cx))),
-                        )
-                        .child(div().font_weight(FontWeight::MEDIUM).child("Integrity"))
+        if matches!(job.state(), JobState::Idle) {
+            return None;
+        }
+        let mut view = crate::manager::jobview::JobView::new("bk-run", format!("Backing up to {}", self.prefs.folder.display()), &self.backup)
+            .cancel(crate::manager::jobview::Cancel::Cannot("A backup cannot be stopped half-way. SENTIENT keeps running while it is made."));
+        if let (JobState::Done(_), Some(m)) = (job.state(), &self.made) {
+            let name = m.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let whole = m.files.first().map(|(_, h, _)| h.clone()).unwrap_or_default();
+            let short = if whole.len() > 16 { format!("{}…{}", &whole[..8], &whole[whole.len() - 8..]) } else { whole.clone() };
+            view = view
+                .result(ui::outcome(theme, Tone::Good, format!("Backup finished and checked: {name}, {}.", crate::dbstatus::bytes_label(m.bytes))))
+                .extra(
+                    v_flex()
+                        .gap_2()
                         .child(brow(theme, "Each part", None, div().text_sm().child(format!("SHA-256 stored inside the file, {} parts", m.members))))
                         .child(if m.files.len() == 1 {
                             brow(
@@ -804,27 +797,37 @@ impl BackupPage {
                                 h_flex()
                                     .gap(crate::ui::button_gap())
                                     .child(div().text_sm().font_family(theme.mono_font_family.clone()).child(short))
-                                    .child(crate::ui::button("copy-hash").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(whole.clone())))),
+                                    .child(crate::ui::button("copy-hash").outline().small().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(whole.clone())))),
                             )
                         } else {
                             brow(theme, "Files", None, div().text_sm().child(format!("{} parts, each with its SHA-256", m.files.len())))
                         })
                         .child(brow(theme, "Saved beside it", None, div().text_sm().child(m.sidecar.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())))
                         .child(brow(theme, "Read back", None, div().text_sm().child(m.check.summary.clone())))
-                        .when_some(m.copied_to.clone(), |c, p| c.child(brow(theme, "Second copy", None, div().text_sm().child(p.display().to_string()))));
-                }
-                (Some(true), None) => run = run.child(ui::outcome(theme, Tone::Good, "Backup finished and checked.")),
-                (Some(false), _) => {
-                    if let JobState::Failed(e) = job.state() {
-                        run = run.child(ui::outcome(theme, Tone::Bad, e.clone()));
-                    }
-                }
-            }
-            run = run.child(ui::steps(theme, &marked));
-            return Some(run);
+                        .when_some(m.copied_to.clone(), |c, p| c.child(brow(theme, "Second copy", None, div().text_sm().child(p.display().to_string())))),
+                );
         }
-        None
+        view = view.actions(actions);
+        Some(view.render(cx))
+    }
 
+    /// The page's actions under a backup's result: back, then the primary.
+    fn run_actions(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let back = crate::ui::button("bk-run-back").outline().label("Back to Backup and restore").on_click(cx.listener(|p, _, _, cx| {
+            p.shown_run = false;
+            p.backup.update(cx, |j, cx| j.reset(cx));
+            p.refresh_list();
+            cx.notify();
+        }));
+        let next = match self.backup.read(cx).state() {
+            JobState::Done(_) => {
+                let folder = self.prefs.folder.display().to_string();
+                Some(crate::ui::button("open-folder").primary().label("Open folder").on_click(move |_, _, cx| ui::open_url(&folder, cx)).into_any_element())
+            }
+            JobState::Failed(_) => Some(crate::ui::button("bk-run-again").primary().label("Try again").on_click(cx.listener(|p, _, _, cx| p.run_preset_backup(cx))).into_any_element()),
+            _ => None,
+        };
+        std::iter::once(back.into_any_element()).chain(next).collect()
     }
 
     /// J6: a check's result, part by part (in its dialog).
@@ -881,7 +884,7 @@ impl Render for BackupDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let page = self.page.read(cx);
-        let body = if self.check { page.check_view(&theme) } else { page.run_view(&theme, cx) };
+        let body = if self.check { page.check_view(&theme) } else { page.run_view(&theme, Vec::new(), cx) };
         v_flex()
             .gap_3()
             .children(body)
@@ -1150,6 +1153,24 @@ impl Render for BackupPage {
             "Backup and restore",
             "One file with the database, telemetry and file stores, a checksum for every part, and optional encryption.",
         );
+        // Screens and the layout test: a backup in the middle with a long
+        // log (SPM_DEBUG_JOB_LOG=<lines>[:<step>], crate::manager::jobview).
+        #[cfg(debug_assertions)]
+        {
+            static FILLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !FILLED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let plan = crate::jobplan::backup(&self.prefs, false, true);
+                if crate::manager::jobview::debug_job(&self.backup, plan, cx) {
+                    self.shown_run = true;
+                }
+            }
+        }
+        if self.shown_run && self.record.is_none() {
+            let actions = self.run_actions(cx);
+            if let Some(run) = self.run_view(&theme, actions, cx) {
+                return page.child(run).into_any_element();
+            }
+        }
         let Some(record) = self.record.clone() else {
             return page.child(ui::not_installed(&theme)).into_any_element();
         };
@@ -1162,6 +1183,14 @@ impl Render for BackupPage {
         }
         #[cfg(debug_assertions)]
         self.debug_dialogs(cx);
+        // A backup's run, in place of the page (crate::manager::jobview).
+        if self.shown_run {
+            let actions = self.run_actions(cx);
+            if let Some(run) = self.run_view(&theme, actions, cx) {
+                return page.child(run).into_any_element();
+            }
+            self.shown_run = false;
+        }
         let clickhouse = record.flavor() == Flavor::Clickhouse;
         let busy = self.backup.read(cx).is_running() || self.restore.read(cx).is_running();
 

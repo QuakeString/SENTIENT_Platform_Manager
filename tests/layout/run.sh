@@ -62,6 +62,10 @@ for p in $PAGES_LOCAL; do for w in $WIDTHS; do for s in $SCALES; do for t in $TH
 # Dialogs and panels, opened by their debug hooks (this computer).
 DIALOGS=${DIALOGS-"SPM_DEBUG_TAKEOVER=found SPM_DEBUG_LOG_DIALOG=1 SPM_DEBUG_PARTS_DIALOG=1 SPM_DEBUG_BELL=1 SPM_DEBUG_SUDO_PROMPT=1 SPM_DEBUG_ERROR_DIALOG=1"}
 for g in $DIALOGS; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local status $w $s $t $g"); done; done; done; done
+# The shared job view mid-way with a very long log (SPM_DEBUG_JOB_LOG,
+# crate::manager::jobview), on the Backup page.
+JOBVIEWS=${JOBVIEWS-"SPM_DEBUG_JOB_LOG=6000:2"}
+for g in $JOBVIEWS; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local backup $w $s $t $g"); done; done; done; done
 # Add instance with its Setup guide open (Linux and Windows servers).
 for g in ${GUIDES-SPM_DEBUG_ADD_GUIDE=linux SPM_DEBUG_ADD_GUIDE=windows}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local instances $w $s $t $g"); done; done; done; done
 # Setup's window (its first step): the buttons' gaps only.
@@ -83,4 +87,6 @@ python3 "$HERE/labels.py" "$OUT" | tee "$OUT/labels.txt"; labels=${PIPESTATUS[0]
 python3 "$HERE/tint.py" "$OUT" | tee "$OUT/tint.txt"; tint=${PIPESTATUS[0]}
 # Every tooltip the shared one, with theme colours (tooltips.sh).
 "$HERE/tooltips.sh" | tee "$OUT/tooltips.txt"; tips=${PIPESTATUS[0]}
-[ "$fails" -eq 0 ] && [ "$labels" -eq 0 ] && [ "$tint" -eq 0 ] && [ "$tips" -eq 0 ]
+# Every long job in the shared job view, its steps declared (jobview.sh).
+"$HERE/jobview.sh" | tee "$OUT/jobview.txt"; jobs=${PIPESTATUS[0]}
+[ "$fails" -eq 0 ] && [ "$labels" -eq 0 ] && [ "$tint" -eq 0 ] && [ "$tips" -eq 0 ] && [ "$jobs" -eq 0 ]

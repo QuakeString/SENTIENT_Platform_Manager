@@ -8,7 +8,6 @@ use gpui_kit::component::{
     checkbox::Checkbox,
     input::{Input, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
-    progress::Progress,
     scroll::ScrollableElement as _,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -319,6 +318,7 @@ impl Installer {
             )
         });
         let cleanup = self.cleanup.read(cx);
+        // jobview: short (removing what an earlier install left, on its check's row).
         let (cleaning, cleanup_state, cleanup_step) = (cleanup.is_running(), cleanup.state().clone(), cleanup.step_with_time());
         let leftovers = (!self.leftovers.is_empty() || cleaning || !matches!(cleanup_state, JobState::Idle)).then(|| {
             let items = self.leftovers.clone();
@@ -385,6 +385,7 @@ impl Installer {
         let (tone, text) = check_tone(row.status, row.state.clone());
         let ready = row.status == Status::Pass;
         let fix = self.check_fix.read(cx);
+        // jobview: short (a check's one-click fix, on its row).
         let (fixing, fix_step) = (fix.is_running(), fix.step_with_time());
         let here = self.check_fix_at.as_ref().filter(|(r, _)| *r == row.id).map(|(_, l)| l.clone());
         let mut buttons: Vec<AnyElement> = Vec::new();
@@ -1150,45 +1151,25 @@ impl Installer {
         let theme = cx.theme().clone();
         let job = self.install.read(cx);
         let state = job.state().clone();
-        let step = job.step_with_time();
-        let percent = job.percent();
-        let log: Vec<SharedString> = job.log().iter().rev().take(16).rev().cloned().collect();
-        // What went wrong and the fix (crate::diagnosis), when diagnosed.
-        let diagnosis = job.diagnosis_view();
-        column()
-            .child(
-                ui::panel(&theme)
-                    .gap_2()
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(step))
-                    .when_some(percent, |c, p| c.child(Progress::new("install-progress").value(p))),
-            )
-            .when(matches!(&state, JobState::Failed(m) if m.as_ref() == super::plan::RESTART_REQUIRED), |c| {
-                c.child(ui::notice_with(
-                    &theme,
-                    Tone::Neutral,
-                    "Restart required\nWindows must restart to finish enabling WSL2 for ClickHouse. Setup continues by itself after you sign in again; your choices are kept.",
-                    Some(crate::ui::button("restart-now").primary().label("Restart now").on_click(|_, _, _| super::plan::restart_now()).into_any_element()),
-                ))
-            })
-            .when_some(
-                match &state {
-                    JobState::Failed(m) if m.as_ref() != super::plan::RESTART_REQUIRED && diagnosis.is_none() => Some(m.clone()),
-                    _ => None,
-                },
-                |c, message| c.child(install_failed(&theme, message)),
-            )
-            .when(!matches!(&state, JobState::Failed(m) if m.as_ref() == super::plan::RESTART_REQUIRED), |c| c.children(diagnosis))
-            .when(!log.is_empty(), |c| {
-                c.child(
-                    ui::panel(&theme)
-                        .gap_1()
-                        .text_size(px(13.))
-                        .line_height(px(20.))
-                        .font_family(theme.mono_font_family.clone())
-                        .text_color(theme.muted_foreground)
-                        .children(log.into_iter().map(|line| div().child(line))),
-                )
-            })
+        let restart = matches!(&state, JobState::Failed(m) if m.as_ref() == super::plan::RESTART_REQUIRED);
+        // What went wrong and the fix (crate::diagnosis), when diagnosed;
+        // the shared job view shows it (crate::manager::jobview).
+        let undiagnosed = job.diagnosis_view().is_none();
+        let mut view = crate::manager::jobview::JobView::new("install", if self.manager_only { "Installing the Platform Manager" } else { "Installing SENTIENT" }, &self.install)
+            .cancel(crate::manager::jobview::Cancel::Cannot("Setup cannot stop half-way: a failed step says what to fix, and Setup can then run again."));
+        if restart {
+            view = view.pill("Restart", Tone::Warn).result(ui::notice_with(
+                &theme,
+                Tone::Neutral,
+                "Restart required\nWindows must restart to finish enabling WSL2 for ClickHouse. Setup continues by itself after you sign in again; your choices are kept.",
+                Some(crate::ui::button("restart-now").primary().label("Restart now").on_click(|_, _, _| super::plan::restart_now()).into_any_element()),
+            ));
+        } else if let JobState::Failed(m) = &state {
+            if undiagnosed {
+                view = view.result(install_failed(&theme, m.clone()));
+            }
+        }
+        column().child(view.render(cx))
     }
 
     fn finish(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Div {

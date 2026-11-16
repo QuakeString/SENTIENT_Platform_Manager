@@ -144,6 +144,7 @@ fn printer() -> ProgressFn {
 
 fn print_plain(p: Progress) {
     match p {
+        Progress::Plan { .. } => {}
         Progress::Step { name } => println!("== {name}"),
         // Data lines of a root job (crate::kept::encode) are printed decoded.
         Progress::Log { line } if line.starts_with("KEPT\t") || line.starts_with("ROLLBACK\t") || line.starts_with("FOUND\t") || line.starts_with(sentient_installer_core::diagnose::DIAG_PREFIX) || crate::restore_flow::is_data(&line) => {}
@@ -756,6 +757,11 @@ fn run_job(args: &[String]) -> i32 {
         };
     }
     record.use_pg_tools();
+    // The job's steps before it starts (crate::jobplan): the window shows
+    // them all at once.
+    if let Some(steps) = crate::jobplan::for_job(&record, args) {
+        sink(Progress::Plan { steps });
+    }
     let result: Result<(), String> = match job {
         "migrate" => match args.get(1).and_then(|f| Flavor::parse(f)) {
             Some(target) => crate::migration::run(record, target, sink.clone()).map(|_| ()),
@@ -870,6 +876,7 @@ fn run_job(args: &[String]) -> i32 {
             Some(Ok(req)) => {
                 let pass = passphrase_arg(args);
                 if job == "restore-run" {
+                    sink(Progress::Plan { steps: crate::jobplan::restore(&req) });
                     crate::restore_flow::run(record, req, pass, sink.clone())
                 } else {
                     crate::restore_flow::precheck(&record, &req, pass.as_deref(), &sink).map(|p| sink(crate::restore_flow::data_line("precheck", &p)))

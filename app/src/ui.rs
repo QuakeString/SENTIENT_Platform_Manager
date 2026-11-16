@@ -1405,7 +1405,7 @@ pub fn layout_probe(name: &'static str) -> impl IntoElement {
 
 /// Motion off: static placeholders (SPM_REDUCED_MOTION, or GNOME/KDE's
 /// "reduce animations" when it can be read).
-fn reduced_motion() -> bool {
+pub(crate) fn reduced_motion() -> bool {
     static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *R.get_or_init(|| {
         std::env::var_os("SPM_REDUCED_MOTION").is_some()

@@ -222,6 +222,7 @@ impl MigrationPage {
                 let item = item.clone();
                 this.update(cx, |page, cx| {
                     let Some(record) = page.record.clone() else { return };
+                    // jobview: short (removing a kept item, followed in the progress strip).
                     if crate::rootjob::needed(&record) {
                         let args = vec!["remove-kept".to_string(), item.name.clone()];
                         page.job.update(cx, |job, cx| job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
@@ -246,7 +247,10 @@ impl MigrationPage {
     ) {
         self.shown = Some(title.clone());
         let me = cx.entity().downgrade();
+        // Its steps, shown from the start (crate::jobplan).
+        let plan = if title.starts_with("Taking over") { crate::jobplan::takeover() } else { crate::jobplan::migration() };
         self.job.update(cx, |job, cx| {
+            job.set_plan(plan);
             job.set_label(title);
             job.set_on_page(true);
             if let Some(again) = again {
@@ -422,8 +426,8 @@ impl MigrationPage {
             JobState::Failed(m) => job.retry().map(|r| crate::ui::button("mig-job-retry").primary().label(crate::ui::retry_label(m, "Try again")).on_click(move |_, _, cx| r(cx)).into_any_element()),
             _ => None,
         };
-        let stages: &[crate::manager::jobview::Stage] = if title.starts_with("Changing the database") { crate::manager::jobview::MIGRATION } else { &[] };
-        Some(crate::manager::jobview::view("mjob", title, stages, job, Some(back), retry, cx))
+        // Secondary first, the primary at the right end.
+        Some(crate::manager::jobview::JobView::new("mjob", title, &self.job).actions(std::iter::once(back).chain(retry)).render(cx))
     }
 }
 
