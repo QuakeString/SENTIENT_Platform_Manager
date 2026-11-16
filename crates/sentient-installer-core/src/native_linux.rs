@@ -115,8 +115,12 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         Pm::Pacman => format!(
             "pacman -Sy --noconfirm --needed postgresql{curl}\n\
              DATA=/var/lib/postgres/data\n\
-             [ -f \"$DATA/PG_VERSION\" ] || runuser -u postgres -- initdb -D \"$DATA\" --locale=C.UTF-8 --encoding=UTF8 >/dev/null\n",
-            curl = if ch { " curl" } else { "" }
+             {same_major}\
+             [ -f \"$DATA/PG_VERSION\" ] || runuser -u postgres -- initdb -D \"$DATA\" --locale=C.UTF-8 --encoding=UTF8 >/dev/null\n\
+             {first_port}",
+            curl = if ch { " curl" } else { "" },
+            same_major = SAME_MAJOR,
+            first_port = first_port(cfg.pg_port),
         ),
         Pm::Apt => format!(
             "export DEBIAN_FRONTEND=noninteractive\napt-get update -qq\napt-get install -y -qq postgresql{curl}\n",
@@ -124,8 +128,13 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         ),
         Pm::Dnf => format!(
             "dnf install -y postgresql-server postgresql{curl}\n\
-             [ -f /var/lib/pgsql/data/PG_VERSION ] || postgresql-setup --initdb >/dev/null\n",
-            curl = if ch { " curl" } else { "" }
+             DATA=/var/lib/pgsql/data\n\
+             {same_major}\
+             [ -f \"$DATA/PG_VERSION\" ] || postgresql-setup --initdb >/dev/null\n\
+             {first_port}",
+            curl = if ch { " curl" } else { "" },
+            same_major = SAME_MAJOR,
+            first_port = first_port(cfg.pg_port),
         ),
         Pm::Zypper => format!(
             "zypper --non-interactive install postgresql-server postgresql{curl}\n",
@@ -133,6 +142,15 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         ),
     };
     let install = if ch { format!("{install}{}", clickhouse_static_install()) } else { install };
+    // Where the first start listens: Arch and Fedora start on the chosen
+    // port (written before the start, so a taken 5432 cannot stop them);
+    // Debian's packaging creates and starts the cluster itself, on 5432 or
+    // the next free port; openSUSE initialises on its first start, on 5432.
+    let start_port = match pm {
+        Pm::Pacman | Pm::Dnf => cfg.pg_port.to_string(),
+        Pm::Apt => "$(pg_lsclusters -h 2>/dev/null | awk 'NR==1{print $3}')".into(),
+        Pm::Zypper => "5432".into(),
+    };
 
     // Tuning and port through ALTER SYSTEM (postgresql.auto.conf): the same
     // statement on every distribution, whatever their config layout. Reached
@@ -151,15 +169,20 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     // where systemd-networkd is enabled but manages nothing (many servers,
     // every container) that target only arrives after wait-online's own
     // 2-minute timeout.
+    // The wait stops at once when the service fails (its log is shown and
+    // the exit code says why, see `setup_error`), instead of waiting out
+    // the four minutes.
     let mut script = format!(
-        "set -e\n{install}\
+        "set -e\n{WAIT_PG}{install}\
+         START_PORT={start_port}\n\
+         systemctl reset-failed '{PG_UNIT}*' 2>/dev/null || true\n\
          systemctl enable --no-block --now {PG_UNIT}\n\
          echo '>> Waiting for PostgreSQL to start (can take two minutes while the system waits for the network)'\n\
-         for i in $(seq 1 240); do runuser -u postgres -- pg_isready -q && break; sleep 1; done\n\
-         runuser -u postgres -- psql -v ON_ERROR_STOP=1 -qAt {alter}\n\
+         wait_pg \"${{START_PORT:-5432}}\"\n\
+         runuser -u postgres -- psql -v ON_ERROR_STOP=1 -qAt -p \"${{START_PORT:-5432}}\" {alter}\n\
          systemctl restart --no-block {PG_UNIT}\n\
          sleep 2\n\
-         for i in $(seq 1 240); do runuser -u postgres -- pg_isready -q -p {port} && break; sleep 1; done\n\
+         wait_pg {port}\n\
          runuser -u postgres -- pg_isready -p {port}\n",
         port = cfg.pg_port,
     );
@@ -184,7 +207,7 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
             tcp = cfg.ch_native_port,
         ));
     }
-    exec::run_privileged(&sink, &script)?;
+    exec::run_privileged(&sink, &script).map_err(|e| setup_error(&e, cfg.pg_port))?;
     bail_if_cancelled()?;
 
     if is_ready(cfg) {
@@ -196,6 +219,65 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         Ok(())
     } else {
         Err("The database packages installed but their services are not registered. Check the log above.".into())
+    }
+}
+
+/// The data directory (`$DATA`) must be the installed PostgreSQL's major:
+/// a cluster from an older major stops the distribution's unit (Arch's
+/// postgresql-check-db-dir) and would only show as a long wait. It is never
+/// moved or deleted here; [`setup_error`] says what to do.
+const SAME_MAJOR: &str = "if [ -f \"$DATA/PG_VERSION\" ]; then\n\
+   HAVE=$(cat \"$DATA/PG_VERSION\"); WANT=$(postgres --version 2>/dev/null | sed -E 's/[^0-9]*([0-9]+).*/\\1/')\n\
+   if [ -n \"$WANT\" ] && [ \"$HAVE\" != \"$WANT\" ]; then\n\
+     echo \"!! $DATA holds a PostgreSQL $HAVE database; PostgreSQL $WANT is installed.\"\n\
+     exit 42\n\
+   fi\n\
+ fi\n";
+
+/// The chosen port and local-only listening before the first start (the
+/// same settings the ALTER SYSTEM step writes, so nothing changes after).
+fn first_port(port: u16) -> String {
+    format!(
+        "runuser -u postgres -- sh -c \"printf '%s\\n' 'port = {port}' \\\"listen_addresses = 'localhost'\\\" >> \\\"$DATA/postgresql.auto.conf\\\"\"\n"
+    )
+}
+
+/// `wait_pg <port>`: until PostgreSQL answers there (up to 4 minutes), but
+/// stop at once when a PostgreSQL unit has failed, with its log: exit 43
+/// when its port is taken, 41 otherwise; 40 when it never answers.
+const WAIT_PG: &str = "wait_pg() {\n\
+   for i in $(seq 1 240); do\n\
+     runuser -u postgres -- pg_isready -q -p \"$1\" && return 0\n\
+     if systemctl list-units --failed --plain --no-legend 'postgresql*' 2>/dev/null | grep -q .; then\n\
+       echo '!! PostgreSQL stopped while starting. Its log:'\n\
+       LOG=$(journalctl -u 'postgresql*' -n 25 --no-pager -o cat 2>/dev/null || true)\n\
+       printf '%s\\n' \"$LOG\"\n\
+       case \"$LOG\" in *'already in use'*) exit 43;; esac\n\
+       exit 41\n\
+     fi\n\
+     sleep 1\n\
+   done\n\
+   echo '!! PostgreSQL did not answer within 4 minutes. Its log:'\n\
+   journalctl -u 'postgresql*' -n 25 --no-pager -o cat 2>/dev/null || true\n\
+   exit 40\n\
+ }\n";
+
+/// What a failed database setup means, from the script's exit code.
+fn setup_error(e: &str, port: u16) -> String {
+    let code = |c: &str| e.contains(&format!("exited with {c}")) || e.contains(&format!("exit status: {c}"));
+    if code("42") {
+        "The PostgreSQL data folder holds a database from another PostgreSQL version (see the log above). \
+         If you need that data, upgrade it with pg_upgrade first; if not, move the folder aside \
+         (for example sudo mv /var/lib/postgres/data /var/lib/postgres/data.old) and run Setup again."
+            .into()
+    } else if code("43") {
+        format!("PostgreSQL could not listen on its port because another program uses it (see the log above). Stop that program or choose another port than {port} in Network ports, and run Setup again.")
+    } else if code("41") {
+        "PostgreSQL stopped while starting; its log is above. Fix what it reports and run Setup again.".into()
+    } else if code("40") {
+        "PostgreSQL did not answer within 4 minutes; its log is above.".into()
+    } else {
+        e.to_string()
     }
 }
 
@@ -954,5 +1036,65 @@ mod tests {
         assert!(e.contains("TS_TYPE='clickhouse'"));
         assert!(e.contains("DB_POOL_PRIMARY_MAX='48'"));
         assert!(!e.contains("HTTP_PORT="));
+    }
+}
+
+#[cfg(test)]
+mod start_tests {
+    use super::*;
+
+    fn bash(script: &str) -> (i32, String) {
+        let out = std::process::Command::new("bash").arg("-c").arg(script).output().expect("bash");
+        (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    #[test]
+    fn start_helpers_are_valid_shell() {
+        let script = format!("set -e\n{WAIT_PG}DATA=/nonexistent\n{SAME_MAJOR}");
+        let ok = std::process::Command::new("bash").arg("-n").arg("-c").arg(&script).status().unwrap();
+        assert!(ok.success(), "bash -n failed:\n{script}");
+        let fp = first_port(5433);
+        assert!(fp.contains("port = 5433") && fp.contains("listen_addresses = 'localhost'"), "{fp}");
+    }
+
+    #[test]
+    fn other_major_data_dir_stops_with_42() {
+        let dir = std::env::temp_dir().join(format!("spm-pgv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("PG_VERSION"), "1\n").unwrap();
+        // A fake `postgres --version` reporting 18.
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("postgres"), "#!/bin/sh\necho 'postgres (PostgreSQL) 18.7'\n").unwrap();
+        std::process::Command::new("chmod").args(["+x", bin.join("postgres").to_str().unwrap()]).status().unwrap();
+        let script = format!("PATH={}:$PATH\nDATA={}\n{SAME_MAJOR}echo same", bin.display(), dir.display());
+        let (code, out) = bash(&script);
+        assert_eq!(code, 42, "{out}");
+        assert!(out.contains("PostgreSQL 1 database; PostgreSQL 18 is installed"), "{out}");
+        std::fs::write(dir.join("PG_VERSION"), "18\n").unwrap();
+        let (code, out) = bash(&script);
+        assert_eq!((code, out.trim()), (0, "same"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn first_port_writes_the_auto_conf() {
+        // The quoting: run the line with runuser replaced by a pass-through.
+        let dir = std::env::temp_dir().join(format!("spm-pgp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let line = first_port(5433).replace("runuser -u postgres -- ", "");
+        let (code, _) = bash(&format!("DATA={}\n{line}", dir.display()));
+        assert_eq!(code, 0);
+        let conf = std::fs::read_to_string(dir.join("postgresql.auto.conf")).unwrap();
+        assert_eq!(conf, "port = 5433\nlisten_addresses = 'localhost'\n");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn exit_codes_say_why() {
+        assert!(setup_error("bash exited with 42", 5432).contains("another PostgreSQL version"));
+        assert!(setup_error("pkexec exited with 43", 5433).contains("5433"));
+        assert!(setup_error("x exited with 41", 5432).contains("stopped while starting"));
+        assert_eq!(setup_error("x exited with 1", 5432), "x exited with 1");
     }
 }
