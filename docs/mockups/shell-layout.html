@@ -265,6 +265,22 @@ section{display:flex;flex-direction:column;gap:10px}
 .win.dimA .it.on::before,.win.dimA .it.on::after{content:"";position:absolute;right:0;width:14px;height:14px;pointer-events:none}
 .win.dimA .it.on::before{top:-14px;background:radial-gradient(circle at 0 0,transparent 12.9px,var(--border) 13.2px,var(--border) 13.8px,var(--page) 14.1px)}
 .win.dimA .it.on::after{bottom:-14px;background:radial-gradient(circle at 0 100%,transparent 12.9px,var(--border) 13.2px,var(--border) 13.8px,var(--page) 14.1px)}
+/* tinted bar, like the tile headers (his ask 2026-11-16 03:06Z) */
+.bar{--tb:color-mix(in srgb,var(--ic) var(--ht),var(--card));color:var(--text);background:color-mix(in srgb,var(--tb) 82%,transparent);box-shadow:0 1px 0 var(--border)}
+.bar .sw{background:color-mix(in srgb,var(--ic) 14%,transparent)}
+.bar .sw small{color:var(--text2);opacity:1}
+.bar .os{background:var(--ic);color:#fff}
+.bar .dot{border-color:var(--card)}
+.bar .tag{background:var(--ic);color:#fff}
+.bar .div{background:var(--border)}
+.bar .rb,.bar .thb,.bar .bell{color:var(--text)}
+.bar .mon svg{color:var(--text2);opacity:1}
+.bar .mon i{background:color-mix(in srgb,var(--text) 14%,transparent)}
+.bar .mon i b{background:color-mix(in srgb,var(--ic) 65%,var(--text))}
+.bar .bell .ud{border-color:var(--card);background:var(--primary)}
+.thb.on{background:color-mix(in srgb,var(--ic) 16%,transparent)}
+.desk.solid .bar{background:var(--tb)}
+.legend .bar{background:var(--tb)}
 </style>
 
 <main>
@@ -276,7 +292,7 @@ section{display:flex;flex-direction:column;gap:10px}
     <div class="themes" role="group" aria-label="Theme"><button data-t="">System</button><button data-t="light">Light</button><button data-t="dark">Dark</button></div>
   </div>
 
-  <section><div class="cap"><span class="code">S1</span><b>Remote instance, page at the top</b><span>Menu shows the desktop behind it, blurred. Bar 72 px in the instance colour, see-through. Tiles as built today.</span></div><div class="scroll" id="s1"></div></section>
+  <section><div class="cap"><span class="code">S1</span><b>Remote instance, page at the top</b><span>Menu shows the desktop behind it, blurred. Bar 72 px, tinted with the instance colour like the tile headers, see-through. Tiles as built today.</span></div><div class="scroll" id="s1"></div></section>
   <section><div class="cap"><span class="code">S2</span><b>Scrolled, pointer on the fold button</b><span>Tiles pass under the bar, blurred. Unfolded, the fold button sits right of the name.</span></div><div class="scroll" id="s2"></div></section>
   <section><div class="cap"><span class="code">S3</span><b>Menu folded, pointer on the logo</b><span>64 px of icons and no button; on hover the logo turns into the unfold button. Item names show as tooltips. The choice is remembered.</span></div><div class="scroll" id="s3"></div></section>
   <section><div class="cap"><span class="code">S4</span><b>This computer, Status page, a warning</b><span>Amber dot: something needs a look (here disk space); hover says what. Thin progress strip under the bar for a running job.</span></div><div class="scroll" id="s4"></div></section>
@@ -292,7 +308,7 @@ section{display:flex;flex-direction:column;gap:10px}
     <ul>
       <li>Logo and SENTIENT / PLATFORM MANAGER at the top of a full-height menu. Unfolded: a fold button right of the name. Folded: no button, the logo becomes the unfold button on hover.</li>
       <li>Menu and bar are see-through with a blur (menu shows the desktop, bar shows the page). One switch in preferences turns both solid.</li>
-      <li>Bar 72 px instead of 52 px; it spans only the page area. Page titles and their refresh buttons stay in the page.</li>
+      <li>The bar is tinted with the instance colour like the tile headers (no longer the full colour), with normal dark or light text. Bar 72 px instead of 52 px; it spans only the page area. Page titles and their refresh buttons stay in the page.</li>
       <li>Monitors as icons with bar and value; when the window is narrow only icon and value.</li>
       <li>Switcher dot: green all fine, amber needs a look, red a fault (SENTIENT stopped, a database down, backup failed), grey not reachable or still checking.</li>
       <li>Menu footer: app icon, name and version, an Update pill when a new version exists, and a sliders button opening About and preferences.</li>
