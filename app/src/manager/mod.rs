@@ -183,6 +183,12 @@ pub struct Manager {
     /// The folded menu's logo is under the pointer (it shows the unfold
     /// button then).
     logo_hover: bool,
+    /// Narrow window: the menu is open over the page (the logo's unfold
+    /// button there; the page does not move).
+    menu_overlay: bool,
+    /// How far that overlay is open (0..1, the scrim's strength), set by
+    /// the menu each frame.
+    overlay_t: std::cell::Cell<f32>,
     /// The bell's conditions: when each was first seen (its time), and the
     /// ones cleared with their × (until they change or go and come back).
     cond_since: std::cell::RefCell<std::collections::HashMap<String, i64>>,
@@ -297,6 +303,8 @@ impl Manager {
             switcher_open: false,
             bell_open: false,
             logo_hover: false,
+            menu_overlay: false,
+            overlay_t: std::cell::Cell::new(0.),
             cond_since: Default::default(),
             cond_cleared: Default::default(),
             window_h: std::cell::Cell::new(720.),
@@ -1831,6 +1839,12 @@ impl Render for Manager {
         if crate::logsource::take_go() {
             self.page = Page::Logs;
         }
+        // Widened past the fold while the menu is open over the page: it
+        // becomes the docked, unfolded menu.
+        if self.menu_overlay && width >= shell::FOLD_BELOW {
+            self.menu_overlay = false;
+            shell::Appearance::set(|a| a.folded = false);
+        }
         let menu_w = if Self::folded(width) { shell::MENU_FOLDED_W } else { shell::MENU_W };
         let top = self.top_bar(width - menu_w, window, cx);
         let nav = self.shell_menu(width, window, cx);
@@ -1868,19 +1882,28 @@ impl Render for Manager {
             .relative()
             .track_focus(&self.modal_focus)
             // Escape closes the open dialog, from anywhere in the window.
-            .on_key_down(|e: &KeyDownEvent, window, cx| {
-                if e.keystroke.key == "escape" && cx.try_global::<crate::modal::ModalSlot>().is_some_and(|s| s.0.is_some()) {
-                    crate::modal::dismiss(window, cx);
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                if e.keystroke.key != "escape" {
+                    return;
                 }
-            })
+                if cx.try_global::<crate::modal::ModalSlot>().is_some_and(|s| s.0.is_some()) {
+                    crate::modal::dismiss(window, cx);
+                } else if this.menu_overlay {
+                    // Escape also closes the menu open over the page.
+                    this.menu_overlay = false;
+                    cx.notify();
+                }
+            }))
             .bg(if shell::see_through() { cx.theme().background.opacity(0.) } else { cx.theme().background })
             .text_color(cx.theme().foreground)
             .child(
                 // The shell: the menu the window's full height; beside it the
                 // bar over the page, then the page.
+                // Reversed, so the menu paints after the page: open over it
+                // in a narrow window, it stays on top.
                 h_flex()
                     .size_full()
-                    .child(nav)
+                    .flex_row_reverse()
                     .child(
                         v_flex()
                             .flex_1()
@@ -1905,8 +1928,27 @@ impl Render for Manager {
                                     )
                                     .into_any_element()
                                 }
+                            })
+                            // The menu open over the page: a faint scrim on
+                            // the page; a click on it closes the menu.
+                            .when(self.overlay_t.get() > 0.001, |c| {
+                                let dark = cx.theme().mode.is_dark();
+                                let t = self.overlay_t.get();
+                                c.child(
+                                    div()
+                                        .id("menu-scrim")
+                                        .absolute()
+                                        .inset_0()
+                                        .bg(gpui::black().opacity(t * if dark { 0.32 } else { 0.14 }))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                            this.menu_overlay = false;
+                                            cx.stop_propagation();
+                                            cx.notify();
+                                        })),
+                                )
                             }),
-                    ),
+                    )
+                    .child(nav),
             )
             .children(layer)
     }
