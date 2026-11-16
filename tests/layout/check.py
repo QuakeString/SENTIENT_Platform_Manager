@@ -134,11 +134,18 @@ def main():
     bad = []
     # The bar over the page (the shell's 60 px).
     top_bar = 60 * scale
+    # A window with a bar under the page (Setup's buttons) reports where the
+    # page ends (`LAYOUT page-area`): cards and the margin are checked down
+    # to there, not under the bar.
+    bottom = H
+    areas = [l.split()[2:] for l in open(log, errors="replace").read().splitlines() if l.startswith("LAYOUT page-area ")]
+    if areas:
+        bottom = min(H, int(float(areas[-1][3]) * scale))
     for (l, r, t, b) in panels:
         L, R, T, B = (v * scale for v in (l, r, t, b))
         if R <= 0 or L >= W or B <= top_bar or T >= H or R - L < 80 * scale:
             continue
-        y0, y1 = int(max(T + 14 * scale, top_bar + 2)), int(min(B - 14 * scale, H - 2))
+        y0, y1 = int(max(T + 14 * scale, top_bar + 2)), int(min(B - 14 * scale, bottom - 2))
         x0, x1 = int(R - (PAD - 2) * scale), int(R - 3 * scale)
         if y1 <= y0 or x1 <= x0 or x1 >= W:
             continue
@@ -199,8 +206,8 @@ def main():
             print(f"{png.split('/')[-1]}: {b}")
         return 1 if bad else 0
     x0, x1 = int(W - (PAGE_PAD - 3) * scale), int(W - 3 * scale)
-    ref = im.getpixel((W - int(PAGE_PAD * scale / 2), H - int(6 * scale)))
-    hits = [(x, y) for y in range(int(top_bar + 60 * scale), H - int(4 * scale), 2) for x in range(x0, x1) if differs(im.getpixel((x, y)), ref)]
+    ref = im.getpixel((W - int(PAGE_PAD * scale / 2), bottom - int(6 * scale)))
+    hits = [(x, y) for y in range(int(top_bar + 60 * scale), bottom - int(4 * scale), 2) for x in range(x0, x1) if differs(im.getpixel((x, y)), ref)]
     if len(hits) >= MIN_PIXELS:
         x, y = hits[0]
         bad.append(f"page margin: {len(hits)} px, first at ({x / scale:.0f}, {y / scale:.0f})")

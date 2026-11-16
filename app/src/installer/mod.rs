@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, Icon, IconName, h_flex, v_flex,
     button::ButtonVariants as _,
     input::{InputEvent, InputState},
 };
@@ -30,6 +30,7 @@ use sentient_installer_core::stack::Flavor;
 use crate::catalog::{self, Group};
 use crate::installation::Engine;
 use crate::jobs::{Job, JobState};
+use crate::ui;
 
 const STEPS: [&str; 12] = [
     "Welcome",
@@ -180,7 +181,14 @@ fn loc_input(window: &mut Window, cx: &mut Context<Installer>, debug_env: &str) 
 }
 
 fn secret(window: &mut Window, cx: &mut Context<Installer>) -> Entity<InputState> {
-    cx.new(|cx| InputState::new(window, cx).masked(true))
+    secret_with(window, cx, "")
+}
+
+/// A masked field holding `value` (the database passwords' default, still
+/// editable; their (i) says to change it when the port is reachable).
+fn secret_with(window: &mut Window, cx: &mut Context<Installer>, value: &str) -> Entity<InputState> {
+    let value = value.to_string();
+    cx.new(|cx| InputState::new(window, cx).masked(true).default_value(value))
 }
 
 impl Installer {
@@ -197,12 +205,15 @@ impl Installer {
             data_dir: input(window, cx, if cfg!(windows) { r"C:\PostgreSQL\18" } else { "" }),
             pg_db: input(window, cx, &d.db_name),
             pg_user: input(window, cx, &d.db_user),
-            pg_password: secret(window, cx),
+            // The database passwords start as the default ("sentient"):
+            // the databases listen on 127.0.0.1 only (Docker publishes their
+            // ports there; natively they listen on localhost).
+            pg_password: secret_with(window, cx, &d.db_password),
             pg_admin_password: secret(window, cx),
             pg_port: input(window, cx, &d.pg_port.to_string()),
             ch_db: input(window, cx, &d.ch_db),
             ch_user: input(window, cx, &d.ch_user),
-            ch_password: secret(window, cx),
+            ch_password: secret_with(window, cx, &d.ch_password),
             ch_http_port: input(window, cx, &d.ch_http_port.to_string()),
             ch_native_port: input(window, cx, &d.ch_native_port.to_string()),
             http_port: input(window, cx, &d.http_port.to_string()),
@@ -340,6 +351,7 @@ impl Installer {
             this.step = step.min(FINISH);
             this.flavor = Some(Flavor::Timescaledb);
             this.loc_per_store = std::env::var_os("SPM_DEBUG_LOC_PG").is_some();
+            this.debug_content(window, cx);
         }
         this
     }
@@ -741,6 +753,10 @@ impl Installer {
             coap_port: self.port(&f.coap_port, "CoAP port", cx)?,
             coaps_port: self.port(&f.coaps_port, "CoAP over DTLS port", cx)?,
             load_demo: self.load_demo,
+            // PostgreSQL and ClickHouse are published on 127.0.0.1 only:
+            // nothing outside this computer reaches them (SENTIENT reaches
+            // them over Docker's own network).
+            db_loopback: true,
             ..DeployConfig::default()
         };
         // Docker pulls the picked version's image instead of :latest.
@@ -987,71 +1003,164 @@ impl Installer {
         });
     }
 
+    /// Screens and layout tests: the step's long content
+    /// (SPM_DEBUG_SETUP_LONG=1): every optional block a step can show, and
+    /// on Install a running or a failed install (short or long).
+    #[cfg(debug_assertions)]
+    fn debug_content(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.earlier_done = true;
+        let long = std::env::var_os("SPM_DEBUG_SETUP_LONG").is_some();
+        if long {
+            self.flavor = Some(Flavor::Clickhouse);
+            self.customize = self.step == 7;
+            self.open_at_signin = true;
+            self.autologin = true;
+            self.kiosk = true;
+            self.leftovers = vec![
+                "The SENTIENT service (sentient.service), stopped".into(),
+                "PostgreSQL 18 in /var/lib/postgresql/18/main, 4.2 GB".into(),
+                "ClickHouse in /var/lib/clickhouse, 18.7 GB".into(),
+            ];
+            if self.step == 4 {
+                self.existing = Some("The Docker volume st-pg-data holds the database of an earlier install.".into());
+            }
+            let f = &self.fields;
+            for (field, value) in [(f.admin_email.clone(), "operations.manager@an-example-plant.example.com")] {
+                field.update(cx, |s, cx| s.set_value(value, window, cx));
+            }
+        }
+        if self.step == INSTALL {
+            self.install.update(cx, |job, cx| {
+                job.start(
+                    move |sink| {
+                        sink(sentient_installer_core::progress::Progress::Step { name: "Starting PostgreSQL".into() });
+                        sink(sentient_installer_core::progress::Progress::Percent { value: 0.42 });
+                        for i in 0..if long { 24 } else { 4 } {
+                            sink(sentient_installer_core::progress::Progress::Log {
+                                line: format!("[{:02}] waiting for the database to accept connections on 127.0.0.1:5432 (attempt {i} of 60, the container reports starting)", i),
+                            });
+                        }
+                        if long {
+                            return Err("PostgreSQL did not start within two minutes: the container sentient-postgres exited with code 1 (see its log under Logs).".into());
+                        }
+                        loop {
+                            std::thread::sleep(std::time::Duration::from_secs(60));
+                        }
+                    },
+                    cx,
+                )
+            });
+        }
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn debug_content(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+
+    /// The steps down the left: the Platform Manager's menu (crate::manager::shell),
+    /// with the product on top, 40 px rows on a 44 px pitch, a number badge
+    /// in the icon slot (a check once done) and the selection joined to the page.
     fn steps_nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::manager::shell;
         let theme = cx.theme().clone();
+        let pad = shell::MENU_PAD;
+        let active: &'static str = STEPS[self.step];
         let rows = self.shown_steps().into_iter().enumerate().map(|(n, i)| {
             let title = self.title(i);
             let current = i == self.step;
             let done = i < self.step;
             let mark = div()
-                .size_5()
+                .relative()
+                .size(px(shell::ICON))
                 .flex_shrink_0()
                 .rounded_full()
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(13.))
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(ui::layout_probe("menu-icon"))
                 .map(|m| {
                     if current {
                         m.bg(theme.primary).text_color(theme.primary_foreground).child(format!("{}", n + 1))
                     } else if done {
-                        m.bg(theme.success).text_color(theme.success_foreground)
-                            .child(Icon::new(IconName::Check).xsmall())
+                        m.bg(theme.primary.opacity(0.14)).text_color(theme.primary).child(Icon::new(IconName::Check).size(px(12.)))
                     } else {
-                        m.border_1().border_color(theme.input).text_color(theme.muted_foreground)
-                            .child(format!("{}", n + 1))
+                        m.border_1().border_color(theme.muted_foreground.opacity(0.6)).text_color(theme.muted_foreground).child(format!("{}", n + 1))
                     }
                 });
+            let id: &'static str = STEPS[i];
             h_flex()
                 .id(("step", i))
-                .gap_3()
-                .mx_3()
-                .px_3()
-                .py_2()
-                .rounded(theme.radius)
+                .relative()
+                .h(px(shell::ROW_H))
+                .flex_shrink_0()
+                .gap(px(12.))
+                .pl(px(shell::row_pl(pad)))
+                .pr(px(12.))
+                .mr(px(10.))
+                .rounded(px(8.))
                 .text_sm()
-                .when(current, |r| r.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground))
-                .when(!current && !done, |r| r.text_color(theme.muted_foreground))
-                .when(done && self.step < INSTALL, |r| r.cursor_pointer())
+                .font_weight(if current { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+                .text_color(if current {
+                    shell::selected_label(&theme)
+                } else if done {
+                    theme.foreground
+                } else {
+                    theme.muted_foreground
+                })
+                .when(done && self.step < INSTALL, |r| r.cursor_pointer().hover(|r| r.bg(theme.list_hover)))
+                .child(shell::row_probe(id))
+                .child(ui::layout_probe("menu-row"))
                 .child(mark)
-                .child(title)
+                .child(
+                    div()
+                        .relative()
+                        .min_w_0()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(title)
+                        .child(ui::layout_probe(if current { "menu-label-on" } else { "menu-label" })),
+                )
                 .on_click(cx.listener(move |this, _, _, cx| this.go(i, cx)))
         });
+        let brand = h_flex()
+            .relative()
+            .h(px(shell::BAR_H))
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(10.))
+            .pl(px(shell::ICON_X - shell::LOGO / 2.))
+            .pr(px(10.))
+            .child(ui::layout_probe("menu-brand"))
+            .child(div().relative().size(px(shell::LOGO)).flex_shrink_0().flex().items_center().justify_center().child(ui::product_logo(ui::Product::Sentient, shell::LOGO)).child(ui::layout_probe("menu-icon")))
+            .child(shell::brand_name(&theme, "SETUP"));
         v_flex()
-            .w_56()
+            .w(px(shell::MENU_W))
             .h_full()
             .flex_shrink_0()
-            .py_4()
-            .gap_0p5()
-            .bg(theme.sidebar)
-            .border_r_1()
-            .border_color(theme.sidebar_border)
+            .relative()
+            .overflow_hidden()
+            .bg(shell::menu_bg(&theme, false, 0.))
+            // No border: the edge and the selection are one shape, under the rows.
+            .child(shell::menu_probe(pad, None))
+            .child(shell::selection(active, theme.muted, theme.sidebar_border, !ui::reduce_motion()))
+            .child(brand)
             .child(
                 v_flex()
-                    .px_4()
-                    .pb_4()
-                    .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(theme.primary).whitespace_nowrap().child("SENTIENT Setup"))
-                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).whitespace_nowrap().text_ellipsis().child(if self.manager_only {
-                        "Platform Manager"
-                    } else if self.adding_sentient {
-                        "Platform"
-                    } else {
-                        "Platform and Manager"
-                    })),
+                    .id("steps-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .gap(px(shell::ROW_GAP))
+                    .pt(px(shell::NAV_TOP))
+                    .pb(px(12.))
+                    .pl(px(pad))
+                    .children(rows),
             )
-            .children(rows)
     }
 
+    /// The buttons under the page: the step count and why Next is off on
+    /// the left; Cancel, Back and Next as the dialogs' buttons, 40 px tall.
     fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let failed = matches!(self.install.read(cx).state(), JobState::Failed(_));
@@ -1064,16 +1173,17 @@ impl Installer {
             FINISH => "Close",
             _ => "Next",
         };
+        let h = px(crate::theme::BAR_CTRL_H);
         h_flex()
-            .h_16()
             .flex_shrink_0()
-            .px_8()
+            .px(px(ui::PAGE_PAD))
+            .py(px(14.))
             .gap_2()
             .items_center()
             .bg(theme.background)
             .border_t_1()
             .border_color(theme.border)
-            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child({
+            .child(div().flex_shrink_0().text_size(px(12.)).text_color(theme.muted_foreground).whitespace_nowrap().child({
                 let shown = self.shown_steps();
                 let at = shown.iter().position(|s| *s == self.step).unwrap_or(0);
                 format!("Step {} of {}", at + 1, shown.len())
@@ -1088,7 +1198,7 @@ impl Installer {
                         .gap_1p5()
                         .text_sm()
                         .text_color(theme.muted_foreground)
-                        .child(Icon::new(IconName::Info).small().flex_shrink_0())
+                        .child(Icon::new(IconName::Info).size(px(16.)).flex_shrink_0())
                         .child(div().flex_1().min_w_0().line_clamp(2).child(reason)),
                 ),
                 (None, None) => bar.child(div().flex_1()),
@@ -1096,7 +1206,9 @@ impl Installer {
             .when(self.step < FINISH, |bar| {
                 bar.child(
                     crate::ui::button("cancel")
-                        .ghost()
+                        .outline()
+                        .h(h)
+                        .px_4()
                         .label("Cancel")
                         .on_click(cx.listener(|this, _, window, cx| this.confirm_cancel(window, cx))),
                 )
@@ -1105,6 +1217,8 @@ impl Installer {
                 bar.child(
                     crate::ui::button("back")
                         .outline()
+                        .h(h)
+                        .px_4()
                         .label("Back")
                         .on_click(cx.listener(|this, _, _, cx| this.go(this.previous_shown(this.step), cx))),
                 )
@@ -1112,6 +1226,8 @@ impl Installer {
             .child(
                 crate::ui::button("next")
                     .primary()
+                    .h(h)
+                    .px_5()
                     .label(next_label)
                     .disabled((self.step == INSTALL && !failed) || blocked.is_some())
                     .on_click(cx.listener(|this, _, window, cx| this.next(window, cx))),
@@ -1122,18 +1238,31 @@ impl Installer {
 impl Render for Installer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(earlier) = &self.earlier {
-            return div().size_full().child(earlier.clone()).into_any_element();
+            return div().size_full().bg(cx.theme().background).child(earlier.clone()).into_any_element();
+        }
+        let width = f32::from(window.viewport_size().width);
+        // Two cards side by side when the page has the room (ui::card_pair).
+        ui::set_side_by_side(width - crate::manager::shell::MENU_W >= 720.);
+        ui::set_narrow(width - crate::manager::shell::MENU_W < 560.);
+        #[cfg(debug_assertions)]
+        if std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
+            eprintln!("LAYOUT-FRAME {:.0} {:.0}", width, f32::from(window.viewport_size().height));
         }
         let nav = self.steps_nav(cx);
         let footer = self.footer(cx);
         let page = self.page(window, cx);
+        let subtitle = self.subtitle();
         let theme = cx.theme().clone();
         // The shared dialogs, centred right of the steps (crate::modal).
-        let layer = crate::modal::layer(window, cx, 224., 0.);
+        let layer = crate::modal::layer(window, cx, crate::manager::shell::MENU_W, 0.);
+        // Welcome fits the window (its licence scrolls inside); every other
+        // step scrolls as a whole.
+        let fits = self.step == 0;
         h_flex()
             .size_full()
             .relative()
-            .bg(theme.background)
+            // Clear under the translucent menu (the page and the footer paint their own).
+            .bg(if crate::manager::shell::see_through() { theme.background.opacity(0.) } else { theme.background })
             .text_color(theme.foreground)
             .child(nav)
             .child(
@@ -1144,21 +1273,25 @@ impl Render for Installer {
                     .child(
                         v_flex()
                             .id("page")
+                            .relative()
                             .flex_1()
                             .min_h_0()
-                            .overflow_y_scroll()
-                            .p_8()
+                            .map(|p| if fits { p.overflow_hidden() } else { p.overflow_y_scroll() })
+                            .p(px(ui::PAGE_PAD))
+                            .gap(px(ui::GAP))
                             .bg(theme.muted)
-                            // One content column on every step.
+                            .child(ui::layout_probe("page-area"))
+                            // The title and its line, as on every Platform Manager page (ui::page).
                             .child(
                                 v_flex()
-                                    .w_full()
-                                    .max_w(px(820.))
-                                    .flex_1()
-                                    .gap_4()
-                                    .child(div().text_size(px(18.)).font_weight(FontWeight::MEDIUM).child(self.title(self.step)))
-                                    .child(page),
-                            ),
+                                    .flex_shrink_0()
+                                    .gap_0p5()
+                                    .min_h(px(32.))
+                                    .justify_center()
+                                    .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child(self.title(self.step)))
+                                    .when_some(subtitle, |c, s| c.child(div().text_sm().text_color(theme.muted_foreground).child(s))),
+                            )
+                            .child(page),
                     )
                     .child(footer),
             )
