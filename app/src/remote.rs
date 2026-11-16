@@ -2321,3 +2321,100 @@ pub fn download_backup(src: &Instance, path: &str, folder: &Path, progress: &(dy
     let _ = sftp_batch(src, &format!("get \"{}.sha256\" \"{}.sha256\"", sftp_path(src, path), dest.display()));
     Ok(dest)
 }
+
+/// The restore jobs against the shared test bed (read-only there: a backup
+/// is made into /tmp, inspected, pre-checked, uploaded and copied; nothing
+/// is restored). SPM_E2E_RESTORE=<instance id>, XDG_CONFIG_HOME with the
+/// instances, SPM_AGENT_DIR with the static agent.
+#[cfg(test)]
+mod restore_live {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn restore_jobs_on_the_test_bed() {
+        let id = std::env::var("SPM_E2E_RESTORE").expect("SPM_E2E_RESTORE");
+        let inst = load().into_iter().find(|i| i.id == id).expect("instance");
+        let lines: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+        let l2 = lines.clone();
+        let sink: ProgressFn = std::sync::Arc::new(move |p| {
+            let line = match p {
+                Progress::Step { name } => format!(">> {name}"),
+                Progress::Log { line } => line,
+                Progress::Done { message } => format!("done: {message}"),
+                Progress::Error { message } => format!("error: {message}"),
+                _ => return,
+            };
+            l2.lock().unwrap().push(line);
+        });
+        let take = || std::mem::take(&mut *lines.lock().unwrap());
+        deploy(&inst, &sink).expect("deploy");
+        run(&inst, "rm -rf /tmp/spme && mkdir -p /tmp/spme/up /tmp/spme/copy && chmod 777 /tmp/spme /tmp/spme/up /tmp/spme/copy", None).unwrap();
+        let file = "/tmp/spme/b1.sentient-backup";
+        run_followed(&inst, &["backup".into(), file.into()], &sink).expect("backup");
+        take();
+        // Inspect: sound, the parts listed and checked.
+        let req = crate::restore_flow::Request { file: file.into(), ..Default::default() };
+        let args = restore_args(&inst, "restore-inspect", &req, None).unwrap();
+        run_followed(&inst, &args, &sink).expect("inspect");
+        let got = take();
+        let i: crate::restore_flow::Inspection = crate::restore_flow::read_data(&got, "inspect").expect("inspection");
+        assert!(i.sound(), "{:?}", i.parts);
+        assert!(got.iter().filter(|l| l.starts_with("PART\t")).count() > i.parts.len());
+        eprintln!("inspect: {} parts, {} bytes, here {:?}", i.parts.len(), i.file_bytes, i.here);
+        // Not a backup.
+        run(&inst, "echo nope > /tmp/spme/x.sentient-backup", None).unwrap();
+        let bad = crate::restore_flow::Request { file: "/tmp/spme/x.sentient-backup".into(), ..Default::default() };
+        let args = restore_args(&inst, "restore-inspect", &bad, None).unwrap();
+        assert!(run_followed(&inst, &args, &sink).is_err());
+        let u: crate::restore_flow::Unreadable = crate::restore_flow::read_data(&take(), "unreadable").expect("unreadable");
+        assert!(matches!(u, crate::restore_flow::Unreadable::NotABackup(_)), "{u:?}");
+        // Pre-check: configuration only with Keep (orphans), and everything.
+        for scope in [sentient_backup_core::restore_scope::Scope::Configuration, sentient_backup_core::restore_scope::Scope::Everything] {
+            let req = crate::restore_flow::Request { file: file.into(), scope: scope.clone(), keep_telemetry: true, safety_backup: true, ..Default::default() };
+            let args = restore_args(&inst, "restore-precheck", &req, None).unwrap();
+            run_followed(&inst, &args, &sink).expect("precheck");
+            let p: crate::restore_flow::Precheck = crate::restore_flow::read_data(&take(), "precheck").expect("precheck answer");
+            eprintln!("precheck {scope:?}: disks {:?}\n  estimate {:?} upgrade {:?} settings {} same {} orphans {:?} live {:?}", p.disks, p.estimate, p.upgrade, p.settings.len(), p.same, p.orphans, p.live);
+            assert!(!p.disks.is_empty() && p.disks.iter().all(|d| d.free.is_some()));
+        }
+        // History answers (an empty list is fine).
+        let h = restore_history(&inst).expect("history");
+        eprintln!("history: {} entries", h.len());
+        // Upload from here, with resume: a partial part first.
+        let dir = std::env::temp_dir().join(format!("spme-up-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let local = dir.join("up.sentient-backup");
+        let data: Vec<u8> = (0..30_000_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&local, &data).unwrap();
+        put_text(&inst, "/tmp/spme/up/up.sentient-backup.part", "").unwrap();
+        run(&inst, "head -c 10000000 /dev/zero > /tmp/spme/up/up.sentient-backup.part.tmp; true", None).unwrap();
+        assert!(can_write(&inst, "/tmp/spme/up").unwrap());
+        assert!(!can_write(&inst, "/root/spme").unwrap_or(false));
+        let seen = std::sync::Mutex::new(Vec::new());
+        let path = upload_backup(&inst, &local, "/tmp/spme/up", &|s, t| seen.lock().unwrap().push((s, t))).expect("upload");
+        assert_eq!(remote_size(&inst, &path), data.len() as u64);
+        let sum = run(&inst, &format!("sha256sum {path}"), None).unwrap();
+        let mine = sentient_backup_core::util::sha256_file(&local).unwrap().0;
+        assert!(sum.starts_with(&mine), "{sum} vs {mine}");
+        eprintln!("upload: {} progress readings, last {:?}", seen.lock().unwrap().len(), seen.lock().unwrap().last());
+        // Resume: cut the file on the server to a part and send again.
+        run(&inst, &format!("head -c 12000000 {path} > {path}.part && rm {path}"), None).unwrap();
+        let path = upload_backup(&inst, &local, "/tmp/spme/up", &|_, _| {}).expect("resumed upload");
+        assert!(run(&inst, &format!("sha256sum {path}"), None).unwrap().starts_with(&mine));
+        // Another instance: the same server as source, both ways.
+        assert!(reaches(&inst, &inst));
+        for (way, folder) in [(CopyWay::ThroughHere, "/tmp/spme/copy"), (CopyWay::Direct, "/tmp/spme/copy2")] {
+            run(&inst, &format!("mkdir -p {folder}"), None).unwrap();
+            let p = copy_between(&inst, &inst, file, folder, way, &|_, _| {}).expect("copy");
+            assert_eq!(remote_size(&inst, &p), remote_size(&inst, file));
+            eprintln!("copy {way:?}: {p}");
+        }
+        // Down to this computer.
+        let got = download_backup(&inst, file, &dir, &|_, _| {}).expect("download");
+        assert_eq!(std::fs::metadata(&got).unwrap().len(), remote_size(&inst, file));
+        let _ = run(&inst, "rm -rf /tmp/spme", None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
