@@ -7,7 +7,8 @@
 # fails a render where anything reaches into a card's right padding or the
 # page's margin; icons.py checks the rail's badges sit on x = 32; labels.py
 # checks the rail's rows (40 px on a 44 px pitch, 16 px under the brand) and
-# that the current step's label is the size of the others.
+# that the current step's label is the size of the others; and no database
+# password field starts empty (its `LAYOUT password <name> empty|set` lines).
 #
 #   tests/layout/setup.sh <app binary> <out dir>
 #
@@ -43,9 +44,14 @@ one() { # step width scale theme variant
   DISPLAY=$d import -window root "$OUT/$name.png" 2>/dev/null
   kill $ap 2>/dev/null; sleep 1; kill -9 $ap 2>/dev/null; kill $xp 2>/dev/null
   rm -rf "$x"
-  { python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" && python3 "$HERE/icons.py" "$OUT/$name.log"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
+  { python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" && python3 "$HERE/icons.py" "$OUT/$name.log" && passwords "$OUT/$name.log"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
 }
-export -f one; export OUT HERE BIN HEIGHT WAIT
+passwords() { # log: every database password field reported, none empty
+  if ! grep -q '^LAYOUT password ' "$1"; then echo "no LAYOUT password lines in $1"; return 1; fi
+  local empty; empty=$(grep -E '^LAYOUT password [^ ]+ empty$' "$1" | awk '{print $3}' | sort -u | tr '\n' ' ')
+  if [ -n "$empty" ]; then echo "password fields start empty: $empty"; return 1; fi
+}
+export -f one passwords; export OUT HERE BIN HEIGHT WAIT
 list=()
 for s in $STEPS; do for v in $VARIANTS; do for w in $WIDTHS; do for c in $SCALES; do for t in $THEMES; do list+=("$s $w $c $t $v"); done; done; done; done; done
 printf '%s\n' "${list[@]}" | xargs -P "$JOBS" -L 1 bash -c 'one "$@"' _ | tee "$OUT/summary.txt"

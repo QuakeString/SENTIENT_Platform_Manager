@@ -103,13 +103,122 @@ pub enum FixAction {
     AskAgain,
     /// Windows: start WSL.
     StartWsl,
+    /// Stop a systemd service and keep it from starting at boot (a unit
+    /// whose file is gone is only stopped).
+    StopService { unit: String },
+    /// Remove a PostgreSQL that is in the way: stop it, remove its package
+    /// (when one is installed), clean its unit up, and move its data folder
+    /// aside to `<dir>.old-<date>`. The data is never deleted.
+    RemovePostgres { unit: String, package: Option<String>, data_dir: String },
+    /// Stop a Docker container (it stays, and can be started again).
+    StopContainer { name: String },
+    /// Run the check again: the page that asked does it.
+    Recheck,
 }
 
 impl FixAction {
     /// Applied by the page that shows the panel, not by [`apply`].
     pub fn is_page_action(&self) -> bool {
-        matches!(self, FixAction::UsePort { .. } | FixAction::AskAgain)
+        matches!(self, FixAction::UsePort { .. } | FixAction::AskAgain | FixAction::Recheck)
     }
+
+    /// The exact shell [`apply`] runs for it (as administrator, except
+    /// where noted), for "Show command". None: nothing to show (a page
+    /// action, or a fix done in-process).
+    pub fn command(&self) -> Option<String> {
+        match self {
+            FixAction::StopService { unit } => Some(stop_service_script(unit)),
+            FixAction::RemovePostgres { unit, package, data_dir } => {
+                Some(remove_postgres_script(package_manager_here(), unit, package.as_deref(), data_dir))
+            }
+            FixAction::StopContainer { name } => Some(format!("docker stop {}", quote(name))),
+            FixAction::StartDocker => Some(START_DOCKER.to_string()),
+            #[cfg(unix)]
+            FixAction::UpgradePgData { family } => Some(old_pg::fix_script(*family, old_pg::OldPgChoice::Upgrade)),
+            #[cfg(unix)]
+            FixAction::KeepPgDataAside { family } => Some(old_pg::fix_script(*family, old_pg::OldPgChoice::KeepAside)),
+            FixAction::StartWsl => Some("wsl.exe --exec true".into()),
+            _ => None,
+        }
+    }
+}
+
+/// A unit or container name as given: refused when it holds anything a
+/// shell could read as more than a name.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn safe_name(name: &str) -> Result<&str, String> {
+    let ok = !name.is_empty() && !name.starts_with('-') && name.len() <= 255 && name.chars().all(|c| c.is_ascii_alphanumeric() || "@._:-+\\".contains(c));
+    if ok { Ok(name) } else { Err(format!("“{name}” is not a service or container name.")) }
+}
+
+/// A value single-quoted for a POSIX shell.
+fn quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+const START_DOCKER: &str = "systemctl enable --now docker.socket docker.service\nfor i in $(seq 1 30); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done\necho '!! Docker did not answer within 30 seconds'; exit 1\n";
+
+/// Stop `unit` and keep it from starting at boot. `disable` fails for a
+/// unit whose file is gone (a removed package's service still running), so
+/// that one is stopped only.
+pub fn stop_service_script(unit: &str) -> String {
+    let u = quote(unit);
+    format!(
+        "echo '>> Stopping {unit}'\n\
+         systemctl disable --now {u} 2>/dev/null || systemctl stop {u}\n\
+         systemctl reset-failed {u} 2>/dev/null || true\n"
+    )
+}
+
+/// The package manager on this computer, by its program's name.
+pub fn package_manager_here() -> Option<&'static str> {
+    ["pacman", "apt-get", "dnf", "zypper"].into_iter().find(|b| {
+        std::process::Command::new("sh").arg("-c").arg(format!("command -v {b}")).output().is_ok_and(|o| o.status.success())
+    })
+}
+
+/// The command that removes `package` with package manager `pm` (its
+/// program's name). Removes, never purges: a purge deletes configuration.
+pub fn package_remove(pm: &str, package: &str) -> String {
+    let p = quote(package);
+    match pm {
+        "pacman" => format!("pacman -R --noconfirm {p}"),
+        "apt-get" => format!("DEBIAN_FRONTEND=noninteractive apt-get remove -y {p}"),
+        "dnf" => format!("dnf remove -y {p}"),
+        "zypper" => format!("zypper --non-interactive remove {p}"),
+        other => format!("echo '!! No way to remove packages with {other}'; exit 1"),
+    }
+}
+
+/// [`FixAction::RemovePostgres`]: stop the service, remove its package,
+/// clean the unit up (a hand-written unit file under /etc is renamed
+/// aside), and move the data folder to `<dir>.old-<date>`. Nothing is
+/// deleted.
+pub fn remove_postgres_script(pm: Option<&str>, unit: &str, package: Option<&str>, data_dir: &str) -> String {
+    let u = quote(unit);
+    let mut s = format!(
+        "set -e\n\
+         echo '>> Stopping {unit}'\n\
+         systemctl disable --now {u} 2>/dev/null || systemctl stop {u} 2>/dev/null || true\n"
+    );
+    if let (Some(pkg), Some(pm)) = (package, pm) {
+        s.push_str(&format!("echo '>> Removing the package {pkg}'\n{}\n", package_remove(pm, pkg)));
+    }
+    s.push_str(&format!(
+        "echo '>> Cleaning up the service'\n\
+         F=$(systemctl show -p FragmentPath --value {u} 2>/dev/null || true)\n\
+         case \"$F\" in /etc/*) if [ -f \"$F\" ]; then mv \"$F\" \"$F.removed-$(date +%Y%m%d-%H%M%S)\"; fi ;; esac\n\
+         systemctl daemon-reload\n\
+         systemctl reset-failed {u} 2>/dev/null || true\n\
+         DATA={d}\n\
+         if [ -e \"$DATA\" ]; then\n\
+         \x20 ASIDE=\"$DATA.old-$(date +%Y%m%d-%H%M%S)\"\n\
+         \x20 mv \"$DATA\" \"$ASIDE\"\n\
+         \x20 echo \">> The PostgreSQL data is kept in $ASIDE (nothing was deleted)\"\n\
+         fi\n",
+        d = quote(data_dir)
+    ));
+    s
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1064,8 +1173,39 @@ pub fn apply(action: &FixAction, sink: &ProgressFn) -> Result<String, String> {
         #[cfg(unix)]
         FixAction::StartDocker => {
             sink(Progress::Step { name: "Starting Docker".into() });
-            crate::exec::run_privileged(sink, "systemctl enable --now docker.socket docker.service\nfor i in $(seq 1 30); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done\necho '!! Docker did not answer within 30 seconds'; exit 1\n")?;
+            crate::exec::run_privileged(sink, START_DOCKER)?;
             Ok("Docker is running. Press Retry.".into())
+        }
+        #[cfg(unix)]
+        FixAction::StopService { unit } => {
+            sink(Progress::Step { name: format!("Stopping {unit}") });
+            crate::exec::run_privileged(sink, &stop_service_script(safe_name(unit)?))?;
+            Ok(format!("{unit} is stopped and will not start at boot."))
+        }
+        #[cfg(unix)]
+        FixAction::RemovePostgres { unit, package, data_dir } => {
+            sink(Progress::Step { name: "Removing PostgreSQL".into() });
+            if let Some(p) = package {
+                safe_name(p)?;
+            }
+            if !data_dir.starts_with('/') || data_dir.contains("..") || data_dir.trim_end_matches('/').matches('/').count() < 2 {
+                return Err(format!("{data_dir} is not a PostgreSQL data folder."));
+            }
+            crate::exec::run_privileged(sink, &remove_postgres_script(package_manager_here(), safe_name(unit)?, package.as_deref(), data_dir))?;
+            Ok(format!("PostgreSQL is removed. Its data was moved to {data_dir}.old-<date> (nothing was deleted)."))
+        }
+        #[cfg(unix)]
+        FixAction::StopContainer { name } => {
+            sink(Progress::Step { name: format!("Stopping the container {name}") });
+            let name = safe_name(name)?;
+            // As this user first (the docker group); as administrator when
+            // the socket is closed to it.
+            let own = std::process::Command::new("docker").args(["stop", name]).output();
+            match own {
+                Ok(o) if o.status.success() => {}
+                _ => crate::exec::run_privileged(sink, &format!("docker stop {}", quote(name)))?,
+            }
+            Ok(format!("The container {name} is stopped (not removed: Docker can start it again)."))
         }
         #[cfg(windows)]
         FixAction::StartWsl => {
@@ -1106,6 +1246,33 @@ mod tests {
 
     fn actions(d: &Diagnosis) -> Vec<FixAction> {
         d.fixes.iter().filter_map(|f| if let Fix::Action { action, .. } = f { Some(action.clone()) } else { None }).collect()
+    }
+
+    #[test]
+    fn system_check_actions_map_to_their_commands() {
+        let stop = FixAction::StopService { unit: "postgresql.service".into() }.command().unwrap();
+        assert!(stop.contains("systemctl disable --now 'postgresql.service' 2>/dev/null || systemctl stop 'postgresql.service'"), "{stop}");
+        assert_eq!(FixAction::StopContainer { name: "sentient-postgres".into() }.command().as_deref(), Some("docker stop 'sentient-postgres'"));
+        let rm = remove_postgres_script(Some("pacman"), "postgresql.service", Some("postgresql"), "/var/lib/postgres/data");
+        assert!(rm.contains("pacman -R --noconfirm 'postgresql'"), "{rm}");
+        assert!(rm.contains("DATA='/var/lib/postgres/data'"));
+        assert!(rm.contains("ASIDE=\"$DATA.old-$(date +%Y%m%d-%H%M%S)\""));
+        assert!(rm.contains("mv \"$DATA\" \"$ASIDE\""));
+        assert!(rm.contains("systemctl daemon-reload"));
+        // The data is moved, never deleted; a removed package needs no package step.
+        assert!(!rm.contains("rm -") && !rm.contains("\nrm ") && !rm.contains(" rm "), "{rm}");
+        let left = remove_postgres_script(Some("pacman"), "postgresql.service", None, "/var/lib/postgres/data");
+        assert!(!left.contains("pacman"));
+        assert!(package_remove("apt-get", "postgresql-common").starts_with("DEBIAN_FRONTEND=noninteractive apt-get remove -y"));
+        assert!(!package_remove("apt-get", "x").contains("purge"));
+        // Page actions run nothing of their own.
+        assert_eq!(FixAction::UsePort { port: 5432, instead: 5433 }.command(), None);
+        assert_eq!(FixAction::Recheck.command(), None);
+        assert!(FixAction::Recheck.is_page_action());
+        // A name is a name.
+        assert!(safe_name("postgresql@16-main.service").is_ok());
+        assert!(safe_name("a;rm -rf /").is_err());
+        assert!(safe_name("--force").is_err());
     }
 
     #[test]

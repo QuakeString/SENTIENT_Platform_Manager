@@ -100,6 +100,11 @@ impl DiagnosisView {
 
 /// A command to copy: monospace on a faint panel, with Copy.
 fn command_box(theme: &gpui_kit::component::Theme, id: SharedString, label: &str, command: &str) -> Div {
+    command_box_in(theme, id, label, command, theme.danger.opacity(0.18))
+}
+
+/// [`command_box`] with its own border colour (outside the error panel).
+pub(crate) fn command_box_in(theme: &gpui_kit::component::Theme, id: SharedString, label: &str, command: &str, border: Hsla) -> Div {
     let copy = command.to_string();
     v_flex()
         .gap_1()
@@ -114,7 +119,7 @@ fn command_box(theme: &gpui_kit::component::Theme, id: SharedString, label: &str
                 .rounded(theme.radius)
                 .bg(theme.background.opacity(0.7))
                 .border_1()
-                .border_color(theme.danger.opacity(0.18))
+                .border_color(border)
                 .child(div().flex_1().min_w_0().font_family(theme.mono_font_family.clone()).text_size(px(12.5)).text_color(theme.foreground).child(command.to_string()))
                 .child(
                     ui::button(id)

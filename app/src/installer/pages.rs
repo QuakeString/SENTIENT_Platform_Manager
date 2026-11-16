@@ -14,6 +14,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use sentient_installer_core::checks::Status;
+use sentient_installer_core::diagnose::{Fix, FixAction};
 use sentient_installer_core::stack::Flavor;
 
 use super::{FINISH, INSTALL, Installer};
@@ -28,14 +29,20 @@ fn label(theme: &Theme, text: &'static str) -> Div {
     h_flex().gap_1().items_center().text_sm().font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(text)
 }
 
+/// An input reported to the layout test (`LAYOUT field`): the edges of
+/// fields side by side are not a card's row divider.
+fn probed_input(input: Input) -> Div {
+    div().relative().child(input).child(ui::layout_probe("field"))
+}
+
 /// A labelled input.
 fn field(theme: &Theme, text: &'static str, state: &Entity<InputState>) -> Div {
-    v_flex().gap_1p5().child(label(theme, text)).child(Input::new(state))
+    v_flex().gap_1p5().child(label(theme, text)).child(probed_input(Input::new(state)))
 }
 
 /// A labelled masked input with a show/hide toggle.
 fn secret_field(theme: &Theme, text: &'static str, state: &Entity<InputState>) -> Div {
-    v_flex().gap_1p5().child(label(theme, text)).child(Input::new(state).mask_toggle())
+    v_flex().gap_1p5().child(label(theme, text)).child(probed_input(Input::new(state).mask_toggle()))
 }
 
 /// The help on a database password Setup fills in (an (i) beside its label).
@@ -46,7 +53,7 @@ fn default_password_field(theme: &Theme, id: &'static str, text: &'static str, s
     v_flex()
         .gap_1p5()
         .child(label(theme, text).child(ui::info(id.into(), DEFAULT_PASSWORD_HELP.into())))
-        .child(Input::new(state).mask_toggle())
+        .child(probed_input(Input::new(state).mask_toggle()))
 }
 
 /// One choice of several as a Platform Manager card (ui::radio_card),
@@ -87,14 +94,24 @@ fn column() -> Div {
     v_flex().w_full().gap(px(ui::GAP))
 }
 
-fn check_tone(status: Status) -> (Tone, &'static str) {
-    match status {
+/// A check's pill: its tone, and its own words when the check gives them
+/// ("Already installed", "In use") over the status's.
+fn check_tone(status: Status, state: Option<SharedString>) -> (Tone, SharedString) {
+    let (tone, text) = match status {
         Status::Pass => (Tone::Good, "Ready"),
         Status::Setup => (Tone::Warn, "Will be installed"),
         Status::Fail => (Tone::Bad, "Blocker"),
         Status::Warn => (Tone::Warn, "Attention"),
         Status::Unknown => (Tone::Neutral, "Unknown"),
-    }
+    };
+    (tone, state.unwrap_or_else(|| text.into()))
+}
+
+/// Grid rows: every cell the same width, the same gap apart, so the column
+/// edges line up from row to row and from card to card (an empty cell
+/// keeps its column).
+fn grid_row(cells: Vec<Option<Div>>) -> Div {
+    h_flex().gap_3().items_start().children(cells.into_iter().map(|c| v_flex().flex_1().min_w_0().children(c)))
 }
 
 impl Installer {
@@ -344,21 +361,12 @@ impl Installer {
             .children(old_pg)
             .child(match rows {
                 None => ui::panel(&theme).child(div().text_sm().child("Checking this computer…")),
-                Some(rows) => ui::panel(&theme).gap_0().children(rows.into_iter().enumerate().map(|(i, row)| {
-                    let (tone, text) = check_tone(row.status);
-                    h_flex()
-                        .gap_3()
-                        .py(px(10.))
-                        .items_start()
-                        .when(i > 0, |r| r.border_t_1())
-                        .border_color(theme.border)
-                        .text_sm()
-                        // The label keeps its own width in a fixed column.
-                        .child(h_flex().w(px(148.)).flex_shrink_0().child(ui::pill(&theme, tone, text)))
-                        .child(div().w(px(ui::CARD_LABEL_W + 30.)).flex_shrink_0().font_weight(FontWeight::MEDIUM).child(row.label))
-                        .child(div().flex_1().min_w_0().text_color(theme.muted_foreground).child(row.detail))
-                })),
+                Some(rows) => {
+                    let rows: Vec<AnyElement> = rows.into_iter().enumerate().map(|(i, row)| self.check_row(i, row, cx)).collect();
+                    ui::panel(&theme).gap_0().children(rows)
+                }
             })
+            .children(self.check_fix_outcome(cx))
             .child(
                 h_flex().child(
                     crate::ui::button("recheck")
@@ -367,6 +375,109 @@ impl Installer {
                         .on_click(cx.listener(|this, _, _, cx| this.run_checks(cx))),
                 ),
             )
+    }
+
+    /// One System check row: the pill, the name, the cause, and, when it
+    /// is not ready, what can be done: its actions as buttons, always
+    /// "Check again", and "Show command" for the exact commands.
+    fn check_row(&self, i: usize, row: super::CheckRow, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let (tone, text) = check_tone(row.status, row.state.clone());
+        let ready = row.status == Status::Pass;
+        let fix = self.check_fix.read(cx);
+        let (fixing, fix_step) = (fix.is_running(), fix.step_with_time());
+        let here = self.check_fix_at.as_ref().filter(|(r, _)| *r == row.id).map(|(_, l)| l.clone());
+        let mut buttons: Vec<AnyElement> = Vec::new();
+        // (label, command): the actions' own scripts, then the commands to copy.
+        let mut commands: Vec<(String, String)> = Vec::new();
+        let mut notes: Vec<String> = Vec::new();
+        for (n, f) in row.fixes.iter().enumerate() {
+            match f {
+                Fix::Action { label, action } => {
+                    if let Some(c) = action.command() {
+                        commands.push((label.clone(), c));
+                    }
+                    let (id, label, action) = (row.id.clone(), label.clone(), action.clone());
+                    let danger = matches!(action, FixAction::RemovePostgres { .. });
+                    let b = ui::button(SharedString::from(format!("check-fix-{}-{n}", row.id))).label(label.clone()).disabled(fixing);
+                    let b = if danger { b.danger() } else { b.outline() };
+                    buttons.push(b.on_click(cx.listener(move |this, _, window, cx| this.check_action(id.clone(), label.clone(), action.clone(), window, cx))).into_any_element());
+                }
+                Fix::Command { label, command } => commands.push((label.clone(), command.clone())),
+                Fix::Steps { text } => notes.push(text.clone()),
+            }
+        }
+        let shown = self.commands_shown.contains(&row.id);
+        if !ready {
+            buttons.push(
+                ui::button(SharedString::from(format!("check-again-{}", row.id)))
+                    .ghost()
+                    .label("Check again")
+                    .disabled(fixing)
+                    .on_click(cx.listener(|this, _, _, cx| this.run_checks(cx)))
+                    .into_any_element(),
+            );
+            if !commands.is_empty() {
+                let id = row.id.clone();
+                buttons.push(
+                    ui::button(SharedString::from(format!("check-cmd-{}", row.id)))
+                        .ghost()
+                        .label(match (shown, commands.len()) {
+                            (true, 1) => "Hide command",
+                            (true, _) => "Hide commands",
+                            (false, 1) => "Show command",
+                            (false, _) => "Show commands",
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.commands_shown.remove(&id) {
+                                this.commands_shown.insert(id.clone());
+                            }
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                );
+            }
+        }
+        let rid = row.id.clone();
+        h_flex()
+            .gap_3()
+            .py(px(10.))
+            .items_start()
+            .when(i > 0, |r| r.border_t_1())
+            .border_color(theme.border)
+            .text_sm()
+            // The label keeps its own width in a fixed column.
+            .child(h_flex().w(px(148.)).flex_shrink_0().child(ui::pill(&theme, tone, text)))
+            .child(div().w(px(ui::CARD_LABEL_W + 30.)).flex_shrink_0().font_weight(FontWeight::MEDIUM).child(row.label))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_2()
+                    .child(div().text_color(theme.muted_foreground).child(row.detail))
+                    .children(notes.into_iter().map(|n| div().text_color(theme.muted_foreground).child(n)))
+                    .when(!ready, |c| c.child(ui::button_row(buttons)))
+                    .when_some(here.filter(|_| fixing), |c, label| c.child(div().child(format!("{label}: {fix_step}"))))
+                    .when(shown && !ready, |c| {
+                        c.children(commands.into_iter().enumerate().map(|(n, (label, command))| {
+                            crate::diagnosis::command_box_in(&theme, SharedString::from(format!("check-copy-{rid}-{n}")), &label, &command, theme.border)
+                        }))
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// How the last System check action ended, under the list (the list
+    /// itself is read again then).
+    fn check_fix_outcome(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (_, label) = self.check_fix_at.clone()?;
+        let theme = cx.theme().clone();
+        let job = self.check_fix.read(cx);
+        match job.state() {
+            JobState::Done(m) => Some(ui::outcome(&theme, Tone::Good, format!("{label}: {m}")).into_any_element()),
+            JobState::Failed(m) => Some(crate::diagnosis::outcome(&theme, Tone::Bad, format!("{label} did not finish: {m}"), job)),
+            _ => None,
+        }
     }
 
     fn browse(&mut self, field: Entity<InputState>, window: &mut Window, cx: &mut Context<Self>) {
@@ -446,7 +557,7 @@ impl Installer {
                 .py(px(8.))
                 .when(!last, |r| r.border_b_1().border_color(theme.border))
                 .child(div().w(px(150.)).flex_shrink_0().text_sm().text_color(theme.muted_foreground).child(label))
-                .child(div().flex_1().min_w_0().font_family(theme.mono_font_family.clone()).child(gpui_kit::component::input::Input::new(&field)))
+                .child(div().flex_1().min_w_0().font_family(theme.mono_font_family.clone()).child(probed_input(Input::new(&field))))
                 .child(crate::ui::button(id).outline().icon(Icon::new(IconName::Folder)).label("Change…").on_click(cx.listener(move |this, _, window, cx| this.browse(f2.clone(), window, cx))))
                 .into_any_element()
         };
@@ -596,19 +707,16 @@ impl Installer {
                 ui::panel(&theme)
                     .gap_4()
                     .child(div().font_weight(FontWeight::SEMIBOLD).child(pg_title))
-                    .child(
-                        h_flex()
-                            .gap_3()
-                            .child(field(&theme, "Database name", &f.pg_db).flex_1())
-                            .child(field(&theme, "User", &f.pg_user).flex_1())
-                            .child(field(&theme, "Port", &f.pg_port).w_24()),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_3()
-                            .child(default_password_field(&theme, "pg-password-help", "Password", &f.pg_password).flex_1())
-                            .child(secret_field(&theme, "PostgreSQL admin password", &f.pg_admin_password).flex_1()),
-                    ),
+                    .child(grid_row(vec![
+                        Some(field(&theme, "Database name", &f.pg_db)),
+                        Some(field(&theme, "User", &f.pg_user)),
+                        Some(field(&theme, "Port", &f.pg_port)),
+                    ]))
+                    .child(grid_row(vec![
+                        Some(default_password_field(&theme, "pg-password-help", "Password", &f.pg_password)),
+                        Some(default_password_field(&theme, "pg-admin-password-help", "PostgreSQL admin password", &f.pg_admin_password)),
+                        None,
+                    ])),
             )
             .when(self.flavor == Some(Flavor::Clickhouse), |col| {
                 col.child(
@@ -621,19 +729,16 @@ impl Installer {
                         } else {
                             "ClickHouse"
                         }))
-                        .child(
-                            h_flex()
-                                .gap_3()
-                                .child(field(&theme, "Database", &f.ch_db).flex_1())
-                                .child(field(&theme, "User", &f.ch_user).flex_1())
-                                .child(default_password_field(&theme, "ch-password-help", "Password", &f.ch_password).flex_1()),
-                        )
-                        .child(
-                            h_flex()
-                                .gap_3()
-                                .child(field(&theme, "HTTP port", &f.ch_http_port).w_32())
-                                .child(field(&theme, "Native port", &f.ch_native_port).w_32()),
-                        ),
+                        .child(grid_row(vec![
+                            Some(field(&theme, "Database", &f.ch_db)),
+                            Some(field(&theme, "User", &f.ch_user)),
+                            Some(default_password_field(&theme, "ch-password-help", "Password", &f.ch_password)),
+                        ]))
+                        .child(grid_row(vec![
+                            Some(field(&theme, "HTTP port", &f.ch_http_port)),
+                            Some(field(&theme, "Native port", &f.ch_native_port)),
+                            None,
+                        ])),
                 )
             })
             .children(self.port_warning(cx))
