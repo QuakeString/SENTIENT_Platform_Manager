@@ -1,0 +1,4 @@
+old-light frames 420 page bg (238.0, 238.0, 238.0) frames off the page bg: 24
+new-light frames 420 page bg (238.0, 238.0, 238.0) frames off the page bg: 0
+old-dark frames 420 page bg (33.0, 40.0, 42.0) frames off the page bg: 30
+new-dark frames 420 page bg (33.0, 40.0, 42.0) frames off the page bg: 0

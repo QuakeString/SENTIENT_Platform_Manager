@@ -495,7 +495,7 @@ impl Manager {
         let theme = cx.theme().clone();
         let events = self.strip.read(cx).events.clone();
         let (unread, _) = self.strip.read(cx).unread();
-        let w = (width - 24.).min(360.);
+        let w = (width - 24.).min(400.);
         let now = chrono::Utc::now().timestamp();
         let ago = |at: i64| {
             let m = (now - at).max(0) / 60;
@@ -513,7 +513,7 @@ impl Manager {
                 .items_start()
                 .pl(px(10.))
                 .pr_2()
-                .py(px(7.))
+                .py(px(9.))
                 .rounded(px(6.))
                 .cursor_pointer()
                 .hover(|r| r.bg(theme.list_hover))
@@ -534,13 +534,13 @@ impl Manager {
                                 .when(unread, |c| c.child(div().flex_shrink_0().size(px(7.)).rounded_full().bg(theme.danger)))
                                 .child(div().min_w_0().text_sm().font_weight(if unread { FontWeight::SEMIBOLD } else { FontWeight::NORMAL }).overflow_hidden().whitespace_nowrap().text_ellipsis().child(title)),
                         )
-                        .child(div().text_size(px(12.5)).text_color(theme.muted_foreground).overflow_hidden().whitespace_nowrap().text_ellipsis().child(detail))
+                        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).overflow_hidden().whitespace_nowrap().text_ellipsis().child(detail))
                         .child(
                             h_flex()
                                 .gap(px(5.))
                                 .items_center()
                                 .child(div().size(px(7.)).rounded_full().bg(rgb(c)))
-                                .child(div().text_size(px(11.5)).text_color(theme.muted_foreground).child(meta)),
+                                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(meta)),
                         ),
                 )
                 // Right: the row's own clear (×), always shown so one line
@@ -552,14 +552,14 @@ impl Manager {
         let clear_button = |id: SharedString, on: Box<dyn Fn(&mut App)>| {
             div()
                 .id(id)
-                .size(px(22.))
+                .size(px(28.))
                 .flex()
                 .items_center()
                 .justify_center()
                 .rounded(px(5.))
                 .hover(|d| d.bg(theme.danger.opacity(0.12)))
                 .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Clear").build(w, cx))
-                .child(Icon::new(IconName::Close).size(px(13.)).text_color(theme.muted_foreground))
+                .child(Icon::new(IconName::Close).size(px(16.)).text_color(theme.muted_foreground))
                 .on_click(move |_, _, cx| {
                     cx.stop_propagation();
                     on(cx);
@@ -630,10 +630,10 @@ impl Manager {
             .gap_2()
             .items_center()
             .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("Notifications"))
-            .when(unread > 0, |h| h.child(crate::ui::button("bell-read").ghost().xsmall().label("Mark all as read").on_click(move |_, _, cx| s3.update(cx, |s, cx| s.mark_all_read(cx)))))
+            .when(unread > 0, |h| h.child(crate::ui::button("bell-read").ghost().label("Mark all as read").on_click(move |_, _, cx| s3.update(cx, |s, cx| s.mark_all_read(cx)))))
             .when(!empty, |h| {
                 let close2 = close.clone();
-                h.child(crate::ui::button("bell-clear").ghost().xsmall().label("Clear all").on_click(move |_, _, cx| {
+                h.child(crate::ui::button("bell-clear").ghost().label("Clear all").on_click(move |_, _, cx| {
                     s4.update(cx, |s, cx| s.clear(None, cx));
                     let keys = cond_keys.clone();
                     close2
@@ -749,12 +749,7 @@ impl Manager {
                 .child(div().text_color(fg.opacity(0.65)).child(label))
                 .when(wide, |r| {
                     r.child(
-                        div()
-                            .w(px(42.))
-                            .h(px(5.))
-                            .rounded_full()
-                            .bg(fg.opacity(0.2))
-                            .child(div().h_full().rounded_full().w(relative(fraction.clamp(0.0, 1.0))).bg(if high { warn_fill } else { fg })),
+                        div().w(px(42.)).child(ui::segment_bar(fg.opacity(0.2), 5., &[(if high { warn_fill } else { fg }, fraction.clamp(0.0, 1.0))])),
                     )
                 })
                 // A fixed slot for the widest value: the bars and the bell
@@ -867,7 +862,7 @@ impl Manager {
         let bell_open = self.bell_open;
         let bell = div()
             .id("bell")
-            .size(px(30.))
+            .size(px(32.))
             .flex()
             .items_center()
             .justify_center()
@@ -875,7 +870,7 @@ impl Manager {
             .cursor_pointer()
             .when(bell_open, |b| b.bg(black().opacity(if light_bar { 0.16 } else { 0.30 })))
             .hover(move |b| b.bg(black().opacity(if light_bar { 0.16 } else { 0.30 })))
-            .child(Icon::new(IconName::Bell).text_color(fg).size_4())
+            .child(Icon::new(IconName::Bell).text_color(fg).size_5())
             .on_click(cx.listener(|this, _, _, cx| {
                 this.bell_open = !this.bell_open;
                 cx.notify();
@@ -1015,16 +1010,16 @@ impl Manager {
                     b.child(
                         div()
                             .absolute()
-                            .top(px(1.))
-                            .right(px(1.))
-                            .min_w(px(15.))
-                            .h(px(15.))
-                            .px(px(3.))
+                            .top(px(0.))
+                            .right(px(0.))
+                            .min_w(px(16.))
+                            .h(px(16.))
+                            .px(px(4.))
                             .rounded_full()
                             // Red while a failed job is unread, else amber.
                             .bg(if unseen > 0 { rgb(0xdc2626) } else { rgb(0xf59e0b) })
                             .text_color(if unseen > 0 { rgb(0xffffff) } else { rgb(0x1c1917) })
-                            .text_size(px(10.))
+                            .text_size(px(10.5))
                             .font_weight(FontWeight::BOLD)
                             .flex()
                             .items_center()
@@ -1800,7 +1795,11 @@ impl Render for Manager {
                             .min_w_0()
                             .relative()
                             .children(notices)
-                            .child(crate::ui::appear(h_flex().flex_1().min_h_0().w_full().child(content), SharedString::from(format!("page-{}", self.page.id())), 140)),
+                            // The page's own grey behind it, so no frame shows the
+                            // window's white; a page switch is instant (a fade-in
+                            // let the white show through on its first frames).
+                            .bg(cx.theme().muted)
+                            .child(h_flex().flex_1().min_h_0().w_full().child(content)),
                     ),
             )
             .children(layer)

@@ -119,13 +119,7 @@ fn table_row(theme: &gpui_kit::component::Theme, name: String, hint: String, fra
                 .when(!hint.is_empty(), |r| r.child(div().min_w_0().overflow_hidden().text_ellipsis().text_size(px(13.)).text_color(theme.muted_foreground).child(hint))),
         )
         .child(
-            div()
-                .flex_1()
-                .min_w(px(40.))
-                .h(px(6.))
-                .rounded_full()
-                .bg(theme.secondary)
-                .child(div().h_full().rounded_full().w(relative(fraction.clamp(0.02, 1.0))).bg(theme.primary)),
+            div().flex_1().min_w(px(40.)).child(ui::segment_bar(theme.secondary, 6., &[(theme.primary, fraction.clamp(0.02, 1.0))])),
         )
         .child(div().w(px(64.)).flex_shrink_0().text_right().child(size))
 }
@@ -846,13 +840,7 @@ pub(crate) fn db_details(
         .into_iter()
         .filter(|(_, b, name)| *b > 0 || *name == "PostgreSQL")
         .collect();
-        let bar = h_flex()
-            .w_full()
-            .h(px(14.))
-            .rounded_full()
-            .overflow_hidden()
-            .bg(theme.secondary)
-            .children(segs.iter().map(|(c, b, _)| div().h_full().w(relative(frac(*b))).bg(*c)));
+        let bar = ui::segment_bar(theme.secondary, 14., &segs.iter().map(|(c, b, _)| (*c, frac(*b))).collect::<Vec<_>>());
         let legend = h_flex()
             .gap_4()
             .flex_wrap()

@@ -192,6 +192,12 @@ pub struct RemotePages {
     /// A takeover started for a migration: the migration to this type runs
     /// by itself once the takeover succeeded.
     pending_migrate: Option<String>,
+    /// Readings under way (fetch).
+    in_flight: usize,
+    /// A small save under way (run_quiet), by its section.
+    saving: Option<&'static str>,
+    /// The last small save: its section, how it went and its job (Retry).
+    saved: Option<(&'static str, Result<(), String>, Vec<String>)>,
     /// The newest SENTIENT on the update channel (None: none newer).
     offer: Read<Option<crate::updates::Offer>>,
     /// The versions "Other version" lists.
@@ -264,6 +270,12 @@ impl RemotePages {
                         JobState::Failed(_) => this.pending_migrate = None,
                         _ => {}
                     }
+                    // Whatever ran may have changed what the page knows (a
+                    // takeover ends "cannot be changed now"): every reading,
+                    // the preflight's too, is taken again at once, while the
+                    // job's result still shows.
+                    this.preflight = Preflight::Idle;
+                    this.migrate_confirm = false;
                     this.reload(cx);
                 }
                 cx.notify();
@@ -285,6 +297,9 @@ impl RemotePages {
             // Screens: a canned preflight failure.
             shown_job: None,
             pending_migrate: None,
+            in_flight: 0,
+            saving: None,
+            saved: None,
             preflight: std::env::var("SPM_DEBUG_PREFLIGHT").ok().filter(|_| cfg!(debug_assertions)).map(Preflight::Failed).unwrap_or(Preflight::Idle),
             offer: Read::Loading,
             versions: Read::Loading,
@@ -493,12 +508,15 @@ impl RemotePages {
     ) {
         // Whichever comes first: the answer, or 20 seconds without one (a
         // reading never waits forever).
+        // Counted while it runs (the Refresh icon turns meanwhile).
+        self.in_flight += 1;
         let put = std::rc::Rc::new(std::cell::RefCell::new(Some(put)));
         let p2 = put.clone();
         let task = cx.spawn(async move |this, cx| {
             let got = cx.background_executor().spawn(async move { work() }).await;
             this.update(cx, |p, cx| {
                 if let Some(put) = put.borrow_mut().take() {
+                    p.in_flight = p.in_flight.saturating_sub(1);
                     put(p, match got {
                         Ok(v) => Read::Got(v),
                         Err(e) => Read::Failed(e),
@@ -513,6 +531,7 @@ impl RemotePages {
             cx.background_executor().timer(READ_TIMEOUT).await;
             this.update(cx, |p, cx| {
                 if let Some(put) = p2.borrow_mut().take() {
+                    p.in_flight = p.in_flight.saturating_sub(1);
                     put(p, Read::Failed(format!("The server did not answer within {} seconds.", READ_TIMEOUT.as_secs())));
                     cx.notify();
                 }
@@ -520,6 +539,82 @@ impl RemotePages {
             .ok();
         });
         self._tasks.push(timeout);
+    }
+
+    /// A small save (a setting, a delete): no job view, no chip, nothing in
+    /// the bell. The thin line under the top bar runs meanwhile; then the
+    /// section says Saved, or what went wrong with Retry, and is read again.
+    fn run_quiet(&mut self, section: &'static str, args: Vec<String>, cx: &mut Context<Self>) {
+        if self.saving.is_some() || self.job.read(cx).is_running() {
+            return;
+        }
+        self.saving = Some(section);
+        self.saved = None;
+        crate::manager::strip::quiet(true, cx);
+        let inst = self.inst.clone();
+        let a2 = args.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let r = cx
+                .background_executor()
+                .spawn(async move {
+                    let sink = sentient_installer_core::progress::noop();
+                    let a: Vec<&str> = a2.iter().map(String::as_str).collect();
+                    remote::start_job(&inst, &a).and_then(|id| remote::follow(&inst, &id, &sink))
+                })
+                .await;
+            let _ = cx.update(|cx| crate::manager::strip::quiet(false, cx));
+            this.update(cx, |p, cx| {
+                p.saving = None;
+                p.saved = Some((section, r.map_err(|e| remote::split_failure(&e).0), args));
+                p.reload(cx);
+                cx.notify();
+                // The tick goes after a few seconds; an error stays.
+                let hide = cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(std::time::Duration::from_secs(4)).await;
+                    this.update(cx, |p, cx| {
+                        if p.saved.as_ref().is_some_and(|(s, r, _)| *s == section && r.is_ok()) {
+                            p.saved = None;
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                });
+                p._tasks.push(hide);
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+        cx.notify();
+    }
+
+    /// A section's title with its small save's outcome beside it.
+    fn section_title(&self, theme: &gpui_kit::component::Theme, title: &'static str, section: &'static str, cx: &mut Context<Self>) -> Div {
+        let outcome: Option<AnyElement> = match &self.saved {
+            Some((s, Ok(()), _)) if *s == section => Some(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .text_sm()
+                    .text_color(theme.success_foreground)
+                    .child(gpui_kit::component::Icon::new(gpui_kit::component::IconName::Check).size_4())
+                    .child("Saved")
+                    .into_any_element(),
+            ),
+            Some((s, Err(e), args)) if *s == section => {
+                let args = args.clone();
+                Some(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .min_w_0()
+                        .child(div().min_w_0().text_sm().text_color(theme.danger).overflow_hidden().whitespace_nowrap().text_ellipsis().child(format!("Not saved: {e}")))
+                        .child(crate::ui::button(SharedString::from(format!("{section}-retry"))).outline().label("Retry").on_click(cx.listener(move |this, _, _, cx| this.run_quiet(section, args.clone(), cx))))
+                        .into_any_element(),
+                )
+            }
+            _ => None,
+        };
+        h_flex().gap_3().items_center().min_h(px(28.)).child(div().font_weight(FontWeight::MEDIUM).child(title)).children(outcome)
     }
 
     fn run_job(&mut self, label: impl Into<String>, args: Vec<String>, cx: &mut Context<Self>) {
@@ -1077,7 +1172,7 @@ impl RemotePages {
         crate::modal::alert(window, cx, move |d, _, _| {
             let (this, path) = (this.clone(), path.clone());
             d.title(format!("Delete {name}?")).description("The file is deleted from the server. This cannot be undone.").confirm().ok_text("Delete").on_ok(move |_, _, cx| {
-                this.update(cx, |p, cx| p.run_job("Deleting the backup", vec!["backup-delete".into(), path.clone()], cx)).ok();
+                this.update(cx, |p, cx| p.run_quiet("backups", vec!["backup-delete".into(), path.clone()], cx)).ok();
                 true
             })
         });
@@ -1085,7 +1180,8 @@ impl RemotePages {
 
     fn backup_page(&self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
-        let busy = self.job.read(cx).is_running();
+        // A small save under way keeps the controls where they are, off.
+        let busy = self.job.read(cx).is_running() || self.saving.is_some();
         // The same panels as this computer's Backup: "Back up now", the
         // daily backup, then the list. Rows the server cannot change from
         // here yet are left out.
@@ -1111,7 +1207,7 @@ impl RemotePages {
         let this = cx.entity().downgrade();
         let auto = ui::panel(&theme)
             .gap_0()
-            .child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Automatic backup"))
+            .child(div().pb_1().child(self.section_title(&theme, "Automatic backup", "auto", cx)))
             .child(crate::manager::backup::brow_pub(&theme, "Back up every day", Some("A backup every day at this time, on the server's clock."), {
                 let (t1, this1) = (time.clone(), this.clone());
                 h_flex()
@@ -1119,7 +1215,7 @@ impl RemotePages {
                     .items_center()
                     .child(gpui_kit::component::switch::Switch::new("r-auto-on").checked(on).disabled(busy).on_click(cx.listener(move |this, v: &bool, _, cx| {
                         let at = if *v { t1.clone() } else { "off".into() };
-                        this.run_job("Saving the automatic backup", save(at, keep, include), cx);
+                        this.run_quiet("auto", save(at, keep, include), cx);
                     })))
                     .child(crate::ui::button("r-auto-time").outline().disabled(!on || busy).label(time.clone()).icon(gpui_kit::component::IconName::ChevronDown).dropdown_menu(move |menu, _, _| {
                         let mut menu = menu;
@@ -1128,7 +1224,7 @@ impl RemotePages {
                                 let t = format!("{h:02}:{m:02}");
                                 let (this, t2) = (this1.clone(), t.clone());
                                 menu = menu.item(PopupMenuItem::new(t).on_click(move |_, _, cx| {
-                                    this.update(cx, |p, cx| p.run_job("Saving the automatic backup", save(t2.clone(), keep, include), cx)).ok();
+                                    this.update(cx, |p, cx| p.run_quiet("auto", save(t2.clone(), keep, include), cx)).ok();
                                 }));
                             }
                         }
@@ -1138,7 +1234,7 @@ impl RemotePages {
             .child(crate::manager::backup::brow_pub(&theme, "Keep", Some("Older automatic backups are deleted."), {
                 let (t1, this1) = (if on { time.clone() } else { "off".into() }, this.clone());
                 crate::manager::backup::keep_menu("r-auto-keep", keep, busy, move |k, _, cx| {
-                    this1.update(cx, |p, cx| p.run_job("Saving the automatic backup", save(t1.clone(), k, include), cx)).ok();
+                    this1.update(cx, |p, cx| p.run_quiet("auto", save(t1.clone(), k, include), cx)).ok();
                 })
             }))
             .child(crate::manager::backup::brow_pub(&theme, "Include", Some("Everything: the whole database and its files. Configuration: devices, dashboards, users and settings, without telemetry history."), {
@@ -1147,8 +1243,8 @@ impl RemotePages {
                 for (key, label) in [("everything", "Everything"), ("configuration", "Configuration only")] {
                     let at = at.clone();
                     seg = seg.child(ui::seg_item(&theme, SharedString::from(format!("r-inc-{key}")), label, include == key).on_click(cx.listener(move |this, _, _, cx| {
-                        if include != key && !this.job.read(cx).is_running() {
-                            this.run_job("Saving the automatic backup", save(at.clone(), keep, key), cx);
+                        if include != key && !this.job.read(cx).is_running() && this.saving.is_none() {
+                            this.run_quiet("auto", save(at.clone(), keep, key), cx);
                         }
                     })));
                 }
@@ -1160,7 +1256,7 @@ impl RemotePages {
                 .gap_3()
                 .pb_1()
                 .items_center()
-                .child(div().font_weight(FontWeight::MEDIUM).child("Backups"))
+                .child(self.section_title(&theme, "Backups", "backups", cx))
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().text_color(theme.muted_foreground).child(format!(
                     "{} · {} file{}, {}",
                     b.folder.display(),
@@ -1799,7 +1895,10 @@ impl Render for RemotePages {
         };
         // Which server this is shows in the top bar (its colour, the
         // switcher with REMOTE); a job shows in the progress strip.
-        let reload = { use gpui_kit::component::Sizable as _; crate::ui::button("remote-reload").ghost().small().icon(gpui_kit::component::IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(|this, _, _, cx| this.reload(cx))) };
+        let me = cx.entity().downgrade();
+        let reload = crate::ui::refresh_button("remote-reload", self.in_flight > 0, window, move |_, cx| {
+            me.update(cx, |this, cx| this.reload(cx)).ok();
+        });
         ui::page_with(&theme, title, summary, reload).child(body)
     }
 }

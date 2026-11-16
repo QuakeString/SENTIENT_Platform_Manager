@@ -561,6 +561,8 @@ impl BackupPage {
         }
         let prefs = self.prefs.clone();
         let record = self.record.clone();
+        // A small save: the thin line under the top bar, then the note here.
+        crate::manager::strip::quiet(true, cx);
         let task = cx.spawn(async move |this, cx| {
             let r = cx
                 .background_executor()
@@ -579,6 +581,7 @@ impl BackupPage {
                     }))
                 })
                 .await;
+            let _ = cx.update(|cx| crate::manager::strip::quiet(false, cx));
             this.update(cx, |page, cx| {
                 page.schedule_note = match r {
                     Ok(Some(m)) => Some((Tone::Good, m)),
@@ -1353,10 +1356,16 @@ pub(crate) fn entry_row(theme: &gpui_kit::component::Theme, i: usize, e: &crate:
 pub(crate) fn entry_row_with(theme: &gpui_kit::component::Theme, i: usize, e: &crate::backups::Entry, verified: bool) -> Div {
     // Verified: every part of the file was read back and matched its
     // SHA-256 (after it was written, or by Check).
-    let (tone, text, tip) = match &e.check {
-        Some(c) if c.ok => (Tone::Good, format!("Verified {}", c.at.get(..10).unwrap_or("")), "Every part of the file was read back on this date and matched its SHA-256 checksum."),
-        Some(_) => (Tone::Bad, "Damaged".to_string(), "A part of the file does not match its SHA-256 checksum. Do not rely on this backup."),
-        None => (Tone::Neutral, "Not verified".to_string(), "Integrity check not run yet. Check reads every part of the file and compares it with its SHA-256 checksum."),
+    // Every backup is checked as the last part of its own job, so a new one
+    // is "Verified <date time>" at once; Verify checks it again later.
+    let (tone, text, tip): (Tone, String, String) = match &e.check {
+        Some(c) if c.ok => (
+            Tone::Good,
+            format!("Verified {}", check_time(&c.at)),
+            format!("Every part of the file was read back on {} and matched its SHA-256 checksum. {}", check_time(&c.at), c.summary),
+        ),
+        Some(c) => (Tone::Bad, "Damaged".to_string(), format!("Checked {}: {} Do not rely on this backup.", check_time(&c.at), c.summary)),
+        None => (Tone::Neutral, "Not verified".to_string(), "Integrity check not run yet. Verify reads every part of the file and compares it with its SHA-256 checksum.".to_string()),
     };
     h_flex()
         .flex_wrap()
@@ -1382,11 +1391,19 @@ pub(crate) fn entry_row_with(theme: &gpui_kit::component::Theme, i: usize, e: &c
         .when(verified, |r| r.child(
             h_flex()
                 .id(SharedString::from(format!("verified-{}", e.name)))
-                .w(px(150.))
+                .w(px(176.))
                 .flex_shrink_0()
                 .child(ui::pill(theme, tone, text))
-                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)),
+                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)),
         ))
+}
+
+/// When a check ran, on the clock of the machine that ran it (as the
+/// backup's own time beside it is): "2026-11-15 17:14".
+fn check_time(at: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(at)
+        .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|_| at.get(..16).unwrap_or(at).replace('T', " "))
 }
 
 /// "Keep: 7 backups", chosen from a list. Shared with a remote server's.
