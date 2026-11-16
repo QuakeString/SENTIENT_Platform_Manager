@@ -262,6 +262,8 @@ pub struct RemotePages {
     restores: Read<Vec<crate::restore_flow::Entry>>,
     /// Platform settings › Database: where each store keeps its data.
     locations: Option<Entity<super::movedata::LocationsCard>>,
+    /// Platform settings: Enter in the fields (made with the inputs).
+    settings_enter: Vec<Subscription>,
 }
 
 impl RemotePages {
@@ -362,6 +364,7 @@ impl RemotePages {
             restore_pending: None,
             restores: Read::Loading,
             locations: None,
+            settings_enter: Vec::new(),
         };
         #[cfg(debug_assertions)]
         if let (Ok(frame), Kind::Backup) = (std::env::var("SPM_DEBUG_RESTORE"), kind) {
@@ -373,9 +376,115 @@ impl RemotePages {
             let names = ["platform", "database", "network", "retention", "advanced"];
             p.settings_tab = names.iter().position(|n| n.eq_ignore_ascii_case(&t)).unwrap_or(0);
         }
+        // Leaving Platform settings with changes not applied asks first.
+        let (a, b, c, d) = (cx.entity().downgrade(), cx.entity().downgrade(), cx.entity().downgrade(), cx.entity().downgrade());
+        crate::ui::set_unsaved(
+            Some(p.inst.id.clone()),
+            crate::ui::Unsaved {
+                pending: std::rc::Rc::new(move |cx| a.upgrade().map(|p| p.read(cx).settings_pending(cx)).unwrap_or((0, 0))),
+                list: std::rc::Rc::new(move |cx| d.upgrade().map(|p| p.read(cx).settings_change_lines(cx)).unwrap_or_default()),
+                apply: std::rc::Rc::new(move |_, cx| {
+                    b.update(cx, |p, cx| p.apply_pending_settings(cx)).ok();
+                }),
+                discard: std::rc::Rc::new(move |_, cx| {
+                    c.update(cx, |p, cx| {
+                        p.inputs.clear();
+                        cx.notify();
+                    })
+                    .ok();
+                }),
+            },
+        );
         p.reload(cx);
         p.refresh_agent(cx);
         p
+    }
+
+    /// Platform settings: the values read, and the catalog setting of each input.
+    fn settings_read(&self) -> Option<&std::collections::HashMap<String, String>> {
+        match &self.settings {
+            Read::Got(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// Platform settings: the inputs whose value differs from the one read.
+    fn settings_changed(&self, cx: &App) -> Vec<String> {
+        let Some(values) = self.settings_read() else { return Vec::new() };
+        self.inputs.iter().filter(|(e, i)| values.get(e).cloned().unwrap_or_default() != i.read(cx).value().trim()).map(|(e, _)| e.clone()).collect()
+    }
+
+    /// Platform settings: the inputs whose value cannot be used, in order.
+    fn settings_invalid(&self, cx: &App) -> Vec<(crate::catalog::Setting, String)> {
+        let all: Vec<crate::catalog::Setting> = crate::catalog::groups().into_iter().flat_map(|g| g.settings).collect();
+        self.inputs
+            .iter()
+            .filter_map(|(e, i)| {
+                let v = i.read(cx).value().to_string();
+                let st = all.iter().find(|s| &s.env == e)?;
+                st.problem(&v).map(|_| (st.clone(), v))
+            })
+            .collect()
+    }
+
+    /// (changes, fields not valid) on Platform settings.
+    fn settings_pending(&self, cx: &App) -> (usize, usize) {
+        (self.settings_changed(cx).len(), self.settings_invalid(cx).len())
+    }
+
+    /// The changes as the leave prompt lists them ("Name: old to new").
+    fn settings_change_lines(&self, cx: &App) -> Vec<String> {
+        let Some(values) = self.settings_read() else { return Vec::new() };
+        let all: Vec<crate::catalog::Setting> = crate::catalog::groups().into_iter().flat_map(|g| g.settings).collect();
+        self.settings_changed(cx)
+            .iter()
+            .filter_map(|e| {
+                let st = all.iter().find(|s| &s.env == e)?;
+                let new = self.inputs.iter().find(|(k, _)| k == e).map(|(_, i)| i.read(cx).value().trim().to_string()).unwrap_or_default();
+                Some(crate::manager::settings::change_line(st, &values.get(e).cloned().unwrap_or_default(), &new))
+            })
+            .collect()
+    }
+
+    /// The values to write: those read, with the fields' over them.
+    fn settings_to_apply(&self, cx: &App) -> Option<std::collections::HashMap<String, String>> {
+        let mut all = self.settings_read()?.clone();
+        for (e, i) in &self.inputs {
+            let v = i.read(cx).value().trim().to_string();
+            if v.is_empty() {
+                all.remove(e);
+            } else {
+                all.insert(e.clone(), v);
+            }
+        }
+        Some(all)
+    }
+
+    /// Apply the changes (the bar's Apply, Enter, leaving the page).
+    fn apply_pending_settings(&mut self, cx: &mut Context<Self>) {
+        let (changes, invalid) = self.settings_pending(cx);
+        let external = self.status.got().is_none_or(|s| s.external_compose);
+        if changes == 0 || invalid > 0 || external || self.job.read(cx).is_running() {
+            return;
+        }
+        if let Some(all) = self.settings_to_apply(cx) {
+            self.apply_settings(all, cx);
+        }
+    }
+
+    /// The inputs the open settings tab shows, in order (Enter).
+    fn settings_shown_inputs(&self) -> Vec<Entity<InputState>> {
+        use crate::manager::settings as local;
+        let all: Vec<crate::catalog::Setting> = crate::catalog::groups().into_iter().flat_map(|g| g.settings).collect();
+        let keys: Vec<String> = if self.settings_tab < 4 {
+            local::TAB_GROUPS[self.settings_tab].iter().flat_map(|(_, k)| k.iter().map(|s| s.to_string())).collect()
+        } else {
+            all.iter().map(|s| s.env.clone()).collect()
+        };
+        keys.iter()
+            .filter(|k| all.iter().find(|s| &s.env == *k).is_some_and(local::is_input))
+            .filter_map(|k| self.inputs.iter().find(|(e, _)| e == k).map(|(_, i)| i.clone()))
+            .collect()
     }
 
     /// Shown again after another instance was open: what it read before
@@ -1551,7 +1660,9 @@ impl RemotePages {
     // -- Settings, Migration, Repair, Gateway --------------------------------
 
     fn settings_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        use crate::manager::settings as local;
         let theme = cx.theme().clone();
+        ui::set_stacked(f32::from(window.viewport_size().width) < ui::ROW_STACK_W);
         let values = match &self.settings {
             Read::Loading => return self.skeleton(&theme),
             Read::Failed(e) => return Self::failed(&theme, e),
@@ -1572,51 +1683,63 @@ impl RemotePages {
                     self.inputs.push((st.env.clone(), input));
                 }
             }
+            // Enter: the next field shown; on the last one Apply, or the
+            // first field that is not valid.
+            let fields: Vec<Entity<InputState>> = self.inputs.iter().map(|(_, i)| i.clone()).collect();
+            self.settings_enter = ui::enter_moves_on(&fields, window, cx, |p: &Self, _| p.settings_shown_inputs(), |p: &mut Self, _, cx| {
+                let bad = p.settings_invalid(cx);
+                if let Some((st, _)) = bad.first() {
+                    let shown = p.settings_shown_inputs();
+                    let first = shown.into_iter().find(|i| bad.iter().any(|(s, _)| p.inputs.iter().any(|(e, x)| e == &s.env && x == i)));
+                    return first.or_else(|| p.inputs.iter().find(|(e, _)| e == &st.env).map(|(_, i)| i.clone()));
+                }
+                p.apply_pending_settings(cx);
+                None
+            });
+            // Screens and the layout test: some settings changed and one
+            // field not valid, so the bar shows (SPM_DEBUG_SETTINGS_PENDING=
+            // short, long on All variables, valid without the bad field,
+            // leave with the leave prompt open).
+            #[cfg(debug_assertions)]
+            if let Ok(which) = std::env::var("SPM_DEBUG_SETTINGS_PENDING") {
+                if which == "long" {
+                    self.settings_tab = 4;
+                }
+                let mut set = vec![("RUST_LOG", "debug"), ("LICENSE_SERVER_URL", "https://licence.example.com/a/rather/long/address")];
+                if which != "valid" && which != "leave" {
+                    set.push(("LICENSE_BINDING_CHECK_INTERVAL_SECS", "jj"));
+                }
+                for (k, v) in set {
+                    if let Some((_, i)) = self.inputs.iter().find(|(e, _)| e == k) {
+                        i.update(cx, |s, cx| s.set_value(v.to_string(), window, cx));
+                    }
+                }
+                if which == "leave" {
+                    let id = self.inst.id.clone();
+                    window.defer(cx, move |window, cx| ui::debug_leave_prompt(Some(id), window, cx));
+                }
+            }
         }
         let busy = self.job.read(cx).is_running();
-        let value_of = |env: &str, cx: &App| self.inputs.iter().find(|(e, _)| e == env).map(|(_, i)| i.read(cx).value().trim().to_string()).unwrap_or_default();
-        let changed: Vec<String> = self.inputs.iter().filter(|(e, i)| values.get(e).cloned().unwrap_or_default() != i.read(cx).value().trim()).map(|(e, _)| e.clone()).collect();
-        let mut col = v_flex().gap(px(ui::GAP));
+        let changed = self.settings_changed(cx);
+        let invalid = self.settings_invalid(cx);
+        let mut notices = v_flex().gap(px(ui::GAP));
         // Someone else's compose file: the notice, and Apply stays off (also
         // while the status, which says so, is still being read).
         let external = self.status.got().is_some_and(|s| s.external_compose);
         if external {
-            col = col.child(foreign_compose_notice(&theme, "The settings cannot be changed now.", self.take_over_button("r-set-take-over", busy, cx)));
+            notices = notices.child(foreign_compose_notice(&theme, "The settings cannot be changed now.", self.take_over_button("r-set-take-over", busy, cx)));
         }
-        if !changed.is_empty() {
-            let mut all = values.clone();
-            for (e, _) in &self.inputs {
-                let v = value_of(e, cx);
-                if v.is_empty() {
-                    all.remove(e);
-                } else {
-                    all.insert(e.clone(), v);
-                }
-            }
-            let n = changed.len();
-            col = col.child(
-                h_flex()
-                    .gap(crate::ui::button_gap())
-                    .items_center()
-                    .p_3()
-                    .rounded(theme.radius)
-                    .border_1()
-                    .border_color(theme.primary)
-                    .bg(theme.accent)
-                    .child(div().flex_1().text_sm().child(format!("{n} change{} to apply on {}. SENTIENT restarts when a setting needs it.", if n == 1 { "" } else { "s" }, self.inst.name)))
-                    .child(crate::ui::probed(crate::ui::button("r-set-undo").ghost().label("Undo").on_click(cx.listener(|this, _, _, cx| {
-                        this.inputs.clear();
-                        cx.notify();
-                    }))))
-                    .child(crate::ui::probed(crate::ui::button("r-set-apply").primary().label("Apply").disabled(busy || external || self.status.got().is_none()).on_click(cx.listener(move |this, _, _, cx| this.apply_settings(all.clone(), cx))))),
-            );
+        // The tabs' counts: changes on each, red where a field is not valid.
+        let mut badges = vec![(0usize, false); 5];
+        for e in &changed {
+            badges[local::tab_index_of(e)].0 += 1;
         }
-        // The same tabs, rows and Advanced table as this computer's
-        // Platform settings. Rows that need this computer (presets from its
-        // memory, administrator accounts) are left out.
-        use crate::manager::settings as local;
+        for (st, _) in &invalid {
+            badges[local::tab_index_of(&st.env)].1 = true;
+        }
         let this = cx.entity().downgrade();
-        let nav = local::tab_bar(&theme, "r-", &local::TAB_TITLES, self.settings_tab, std::rc::Rc::new(move |i, cx| {
+        let tabs = ui::card_tabs(&theme, "r-", &local::TAB_TITLES, self.settings_tab, &badges, std::rc::Rc::new(move |i, cx| {
             this.update(cx, |p, cx| {
                 p.settings_tab = i;
                 super::session::set_settings_tab(i);
@@ -1624,10 +1747,13 @@ impl RemotePages {
             })
             .ok();
         }));
-        let active = self.settings_tab;
         let all: Vec<crate::catalog::Setting> = groups.iter().flat_map(|g| g.settings.iter().cloned()).collect();
-        let parts_of = |st: &crate::catalog::Setting, table: bool, cx: &mut Context<Self>| -> (AnyElement, Option<AnyElement>) {
-            let Some((_, input)) = self.inputs.iter().find(|(e, _)| *e == st.env) else { return (div().into_any_element(), None) };
+        let help = |st: &crate::catalog::Setting| {
+            let default = if st.default.is_empty() { "SENTIENT's own".to_string() } else { st.default.clone() };
+            Some(format!("{}\n\nVariable: {}. Built-in value: {default}.", st.help, st.env))
+        };
+        let row_of = |st: &crate::catalog::Setting, desc: Option<String>, cx: &mut Context<Self>| -> Option<ui::SettingRow> {
+            let (_, input) = self.inputs.iter().find(|(e, _)| *e == st.env)?;
             let this = cx.entity().downgrade();
             let inp = input.clone();
             let set: crate::manager::setting_field::SetFn = std::rc::Rc::new(move |v, window, cx| {
@@ -1641,86 +1767,85 @@ impl RemotePages {
                 let env = env.clone();
                 this.update(cx, |p, cx| p.check_file(env, path, cx)).ok();
             });
-            let (f, button) = crate::manager::setting_field::field_parts(st, input, set, crate::manager::setting_field::FileButton::Check(check), table, cx);
+            let control = crate::manager::setting_field::control(st, input, set, crate::manager::setting_field::FileButton::Check(check), window, cx);
+            // What Check found, on the line under the name.
             let checked = self.file_checks.get(&st.env).map(|r| match r {
-                Read::Loading => ui::pill(&theme, Tone::Neutral, "Checking…"),
-                Read::Got(true) => ui::pill(&theme, Tone::Good, "Found on the server"),
-                Read::Got(false) => ui::pill(&theme, Tone::Bad, "Not on the server"),
-                Read::Failed(_) => ui::pill(&theme, Tone::Warn, "Could not check"),
+                Read::Loading => "Checking…".to_string(),
+                Read::Got(true) => "Found on the server".to_string(),
+                Read::Got(false) => "Not on the server".to_string(),
+                Read::Failed(_) => "Could not check".to_string(),
             });
-            (h_flex().flex_1().min_w_0().gap_2().items_center().child(f).children(checked).into_any_element(), button)
+            let is_changed = changed.contains(&st.env);
+            Some(ui::SettingRow {
+                label: st.short_label().into(),
+                help: help(st),
+                desc: checked.or(desc),
+                restart: is_changed,
+                changed: is_changed,
+                control,
+                wide: false,
+                current: Some(crate::manager::setting_field::current_words(st, &values.get(&st.env).cloned().unwrap_or_default())),
+                first: false,
+            })
         };
-        let field_of = |st: &crate::catalog::Setting, cx: &mut Context<Self>| -> AnyElement {
-            match parts_of(st, false, cx) {
-                (f, Some(b)) => h_flex().flex_1().min_w_0().gap_2().items_center().child(f).child(b).into_any_element(),
-                (f, None) => f,
-            }
-        };
-        let help = |st: &crate::catalog::Setting| {
-            let default = if st.default.is_empty() { "SENTIENT's own".to_string() } else { st.default.clone() };
-            Some(format!("{}\n\nVariable: {}. Built-in value: {default}.", st.help, st.env))
-        };
+        let mut body = v_flex().pb(px(12.));
         if self.settings_tab < 4 {
             // Screens and the layout test: the Data locations card first,
             // where it shows without scrolling.
-            if self.settings_tab == 1 && cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_MOVEDATA_FIRST").is_some() {
-                let inst = self.inst.clone();
-                let card = self.locations.get_or_insert_with(|| {
-                    let windows = crate::remote::is_windows(&inst);
-                    cx.new(|cx| super::movedata::LocationsCard::new(crate::movedata::Target::Remote(inst.clone()), inst.name.clone(), windows, cx))
-                });
-                col = col.child(card.clone());
+            let first = cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_MOVEDATA_FIRST").is_some();
+            let inst = self.inst.clone();
+            let card = (self.settings_tab == 1).then(|| {
+                self.locations
+                    .get_or_insert_with(|| {
+                        let windows = crate::remote::is_windows(&inst);
+                        cx.new(|cx| super::movedata::LocationsCard::new(crate::movedata::Target::Remote(inst.clone()), inst.name.clone(), windows, cx))
+                    })
+                    .clone()
+            });
+            if let Some(c) = card.clone().filter(|_| first) {
+                body = body.child(ui::group(&theme, "Where the data is", vec![], vec![c.into_any_element()], cx));
             }
-            let mut sec = local::section(&theme, local::TAB_TITLES[self.settings_tab], None);
-            for key in local::TAB_KEYS[self.settings_tab] {
-                let Some(st) = all.iter().find(|s| s.env == *key) else { continue };
-                let field = field_of(st, cx);
-                sec = sec.child(local::row(&theme, st.short_label(), help(st), changed.contains(&st.env), field));
+            for (title, keys) in local::TAB_GROUPS[self.settings_tab] {
+                let rows: Vec<ui::SettingRow> = keys.iter().filter_map(|k| all.iter().find(|s| s.env == *k)).filter_map(|st| row_of(st, None, cx)).collect();
+                if !rows.is_empty() {
+                    body = body.child(ui::group(&theme, title, rows, vec![], cx));
+                }
             }
-            col = col.child(sec);
             // Database: where each store keeps its data, each with its Move….
-            if self.settings_tab == 1 && !(cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_MOVEDATA_FIRST").is_some()) {
-                let inst = self.inst.clone();
-                let card = self.locations.get_or_insert_with(|| {
-                    let windows = crate::remote::is_windows(&inst);
-                    cx.new(|cx| super::movedata::LocationsCard::new(crate::movedata::Target::Remote(inst.clone()), inst.name.clone(), windows, cx))
-                });
-                col = col.child(card.clone());
+            if let Some(c) = card.filter(|_| !first) {
+                body = body.child(ui::group(&theme, "Where the data is", vec![], vec![c.into_any_element()], cx));
             }
         } else {
-            let mut table = ui::panel(&theme).gap_0().overflow_hidden().child(local::table_header(&theme));
-            for st in &all {
-                let (field, action) = parts_of(st, true, cx);
-                table = table.child(local::table_row(
-                    &theme,
-                    st.short_label(),
-                    help(st),
-                    changed.contains(&st.env),
-                    local::table_cells(&theme, &st.env, field, action, local::builtin_label(st), None),
-                ));
+            for g in &groups {
+                let rows: Vec<ui::SettingRow> = g.settings.iter().filter_map(|st| row_of(st, Some(st.env.clone()), cx)).collect();
+                body = body.child(ui::group(&theme, &g.name, rows, vec![], cx));
             }
-            col = col.child(table);
         }
-        // The same category list and heading as this computer's; on a narrow
-        // window the list sits above the page.
-        h_flex()
-            .gap_4()
-            .items_start()
-            .when(ui::narrow(), |r| r.flex_col().items_stretch())
-            .child(nav)
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap(px(14.))
-                    .child(
-                        v_flex()
-                            .gap_0p5()
-                            .child(div().text_size(px(17.)).font_weight(FontWeight::MEDIUM).child(local::TAB_TITLES[active.min(4)]))
-                            .child(div().text_sm().text_color(theme.muted_foreground).child(local::TAB_ABOUT[active.min(4)])),
-                    )
-                    .child(col),
-            )
+        let (changes, n_invalid) = (changed.len(), invalid.len());
+        let names: Vec<String> = changed.iter().filter_map(|e| all.iter().find(|s| &s.env == e)).map(|s| s.short_label()).collect();
+        let first_bad = invalid.first().map(|(st, v)| local::first_invalid_of(st, v));
+        let line = ui::pending_line(changes, &names, changes > 0, first_bad.as_ref().map(|(l, n)| (l.as_str(), *n)));
+        let bar = ui::pending_bar(
+            &theme,
+            "r-settings-pending",
+            changes,
+            n_invalid,
+            line,
+            changes > 0,
+            !busy && !external && self.status.got().is_some(),
+            cx.listener(|this, _, _, cx| {
+                this.inputs.clear();
+                cx.notify();
+            }),
+            cx.listener(|this, _, _, cx| this.apply_pending_settings(cx)),
+        );
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .gap(px(ui::GAP))
+            // The notice only when there is one (an empty one would add a gap).
+            .when(external, |c| c.child(notices))
+            .child(ui::settings_card(&theme, "r-settings-body", tabs, body, bar))
     }
 
     /// "Check" beside a file setting: does the server have that file?
@@ -2238,6 +2363,7 @@ impl Render for RemotePages {
                 return flow.clone().into_any_element();
             }
         }
+        let mut fixed = false;
         let body = if let Some(v) = self.job_view(cx) { v } else if let Some(g) = gate { g } else { match self.kind {
             Kind::Status => self.status_page(cx),
             Kind::Logs => self.logs_page(window, cx),
@@ -2280,13 +2406,17 @@ impl Render for RemotePages {
                 }
                 self.backup_page(crate::manager::backup::narrow(window), cx)
             }
-            Kind::Settings => self.settings_page(window, cx),
+            Kind::Settings => {
+                fixed = matches!(self.settings, Read::Got(_));
+                self.settings_page(window, cx)
+            }
             Kind::Migration => self.migration_page(cx),
             Kind::Repair => self.repair_page(cx),
             Kind::Gateway => self.gateway_page(cx),
         } };
         // An agent too old for this page's jobs: one notice and Update agent,
         // in place of every panel that cannot load.
+        let fixed = fixed && !self.agent_old();
         let body = if self.agent_old() {
             let busy = self.job.read(cx).is_running();
             ui::notice_with(
@@ -2305,7 +2435,10 @@ impl Render for RemotePages {
             me.update(cx, |this, cx| this.reload(cx)).ok();
         });
         let reload = h_flex().gap_3().items_center().min_h(px(32.)).children(self.stale_note(&theme, cx)).child(reload);
-        ui::page_with(&theme, title, summary, reload).child(body).into_any_element()
+        // Platform settings scroll inside their card (its Apply bar stays at
+        // the card's bottom), not the page.
+        let page = ui::page_with(&theme, title, summary, reload);
+        if fixed { page.overflow_y_hidden().child(body) } else { page.child(body) }.into_any_element()
     }
 }
 

@@ -6,11 +6,9 @@
 //! Windows whether SENTIENT starts with Windows and after what delay.
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, h_flex, v_flex,
-    checkbox::Checkbox,
-    input::{Input, InputState},
+    ActiveTheme, v_flex,
+    input::InputState,
 };
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::jobs::{Job, JobState};
@@ -38,6 +36,9 @@ pub struct StartupPanel {
     start_job: Entity<Job>,
     _start_observe: Subscription,
     _tasks: Vec<Task<()>>,
+    /// Enter on the last field: Platform settings' Apply (set by it).
+    pub on_submit: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>,
+    _enter: Vec<Subscription>,
 }
 
 fn signin_index(mode: Option<bool>) -> usize {
@@ -81,10 +82,92 @@ impl StartupPanel {
             start_job,
             _start_observe,
             _tasks: Vec::new(),
+            on_submit: None,
+            _enter: Vec::new(),
         };
+        // Enter moves to the next field shown; on the last one it applies
+        // (Platform settings' bar), or goes to the field that is not valid.
+        let fields = [page.autologin_user.clone(), page.autologin_password.clone(), page.start_delay.clone()];
+        page._enter = crate::ui::enter_moves_on(
+            &fields,
+            window,
+            cx,
+            |p: &Self, _| p.shown_fields(),
+            |p: &mut Self, window, cx| {
+                if p.invalid_count(cx) > 0 {
+                    return Some(p.start_delay.clone());
+                }
+                if let Some(f) = p.on_submit.clone() {
+                    window.defer(cx, move |window, cx| f(window, cx));
+                }
+                None
+            },
+        );
         page.load_signin(cx);
         page.load_start(cx);
         page
+    }
+
+    /// The fields shown, in order (Enter).
+    fn shown_fields(&self) -> Vec<Entity<InputState>> {
+        let mut out = Vec::new();
+        if self.autologin.is_some() && self.autologin_on {
+            out.push(self.autologin_user.clone());
+            if cfg!(windows) {
+                out.push(self.autologin_password.clone());
+            }
+        }
+        if self.start.is_some() && self.start_on {
+            out.push(self.start_delay.clone());
+        }
+        out
+    }
+
+    /// The changes not applied (Platform settings' bar).
+    pub fn pending_count(&self, cx: &App) -> usize {
+        let (signin, autologin) = self.pending(cx);
+        signin as usize + autologin as usize + self.start_changed(cx) as usize
+    }
+
+    /// The start delay cannot be used (one field).
+    pub fn invalid_count(&self, cx: &App) -> usize {
+        self.delay_problem(cx).is_some() as usize
+    }
+
+    fn delay_problem(&self, cx: &App) -> Option<String> {
+        if self.start.is_none() || !self.start_on {
+            return None;
+        }
+        crate::installer::parse_start_delay(&self.start_delay.read(cx).value()).err()
+    }
+
+    /// Apply what changed (the bar's Apply).
+    pub fn apply_pending(&mut self, cx: &mut Context<Self>) {
+        let (signin, autologin) = self.pending(cx);
+        if (signin || autologin) && !self.signin_job.read(cx).is_running() {
+            self.apply_signin(cx);
+        }
+        if self.start_changed(cx) && self.invalid_count(cx) == 0 && !self.start_job.read(cx).is_running() {
+            self.apply_start(cx);
+        }
+    }
+
+    /// Back to what is set (the bar's Discard).
+    pub fn discard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(s) = self.signin {
+            self.signin_choice = s;
+        }
+        if let Some(found) = self.autologin.clone() {
+            self.autologin_on = found.is_some();
+            let user = found.unwrap_or_else(sentient_installer_core::autologin::this_user);
+            self.autologin_user.update(cx, |i, cx| i.set_value(user, window, cx));
+            self.autologin_password.update(cx, |i, cx| i.set_value("", window, cx));
+        }
+        if let Some((on, delay)) = self.start {
+            self.start_on = on;
+            self.start_delay.update(cx, |i, cx| i.set_value(delay.to_string(), window, cx));
+        }
+        cx.notify();
     }
 
     fn load_start(&mut self, cx: &mut Context<Self>) {
@@ -204,87 +287,108 @@ impl StartupPanel {
 }
 
 impl Render for StartupPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        v_flex()
-            .gap(px(ui::GAP))
-            .child({
-            let sjob = self.signin_job.read(cx);
-            let sbusy = sjob.is_running();
-            let soutcome = match sjob.state() {
-                JobState::Done(m) => Some((Tone::Good, m.to_string())),
-                JobState::Failed(m) => Some((Tone::Bad, m.to_string())),
-                _ => None,
-            };
-            let (signin_changed, autologin_changed) = self.pending(cx);
-            let changed = signin_changed || autologin_changed;
-            ui::panel(&theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child("Operator screen"))
-                // Setting rows like every other panel: label left, control
-                // right; the explanation behind the row's (i).
-                .child(crate::manager::settings::row(&theme, "Open SENTIENT at sign-in", Some("Open SENTIENT in the browser when someone signs in to this computer, for example a control-room screen after a power cut. It opens at once and shows SENTIENT as soon as it answers.".into()), false, match self.signin {
-                    None => div().text_sm().child("Checking…").into_any_element(),
-                    Some(_) => ui::seg_track(&theme)
-                        .children(["Off", "Full screen (kiosk)", "Browser window"].into_iter().enumerate().map(|(i, label)| {
-                            ui::seg_item(&theme, SharedString::from(format!("signin-{i}")), label, self.signin_choice == i).on_click(cx.listener(move |this, _, _, cx| {
-                                if !sbusy {
-                                    this.signin_choice = i;
-                                    cx.notify();
-                                }
-                            }))
-                        }))
-                        .into_any_element(),
-                }))
-                .when(self.autologin.is_some(), |panel| {
-                    panel
-                        .child(crate::manager::settings::row(
-                            &theme,
-                            "Sign in to this computer automatically after a restart",
-                            None,
-                            false,
-                            gpui_kit::component::switch::Switch::new("autologin").checked(self.autologin_on).on_click(cx.listener(move |this, value: &bool, _, cx| {
-                                if !sbusy {
-                                    this.autologin_on = *value;
-                                    cx.notify();
-                                }
-                            })),
-                        ))
-                        .when(self.autologin_on, |panel| {
-                            let found = self.autologin.as_ref().is_some_and(|f| f.is_some());
-                            panel
-                                .child(crate::manager::settings::row(&theme, "Operator account", None, false, div().w(px(260.)).child(Input::new(&self.autologin_user))))
-                                .when(cfg!(windows), |p| {
-                                    p.child(crate::manager::settings::row(
-                                        &theme,
-                                        if found { "Password (only to change it)" } else { "Account password" },
-                                        None,
-                                        false,
-                                        div().w(px(260.)).child(Input::new(&self.autologin_password).mask_toggle()),
-                                    ))
-                                })
-                                .child(ui::outcome(
-                                    &theme,
-                                    Tone::Warn,
-                                    if cfg!(windows) {
-                                        "Anyone at this screen gets this account without typing a password. Use an operator account with only the rights the operator needs. Windows keeps the password in its secret store, readable only by administrators."
-                                    } else {
-                                        "Anyone at this screen gets this account without typing a password. Use an operator account with only the rights the operator needs."
-                                    },
-                                ))
+        let sjob = self.signin_job.read(cx);
+        let sbusy = sjob.is_running();
+        let soutcome = match sjob.state() {
+            JobState::Done(m) => Some((Tone::Good, m.to_string())),
+            JobState::Failed(m) => Some((Tone::Bad, m.to_string())),
+            _ => None,
+        };
+        const SIGNIN: [&str; 3] = ["Off", "Full screen (kiosk)", "Browser window"];
+        let (signin_changed, autologin_changed) = self.pending(cx);
+        // Setting rows like every other tab: label left, the field, what is
+        // set now.
+        let mut rows = vec![ui::SettingRow {
+            label: "Open SENTIENT at sign-in".into(),
+            help: Some("Open SENTIENT in the browser when someone signs in to this computer, for example a control-room screen after a power cut. It opens at once and shows SENTIENT as soon as it answers.".into()),
+            desc: None,
+            restart: false,
+            changed: signin_changed,
+            control: match self.signin {
+                None => div().pt(px(10.)).text_sm().child("Checking…").into_any_element(),
+                Some(_) => {
+                    let this = cx.entity().downgrade();
+                    ui::chips(&theme, "signin", &["Off", "Kiosk", "Window"], Some(self.signin_choice), std::rc::Rc::new(move |i, _, cx| {
+                        this.update(cx, |p, cx| {
+                            if !p.signin_job.read(cx).is_running() {
+                                p.signin_choice = i;
+                                cx.notify();
+                            }
                         })
-                })
-                .child(
-                    h_flex().child(
-                        crate::ui::button("apply-signin")
-                            .outline()
-                            .label("Apply")
-                            .disabled(sbusy || !changed)
-                            .on_click(cx.listener(|this, _, _, cx| this.apply_signin(cx))),
-                    ),
+                        .ok();
+                    }))
+                    .into_any_element()
+                }
+            },
+            wide: false,
+            current: self.signin.map(|i| SIGNIN[i].to_string()),
+            first: false,
+        }];
+        if let Some(found) = self.autologin.clone() {
+            rows.push(ui::SettingRow {
+                label: "Sign in automatically after a restart".into(),
+                help: None,
+                desc: None,
+                restart: false,
+                changed: autologin_changed,
+                control: ui::toggle(&theme, "autologin", self.autologin_on, None, cx.listener(move |this, value: &bool, _, cx| {
+                    if !sbusy {
+                        this.autologin_on = *value;
+                        cx.notify();
+                    }
+                }))
+                .into_any_element(),
+                wide: false,
+                current: Some(found.clone().map(|u| format!("As {u}")).unwrap_or_else(|| "Off".into())),
+                first: false,
+            });
+            if self.autologin_on {
+                rows.push(ui::SettingRow {
+                    label: "Operator account".into(),
+                    help: None,
+                    desc: None,
+                    restart: false,
+                    changed: false,
+                    control: ui::field_input(&theme, &self.autologin_user, None, None, false, window, cx).into_any_element(),
+                    wide: false,
+                    current: found.clone(),
+                    first: false,
+                });
+                if cfg!(windows) {
+                    rows.push(ui::SettingRow {
+                        label: if found.is_some() { "Password (only to change it)".into() } else { "Account password".into() },
+                        help: None,
+                        desc: None,
+                        restart: false,
+                        changed: false,
+                        control: ui::field_input(&theme, &self.autologin_password, None, None, true, window, cx).into_any_element(),
+                        wide: false,
+                        current: None,
+                        first: false,
+                    });
+                }
+            }
+        }
+        let mut extra: Vec<AnyElement> = Vec::new();
+        if self.autologin.is_some() && self.autologin_on {
+            extra.push(
+                ui::outcome(
+                    &theme,
+                    Tone::Warn,
+                    if cfg!(windows) {
+                        "Anyone at this screen gets this account without typing a password. Use an operator account with only the rights the operator needs. Windows keeps the password in its secret store, readable only by administrators."
+                    } else {
+                        "Anyone at this screen gets this account without typing a password. Use an operator account with only the rights the operator needs."
+                    },
                 )
-                .children(soutcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
-        })
-        .when(self.start.is_some(), |page| {
+                .into_any_element(),
+            );
+        }
+        extra.extend(soutcome.map(|(tone, text)| ui::outcome(&theme, tone, text).into_any_element()));
+        let mut out = v_flex().child(ui::group(&theme, "Operator screen", rows, extra, cx));
+        if let Some((was_on, was_delay)) = self.start {
             let job = self.start_job.read(cx);
             let busy = job.is_running();
             let outcome = match job.state() {
@@ -292,32 +396,39 @@ impl Render for StartupPanel {
                 JobState::Failed(m) => Some((Tone::Bad, m.to_string())),
                 _ => None,
             };
-            let changed = self.start_changed(cx);
-            page.child(
-                ui::panel(&theme)
-                    .child(div().font_weight(FontWeight::MEDIUM).child("Start with Windows"))
-                    .child(
-                        Checkbox::new("start-with-windows")
-                            .label("Start SENTIENT automatically with Windows")
-                            .checked(self.start_on)
-                            .disabled(busy)
-                            .on_change(cx.listener(|this, value: &bool, _, cx| {
-                                this.start_on = *value;
-                                cx.notify();
-                            })),
-                    )
-                    .when(self.start_on, |panel| panel.child(div().pl_6().child(ui::start_delay_row(&theme, &self.start_delay))))
-                    .child(
-                        h_flex().child(
-                            crate::ui::button("apply-start")
-                                .outline()
-                                .label("Apply")
-                                .disabled(busy || !changed)
-                                .on_click(cx.listener(|this, _, _, cx| this.apply_start(cx))),
-                        ),
-                    )
-                    .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text))),
-            )
-        })
+            let typed = self.start_delay.read(cx).value().trim().to_string();
+            let mut rows = vec![ui::SettingRow {
+                label: "Start SENTIENT with Windows".into(),
+                help: None,
+                desc: None,
+                restart: false,
+                changed: was_on != self.start_on,
+                control: ui::toggle(&theme, "start-with-windows", self.start_on, None, cx.listener(move |this, value: &bool, _, cx| {
+                    if !busy {
+                        this.start_on = *value;
+                        cx.notify();
+                    }
+                }))
+                .into_any_element(),
+                wide: false,
+                current: Some(if was_on { "On".into() } else { "Off".into() }),
+                first: false,
+            }];
+            if self.start_on {
+                rows.push(ui::SettingRow {
+                    label: "Start delay".into(),
+                    help: Some(ui::START_DELAY_HELP.into()),
+                    desc: None,
+                    restart: false,
+                    changed: typed != was_delay.to_string(),
+                    control: ui::field_input(&theme, &self.start_delay, Some(ui::Slot::Unit("seconds".into())), self.delay_problem(cx), false, window, cx).into_any_element(),
+                    wide: false,
+                    current: Some(format!("{was_delay} seconds")),
+                    first: false,
+                });
+            }
+            out = out.child(ui::group(&theme, "Start with Windows", rows, outcome.map(|(tone, text)| ui::outcome(&theme, tone, text).into_any_element()).into_iter().collect(), cx));
+        }
+        out
     }
 }

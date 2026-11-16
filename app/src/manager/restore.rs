@@ -504,6 +504,19 @@ impl RestoreFlow {
         if let Ok(frame) = std::env::var("SPM_DEBUG_RESTORE") {
             canned::inputs(&frame, &f, window, cx);
         }
+        // Enter in the dates: From, then To, then Next (when the range holds).
+        let dates = [f.from.clone(), f.to.clone()];
+        let subs = ui::enter_moves_on(&dates, window, cx, |f: &Self, _| vec![f.from.clone(), f.to.clone()], |f: &mut Self, _, cx| {
+            if f.step != Step::What || f.check.read(cx).is_running() {
+                return None;
+            }
+            if !f.range_valid(cx) {
+                return Some(f.from.clone());
+            }
+            f.next(cx);
+            None
+        });
+        f._subs.extend(subs);
         f.start_check(cx);
         f
     }

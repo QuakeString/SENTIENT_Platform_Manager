@@ -173,6 +173,14 @@ pub struct Alert {
     text: SharedString,
     ok: SharedString,
     on_ok: Option<std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) -> bool>>,
+    /// Cancel's label ("Stay").
+    cancel: SharedString,
+    /// A second outline action between Cancel and the action; it closes.
+    secondary: Option<(SharedString, std::rc::Rc<dyn Fn(&mut Window, &mut App)>)>,
+    /// No action button (only Cancel and the secondary one).
+    no_ok: bool,
+    /// A bullet list under the text.
+    list: Vec<String>,
 }
 
 impl Alert {
@@ -192,6 +200,22 @@ impl Alert {
         self.ok = t.into();
         self
     }
+    pub fn cancel_text(mut self, t: impl Into<SharedString>) -> Self {
+        self.cancel = t.into();
+        self
+    }
+    pub fn secondary(mut self, label: impl Into<SharedString>, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.secondary = Some((label.into(), std::rc::Rc::new(f)));
+        self
+    }
+    pub fn list(mut self, items: Vec<String>) -> Self {
+        self.list = items;
+        self
+    }
+    pub fn no_ok(mut self) -> Self {
+        self.no_ok = true;
+        self
+    }
     /// Return true to close the dialog.
     pub fn on_ok(mut self, f: impl Fn(&ClickEvent, &mut Window, &mut App) -> bool + 'static) -> Self {
         self.on_ok = Some(std::rc::Rc::new(f));
@@ -200,7 +224,7 @@ impl Alert {
 }
 
 pub fn alert(window: &mut Window, cx: &mut App, build: impl FnOnce(Alert, &mut Window, &mut App) -> Alert) {
-    let a = build(Alert { title: "".into(), text: "".into(), ok: "OK".into(), on_ok: None }, window, cx);
+    let a = build(Alert { title: "".into(), text: "".into(), ok: "OK".into(), on_ok: None, cancel: "Cancel".into(), secondary: None, no_ok: false, list: Vec::new() }, window, cx);
     let title = a.title.clone();
     let view = cx.new(|_| AlertBody { a });
     open(Modal { title, body: view.into(), width: 480., icon: None, on_close: None }, cx);
@@ -254,12 +278,21 @@ impl Render for AlertBody {
         v_flex()
             .gap_4()
             .child(div().text_sm().text_color(theme.muted_foreground).child(self.a.text.clone()))
+            .when(!self.a.list.is_empty(), |c| {
+                c.child(v_flex().gap_1().pl_2().children(self.a.list.iter().map(|l| h_flex().gap_2().items_start().text_sm().child("•").child(div().flex_1().min_w_0().child(l.clone())))))
+            })
             .child(
                 h_flex()
                     .gap(crate::ui::button_gap())
                     .justify_end()
-                    .child(crate::ui::probed(crate::ui::button("alert-cancel").outline().label("Cancel").on_click(|_, _, cx| close(cx))))
-                    .child(crate::ui::probed(ok)),
+                    .child(crate::ui::probed(crate::ui::button("alert-cancel").outline().label(self.a.cancel.clone()).on_click(|_, _, cx| close(cx))))
+                    .when_some(self.a.secondary.clone(), |r, (label, f)| {
+                        r.child(crate::ui::probed(crate::ui::button("alert-secondary").outline().label(label).on_click(move |_, window, cx| {
+                            close(cx);
+                            f(window, cx);
+                        })))
+                    })
+                    .when(!self.a.no_ok, |r| r.child(crate::ui::probed(ok))),
             )
     }
 }

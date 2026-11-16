@@ -8,6 +8,9 @@
 #
 #   tests/layout/run.sh <app binary> <out dir> [XDG_CONFIG_HOME with instances]
 #
+# fields.py checks the settings card's fields line up and its Apply bar sits
+# at the card's bottom (PENDING sets the states shown with the bar).
+#
 # Needs Xvfb and ImageMagick's import. Exit status 1 on any finding.
 set -u
 BIN=${1:?binary}; OUT=${2:?out dir}; PROFILE=${3:-}
@@ -54,7 +57,7 @@ one() { # where page width scale theme [dialog env]
   # The page's overflow, and the menu's icons on x = 32 (folded below
   # 1000 px, unfolded above).
   local only=(); [ "$where" = setup ] && only=(buttons)
-  { python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" "${only[@]}" && { [ "$where" = setup ] || python3 "$HERE/icons.py" "$OUT/$name.log"; }; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
+  { python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" "${only[@]}" && { [ "$where" = setup ] || python3 "$HERE/icons.py" "$OUT/$name.log"; } && python3 "$HERE/fields.py" "$OUT/$name.log" "$dlg"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
 }
 export -f one; export OUT HERE BIN PROFILE LOADING_PROFILE INSTANCE WAIT SPM_INSTALLATION_RECORD HOVER_INFO 2>/dev/null
 list=()
@@ -72,6 +75,10 @@ if [ -n "${LOADING_PROFILE:-}" ]; then
 fi
 if [ -n "${INSTANCE:-}" ]; then
   for p in $PAGES_REMOTE; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote $p $w $s $t"); done; done; done; done
+  # Platform settings with changes not applied (the Apply bar): valid
+  # changes, a field not valid on a short and on a long tab, the leave
+  # prompt (SPM_DEBUG_SETTINGS_PENDING).
+  for g in ${PENDING-SPM_DEBUG_SETTINGS_PENDING=valid SPM_DEBUG_SETTINGS_PENDING=short SPM_DEBUG_SETTINGS_PENDING=long SPM_DEBUG_SETTINGS_PENDING=leave}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote settings $w $s $t $g"); done; done; done; done
 fi
 printf '%s\n' "${list[@]}" | xargs -P "$JOBS" -L 1 bash -c 'one "$@"' _ | tee "$OUT/summary.txt"
 fails=$(grep -c '^FAIL' "$OUT/summary.txt"); total=$(grep -c -E '^(ok|FAIL)' "$OUT/summary.txt")

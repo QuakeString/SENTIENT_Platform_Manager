@@ -1167,10 +1167,12 @@ impl Manager {
                 let popover = open.then(|| {
                     let this = cx.entity().downgrade();
                     let go = |t: WeakEntity<Manager>, id: Option<String>| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
-                        std::rc::Rc::new(move |_, cx| {
+                        std::rc::Rc::new(move |window, cx| {
                             t.update(cx, |m, cx| {
                                 m.switcher_open = false;
-                                m.open_instance(id.clone(), cx);
+                                // Platform settings with changes not applied asks first.
+                                let id = id.clone();
+                                m.leave_then(window, cx, move |m, cx| m.open_instance(id.clone(), cx));
                             })
                             .ok();
                         })

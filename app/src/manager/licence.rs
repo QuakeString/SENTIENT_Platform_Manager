@@ -12,7 +12,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme, Disableable as _, Icon, button::ButtonVariants as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -116,13 +116,31 @@ impl LicencePage {
             _tasks: Vec::new(),
             _enter: Vec::new(),
         };
-        for input in [page.email.clone(), page.password.clone()] {
-            page._enter.push(cx.subscribe_in(&input, window, |p: &mut Self, _, e: &InputEvent, window, cx| {
-                if matches!(e, InputEvent::PressEnter { .. }) && matches!(p.view, View::SignIn) && !p.signing_in {
-                    p.sign_in(window, cx);
+        // Enter: email, then password, then Sign in (an empty field first).
+        page._enter = crate::ui::enter_moves_on(
+            &[page.email.clone(), page.password.clone()],
+            window,
+            cx,
+            |p: &Self, _| vec![p.email.clone(), p.password.clone()],
+            |p: &mut Self, window, cx| {
+                if !matches!(p.view, View::SignIn) || p.signing_in {
+                    return None;
                 }
-            }));
-        }
+                if p.email.read(cx).value().trim().is_empty() {
+                    return Some(p.email.clone());
+                }
+                if p.password.read(cx).value().is_empty() {
+                    return Some(p.password.clone());
+                }
+                p.sign_in(window, cx);
+                None
+            },
+        );
+        // Enter in the licence key: Activate….
+        page._enter.extend(crate::ui::enter_moves_on(&[page.key.clone()], window, cx, |p: &Self, _| vec![p.key.clone()], |p: &mut Self, window, cx| {
+            p.activate_key(window, cx);
+            None
+        }));
         #[cfg(debug_assertions)]
         if std::env::var_os("SPM_DEBUG_LICENCE").is_some() && std::env::var_os("SPM_DEBUG_LICENCE_SIGNED_IN").is_some() {
             crate::licence::set_session(&page.target.key(), "admin@sentient.local", "debug");
@@ -377,6 +395,17 @@ impl LicencePage {
         cx.notify();
     }
 
+    /// Activate… with the key typed (its button, Enter in the field).
+    fn activate_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let key = self.key.read(cx).value().trim().to_string();
+        if key.is_empty() {
+            self.note = Some((Tone::Bad, "Enter the licence key first.".into()));
+            cx.notify();
+            return;
+        }
+        self.open_action(Act::Activate(key), window, cx);
+    }
+
     fn open_action(&mut self, act: Act, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = false;
         let Some(s) = self.token(cx) else { return };
@@ -384,7 +413,18 @@ impl LicencePage {
         let target = self.target.clone();
         let name = self.name.clone();
         let title = act.title();
-        let view = cx.new(|cx| ActionDialog { page, target, name, email: s.email.clone(), act, password: cx.new(|cx| InputState::new(window, cx).masked(true)), busy: false, error: None, _task: None });
+        let view = cx.new(|cx| {
+            let password = cx.new(|cx| InputState::new(window, cx).masked(true));
+            // Enter in the password: the dialog's action.
+            let _enter = crate::ui::enter_moves_on(&[password.clone()], window, cx, |d: &ActionDialog, _| vec![d.password.clone()], |d: &mut ActionDialog, _, cx| {
+                if d.busy {
+                    return None;
+                }
+                d.go(cx);
+                d.error.is_some().then(|| d.password.clone())
+            });
+            ActionDialog { page, target, name, email: s.email.clone(), act, password, busy: false, error: None, _task: None, _enter }
+        });
         crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 520., icon: None, on_close: None }, cx);
     }
 
@@ -479,6 +519,7 @@ struct ActionDialog {
     busy: bool,
     error: Option<String>,
     _task: Option<Task<()>>,
+    _enter: Vec<Subscription>,
 }
 
 impl ActionDialog {
@@ -987,15 +1028,7 @@ impl LicencePage {
                 .w(px(w))
                 .child(h_flex().gap_2().items_center().child(div().flex_1().min_w_0().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child(title)).child(ui::pill(theme, Tone::Neutral, "Not licensed").text_size(px(12.)).py(px(0.))))
                 .child(
-                    h_flex().gap(px(10.)).items_center().child(div().flex_1().min_w_0().child(Input::new(&self.key))).child(ui::probed(ui::button("licence-activate").primary().label("Activate…").on_click(cx.listener(|p, _, window, cx| {
-                        let key = p.key.read(cx).value().trim().to_string();
-                        if key.is_empty() {
-                            p.note = Some((Tone::Bad, "Enter the licence key first.".into()));
-                            cx.notify();
-                            return;
-                        }
-                        p.open_action(Act::Activate(key), window, cx);
-                    })))),
+                    h_flex().gap(px(10.)).items_center().child(div().flex_1().min_w_0().child(Input::new(&self.key))).child(ui::probed(ui::button("licence-activate").primary().label("Activate…").on_click(cx.listener(|p, _, window, cx| p.activate_key(window, cx))))),
                 )
                 .child(
                     h_flex()
