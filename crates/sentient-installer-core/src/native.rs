@@ -116,6 +116,9 @@ pub struct NativeConfig {
     pub ch_password: String,
     pub ch_http_port: u16,
     pub ch_native_port: u16,
+    /// Linux: what to do with a PostgreSQL data folder from an older major
+    /// (crate::old_pg), chosen before the install.
+    pub old_pg: crate::old_pg::OldPgChoice,
 }
 
 impl NativeConfig {

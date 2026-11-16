@@ -1,0 +1,6 @@
+Starting PostgreSQL database server...
+An old version of the database format was found.
+See https://wiki.archlinux.org/index.php/PostgreSQL#Upgrading_PostgreSQL
+postgresql.service: Control process exited, code=exited, status=1/FAILURE
+postgresql.service: Failed with result 'exit-code'.
+Failed to start PostgreSQL database server.

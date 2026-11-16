@@ -101,6 +101,25 @@ impl EventEmitter<ListChanged> for InstancesPage {}
 impl InstancesPage {
     pub fn new(local: Option<InstallationRecord>, cx: &mut Context<Self>) -> Self {
         let job = cx.new(|_| Job::new());
+        // The error panel's "Ask for the password again": Try again.
+        let me = cx.entity().downgrade();
+        job.update(cx, |j, _| {
+            j.set_fix_handler(std::rc::Rc::new(move |action, _, cx| {
+                if *action != sentient_installer_core::diagnose::FixAction::AskAgain {
+                    return false;
+                }
+                me.update(cx, |this, cx| {
+                    let Some(retry) = this.retry.clone() else { return false };
+                    this.job.update(cx, |j, cx| j.reset(cx));
+                    match retry {
+                        Retry::SetUp(id) => this.set_up(&id, cx),
+                        Retry::Job(id, label, args) => this.run_job(&id, label, args, cx),
+                    }
+                    true
+                })
+                .unwrap_or(false)
+            }), false)
+        });
         let subs = vec![cx.observe(&job, |this, job, cx| {
             // A finished job changes what the card shows.
             if !job.read(cx).is_running() {
@@ -505,7 +524,11 @@ impl InstancesPage {
             return;
         }
         self.job_for = Some((id.to_string(), format!("The job running on {}", inst.name).into()));
-        self.job.update(cx, |job, cx| job.start(move |sink| remote::follow(&inst, &job_id, &sink), cx));
+        self.job.update(cx, |job, cx| {
+            // A server's job: its agent diagnoses a failure there.
+            job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
+            job.start(move |sink| remote::follow(&inst, &job_id, &sink), cx)
+        });
         cx.notify();
     }
 
@@ -1145,6 +1168,7 @@ impl InstancesPage {
         p = match job.state() {
             JobState::Running => p.child(div().text_sm().child(job.step_with_time())),
             JobState::Done(m) => p.child(ui::outcome(&theme, Tone::Good, m.clone())),
+            JobState::Failed(_) if job.diagnosis_view().is_some() => p.children(job.diagnosis_view()),
             JobState::Failed(m) => {
                 let (headline, details) = remote::split_failure(m);
                 let shown = self.show_details;

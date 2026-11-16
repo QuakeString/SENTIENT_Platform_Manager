@@ -1,0 +1,8 @@
+Started [systemd-run] /usr/sbin/tail -q -n0 -f /etc/passwd /etc/group /etc/hostname /etc/hosts /etc/shells /etc/fstab /etc/os-release /etc/pacman.conf /etc/locale.gen /etc/makepkg.conf.
+tail: cannot open '/etc/fstab' for reading: Too many open files
+tail: cannot open '/etc/os-release' for reading: Too many open files
+tail: cannot open '/etc/pacman.conf' for reading: Too many open files
+tail: cannot open '/etc/locale.gen' for reading: Too many open files
+tail: cannot open '/etc/makepkg.conf' for reading: Too many open files
+clickhouse-server.service: Service reached runtime time limit. Stopping.
+clickhouse-server.service: Failed with result 'timeout'.

@@ -10,8 +10,21 @@
 //! returns and drops the callback, so the drain loop ends on its own.
 
 use futures::StreamExt as _;
-use gpui_kit::{App, Context, SharedString, Task};
+use gpui_kit::{App, AppContext as _, Context, SharedString, Task};
+use sentient_installer_core::diagnose::{self, Diagnosis, FixAction};
 use sentient_installer_core::progress::{Progress, ProgressFn};
+
+/// A page's own handling of a fix (Setup's "Use port NNNN instead", Ask
+/// again): true when it applied it.
+pub type FixHandler = std::rc::Rc<dyn Fn(&FixAction, &mut gpui_kit::Window, &mut App) -> bool>;
+
+/// What a page handles itself, and how.
+#[derive(Clone)]
+pub struct PageFixes {
+    pub handler: FixHandler,
+    /// It can change a port (Setup's fields).
+    pub ports: bool,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum JobState {
@@ -49,6 +62,12 @@ pub struct Job {
     /// a panel the chip opens instead of Details (the Files transfers).
     chip: Option<std::rc::Rc<dyn Fn(&App) -> String>>,
     panel: Option<gpui_kit::AnyView>,
+    /// What went wrong, when it failed (sentient_installer_core::diagnose):
+    /// the agent's own (a `DIAG` line), else made here once the work ended.
+    diagnosis: Option<Diagnosis>,
+    /// Its error panel (crate::diagnosis), made when it failed.
+    diag_view: Option<gpui_kit::Entity<crate::diagnosis::DiagnosisView>>,
+    fix_handler: Option<PageFixes>,
     _task: Option<Task<()>>,
     /// Re-renders once a second while running, so the step's time moves.
     _ticker: Option<Task<()>>,
@@ -71,6 +90,9 @@ impl Job {
             on_page: false,
             chip: None,
             panel: None,
+            diagnosis: None,
+            diag_view: None,
+            fix_handler: None,
             _task: None,
             _ticker: None,
         }
@@ -126,6 +148,21 @@ impl Job {
         self.retry.clone()
     }
 
+    /// A page that applies some fixes itself (see [`FixHandler`]).
+    pub fn set_fix_handler(&mut self, handler: FixHandler, ports: bool) {
+        self.fix_handler = Some(PageFixes { handler, ports });
+    }
+
+    /// What went wrong (when it failed).
+    pub fn diagnosis(&self) -> Option<&Diagnosis> {
+        self.diagnosis.as_ref()
+    }
+
+    /// Its error panel, while it is failed.
+    pub fn diagnosis_view(&self) -> Option<gpui_kit::AnyView> {
+        matches!(self.state, JobState::Failed(_)).then(|| self.diag_view.clone().map(Into::into)).flatten()
+    }
+
     pub fn state(&self) -> &JobState {
         &self.state
     }
@@ -142,6 +179,8 @@ impl Job {
         self.state = JobState::Idle;
         self.steps.clear();
         self.log.clear();
+        self.diagnosis = None;
+        self.diag_view = None;
         cx.notify();
     }
 
@@ -193,6 +232,8 @@ impl Job {
         self.log.clear();
         self.steps.clear();
         self.last_done = None;
+        self.diagnosis = None;
+        self.diag_view = None;
         self.step_started = Some(std::time::Instant::now());
         cx.notify();
         // The global progress strip follows it (crate::manager::strip).
@@ -218,14 +259,45 @@ impl Job {
         }));
 
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<Progress>();
+        // The last output lines, for the diagnosis when it fails (a sync
+        // lock, held only to push or copy; never across an await).
+        let tail: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>> = Default::default();
+        let lines = tail.clone();
         let sink: ProgressFn = std::sync::Arc::new(move |p| {
+            if let Progress::Log { line } = &p {
+                if let Ok(mut t) = lines.lock() {
+                    if t.len() >= 200 {
+                        t.pop_front();
+                    }
+                    t.push_back(line.clone());
+                }
+            }
             let _ = tx.unbounded_send(p);
         });
         // A job is something the user started: its root steps may ask for the
         // administrator password, once (sentient_installer_core::elevation).
+        // A remote job: only what it printed is known here (its agent
+        // diagnoses itself and sends the answer as a DIAG line).
+        let remote = self.instance.is_some();
         let worker = cx.background_executor().spawn(async move {
             let _action = sentient_installer_core::elevation::user_action();
-            work(sink)
+            let result = work(sink);
+            let diag = result.as_ref().err().map(|e| {
+                let lines: Vec<String> = tail.lock().map(|t| t.iter().cloned().collect()).unwrap_or_default();
+                if let Some(d) = lines.iter().rev().find_map(|l| Diagnosis::decode(l)) {
+                    return d;
+                }
+                let shown: Vec<String> = lines.into_iter().filter(|l| !l.starts_with(diagnose::DIAG_PREFIX)).collect();
+                if remote {
+                    diagnose::diagnose(&diagnose::Evidence::from_text(e, &shown))
+                } else {
+                    diagnose::diagnose_failure(e, &shown, crate::online::downloads_dir("").parent())
+                }
+            });
+            // Screens: a canned cause (SPM_DEBUG_DIAGNOSIS, crate::diagnosis).
+            #[cfg(debug_assertions)]
+            let diag = diag.map(|d| crate::diagnosis::debug_diagnosis().unwrap_or(d));
+            (result, diag)
         });
         self._task = Some(cx.spawn(async move |this, cx| {
             while let Some(progress) = rx.next().await {
@@ -239,9 +311,14 @@ impl Job {
                     return;
                 }
             }
-            let result = worker.await;
+            let (result, diag) = worker.await;
             this.update(cx, |job, cx| {
                 job.finish(result);
+                if let Some(d) = diag {
+                    job.diagnosis = Some(d.clone());
+                    let (instance, retry, handler) = (job.instance.clone(), job.retry.clone(), job.fix_handler.clone());
+                    job.diag_view = Some(cx.new(|cx| crate::diagnosis::DiagnosisView::new(d, instance, retry, handler, cx)));
+                }
                 cx.notify();
             })
             .ok();
@@ -257,6 +334,8 @@ impl Job {
                 self.percent = None;
                 self.step_started = Some(std::time::Instant::now());
             }
+            // An agent's diagnosis: kept by the worker, not a log line.
+            Progress::Log { line } if line.starts_with(diagnose::DIAG_PREFIX) => {}
             Progress::Log { line } => {
                 let line = crate::ui::strip_ansi(&line);
                 activity(&format!("  {line}"));

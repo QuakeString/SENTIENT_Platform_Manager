@@ -1,0 +1,8 @@
+dd: error writing '/mnt/tiny/f': No space left on device
+2+0 records in
+1+0 records out
+1048576 bytes (1.0 MB, 1.0 MiB) copied, 0.000547619 s, 1.9 GB/s
+exit=1
+===DF
+Filesystem     1024-blocks  Used Available Capacity Mounted on
+tmpfs                 1024  1024         0     100% /mnt/tiny

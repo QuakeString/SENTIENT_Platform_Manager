@@ -4,6 +4,7 @@
 //! "Installer wizard"). Twelve pages: ten collect choices without touching the
 //! machine, Install runs the plan, Finish says what to do next.
 
+mod old_pg;
 mod pages;
 mod plan;
 
@@ -156,6 +157,11 @@ pub struct Installer {
     earlier_done: bool,
     /// Who holds a busy port (checks::port_owner), looked up once per port.
     port_owners: HashMap<u16, Option<checks::PortOwner>>,
+    /// Native Linux: a PostgreSQL data folder from an older major, and
+    /// what to do with it (crate::installer::old_pg).
+    pub(crate) old_pg: Option<sentient_installer_core::old_pg::OldPgData>,
+    pub(crate) old_pg_choice: sentient_installer_core::old_pg::OldPgChoice,
+    old_pg_probing: bool,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -303,6 +309,9 @@ impl Installer {
             leftovers: Vec::new(),
             cleanup,
             port_owners: HashMap::new(),
+            old_pg: None,
+            old_pg_choice: Default::default(),
+            old_pg_probing: false,
             earlier: None,
             earlier_done: resumed.is_some(),
             keep_existing: true,
@@ -314,6 +323,14 @@ impl Installer {
             _subscriptions: vec![search_sub, install_sub],
         };
         this.run_checks(cx);
+        // The error panel's page fixes: another port, or the password
+        // prompt again (both run the install again).
+        let me = cx.entity().downgrade();
+        this.install.update(cx, |job, _| {
+            job.set_fix_handler(std::rc::Rc::new(move |action, window, cx| {
+                me.update(cx, |page, cx| page.apply_fix(action, window, cx)).unwrap_or(false)
+            }), true)
+        });
         if let Some(plan) = resumed {
             this.accepted = true;
             this.flavor = Some(plan.stack.flavor);
@@ -352,8 +369,51 @@ impl Installer {
             this.flavor = Some(Flavor::Timescaledb);
             this.loc_per_store = std::env::var_os("SPM_DEBUG_LOC_PG").is_some();
             this.debug_content(window, cx);
+            // Screens: an older PostgreSQL's data on System check.
+            if std::env::var_os("SPM_DEBUG_OLD_PG").is_some() {
+                this.engine = Engine::Native;
+                this.run_checks(cx);
+            }
+            // The install step failed with a canned cause (crate::diagnosis).
+            if this.step == INSTALL && std::env::var_os("SPM_DEBUG_DIAGNOSIS").is_some() {
+                this.engine = Engine::Native;
+                this.install.update(cx, |job, cx| {
+                    job.start(
+                        |sink| {
+                            sink(sentient_installer_core::progress::Progress::Step { name: "Installing PostgreSQL from your distribution".into() });
+                            Err("pkexec exited with 42".into())
+                        },
+                        cx,
+                    )
+                });
+            }
         }
         this
+    }
+
+    /// A fix the install's error panel leaves to this page: another port
+    /// for the one in use, or ask for the password again. Both run the
+    /// install again. False: not this page's.
+    fn apply_fix(&mut self, action: &sentient_installer_core::diagnose::FixAction, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        use sentient_installer_core::diagnose::FixAction;
+        match action {
+            FixAction::UsePort { port, instead } => {
+                let f = &self.fields;
+                let field = [&f.pg_port, &f.ch_http_port, &f.ch_native_port, &f.http_port, &f.mqtt_port, &f.mqtts_port, &f.coap_port, &f.coaps_port]
+                    .into_iter()
+                    .find(|field| self.value(field, cx) == port.to_string())
+                    .cloned();
+                let Some(field) = field else { return false };
+                field.update(cx, |state, cx| state.set_value(instead.to_string(), window, cx));
+                self.start_install(cx);
+                true
+            }
+            FixAction::AskAgain => {
+                self.start_install(cx);
+                true
+            }
+            _ => false,
+        }
     }
 
     fn value(&self, field: &Entity<InputState>, cx: &App) -> String {
@@ -362,6 +422,7 @@ impl Installer {
 
     fn run_checks(&mut self, cx: &mut Context<Self>) {
         self.checks = None;
+        self.look_for_old_pg(cx);
         let offline = self.bundle.is_some();
         let engine = self.engine;
         let pg_dir = std::path::PathBuf::from(self.value(&self.fields.data_dir, cx));
@@ -784,6 +845,7 @@ impl Installer {
             pg_superuser_password: self.value(&f.pg_admin_password, cx),
             existing: self.existing.as_ref().map(|_| self.keep_existing),
             delete_existing: self.existing.is_some() && !self.keep_existing && self.delete_existing,
+            old_pg: self.old_pg_choice,
             admin_email: self.value(&f.admin_email, cx),
             admin_password: self.value(&f.admin_password, cx),
             settings: self.chosen_settings(cx),

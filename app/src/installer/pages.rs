@@ -336,9 +336,12 @@ impl Installer {
                     |p, o| p.child(o),
                 )
         });
+        // An older PostgreSQL's data: upgrade or keep aside, before installing.
+        let old_pg = self.old_pg_panel(cx);
         column()
             .children(engine_choice)
             .children(leftovers)
+            .children(old_pg)
             .child(match rows {
                 None => ui::panel(&theme).child(div().text_sm().child("Checking this computer…")),
                 Some(rows) => ui::panel(&theme).gap_0().children(rows.into_iter().enumerate().map(|(i, row)| {
@@ -1045,6 +1048,8 @@ impl Installer {
         let step = job.step_with_time();
         let percent = job.percent();
         let log: Vec<SharedString> = job.log().iter().rev().take(16).rev().cloned().collect();
+        // What went wrong and the fix (crate::diagnosis), when diagnosed.
+        let diagnosis = job.diagnosis_view();
         column()
             .child(
                 ui::panel(&theme)
@@ -1062,20 +1067,23 @@ impl Installer {
             })
             .when_some(
                 match &state {
-                    JobState::Failed(m) if m.as_ref() != super::plan::RESTART_REQUIRED => Some(m.clone()),
+                    JobState::Failed(m) if m.as_ref() != super::plan::RESTART_REQUIRED && diagnosis.is_none() => Some(m.clone()),
                     _ => None,
                 },
                 |c, message| c.child(install_failed(&theme, message)),
             )
-            .child(
-                ui::panel(&theme)
-                    .gap_1()
-                    .text_size(px(13.))
-                    .line_height(px(20.))
-                    .font_family(theme.mono_font_family.clone())
-                    .text_color(theme.muted_foreground)
-                    .children(log.into_iter().map(|line| div().child(line))),
-            )
+            .when(!matches!(&state, JobState::Failed(m) if m.as_ref() == super::plan::RESTART_REQUIRED), |c| c.children(diagnosis))
+            .when(!log.is_empty(), |c| {
+                c.child(
+                    ui::panel(&theme)
+                        .gap_1()
+                        .text_size(px(13.))
+                        .line_height(px(20.))
+                        .font_family(theme.mono_font_family.clone())
+                        .text_color(theme.muted_foreground)
+                        .children(log.into_iter().map(|line| div().child(line))),
+                )
+            })
     }
 
     fn finish(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Div {

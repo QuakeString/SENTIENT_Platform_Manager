@@ -179,6 +179,7 @@ impl InstallationRecord {
             ch_password: String::new(),
             ch_http_port: st.ch_http_port,
             ch_native_port: st.ch_native_port,
+            old_pg: Default::default(),
         }
     }
 }
