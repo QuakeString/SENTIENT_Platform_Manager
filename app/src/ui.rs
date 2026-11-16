@@ -1606,3 +1606,41 @@ pub fn enter_moves_on<T: 'static>(
         })
         .collect()
 }
+
+/// One entry of a row's [`row_menu`].
+pub enum RowMenuItem {
+    Item { label: SharedString, icon: Option<gpui_kit::component::IconName>, action: std::rc::Rc<dyn Fn(&mut Window, &mut App)> },
+    Divider,
+}
+
+/// A row's actions behind the three dots: the outlined 28 px button with
+/// the 8 px radius that every list row in SPM uses (Instances, Backup…),
+/// never a bare chevron.
+pub fn row_menu(id: impl Into<SharedString>, tip: &'static str, disabled: bool, items: Vec<RowMenuItem>) -> impl IntoElement {
+    use gpui_kit::component::{Disableable as _, menu::{DropdownMenu as _, PopupMenuItem}};
+    let items = std::rc::Rc::new(items);
+    button(gpui_kit::ElementId::Name(id.into()))
+        .outline()
+        .w(px(28.))
+        .h(px(28.))
+        .rounded(px(8.))
+        .icon(gpui_kit::component::Icon::new(gpui_kit::component::IconName::Ellipsis).size(px(18.)))
+        .tooltip(tip)
+        .disabled(disabled)
+        .dropdown_menu(move |mut menu, _, _| {
+            for it in items.iter() {
+                menu = match it {
+                    RowMenuItem::Divider => menu.separator(),
+                    RowMenuItem::Item { label, icon, action } => {
+                        let a = action.clone();
+                        let mut item = PopupMenuItem::new(label.clone()).on_click(move |_, window, cx| a(window, cx));
+                        if let Some(i) = icon {
+                            item = item.icon(gpui_kit::component::Icon::new(i.clone()));
+                        }
+                        menu.item(item)
+                    }
+                };
+            }
+            menu
+        })
+}

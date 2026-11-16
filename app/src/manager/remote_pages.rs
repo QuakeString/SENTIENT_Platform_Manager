@@ -1492,6 +1492,8 @@ impl RemotePages {
                             .ok();
                         })
                     }),
+                    // On the server: no folder to show here.
+                    reveal: None,
                     verify: std::rc::Rc::new(move |_, cx| {
                         t2.update(cx, |p, cx| p.run_job("Verifying the backup", vec!["backup-verify".into(), p2.clone()], cx)).ok();
                     }),

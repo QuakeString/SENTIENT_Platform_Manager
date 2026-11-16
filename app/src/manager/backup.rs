@@ -1124,6 +1124,10 @@ impl BackupPage {
                             .ok();
                         })
                     }),
+                    reveal: Some({
+                        let dir = e.path.parent().map(|d| d.display().to_string()).unwrap_or_default();
+                        std::rc::Rc::new(move |_, cx| crate::ui::open_url(&dir, cx))
+                    }),
                     verify: std::rc::Rc::new(move |_, cx| {
                         t2.update(cx, |this, cx| this.run_check(p2.clone(), cx)).ok();
                     }),
@@ -1424,9 +1428,11 @@ pub(crate) fn short_made(made: &str) -> String {
     chrono::NaiveDateTime::parse_from_str(made, "%Y-%m-%d %H:%M").map(|t| t.format("%-d %b, %H:%M").to_string()).unwrap_or_else(|_| made.to_string())
 }
 
-/// What a row's chevron offers.
+/// What a row offers: Restore beside it, the rest in its three-dot menu.
 pub(crate) struct RowActions {
     pub restore: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>,
+    /// Show the file in its folder (a backup on this computer only).
+    pub reveal: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>,
     pub verify: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
     pub delete: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
 }
@@ -1446,19 +1452,31 @@ pub(crate) fn table_row(theme: &gpui_kit::component::Theme, narrow: bool, i: usi
         if e.parts > 1 { format!(" · {} parts", e.parts) } else { String::new() },
         if e.old_folder { format!("\nIn {}", e.path.parent().map(|p| p.display().to_string()).unwrap_or_default()) } else { String::new() }
     );
-    let RowActions { restore, verify, delete } = actions;
-    let menu = crate::ui::button(SharedString::from(format!("bk-row-{i}")))
-        .ghost()
-        .small()
-        .icon(IconName::ChevronRight)
-        .disabled(busy)
-        .dropdown_menu(move |menu, _, _| {
-            let (v, d) = (verify.clone(), delete.clone());
-            menu.item(PopupMenuItem::new("Verify").on_click(move |_, window, cx| v(window, cx))).separator().item(PopupMenuItem::new("Delete…").on_click(move |_, window, cx| d(window, cx)))
-        });
+    let RowActions { restore, reveal, verify, delete } = actions;
+    let details = format!("{}\n\n{}\n\n{}\n\n{}", e.name, made_tip, crate::dbstatus::bytes_label(e.bytes), tip);
+    let path = e.path.display().to_string();
+    let mut items = vec![
+        crate::ui::RowMenuItem::Item {
+            label: "Details".into(),
+            icon: Some(IconName::Info),
+            action: std::rc::Rc::new(move |_, cx| crate::ui::show_info("Backup details", details.clone(), cx)),
+        },
+        crate::ui::RowMenuItem::Item { label: "Check integrity".into(), icon: Some(IconName::CircleCheck), action: verify },
+    ];
+    if let Some(r) = reveal {
+        items.push(crate::ui::RowMenuItem::Item { label: "Show in folder".into(), icon: Some(IconName::Folder), action: r });
+    }
+    items.push(crate::ui::RowMenuItem::Item {
+        label: "Copy path".into(),
+        icon: Some(IconName::Copy),
+        action: std::rc::Rc::new(move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(path.clone()))),
+    });
+    items.push(crate::ui::RowMenuItem::Divider);
+    items.push(crate::ui::RowMenuItem::Item { label: "Delete…".into(), icon: Some(IconName::Delete), action: delete });
+    let menu = crate::ui::row_menu(format!("bk-row-{i}"), "More", busy, items);
     // Restore… on every row, visible; off for a damaged backup.
     let damaged = restore.is_none();
-    let mut restore_btn = crate::ui::button(SharedString::from(format!("bk-restore-{i}"))).outline().small().icon(crate::manager::restore::icon("history")).disabled(busy || damaged);
+    let mut restore_btn = crate::ui::button(SharedString::from(format!("bk-restore-{i}"))).outline().icon(crate::manager::restore::icon("history")).disabled(busy || damaged);
     if !narrow {
         restore_btn = restore_btn.label("Restore…");
     }
