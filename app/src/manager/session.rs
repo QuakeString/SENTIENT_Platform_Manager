@@ -27,6 +27,12 @@ pub struct Session {
     /// The Platform settings tab (its position).
     #[serde(default)]
     pub settings_tab: Option<usize>,
+    /// Files: the left pane's share of the width (0.5: half).
+    #[serde(default)]
+    pub files_split: Option<f32>,
+    /// Files: each pane's Size, Modified and Owner column widths.
+    #[serde(default)]
+    pub files_cols: Option<[[f32; 3]; 2]>,
 }
 
 fn path() -> std::path::PathBuf {
@@ -61,6 +67,24 @@ pub fn load() -> Session {
 
 pub fn set_settings_tab(i: usize) {
     with(|s| s.current.settings_tab = Some(i));
+}
+
+/// Files' split and column widths (written with the window's state).
+/// Written at once (a drag ended), not only with the next window change.
+pub fn set_files(split: f32, cols: [[f32; 3]; 2]) {
+    with(|s| {
+        s.current.files_split = Some(split);
+        s.current.files_cols = Some(cols);
+        if s.saved.as_ref() == Some(&s.current) {
+            return;
+        }
+        if let Ok(t) = serde_json::to_string_pretty(&s.current) {
+            let _ = std::fs::create_dir_all(crate::updates::prefs_dir());
+            let _ = std::fs::write(path(), t);
+        }
+        s.saved = Some(s.current.clone());
+        s.written = Some(Instant::now());
+    });
 }
 
 /// Note the window's state; written when it changed, at most every half a
