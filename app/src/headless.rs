@@ -39,7 +39,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
+use-restored <database> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
 
 /// A console for the output: release builds on Windows have none of their
@@ -281,6 +281,17 @@ pub fn run(args: &[String]) -> i32 {
             Err(e) => {
                 eprintln!("{e}");
                 1
+            }
+        };
+    }
+    // SENTIENT's licence functions, called here for the window
+    // (crate::licence): the request in a file, removed once read.
+    if job == "licence-api" {
+        return match args.windows(2).find(|w| w[0] == "--request-file") {
+            Some(w) => crate::licence::agent_job(&w[1]),
+            None => {
+                eprintln!("{USAGE}");
+                2
             }
         };
     }
@@ -860,6 +871,9 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
     // Without administrator rights the database's size needs a password
     // prompt (native Linux): leave it out rather than ask.
     let db = if crate::dbstatus::needs_admin(record) && !crate::rootjob::is_root() { crate::dbstatus::DbStatus::default() } else { crate::dbstatus::read(record) };
+    // The licence's one-word state, read-only from the database (same
+    // rights as the size above).
+    let licence = if crate::dbstatus::needs_admin(record) && !crate::rootjob::is_root() { None } else { crate::licence::read_tile(record) };
     let database_bytes = db.pg.as_ref().map(|p| p.db_bytes + db.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0));
     let mon = crate::sysmon::sample(&record.state_dir);
     let prefs = crate::backups::BackupPrefs::load();
@@ -879,6 +893,7 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
         http_port: Some(record.stack.http_port),
         vanished_files: record.stack.vanished_files(),
         external_compose: record.engine == crate::installation::Engine::Docker && record.stack.external.is_some(),
+        licence,
     }
 }
 

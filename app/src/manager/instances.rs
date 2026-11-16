@@ -1373,6 +1373,23 @@ fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<Remote
             };
             col = col
                 .child(row("SENTIENT", s.sentient_version.clone(), false))
+                // The licence in one word, read-only from the database.
+                .when_some(s.licence, |c, l| {
+                    use crate::licence::TileLicence as L;
+                    let tone = match l {
+                        L::Active => Tone::Good,
+                        L::EndsIn(_) => Tone::Warn,
+                        L::Expired | L::OverLimit => Tone::Bad,
+                        L::None => Tone::Neutral,
+                    };
+                    c.child(
+                        h_flex()
+                            .text_size(px(13.))
+                            .items_center()
+                            .child(div().w(px(84.)).flex_shrink_0().text_color(theme.muted_foreground).child("Licence"))
+                            .child(h_flex().flex_1().min_w_0().child(ui::pill(theme, tone, l.label()).text_size(px(11.5)).px(px(8.)).py(px(0.)))),
+                    )
+                })
                 .child(row("Database", db, false))
                 .child(row(
                     "Disk",
@@ -1391,12 +1408,12 @@ fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<Remote
         Some(Err(e)) => col = col.child(div().text_sm().text_color(if e == remote::NOT_SET_UP || e == remote::FORGOTTEN { theme.foreground } else { theme.danger }).child(e.clone())),
         // Still reading: the rows it will show, values as placeholders.
         None => {
-            for (i, label) in ["SENTIENT", "Database", "Disk", "Last backup", "Up for"].into_iter().enumerate() {
+            for (i, label) in ["SENTIENT", "Licence", "Database", "Disk", "Last backup", "Up for"].into_iter().enumerate() {
                 col = col.child(
                     h_flex()
                         .text_size(px(13.))
                         .child(div().w(px(84.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
-                        .child(ui::skeleton_line(theme, format!("tile-{label}"), [70., 150., 90., 110., 60.][i])),
+                        .child(ui::skeleton_line(theme, format!("tile-{label}"), [70., 54., 150., 90., 110., 60.][i])),
                 );
             }
         }

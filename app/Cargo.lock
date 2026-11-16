@@ -6493,6 +6493,7 @@ dependencies = [
  "tar",
  "tokio",
  "tray-icon",
+ "ureq",
  "windows-sys 0.61.2",
  "winresource",
 ]

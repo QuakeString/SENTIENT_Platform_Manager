@@ -32,12 +32,23 @@ const EXTRA: &[(&str, &[u8])] = &[
     ("icons/sliders-horizontal.svg", include_bytes!("../assets/icons/sliders-horizontal.svg")),
     ("icons/trash.svg", include_bytes!("../assets/icons/trash.svg")),
     ("icons/wrench.svg", include_bytes!("../assets/icons/wrench.svg")),
+    // The Licence page (crate::manager::licence): the mockup's Lucide icons.
+    ("icons/licence/cart.svg", include_bytes!("../assets/icons/licence/cart.svg")),
+    ("icons/licence/chart.svg", include_bytes!("../assets/icons/licence/chart.svg")),
+    ("icons/licence/file.svg", include_bytes!("../assets/icons/licence/file.svg")),
+    ("icons/licence/key.svg", include_bytes!("../assets/icons/licence/key.svg")),
+    ("icons/licence/mail.svg", include_bytes!("../assets/icons/licence/mail.svg")),
+    ("icons/licence/shield.svg", include_bytes!("../assets/icons/licence/shield.svg")),
+    ("icons/licence/trash.svg", include_bytes!("../assets/icons/licence/trash.svg")),
+    ("icons/licence/unlink.svg", include_bytes!("../assets/icons/licence/unlink.svg")),
+    ("icons/licence/user.svg", include_bytes!("../assets/icons/licence/user.svg")),
     // The menu's icons, drawn heavier (stroke 2.75 for 2) to sit with the
     // labels' weight.
     ("icons/menu/activity.svg", include_bytes!("../assets/icons/menu/activity.svg")),
     ("icons/menu/archive.svg", include_bytes!("../assets/icons/menu/archive.svg")),
     ("icons/menu/arrow-left-right.svg", include_bytes!("../assets/icons/menu/arrow-left-right.svg")),
     ("icons/menu/chart-line.svg", include_bytes!("../assets/icons/menu/chart-line.svg")),
+    ("icons/menu/key.svg", include_bytes!("../assets/icons/menu/key.svg")),
     ("icons/menu/info.svg", include_bytes!("../assets/icons/menu/info.svg")),
     ("icons/menu/network.svg", include_bytes!("../assets/icons/menu/network.svg")),
     ("icons/menu/panel-left-close.svg", include_bytes!("../assets/icons/menu/panel-left-close.svg")),

@@ -814,6 +814,10 @@ pub struct RemoteStatus {
     /// database type need the takeover first.
     #[serde(default)]
     pub external_compose: bool,
+    /// The licence's one-word state, read-only from SENTIENT's database
+    /// (crate::licence::read_tile); None: not read (an older agent too).
+    #[serde(default)]
+    pub licence: Option<crate::licence::TileLicence>,
 }
 
 /// One service or container on the server (Status and Control).
@@ -1232,6 +1236,21 @@ pub fn check_takeover_password(inst: &Instance, ch: bool, password: &str) -> Res
     let r = spm_job(inst, &format!("takeover-check-password{} --db-password-file '{}'", if ch { " --clickhouse" } else { "" }, file.replace('\'', ""))).map(|_| ());
     remove_file(inst, &file);
     r
+}
+
+/// One call to SENTIENT's licence functions on the server, made there by
+/// its agent (crate::licence::agent_job). The request (it may hold the
+/// sign-in token or password) goes in a file only the account reads; the
+/// agent removes it once read, and so does this, in case it never ran.
+pub fn licence_api(inst: &Instance, req: &crate::licence::Request) -> Result<crate::licence::Reply, String> {
+    let text = serde_json::to_string(req).map_err(|e| e.to_string())?;
+    let file = format!("{}/.spm-licence-{}", home(inst)?.trim_end_matches('/'), chrono::Utc::now().timestamp_millis());
+    put_text(inst, &file, &text)?;
+    let out = spm_job(inst, &format!("licence-api --request-file '{}'", file.replace('\'', "")));
+    remove_file(inst, &file);
+    let out = out?;
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's agent gave no answer.")?;
+    serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 
 /// Whether a migration could start on the server now (crate::migration::

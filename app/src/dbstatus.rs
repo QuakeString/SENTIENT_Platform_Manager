@@ -427,6 +427,11 @@ fn passwords(record: &InstallationRecord) -> Result<(String, String), String> {
     }
 }
 
+/// SENTIENT's database password (crate::licence reads the licence's state).
+pub fn db_password(record: &InstallationRecord) -> Result<String, String> {
+    passwords(record).map(|(db, _)| db)
+}
+
 /// Whether reading asks for the administrator password (native Linux): the
 /// screen then reads only when asked, not on a timer.
 pub fn needs_admin(record: &InstallationRecord) -> bool {

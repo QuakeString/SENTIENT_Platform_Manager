@@ -44,6 +44,7 @@ mod log_level;
 mod logsource;
 mod kept;
 mod leftovers;
+mod licence;
 #[cfg(feature = "gui")]
 mod maintenance;
 #[cfg(feature = "gui")]
