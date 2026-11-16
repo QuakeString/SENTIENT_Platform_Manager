@@ -575,8 +575,8 @@ impl Manager {
         let dark = theme::is_dark(cx);
         let row = |key: SharedString, icon: IconName, icon_color: Hsla, title: String, detail: String, meta: String, color: &str, unread: bool, clear: AnyElement| {
             let c = crate::remote::parse_hex(color).unwrap_or(0x187074);
-            let base = if dark { 0.14 } else { 0.08 };
-            let tint = base + if unread { 0.05 } else { 0. };
+            let base = if dark { 0.07 } else { 0.04 };
+            let tint = base + if unread { 0.02 } else { 0. };
             h_flex()
                 .id(key.clone())
                 .group(key)
@@ -589,7 +589,7 @@ impl Manager {
                 .rounded(px(8.))
                 .bg(icon_color.opacity(tint))
                 .cursor_pointer()
-                .hover(move |r| r.bg(icon_color.opacity(tint + 0.06)))
+                .hover(move |r| r.bg(icon_color.opacity(tint + 0.03)))
                 .child(Icon::new(icon).size_4().text_color(icon_color).mt(px(2.)))
                 .child(
                     v_flex()
@@ -720,7 +720,9 @@ impl Manager {
         // As tall as its entries, at most the window below the bar less
         // 24 px, and never over 560 px; the list scrolls inside, the header
         // stays (the 50 newest events are kept, crate::manager::strip).
-        let max_h = (f32::from(self.window_h.get()) - shell::BAR_H - 24.).min(560.).max(240.);
+        // Grows with its entries up to half the window (at least 240 px),
+        // and only then scrolls.
+        let max_h = (f32::from(self.window_h.get()) * 0.5).max(240.);
         // A long list: the panel takes its full height and the list scrolls
         // in it (a scrolling child has no height of its own to grow by).
         let full = 52. + n_rows as f32 * 82. > max_h;
@@ -734,6 +736,7 @@ impl Manager {
                             .id("bell-panel")
                             .relative()
                             .child(crate::ui::layout_probe("overlay"))
+                            .child(crate::ui::layout_probe("bell-panel"))
                             .occlude()
                             .p_2()
                             .min_h(px(240.))
@@ -757,7 +760,15 @@ impl Manager {
                                     .child(div().text_sm().text_color(theme.muted_foreground).child("No new notifications"))
                                     .into_any_element()
                             } else {
-                                div().id("bell-list").flex_1().min_h_0().child(list).overflow_y_scrollbar().into_any_element()
+                                // Short: the list as it is (the panel takes its height).
+                                // Long: the panel at its most, the list scrolling in
+                                // it, with room on the right so the scrollbar never
+                                // sits on the cards.
+                                if full {
+                                    div().id("bell-list").flex_1().min_h_0().child(div().pr(px(10.)).child(list)).overflow_y_scrollbar().into_any_element()
+                                } else {
+                                    div().id("bell-list").child(list).into_any_element()
+                                }
                             })
                             .on_mouse_down_out(move |_, _, cx| {
                                 close.update(cx, |m, cx| {
