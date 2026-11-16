@@ -55,6 +55,12 @@ pub struct InstallationRecord {
     /// (crate::shortcuts), so uninstall removes exactly those.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shortcuts: Vec<crate::shortcuts::Entry>,
+    /// What Setup itself put on this computer (PostgreSQL, ClickHouse,
+    /// WSL) as opposed to what it found there, recorded at install time:
+    /// uninstall removes only that (crate::uninstall). None in records
+    /// from before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed: Option<crate::uninstall::Installed>,
 }
 
 impl InstallationRecord {
@@ -147,6 +153,7 @@ impl InstallationRecord {
             kiosk: None,
             changes_done: Vec::new(),
             shortcuts: Vec::new(),
+            installed: None,
         };
         record.native_config()
     }

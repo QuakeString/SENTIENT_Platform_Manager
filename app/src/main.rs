@@ -94,6 +94,7 @@ mod sysmon;
 mod theme;
 #[cfg(feature = "gui")]
 mod ui;
+mod uninstall;
 mod updates;
 mod updating;
 

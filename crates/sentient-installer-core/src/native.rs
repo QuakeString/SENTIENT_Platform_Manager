@@ -1934,6 +1934,90 @@ pub fn cleanup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     }
 }
 
+/// Uninstall, part by part (crate::removal): SENTIENT's service and program
+/// folders only. Its database stays as it is.
+pub fn remove_sentient_only(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::native_linux::uninstall(sink, cfg)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        remove_platform(&sink, cfg);
+        let _ = remove_tree_retrying(&cfg.state_dir.join("downloads"));
+        Ok(())
+    }
+}
+
+/// The folders under the bundled PostgreSQL that are its program (all but
+/// `data`): removed with it, the data folder only when it is not kept.
+pub fn pg_program_entries(entries: &[String], keep_data: bool) -> Vec<String> {
+    entries.iter().filter(|e| !(keep_data && e.eq_ignore_ascii_case("data"))).cloned().collect()
+}
+
+/// Windows: remove the bundled PostgreSQL. Stop its service and wait, end a
+/// `postgres.exe` of this cluster still running, unregister the service,
+/// delete the program and (unless `keep_data`) the data folder.
+#[cfg(not(target_os = "linux"))]
+pub fn remove_postgres_windows(sink: &ProgressFn, cfg: &NativeConfig, keep_data: bool) -> Result<(), String> {
+    step(sink, "Stopping and removing PostgreSQL");
+    let _ = sc(&["stop", PG_SERVICE]);
+    for _ in 0..60 {
+        if matches!(service_state(PG_SERVICE).as_str(), "stopped" | "absent") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    // A postgres.exe of this cluster that outlived its service.
+    let ps = format!(
+        "Get-Process postgres -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -like '{}*' }} | Stop-Process -Force -ErrorAction SilentlyContinue",
+        cfg.pg_dir.display().to_string().replace('\'', "''")
+    );
+    let _ = sys::output("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", &ps]);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let pg_ctl = cfg.pg_bin().join("pg_ctl.exe");
+    if pg_ctl.exists() {
+        let _ = sys::output_limited(&pg_ctl.to_string_lossy(), &["unregister", "-N", PG_SERVICE], std::time::Duration::from_secs(60));
+    }
+    if service_exists(PG_SERVICE) {
+        let _ = sc(&["delete", PG_SERVICE]);
+    }
+    let names: Vec<String> = std::fs::read_dir(&cfg.pg_dir)
+        .map(|r| r.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default();
+    let left: Vec<String> = pg_program_entries(&names, keep_data)
+        .into_iter()
+        .map(|n| cfg.pg_dir.join(n))
+        .filter(|p| if p.is_dir() { !remove_tree_retrying(p) } else { std::fs::remove_file(p).is_err() })
+        .map(|p| p.display().to_string())
+        .collect();
+    if !keep_data {
+        let _ = std::fs::remove_dir(&cfg.pg_dir);
+    }
+    if !left.is_empty() {
+        return Err(format!("Could not delete {} (still in use). Restart Windows and delete it by hand.", left.join(" and ")));
+    }
+    log(sink, if keep_data { "PostgreSQL's data folder is kept." } else { "PostgreSQL and its data are removed." });
+    Ok(())
+}
+
+/// Windows: the bundled PostgreSQL stays installed but stopped and not
+/// started with Windows (a new install starts it again and reuses it).
+#[cfg(not(target_os = "linux"))]
+pub fn park_postgres_windows(sink: &ProgressFn) {
+    if service_exists(PG_SERVICE) {
+        step(sink, "Stopping PostgreSQL (it stays installed)");
+        let _ = sc(&["stop", PG_SERVICE]);
+        for _ in 0..60 {
+            if service_state(PG_SERVICE) == "stopped" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        let _ = sc(&["config", PG_SERVICE, "start=", "demand"]);
+    }
+}
+
 /// What an earlier SENTIENT install left of its own services and PostgreSQL
 /// cluster (no installation record any more), for Setup's "Remove the
 /// earlier install". Descriptions, empty when there is nothing.

@@ -67,3 +67,52 @@ pub fn install(sink: ProgressFn) -> WslOutcome {
         WslOutcome { ready: false, reboot_required: false }
     }
 }
+
+/// The WSL distributions this account has, without SENTIENT's own
+/// (`sentient`, crate::distro::DISTRO): what keeps WSL from being removed.
+pub fn other_distros() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        sys::output("wsl.exe", &["-l", "-q"])
+            .filter(|(ok, _, _)| *ok)
+            .map(|(_, out, _)| crate::removal::wsl_distros(&sys::decode(&out)))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|d| !d.eq_ignore_ascii_case(crate::distro::DISTRO))
+            .collect()
+    }
+    #[cfg(not(windows))]
+    Vec::new()
+}
+
+/// Turn WSL off: its package (`wsl --uninstall`) and the two Windows
+/// features Setup's `wsl --install` turned on. Finished by a restart.
+pub fn remove(sink: &ProgressFn) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let _ = sys::output("wsl.exe", &["--shutdown"]);
+        step(sink, "Removing WSL", "wsl.exe", &["--uninstall"]);
+        let mut failed = Vec::new();
+        for feature in ["Microsoft-Windows-Subsystem-Linux", "VirtualMachinePlatform"] {
+            sink(Progress::Step { name: format!("Turning off the Windows feature {feature}") });
+            let arg = format!("/featurename:{feature}");
+            match sys::output_tracked("dism.exe", &["/online", "/disable-feature", &arg, "/norestart"]) {
+                // 3010: done, a restart finishes it.
+                Some((ok, out, _)) if ok || sys::decode(&out).contains("3010") => {}
+                Some((_, out, err)) => failed.push(format!("{feature}: {}", sys::decode(&[out, err].concat()).trim().lines().last().unwrap_or("").to_string())),
+                None => failed.push(format!("{feature}: dism.exe did not run")),
+            }
+        }
+        if failed.is_empty() {
+            sink(Progress::Log { line: "WSL is turned off. Windows finishes it at the next restart.".into() });
+            Ok(())
+        } else {
+            Err(format!("WSL was not turned off: {}", failed.join("; ")))
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = sink;
+        Err("WSL exists on Windows only.".into())
+    }
+}

@@ -145,6 +145,7 @@ impl InstallPlan {
             kiosk: Some(self.shortcuts.kiosk),
             changes_done: crate::changes::all_ids(),
             shortcuts: crate::shortcuts::noted(),
+            installed: crate::uninstall::noted(),
         }
     }
 }
@@ -364,6 +365,8 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
     }
     step(&sink, "Installing the Platform Manager");
     let manager = self_install::install_manager()?;
+    // What is already here, before anything is installed (uninstall removes only what Setup put here).
+    crate::uninstall::note_before_install(plan.engine, plan.stack.flavor);
     // ClickHouse first: SENTIENT's schema installer creates its tables there.
     #[cfg(windows)]
     if plan.stack.flavor == Flavor::Clickhouse {

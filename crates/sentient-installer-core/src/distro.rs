@@ -307,7 +307,7 @@ impl DeployConfig {
         let base = stack_base_dir();
         if self.stack_name == "sentient" { base } else { format!("{base}/{}", self.stack_name) }
     }
-    fn compose_path(&self) -> String {
+    pub fn compose_path(&self) -> String {
         format!("{}/docker-compose.yml", self.stack_dir())
     }
     pub fn ch_config_path(&self) -> String {

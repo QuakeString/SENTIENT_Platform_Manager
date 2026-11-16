@@ -28,6 +28,12 @@
 //! --job agents                          (the server agents this package carries, written out)
 //! --job kept
 //! --job remove-kept <name>
+//! --job uninstall [--delete-data]       (everything Setup installed but the Platform Manager;
+//!                                       the data kept unless --delete-data)
+//! --job uninstall --parts sentient,postgres,clickhouse,gateway,shortcuts,manager
+//!       [--keep-files] [--keep-pg-data] [--keep-ch-data] [--wsl-distro] [--wsl]
+//!                                       (the parts picked; pg-database / ch-database drop only
+//!                                       SENTIENT's database in one Setup did not install)
 //! ```
 
 use std::path::PathBuf;
@@ -42,7 +48,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | diagnose-fix <fix json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | movedata-json | movedata-check <store> <folder> | movedata-estimate <store=folder,…> | move-data <store=folder,…> | move-data-remove-old <folder> | move-data-cancel | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> [--stop-shared-pg] | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live [system|services|db] | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | agent-info | agents | pg-others-json | \
+use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> [--stop-shared-pg] | service <start|stop|restart> <name> | uninstall [--delete-data] | uninstall --parts <sentient,postgres,pg-database,clickhouse,ch-database,gateway,shortcuts,wsl-distro,wsl,manager> [--keep-files] [--keep-pg-data] [--keep-ch-data] [--wsl-distro] [--wsl] | uninstall-facts-json | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live [system|services|db] | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | agent-info | agents | pg-others-json | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart> | gateway-remove [--delete-data] [--remove-image] | gateway-adopt
 
 Administrator password (native Linux): a job typed in a terminal may ask for it, once for the
@@ -147,6 +153,16 @@ fn print_plain(p: Progress) {
         Progress::Step { name } => println!("== {name}"),
         // Data lines of a root job (crate::kept::encode) are printed decoded.
         Progress::Log { line } if line.starts_with("KEPT\t") || line.starts_with("ROLLBACK\t") || line.starts_with("FOUND\t") || line.starts_with(sentient_installer_core::diagnose::DIAG_PREFIX) || crate::restore_flow::is_data(&line) => {}
+        // Uninstall's check of what is left (crate::uninstall).
+        Progress::Log { line } if sentient_installer_core::removal::Check::decode(&line).is_some() => {
+            if let Some(c) = sentient_installer_core::removal::Check::decode(&line) {
+                match (c.ok, c.fix) {
+                    (true, _) => println!("   ok    {}", c.what),
+                    (false, Some(fix)) => println!("   LEFT  {}\n         remove it with: {fix}", c.what),
+                    (false, None) => println!("   LEFT  {}", c.what),
+                }
+            }
+        }
         Progress::Log { line } => println!("   {}", crate::maintenance_ops::strip_ansi(&line)),
         Progress::Percent { .. } => {}
         Progress::Done { message } => println!("✓ {message}"),
@@ -517,6 +533,15 @@ fn run_job(args: &[String]) -> i32 {
         let line = match answer {
             Ok(names) => serde_json::json!({ "names": names }),
             Err(e) => serde_json::json!({ "names": [], "error": e }),
+        };
+        println!("{line}");
+        return 0;
+    }
+    // What a server's Uninstall dialog shows (crate::uninstall::Facts): one JSON line.
+    if job == "uninstall-facts-json" {
+        let line = match InstallationRecord::load() {
+            Some(record) => serde_json::to_string(&crate::uninstall::facts_full(&record)).unwrap_or_else(|_| "null".into()),
+            None => "null".into(),
         };
         println!("{line}");
         return 0;
@@ -928,10 +953,19 @@ fn run_job(args: &[String]) -> i32 {
             (Some(a @ ("start" | "stop" | "restart")), Some(name)) => record.platform().service_control(sink.clone(), name, a),
             _ => Err(USAGE.into()),
         },
-        "uninstall" => {
-            let keep = !args.iter().any(|a| a == "--delete-data");
-            crate::maintenance_ops::run_uninstall(record, keep, sink.clone())
-        }
+        // uninstall [--parts …] [--keep-*]: crate::uninstall. The old
+        // `uninstall [--delete-data]` is everything Setup installed but the
+        // Platform Manager.
+        "uninstall" => crate::uninstall::from_args(&args[1..]).and_then(|choice| {
+            let mut facts = crate::uninstall::facts_quick(&record);
+            facts.pg_others = Some(crate::uninstall::pg_others(&record));
+            let manager = choice.has(crate::uninstall::Key::Manager);
+            crate::uninstall::run(record, choice, facts, sink.clone())?;
+            if manager {
+                crate::uninstall::remove_manager_last(&sink);
+            }
+            Ok(())
+        }),
         "apply-settings" => match args.get(1) {
             Some(file) => std::fs::read_to_string(file)
                 .map_err(|e| format!("read {file}: {e}"))
