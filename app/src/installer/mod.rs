@@ -355,6 +355,25 @@ impl Installer {
             _tasks: Vec::new(),
             _subscriptions: vec![search_sub, install_sub, check_fix_sub],
         };
+        // Enter: the next field of the step, and on its last one Next (a
+        // step that is not valid keeps its message and focuses the first
+        // empty field).
+        let f = &this.fields;
+        let all = [
+            &f.pg_db, &f.pg_user, &f.pg_port, &f.pg_password, &f.pg_admin_password, &f.ch_db, &f.ch_user, &f.ch_password, &f.ch_http_port, &f.ch_native_port,
+            &f.http_port, &f.mqtt_port, &f.mqtts_port, &f.coap_port, &f.coaps_port, &f.admin_email, &f.admin_password, &f.admin_confirm, &f.autologin_user, &f.autologin_password,
+        ]
+        .map(|e| e.clone());
+        let enter = crate::ui::enter_moves_on(&all, window, cx, |this: &Self, _| this.step_fields(), |this: &mut Self, window, cx| {
+            let step = this.step;
+            this.next(window, cx);
+            if this.step != step || this.problem.is_none() {
+                return None;
+            }
+            let fields = this.step_fields();
+            fields.iter().find(|e| e.read(cx).value().trim().is_empty()).cloned().or_else(|| fields.first().cloned())
+        });
+        this._subscriptions.extend(enter);
         this.run_checks(cx);
         // The error panel's page fixes: another port, or the password
         // prompt again (both run the install again).
@@ -644,6 +663,32 @@ impl Installer {
             .ok()
             .filter(|p| *p > 0)
             .ok_or_else(|| format!("{name} must be a number between 1 and 65535."))
+    }
+
+    /// The text fields of the current step as shown, in their visual order
+    /// (Enter moves through them).
+    fn step_fields(&self) -> Vec<Entity<InputState>> {
+        let f = &self.fields;
+        let v: Vec<&Entity<InputState>> = match self.step {
+            4 => {
+                let mut v = vec![&f.pg_db, &f.pg_user, &f.pg_port, &f.pg_password, &f.pg_admin_password];
+                if self.flavor == Some(Flavor::Clickhouse) {
+                    v.extend([&f.ch_db, &f.ch_user, &f.ch_password, &f.ch_http_port, &f.ch_native_port]);
+                }
+                v
+            }
+            5 => vec![&f.http_port, &f.mqtt_port, &f.mqtts_port, &f.coap_port, &f.coaps_port],
+            6 => vec![&f.admin_email, &f.admin_password, &f.admin_confirm],
+            7 if self.autologin => {
+                if cfg!(windows) {
+                    vec![&f.autologin_user, &f.autologin_password]
+                } else {
+                    vec![&f.autologin_user]
+                }
+            }
+            _ => Vec::new(),
+        };
+        v.into_iter().cloned().collect()
     }
 
     /// Can the wizard leave the current page? `Err` says why not.
