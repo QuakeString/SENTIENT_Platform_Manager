@@ -34,6 +34,8 @@ pub mod diagnose;
 pub mod native_linux;
 pub mod progress;
 pub mod releases;
+/// Uninstall part by part, and the check that nothing is left.
+pub mod removal;
 pub mod signing;
 pub mod vcrt;
 /// Running a script as root from a desktop session (pkexec, else `sudo -n`).

@@ -2142,8 +2142,7 @@ impl RemotePages {
         let busy = self.job.read(cx).is_running();
         let installed = self.status.got().is_some_and(|s| s.installed);
         let external = self.status.got().is_some_and(|s| s.external_compose);
-        // The same panels as this computer's Repair. Uninstalling is done on
-        // the server itself, so that panel is left out here.
+        // The same panels as this computer's Repair.
         let take_over = external.then(|| {
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Take over the compose file"))
@@ -2175,6 +2174,40 @@ impl RemotePages {
                 "For a SENTIENT that does not start or a service that went missing: the services and their configuration are written again from this installation's record, and SENTIENT is started. Data and settings are kept.",
             ))
             .child(h_flex().child(crate::ui::button("r-repair").outline().label("Repair").disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job("Repairing", vec!["repair".into()], cx)))))).children(gw)
+            .when(installed, |c| {
+                c.child(
+                    ui::panel(&theme)
+                        .child(div().font_weight(FontWeight::MEDIUM).child("Uninstall"))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child("Choose what to remove from this server, the same way as on this computer."))
+                        .child(ui::button_row(vec![crate::ui::button("r-uninstall").danger().label("Uninstall…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_uninstall(cx))).into_any_element()])),
+                )
+            })
+    }
+
+    /// The Uninstall dialog for this server: its facts and the job through
+    /// its agent (crate::manager::uninstall_dialog).
+    fn open_uninstall(&mut self, cx: &mut Context<Self>) {
+        let inst = self.inst.clone();
+        let (i1, i2, id) = (inst.clone(), inst.clone(), inst.id.clone());
+        crate::manager::uninstall_dialog::open(
+            crate::manager::uninstall_dialog::Opts {
+                name: inst.name.clone(),
+                load: std::sync::Arc::new(move || remote::uninstall_facts(&i1)),
+                run: std::sync::Arc::new(move |args: Vec<String>, sink| {
+                    let a: Vec<&str> = args.iter().map(String::as_str).collect();
+                    remote::start_job(&i2, &a).and_then(|job| remote::follow(&i2, &job, &sink))
+                }),
+                remote: true,
+                on_done: std::rc::Rc::new(|cx: &mut App| cx.refresh_windows()),
+                on_close: std::rc::Rc::new(move |after, cx: &mut App| {
+                    if after.forget_instance {
+                        remote::forget_instance(&id);
+                        cx.refresh_windows();
+                    }
+                }),
+            },
+            cx,
+        );
     }
 
     fn gateway_page(&self, cx: &mut Context<Self>) -> Div {

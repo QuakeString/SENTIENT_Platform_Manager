@@ -29,6 +29,7 @@ pub(crate) mod setting_field;
 pub(crate) mod status;
 pub(crate) mod stats;
 pub(crate) mod strip;
+pub(crate) mod uninstall_dialog;
 pub(crate) mod update;
 
 use gpui_kit::assets::IconName as Lucide;
@@ -485,6 +486,11 @@ impl Manager {
                     part("ts_kv_dictionary", "tuple()", "all_3_3_0", 12_000),
                 ];
                 status::BrokenParts::open(std::sync::Arc::new(move || Ok(list.clone())), std::sync::Arc::new(|_, _| Ok("ok a\nfailed b: Code: 232. Part b is broken".into())), cx);
+            }
+            // The Uninstall dialog for one deployment (crate::uninstall::FIXTURES),
+            // `<name>:done` for its result screen.
+            if let Ok(spec) = std::env::var("SPM_DEBUG_UNINSTALL") {
+                uninstall_dialog::open_fixture(&spec, cx);
             }
             if std::env::var_os("SPM_DEBUG_LOG_DIALOG").is_some() {
                 let view = cx.new(|cx| logs::LogView::file(crate::jobs::activity_log(), _window, cx));

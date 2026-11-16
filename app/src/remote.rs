@@ -1119,6 +1119,25 @@ fn read_json<T: serde::de::DeserializeOwned>(inst: &Instance, job: &str) -> Resu
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 
+/// What the server's Uninstall dialog shows (crate::uninstall::Facts); the
+/// agent is brought up to date first (an older one does not know the job).
+pub fn uninstall_facts(inst: &Instance) -> Result<crate::uninstall::Facts, String> {
+    let _ = deploy(inst, &sentient_installer_core::progress::noop());
+    read_json(inst, "uninstall-facts-json")
+}
+
+/// Forget a server here (Uninstall's "Remove from Instances").
+pub fn forget_instance(id: &str) {
+    let mut list = load();
+    if let Some(inst) = list.iter().find(|i| i.id == id) {
+        untrust(&inst.host, inst.port);
+    }
+    forget_secret(id);
+    reuse::forget(id);
+    list.retain(|i| i.id != id);
+    let _ = save(&list);
+}
+
 pub fn services(inst: &Instance) -> Result<Vec<RemoteService>, String> {
     #[cfg(debug_assertions)]
     if let Some(secs) = std::env::var("SPM_DEBUG_REMOTE_SLOW").ok().and_then(|s| s.parse::<u64>().ok()) {
@@ -2405,6 +2424,7 @@ mod tests {
             kiosk: None,
             changes_done: Vec::new(),
             shortcuts: Vec::new(),
+            installed: None,
         };
         let dir = std::env::temp_dir().join(format!("spm-e2e-bk-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

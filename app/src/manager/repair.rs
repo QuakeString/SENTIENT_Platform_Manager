@@ -7,7 +7,6 @@
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex,
     button::ButtonVariants as _,
-    checkbox::Checkbox,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -114,6 +113,25 @@ impl RepairPage {
                 cx,
             )
         });
+    }
+
+    /// The Uninstall dialog (crate::manager::uninstall_dialog).
+    fn open_uninstall(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        let page = cx.entity().downgrade();
+        self.running = Some(Action::Uninstall);
+        crate::manager::uninstall_dialog::open_local(
+            record,
+            std::rc::Rc::new(move |cx: &mut App| {
+                page.update(cx, |p, cx| {
+                    p.record = InstallationRecord::load();
+                    cx.emit(RecordChanged);
+                    cx.notify();
+                })
+                .ok();
+            }),
+            cx,
+        );
     }
 
     /// The plan for confirmation (crate::manager::takeover), then the takeover.
@@ -320,28 +338,14 @@ impl Render for RepairPage {
         .child(
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Uninstall"))
-                .child(div().text_sm().text_color(theme.muted_foreground).child(
-                    "Removes SENTIENT and its services. The Platform Manager stays; removing it is its own step once SENTIENT is gone. Keeping the database lets a new install use it.",
-                ))
                 .child(
-                    Checkbox::new("keep-data")
-                        .label("Keep the database")
-                        .checked(self.keep_data)
-                        .disabled(done)
-                        .on_change(cx.listener(|this, value: &bool, _, cx| {
-                            this.keep_data = *value;
-                            cx.notify();
-                        })),
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().text_sm().text_color(theme.muted_foreground).child("Choose what to remove: SENTIENT, its databases, the shortcuts, the Platform Manager."))
+                        .child(ui::info("uninstall-help".into(), "Each part has its own switch, and each database a Keep its data switch, on by default. A database Setup did not install is never removed. Afterwards the Platform Manager checks that nothing is left and lists what is, with the command to remove it.".into())),
                 )
-                .child(
-                    h_flex().child(
-                        crate::ui::button("uninstall")
-                            .danger()
-                            .label(if self.keep_data { "Uninstall" } else { "Uninstall and delete the data" })
-                            .disabled(done)
-                            .on_click(cx.listener(|this, _, window, cx| this.confirm(Action::Uninstall, window, cx))),
-                    ),
-                ),
+                .child(ui::button_row(vec![crate::ui::button("uninstall").danger().label("Uninstall…").disabled(done).on_click(cx.listener(|this, _, _, cx| this.open_uninstall(cx))).into_any_element()])),
         )
         .when(uninstalled, |page| {
             page.child(

@@ -105,6 +105,7 @@ fn record_for_docker(cfg: &DeployConfig, version: Option<String>) -> Installatio
         kiosk: None,
         changes_done: Vec::new(),
         shortcuts: Vec::new(),
+        installed: None,
     }
 }
 
@@ -177,6 +178,8 @@ fn native_record(cfg: &sentient_installer_core::native::NativeConfig) -> Install
         kiosk: None,
         changes_done: Vec::new(),
         shortcuts: Vec::new(),
+        // Added, not installed: its databases were there before.
+        installed: Some(crate::uninstall::Installed { postgres: false, clickhouse: false, wsl: false }),
     }
 }
 
