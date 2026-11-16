@@ -12,7 +12,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, Disableable as _, Icon, button::ButtonVariants as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -72,6 +72,8 @@ pub struct LicencePage {
     pending: Option<Act>,
     _watch: Option<Subscription>,
     _tasks: Vec<Task<()>>,
+    /// Enter in the email or password field signs in.
+    _enter: Vec<Subscription>,
 }
 
 impl EventEmitter<GoSettings> for LicencePage {}
@@ -103,7 +105,15 @@ impl LicencePage {
             pending: None,
             _watch: None,
             _tasks: Vec::new(),
+            _enter: Vec::new(),
         };
+        for input in [page.email.clone(), page.password.clone()] {
+            page._enter.push(cx.subscribe_in(&input, window, |p: &mut Self, _, e: &InputEvent, window, cx| {
+                if matches!(e, InputEvent::PressEnter { .. }) && matches!(p.view, View::SignIn) && !p.signing_in {
+                    p.sign_in(window, cx);
+                }
+            }));
+        }
         #[cfg(debug_assertions)]
         if std::env::var_os("SPM_DEBUG_LICENCE").is_some() && std::env::var_os("SPM_DEBUG_LICENCE_SIGNED_IN").is_some() {
             crate::licence::set_session(&page.target.key(), "admin@sentient.local", "debug");
@@ -504,6 +514,12 @@ impl Render for ActionDialog {
     }
 }
 
+/// The sign-in card (and its placeholder) in the middle of the page, like
+/// the licence card.
+fn centred(el: Div) -> Div {
+    v_flex().flex_1().w_full().items_center().justify_center().pb(px(40.)).child(el)
+}
+
 fn name_or_this(name: &str) -> String {
     if name == "this computer" { "this computer".into() } else { name.to_string() }
 }
@@ -675,7 +691,7 @@ impl LicencePage {
                 .justify_center()
                 .gap(px(16.))
                 .pb(px(40.))
-                .child(ui::skeleton_block(theme, "licence-card", px(w).into(), licence_card::H * f).rounded(px(22. * f)))
+                .child(ui::skeleton_block_r(theme, "licence-card", px(w).into(), licence_card::H * f, 22. * f))
                 .child(h_flex().w(px(w)).gap(px(8.)).children((0..3).map(|i| div().flex_1().child(ui::skeleton_block(theme, format!("licence-btn-{i}"), relative(1.).into(), 32.)))))
         } else {
             ui::panel(theme)
@@ -991,7 +1007,7 @@ impl Render for LicencePage {
             }))));
         }
         let page = match self.view.clone() {
-            View::Checking => page.child(self.skeleton(&theme, false, w)),
+            View::Checking => page.child(centred(self.skeleton(&theme, false, w))),
             View::Loading => page.child(self.skeleton(&theme, true, w)),
             View::NotInstalled => match self.target {
                 Target::Local(_) => page.child(ui::not_installed(&theme)),
@@ -1016,7 +1032,7 @@ impl Render for LicencePage {
                 format!("The licence could not be read.\n{e}"),
                 Some(ui::button("licence-retry").outline().label("Retry").on_click(cx.listener(|p, _, _, cx| p.reload(cx))).into_any_element()),
             )),
-            View::SignIn => page.child(self.sign_in_card(&theme, cx)),
+            View::SignIn => page.child(centred(self.sign_in_card(&theme, cx))),
             View::Ready(r) => {
                 let page = match &r.status.binding_block_reason {
                     Some(why) => page.child(banner(&theme, Tone::Bad, Some("SENTIENT refuses new items."), why.clone(), None)),

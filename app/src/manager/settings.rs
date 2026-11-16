@@ -1184,7 +1184,7 @@ impl SettingsPage {
                         })),
                 )
                 .into_any_element(),
-            h_flex().gap_4().items_start().child(groups_nav).child(table).into_any_element(),
+            h_flex().gap(px(crate::ui::GAP)).items_start().child(groups_nav).child(table).into_any_element(),
             added.into_any_element(),
         ]
     }

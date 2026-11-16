@@ -42,6 +42,11 @@ pub struct ChMember {
     pub rows: u64,
     /// Archive member holding the zstd-compressed Native stream.
     pub member: String,
+    /// History exported with FINAL: `rows` counts each (entity, key, ts)
+    /// once. ts_kv is a ReplacingMergeTree, so the live table may still hold
+    /// rows its merges will replace; an older backup counted those too.
+    #[serde(default)]
+    pub deduplicated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,7 +176,11 @@ pub fn export_all(
         if since_partition.is_some_and(|since| partition.as_str() < since) {
             continue;
         }
-        let filter = partition_filter(&partition);
+        // FINAL: each (entity, key, ts) once, as the table will hold it after
+        // its merges (and as a restore's insert stores it). Counting the raw
+        // rows made every restore of a partition with pending replacements
+        // fail its row check.
+        let filter = format!(" FINAL{}", partition_filter(&partition));
         let rows = conn.count(HISTORY_TABLE, &filter)?;
         let temp = temp_base.with_extension(format!("ch-{partition}.tmp"));
         let (sha256, bytes) = export(conn, &format!("SELECT * FROM {HISTORY_TABLE}{filter}"), &temp, level)?;
@@ -182,6 +191,7 @@ pub fn export_all(
                 partition: partition.clone(),
                 rows,
                 member: format!("clickhouse/{HISTORY_TABLE}/{partition}.native.zst"),
+                deduplicated: true,
             },
             temp,
             sha256,
@@ -198,6 +208,7 @@ pub fn export_all(
             partition: String::new(),
             rows,
             member: format!("clickhouse/{LATEST_TABLE}.native.zst"),
+            deduplicated: false,
         },
         temp,
         sha256,
@@ -264,8 +275,12 @@ pub fn import(conn: &ChConn, entry: &ChMember, file: &Path) -> Result<u64> {
         .send(ZstdFileReader(dec))
         .map_err(ch_error)?;
     if entry.table == HISTORY_TABLE {
-        let got = conn.count(HISTORY_TABLE, &partition_filter(&entry.partition))?;
-        if got < entry.rows {
+        // Counted as the table keeps them: each (entity, key, ts) once.
+        let got = conn.count(HISTORY_TABLE, &format!(" FINAL{}", partition_filter(&entry.partition)))?;
+        // A backup made before FINAL counted rows the table replaces; its
+        // restore holds fewer, never none.
+        let short = if entry.deduplicated { got < entry.rows } else { got == 0 && entry.rows > 0 };
+        if short {
             return Err(Error::msg(format!(
                 "ClickHouse {} {}: {got} rows after restore, the backup holds {}",
                 entry.table, entry.partition, entry.rows

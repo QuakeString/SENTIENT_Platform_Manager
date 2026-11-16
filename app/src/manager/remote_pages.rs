@@ -976,7 +976,7 @@ impl RemotePages {
         );
         let _ = serving;
         v_flex()
-            .gap_4()
+            .gap(px(ui::GAP))
             .child(ui::panel(&theme).child(row))
             .child(self.services_panel_with_actions(cx))
     }
@@ -1327,7 +1327,7 @@ impl RemotePages {
             &theme,
             narrow,
             "What to back up",
-            Some("Everything: the whole database and its files. Last 90 days: the same with only the last 90 days of telemetry. Configuration only: devices, dashboards, users and settings, without telemetry history."),
+            Some("Everything: settings and all telemetry.\nLast 90 days: settings and the last 90 days of telemetry.\nConfiguration only: devices, dashboards, users and settings, no telemetry."),
             {
                 let at = if on { time.clone() } else { "off".into() };
                 let options = [("everything", "Everything"), ("last90", "Last 90 days"), ("configuration", "Configuration only")];

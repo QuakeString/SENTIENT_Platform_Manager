@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use super::*;
 
 // ---------------------------------------------------------------------------
-// Appearance preferences: the folded menu, the see-through menu and bar
+// Appearance preferences: the folded menu, the translucent menu and bar
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,7 +80,7 @@ impl Appearance {
     }
 }
 
-/// Where see-through cannot work, why (None: it can). Windows blurs behind
+/// Where the translucent menu cannot work, why (None: it can). Windows blurs behind
 /// any window (acrylic); KDE Plasma does on Wayland (ext-background-effect,
 /// or its own blur protocol) and on X11 (its blur property); Hyprland blurs
 /// every translucent window by itself, and picom when it runs (with blur in
@@ -91,7 +91,7 @@ pub fn see_through_why_not() -> Option<&'static str> {
         return None;
     }
     if GL_ONLY.with(|g| g.get()) {
-        return Some("The window cannot be see-through without Vulkan graphics: install your graphics card's Vulkan driver (on Arch vulkan-intel, vulkan-radeon or nvidia-utils; on Debian and Ubuntu mesa-vulkan-drivers), then start the Platform Manager again.");
+        return Some("The menu cannot be translucent without Vulkan graphics: install your graphics card's Vulkan driver (on Arch vulkan-intel, vulkan-radeon or nvidia-utils; on Debian and Ubuntu mesa-vulkan-drivers), then start the Platform Manager again.");
     }
     let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_uppercase();
     let blurs = desktop.contains("KDE") || desktop.contains("HYPRLAND") || picom_runs();
@@ -121,7 +121,7 @@ pub fn set_gl_only(gl: bool) {
     GL_ONLY.with(|g| g.set(gl));
 }
 
-/// See-through on: chosen and possible.
+/// The translucent menu on: chosen and possible.
 pub fn see_through() -> bool {
     see_through_supported() && Appearance::get().see_through
 }
@@ -144,10 +144,10 @@ pub const BAR_H: f32 = 60.;
 /// folded menu. Folding only hides the labels; nothing moves.
 pub const ICON_X: f32 = 32.;
 /// The menu's left padding (the selection's left end), the same folded or not.
-const MENU_PAD: f32 = 8.;
+const MENU_PAD: f32 = 12.;
 /// Unfolded, the selection keeps a wider margin from the window's edge (his
 /// D1 note: too little room on its left); the icons stay on ICON_X.
-const MENU_PAD_OPEN: f32 = 16.;
+const MENU_PAD_OPEN: f32 = 12.;
 /// A row's icon size and its left padding inside the row (icon centre at ICON_X).
 const ICON: f32 = 18.;
 fn row_pl(pad: f32) -> f32 {
@@ -204,7 +204,11 @@ fn menu_probe(left_pad: f32) -> impl IntoElement {
                 r.left = f32::from(b.origin.x) + left_pad;
                 r.top_y = f32::from(b.origin.y);
                 r.bottom_y = f32::from(b.origin.y + b.size.height);
-            })
+            });
+            // The layout test measures the page's gaps from here.
+            if cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
+                eprintln!("LAYOUT menu-edge {:.2}", f32::from(b.origin.x + b.size.width));
+            }
         },
         |_, _, _, _| {},
     )
@@ -436,20 +440,32 @@ impl Manager {
                         .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Unfold menu").build(w, cx))
                 })
                 .when(rail && forced, |d| d.tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("The window is too narrow to unfold the menu").build(w, cx)))
-                .child(if rail && !forced && logo_hover {
+                // The swap cross-fades (150 ms, the app's ease-out): the logo
+                // fades and shrinks a little as the unfold button fades in,
+                // and back on leaving. Reduced motion: at once.
+                .child({
+                    let t = ui::tween("logo-swap", if rail && !forced && logo_hover { 1. } else { 0. }, 150, window);
+                    let logo_size = LOGO * (1. - 0.08 * t);
                     div()
+                        .relative()
                         .size_full()
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(theme.border)
-                        .bg(theme.list_hover)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(menu_icon("panel-left-open").size(px(ICON)).text_color(theme.muted_foreground))
-                        .into_any_element()
-                } else {
-                    ui::product_logo(ui::Product::Manager, LOGO).into_any_element()
+                        .child(div().absolute().inset_0().flex().items_center().justify_center().opacity(1. - t).child(ui::product_logo(ui::Product::Manager, logo_size)))
+                        .when(t > 0.001, |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .bg(theme.list_hover)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .opacity(t)
+                                    .child(menu_icon("panel-left-open").size(px(ICON)).text_color(theme.muted_foreground)),
+                            )
+                        })
                 });
             h_flex()
                 .h(px(BAR_H))
@@ -459,8 +475,7 @@ impl Manager {
                 // The logo's centre on ICON_X, folded or not.
                 .pl(px(ICON_X - LOGO / 2.))
                 .when(!rail, |r| r.pr(px(10.)))
-                .border_b_1()
-                .border_color(theme.sidebar_border)
+                // No line under it (his rc12-20 note): the menu starts below.
                 .child(logo)
                 .when(!rail, |r| {
                     r.child(

@@ -591,7 +591,7 @@ impl Render for StatsPage {
             .child(h_flex().gap_2().items_center().child(seg).child(refresh));
 
         let latest = self.live.last().cloned().or_else(|| self.points().last().cloned());
-        let mut col = v_flex().gap(px(10.)).child(header);
+        let mut col = v_flex().gap(px(crate::ui::GAP)).child(header);
         let page = |col: Div| v_flex().id("stats-page").flex_1().min_w_0().h_full().overflow_y_scroll().p(px(crate::ui::PAGE_PAD)).bg(theme.muted).child(col);
         // Nothing read: one notice in the page and nothing else (no empty
         // boxes, no endless "Reading…").
@@ -639,7 +639,7 @@ impl Render for StatsPage {
                     };
                     let charts = ["Processor", "Memory", "Processor load", "Network received", "Network sent", "Disk activity"].into_iter().enumerate().map(|(i, t)| chart(i, t)).collect();
                     v_flex()
-                        .gap(px(10.))
+                        .gap(px(crate::ui::GAP))
                         .child(grid(fig_cols, figs))
                         .child(grid(chart_cols, charts))
                         .child(ui::skeleton_card(&theme, "stats-svc", Some("Services"), &["", "", ""]))
@@ -695,13 +695,13 @@ impl Render for StatsPage {
             (Some(services), Some(db)) if side_by_side => {
             // Siblings in a row share its height.
             h_flex()
-                .gap(px(10.))
+                .gap(px(crate::ui::GAP))
                 .items_stretch()
                 .child(div().flex_grow(1.6).flex_basis(px(0.)).min_w_0().flex().flex_col().child(services.flex_1()))
                 .child(div().flex_grow(1.).flex_basis(px(0.)).min_w_0().flex().flex_col().child(db.flex_1()))
                 .into_any_element()
             }
-            (services, db) => v_flex().gap(px(10.)).children(services).children(db).into_any_element(),
+            (services, db) => v_flex().gap(px(crate::ui::GAP)).children(services).children(db).into_any_element(),
         });
 
         page(col)
@@ -710,10 +710,10 @@ impl Render for StatsPage {
 
 /// Items in `cols` equal columns, rows as tall as their tallest item.
 fn grid(cols: usize, items: Vec<AnyElement>) -> AnyElement {
-    let mut rows = v_flex().gap(px(10.));
+    let mut rows = v_flex().gap(px(crate::ui::GAP));
     let mut it = items.into_iter().peekable();
     while it.peek().is_some() {
-        let mut row = h_flex().gap(px(10.)).items_stretch();
+        let mut row = h_flex().gap(px(crate::ui::GAP)).items_stretch();
         for _ in 0..cols {
             row = row.child(match it.next() {
                 Some(el) => div().flex_1().flex_basis(px(0.)).min_w_0().flex().flex_col().child(el).into_any_element(),

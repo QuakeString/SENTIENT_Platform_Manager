@@ -202,16 +202,32 @@ impl TakeOverDialog {
     }
 }
 
-/// A file and whether it is there.
+/// A file and whether it is there. A long path keeps both ends (the middle
+/// gives way), the whole path on hover. A file that is gone says so; it is
+/// never used as the source.
 fn file_row(theme: &gpui_kit::component::Theme, path: &str, found: bool) -> Div {
+    let full = path.to_string();
     h_flex()
         .relative()
         .child(ui::layout_probe("file-row"))
         .gap_2()
         .items_center()
         .min_w_0()
-        .child(ui::pill(theme, if found { Tone::Good } else { Tone::Warn }, if found { "Found" } else { "Missing" }).flex_shrink_0())
-        .child(div().min_w_0().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().font_family(theme.mono_font_family.clone()).text_size(px(12.5)).child(path.to_string()))
+        .min_h(px(26.))
+        .child(ui::pill(theme, if found { Tone::Good } else { Tone::Warn }, if found { "Found" } else { "Missing (file was removed)" }).flex_shrink_0())
+        .child(
+            div()
+                .id(SharedString::from(format!("to-file-{path}")))
+                .min_w_0()
+                .flex_1()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .font_family(theme.mono_font_family.clone())
+                .text_size(px(12.5))
+                .when(!found, |d| d.text_color(theme.muted_foreground))
+                .child(ui::middle_ellipsis(path, if found { 64 } else { 44 }))
+                .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(full.clone()).build(w, cx)),
+        )
 }
 
 fn section(theme: &gpui_kit::component::Theme, title: &'static str, help: Option<(&'static str, &'static str)>) -> Div {
@@ -294,7 +310,7 @@ impl Render for TakeOverDialog {
         // Another compose file: typed on a server, chosen on this computer.
         let place = if self.local { "this computer" } else { "this server" };
         b = b
-            .child(div().text_size(px(12.5)).text_color(theme.muted_foreground).mt_1().child(format!("Another compose file on {place}")))
+            .child(div().text_size(px(12.5)).text_color(theme.muted_foreground).mt_2().child(format!("Another compose file on {place}")))
             .child(
                 h_flex()
                     .gap_2()

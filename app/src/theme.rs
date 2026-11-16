@@ -99,6 +99,23 @@ pub fn toggle(cx: &mut App) {
     Theme::change(next, None, cx);
 }
 
+/// The one page gap: card to card (down and across), the menu edge and the
+/// window edge to the page content, the page's top, and under its title.
+pub const PAGE_GAP: f32 = 18.;
+
+/// The top bar's controls (the instance switcher, the monitors, the theme
+/// button and the bell): one height, one radius, one hover tint (the
+/// instance's colour at this opacity), centred in the 60 px bar.
+pub const BAR_CTRL_H: f32 = 40.;
+pub const BAR_CTRL_RADIUS: f32 = 8.;
+pub const BAR_CTRL_HOVER: f32 = 0.22;
+
+/// Plain information (an update waiting): a soft blue, for the
+/// notifications' tint and icon.
+pub fn info(cx: &App) -> gpui_kit::Hsla {
+    if is_dark(cx) { gpui_kit::rgb(0x60a5fa).into() } else { gpui_kit::rgb(0x2563eb).into() }
+}
+
 pub fn is_dark(cx: &App) -> bool {
     Theme::global(cx).mode.is_dark()
 }

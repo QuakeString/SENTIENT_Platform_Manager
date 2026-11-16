@@ -233,7 +233,7 @@ impl Render for AboutPage {
             .child(pref_row(&theme, "Theme", None, themes).border_t_0())
             .child(pref_row(
                 &theme,
-                "See-through menu",
+                "Translucent menu",
                 Some(crate::manager::shell::see_through_why_not().unwrap_or("Shows the desktop blurred behind the menu (KDE Plasma, Hyprland, picom, Windows). On X11 a change shows after the Platform Manager starts again.")),
                 see_through,
             ));

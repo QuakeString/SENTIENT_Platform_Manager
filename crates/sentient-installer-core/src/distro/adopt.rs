@@ -564,6 +564,16 @@ fn free_loopback_port(from: u16) -> u16 {
 
 /// The plan for taking `cfg` over; `compose` overrides the compose file the
 /// labels name (one picked on the server when that one is gone).
+/// The compose files a container was started from, as its labels name
+/// them now (empty when it has none or is not there).
+fn live_compose_files(container: &str) -> Vec<String> {
+    let cmd = format!("docker inspect -f '{{{{index .Config.Labels \"com.docker.compose.project.config_files\"}}}}' {}", shell_quote(container));
+    match run_output(&cmd) {
+        Some((true, out)) => out.trim().split(',').map(str::trim).filter(|f| !f.is_empty() && *f != "<no value>").map(String::from).collect(),
+        _ => Vec::new(),
+    }
+}
+
 pub fn take_over_plan(cfg: &DeployConfig, compose: Option<&str>) -> (TakeOverPlan, DeployConfig) {
     let mut plan = TakeOverPlan::default();
     let mut own = cfg.clone();
@@ -573,8 +583,14 @@ pub fn take_over_plan(cfg: &DeployConfig, compose: Option<&str>) -> (TakeOverPla
     };
     own.external = None;
     plan.project = ext.project.clone();
+    // The files the containers name NOW: the record keeps the list from
+    // when the installation was added, which goes stale when the stack is
+    // brought up again with other files (a temporary override, since
+    // deleted, kept showing as "Missing").
+    let live = live_compose_files(&cfg.names().app);
     let files: Vec<String> = match compose {
         Some(c) if !c.trim().is_empty() => vec![c.trim().to_string()],
+        _ if !live.is_empty() => live,
         _ => ext.files.clone(),
     };
     plan.files = files.iter().map(|f| (f.clone(), super::host_file_exists(f))).collect();
@@ -968,6 +984,32 @@ mod tests {
             let env = sh(&format!("docker inspect -f '{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}' {}", c.app())).1;
             assert!(env.contains("MY_EXTRA_SETTING=kept"), "the env_file's value is carried over: {env}");
             assert!(is_running(c.http()));
+        }
+
+        /// His st-dev case: the record still names a temporary override the
+        /// stack was once brought up with (since deleted); the containers'
+        /// labels name only the real file now. The plan lists what the
+        /// containers name, and the new compose file is the Platform
+        /// Manager's own, outside the old project's folder.
+        #[test]
+        #[ignore]
+        fn a_stale_override_in_the_record_is_not_used() {
+            scratch();
+            let c = Case::up(9, true);
+            let mut cfg = c.found();
+            let gone = c.dir.join("compose.override-deleted.yml").display().to_string();
+            if let Some(ext) = cfg.external.as_mut() {
+                ext.files.push(gone.clone());
+            }
+            let (plan, _) = take_over_plan(&cfg, None);
+            assert!(plan.files.iter().all(|(f, found)| *found && *f != gone), "only the live file: {:?}", plan.files);
+            assert_eq!(plan.files.len(), 1, "{:?}", plan.files);
+            let own = take_over(sink(), &cfg, None).unwrap();
+            taken_over(&c, &own);
+            let xdg = std::env::var("XDG_DATA_HOME").unwrap();
+            assert!(own.compose_path().starts_with(&xdg), "the Platform Manager's own place: {}", own.compose_path());
+            assert!(!own.compose_path().starts_with(&c.dir.display().to_string()), "not the old project's folder");
+            c.down();
         }
 
         #[test]
