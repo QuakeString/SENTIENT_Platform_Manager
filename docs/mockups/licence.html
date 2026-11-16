@@ -1,6 +1,6 @@
 <title>SPM Licence Page</title>
 <meta name="claude:viewport-fit-sides" content="cover">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600&family=Noto+Sans+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Noto+Sans:wght@400;500;600&family=Noto+Sans+Mono:wght@400;500&display=swap">
 <style>
 :root{
   --page:#eeeeee; --card:#ffffff; --side:#ffffff; --text:rgba(0,0,0,.87); --text2:rgba(0,0,0,.6); --border:rgba(0,0,0,.12);
@@ -213,7 +213,7 @@ section{display:flex;flex-direction:column;gap:18px}
 @media (max-width:700px){ h1{font-size:21px} }
 
 /* SENTIENT licence card, Professional tier (copied from SENTIENT's licence page) */
-.lic-card{--rim-color:rgba(243,197,182,.45);position:relative;width:100%;max-width:540px;aspect-ratio:540/340;border-radius:22px;padding:24px 28px 30px;box-sizing:border-box;overflow:hidden;color:#fff;
+.lic-card{--rim-color:rgba(243,197,182,.45);position:relative;width:100%;max-width:540px;aspect-ratio:540/340;border-radius:22px;padding:24px 28px 42px;box-sizing:border-box;overflow:hidden;color:#fff;font-family:Roboto,var(--font);
  box-shadow:0 16px 40px rgba(0,0,0,.22),0 6px 14px rgba(0,0,0,.12),inset 0 0 0 1px var(--rim-color);display:flex;flex-direction:column;
  background:radial-gradient(ellipse at 50% 0%,rgba(232,180,163,.18),transparent 70%),linear-gradient(135deg,#0f1832 0%,#0a1126 55%,#040814 100%)}
 .lic-card.over{--rim-color:rgba(239,68,68,.55)}
@@ -222,12 +222,12 @@ section{display:flex;flex-direction:column;gap:18px}
 .lic-top .bn{font-size:18px;font-weight:700;letter-spacing:3px}
 .lic-top .bs{margin-top:2px;font-size:9px;font-weight:500;letter-spacing:3px;opacity:.7}
 .lic-tier{padding:6px 14px;border-radius:4px;font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase;background:linear-gradient(90deg,#e6a191,#f3c5b6,#b67864);color:#2c1814}
-.lic-marks{display:flex;align-items:center;gap:14px;margin-top:22px;margin-inline-start:19px;position:relative;z-index:2}
-.lic-marks svg{width:48px;height:43px}
-.lic-key{font-family:Menlo,Consolas,ui-monospace,monospace;font-size:19px;font-weight:600;letter-spacing:4px;margin-top:20px;position:relative;z-index:2;white-space:pre}
-.lic-bottom{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;gap:20px;align-items:end;margin-top:auto;padding-top:14px;position:relative;z-index:2}
+.lic-marks{display:flex;align-items:center;gap:14px;margin-top:58px;margin-inline-start:19px;position:relative;z-index:2}
+.lic-marks svg{width:56px;height:50px;flex-shrink:0}
+.lic-key{font-family:Menlo,Consolas,ui-monospace,monospace;font-size:21px;font-weight:600;letter-spacing:4px;margin-top:37px;position:relative;z-index:2}
+.lic-bottom{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;gap:24px;align-items:end;margin-top:auto;padding-top:18px;position:relative;z-index:2}
 .lic-bottom .ml{font-size:9px;font-weight:500;letter-spacing:2px;opacity:.6;text-transform:uppercase}
-.lic-bottom .mv{margin-top:4px;font-size:14px;font-weight:600;white-space:nowrap}
+.lic-bottom .mv{margin-top:4px;font-size:15px;font-weight:600;white-space:nowrap}
 .lic-bottom>div:first-child .mv{white-space:normal;overflow-wrap:anywhere;line-height:1.2}
 .lic-bottom .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#34d399;margin-right:6px}
 .lic-bottom .dot.bad{background:#ef4444}
