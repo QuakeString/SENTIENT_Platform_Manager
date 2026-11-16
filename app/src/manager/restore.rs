@@ -293,7 +293,7 @@ fn blk(theme: &gpui_kit::component::Theme, warn: bool, title: impl Into<SharedSt
         .border_1()
         .border_color(border)
         .child(ui::layout_probe("panel"))
-        .child(h_flex().gap(px(10.)).items_center().font_weight(FontWeight::MEDIUM).child(Icon::new(ic).size(px(18.)).text_color(fg)).child(title.into()))
+        .child(h_flex().gap(px(10.)).items_start().font_weight(FontWeight::MEDIUM).child(Icon::new(ic).size(px(18.)).text_color(fg).mt(px(2.)).flex_shrink_0()).child(div().flex_1().min_w_0().child(title.into())))
         .child(div().text_sm().child(why.into()))
         .when(!steps.is_empty(), |c| {
             c.child(div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child("To fix it"))
