@@ -156,7 +156,6 @@ pub struct SettingsPage {
     /// Advanced: the group shown (None: all), and only the ones set here.
     group: Option<String>,
     changed_only: bool,
-    show_names: bool,
     /// Database: the exact numbers are open.
     custom_db: bool,
     ram_mb: u64,
@@ -284,7 +283,6 @@ impl SettingsPage {
             startup: cx.new(|cx| super::startup::StartupPanel::new(window, cx)),
             group: None,
             changed_only: false,
-            show_names: false,
             custom_db: false,
             ram_mb: catalog::total_ram_mb(),
             job,
@@ -1030,13 +1028,15 @@ impl SettingsPage {
                     )
                     .when_some(problem.filter(|_| !pw.is_empty()), |c, p| c.child(div().text_sm().text_color(theme.danger).child(p)))
                     .child(
+                        // Actions on the right: Cancel, then the primary.
                         h_flex()
+                            .justify_end()
                             .gap(crate::ui::button_gap())
-                            .child(crate::ui::probed(crate::ui::button("do-reset").primary().label("Reset password").disabled(problem.is_some() || self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.reset_password(window, cx)))))
                             .child(crate::ui::probed(crate::ui::button("cancel-reset").outline().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
                                 this.reset_for = None;
                                 cx.notify();
-                            })))),
+                            }))))
+                            .child(crate::ui::probed(crate::ui::button("do-reset").primary().label("Reset password").disabled(problem.is_some() || self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.reset_password(window, cx))))),
                     )
                     .into_any_element(),
             );
@@ -1445,7 +1445,8 @@ impl Render for SettingsPage {
             Tab::Advanced => self.advanced(&theme, window, cx),
         };
 
-        settings_page(&theme, "Platform settings", self.tab.about(), v_flex().children(foreign).children(problems.into_iter().map(|p| div().text_sm().text_color(theme.danger).child(p))), ui::settings_card(&theme, "settings-body", tabs, v_flex().pb(px(12.)).children(body), bar))
+        let notices = (foreign.is_some() || !problems.is_empty()).then(|| v_flex().gap_2().children(foreign).children(problems.into_iter().map(|p| div().text_sm().text_color(theme.danger).child(p))));
+        settings_page(&theme, "Platform settings", self.tab.about(), notices, ui::settings_card(&theme, "settings-body", tabs, v_flex().pb(px(12.)).children(body), bar))
             .into_any_element()
     }
 }
@@ -1453,7 +1454,7 @@ impl Render for SettingsPage {
 /// Platform settings' page: its title and line, notices, then the settings
 /// card filling the rest (it scrolls inside; the page does not). Shared
 /// with a remote server's.
-pub(crate) fn settings_page(theme: &gpui_kit::component::Theme, title: &'static str, about: &'static str, notices: impl IntoElement, card: impl IntoElement) -> Stateful<Div> {
+pub(crate) fn settings_page(theme: &gpui_kit::component::Theme, title: &'static str, about: &'static str, notices: Option<Div>, card: impl IntoElement) -> Stateful<Div> {
     v_flex()
         .id("settings-page")
         .flex_1()
@@ -1468,7 +1469,7 @@ pub(crate) fn settings_page(theme: &gpui_kit::component::Theme, title: &'static 
                 .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child(title))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(about)),
         )
-        .child(notices)
+        .children(notices)
         .child(card)
 }
 
@@ -1546,12 +1547,6 @@ pub(crate) const TAB_GROUPS: [&[(&str, &[&str])]; 4] = [
     ],
     &[("How long data is kept", &["AUDIT_LOG_TTL_DAYS", "NOTIFICATIONS_TTL_DAYS", "SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS", "SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS"]), ("Cleanup", &["AUDIT_LOG_CLEANUP_ENABLED", "SENTIENT__EVENT_CLEANUP__ENABLED"])],
 ];
-
-/// A setting's built-in value in words (the current column when nothing
-/// is set).
-pub(crate) fn builtin_label(s: &crate::catalog::Setting) -> String {
-    crate::manager::setting_field::current_words(s, "")
-}
 
 impl super::Manager {
     /// Leave the page (a menu row, another instance): from Platform settings

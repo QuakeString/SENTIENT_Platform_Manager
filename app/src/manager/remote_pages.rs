@@ -1839,7 +1839,8 @@ impl RemotePages {
             .flex_1()
             .min_h_0()
             .gap(px(ui::GAP))
-            .child(notices)
+            // The notice only when there is one (an empty one would add a gap).
+            .when(external, |c| c.child(notices))
             .child(ui::settings_card(&theme, "r-settings-body", tabs, body, bar))
     }
 
