@@ -21,7 +21,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::backups::DirList;
-use crate::dbstatus::bytes_label;
+use crate::manager::backup::free_label as bytes_label;
 use crate::remote::{self, Instance};
 
 /// Where the folders are.
@@ -126,7 +126,35 @@ pub const OLD_W: f32 = 520.;
 pub fn open(o: Opening, window: &mut Window, cx: &mut App) {
     let title = format!("Choose the backup folder on {}", o.on);
     let view = cx.new(|cx| FolderChooser::new(o, window, cx));
+    let footer = cx.new(|cx| ChooserFooter { _observe: cx.observe(&view, |_, _, cx| cx.notify()), chooser: view.clone() });
     crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: CHOOSE_W, icon: Some(Icon::new(TITLE_ICON)), on_close: None }, cx);
+    crate::modal::set_footer(footer.into(), cx);
+}
+
+/// The chooser's buttons, in the dialog's footer: Cancel and Use this
+/// folder (B2, B3), or Back and Use the new folder (B4).
+struct ChooserFooter {
+    chooser: Entity<FolderChooser>,
+    _observe: Subscription,
+}
+
+impl Render for ChooserFooter {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let c = self.chooser.read(cx);
+        let (stage, usable, busy) = (c.stage, c.usable(), c.busy.is_some());
+        let chooser = self.chooser.clone();
+        let row = h_flex().w_full().gap_2().justify_end().items_center();
+        match stage {
+            Stage::Old(move_them) => {
+                let (c1, c2) = (chooser.clone(), chooser);
+                row.child(crate::ui::button("fc-back").outline().label("Back").on_click(move |_, _, cx| c1.update(cx, |this, cx| this.back(cx))))
+                    .child(crate::ui::button("fc-use-new").primary().label("Use the new folder").on_click(move |_, _, cx| c2.update(cx, |this, cx| this.finish(move_them, cx))))
+            }
+            Stage::Choose => row
+                .child(crate::ui::button("fc-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx)))
+                .child(crate::ui::button("fc-use").primary().label("Use this folder").disabled(!usable || busy).on_click(move |_, _, cx| chooser.update(cx, |this, cx| this.use_it(cx)))),
+        }
+    }
 }
 
 impl FolderChooser {
@@ -385,11 +413,6 @@ fn set_icon(icon: Icon, cx: &mut App) {
     }
 }
 
-/// The dialog's buttons along its bottom edge, edge to edge (the mockup).
-fn footer(theme: &gpui_kit::component::Theme) -> Div {
-    h_flex().mt(px(16.)).mx(px(-20.)).mb(px(-16.)).px(px(20.)).py(px(14.)).gap_2().justify_end().items_center().border_t_1().border_color(theme.border)
-}
-
 impl Render for FolderChooser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
@@ -567,7 +590,8 @@ impl Render for FolderChooser {
                 Err(why) => v_flex()
                     .gap(px(10.))
                     .child(status_line(&theme, false, format!("SENTIENT cannot write here: {}", why.trim_end_matches('.').to_string() + ".")))
-                    .child(
+                    // A read-only disk: no button fixes that.
+                    .when(l.fixable, |c| c.child(
                         h_flex()
                             .gap_3()
                             .items_center()
@@ -581,7 +605,7 @@ impl Render for FolderChooser {
                                     .on_click(cx.listener(|this, _, _, cx| this.make_writable(cx))),
                             )
                             .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Asks for the administrator password once.")),
-                    )
+                    ))
                     .into_any_element(),
             },
         };
@@ -591,11 +615,6 @@ impl Render for FolderChooser {
             .child(chips)
             .child(table)
             .child(status)
-            .child(
-                footer(&theme)
-                    .child(crate::ui::button("fc-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx)))
-                    .child(crate::ui::button("fc-use").primary().label("Use this folder").disabled(!self.usable() || busy.is_some()).on_click(cx.listener(|this, _, _, cx| this.use_it(cx)))),
-            )
             .into_any_element()
     }
 }
@@ -626,16 +645,12 @@ impl FolderChooser {
             .child(
                 h_flex()
                     .pt_2()
+                    .pb(px(12.))
                     .gap_4()
                     .items_center()
                     .text_sm()
                     .child(div().w(px(170.)).flex_shrink_0().text_color(theme.muted_foreground).child("New folder"))
                     .child(div().min_w_0().overflow_hidden().text_ellipsis().font_family(mono).text_size(px(13.)).child(self.picked.display().to_string())),
-            )
-            .child(
-                footer(theme)
-                    .child(crate::ui::button("fc-back").outline().label("Back").on_click(cx.listener(|this, _, _, cx| this.back(cx))))
-                    .child(crate::ui::button("fc-use-new").primary().label("Use the new folder").on_click(cx.listener(move |this, _, _, cx| this.finish(move_them, cx)))),
             )
     }
 }

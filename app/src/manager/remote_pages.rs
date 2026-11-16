@@ -300,7 +300,8 @@ impl RemotePages {
             pending_migrate: None,
             in_flight: 0,
             saving: None,
-            saved: None,
+            // Screens: "Saved" shown on a section (SPM_DEBUG_SAVED=folder).
+            saved: std::env::var("SPM_DEBUG_SAVED").ok().filter(|_| cfg!(debug_assertions)).map(|s| (&*s.leak(), Ok(()), Vec::new())),
             preflight: std::env::var("SPM_DEBUG_PREFLIGHT").ok().filter(|_| cfg!(debug_assertions)).map(Preflight::Failed).unwrap_or(Preflight::Idle),
             offer: Read::Loading,
             versions: Read::Loading,
@@ -1214,7 +1215,7 @@ impl RemotePages {
         );
     }
 
-    fn backup_page(&self, cx: &mut Context<Self>) -> Div {
+    fn backup_page(&self, narrow: bool, cx: &mut Context<Self>) -> Div {
         use crate::manager::backup as bk;
         let theme = cx.theme().clone();
         // A small save under way keeps the controls where they are, off.
@@ -1238,13 +1239,14 @@ impl RemotePages {
 
         let folder_row = bk::card_row(
             &theme,
+            narrow,
             "Backup folder",
             None,
             bk::folder_value(&theme, &b.folder, b.free, self.saved_note(&theme, "folder", cx)),
             Some(bk::change_button("r-folder-change", busy).on_click(cx.listener(|this, _, window, cx| this.open_folder_chooser(window, cx))).into_any_element()),
             false,
         );
-        let auto_row = bk::card_row(&theme, "Automatic backup", Some("A backup every day at this time, on the server's clock."), {
+        let auto_row = bk::card_row(&theme, narrow, "Automatic backup", Some("A backup every day at this time, on the server's clock."), {
             let (t1, this1) = (time.clone(), this.clone());
             h_flex()
                 .gap_3()
@@ -1274,28 +1276,53 @@ impl RemotePages {
                         }),
                 )
         }, None, false);
-        let keep_row = bk::card_row(&theme, "Keep", Some("Older backups are deleted, across the folder and any folder used before."), {
+        let keep_row = bk::card_row(&theme, narrow, "Keep", Some("Older backups are deleted, across the folder and any folder used before."), {
             let (t1, this1) = (if on { time.clone() } else { "off".into() }, this.clone());
-            bk::keep_menu("r-auto-keep", keep, busy, move |k, _, cx| {
+            bk::keep_menu(&theme, "r-auto-keep", keep, busy, move |k, _, cx| {
                 this1.update(cx, |p, cx| p.run_quiet("auto", save(t1.clone(), k, include), cx)).ok();
             })
         }, None, false);
         let what_row = bk::card_row(
             &theme,
+            narrow,
             "What to back up",
             Some("Everything: the whole database and its files. Last 90 days: the same with only the last 90 days of telemetry. Configuration only: devices, dashboards, users and settings, without telemetry history."),
             {
                 let at = if on { time.clone() } else { "off".into() };
-                let mut seg = ui::seg_track(&theme);
-                for (key, label) in [("everything", "Everything"), ("last90", "Last 90 days"), ("configuration", "Configuration only")] {
-                    let at = at.clone();
-                    seg = seg.child(ui::seg_item(&theme, SharedString::from(format!("r-inc-{key}")), label, include == key).on_click(cx.listener(move |this, _, _, cx| {
-                        if include != key && !this.job.read(cx).is_running() && this.saving.is_none() {
-                            this.run_quiet("auto", save(at.clone(), keep, key), cx);
-                        }
-                    })));
+                let options = [("everything", "Everything"), ("last90", "Last 90 days"), ("configuration", "Configuration only")];
+                // Wide: the mockup's segments; narrow: the same as a menu.
+                if narrow {
+                    bk::choice_menu(
+                        "r-inc-menu",
+                        busy,
+                        options
+                            .iter()
+                            .map(|&(key, label)| {
+                                let (this, at) = (this.clone(), at.clone());
+                                (label, include == key, std::rc::Rc::new(move |_: &mut Window, cx: &mut App| {
+                                    this.update(cx, |p, cx| {
+                                        if include != key && !p.job.read(cx).is_running() && p.saving.is_none() {
+                                            p.run_quiet("auto", save(at.clone(), keep, key), cx);
+                                        }
+                                    })
+                                    .ok();
+                                }) as std::rc::Rc<dyn Fn(&mut Window, &mut App)>)
+                            })
+                            .collect(),
+                    )
+                    .into_any_element()
+                } else {
+                    let mut seg = ui::seg_track(&theme);
+                    for (key, label) in options {
+                        let at = at.clone();
+                        seg = seg.child(ui::seg_item(&theme, SharedString::from(format!("r-inc-{key}")), label, include == key).on_click(cx.listener(move |this, _, _, cx| {
+                            if include != key && !this.job.read(cx).is_running() && this.saving.is_none() {
+                                this.run_quiet("auto", save(at.clone(), keep, key), cx);
+                            }
+                        })));
+                    }
+                    seg.into_any_element()
                 }
-                seg
             },
             None,
             true,
@@ -1320,7 +1347,7 @@ impl RemotePages {
         if b.list.is_empty() {
             list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder."));
         } else {
-            list = list.child(bk::table_header(&theme));
+            list = list.child(bk::table_header(&theme, narrow));
         }
         for (i, e) in b.list.iter().enumerate() {
             let damaged = e.check.as_ref().is_some_and(|c| !c.ok);
@@ -1329,6 +1356,7 @@ impl RemotePages {
             let (t1, t2, t3) = (this.clone(), this.clone(), this.clone());
             list = list.child(bk::table_row(
                 &theme,
+                narrow,
                 i,
                 e,
                 busy,
@@ -1947,7 +1975,7 @@ impl Render for RemotePages {
                         }
                     }
                 }
-                self.backup_page(cx)
+                self.backup_page(crate::manager::backup::narrow(window), cx)
             }
             Kind::Settings => self.settings_page(window, cx),
             Kind::Migration => self.migration_page(cx),

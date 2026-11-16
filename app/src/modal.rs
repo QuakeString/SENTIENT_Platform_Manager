@@ -22,6 +22,20 @@ pub struct Modal {
     pub on_close: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>,
 }
 
+/// Buttons along the open dialog's bottom edge, edge to edge under a line,
+/// outside the scrolling body (the mockup's dialogs): a view of their own
+/// that follows the body's state. Set after [`open`]; [`open`] and
+/// [`close`] clear it.
+#[derive(Default)]
+pub struct ModalFooter(pub Option<AnyView>);
+
+impl Global for ModalFooter {}
+
+pub fn set_footer(view: AnyView, cx: &mut App) {
+    cx.set_global(ModalFooter(Some(view)));
+    cx.refresh_windows();
+}
+
 /// The one dialog open now (the manager draws it).
 #[derive(Default)]
 pub struct ModalSlot(pub Option<Modal>);
@@ -37,6 +51,7 @@ pub fn set_width(width: f32, cx: &mut App) {
 }
 
 pub fn open(modal: Modal, cx: &mut App) {
+    cx.set_global(ModalFooter(None));
     cx.set_global(ModalSlot(Some(modal)));
     cx.refresh_windows();
 }
@@ -56,6 +71,7 @@ pub fn set_title(title: impl Into<SharedString>, cx: &mut App) {
 /// Close without calling its on_close (the page closed it itself).
 pub fn close(cx: &mut App) {
     if cx.try_global::<ModalSlot>().is_some_and(|s| s.0.is_some()) {
+        cx.set_global(ModalFooter(None));
         cx.set_global(ModalSlot(None));
         cx.refresh_windows();
     }
@@ -74,6 +90,7 @@ pub fn dismiss(window: &mut Window, cx: &mut App) {
 /// area starts (menu width, top bar height).
 pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -> Option<AnyElement> {
     let modal = cx.try_global::<ModalSlot>().and_then(|s| s.0.clone())?;
+    let footer = cx.try_global::<ModalFooter>().and_then(|f| f.0.clone());
     let theme = cx.theme().clone();
     let vw = f32::from(window.viewport_size().width);
     let vh = f32::from(window.viewport_size().height);
@@ -111,7 +128,8 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
             // 20 px around the body (the mockup's dialog); the probe lets the
             // layout test check nothing reaches into it.
             div().id("modal-body").relative().flex_1().min_h_0().overflow_y_scroll().px(px(20.)).pt(px(12.)).pb(px(16.)).child(crate::ui::layout_probe("dialog")).child(modal.body.clone()),
-        );
+        )
+        .when_some(footer, |p, f| p.child(div().flex_shrink_0().px(px(20.)).py(px(14.)).border_t_1().border_color(theme.border).child(f)));
     Some(
         div()
             .id("modal-layer")

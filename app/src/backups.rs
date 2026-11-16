@@ -323,15 +323,21 @@ fn move_backup(base: &Path, folder: &Path) -> Result<(), String> {
 /// Whether the backup job can write in `dir` (a file is made and removed);
 /// why not, in plain words.
 pub fn check_writable(dir: &Path) -> Result<(), String> {
+    probe_writable(dir).map_err(|(why, _)| why)
+}
+
+/// [`check_writable`], and whether giving the folder to the account would
+/// fix it (permissions: yes; a read-only disk: no).
+fn probe_writable(dir: &Path) -> Result<(), (String, bool)> {
     let probe = dir.join(format!(".spm-write-test-{}", std::process::id()));
     match std::fs::write(&probe, b"") {
         Ok(()) => {
             let _ = std::fs::remove_file(&probe);
             Ok(())
         }
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(owner_why(dir)),
-        Err(e) if e.raw_os_error() == Some(30) => Err("the disk is read-only.".into()),
-        Err(e) => Err(e.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err((owner_why(dir), true)),
+        Err(e) if e.raw_os_error() == Some(30) => Err(("the disk is read-only.".into(), false)),
+        Err(e) => Err((e.to_string(), false)),
     }
 }
 
@@ -391,6 +397,10 @@ pub struct DirList {
     pub dirs: Vec<(String, u64)>,
     /// Ok, or why not (B3).
     pub writable: Result<(), String>,
+    /// Why not is a permission that "Make it writable…" fixes (not a
+    /// read-only disk).
+    #[serde(default)]
+    pub fixable: bool,
     pub free: u64,
     /// Home, the current backup folder, and mounted disks: (label, path).
     pub shortcuts: Vec<(String, PathBuf)>,
@@ -412,8 +422,8 @@ pub fn dir_list(path: &Path) -> Result<DirList, String> {
     dirs.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
     let prefs = BackupPrefs::load();
     let mut shortcuts: Vec<(String, PathBuf)> = Vec::new();
-    if let Some(h) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
-        shortcuts.push(("Home".into(), PathBuf::from(h)));
+    if let Some(h) = home_dir() {
+        shortcuts.push(("Home".into(), h));
     }
     shortcuts.push(("Current backup folder".into(), prefs.folder.clone()));
     let disks = sysinfo::Disks::new_with_refreshed_list();
@@ -426,7 +436,24 @@ pub fn dir_list(path: &Path) -> Result<DirList, String> {
             shortcuts.push((if usb { "USB disk".into() } else { s.clone() }, m));
         }
     }
-    Ok(DirList { path: path.to_path_buf(), parent: path.parent().map(Path::to_path_buf), dirs, writable: check_writable(path), free, shortcuts })
+    let (writable, fixable) = match probe_writable(path) {
+        Ok(()) => (Ok(()), false),
+        Err((why, fix)) => (Err(why), fix),
+    };
+    Ok(DirList { path: path.to_path_buf(), parent: path.parent().map(Path::to_path_buf), dirs, writable, fixable, free, shortcuts })
+}
+
+/// Home: the signed-in account's, also when the agent runs through sudo on
+/// a server (sudo sets HOME to root's).
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(unix)]
+    if let Some(user) = std::env::var("SUDO_USER").ok().filter(|u| !u.is_empty() && u != "root") {
+        let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+        if let Some(home) = passwd.lines().map(|l| l.split(':').collect::<Vec<_>>()).find(|f| f.len() > 5 && f[0] == user).map(|f| PathBuf::from(f[5])) {
+            return Some(home);
+        }
+    }
+    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
 }
 
 /// Delete a backup: its file or parts and its `.sha256`.
