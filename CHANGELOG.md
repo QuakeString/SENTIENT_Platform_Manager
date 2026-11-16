@@ -169,6 +169,15 @@ refreshes that repository's Downloads table.
   of "Installing the SENTIENT schema (one-time)".
 
 ### Fixed
+- Native Linux asks for the administrator password once per job: Setup,
+  Repair, Update and the other jobs start one administrator helper for all
+  their root steps instead of one password prompt per step (Setup asked
+  five times). A closed password prompt says so, with "Ask again".
+- Viewing a page never asks for the administrator password. Setup and
+  Repair give the installing account read access to SENTIENT's settings
+  (group sentient-admin), so Status, Statistics and Licence read the
+  database without root; until the next sign-in they say the values are
+  available after signing in again.
 - Setting up a remote server: the first copy of the Platform Manager
   failed ("stat remote: No such file or directory"), and a key with a
   passphrase or a password sign-in could not copy at all. A Linux server

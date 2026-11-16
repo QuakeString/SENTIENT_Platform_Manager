@@ -9,6 +9,8 @@ pub mod checks;
 /// hidden service account so it runs from boot.
 pub mod clickhouse_wsl;
 pub mod distro;
+/// One administrator elevation per job (a root helper fed over a pipe).
+pub mod elevation;
 pub(crate) mod exec;
 pub mod stack;
 pub mod gateway;
