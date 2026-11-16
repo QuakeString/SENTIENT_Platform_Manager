@@ -206,7 +206,7 @@ impl TakeOverDialog {
 fn file_row(theme: &gpui_kit::component::Theme, path: &str, found: bool) -> Div {
     h_flex()
         .relative()
-        .child(ui::layout_probe("panel"))
+        .child(ui::layout_probe("file-row"))
         .gap_2()
         .items_center()
         .min_w_0()
@@ -400,7 +400,7 @@ impl Render for TakeOverDialog {
             .when(more, |d| {
                 d.child(div().absolute().left_0().right(px(12.)).bottom_0().h(px(28.)).bg(linear_gradient(180., linear_color_stop(bg.opacity(0.), 0.), linear_color_stop(bg, 1.))))
             });
-        v_flex().relative().child(ui::layout_probe("panel")).gap_2().w_full().child(body).child(
+        v_flex().relative().child(ui::layout_probe("takeover-body")).gap_2().w_full().child(body).child(
             h_flex()
                 .relative()
                 .child(ui::layout_probe("button"))

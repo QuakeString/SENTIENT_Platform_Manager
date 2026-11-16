@@ -308,7 +308,7 @@ impl RemotePages {
             file_checks: Default::default(),
             log_view: None,
             svc_busy: None,
-            settings_tab: 0,
+            settings_tab: super::session::load().settings_tab.filter(|i| *i < 5).unwrap_or(0),
             auto_add_tried: false,
             agent_refresh: AgentRefresh::Idle,
             sudo_asked: false,
@@ -599,6 +599,8 @@ impl RemotePages {
                     .text_color(theme.success_foreground)
                     .child(gpui_kit::component::Icon::new(gpui_kit::component::IconName::Check).size_4())
                     .child("Saved")
+                    // It fades in (150 ms).
+                    .with_animation(SharedString::from(format!("{section}-saved")), Animation::new(std::time::Duration::from_millis(150)).with_easing(crate::ui::ease_out), |el, t| el.opacity(t))
                     .into_any_element(),
             ),
             Some((s, Err(e), args)) if *s == section => {
@@ -845,10 +847,13 @@ impl RemotePages {
                         .child(
                             // A pill only while the update runs or when it failed;
                             // the normal state has none.
+                            // On a narrow card the pill goes under the row.
                             h_flex()
-                                .gap_3()
+                                .flex_wrap()
+                                .gap_x_3()
+                                .gap_y_1()
                                 .items_center()
-                                .child(ui::fact(&theme, "Server agent", s.manager_version.clone()).flex_1())
+                                .child(ui::fact(&theme, "Server agent", s.manager_version.clone()).flex_1().min_w(px(240.)))
                                 .map(|r| match &self.agent_refresh {
                                     AgentRefresh::Running => r.child(ui::pill(&theme, Tone::Warn, "Updating")),
                                     AgentRefresh::Failed(why) => {
@@ -1278,17 +1283,17 @@ impl RemotePages {
                 crate::manager::backup::entry_row_with(&theme, i, e, true)
                     .child(crate::manager::backup::action_slot(
                         crate::manager::backup::SLOT_RESTORE,
-                        (!damaged).then(|| crate::ui::button(SharedString::from(format!("r-restore-{}", e.name))).outline().label("Restore…").disabled(busy).on_click(cx.listener(move |this, _, window, cx| this.confirm_restore(p1.clone(), name.clone(), window, cx))).into_any_element()),
+                        (!damaged).then(|| crate::ui::button(SharedString::from(format!("r-restore-{}", e.name))).outline().label("Restore…").w_full().disabled(busy).on_click(cx.listener(move |this, _, window, cx| this.confirm_restore(p1.clone(), name.clone(), window, cx))).into_any_element()),
                     ))
                     .child(crate::manager::backup::action_slot(
                         crate::manager::backup::SLOT_VERIFY,
-                        Some(crate::ui::button(SharedString::from(format!("r-verify-{}", e.name))).outline().label("Verify").disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
+                        Some(crate::ui::button(SharedString::from(format!("r-verify-{}", e.name))).outline().label("Verify").w_full().disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
                             this.run_job("Verifying the backup", vec!["backup-verify".into(), p2.clone()], cx);
                         })).into_any_element()),
                     ))
                     .child(crate::manager::backup::action_slot(
                         crate::manager::backup::SLOT_DELETE,
-                        Some(crate::ui::button(SharedString::from(format!("r-delete-{}", e.name))).outline().text_color(theme.danger).label("Delete").disabled(busy).on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), name2.clone(), window, cx))).into_any_element()),
+                        Some(crate::ui::button(SharedString::from(format!("r-delete-{}", e.name))).outline().text_color(theme.danger).label("Delete").w_full().disabled(busy).on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), name2.clone(), window, cx))).into_any_element()),
                     )),
             );
         }
@@ -1366,6 +1371,7 @@ impl RemotePages {
         let nav = local::tab_bar(&theme, "r-", self.settings_tab, std::rc::Rc::new(move |i, cx| {
             this.update(cx, |p, cx| {
                 p.settings_tab = i;
+                super::session::set_settings_tab(i);
                 cx.notify();
             })
             .ok();

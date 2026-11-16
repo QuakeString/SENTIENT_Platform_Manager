@@ -59,6 +59,11 @@ struct Form {
     color: String,
     stage: Stage,
     error: Option<SharedString>,
+    /// The Setup guide beside the form (the mockup's G1).
+    guide: bool,
+    guide_scroll: ScrollHandle,
+    /// The command copied from the guide last, and when (its tick).
+    copied: Option<(String, std::time::Instant)>,
 }
 
 pub struct InstancesPage {
@@ -272,6 +277,9 @@ impl InstancesPage {
             color,
             stage: Stage::Edit,
             error: None,
+            guide: false,
+            guide_scroll: ScrollHandle::new(),
+            copied: None,
         });
         cx.notify();
     }
@@ -792,10 +800,28 @@ impl InstancesPage {
                                 cx.notify();
                             }))),
                     )
-                    .child(crate::ui::button("os-guide").ghost().small().label("Setup guide").icon(IconName::ExternalLink).on_click({
-                        let anchor = if f.os == Os::Windows { "windows-servers" } else { "linux-servers" };
-                        move |_, _, cx| ui::open_url(&format!("https://sentient.invenia.in/docs/installation/remote-instances/#{anchor}"), cx)
-                    }))
+                    // The mockup's teal ghost button: tint on hover; tint and a
+                    // thin border while the guide is open.
+                    .child(
+                        h_flex()
+                            .id("os-guide")
+                            .h(px(30.))
+                            .px(px(10.))
+                            .gap(px(6.))
+                            .items_center()
+                            .rounded(px(8.))
+                            .border_1()
+                            .border_color(if f.guide { theme.border } else { gpui_kit::transparent_black() })
+                            .when(f.guide, |b| b.bg(theme.sidebar_accent))
+                            .when(!f.guide, |b| b.hover(|b| b.bg(theme.sidebar_accent)))
+                            .cursor_pointer()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.primary)
+                            .child(gpui_kit::component::Icon::new(IconName::BookOpen).size(px(16.)))
+                            .child("Setup guide")
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_guide(cx))),
+                    )
                     .into_any_element(),
             )).child(
                 // What connecting found (or will check) sits inside the
@@ -917,7 +943,57 @@ impl InstancesPage {
                     )
                 })
         );
-        Some(panel.into_any_element())
+        // With the guide open: the form as it is, the guide beside it at the
+        // form's height, scrolling on its own.
+        if !f.guide {
+            return Some(panel.into_any_element());
+        }
+        let this = cx.entity().downgrade();
+        let this2 = this.clone();
+        let ctx = crate::manager::setup_guide::Ctx {
+            os: f.os,
+            host: f.host.read(cx).value().to_string(),
+            port: f.port.read(cx).value().to_string(),
+            user: f.user.read(cx).value().to_string(),
+            copied: f.copied.as_ref().filter(|(_, t)| t.elapsed() < std::time::Duration::from_millis(1200)).map(|(c, _)| c.clone()),
+            scroll: f.guide_scroll.clone(),
+            copy: std::rc::Rc::new(move |text, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                this.update(cx, |p, cx| {
+                    if let Some(f) = &mut p.form {
+                        f.copied = Some((text, std::time::Instant::now()));
+                    }
+                    cx.notify();
+                    // The tick goes after 1.2 s.
+                    let t = cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(std::time::Duration::from_millis(1250)).await;
+                        this.update(cx, |_, cx| cx.notify()).ok();
+                    });
+                    p._tasks.push(t);
+                })
+                .ok();
+            }),
+            close: std::rc::Rc::new(move |cx| {
+                this2.update(cx, |p, cx| p.toggle_guide(cx)).ok();
+            }),
+        };
+        let guide = crate::manager::setup_guide::pane(&ctx, cx);
+        Some(
+            h_flex()
+                .items_stretch()
+                .child(div().w(px(FORM_W)).flex_shrink_0().pr(px(20.)).child(panel))
+                .child(div().relative().flex_1().min_w_0().child(div().absolute().inset_0().child(guide)))
+                .into_any_element(),
+        )
+    }
+
+    /// Open or close the Setup guide: the dialog widens or narrows to it.
+    fn toggle_guide(&mut self, cx: &mut Context<Self>) {
+        let Some(f) = &mut self.form else { return };
+        f.guide = !f.guide;
+        let w = if f.guide { FORM_DIALOG_W + crate::manager::setup_guide::PANE_W } else { FORM_DIALOG_W };
+        crate::modal::set_width(w, cx);
+        cx.notify();
     }
 
     /// Pick the key file with the system's file chooser.
@@ -964,7 +1040,7 @@ impl InstancesPage {
                 crate::modal::Modal {
                     title: title.into(),
                     body: slot.into(),
-                    width: 540.,
+                    width: FORM_DIALOG_W,
                     on_close: Some(std::rc::Rc::new(move |_, cx| {
                         p2.update(cx, |p, cx| {
                             p.form = None;
@@ -1109,6 +1185,22 @@ impl InstancesPage {
 impl Render for InstancesPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        // Screens and the layout test: Add instance open with its Setup
+        // guide (SPM_DEBUG_ADD_GUIDE=linux|windows).
+        #[cfg(debug_assertions)]
+        {
+            static OPENED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if let Ok(os) = std::env::var("SPM_DEBUG_ADD_GUIDE") {
+                if !OPENED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    self.open_form(None, window, cx);
+                    if let Some(f) = &mut self.form {
+                        f.os = if os == "windows" { Os::Windows } else { Os::Linux };
+                    }
+                    self.sync_dialogs(window, cx);
+                    self.toggle_guide(cx);
+                }
+            }
+        }
         // Screens: the trust step open (SPM_DEBUG_TRUST).
         #[cfg(debug_assertions)]
         {
@@ -1188,7 +1280,7 @@ impl Render for InstancesPage {
                     .items_center()
                     .child(v_flex().flex_1().min_w_0().gap_0p5().child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Instances")).child(div().text_sm().text_color(theme.muted_foreground).child(summary)))
                     .when(self.form.is_none(), |r| {
-                        r.child(crate::ui::button("add").primary().icon(IconName::Plus).label("Add a remote instance").on_click(cx.listener(|this, _, window, cx| this.open_form(None, window, cx))))
+                        r.child(crate::ui::button("add").primary().icon(IconName::Plus).label("Add instance").on_click(cx.listener(|this, _, window, cx| this.open_form(None, window, cx))))
                     }),
             )
             .child({
@@ -1226,6 +1318,11 @@ impl Render for InstancesPage {
             })
     }
 }
+
+/// The Add instance dialog's width, and its form's within it (the dialog
+/// body keeps 20 px either side).
+const FORM_DIALOG_W: f32 = 540.;
+const FORM_W: f32 = 500.;
 
 /// The key for this computer's status.
 const LOCAL: &str = "@local";

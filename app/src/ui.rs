@@ -648,6 +648,13 @@ pub fn seg_item(theme: &Theme, id: impl Into<ElementId>, label: impl Into<Shared
         .child(label.into())
 }
 
+/// `seg_item` with a 15 px icon before its label.
+pub fn seg_item_with(theme: &Theme, id: impl Into<ElementId>, icon: gpui_kit::component::Icon, label: impl Into<SharedString>, on: bool) -> Stateful<Div> {
+    let label = label.into();
+    let colour = if on { theme.sidebar_accent_foreground } else { theme.muted_foreground };
+    seg_item(theme, id, "", on).gap(px(6.)).child(icon.size(px(15.)).text_color(colour)).child(label)
+}
+
 /// A row of sibling boxes or cards: all stretch to the tallest, tops
 /// aligned, wrapping on narrow windows. Use it for every row of boxes.
 pub fn box_row() -> Div {
@@ -896,7 +903,7 @@ pub enum MenuRow {
 /// 12 px panel with tinted chosen row and a check at the right, and its
 /// pointer toward the anchor at `pointer_x`, above (`up`) or below it. The
 /// caller places it (deferred, absolute) and closes it on `on_close`.
-pub fn popover_menu(theme: &Theme, id: &'static str, width: f32, rows: Vec<MenuRow>, up: bool, pointer_x: Pixels, on_close: impl Fn(&mut Window, &mut App) + 'static) -> Div {
+pub fn popover_menu(theme: &Theme, id: &'static str, width: f32, rows: Vec<MenuRow>, up: bool, pointer_x: Pixels, on_close: impl Fn(&mut Window, &mut App) + 'static) -> AnyElement {
     use gpui_kit::component::{h_flex, v_flex};
     let rows = rows.into_iter().map(|r| match r {
         MenuRow::Divider => div().my_1().mx_1().h(px(1.)).bg(theme.border).into_any_element(),
@@ -945,6 +952,18 @@ pub fn popover_menu(theme: &Theme, id: &'static str, width: f32, rows: Vec<MenuR
                 .on_mouse_down_out(move |_, window, cx| on_close(window, cx)),
         )
         .map(|d| if up { d.child(pointer_up(theme.popover, theme.border, pointer_x)) } else { d.child(pointer_down(theme.popover, theme.border, pointer_x)) })
+        // Opening: a quick fade, moving 4 px from its anchor (140 ms).
+        .map(|d| {
+            if reduce_motion() {
+                d.into_any_element()
+            } else {
+                d.with_animation(SharedString::from(format!("{id}-open")), Animation::new(std::time::Duration::from_millis(140)).with_easing(ease_out), move |el, t| {
+                    let off = 4. * (1. - t);
+                    el.opacity(t).top(px(if up { off } else { -off }))
+                })
+                .into_any_element()
+            }
+        })
 }
 
 /// Every button: the toolkit's, with the mockup's medium-weight label.
@@ -987,6 +1006,71 @@ pub fn segment_bar(track: Hsla, h: f32, parts: &[(Hsla, f32)]) -> Div {
                 .when(end >= 0.999, |d| d.rounded_r(r))
                 .bg(c)
         }))
+}
+
+// ---------------------------------------------------------------------------
+// Motion: values that glide to a new target (the motion plan): ease-out,
+// only position, size, opacity or colour; off with reduce motion
+// ---------------------------------------------------------------------------
+
+struct Tween {
+    from: [f32; 4],
+    to: [f32; 4],
+    since: std::time::Instant,
+    ms: f32,
+}
+
+thread_local! {
+    static TWEENS: std::cell::RefCell<std::collections::HashMap<SharedString, Tween>> = Default::default();
+}
+
+pub fn ease_out(t: f32) -> f32 {
+    1. - (1. - t.clamp(0., 1.)).powi(3)
+}
+
+fn tween_n(key: SharedString, target: [f32; 4], ms: u64, window: &mut Window) -> [f32; 4] {
+    let now = std::time::Instant::now();
+    let motion = !reduce_motion();
+    TWEENS.with(|t| {
+        let mut t = t.borrow_mut();
+        let ms = ms as f32;
+        let at = |w: &Tween| {
+            let k = ease_out(now.duration_since(w.since).as_secs_f32() * 1000. / w.ms);
+            let mut v = [0.; 4];
+            for i in 0..4 {
+                v[i] = w.from[i] + (w.to[i] - w.from[i]) * k;
+            }
+            v
+        };
+        let w = t.entry(key).or_insert(Tween { from: target, to: target, since: now, ms });
+        if w.to != target {
+            // A new target: from where it is now.
+            w.from = if motion { at(w) } else { target };
+            w.to = target;
+            w.since = now;
+            w.ms = ms;
+        }
+        let done = now.duration_since(w.since).as_secs_f32() * 1000. >= w.ms;
+        if done || !motion {
+            w.from = w.to;
+            w.to
+        } else {
+            window.request_animation_frame();
+            at(w)
+        }
+    })
+}
+
+/// A number that glides to `target` over `ms` (ease-out) whenever it changes.
+pub fn tween(key: impl Into<SharedString>, target: f32, ms: u64, window: &mut Window) -> f32 {
+    tween_n(key.into(), [target, 0., 0., 0.], ms, window)[0]
+}
+
+/// A colour that cross-fades to `target` over `ms` whenever it changes.
+pub fn tween_color(key: impl Into<SharedString>, target: Hsla, ms: u64, window: &mut Window) -> Hsla {
+    let r = target.to_rgb();
+    let v = tween_n(key.into(), [r.r, r.g, r.b, r.a], ms, window);
+    Rgba { r: v[0], g: v[1], b: v[2], a: v[3] }.into()
 }
 
 /// One full turn of the Refresh icon.
@@ -1171,7 +1255,9 @@ pub fn skeleton_block(theme: &Theme, key: impl Into<SharedString>, w: Length, h:
     let base = if dark { theme.foreground.opacity(0.08) } else { theme.foreground.opacity(0.07) };
     // A few per cent lighter than the bone, at the band's middle only.
     let light = if dark { gpui_kit::white().opacity(0.07) } else { gpui_kit::white().opacity(0.6) };
-    div().relative().overflow_hidden().w(w).h(px(h)).flex_shrink_0().rounded(px((h / 2.).min(6.))).bg(base).when(!reduced_motion(), |d| {
+    // Its width is the most it takes: it shrinks with its row and never
+    // runs past its parent (a narrow window, a narrow card).
+    div().relative().overflow_hidden().w(w).max_w_full().min_w_0().h(px(h)).flex_shrink(1.).rounded(px((h / 2.).min(6.))).bg(base).when(!reduced_motion(), |d| {
         d.child(canvas(|_, _, _| {}, move |bounds, _, window, _| paint_shimmer(bounds, light, window)).absolute().inset_0().size_full())
     })
 }
@@ -1212,7 +1298,7 @@ fn paint_shimmer(bounds: Bounds<Pixels>, light: Hsla, window: &mut Window) {
 /// A text-line placeholder (one line of 14 px text: 12 px high in a 20 px row).
 pub fn skeleton_line(theme: &Theme, key: impl Into<SharedString>, w: f32) -> Div {
     // A 14 px line's own height (its line-height), so a loaded row is as tall.
-    div().h(rems(0.875 * 1.4)).flex().items_center().child(skeleton_block(theme, key, px(w).into(), 12.))
+    div().h(rems(0.875 * 1.4)).flex_1().min_w_0().flex().items_center().child(skeleton_block(theme, key, px(w).into(), 12.))
 }
 
 /// A fact row whose value is still loading: the label as it will be, the

@@ -1209,6 +1209,7 @@ impl BackupPage {
                 crate::ui::button(SharedString::from(format!("restore-{}", e.name)))
                     .outline()
                     .label("Restore…")
+                    .w_full()
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.restore_input = Some(p1.clone());
                         this.replace_stage = ReplaceStage::Choose;
@@ -1219,8 +1220,8 @@ impl BackupPage {
             list = list.child(
                 entry_row(theme, i, e)
                     .child(action_slot(SLOT_RESTORE, restore))
-                    .child(action_slot(SLOT_VERIFY, Some(crate::ui::button(SharedString::from(format!("check-{}", e.name))).outline().label(if damaged { "Details" } else { "Verify" }).on_click(cx.listener(move |this, _, _, cx| this.run_check(p2.clone(), cx))).into_any_element())))
-                    .child(action_slot(SLOT_DELETE, Some(delete_button(theme, SharedString::from(format!("delete-{}", e.name))).on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), window, cx))).into_any_element()))),
+                    .child(action_slot(SLOT_VERIFY, Some(crate::ui::button(SharedString::from(format!("check-{}", e.name))).outline().label(if damaged { "Details" } else { "Verify" }).w_full().on_click(cx.listener(move |this, _, _, cx| this.run_check(p2.clone(), cx))).into_any_element())))
+                    .child(action_slot(SLOT_DELETE, Some(delete_button(theme, SharedString::from(format!("delete-{}", e.name))).w_full().on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), window, cx))).into_any_element()))),
             );
         }
         out.push(list.into_any_element());
@@ -1410,7 +1411,8 @@ pub(crate) const SLOT_VERIFY: f32 = 72.;
 pub(crate) const SLOT_DELETE: f32 = 68.;
 
 pub(crate) fn action_slot(w: f32, button: Option<AnyElement>) -> Div {
-    h_flex().w(px(w)).flex_shrink_0().justify_end().children(button)
+    // The button fills its slot, so the gaps between them are all the row's.
+    h_flex().w(px(w)).flex_shrink_0().children(button)
 }
 
 /// When a check ran, on the clock of the machine that ran it (as the

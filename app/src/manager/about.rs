@@ -205,12 +205,64 @@ impl Render for AboutPage {
                 .on_click(cx.listener(move |this, _, _, cx| this.updates.update(cx, |u, cx| u.set_channel(c, cx))))
         }));
         let checks = ui::seg_track(&theme)
-            .child(ui::seg_item(&theme, "about-daily", "Once a day", daily).on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.set_daily(true, cx)))))
-            .child(ui::seg_item(&theme, "about-by-hand", "Only when I ask", !daily).on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.set_daily(false, cx)))));
+            .child(ui::seg_item(&theme, "about-daily", "Daily", daily).on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.set_daily(true, cx)))))
+            .child(ui::seg_item(&theme, "about-by-hand", "Manually", !daily).on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.set_daily(false, cx)))));
+        // Appearance (the shell mockup's S7): the theme, and the menu showing
+        // the desktop behind the window where the desktop can blur it.
+        let choice = crate::theme::Choice::saved();
+        let themes = ui::seg_track(&theme).children(crate::theme::Choice::ALL.into_iter().map(|c| {
+            ui::seg_item_with(&theme, SharedString::from(format!("about-theme-{}", c.label())), crate::manager::shell::theme_icon(c), c.label(), c == choice).on_click(cx.listener(move |_, _, window, cx| {
+                crate::theme::choose(c, Some(window), cx);
+                cx.notify();
+            }))
+        }));
+        let supported = crate::manager::shell::see_through_supported();
+        let see_through = gpui_kit::component::switch::Switch::new("see-through")
+            .checked(supported && crate::manager::shell::Appearance::get().see_through)
+            .disabled(!supported)
+            .on_click(cx.listener(|_, v: &bool, window, cx| {
+                let v = *v;
+                crate::manager::shell::Appearance::set(|a| a.see_through = v);
+                window.set_background_appearance(if v { WindowBackgroundAppearance::Blurred } else { WindowBackgroundAppearance::Opaque });
+                cx.notify();
+                window.refresh();
+            }));
+        let appearance = ui::panel(&theme)
+            .gap_0()
+            .py_1()
+            .child(pref_row(&theme, "Theme", None, themes).border_t_0())
+            .child(pref_row(
+                &theme,
+                "See-through menu",
+                Some(if supported { "Shows the desktop blurred behind the menu, on KDE Plasma (Wayland) and Windows." } else { crate::manager::shell::SEE_THROUGH_WHY }),
+                see_through,
+            ));
         let prefs = ui::panel(&theme)
             .gap_0()
             .py_1()
-            .child(pref_row(&theme, "Language", None, div().text_sm().child("English")).border_t_0())
+            .child(pref_row(&theme, "Language", None, {
+                // One list of languages (shell::LANGUAGES), each by its own name.
+                let current = crate::manager::shell::Appearance::get().language;
+                let name = crate::manager::shell::LANGUAGES.iter().find(|(c, _)| *c == current).map(|(_, n)| *n).unwrap_or("English");
+                { use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem}; crate::ui::button("about-language")
+                    .outline()
+                    .h(px(32.))
+                    .label(name)
+                    .icon(IconName::ChevronDown)
+                    .dropdown_menu(move |menu, _, _| {
+                        let mut menu = menu;
+                        for (code, native) in crate::manager::shell::LANGUAGES {
+                            let code = code.to_string();
+                            menu = menu.item(PopupMenuItem::new(*native).checked(code == current).on_click(move |_, window, cx| {
+                                let code = code.clone();
+                                crate::manager::shell::Appearance::set(|a| a.language = code);
+                                window.refresh();
+                                let _ = cx;
+                            }));
+                        }
+                        menu
+                    }) }
+            }).border_t_0())
             .child(pref_row(&theme, "Update channel", Some("Release candidates arrive earlier and are less tested."), channels))
             .child(pref_row(&theme, "Check for updates", None, checks))
             .children(self.background_rows(&theme, cx));
@@ -222,7 +274,7 @@ impl Render for AboutPage {
                     .gap_3()
                     .flex_wrap()
                     .items_stretch()
-                    .child(tile(&theme, "about-log", IconName::File, "Open the log", "What the Platform Manager did, with times.").on_click(move |_, window, cx| {
+                    .child(tile(&theme, "about-log", IconName::File, "Open the log", "Every action and error, with timestamps.").on_click(move |_, window, cx| {
                         // In the app, with the Logs page's tools: never an
                         // outside program that may fail silently.
                         let path = log_path.clone();
@@ -230,10 +282,10 @@ impl Render for AboutPage {
                         crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., on_close: None }, cx);
                     }))
                     .child(
-                        tile(&theme, "about-support", IconName::ArrowDown, "Create a support file", if self.making { "Collecting…" } else { "Logs, versions and settings in one file, without passwords." })
+                        tile(&theme, "about-support", IconName::ArrowDown, "Create a support file", if self.making { "Collecting…" } else { "Logs, versions and settings in one file. Passwords are left out." })
                             .on_click(cx.listener(|this, _, _, cx| this.make_support_file(cx))),
                     )
-                    .child(tile(&theme, "about-docs", IconName::BookOpen, "Documentation", "Opens docs.invenia.in in the browser.").on_click(|_, _, cx| ui::open_url("https://docs.invenia.in", cx))),
+                    .child(tile(&theme, "about-docs", IconName::BookOpen, "Documentation", "Guides and help on docs.invenia.in.").on_click(|_, _, cx| ui::open_url("https://docs.invenia.in", cx))),
             )
             .children(self.support.as_ref().map(|r| match r {
                 Ok(p) => ui::outcome(&theme, Tone::Good, format!("Support file saved: {}", p.display())).into_any_element(),
@@ -273,6 +325,7 @@ impl Render for AboutPage {
                     .max_w(px(800.))
                     .gap(px(14.))
                     .child(hero)
+                    .child(v_flex().gap_2().child(caption("Appearance")).child(appearance))
                     .child(v_flex().gap_2().child(caption("Preferences")).child(prefs))
                     .child(v_flex().gap_2().child(caption("Support")).child(support))
                     .child(footer),

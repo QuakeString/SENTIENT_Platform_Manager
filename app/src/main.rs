@@ -151,7 +151,19 @@ fn window_options(mode: AppMode, cx: &mut gpui_kit::App) -> WindowOptions {
 
 #[cfg(feature = "gui")]
 fn window_options_manager(cx: &mut gpui_kit::App) -> WindowOptions {
-    window_options(AppMode::Manager, cx)
+    let mut o = window_options(AppMode::Manager, cx);
+    // Where and how big it was left.
+    // (SPM_WINDOW_SIZE, for screens and tests, wins.)
+    if std::env::var_os("SPM_WINDOW_SIZE").is_some() {
+    } else if let Some(b) = manager::session::window_bounds(cx, gpui_kit::size(gpui_kit::px(560.), gpui_kit::px(480.))) {
+        o.window_bounds = Some(b);
+    }
+    // The see-through menu: the desktop shows blurred behind it (where the
+    // desktop can; crate::manager::shell).
+    if manager::shell::see_through() {
+        o.window_background = gpui_kit::WindowBackgroundAppearance::Blurred;
+    }
+    o
 }
 
 /// The Platform Manager's window (crate::bg_app opens it, again after a close).

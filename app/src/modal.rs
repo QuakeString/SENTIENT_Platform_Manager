@@ -25,6 +25,14 @@ pub struct ModalSlot(pub Option<Modal>);
 
 impl Global for ModalSlot {}
 
+/// Widen or narrow the open dialog (it glides to the new width).
+pub fn set_width(width: f32, cx: &mut App) {
+    if let Some(m) = cx.try_global::<ModalSlot>().and_then(|s| s.0.clone()) {
+        cx.set_global(ModalSlot(Some(Modal { width, ..m })));
+        cx.refresh_windows();
+    }
+}
+
 pub fn open(modal: Modal, cx: &mut App) {
     cx.set_global(ModalSlot(Some(modal)));
     cx.refresh_windows();
@@ -66,7 +74,8 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
     let theme = cx.theme().clone();
     let vw = f32::from(window.viewport_size().width);
     let vh = f32::from(window.viewport_size().height);
-    let w = modal.width.min(vw - 32.);
+    // A width change glides (260 ms), per dialog.
+    let w = crate::ui::tween(SharedString::from(format!("modal-w-{}", modal.title)), modal.width, 260, window).min(vw - 32.);
     // Centre in the page area when the panel fits there, else in the window.
     let (area_left, area_w) = if vw - page_left >= w + 32. { (page_left, vw - page_left) } else { (0., vw) };
     let left = area_left + (area_w - w) / 2.;
@@ -93,7 +102,11 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
                 .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(modal.title.clone()))
                 .child(crate::ui::button("modal-close").ghost().small().icon(IconName::Close).on_click(|_, window, cx| dismiss(window, cx))),
         )
-        .child(div().id("modal-body").flex_1().min_h_0().overflow_y_scroll().p_4().child(modal.body.clone()));
+        .child(
+            // 20 px around the body (the mockup's dialog); the probe lets the
+            // layout test check nothing reaches into it.
+            div().id("modal-body").relative().flex_1().min_h_0().overflow_y_scroll().px(px(20.)).pt(px(12.)).pb(px(16.)).child(crate::ui::layout_probe("dialog")).child(modal.body.clone()),
+        );
     Some(
         div()
             .id("modal-layer")
@@ -112,7 +125,17 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
                     .flex()
                     .flex_col()
                     .justify_center()
-                    .child(crate::ui::appear(panel.on_click(|_, _, cx| cx.stop_propagation()), "modal-appear", 160)),
+                    // The dialog rises 8 px as it fades in (180 ms).
+                    .child({
+                        let panel = panel.on_click(|_, _, cx| cx.stop_propagation()).relative();
+                        if crate::ui::reduce_motion() {
+                            panel.into_any_element()
+                        } else {
+                            panel
+                                .with_animation("modal-appear", Animation::new(std::time::Duration::from_millis(180)).with_easing(crate::ui::ease_out), |el, t| el.opacity(t).top(px(8. * (1. - t))))
+                                .into_any_element()
+                        }
+                    }),
             )
             .into_any_element(),
     )

@@ -305,7 +305,7 @@ impl Strip {
 
     /// The progress line under the top bar: (fraction or None while it
     /// cannot say, its colour), or nothing when no job is shown.
-    pub fn line(&self, cx: &App) -> Option<AnyElement> {
+    pub fn line(&self, window: &mut Window, cx: &App) -> Option<AnyElement> {
         let theme = cx.theme();
         if self.job.is_none() && self.quiet > 0 {
             let accent = theme.primary;
@@ -345,7 +345,8 @@ impl Strip {
                 .h(px(3.))
                 .bg(accent.opacity(0.25))
                 .child(match (running, job.percent()) {
-                    (true, Some(p)) => div().h_full().w(relative(p / 100.)).bg(accent).into_any_element(),
+                    // The width glides to each new percentage (300 ms).
+                    (true, Some(p)) => div().h_full().w(relative(crate::ui::tween("strip-p", p / 100., 300, window))).bg(accent).into_any_element(),
                     (true, None) => div()
                         .absolute()
                         .top_0()
