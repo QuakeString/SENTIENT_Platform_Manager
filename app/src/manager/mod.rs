@@ -478,14 +478,12 @@ impl Manager {
 
     /// Read the open instance's processor, memory and disk every few seconds.
     fn start_monitor(&mut self, cx: &mut Context<Self>) {
-        let dir = self
-            .record
-            .as_ref()
-            .map(|r| if r.pg_dir.as_os_str().is_empty() { r.install_dir.clone() } else { r.pg_dir.clone() })
-            .unwrap_or_else(|| std::path::PathBuf::from(if cfg!(windows) { "C:\\" } else { "/" }));
+        // The reader Statistics shares (crate::stats::local_read): its first
+        // reading then waits for nothing.
+        let record = self.record.clone();
         let task = cx.spawn(async move |this, cx| loop {
-            let d = dir.clone();
-            let m = cx.background_executor().spawn(async move { crate::sysmon::sample(&d) }).await;
+            let r = record.clone();
+            let m = cx.background_executor().spawn(async move { crate::sysmon::from_sample(&crate::stats::local_read(r.as_ref(), std::time::Duration::from_millis(250))) }).await;
             if this
                 .update(cx, |page, cx| {
                     page.monitor = Some(m);

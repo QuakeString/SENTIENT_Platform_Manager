@@ -169,6 +169,16 @@ refreshes that repository's Downloads table.
   of "Installing the SENTIENT schema (one-time)".
 
 ### Fixed
+- Statistics shows its first cards at once and never asks for a password.
+  Processor, memory, disk, network and "Running for" come straight from
+  this computer (a reader shared with the top bar, under 0.1 s after the
+  page opens); Services and Database are read side by side and fill their
+  own cards when they come. On native Linux the database's numbers show
+  "—" with a note instead of the administrator password prompt that held
+  the whole page (and came back every few seconds); the sampler's timer
+  no longer asks either. On a server, each part is its own agent call
+  (`stats-live system|services|db`); an older agent's whole reading still
+  works.
 - Setting up a remote server: the first copy of the Platform Manager
   failed ("stat remote: No such file or directory"), and a key with a
   passphrase or a password sign-in could not copy at all. A Linux server
