@@ -144,10 +144,10 @@ pub const BAR_H: f32 = 60.;
 /// folded menu. Folding only hides the labels; nothing moves.
 pub const ICON_X: f32 = 32.;
 /// The menu's left padding (the selection's left end), the same folded or not.
-const MENU_PAD: f32 = 8.;
+const MENU_PAD: f32 = 12.;
 /// Unfolded, the selection keeps a wider margin from the window's edge (his
 /// D1 note: too little room on its left); the icons stay on ICON_X.
-const MENU_PAD_OPEN: f32 = 16.;
+const MENU_PAD_OPEN: f32 = 12.;
 /// A row's icon size and its left padding inside the row (icon centre at ICON_X).
 const ICON: f32 = 18.;
 fn row_pl(pad: f32) -> f32 {
@@ -459,8 +459,7 @@ impl Manager {
                 // The logo's centre on ICON_X, folded or not.
                 .pl(px(ICON_X - LOGO / 2.))
                 .when(!rail, |r| r.pr(px(10.)))
-                .border_b_1()
-                .border_color(theme.sidebar_border)
+                // No line under it (his rc12-20 note): the menu starts below.
                 .child(logo)
                 .when(!rail, |r| {
                     r.child(

@@ -150,6 +150,8 @@ pub struct FilesPage {
     /// How many items the drag carries.
     drag_count: usize,
     transfers: Entity<Transfers>,
+    /// The short note at the bottom ("Location copied"), and since when.
+    toast: Option<(String, std::time::Instant)>,
     _subs: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -167,7 +169,7 @@ impl FilesPage {
             }
         }), cx.observe(&transfers, |_, _, cx| cx.notify())];
         let right = remote.map(Place::Remote).unwrap_or(Place::Local);
-        let mut me = FilesPage { panes: [Pane::new(Place::Local, cx), Pane::new(right, cx)], drag_over: None, drag_count: 0, transfers, _subs: subs, _tasks: Vec::new() };
+        let mut me = FilesPage { panes: [Pane::new(Place::Local, cx), Pane::new(right, cx)], drag_over: None, drag_count: 0, transfers, toast: None, _subs: subs, _tasks: Vec::new() };
         for side in 0..2 {
             // Click tests: where each side starts (SPM_DEBUG_FILES_START=<left>|<right>).
             #[cfg(debug_assertions)]
@@ -372,6 +374,39 @@ impl FilesPage {
         }
         cx.set_global(ClipSlot(Some(Clip { place: p.place.clone(), admin: p.admin, dir: p.path.clone(), names: p.selected.iter().cloned().collect() })));
         cx.notify();
+    }
+
+    /// Copy location: the item's full path, written the way its side's
+    /// system writes paths (a Windows server's "/C:/Users/x" as
+    /// "C:\\Users\\x"), to this computer's clipboard; a short note says so.
+    fn copy_location(&mut self, side: usize, cx: &mut Context<Self>) {
+        let p = &self.panes[side];
+        let mut names: Vec<String> = p.selected.iter().cloned().collect();
+        names.sort();
+        if names.is_empty() {
+            return;
+        }
+        let windows = matches!(&p.place, Place::Remote(i) if crate::remote::is_windows(i));
+        let paths: Vec<String> = names.iter().map(|n| os_path(&p.place.join(&p.path, n), windows)).collect();
+        cx.write_to_clipboard(ClipboardItem::new_string(paths.join("\n")));
+        let text = if paths.len() == 1 { "Location copied".to_string() } else { format!("{} locations copied", paths.len()) };
+        self.show_toast(text, cx);
+    }
+
+    fn show_toast(&mut self, text: String, cx: &mut Context<Self>) {
+        self.toast = Some((text, std::time::Instant::now()));
+        cx.notify();
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(TOAST_FOR).await;
+            this.update(cx, |p, cx| {
+                if p.toast.as_ref().is_some_and(|(_, at)| at.elapsed() >= TOAST_FOR) {
+                    p.toast = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
+        self._tasks.push(task);
     }
 
     fn clip_paste(&mut self, side: usize, cx: &mut Context<Self>) {
@@ -815,6 +850,7 @@ impl FilesPage {
                     })))
                     .separator()
                     .item(PopupMenuItem::new("Copy").icon(IconName::Copy).on_click(act(|p, side, _, cx| p.clip_copy(side, cx))))
+                    .item(PopupMenuItem::new("Copy location").icon(Icon::empty().path("icons/link.svg")).on_click(act(|p, side, _, cx| p.copy_location(side, cx))))
                     .item(PopupMenuItem::new("Paste").icon(Icon::empty().path("icons/clipboard.svg")).disabled(!writable).on_click(act(|p, side, _, cx| p.clip_paste(side, cx))))
                     .item(PopupMenuItem::new("Rename").icon(Icon::empty().path("icons/pencil.svg")).disabled(!writable).on_click(act(|p, side, w, cx| p.start_rename(side, w, cx))))
                     .item(PopupMenuItem::new("New folder").icon(Icon::empty().path("icons/folder-plus.svg")).disabled(!writable).on_click(act(|p, side, w, cx| p.start_new_folder(side, w, cx))))
@@ -948,8 +984,36 @@ impl Render for FilesPage {
             .when(narrow, |p| p.overflow_y_scroll())
             .child(h_flex().min_h(px(32.)).items_center().child(div().flex_1().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Files")).child(refresh))
             .child(panes);
-        page
+        // The short note, bottom centre over the page (fades in).
+        let toast = self.toast.as_ref().map(|(text, _)| {
+            div().absolute().bottom(px(24.)).left_0().right_0().flex().justify_center().child(
+                div()
+                    .px(px(14.))
+                    .py(px(8.))
+                    .rounded(px(8.))
+                    .bg(theme.foreground)
+                    .text_color(theme.background)
+                    .text_sm()
+                    .shadow_md()
+                    .child(text.clone())
+                    .with_animation(SharedString::from(format!("toast-{text}")), Animation::new(std::time::Duration::from_millis(150)), |el, t| el.opacity(t)),
+            )
+        });
+        div().relative().flex().flex_1().min_w_0().h_full().child(page).children(toast)
     }
+}
+
+/// How long the short note stays.
+const TOAST_FOR: std::time::Duration = std::time::Duration::from_millis(1800);
+
+/// A path as its system writes it: an SFTP path on a Windows server
+/// ("/C:/Users/x") as Windows writes it ("C:\\Users\\x").
+fn os_path(p: &str, windows: bool) -> String {
+    if !windows {
+        return p.to_string();
+    }
+    let t = p.strip_prefix('/').filter(|r| r.as_bytes().get(1) == Some(&b':')).unwrap_or(p);
+    t.replace('/', "\\")
 }
 
 // -- C7: delete ----------------------------------------------------------------
@@ -1016,5 +1080,17 @@ impl Render for DeleteFooter {
                         me.update(cx, |p, cx| p.delete(side, cx)).ok();
                     }),
             )
+    }
+}
+
+#[cfg(test)]
+mod location_tests {
+    use super::os_path;
+
+    #[test]
+    fn locations_as_the_system_writes_them() {
+        assert_eq!(os_path("/opt/sentient/backups", false), "/opt/sentient/backups");
+        assert_eq!(os_path("/C:/Users/ops/file.txt", true), "C:\\Users\\ops\\file.txt");
+        assert_eq!(os_path("/home/x", true), "\\home\\x");
     }
 }

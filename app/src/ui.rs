@@ -1257,6 +1257,12 @@ fn reduced_motion() -> bool {
 /// shimmer: one soft, slanted band of light sweeping across the whole page
 /// (see [`paint_shimmer`]). `key` names it among its siblings.
 pub fn skeleton_block(theme: &Theme, key: impl Into<SharedString>, w: Length, h: f32) -> Div {
+    skeleton_block_r(theme, key, w, h, (h / 2.).min(6.))
+}
+
+/// [`skeleton_block`] with its own corner radius (the licence card's 22 px).
+/// The shimmer is painted inside the same rounded shape.
+pub fn skeleton_block_r(theme: &Theme, key: impl Into<SharedString>, w: Length, h: f32, radius: f32) -> Div {
     let _key: SharedString = key.into();
     let dark = theme.mode.is_dark();
     let base = if dark { theme.foreground.opacity(0.08) } else { theme.foreground.opacity(0.07) };
@@ -1264,40 +1270,68 @@ pub fn skeleton_block(theme: &Theme, key: impl Into<SharedString>, w: Length, h:
     let light = if dark { gpui_kit::white().opacity(0.07) } else { gpui_kit::white().opacity(0.6) };
     // Its width is the most it takes: it shrinks with its row and never
     // runs past its parent (a narrow window, a narrow card).
-    div().relative().overflow_hidden().w(w).max_w_full().min_w_0().h(px(h)).flex_shrink(1.).rounded(px((h / 2.).min(6.))).bg(base).when(!reduced_motion(), |d| {
-        d.child(canvas(|_, _, _| {}, move |bounds, _, window, _| paint_shimmer(bounds, light, window)).absolute().inset_0().size_full())
+    div().relative().overflow_hidden().w(w).max_w_full().min_w_0().h(px(h)).flex_shrink(1.).rounded(px(radius)).bg(base).when(!reduced_motion(), |d| {
+        d.child(canvas(|_, _, _| {}, move |bounds, _, window, _| paint_shimmer(bounds, radius, light, window)).absolute().inset_0().size_full())
     })
 }
 
 /// How long one sweep of the shimmer takes.
 const SHIMMER_PERIOD: f32 = 1.5;
-/// The band's width (each soft side half of it) and its slant (20°).
+/// The band's width (each soft side half of it) and the stagger between
+/// rows (a diagonal sweep down the page, 20°).
 const SHIMMER_BAND: f32 = 260.;
 const SHIMMER_TAN: f32 = 0.364;
 
-/// The shimmer in one bone. Every bone reads the same clock and places the
+/// The shimmer in one bone: every bone reads the same clock and places the
 /// band by its own position on the page (x minus its height times the
-/// slant), so the band lines up across rows as one light passing over the
-/// page. Two quads, light rising then falling, each a gradient at 20° so
-/// the band's edges slant too. Ease-in-out; the next frame is asked for.
-fn paint_shimmer(bounds: Bounds<Pixels>, light: Hsla, window: &mut Window) {
+/// slant), so one light passes over the page diagonally. The band is soft
+/// all the way (light rising to its middle, then falling): it is painted as
+/// strips cut at the band's corners, each a left-to-right gradient between
+/// the band's light at its two ends, so no strip edge shows; the strips at
+/// the bone's ends take its rounded corners. Ease-in-out; the next frame is
+/// asked for.
+fn paint_shimmer(bounds: Bounds<Pixels>, radius: f32, light: Hsla, window: &mut Window) {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     let start = *START.get_or_init(std::time::Instant::now);
     let page_w = f32::from(window.viewport_size().width);
     let p = (start.elapsed().as_secs_f32() / SHIMMER_PERIOD).fract();
     let eased = if p < 0.5 { 2. * p * p } else { 1. - (-2. * p + 2.).powi(2) / 2. };
-    // From fully left of the page to fully right, including the slant.
+    // From fully left of the page to fully right, including the stagger.
     let travel = page_w + 2. * SHIMMER_BAND + 400. * SHIMMER_TAN;
     let centre_at_top = -SHIMMER_BAND + eased * travel;
     let y_mid = f32::from(bounds.origin.y + bounds.size.height / 2.);
-    let centre = centre_at_top - y_mid * SHIMMER_TAN;
+    let c = centre_at_top - y_mid * SHIMMER_TAN;
     let half = SHIMMER_BAND / 2.;
-    let clear = light.opacity(0.);
+    let (l, r) = (f32::from(bounds.origin.x), f32::from(bounds.origin.x + bounds.size.width));
+    // The light at x: 0 outside the band, 1 at its middle.
+    let at = |x: f32| (1. - (x - c).abs() / half).max(0.);
+    // Cut the bone at the band's three corners that fall inside it.
+    let mut cuts = vec![l];
+    for k in [c - half, c, c + half] {
+        if k > l && k < r {
+            cuts.push(k);
+        }
+    }
+    cuts.push(r);
+    let rad = radius.min(f32::from(bounds.size.height) / 2.).min((r - l) / 2.);
     window.with_content_mask(Some(ContentMask { bounds }), |window| {
-        let top = bounds.origin.y;
-        let h = bounds.size.height;
-        window.paint_quad(fill(Bounds::new(point(px(centre - half), top), size(px(half), h)), linear_gradient(110., linear_color_stop(clear, 0.), linear_color_stop(light, 1.))));
-        window.paint_quad(fill(Bounds::new(point(px(centre), top), size(px(half), h)), linear_gradient(110., linear_color_stop(light, 0.), linear_color_stop(clear, 1.))));
+        for seg in cuts.windows(2) {
+            let (x0, x1) = (seg[0], seg[1]);
+            let (a0, a1) = (at(x0), at(x1));
+            if x1 - x0 < 0.5 || (a0 <= 0.001 && a1 <= 0.001) {
+                continue;
+            }
+            // Corners: the bone's own where the strip reaches its ends; a
+            // strip starting within the corner takes what is left of it.
+            let left = (rad - (x0 - l)).max(0.);
+            let right = (rad - (r - x1)).max(0.);
+            let q = fill(
+                Bounds::new(point(px(x0), bounds.origin.y), size(px(x1 - x0), bounds.size.height)),
+                linear_gradient(90., linear_color_stop(light.opacity(light.a * a0), 0.), linear_color_stop(light.opacity(light.a * a1), 1.)),
+            )
+            .corner_radii(Corners { top_left: px(left), bottom_left: px(left), top_right: px(right), bottom_right: px(right) });
+            window.paint_quad(q);
+        }
     });
     window.request_animation_frame();
 }
