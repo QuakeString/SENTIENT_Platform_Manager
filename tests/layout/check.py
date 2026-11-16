@@ -203,7 +203,11 @@ def button_gaps(log):
     modals = [tuple(float(x) for x in p[2:6]) for p in frame if len(p) == 6 and p[:2] == ["LAYOUT", "modal"]]
     overlays = [tuple(float(x) for x in p[2:6]) for p in frame if len(p) == 6 and p[:2] == ["LAYOUT", "overlay"]]
     if modals:
-        boxes = [b for b in boxes if any(inside(b, m) for m in modals)]
+        # The dialog is drawn after the page: its buttons' lines come after
+        # its own (a page button under it can lie inside its box).
+        at = max(i for i, p in enumerate(frame) if len(p) == 6 and p[:2] == ["LAYOUT", "modal"])
+        mine = {tuple(float(x) for x in p[2:6]) for p in frame[at:] if len(p) == 6 and p[:2] == ["LAYOUT", "button"]}
+        boxes = [b for b in boxes if b in mine and any(inside(b, m) for m in modals)]
     elif overlays:
         boxes = [b for b in boxes if any(inside(b, o) for o in overlays) or not any(meets(b, o) for o in overlays)]
     off = []
