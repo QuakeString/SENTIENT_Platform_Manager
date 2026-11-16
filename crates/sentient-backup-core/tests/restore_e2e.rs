@@ -326,6 +326,80 @@ async fn beside(t: T, name: &str) {
     }
 }
 
+/// Latest values against the history: every series' latest value is its
+/// newest history row (and no latest value without history). PostgreSQL and
+/// TimescaleDB: `ts_kv_latest`; ClickHouse: the aggregate, and PostgreSQL's
+/// leftover `ts_kv_latest` rows on such an install. Ok(series checked) or
+/// the first differences.
+async fn latest_matches(t: T, db: &str) -> Result<usize, String> {
+    let pg = client(&conn(t, db)).await;
+    let pg_latest: Vec<String> = pg
+        .query("SELECT entity_id::text, key, ts, coalesce(dbl_v::text, '') FROM ts_kv_latest ORDER BY 1, 2", &[])
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| format!("{}\t{}\t{}\t{}", r.get::<_, String>(0), r.get::<_, i32>(1), r.get::<_, i64>(2), r.get::<_, String>(3)))
+        .collect();
+    let diff = |want: &[String], got: &[String], what: &str| -> Result<usize, String> {
+        if want == got {
+            return Ok(want.len());
+        }
+        let missing: Vec<&String> = want.iter().filter(|w| !got.contains(w)).take(3).collect();
+        let extra: Vec<&String> = got.iter().filter(|g| !want.contains(g)).take(3).collect();
+        Err(format!("{what}: {} history series, {} latest; missing {missing:?}, wrong {extra:?}", want.len(), got.len()))
+    };
+    if t != T::Hy {
+        let hist: Vec<String> = pg
+            .query("SELECT DISTINCT ON (entity_id, key) entity_id::text, key, ts, coalesce(dbl_v::text, '') FROM ts_kv ORDER BY entity_id, key, ts DESC", &[])
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| format!("{}\t{}\t{}\t{}", r.get::<_, String>(0), r.get::<_, i32>(1), r.get::<_, i64>(2), r.get::<_, String>(3)))
+            .collect();
+        return diff(&hist, &pg_latest, "ts_kv_latest");
+    }
+    let lines = |t: String| t.lines().map(str::to_string).filter(|l| !l.is_empty()).collect::<Vec<_>>();
+    let c = ch(db);
+    let hist = lines(c.text("SELECT toString(entity_id), key, max(ts), ifNull(toString(argMax(dbl_v, (ts, inserted_at))), '') FROM ts_kv GROUP BY entity_id, key ORDER BY 1, 2").unwrap());
+    let agg = lines(c.text("SELECT toString(entity_id), key, maxMerge(ts_max), ifNull(toString(argMaxMerge(dbl_v)), '') FROM ts_kv_latest_agg GROUP BY entity_id, key ORDER BY 1, 2").unwrap());
+    let n = diff(&hist, &agg, "ts_kv_latest_agg")?;
+    // PostgreSQL's rows, where it holds any, are the history's too. Floats
+    // print alike in both ("1045" / "1045.5").
+    let bad: Vec<&String> = pg_latest.iter().filter(|l| !hist.contains(l)).take(3).collect();
+    if !bad.is_empty() {
+        return Err(format!("PostgreSQL ts_kv_latest rows not the newest history: {bad:?}"));
+    }
+    Ok(n)
+}
+
+/// A series only inside 10 Sep .. 20 Oct, on a running database: a range
+/// replace that does not bring it must take its latest value away.
+async fn add_range_only_series(t: T, db: &str) {
+    let kid = key_id(t, db, "volt").await.unwrap();
+    let d9 = "99999999-9999-9999-9999-999999999999";
+    let rows: Vec<(i64, f64)> = (15..18).map(|d| (ms(2026, 9, d) + NOON, 9000.0 + d as f64)).collect();
+    let pg = client(&conn(t, db)).await;
+    if t == T::Hy {
+        let tsv: String = rows.iter().map(|(ts, v)| format!("{d9}\t{kid}\t{ts}\t{v}\n")).collect();
+        ch(db).insert("INSERT INTO ts_kv (entity_id, key, ts, dbl_v) FORMAT TabSeparated", tsv.as_bytes()).unwrap();
+    } else {
+        for (ts, v) in &rows {
+            pg.execute("INSERT INTO ts_kv (entity_id, key, ts, dbl_v) VALUES ($1::text::uuid, $2, $3, $4)", &[&d9, &kid, ts, v]).await.unwrap();
+        }
+    }
+    let (ts, v) = rows.last().unwrap();
+    pg.execute("INSERT INTO ts_kv_latest (entity_id, key, ts, dbl_v) VALUES ($1::text::uuid, $2, $3, $4)", &[&d9, &kid, ts, v]).await.unwrap();
+}
+
+async fn has_latest(t: T, db: &str, dev: &str) -> bool {
+    let pg: i64 = client(&conn(t, db)).await.query_one("SELECT count(*) FROM ts_kv_latest WHERE entity_id = $1::text::uuid", &[&dev]).await.unwrap().get(0);
+    if t == T::Hy {
+        let n: i64 = ch(db).text(&format!("SELECT count() FROM (SELECT entity_id FROM ts_kv_latest_agg WHERE entity_id = '{dev}' GROUP BY entity_id, key)")).unwrap().trim().parse().unwrap();
+        return pg + n > 0;
+    }
+    pg > 0
+}
+
 struct Report(Vec<String>);
 impl Report {
     fn row(&mut self, pair: &str, mode: &str, ok: bool, detail: String) {
@@ -418,6 +492,8 @@ async fn restore_across_types() {
             let added = value(t, &live, D2, "press", (2026, 8, 10)).await;
             let own = value(t, &live, D3, "volt", (2026, 11, 1)).await;
             let names: i64 = client(&conn(t, &live)).await.query_one("SELECT count(*) FROM key_dictionary", &[]).await.unwrap().get(0);
+            let lm = latest_matches(t, &live).await;
+            check!(rep, pair, "latest after telemetry only", fails, lm.is_ok(), "{lm:?}");
             check!(
                 rep, pair, "telemetry only", fails,
                 r.is_ok() && n == want && kept == Some(2014.0) && added == Some(1009.0) && own == Some(2061.0) && names == 4 && empty_dir(&tmp),
@@ -427,9 +503,14 @@ async fn restore_across_types() {
             // A date range: 10 Sep .. 20 Oct replaced.
             let live = format!("rg_{p}");
             seed(t, &live, &B).await;
+            add_range_only_series(t, &live).await;
+            let before = has_latest(t, &live, "99999999-9999-9999-9999-999999999999").await;
             let scope = Scope::Range { from_ms: ms(2026, 9, 10), to_ms: ms(2026, 10, 20) };
             let r = restore::run(&conn(t, &live), &opts(file, t, scope, ch_of(&live).as_deref(), &tmp), quiet()).await;
-            let n = rows(t, &live).await;
+            let lm = latest_matches(t, &live).await;
+            let after = has_latest(t, &live, "99999999-9999-9999-9999-999999999999").await;
+            check!(rep, pair, "latest after a range replace", fails, r.is_ok() && lm.is_ok() && before && !after, "{lm:?}; range-only series had a latest value {before}, has one after {after}");
+            let n = rows(t, &live).await - 0;
             let want = 240 + 216;
             let inr = value(t, &live, D1, "temp", (2026, 9, 15)).await;
             let gone = value(t, &live, D3, "volt", (2026, 9, 15)).await;
@@ -473,6 +554,8 @@ async fn restore_across_types() {
             let names: i64 = client(&conn(t, &live)).await.query_one("SELECT count(*) FROM key_dictionary", &[]).await.unwrap().get(0);
             let v = value(t, &live, D1, "temp", (2026, 9, 15)).await;
             let staging_left = if t == T::Hy { ch(&live).text("EXISTS TABLE spm_restore_range").unwrap().trim() == "1" } else { false };
+            let lm = latest_matches(t, &live).await;
+            check!(rep, pair, &format!("latest after {mode} (rolled back)"), fails, lm.is_ok(), "{lm:?}");
             check!(
                 rep, pair, mode, fails,
                 r.is_err() && n == b_rows && raw == b_rows && v == Some(2014.0) && !staging_left && empty_dir(&tmp),
@@ -505,6 +588,29 @@ async fn restore_across_types() {
         let r = restore::run(&conn(t, &db), &o, quiet()).await;
         let space = matches!(&r, Err(sentient_backup_core::Error::SpaceLow(_)));
         check!(rep, pair, "space watch: everything", fails, space && empty_dir(&tmp), "{r:?}");
+    }
+
+    // X2 on ClickHouse: the switch exchanges the history and latest tables
+    // with the restored database's, and back when SENTIENT does not answer
+    // (crate restore_switch in the app: EXCHANGE TABLES, per table). After
+    // the way back, the live latest values are the live history's again;
+    // also after the restored side was written to in between.
+    {
+        let (live, restored) = ("x2_live", "x2_rest");
+        seed(T::Hy, live, &B).await;
+        seed(T::Hy, restored, &A).await;
+        let x = |a: &str, b: &str| {
+            for tbl in ["ts_kv", "ts_kv_latest_agg"] {
+                ch("default").text(&format!("EXCHANGE TABLES {a}.{tbl} AND {b}.{tbl}")).unwrap();
+            }
+        };
+        x(live, restored);
+        // SENTIENT starting on the restored data writes a value or two there.
+        ch(live).insert("INSERT INTO ts_kv (entity_id, key, ts, dbl_v) FORMAT TabSeparated", format!("{D1}\t1\t{}\t7777\n", ms(2026, 11, 20)).as_bytes()).unwrap();
+        x(live, restored);
+        let lm = latest_matches(T::Hy, live).await;
+        let n = rows(T::Hy, live).await;
+        check!(rep, "hy → hy", "latest after X2 rollback (tables exchanged back)", fails, lm.is_ok() && n == 456, "{lm:?}; live rows {n}");
     }
 
     let table = format!("| pair | mode | result | detail |\n|---|---|---|---|\n{}\n", rep.0.join("\n"));

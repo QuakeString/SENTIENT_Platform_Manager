@@ -355,7 +355,7 @@ pub(crate) async fn pg_to_ch_stream(pg: &Client, select: &str, ch: &ChConn, inse
 }
 
 /// `SELECT … FORMAT TabSeparated` into `COPY <table> FROM STDIN`.
-async fn ch_to_pg_stream(ch: &ChConn, select: &str, pg: &Client, copy: &str) -> Result<u64> {
+pub(crate) async fn ch_to_pg_stream(ch: &ChConn, select: &str, pg: &Client, copy: &str) -> Result<u64> {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(32);
     let ch = ch.clone();
     let select = format!("{select} FORMAT TabSeparated");

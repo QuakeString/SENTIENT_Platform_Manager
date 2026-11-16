@@ -407,13 +407,27 @@ async fn into_live_pg(pg: &tokio_postgres::Client, scope: &Scope, guard: &crate:
     let work = async {
         let mut deleted = 0;
         if let Scope::Range { from_ms, to_ms } = scope {
+            // The series the range touches: those it deletes from and those it brings.
+            pg.execute(
+                &format!(
+                    "CREATE TEMP TABLE spm_affected ON COMMIT DROP AS SELECT DISTINCT entity_id, key FROM ts_kv WHERE ts >= $1 AND ts < $2 \
+                     UNION SELECT DISTINCT entity_id, key FROM {STAGING}"
+                ),
+                &[from_ms, to_ms],
+            )
+            .await?;
             deleted = pg.execute("DELETE FROM ts_kv WHERE ts >= $1 AND ts < $2", &[from_ms, to_ms]).await?;
         }
         let inserted = pg
             .execute(&format!("INSERT INTO ts_kv ({COLS}) SELECT {COLS} FROM {STAGING} ON CONFLICT DO NOTHING"), &[])
             .await?;
         if table_exists(pg, "ts_kv_latest").await? {
-            mv::latest_from_table(pg, STAGING, sink).await?;
+            if matches!(scope, Scope::Range { .. }) {
+                recompute_latest_pg(pg, "spm_affected", sink).await?;
+            } else {
+                // Rows only added: the newer one wins, as SENTIENT writes latest values.
+                mv::latest_from_table(pg, STAGING, sink).await?;
+            }
         }
         fail_point("pg_before_commit")?;
         guard.check()?;
@@ -436,6 +450,99 @@ async fn into_live_pg(pg: &tokio_postgres::Client, scope: &Scope, guard: &crate:
             Err(guard.tripped().map(Error::SpaceLow).unwrap_or(e))
         }
     }
+}
+
+/// PostgreSQL's latest values of the series in `affected` (entity_id,
+/// key) made again from the history, as SENTIENT does when history is
+/// deleted (`delete_ts_range`): the newest row of each series becomes its
+/// latest value, and a series with no history left loses its latest value.
+pub(crate) async fn recompute_latest_pg(pg: &tokio_postgres::Client, affected: &str, sink: &ProgressFn) -> Result<u64> {
+    use crate::telemetry_move::COLS;
+    let n = pg
+        .execute(
+            &format!(
+                "INSERT INTO ts_kv_latest ({COLS}) SELECT a.entity_id, a.key, h.ts, h.bool_v, h.str_v, h.long_v, h.dbl_v, h.json_v \
+                 FROM {affected} a CROSS JOIN LATERAL (SELECT ts, bool_v, str_v, long_v, dbl_v, json_v FROM ts_kv t \
+                 WHERE t.entity_id = a.entity_id AND t.key = a.key ORDER BY t.ts DESC LIMIT 1) h \
+                 ON CONFLICT (entity_id, key) DO UPDATE SET ts = EXCLUDED.ts, bool_v = EXCLUDED.bool_v, str_v = EXCLUDED.str_v, \
+                 long_v = EXCLUDED.long_v, dbl_v = EXCLUDED.dbl_v, json_v = EXCLUDED.json_v"
+            ),
+            &[],
+        )
+        .await?;
+    let gone = pg
+        .execute(
+            &format!(
+                "DELETE FROM ts_kv_latest l USING {affected} a WHERE l.entity_id = a.entity_id AND l.key = a.key \
+                 AND NOT EXISTS (SELECT 1 FROM ts_kv t WHERE t.entity_id = a.entity_id AND t.key = a.key)"
+            ),
+            &[],
+        )
+        .await?;
+    sink(crate::progress::Progress::Log { line: format!("  latest values made again from the history: {n}, {gone} without history removed") });
+    Ok(n)
+}
+
+/// ClickHouse's latest values of the series in `spm_affected` (a table in
+/// the same ClickHouse database) made again from its history, as SENTIENT's
+/// view makes them (the newest `ts`, then the newest write); and, on a
+/// ClickHouse install whose PostgreSQL still holds `ts_kv_latest` rows for
+/// those series, those rows made the same.
+async fn recompute_latest_ch(pg: &tokio_postgres::Client, ch: &crate::clickhouse::ChConn, sink: &ProgressFn) -> Result<()> {
+    let c = ch.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let s = "SETTINGS mutations_sync = 2, allow_nondeterministic_mutations = 1";
+        c.text(&format!("ALTER TABLE ts_kv_latest_agg DELETE WHERE (entity_id, key) IN (SELECT entity_id, key FROM spm_affected) {s}"))?;
+        c.text(
+            "INSERT INTO ts_kv_latest_agg (entity_id, key, ts_max, bool_v, str_v, long_v, dbl_v, json_v) \
+             SELECT entity_id, key, maxState(ts), \
+             argMaxState(bool_v, (ts, toDateTime64(inserted_at, 9))), argMaxState(str_v, (ts, toDateTime64(inserted_at, 9))), \
+             argMaxState(long_v, (ts, toDateTime64(inserted_at, 9))), argMaxState(dbl_v, (ts, toDateTime64(inserted_at, 9))), \
+             argMaxState(json_v, (ts, toDateTime64(inserted_at, 9))) \
+             FROM ts_kv WHERE (entity_id, key) IN (SELECT entity_id, key FROM spm_affected) GROUP BY entity_id, key",
+        )?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| Error::msg(e.to_string()))??;
+    sink(crate::progress::Progress::Log { line: "  ClickHouse's latest values made again from its history".into() });
+    if table_exists(pg, "ts_kv_latest").await? && pg.query_one("SELECT EXISTS (SELECT 1 FROM ts_kv_latest)", &[]).await?.get::<_, bool>(0) {
+        use crate::telemetry_move::{COLS, ch_to_pg_stream};
+        pg.batch_execute(
+            "DROP TABLE IF EXISTS spm_ch_affected; CREATE TEMP TABLE spm_ch_affected (entity_id uuid, key int); \
+             DROP TABLE IF EXISTS spm_ch_latest; CREATE TEMP TABLE spm_ch_latest (entity_id uuid, key int, ts bigint, bool_v boolean, \
+             str_v varchar, long_v bigint, dbl_v double precision, json_v json)",
+        )
+        .await?;
+        ch_to_pg_stream(ch, "SELECT entity_id, key FROM spm_affected", pg, "COPY spm_ch_affected FROM STDIN").await?;
+        ch_to_pg_stream(
+            ch,
+            "SELECT entity_id, key, max(ts), argMax(bool_v, (ts, inserted_at)), argMax(str_v, (ts, inserted_at)), argMax(long_v, (ts, inserted_at)), \
+             argMax(dbl_v, (ts, inserted_at)), argMax(json_v, (ts, inserted_at)) FROM ts_kv \
+             WHERE (entity_id, key) IN (SELECT entity_id, key FROM spm_affected) GROUP BY entity_id, key",
+            pg,
+            &format!("COPY spm_ch_latest ({COLS}) FROM STDIN"),
+        )
+        .await?;
+        // Only the series PostgreSQL holds: SENTIENT keeps latest values in ClickHouse here.
+        let n = pg
+            .execute(
+                "UPDATE ts_kv_latest l SET ts = n.ts, bool_v = n.bool_v, str_v = n.str_v, long_v = n.long_v, dbl_v = n.dbl_v, json_v = n.json_v \
+                 FROM spm_ch_latest n WHERE l.entity_id = n.entity_id AND l.key = n.key",
+                &[],
+            )
+            .await?;
+        let gone = pg
+            .execute(
+                "DELETE FROM ts_kv_latest l USING spm_ch_affected a WHERE l.entity_id = a.entity_id AND l.key = a.key \
+                 AND NOT EXISTS (SELECT 1 FROM spm_ch_latest n WHERE n.entity_id = a.entity_id AND n.key = a.key)",
+                &[],
+            )
+            .await?;
+        pg.batch_execute("DROP TABLE spm_ch_affected; DROP TABLE spm_ch_latest").await?;
+        sink(crate::progress::Progress::Log { line: format!("  PostgreSQL's latest values: {n} made again, {gone} removed") });
+    }
+    Ok(())
 }
 
 fn now_nanos() -> i64 {
@@ -473,6 +580,14 @@ async fn into_live_ch(
         ch_blocking("DROP TABLE IF EXISTS spm_restore_range".into()).await?;
         ch_blocking("CREATE TABLE spm_restore_range AS ts_kv ENGINE = MergeTree ORDER BY (entity_id, key, ts)".into()).await?;
     }
+    // The series this run touches, for their latest values after it (done or undone).
+    ch_blocking("DROP TABLE IF EXISTS spm_affected".into()).await?;
+    ch_blocking("CREATE TABLE spm_affected (entity_id UUID, key Int32) ENGINE = Memory".into()).await?;
+    mv::pg_to_ch_stream(pg, &format!("SELECT DISTINCT entity_id, key FROM {STAGING}"), ch, "INSERT INTO spm_affected (entity_id, key) FORMAT TabSeparated").await?;
+    if let Scope::Range { from_ms, to_ms } = scope {
+        ch_blocking(format!("INSERT INTO spm_affected SELECT DISTINCT entity_id, key FROM ts_kv WHERE ts >= {from_ms} AND ts < {to_ms}")).await?;
+    }
+    let mut touched = false;
     let insert = format!(
         "INSERT INTO {table} (entity_id, key, ts, bool_v, str_v, long_v, dbl_v, json_v, inserted_at) \
          SELECT entity_id, key, ts, bool_v, str_v, long_v, toFloat64(dbl_v), json_v, fromUnixTimestamp64Nano(toInt64({marker})) \
@@ -508,6 +623,7 @@ async fn into_live_ch(
         fail_point("ch_after_insert")?;
         guard.check()?;
         if let Scope::Range { from_ms, to_ms } = scope {
+            touched = true;
             ch_blocking(format!("ALTER TABLE ts_kv DELETE WHERE ts >= {from_ms} AND ts < {to_ms} SETTINGS mutations_sync = 2")).await?;
             ch_blocking("INSERT INTO ts_kv SELECT * FROM spm_restore_range".into()).await?;
         }
@@ -517,7 +633,7 @@ async fn into_live_ch(
     if range {
         let _ = ch_blocking("DROP TABLE IF EXISTS spm_restore_range".into()).await;
     }
-    match work {
+    let result = match work {
         Ok(()) => Ok(rows),
         Err(e) => {
             if inserted_any && !range {
@@ -536,7 +652,38 @@ async fn into_live_ch(
             }
             Err(guard.tripped().map(Error::SpaceLow).unwrap_or(e))
         }
+    };
+    // Latest values follow the history whatever happened: rows added (their
+    // view already fed the aggregate), a range replaced, or rows taken out
+    // again after a failure (the aggregate kept their states).
+    // Telemetry only that went through needs nothing more in ClickHouse: the
+    // view kept the newest per series. PostgreSQL's leftover rows on such an
+    // install take a newer value as SENTIENT's own writes would.
+    if result.is_ok() && !touched && inserted_any && table_exists(pg, "ts_kv_latest").await.unwrap_or(false) {
+        let n = pg
+            .execute(
+                &format!(
+                    "UPDATE ts_kv_latest l SET ts = n.ts, bool_v = n.bool_v, str_v = n.str_v, long_v = n.long_v, dbl_v = n.dbl_v, json_v = n.json_v \
+                     FROM (SELECT DISTINCT ON (entity_id, key) * FROM {STAGING} ORDER BY entity_id, key, ts DESC) n \
+                     WHERE l.entity_id = n.entity_id AND l.key = n.key AND n.ts > l.ts"
+                ),
+                &[],
+            )
+            .await;
+        if let Ok(n) = n {
+            sink(crate::progress::Progress::Log { line: format!("  PostgreSQL's latest values: {n} newer from the backup") });
+        }
+    } else if (inserted_any && result.is_err()) || touched {
+        if let Err(e) = recompute_latest_ch(pg, ch, sink).await {
+            sink(crate::progress::Progress::Log { line: format!("  the latest values could not be made again ({e}); they follow with the next value of each series") });
+            if result.is_ok() {
+                let _ = ch_blocking("DROP TABLE IF EXISTS spm_affected".into()).await;
+                return Err(e);
+            }
+        }
     }
+    let _ = ch_blocking("DROP TABLE IF EXISTS spm_affected".into()).await;
+    result
 }
 
 /// Configuration only, Keep: renumber the restored database's key

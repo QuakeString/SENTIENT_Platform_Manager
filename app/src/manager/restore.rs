@@ -1112,8 +1112,8 @@ impl RestoreFlow {
             v_flex()
                 .gap_3()
                 .child(opt(self, 0, format!("Replace the data of {here}"), &format!("{} keeps its own PostgreSQL{}, ports and licence; only the data inside is replaced.", if server { "This server" } else { "This computer" }, if self.inspection.as_ref().is_some_and(|i| i.here.database_type.contains("ClickHouse")) { ", ClickHouse" } else { "" }), true, None, cx))
-                .child(opt(self, 1, format!("A new instance on {}", if server { here.clone() } else { "this computer".into() }), "Beside the current one, on other ports. Good to look at the backup first.", false, Some("The Platform Manager runs one SENTIENT per server for now. Set up another server in Instances, then restore there with “Replace the data”."), cx))
-                .child(opt(self, 2, "A new instance on another server".into(), "Pick a server; SENTIENT is set up there and the backup restored into it.", false, Some("Set up SENTIENT on that server first (Instances, Set up), then restore the backup there with “Replace the data”; Restore from… copies it across."), cx)),
+                .child(opt(self, 1, format!("A new instance on {}", if server { here.clone() } else { "this computer".into() }), "Beside the current one, on other ports. Good to look at the backup first.", false, Some("Set up SENTIENT on that server first (Instances > Add), then restore there with Replace."), cx))
+                .child(opt(self, 2, "A new instance on another server".into(), "Pick a server; SENTIENT is set up there and the backup restored into it.", false, Some("Set up SENTIENT on that server first (Instances > Add), then restore there with Replace."), cx)),
         );
         (c, self.place == 0)
     }
@@ -1486,6 +1486,9 @@ impl RestoreFlow {
                     })))
                     .child(ui::info("rs-delete-old-i".into(), "Without this, the data from before is kept under “Kept after earlier changes” until you remove it; it is the way back.".into())),
             );
+        }
+        if scope == Scope::TelemetryOnly {
+            c = c.child(muted(theme, "Nothing is deleted, so no safety backup is needed."));
         }
         if offered && !self.skip_safety {
             let s = p.as_ref().map(|p| format!("{} · {} · {}", p.safety.name, gb(p.safety.bytes), mins(p.safety.secs))).unwrap_or_default();
@@ -2980,7 +2983,7 @@ pub(crate) mod canned {
     /// The fields a frame shows filled in.
     pub fn inputs(frame: &str, f: &RestoreFlow, window: &mut Window, cx: &mut Context<RestoreFlow>) {
         match frame {
-            "R15" => {
+            "R15" | "R15t" => {
                 let w = f.target.confirm_word();
                 f.confirm.update(cx, |i, cx| i.set_value(w, window, cx));
             }
@@ -3000,13 +3003,14 @@ pub(crate) mod canned {
             "R11" => Step::Where,
             "R13" | "R13w" | "B2" | "B2s" | "R13p" => Step::Precheck,
             "R14" | "R14o" | "B3" | "B7" => Step::Settings,
-            "R15" => Step::Confirm,
+            "R15" | "R15t" => Step::Confirm,
             "R16" | "R17" | "X1" | "X2" | "X3" => Step::Run,
             _ => return,
         };
         f.scope = match frame {
             "R10b" | "R10c" => 1,
             "R10d" => 3,
+            "R15t" => 2,
             _ => 0,
         };
         f.keep = frame != "R10c";
