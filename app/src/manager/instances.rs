@@ -600,7 +600,12 @@ impl InstancesPage {
                 let (i1, i2, i3, i4) = (id.clone(), id.clone(), id.clone(), id.clone());
                 let ctl = |icon: Lucide, label: &'static str, action: &'static str, title: &'static str| {
                     let id = id.clone();
-                    item(icon, label, can_work, Box::new(move |p, _, cx| p.run_job(&id, title, vec!["control", action], cx)))
+                    item(icon, label, can_work, Box::new(move |p, _, cx| {
+                        if action == "restart" {
+                            crate::manager::status::note_restart(&id);
+                        }
+                        p.run_job(&id, title, vec!["control", action], cx)
+                    }))
                 };
                 menu.item(ctl(Lucide::Play, "Start SENTIENT", "start", "Starting SENTIENT"))
                     .item(ctl(Lucide::Square, "Stop SENTIENT", "stop", "Stopping SENTIENT"))

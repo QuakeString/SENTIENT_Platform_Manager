@@ -1,6 +1,6 @@
 // Copyright © 2016-2026 The SENTIENT Authors
 
-//! The pages of a remote instance (crate::remote): Status, Control, Logs,
+//! The pages of a remote instance (crate::remote): Status, Logs,
 //! Update and Backup, read from the server's own Platform Manager over SSH
 //! and worked through detached jobs there. One view per open instance; the
 //! menu chooses which page it shows.
@@ -22,7 +22,6 @@ use crate::ui::{self, Tone};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Status,
-    Control,
     Logs,
     Update,
     Backup,
@@ -30,6 +29,15 @@ pub enum Kind {
     Migration,
     Repair,
     Gateway,
+}
+
+/// The SENTIENT card's Start, Stop and Restart while the page loads.
+fn control_buttons_loading(theme: &gpui_kit::component::Theme) -> Div {
+    h_flex()
+        .gap_2()
+        .child(ui::skeleton_block_r(theme, "ctl-a", px(78.).into(), 32., 6.))
+        .child(ui::skeleton_block_r(theme, "ctl-b", px(78.).into(), 32., 6.))
+        .child(ui::skeleton_block_r(theme, "ctl-c", px(92.).into(), 32., 6.))
 }
 
 /// What a page has read, or why it could not.
@@ -211,7 +219,7 @@ pub struct RemotePages {
     sudo_asked: bool,
     /// Platform settings: the open tab (crate::manager::settings::TAB_TITLES).
     settings_tab: usize,
-    /// Control: the service whose own action runs now.
+    /// Status: the service whose own action runs now.
     svc_busy: Option<String>,
     /// Logs: the shared view, made when the page first shows.
     log_view: Option<Entity<crate::manager::logs::LogView>>,
@@ -461,20 +469,18 @@ impl RemotePages {
         let inst = self.inst.clone();
         self.fetch(cx, move || remote::ready(&inst), |p, r| p.ready = r);
         // Every page needs to know whether a SENTIENT is added there.
-        if !matches!(self.kind, Kind::Status | Kind::Control | Kind::Update | Kind::Migration | Kind::Repair) {
+        if !matches!(self.kind, Kind::Status | Kind::Update | Kind::Migration | Kind::Repair) {
             let inst = self.inst.clone();
             self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r);
         }
         let inst = self.inst.clone();
         match self.kind {
-            Kind::Status | Kind::Control => {
+            Kind::Status => {
                 self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r);
                 let inst = self.inst.clone();
                 self.fetch(cx, move || remote::services(&inst), |p, r| p.services = r);
-                if self.kind == Kind::Status {
-                    let inst = self.inst.clone();
-                    self.fetch(cx, move || remote::dbstatus(&inst), |p, r| p.db = r);
-                }
+                let inst = self.inst.clone();
+                self.fetch(cx, move || remote::dbstatus(&inst), |p, r| p.db = r);
             }
             Kind::Logs => {}
             Kind::Update => {
@@ -762,20 +768,26 @@ impl RemotePages {
                         .child(ui::skeleton_block(theme, "st-logo", px(30.).into(), 30.))
                         .child(ui::skeleton_block(theme, "st-pill", px(150.).into(), 24.))
                         .child(div().flex_1())
-                        .child(ui::skeleton_block(theme, "st-open", px(124.).into(), 30.)),
+                        .child(ui::skeleton_block(theme, "st-open", px(124.).into(), 32.)),
                 )
-                .child(ui::fact_loading(theme, "SENTIENT version", 120.))
-                .child(ui::fact_loading(theme, "Database", 170.))
-                .child(ui::fact_loading(theme, "Runs as", 70.))
-                .child(ui::fact_loading(theme, "Server", 260.))
-                .child(ui::fact_loading(theme, "Server agent", 180.))
+                .child(ui::card_fact_loading(theme, "SENTIENT version", 120.))
+                .child(ui::card_fact_loading(theme, "Database", 170.))
+                .child(ui::card_fact_loading(theme, "Runs as", 70.))
+                .child(ui::card_fact_loading(theme, "Server", 220.))
+                .child(ui::card_fact_loading(theme, "Server agent", 160.))
+                .children(ui::card_foot(theme, control_buttons_loading(theme)))
         };
-        let services = || ui::panel(theme).gap_2().child(div().font_weight(FontWeight::MEDIUM).child("Services")).children(ui::skeleton_service_rows(theme, "svc", 3));
+        let services = || {
+            ui::panel(theme)
+                .gap_2()
+                .child(crate::manager::status::services_title())
+                .children(ui::skeleton_service_rows(theme, "svc", 3))
+                .children(ui::card_foot(theme, ui::skeleton_line(theme, "svc-foot", 200.)))
+        };
         let col = v_flex().gap(px(ui::GAP));
         match self.kind {
             Kind::Status => col
-                .child(status_card())
-                .child(services())
+                .child(ui::card_pair(status_card(), services()))
                 .child(
                     ui::panel(theme)
                         .child(div().font_weight(FontWeight::MEDIUM).child("Database"))
@@ -783,17 +795,6 @@ impl RemotePages {
                         .child(ui::skeleton_block(theme, "db-bar", relative(1.).into(), 10.))
                         .child(ui::skeleton_line(theme, "db-legend", 420.)),
                 ),
-            Kind::Control => col
-                .child(
-                    ui::panel(theme).child(ui::skeleton_line(theme, "ctl-state", 160.)).child(
-                        h_flex()
-                            .gap_2()
-                            .child(ui::skeleton_block(theme, "ctl-a", px(64.).into(), 32.))
-                            .child(ui::skeleton_block(theme, "ctl-b", px(64.).into(), 32.))
-                            .child(ui::skeleton_block(theme, "ctl-c", px(80.).into(), 32.)),
-                    ),
-                )
-                .child(services()),
             Kind::Backup => col
                 .child(ui::skeleton_card(theme, "bk-now", Some("Back up now"), &["Save to"]))
                 .child(ui::skeleton_card(theme, "bk-auto", Some("Automatic backup"), &["Back up every day", "Keep", "Include"]))
@@ -803,18 +804,6 @@ impl RemotePages {
             Kind::Update => col.child(ui::skeleton_card(theme, "upd", None, &["", ""])),
             _ => col.child(ui::skeleton_card(theme, "page", None, &["", "", ""])),
         }
-    }
-
-    fn services_panel(&self, theme: &gpui_kit::component::Theme) -> Div {
-        let mut p = ui::panel(theme).gap_2().child(div().font_weight(FontWeight::MEDIUM).child("Services"));
-        match &self.services {
-            Read::Loading => p = p.children(ui::skeleton_service_rows(&theme, "svc", 3)),
-            Read::Failed(e) => p = p.child(ui::outcome(theme, Tone::Bad, e.clone())),
-            Read::Got(list) => {
-                p = p.children(ui::service_rows(theme, list.iter().map(|s| (s.name.clone().into(), s.running, s.starting, s.detail.clone().into())), None));
-            }
-        }
-        p
     }
 
     /// No SENTIENT added on the server yet. Not an error: what was found and
@@ -839,9 +828,10 @@ impl RemotePages {
         let busy = self.job.read(cx).is_running();
         let theme = cx.theme().clone();
         let mut col = v_flex().gap(px(ui::GAP));
+        let services = self.services_card(cx);
         match &self.status {
             Read::Loading => return self.skeleton(&theme),
-            Read::Failed(e) => col = col.child(Self::failed(&theme, e)),
+            Read::Failed(e) => col = col.child(Self::failed(&theme, e)).child(services),
             Read::Got(s) if !s.installed => {
                 // Nothing added there yet: only the calm panel, no empty
                 // Services or Database panels.
@@ -862,8 +852,31 @@ impl RemotePages {
                     (Tone::Bad, "SENTIENT is stopped")
                 };
                 let url = format!("http://{}:{}", self.inst.host, s.http_port.unwrap_or(8080));
-                col = col.child(
-                    ui::panel(&theme)
+                let this = cx.entity().downgrade();
+                let (t1, t2, t3) = (this.clone(), this.clone(), this);
+                let controls = crate::manager::status::control_buttons(
+                    &theme,
+                    "r-",
+                    busy,
+                    Some(s.serving),
+                    std::rc::Rc::new(move |_, cx| {
+                        t1.update(cx, |p, cx| p.run_job("Starting SENTIENT", vec!["control".into(), "start".into()], cx)).ok();
+                    }),
+                    std::rc::Rc::new(move |_, cx| {
+                        t2.update(cx, |p, cx| {
+                            crate::manager::status::note_restart(&p.inst.id);
+                            p.run_job("Restarting SENTIENT", vec!["control".into(), "restart".into()], cx)
+                        })
+                        .ok();
+                    }),
+                    std::rc::Rc::new(move |w, cx| {
+                        let t3 = t3.clone();
+                        crate::manager::status::confirm_stop(w, cx, std::rc::Rc::new(move |cx| {
+                            t3.update(cx, |p, cx| p.run_job("Stopping SENTIENT", vec!["control".into(), "stop".into()], cx)).ok();
+                        }));
+                    }),
+                );
+                let card = ui::panel(&theme)
                         .child(
                             h_flex()
                                 .flex_wrap()
@@ -872,15 +885,12 @@ impl RemotePages {
                                 .child(ui::product_logo(ui::Product::Sentient, 30.))
                                 .child(ui::pill(&theme, tone, state))
                                 .child(div().flex_1())
-                                .when(s.installed && !s.serving, |r| {
-                                    r.child(crate::ui::button("r-start").primary().label("Start").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Starting SENTIENT", vec!["control".into(), "start".into()], cx))))
-                                })
-                                .when(s.installed, |r| r.child(ui::open_sentient_button("r-open", s.serving, move |_, _, cx| ui::open_url(&url, cx)))),
+                                .child(h_flex().ml_auto().child(ui::open_sentient_button("r-open", s.serving, move |_, _, cx| ui::open_url(&url, cx)))),
                         )
-                        .child(ui::fact(&theme, "SENTIENT version", s.sentient_version.clone()))
-                        .child(ui::fact(&theme, "Database", s.database.clone()))
-                        .when(!det.install.is_empty(), |p| p.child(ui::fact(&theme, "Runs as", det.install.clone())))
-                        .child(ui::fact(&theme, "Server", format!("{} · {} {}", self.inst.address(), det.os_name, det.arch)))
+                        .child(ui::card_fact(&theme, "SENTIENT version", s.sentient_version.clone()))
+                        .child(ui::card_fact(&theme, "Database", s.database.clone()))
+                        .when(!det.install.is_empty(), |p| p.child(ui::card_fact(&theme, "Runs as", det.install.clone())))
+                        .child(ui::card_fact(&theme, "Server", format!("{} · {} {}", self.inst.address(), det.os_name, det.arch)))
                         .child(
                             // A pill only while the update runs or when it failed;
                             // the normal state has none.
@@ -890,7 +900,7 @@ impl RemotePages {
                                 .gap_x_3()
                                 .gap_y_1()
                                 .items_center()
-                                .child(ui::fact(&theme, "Server agent", s.manager_version.clone()).flex_1().min_w(px(240.)))
+                                .child(ui::card_fact(&theme, "Server agent", s.manager_version.clone()).flex_1().min_w(px(200.)))
                                 .map(|r| match &self.agent_refresh {
                                     AgentRefresh::Running => r.child(ui::pill(&theme, Tone::Warn, "Updating")),
                                     AgentRefresh::Failed(why) => {
@@ -919,11 +929,11 @@ impl RemotePages {
                                     }
                                     AgentRefresh::Idle => r,
                                 }),
-                        ),
-                );
+                        )
+                        .children(ui::card_foot(&theme, controls));
+                col = col.child(ui::card_pair(card, services));
             }
         }
-        col = col.child(self.services_panel(&theme));
         // The same Database panel as this computer's, read without asking.
         let db = ui::panel(&theme).child(div().font_weight(FontWeight::MEDIUM).child("Database"));
         let db = match &self.db {
@@ -976,91 +986,32 @@ impl RemotePages {
         col.child(db)
     }
 
-    fn control_page(&self, cx: &mut Context<Self>) -> Div {
+    /// Status's Services: each row with Start, Stop, Restart and Logs, and
+    /// the totals. The database's own stop or restart asks first while
+    /// SENTIENT runs.
+    fn services_card(&self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
-        let busy = self.job.read(cx).is_running();
-        let installed = self.status.got().is_some_and(|s| s.installed);
+        let mut p = ui::panel(&theme).gap_2().child(crate::manager::status::services_title());
         let serving = self.status.got().is_some_and(|s| s.serving);
         let this = cx.entity().downgrade();
-        let (t1, t2, t3) = (this.clone(), this.clone(), this);
-        let row = crate::manager::control::control_row(
-            &theme,
-            "r-",
-            busy || !installed,
-            self.status.got().map(|s| s.serving),
-            std::rc::Rc::new(move |_, cx| {
-                t1.update(cx, |p, cx| p.run_job("Starting SENTIENT", vec!["control".into(), "start".into()], cx)).ok();
-            }),
-            std::rc::Rc::new(move |_, cx| {
-                t2.update(cx, |p, cx| p.run_job("Restarting SENTIENT", vec!["control".into(), "restart".into()], cx)).ok();
-            }),
-            std::rc::Rc::new(move |w, cx| {
-                let t3 = t3.clone();
-                crate::manager::control::confirm_stop(w, cx, std::rc::Rc::new(move |cx| {
-                    t3.update(cx, |p, cx| p.run_job("Stopping SENTIENT", vec!["control".into(), "stop".into()], cx)).ok();
-                }));
-            }),
-        );
-        let _ = serving;
-        v_flex()
-            .gap(px(ui::GAP))
-            .child(ui::panel(&theme).child(row))
-            .child(self.services_panel_with_actions(cx))
-    }
-
-    /// Control's Services: each row with Start, Stop, Restart and Logs. The
-    /// database's own stop or restart asks first while SENTIENT runs.
-    fn services_panel_with_actions(&self, cx: &mut Context<Self>) -> Div {
-        let theme = cx.theme().clone();
-        let mut p = ui::panel(&theme).gap_2().child(div().font_weight(FontWeight::MEDIUM).child("Services"));
-        let serving = self.status.got().is_some_and(|s| s.serving);
-        let this = cx.entity().downgrade();
-        let act: ui::ServiceAct = std::rc::Rc::new(move |name, action, window, cx| {
-            let name = name.to_string();
-            let plain = ui::service_label(&name).unwrap_or(&name).to_string();
-            let verb = match action {
-                "start" => "Starting",
-                "stop" => "Stopping",
-                _ => "Restarting",
-            };
-            let go: std::rc::Rc<dyn Fn(&mut App)> = std::rc::Rc::new({
-                let (this, name, label) = (this.clone(), name.clone(), format!("{verb} {plain}"));
-                move |cx| {
-                    this.update(cx, |p, cx| {
-                        p.svc_busy = Some(name.clone());
-                        p.run_job(label.clone(), vec!["service".into(), action.into(), name.clone()], cx);
-                    })
-                    .ok();
+        let act = crate::manager::status::service_act(serving, std::rc::Rc::new(move |name, action, cx| {
+            this.update(cx, |p, cx| {
+                if action == "restart" {
+                    crate::manager::status::note_restart(&p.inst.id);
                 }
-            });
-            let n = name.to_lowercase();
-            let database = n.contains("postgres") || n.contains("clickhouse");
-            if database && serving && action != "start" {
-                let title = format!("{} {plain}?", if action == "stop" { "Stop" } else { "Restart" });
-                crate::modal::alert(window, cx, move |d, _, _| {
-                    let go = go.clone();
-                    d.title(title.clone())
-                        .description("SENTIENT loses its database until it is back: devices and dashboards stop updating meanwhile.")
-                        .confirm()
-                        .ok_text(if action == "stop" { "Stop" } else { "Restart" })
-                        .on_ok(move |_, _, cx| {
-                            go(cx);
-                            true
-                        })
-                });
-            } else {
-                go(cx);
-            }
-        });
-        let log: ui::ServiceLog = std::rc::Rc::new(|name, _, cx| {
-            crate::logsource::request(crate::logsource::of_service(name));
-            cx.refresh_windows();
-        });
+                p.svc_busy = Some(name.clone());
+                p.run_job(crate::manager::status::service_job_label(&name, action), vec!["service".into(), action.into(), name.clone()], cx);
+            })
+            .ok();
+        }));
         match &self.services {
             Read::Loading => p = p.children(ui::skeleton_service_rows(&theme, "svc", 3)),
             Read::Failed(e) => p = p.child(ui::outcome(&theme, Tone::Bad, e.clone())),
             Read::Got(list) => {
-                p = p.children(ui::service_rows(&theme, list.iter().map(|s| (s.name.clone().into(), s.running, s.starting, s.detail.clone().into())), Some((act, log, self.svc_busy.clone()))));
+                let up = list.iter().filter(|s| s.running).count();
+                p = p
+                    .children(ui::service_rows(&theme, list.iter().map(|s| (s.name.clone().into(), s.running, s.starting, s.detail.clone().into())), (act, crate::manager::status::service_log(), self.svc_busy.clone())))
+                    .children(ui::card_foot(&theme, ui::services_foot(&theme, up, list.len(), crate::manager::status::restarts_today(&self.inst.id))));
             }
         }
         p
@@ -1548,7 +1499,7 @@ impl RemotePages {
         // memory, administrator accounts) are left out.
         use crate::manager::settings as local;
         let this = cx.entity().downgrade();
-        let nav = local::tab_bar(&theme, "r-", self.settings_tab, std::rc::Rc::new(move |i, cx| {
+        let nav = local::tab_bar(&theme, "r-", &local::TAB_TITLES, self.settings_tab, std::rc::Rc::new(move |i, cx| {
             this.update(cx, |p, cx| {
                 p.settings_tab = i;
                 super::session::set_settings_tab(i);
@@ -2021,7 +1972,6 @@ impl Render for RemotePages {
         let theme = cx.theme().clone();
         let (title, summary) = match self.kind {
             Kind::Status => ("Status", "SENTIENT on this server: its state, services and database."),
-            Kind::Control => ("Control", "Start, stop or restart SENTIENT on this server."),
             Kind::Logs => ("Logs", "SENTIENT's log and its database's on this server, newest at the bottom."),
             Kind::Update => ("Update", "A newer SENTIENT for this server, from the update channel."),
             Kind::Backup => ("Backup and restore", "The backups on this server."),
@@ -2061,7 +2011,6 @@ impl Render for RemotePages {
         }
         let body = if let Some(v) = self.job_view(cx) { v } else if let Some(g) = gate { g } else { match self.kind {
             Kind::Status => self.status_page(cx),
-            Kind::Control => self.control_page(cx),
             Kind::Logs => self.logs_page(window, cx),
             Kind::Update => self.update_page(cx),
             Kind::Backup => {

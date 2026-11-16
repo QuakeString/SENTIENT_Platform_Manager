@@ -13,8 +13,8 @@ set -u
 BIN=${1:?binary}; OUT=${2:?out dir}; PROFILE=${3:-}
 HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$OUT"
-PAGES_LOCAL="status statistics control logs files update gateway backup migration repair licence settings instances about"
-PAGES_REMOTE="status statistics control logs files update gateway backup migration repair licence settings"
+PAGES_LOCAL="status statistics logs files update gateway backup migration repair licence settings instances about"
+PAGES_REMOTE="status statistics logs files update gateway backup migration repair licence settings"
 WIDTHS=${WIDTHS:-"560 900 1200"}; SCALES=${SCALES:-"1 1.5"}; THEMES=${THEMES:-"light dark"}
 JOBS=${JOBS:-4}
 one() { # where page width scale theme [dialog env]

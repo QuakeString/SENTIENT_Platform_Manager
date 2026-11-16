@@ -717,7 +717,7 @@ pub fn run(args: &[String]) -> i32 {
             crate::adopt::take_over_compose(record, compose.as_deref(), password.as_deref(), ch_password.as_deref(), sink.clone()).map(|_| ())
         }
         "repair" => crate::maintenance_ops::run_repair(record, sink.clone()),
-        // Start, stop or restart SENTIENT (a remote instance's Control).
+        // Start, stop or restart SENTIENT (a remote instance's Status).
         "control" => match args.get(1).map(String::as_str) {
             Some(a @ ("start" | "stop" | "restart")) => record.platform().control(sink.clone(), a),
             _ => Err(USAGE.into()),

@@ -1,33 +1,22 @@
 // Copyright © 2016-2026 The SENTIENT Authors
 
-//! Control: start, stop and restart the platform. Services are started in
-//! dependency order (database first) and stopped in reverse by the engine.
-//! Also whether SENTIENT opens in the browser when someone signs in
-//! (operator screens; kiosk::set_open_at_signin), and whether the computer
-//! signs in by itself after a restart (autologin).
+//! Platform settings › Startup: whether SENTIENT opens in the browser when
+//! someone signs in (operator screens; kiosk::set_open_at_signin), whether
+//! the computer signs in by itself after a restart (autologin), and on
+//! Windows whether SENTIENT starts with Windows and after what delay.
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex, v_flex,
-    button::ButtonVariants as _,
     checkbox::Checkbox,
     input::{Input, InputState},
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::installation::InstallationRecord;
 use crate::jobs::{Job, JobState};
 use crate::ui::{self, Tone};
 
-pub struct ControlPage {
-    record: Option<InstallationRecord>,
-    /// The services, as last read.
-    services: Vec<crate::installation::Service>,
-    serving: bool,
-    /// The service whose own action runs now.
-    svc_busy: Option<String>,
-    job: Entity<Job>,
-    _observe: Subscription,
+pub struct StartupPanel {
     /// Opening at sign-in, as found: 0 off, 1 full screen, 2 window; None
     /// while looking.
     signin: Option<usize>,
@@ -59,16 +48,8 @@ fn signin_index(mode: Option<bool>) -> usize {
     }
 }
 
-impl ControlPage {
-    pub fn new(record: Option<InstallationRecord>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let job = cx.new(|_| Job::new());
-        let _observe = cx.observe(&job, |page: &mut Self, job, cx| {
-            if !job.read(cx).is_running() && page.svc_busy.is_some() {
-                page.svc_busy = None;
-                page.read_services(cx);
-            }
-            cx.notify();
-        });
+impl StartupPanel {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let signin_job = cx.new(|_| Job::new());
         let _signin_observe = cx.observe(&signin_job, |page: &mut Self, job, cx| {
             if matches!(job.read(cx).state(), JobState::Done(_) | JobState::Failed(_)) {
@@ -84,9 +65,6 @@ impl ControlPage {
             cx.notify();
         });
         let mut page = Self {
-            record,
-            job,
-            _observe,
             signin: None,
             signin_choice: 0,
             autologin: None,
@@ -103,21 +81,8 @@ impl ControlPage {
             start_job,
             _start_observe,
             _tasks: Vec::new(),
-            services: Vec::new(),
-            serving: false,
-            svc_busy: None,
         };
         page.load_signin(cx);
-        // The services, read now and every few seconds.
-        if page.record.is_some() {
-            let poll = cx.spawn(async move |this, cx| loop {
-                if this.update(cx, |p, cx| p.read_services(cx)).is_err() {
-                    break;
-                }
-                cx.background_executor().timer(std::time::Duration::from_secs(5)).await;
-            });
-            page._tasks.push(poll);
-        }
         page.load_start(cx);
         page
     }
@@ -155,7 +120,7 @@ impl ControlPage {
                     crate::self_install::set_autostart(on, delay)?;
                     sink(sentient_installer_core::progress::Progress::Done {
                         message: match (on, delay) {
-                            (false, _) => "SENTIENT no longer starts with Windows: use Start on the Control page.".to_string(),
+                            (false, _) => "SENTIENT no longer starts with Windows: use Start on the Status page.".to_string(),
                             (true, 0) => "SENTIENT starts together with Windows.".to_string(),
                             (true, d) => format!("SENTIENT starts {d} seconds after Windows."),
                         },
@@ -236,137 +201,14 @@ impl ControlPage {
             )
         });
     }
-
-    pub(crate) fn run(&mut self, action: &'static str, cx: &mut Context<Self>) {
-        let Some(record) = &self.record else { return };
-        let platform = record.platform();
-        self.job.update(cx, |job, cx| {
-            job.set_label(match action {
-                "start" => "Starting SENTIENT",
-                "stop" => "Stopping SENTIENT",
-                _ => "Restarting SENTIENT",
-            });
-            job.start(move |sink| platform.control(sink, action), cx)
-        });
-    }
-
-    fn read_services(&mut self, cx: &mut Context<Self>) {
-        let Some(record) = self.record.clone() else { return };
-        cx.spawn(async move |this, cx| {
-            let snap = cx.background_executor().spawn(async move { record.platform().snapshot() }).await;
-            this.update(cx, |p, cx| {
-                p.services = snap.services;
-                p.serving = snap.serving;
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// One service's own start, stop or restart.
-    fn run_service(&mut self, name: String, action: &'static str, cx: &mut Context<Self>) {
-        let Some(record) = &self.record else { return };
-        let platform = record.platform();
-        self.svc_busy = Some(name.clone());
-        let plain = ui::service_label(&name).unwrap_or(&name).to_string();
-        let label = format!("{} {plain}", match action {
-            "start" => "Starting",
-            "stop" => "Stopping",
-            _ => "Restarting",
-        });
-        self.job.update(cx, |job, cx| {
-            job.set_label(label);
-            job.start(move |sink| platform.service_control(sink, &name, action), cx)
-        });
-        cx.notify();
-    }
-
-    /// Stopping takes every device connection down, so it is confirmed.
-    fn confirm_stop(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let this = cx.entity().downgrade();
-        confirm_stop(window, cx, std::rc::Rc::new(move |cx| {
-            this.update(cx, |page, cx| page.run("stop", cx)).ok();
-        }));
-    }
 }
 
-impl Render for ControlPage {
+impl Render for StartupPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let page = ui::page(
-            &theme,
-            "Control",
-            "Start, stop and restart SENTIENT and its database.",
-        );
-        if self.record.is_none() {
-            return page.child(ui::not_installed(&theme));
-        }
-        let job = self.job.read(cx);
-        let busy = job.is_running();
-        page.child(
-            ui::panel(&theme)
-                .child({
-                    let this = cx.entity().downgrade();
-                    let (t1, t2, t3) = (this.clone(), this.clone(), this);
-                    control_row(
-                        &theme,
-                        "",
-                        busy,
-                        self.record.as_ref().map(|_| self.serving).filter(|_| !self.services.is_empty()),
-                        std::rc::Rc::new(move |_, cx| {
-                            t1.update(cx, |p, cx| p.run("start", cx)).ok();
-                        }),
-                        std::rc::Rc::new(move |_, cx| {
-                            t2.update(cx, |p, cx| p.run("restart", cx)).ok();
-                        }),
-                        std::rc::Rc::new(move |w, cx| {
-                            t3.update(cx, |p, cx| p.confirm_stop(w, cx)).ok();
-                        }),
-                    )
-                })
-        )
-        .child({
-            // Each service on its own (shared rows with a remote server's).
-            let this = cx.entity().downgrade();
-            let serving = self.serving;
-            let act: ui::ServiceAct = std::rc::Rc::new(move |name, action, window, cx| {
-                let name = name.to_string();
-                let plain = ui::service_label(&name).unwrap_or(&name).to_string();
-                let go: std::rc::Rc<dyn Fn(&mut App)> = std::rc::Rc::new({
-                    let (this, name) = (this.clone(), name.clone());
-                    move |cx| {
-                        this.update(cx, |p, cx| p.run_service(name.clone(), action, cx)).ok();
-                    }
-                });
-                let n = name.to_lowercase();
-                if (n.contains("postgres") || n.contains("clickhouse")) && serving && action != "start" {
-                    let title = format!("{} {plain}?", if action == "stop" { "Stop" } else { "Restart" });
-                    crate::modal::alert(window, cx, move |d, _, _| {
-                        let go = go.clone();
-                        d.title(title.clone())
-                            .description("SENTIENT loses its database until it is back: devices and dashboards stop updating meanwhile.")
-                            .confirm()
-                            .ok_text(if action == "stop" { "Stop" } else { "Restart" })
-                            .on_ok(move |_, _, cx| {
-                                go(cx);
-                                true
-                            })
-                    });
-                } else {
-                    go(cx);
-                }
-            });
-            let log: ui::ServiceLog = std::rc::Rc::new(|name, _, cx| {
-                crate::logsource::request(crate::logsource::of_service(name));
-                cx.refresh_windows();
-            });
-            ui::panel(&theme)
-                .gap_2()
-                .child(div().font_weight(FontWeight::MEDIUM).child("Services"))
-                .children(ui::service_rows(&theme, self.services.iter().map(|s| (s.name.clone().into(), s.running, s.starting, s.detail.clone().into())), Some((act, log, self.svc_busy.clone()))))
-        })
-        .child({
+        v_flex()
+            .gap(px(ui::GAP))
+            .child({
             let sjob = self.signin_job.read(cx);
             let sbusy = sjob.is_running();
             let soutcome = match sjob.state() {
@@ -478,57 +320,4 @@ impl Render for ControlPage {
             )
         })
     }
-}
-
-/// Stopping takes every device connection down, so it is confirmed. Shared
-/// with a remote server's Control.
-pub(crate) fn confirm_stop(window: &mut Window, cx: &mut App, stop: std::rc::Rc<dyn Fn(&mut App)>) {
-    crate::modal::alert(window, cx, move |dialog, _, _| {
-        let stop = stop.clone();
-        dialog
-            .title("Stop SENTIENT?")
-            .description("Devices lose their connection and dashboards stop updating until SENTIENT is started again.")
-            .confirm()
-            .ok_text("Stop")
-            .on_ok(move |_, _, cx| {
-                stop(cx);
-                true
-            })
-    });
-}
-
-/// Start, Restart and Stop, in that order and style, on this computer and
-/// on a remote server.
-/// The whole install's state and its actions, in one order everywhere:
-/// Start, Stop, Restart. The action that fits the state is the primary one;
-/// actions that do not apply are off. `running`: None while not known.
-pub(crate) fn control_row(
-    theme: &gpui_kit::component::Theme,
-    id: &str,
-    busy: bool,
-    running: Option<bool>,
-    start: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
-    restart: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
-    stop: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
-) -> Div {
-    let up = running == Some(true);
-    let down = running == Some(false);
-    let btn = |key: &str, label: &'static str, primary: bool, on: bool| {
-        let b = crate::ui::button(SharedString::from(format!("{id}{key}"))).label(label).disabled(busy || !on);
-        if primary { b.primary() } else { b.outline() }
-    };
-    v_flex()
-        .gap_3()
-        .child(div().text_sm().text_color(theme.muted_foreground).child(match running {
-            Some(true) => "SENTIENT is running.",
-            Some(false) => "SENTIENT is stopped.",
-            None => "Reading SENTIENT's state…",
-        }))
-        .child(
-            h_flex()
-                .gap_2()
-                .child(btn("start", "Start", down, !up).on_click(move |_, w, cx| start(w, cx)))
-                .child(btn("stop", "Stop", false, !down).on_click(move |_, w, cx| stop(w, cx)))
-                .child(btn("restart", "Restart", up, !down).on_click(move |_, w, cx| restart(w, cx))),
-        )
 }

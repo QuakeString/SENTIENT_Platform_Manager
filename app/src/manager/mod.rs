@@ -6,7 +6,7 @@
 
 mod about;
 pub(crate) mod backup;
-pub(crate) mod control;
+pub(crate) mod startup;
 pub(crate) mod files;
 pub(crate) mod folder_chooser;
 mod gateway;
@@ -50,7 +50,6 @@ use crate::updates::UpdateState;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
     Status,
-    Control,
     Logs,
     /// Files on this computer and the open instance (SFTP).
     Files,
@@ -73,10 +72,9 @@ enum Page {
 
 impl Page {
     /// The menu, in its order: Platform settings last.
-    const ALL: [Page; 12] = [
+    const ALL: [Page; 11] = [
         Page::Status,
         Page::Statistics,
-        Page::Control,
         Page::Logs,
         Page::Files,
         Page::Update,
@@ -91,7 +89,6 @@ impl Page {
     fn id(self) -> &'static str {
         match self {
             Page::Status => "status",
-            Page::Control => "control",
             Page::Logs => "logs",
             Page::Files => "files",
             Page::Update => "update",
@@ -110,7 +107,6 @@ impl Page {
     fn title(self) -> &'static str {
         match self {
             Page::Status => "Status",
-            Page::Control => "Control",
             Page::Logs => "Logs",
             Page::Files => "Files",
             Page::Update => "Update",
@@ -130,7 +126,6 @@ impl Page {
     fn icon(self) -> Icon {
         shell::menu_icon(match self {
             Page::Status => "activity",
-            Page::Control => "power",
             Page::Logs => "square-terminal",
             Page::Files => "folder",
             Page::Update => "refresh-cw",
@@ -151,7 +146,6 @@ pub struct Manager {
     page: Page,
     record: Option<InstallationRecord>,
     status: Option<Entity<status::StatusPage>>,
-    control: Option<Entity<control::ControlPage>>,
     logs: Option<Entity<logs::LogsPage>>,
     update: Option<Entity<update::UpdatePage>>,
     gateway: Option<Entity<gateway::GatewayPage>>,
@@ -250,7 +244,8 @@ impl Manager {
         let args: Vec<String> = std::env::args().collect();
         // Without --page: the page it was left on.
         let saved = session::load();
-        let page_of = |id: &str| Page::ALL.into_iter().chain([Page::Instances, Page::About]).find(|p| p.id() == id);
+        // Control is part of Status now: a session left there opens Status.
+        let page_of = |id: &str| if id == "control" { Some(Page::Status) } else { Page::ALL.into_iter().chain([Page::Instances, Page::About]).find(|p| p.id() == id) };
         let page_arg = args.windows(2).find(|w| w[0] == "--page").and_then(|w| page_of(&w[1]));
         let page = page_arg.or_else(|| saved.page.as_deref().and_then(page_of)).unwrap_or(Page::Status);
         let record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
@@ -283,7 +278,6 @@ impl Manager {
             page,
             record,
             status: None,
-            control: None,
             logs: None,
             update: None,
             gateway: None,
@@ -1443,7 +1437,6 @@ impl Manager {
             self.settings = None;
         }
         self.status = None;
-        self.control = None;
         self.logs = None;
         self.update = None;
         self.backup = None;
@@ -1611,7 +1604,6 @@ impl Manager {
         if let Some(r) = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned() {
             let kind = match self.page {
                 Page::Status => Some(remote_pages::Kind::Status),
-                Page::Control => Some(remote_pages::Kind::Control),
                 Page::Logs => Some(remote_pages::Kind::Logs),
                 Page::Update => Some(remote_pages::Kind::Update),
                 Page::Backup => Some(remote_pages::Kind::Backup),
@@ -1641,7 +1633,7 @@ impl Manager {
                 return ui::page(&theme, self.page.title(), "")
                     .child(
                         ui::panel(&theme)
-                            .child(div().child(format!("{} is open. This page works on this computer only for now; Status, Control, Logs, Update and Backup and restore work on {}.", r.name, r.name)))
+                            .child(div().child(format!("{} is open. This page works on this computer only for now; Status, Logs, Update and Backup and restore work on {}.", r.name, r.name)))
                             .child(
                                 h_flex()
                                     .gap_2()
@@ -1704,11 +1696,6 @@ impl Manager {
                 }
                 self.status.clone().unwrap().into_any_element()
             }
-            Page::Control => self
-                .control
-                .get_or_insert_with(|| cx.new(|cx| control::ControlPage::new(record, window, cx)))
-                .clone()
-                .into_any_element(),
             Page::Logs => self
                 .logs
                 .get_or_insert_with(|| cx.new(|cx| logs::LogsPage::new(record, window, cx)))
@@ -1792,7 +1779,7 @@ impl Manager {
                     self.page = Page::Status;
                 } else if let Some(verb) = a.strip_prefix("control:") {
                     self.open_instance(None, cx);
-                    self.page = Page::Control;
+                    self.page = Page::Status;
                     self.pending = Some(format!("control:{verb}"));
                 }
             }
@@ -1809,7 +1796,7 @@ impl Manager {
                 cx.defer(move |cx| page.update(cx, |b, cx| b.run_preset_backup(cx)));
             }
         } else if let Some(verb) = p.strip_prefix("control:") {
-            if let Some(page) = self.control.clone() {
+            if let Some(page) = self.status.clone() {
                 self.pending = None;
                 let verb: &'static str = match verb {
                     "start" => "start",
@@ -1828,9 +1815,10 @@ impl Render for Manager {
         // fewer monitors in the top bar as it narrows.
         let width = f32::from(window.viewport_size().width);
         crate::ui::set_narrow(width < 760.);
+        crate::ui::set_side_by_side(width >= crate::ui::SIDE_BY_SIDE_W);
         self.window_h.set(f32::from(window.viewport_size().height));
         stats::set_open(self.page == Page::Statistics);
-        // A Control row's "Logs" asked for the Logs page.
+        // A service row's "Logs" asked for the Logs page.
         if crate::logsource::take_go() {
             self.page = Page::Logs;
         }

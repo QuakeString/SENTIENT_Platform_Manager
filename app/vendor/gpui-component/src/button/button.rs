@@ -214,6 +214,9 @@ pub struct Button {
     size: Size,
     content_style: StyleRefinement,
     icon_size: Option<Size>,
+    /// The hover's background, border and foreground in place of the
+    /// variant's (an outline Stop that hovers red).
+    hover_colors: Option<(Hsla, Hsla, Hsla)>,
     compact: bool,
     tooltip: Option<(
         SharedString,
@@ -266,6 +269,7 @@ impl Button {
             size: Size::Medium,
             content_style: StyleRefinement::default(),
             icon_size: None,
+            hover_colors: None,
             tooltip: None,
             tooltip_placement: None,
             tooltip_show_delay: None,
@@ -398,6 +402,19 @@ impl Button {
     /// Set the icon of the button, if the Button have no label, the button well in Icon Button mode.
     pub fn icon(mut self, icon: impl Into<ButtonIcon>) -> Self {
         self.icon = Some(icon.into());
+        self
+    }
+
+    /// The icon's size, apart from the button's.
+    pub fn icon_size(mut self, size: impl Into<Size>) -> Self {
+        self.icon_size = Some(size.into());
+        self
+    }
+
+    /// Hover with this background, border and foreground instead of the
+    /// variant's own.
+    pub fn hover_colors(mut self, bg: Hsla, border: Hsla, fg: Hsla) -> Self {
+        self.hover_colors = Some((bg, border, fg));
         self
     }
 
@@ -722,6 +739,9 @@ impl RenderOnce for Button {
                     // to the pointer, it is not waiting for another click.
                     .when(interactive, |this| {
                         this.hover(|this| {
+                            if let Some((bg, border, fg)) = self.hover_colors {
+                                return this.bg(bg).border_color(border).text_color(fg);
+                            }
                             let hover_style = style.hovered(self.outline, cx);
                             this.bg(hover_style.bg)
                                 .border_color(hover_style.border)
