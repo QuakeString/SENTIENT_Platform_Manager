@@ -1,0 +1,387 @@
+<title>SPM Licence Page</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600&family=Noto+Sans+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --page:#eeeeee; --card:#ffffff; --side:#ffffff; --text:rgba(0,0,0,.87); --text2:rgba(0,0,0,.6); --border:rgba(0,0,0,.12);
+  --input:#cccccc; --primary:#187074; --on-primary:#ffffff; --tint:#f3f8f8; --sel:rgba(24,112,116,.10); --hover:#f4f4f4;
+  --ok-bg:#dcfce7; --ok:#047857; --warn-bg:#fef3c7; --warn:#92400e; --bad-bg:#fdecea; --bad:#c62828; --danger:#ef4444; --on-danger:#fff;
+  --mute:rgba(0,0,0,.06); --shadow:0 1px 3px rgba(0,0,0,.08); --pop:0 8px 24px rgba(0,0,0,.18); --scrim:rgba(0,0,0,.32);
+  --sheet:#e4e4e4;
+  --font:'Noto Sans',system-ui,'Segoe UI',sans-serif; --mono:'Noto Sans Mono',ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --page:#21282a; --card:#2d363b; --side:#2d363b; --text:rgba(255,255,255,.87); --text2:rgba(255,255,255,.64); --border:rgba(255,255,255,.12);
+  --input:rgba(255,255,255,.24); --primary:#26a69a; --on-primary:rgba(0,0,0,.87); --tint:#2d3c40; --sel:rgba(38,166,154,.16); --hover:rgba(255,255,255,.04);
+  --ok-bg:#1f3d33; --ok:#6ee7b7; --warn-bg:#45391c; --warn:#fcd34d; --bad-bg:#4a2a2a; --bad:#ff8a80; --danger:#f87171; --on-danger:rgba(0,0,0,.87);
+  --mute:rgba(255,255,255,.08); --shadow:0 1px 3px rgba(0,0,0,.3); --pop:0 8px 24px rgba(0,0,0,.5); --scrim:rgba(0,0,0,.5); --sheet:#161c1e; color-scheme:dark } }
+:root[data-theme="dark"]{
+  --page:#21282a; --card:#2d363b; --side:#2d363b; --text:rgba(255,255,255,.87); --text2:rgba(255,255,255,.64); --border:rgba(255,255,255,.12);
+  --input:rgba(255,255,255,.24); --primary:#26a69a; --on-primary:rgba(0,0,0,.87); --tint:#2d3c40; --sel:rgba(38,166,154,.16); --hover:rgba(255,255,255,.04);
+  --ok-bg:#1f3d33; --ok:#6ee7b7; --warn-bg:#45391c; --warn:#fcd34d; --bad-bg:#4a2a2a; --bad:#ff8a80; --danger:#f87171; --on-danger:rgba(0,0,0,.87);
+  --mute:rgba(255,255,255,.08); --shadow:0 1px 3px rgba(0,0,0,.3); --pop:0 8px 24px rgba(0,0,0,.5); --scrim:rgba(0,0,0,.5); --sheet:#161c1e; color-scheme:dark }
+body{background:var(--sheet);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.45;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:24px 64px}
+main{max-width:1300px;margin:0 auto;display:flex;flex-direction:column;gap:40px}
+h1{font-size:24px;font-weight:500;margin:0;text-wrap:balance}
+h2{font-size:19px;font-weight:500;margin:0 0 4px;text-wrap:balance}
+h3{font-size:15px;font-weight:500;margin:0}
+p{margin:0}
+.top{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center;justify-content:space-between}
+.lead{color:var(--text2);max-width:80ch}
+.themes{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--card)}
+.themes button{font:inherit;border:0;background:transparent;color:var(--text2);padding:6px 14px;cursor:pointer}
+.themes button[aria-pressed="true"]{background:var(--tint);color:var(--primary);font-weight:500}
+.jump{display:flex;flex-wrap:wrap;gap:8px}
+.jump a{color:var(--primary);text-decoration:none;border:1px solid var(--border);background:var(--card);border-radius:16px;padding:5px 12px;font-size:13px}
+section{display:flex;flex-direction:column;gap:18px}
+.state{display:flex;flex-direction:column;gap:8px}
+.state>.cap{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.state>.cap b{font-weight:500}
+.state>.cap span{color:var(--text2);font-size:13px}
+.code{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--primary);background:var(--card);border:1px solid var(--border);border-radius:4px;padding:1px 6px}
+.scroll{overflow-x:auto;border-radius:10px}
+.notes{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 18px;max-width:900px}
+.notes ul{margin:6px 0 0;padding-left:20px;display:flex;flex-direction:column;gap:4px}
+
+/* ---------- app window ---------- */
+.win{width:1260px;height:720px;border-radius:10px;overflow:hidden;border:1px solid var(--border);display:flex;flex-direction:column;background:var(--page);position:relative;box-shadow:var(--pop)}
+.win.tall{height:780px}
+.tbar{flex:none;height:52px;white-space:nowrap;display:flex;align-items:center;gap:14px;padding:0 14px;color:#fff;background:var(--ic,#187074)}
+.tbar .app{width:30px;height:30px;border-radius:8px;background:rgba(255,255,255,.92);display:flex;align-items:center;justify-content:center;color:#187074}
+.tbar .sw{display:flex;align-items:center;gap:8px;background:rgba(0,0,0,.14);border-radius:8px;padding:5px 10px;font-weight:600}
+.tbar .sw small{font-weight:400;opacity:.92;font-size:13px}
+.tbar .sw .dot{width:9px;height:9px;border-radius:50%;border:2px solid #fff;background:#4ade80}
+.tbar .tag{background:#fff;color:var(--ic,#187074);font-size:11px;font-weight:700;border-radius:5px;padding:1px 7px;letter-spacing:.03em}
+.tbar .mon{margin-left:auto;display:flex;gap:20px;font-size:13px;align-items:center;font-variant-numeric:tabular-nums}
+.tbar .mon span{display:flex;gap:7px;align-items:center;opacity:.95}
+.tbar .mon i{display:inline-block;width:52px;height:5px;border-radius:3px;background:rgba(255,255,255,.35);position:relative;overflow:hidden}
+.tbar .mon i b{position:absolute;inset:0 auto 0 0;background:#fff;border-radius:3px}
+.tbar .bell{width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:8px;position:relative}
+.tbar .bell svg{width:20px;height:20px}
+.tbar .chip{display:flex;align-items:center;gap:8px;background:rgba(0,0,0,.18);border-radius:16px;padding:4px 12px;font-size:13px;font-variant-numeric:tabular-nums}
+.strip{flex:none;height:3px;background:transparent;position:relative;overflow:hidden}
+.strip.on{background:color-mix(in srgb,var(--primary) 25%,transparent)}
+.strip.on::after{content:"";position:absolute;inset:0 auto 0 0;width:var(--p,40%);background:var(--primary)}
+.body{flex:1;display:flex;min-height:0}
+.side{flex:none;width:228px;background:var(--side);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:12px 10px 8px;gap:2px}
+.side .it{display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:8px;color:var(--text)}
+.side .it svg{width:18px;height:18px;flex:none;color:var(--text2)}
+.side .it.on{background:var(--tint);color:var(--primary);font-weight:500}
+.side .it.on svg{color:var(--primary)}
+.side .it.new::after{content:"New";margin-left:auto;font-size:11px;font-weight:500;color:var(--primary);background:var(--sel);border-radius:8px;padding:0 7px}
+.side hr{border:0;border-top:1px solid var(--border);margin:6px 2px;width:auto}
+.side .it em{font-style:normal;margin-left:auto;color:var(--text2)}
+.side .foot{margin-top:auto;border-top:1px solid var(--border);display:flex;align-items:center;gap:6px;padding:10px 6px 2px;color:var(--text2)}
+.side .foot .v{flex:1;font-family:var(--mono);font-size:13px}
+.side .foot svg{width:18px;height:18px}
+.pagec{flex:1;min-width:0;overflow:hidden;padding:20px 24px;display:flex;flex-direction:column;gap:16px;position:relative}
+.ptitle{display:flex;align-items:center;gap:12px;min-height:32px}
+.ptitle h3{font-size:22px;font-weight:500;flex:1}
+.psub{color:var(--text2);margin-top:-10px}
+.ib{width:32px;height:32px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;color:var(--text2);flex:none;border:1px solid transparent}
+.ib.out{border-color:var(--border);background:var(--card)}
+.ib svg{width:16px;height:16px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow);padding:16px 18px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.btn{display:inline-flex;align-items:center;gap:8px;height:32px;box-sizing:border-box;padding:0 14px;border-radius:8px;border:1px solid var(--input);background:var(--card);color:var(--text);font-weight:500;white-space:nowrap;font-size:14px}
+.btn svg{width:16px;height:16px}
+.btn.pri{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+.btn.dan{background:var(--danger);border-color:var(--danger);color:var(--on-danger)}
+.btn.off{opacity:.45}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--primary)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.sp{flex:1}
+.mut{color:var(--text2)}
+.small{font-size:13px}
+.pill{display:inline-flex;align-items:center;gap:4px;border-radius:10px;padding:1px 9px;font-size:12px;font-weight:500;white-space:nowrap}
+.pill.cur{background:var(--sel);color:var(--primary)}
+.pill.ok{background:var(--ok-bg);color:var(--ok)}
+.pill.mute{background:var(--mute);color:var(--text2)}
+.banner{display:flex;gap:12px;align-items:flex-start;border-radius:12px;padding:12px 16px}
+.banner.warn{background:var(--warn-bg);color:var(--warn)}
+.banner.bad{background:var(--bad-bg);color:var(--bad)}
+.banner svg{width:18px;height:18px;flex:none;margin-top:2px}
+.banner .tx{flex:1}
+.kv{display:grid;grid-template-columns:170px minmax(0,1fr) auto;gap:0 16px;align-items:center}
+.kv>*{padding:10px 0;border-top:1px solid var(--border);min-height:32px;display:flex;align-items:center;gap:8px}
+.kv>.f{border-top:0}
+.kv .k{color:var(--text2)}
+.mono{font-family:var(--mono);font-size:13px}
+.sw2{width:34px;height:18px;border-radius:9px;background:var(--primary);position:relative;display:inline-block;flex:none}
+.sw2::after{content:"";position:absolute;top:2px;left:18px;width:14px;height:14px;border-radius:50%;background:#fff}
+.sw2.offs{background:var(--input)} .sw2.offs::after{left:2px}
+.seg{display:inline-flex;border:1px solid var(--input);border-radius:8px;overflow:hidden;height:32px;box-sizing:border-box}
+.seg span{display:flex;align-items:center;padding:0 14px;color:var(--text2)}
+.seg span+span{border-left:1px solid var(--input)}
+.seg .on{background:var(--tint);color:var(--primary);font-weight:500}
+.inp{height:32px;box-sizing:border-box;border:1px solid var(--input);border-radius:8px;padding:0 10px;display:flex;align-items:center;gap:8px;background:var(--card);min-width:0}
+.inp.focus{border-color:var(--primary)}
+.ihelp{display:inline-flex;width:15px;height:15px;border-radius:50%;border:1px solid var(--text2);color:var(--text2);font-size:10px;font-weight:600;align-items:center;justify-content:center;font-style:normal}
+
+/* migration cards */
+.opt{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--border);border-radius:12px;padding:14px 16px;background:var(--card)}
+.opt .rd{width:18px;height:18px;border-radius:50%;border:2px solid var(--text2);box-sizing:border-box;flex:none;margin-top:2px;position:relative}
+.opt.sel{border-color:var(--primary);background:var(--tint)}
+.opt.sel .rd{border-color:var(--primary)} .opt.sel .rd::after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--primary)}
+.opt.dis{opacity:.5}
+.opt .ot{flex:1;min-width:0}
+.opt .ot b{font-weight:500;font-size:15px;display:flex;gap:10px;align-items:center}
+.opt .ot span{color:var(--text2)}
+.steps{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px;color:var(--text)}
+
+/* files */
+.panes{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.pane{background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow);display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
+.pane.drop{border-color:var(--primary);box-shadow:0 0 0 1px var(--primary)}
+.phead{display:flex;align-items:center;gap:10px;padding:12px 14px 8px}
+.phead .lab{display:flex;align-items:center;gap:8px;font-weight:500;flex:1;min-width:0}
+.phead .lab svg{width:18px;height:18px;color:var(--text2)}
+.phead .lab i{width:10px;height:10px;border-radius:3px;background:var(--ic);flex:none}
+.path{display:flex;align-items:center;gap:6px;margin:0 14px;height:32px;border:1px solid var(--input);border-radius:8px;padding:0 6px 0 10px;font-size:13px;min-width:0;overflow:hidden;white-space:nowrap}
+.path .crumb{color:var(--text2)} .path .crumb.last{color:var(--text);font-weight:500}
+.path .sep{color:var(--text2);opacity:.6}
+.path svg{width:15px;height:15px;color:var(--text2);flex:none}
+.short{display:flex;gap:6px;flex-wrap:wrap;padding:8px 14px 4px}
+.short span{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:13px;border:1px solid var(--border);font-size:12.5px;color:var(--text)}
+.short span svg{width:13px;height:13px;color:var(--primary)}
+.short span.on{background:var(--tint);border-color:var(--primary);color:var(--primary);font-weight:500}
+.ftab{flex:1;min-height:0;overflow:hidden;margin-top:6px}
+.fr{display:grid;grid-template-columns:minmax(0,1fr) 64px 96px;gap:8px;align-items:center;padding:0 14px;height:34px;font-size:13.5px;font-variant-numeric:tabular-nums}
+.fr.srv{grid-template-columns:minmax(0,1fr) 64px 96px 60px}
+.fr.h{height:30px;font-size:12px;color:var(--text2);border-bottom:1px solid var(--border);font-weight:500}
+.fr .n{display:flex;align-items:center;gap:9px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fr .n svg{width:17px;height:17px;flex:none}
+.fr .n .fo{color:#d39e2a} .fr .n .fi{color:var(--text2)}
+.fr>span:not(.n){color:var(--text2);text-align:right;white-space:nowrap}
+.fr.h>span:first-child{text-align:left}
+.fr>span.own{text-align:left}
+.fr.sel{background:var(--sel)}
+.fr.hov{background:var(--hover)}
+.pfoot{border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;padding:10px 14px;font-size:13px;color:var(--text2)}
+.pfoot .btn{height:30px}
+.ghostdrag{position:absolute;display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--primary);border-radius:8px;padding:6px 10px;box-shadow:var(--pop);font-size:13px;z-index:4}
+.ghostdrag b{background:var(--primary);color:var(--on-primary);border-radius:9px;padding:0 7px;font-size:12px}
+.ctx{position:absolute;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:var(--pop);padding:4px;min-width:210px;z-index:5;font-size:14px}
+.ctx div{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:6px}
+.ctx div svg{width:16px;height:16px;color:var(--text2)}
+.ctx div em{margin-left:auto;font-style:normal;color:var(--text2);font-size:12px}
+.ctx div.on{background:var(--hover)}
+.ctx hr{border:0;border-top:1px solid var(--border);margin:4px 0}
+.ctx .dng{color:var(--bad)} .ctx .dng svg{color:var(--bad)}
+.inlock{margin:10px 14px 0;display:flex;gap:10px;align-items:center;background:var(--warn-bg);color:var(--warn);border-radius:10px;padding:10px 12px;font-size:13.5px}
+.inlock svg{width:16px;height:16px;flex:none}
+.inlock .tx{flex:1}
+
+/* popovers, dialogs */
+.scrim{position:absolute;inset:52px 0 0 0;background:var(--scrim);display:flex;align-items:center;justify-content:center;z-index:6}
+
+.dlg{background:var(--card);border-radius:12px;box-shadow:var(--pop);width:520px;max-width:92%;display:flex;flex-direction:column}
+.dlg.w{width:640px}
+.dlg .dh{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border);font-weight:500;font-size:16px}
+.dlg .dh .sp{flex:1}
+.dlg .dh svg{width:18px;height:18px;color:var(--text2)}
+.dlg .db{padding:16px 18px;display:flex;flex-direction:column;gap:12px}
+.dlg .df{display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--border);align-items:center}
+.dlg .df .sp{flex:1}
+.flist{border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.flist .fr{grid-template-columns:minmax(0,1fr) 120px}
+.flist .fr.h>span:first-child{text-align:left}
+.chk{display:flex;align-items:center;gap:8px;font-size:13.5px}
+.chk svg{width:16px;height:16px;flex:none}
+.chk.ok{color:var(--ok)} .chk.bad{color:var(--bad)}
+.box{width:16px;height:16px;border-radius:4px;border:2px solid var(--text2);box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.box.on{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+.box svg{width:12px;height:12px}
+.bpop{position:absolute;top:58px;right:14px;width:400px;background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:var(--pop);z-index:6;display:flex;flex-direction:column}
+.bpop .bh{display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border);font-weight:500;font-size:15px}
+.bpop .bh .sp{flex:1}
+.tr{display:flex;flex-direction:column;gap:6px;padding:12px 16px;border-bottom:1px solid var(--border)}
+.tr:last-child{border-bottom:0}
+.tr .t1{display:flex;gap:10px;align-items:center}
+.tr .t1 svg{width:16px;height:16px;color:var(--primary);flex:none}
+.tr .t1 b{font-weight:500;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tr .t2{display:flex;gap:10px;color:var(--text2);font-size:12.5px;font-variant-numeric:tabular-nums}
+.tr .t2 .sp{flex:1}
+.bar{height:5px;border-radius:3px;background:var(--mute);overflow:hidden}
+.bar i{display:block;height:100%;background:var(--primary);border-radius:3px}
+.tr.done .t1 svg{color:var(--ok)}
+.blist{display:flex;flex-direction:column}
+.bl{display:grid;grid-template-columns:minmax(0,1.6fr) 120px 90px 120px 32px;gap:12px;align-items:center;padding:0 4px;height:42px;border-top:1px solid var(--border);font-variant-numeric:tabular-nums;font-size:13.5px}
+.bl.h{border-top:0;height:28px;color:var(--text2);font-size:12px;font-weight:500}
+.bl .n{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;gap:8px;align-items:center}
+@media (max-width:700px){ h1{font-size:21px} }
+</style>
+
+<main>
+  <div class="top">
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <h1>Platform Manager: Licence</h1>
+      <p class="lead">Mockup for approval; nothing is built. A "Licence" page in the menu, for this computer and for every remote instance. Every licence action goes through SENTIENT's own licence functions and needs the SENTIENT system administrator's email and password. The Platform Manager never saves that password.</p>
+    </div>
+    <div class="themes" role="group" aria-label="Theme">
+      <button data-t="light">Light</button><button data-t="dark">Dark</button><button data-t="">System</button>
+    </div>
+  </div>
+  <nav class="jump"><a href="#l1">L1 Sign in</a><a href="#l2">L2 Licensed</a><a href="#l3">L3 Replace key</a><a href="#l4">L4 Over a limit</a><a href="#l5">L5 No licence</a><a href="#l6">L6 Deactivate</a><a href="#l7">L7 SENTIENT stopped</a></nav>
+  <section>
+    <div class="state" id="l1s"><div class="cap"><span class="code">L1</span><b>Opened</b><span>Asks for the system administrator once per visit; nothing about the licence shows before that</span></div><div class="scroll" id="l1"></div></div>
+    <div class="state" id="l2s"><div class="cap"><span class="code">L2</span><b>Signed in, licence active</b><span>Summary, use against the limits, actions; "Signed in as" with Sign out in the title row</span></div><div class="scroll" id="l2"></div></div>
+    <div class="state" id="l3s"><div class="cap"><span class="code">L3</span><b>Replace the licence</b><span>Paste a key or choose a .key file; segmented choice, password asked again</span></div><div class="scroll" id="l3"></div></div>
+    <div class="state" id="l4s"><div class="cap"><span class="code">L4</span><b>Over a limit</b><span>The same warning SENTIENT shows, with the days left before it blocks</span></div><div class="scroll" id="l4"></div></div>
+    <div class="state" id="l5s"><div class="cap"><span class="code">L5</span><b>No licence</b><span>Activate a key or file, or request a demo or a quote with SENTIENT's own forms</span></div><div class="scroll" id="l5"></div></div>
+    <div class="state" id="l6s"><div class="cap"><span class="code">L6</span><b>Deactivate</b><span>Frees the licence for another computer; the forced removal sits behind it</span></div><div class="scroll" id="l6"></div></div>
+    <div class="state" id="l7s"><div class="cap"><span class="code">L7</span><b>SENTIENT not running</b><span>Licence actions need a running SENTIENT; one button starts it</span></div><div class="scroll" id="l7"></div></div>
+    <div class="notes"><h3>Rules behind the mockup</h3><ul>
+      <li>The page calls SENTIENT's licence functions on the server (over the SSH connection for a remote instance), exactly what the Licence page in SENTIENT does. The licence server sees the same SENTIENT, so hardware binding and the build check are unchanged.</li>
+      <li>Sign-in uses SENTIENT's normal system administrator sign-in, including its lockout after wrong passwords. The session is kept in memory while the page is open and ends on Sign out, on closing the app, or after 15 minutes idle.</li>
+      <li>Activate, Replace, Deactivate and Remove each ask for the password again in their own dialog, so a forgotten open session cannot change the licence. Refresh and reading need only the sign-in.</li>
+      <li>Every change is written to SENTIENT's audit log as that administrator, as it is today from the web page.</li>
+      <li>Open question for you: should each instance tile on the Instances page also show a one-word licence state (Active, ends in N days, Over a limit, None)? That read would happen without the sign-in.</li>
+    </ul></div>
+  </section>
+</main>
+
+<script>
+(function(){
+// theme toggle
+const root=document.documentElement;
+function setT(t){ if(t) root.setAttribute('data-theme',t); else root.removeAttribute('data-theme');
+  document.querySelectorAll('.themes button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.t===t)));
+  try{localStorage.setItem('spm-mock-theme',t)}catch(e){} }
+let saved=''; try{saved=localStorage.getItem('spm-mock-theme')||''}catch(e){}
+setT(saved);
+document.querySelectorAll('.themes button').forEach(b=>b.addEventListener('click',()=>setT(b.dataset.t)));
+
+const P=s=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${s}</svg>`;
+const I={
+ status:P('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'),
+ stats:P('<path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/>'),
+ power:P('<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>'),
+ logs:P('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/>'),
+ folder:P('<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'),
+ folderf:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>',
+ file:P('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>'),
+ update:P('<path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/>'),
+ gateway:P('<rect x="9" y="2" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="16" y="16" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/><path d="M12 12V8"/>'),
+ backup:P('<rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>'),
+ mig:P('<path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/>'),
+ wrench:P('<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>'),
+ gear:P('<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>'),
+ server:P('<rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/>'),
+ bell:P('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>'),
+ refresh:P('<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>'),
+ info:P('<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>'),
+ monitor:P('<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>'),
+ warn:P('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>'),
+ check:P('<path d="M20 6 9 17l-5-5"/>'),
+ checkc:P('<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>'),
+ xc:P('<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>'),
+ x:P('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
+ up:P('<path d="m18 15-6-6-6 6"/>'),
+ home:P('<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>'),
+ lock:P('<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'),
+ newf:P('<path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'),
+ copy:P('<rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>'),
+ paste:P('<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>'),
+ edit:P('<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
+ trash:P('<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>'),
+ down:P('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>'),
+ toR:P('<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>'),
+ toL:P('<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>'),
+ db:P('<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>'),
+ chev:P('<path d="m9 18 6-6-6-6"/>'),
+ hd:P('<path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01"/><path d="M10 16h.01"/>'),
+};
+const GREEN='#22a356';
+const MENU=[['status','Status'],['stats','Statistics'],['power','Control'],['logs','Logs'],['folder','Files'],['update','Update'],['gateway','Gateway'],['backup','Backup and restore'],['mig','Migration'],['wrench','Repair and uninstall'],['gear','Platform settings']];
+function shell(o){
+  const menu=MENU.filter(m=>o.files||m[1]!=='Files').map(([ic,l])=>`<div class="it${l===o.page?' on':''}${l==='Files'?' new':''}">${I[ic]}<span>${l}</span></div>`).join('');
+  const chip=o.chip?`<div class="chip">${o.chip}</div>`:'';
+  return `<div class="win${o.tall?' tall':''}" style="--ic:${GREEN}">
+   <div class="tbar"><div class="app">${I.server}</div>
+    <div class="sw"><span class="dot"></span>INVENIA IIoT <small>129.154.247.56 over SSH</small></div><span class="tag">REMOTE</span>
+    <div class="mon">${chip}<span>CPU <i><b style="width:15%"></b></i> 15%</span><span>Memory <i><b style="width:60%"></b></i> 0.6 / 1 GB</span><span>Disk <i><b style="width:30%"></b></i> 64.1 GB free</span><div class="bell">${I.bell}</div></div></div>
+   <div class="strip${o.strip?' on':''}" style="--p:${o.strip||0}"></div>
+   <div class="body"><div class="side">${menu}<hr><div class="it">${I.server}<span>Instances</span><em>5</em></div>
+     <div class="foot"><span class="v">v0.8.0-rc12</span><span class="ib">${I.info}</span><span class="ib">${I.monitor}</span></div></div>
+    <div class="pagec">${o.body}</div></div>${o.over||''}</div>`;
+}
+const title=(t,extra='')=>`<div class="ptitle"><h3>${t}</h3>${extra}<span class="ib out" title="Refresh">${I.refresh}</span></div>`;
+function put(id,html){document.getElementById(id).innerHTML=html}
+I.key=P('<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>');
+I.user=P('<circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/>');
+I.shield=P('<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>');
+I.mail=P('<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>');
+I.cart=P('<circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/>');
+I.unlink=P('<path d="m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71"/><path d="m5.17 11.75-1.71 1.71a5.004 5.004 0 0 0 .12 7.07 5.006 5.006 0 0 0 6.95 0l1.71-1.71"/><path d="M8 2v3"/><path d="M2 8h3"/><path d="M16 22v-3"/><path d="M22 16h-3"/>');
+const LM=MENU.slice(); LM.splice(LM.findIndex(m=>m[1]==='Platform settings'),0,['key','Licence']);
+function lshell(o){ const save=MENU.splice(0,MENU.length,...LM); const h=shell(Object.assign({files:1},o)); MENU.splice(0,MENU.length,...save); return h; }
+const signed=`<span class="mut small" style="display:flex;align-items:center;gap:6px">${I.user.replace('<svg','<svg width="16" height="16"')}admin@sentient.local</span><span class="btn">Sign out</span>`;
+const ltitle=(x='')=>title('Licence',x);
+const pw=(label,val,focus)=>`<div style="display:flex;flex-direction:column;gap:6px"><span class="small mut">${label}</span><div class="inp${focus?' focus':''}" style="width:100%">${val}</div></div>`;
+
+// L1 sign in
+put('l1',lshell({page:'Licence',body:ltitle()+`<div class="card" style="max-width:520px">
+  <div class="row"><span style="color:var(--primary);display:flex">${I.shield.replace('<svg','<svg width="22" height="22"')}</span><b style="font-weight:500;font-size:16px">Sign in to manage the licence</b></div>
+  <p class="mut">Use the SENTIENT system administrator of INVENIA IIoT. The password is not saved.</p>
+  ${pw('Email','admin@sentient.local')}
+  ${pw('Password','<span style="letter-spacing:3px">••••••••</span>',true)}
+  <div class="row"><span class="btn pri">Sign in</span><span class="sp"></span><span class="mut small">Forgot it? Reset it in Platform settings.</span></div>
+ </div>`}));
+
+// L2 licensed
+const lim=(n,u,m,warn)=>{const p=Math.min(100,Math.round(u/m*100));return `<span class="k">${n}</span><span><span class="bar" style="flex:1;max-width:260px"><i style="width:${p}%;${warn?'background:var(--bad)':''}"></i></span></span><span class="mono" style="justify-content:flex-end;${warn?'color:var(--bad)':''}">${u.toLocaleString('en-IN')} / ${m.toLocaleString('en-IN')}</span>`};
+function summary(status,valid){return `<div class="card"><div class="row" style="min-height:28px"><b style="font-weight:500">Licence</b><span class="sp"></span>${status}</div>
+  <div class="kv" style="grid-template-columns:170px minmax(0,1fr)">
+   <span class="k f">Licensed to</span><span class="f">Sunoil Industries Pvt Ltd</span>
+   <span class="k">Type</span><span>Professional</span>
+   <span class="k">Valid through</span><span>${valid}</span>
+   <span class="k">Versions</span><span>4.x <span class="mut small">· this build 4.4.0.2 is covered</span></span>
+   <span class="k">Bound to</span><span>This server's hardware <span class="pill ok">Matches</span></span>
+   <span class="k">Last check</span><span>Licence server answered 07:02</span>
+  </div></div>`}
+function usage(over){return `<div class="card"><div class="row" style="min-height:28px"><b style="font-weight:500">Use against the limits</b><span class="sp"></span><span class="btn ghost" style="height:28px;padding:0 6px">All limits…</span></div>
+  <div class="kv" style="grid-template-columns:170px minmax(0,1fr) 140px">
+   ${lim('Devices',over?512:186,500,over).replace('class="k"','class="k f"').replace('<span><span class="bar"','<span class="f"><span class="bar"').replace('<span class="mono" style="justify-content','<span class="mono f" style="justify-content')}
+   ${lim('Users',14,50)}${lim('Dashboards',63,200)}${lim('Telemetry keys',1840,5000)}${lim('Rule chains',9,50)}
+  </div></div>`}
+const actions=`<div class="card"><div class="row"><b style="font-weight:500">Actions</b></div><div class="row">
+  <span class="btn">${I.refresh}Check with the licence server</span><span class="btn">${I.key}Replace licence…</span><span class="btn">${I.unlink}Deactivate…</span></div></div>`;
+const twocol=(a,b)=>`<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:stretch">${a}${b}</div>`;
+put('l2',lshell({page:'Licence',tall:true,body:ltitle(signed)+twocol(summary('<span class="pill ok">Active · 228 days left</span>','30 Jun 2027'),usage(false))+actions}));
+
+// L3 replace
+put('l3',lshell({page:'Licence',tall:true,body:ltitle(signed)+twocol(summary('<span class="pill ok">Active · 228 days left</span>','30 Jun 2027'),usage(false))+actions,
+ over:`<div class="scrim"><div class="dlg"><div class="dh">${I.key}<span>Replace the licence</span><span class="sp"></span><span class="ib">${I.x}</span></div>
+  <div class="db"><div class="row"><span class="seg"><span class="on">Licence key</span><span>Licence file</span></span></div>
+   <div class="inp focus" style="height:auto;min-height:72px;align-items:flex-start;padding:8px 10px"><span class="mono" style="overflow-wrap:anywhere">ST4-PRO-9F2C-71AB-55E0-D3C8-0A4E-B71F</span></div>
+   <p class="mut small">The current licence is released on the licence server first, then the new one is activated. Needs internet on the server once.</p>
+   ${pw('System administrator password','<span style="letter-spacing:3px">••••••••</span>')}
+  </div><div class="df"><span class="btn">Cancel</span><span class="btn pri">Replace</span></div></div></div>`}));
+
+// L4 over limit
+put('l4',lshell({page:'Licence',tall:true,body:ltitle(signed)+`<div class="banner bad">${I.warn}<div class="tx"><b style="font-weight:500">Over the device limit for 3 days.</b> 512 devices on a 500-device licence. SENTIENT is blocked in 4 days unless devices are removed or the licence is raised.</div><span class="btn">${I.cart}Raise the limit…</span></div>`
+ +twocol(summary('<span class="pill" style="background:var(--bad-bg);color:var(--bad)">Over a limit</span>','30 Jun 2027'),usage(true))+actions}));
+
+// L5 none
+put('l5',lshell({page:'Licence',body:ltitle(signed)+`<div class="card" style="max-width:720px">
+  <div class="row"><b style="font-weight:500;font-size:16px">No licence on INVENIA IIoT</b><span class="sp"></span><span class="pill mute">Not licensed</span></div>
+    <div class="row"><span class="seg"><span class="on">Licence key</span><span>Licence file</span></span></div>
+  <div class="row" style="flex-wrap:nowrap"><div class="inp" style="flex:1"><span class="mut">Paste the licence key</span></div><span class="btn pri">Activate…</span></div>
+  <div style="border-top:1px solid var(--border);padding-top:12px" class="row"><span class="mut">No key yet?</span><span class="btn">${I.mail}Request a demo licence</span><span class="btn">${I.cart}Buy a licence</span></div>
+ </div>`}));
+
+// L6 deactivate
+put('l6',lshell({page:'Licence',tall:true,body:ltitle(signed)+twocol(summary('<span class="pill ok">Active · 228 days left</span>','30 Jun 2027'),usage(false))+actions,
+ over:`<div class="scrim"><div class="dlg"><div class="dh">${I.unlink}<span>Deactivate the licence on INVENIA IIoT?</span></div>
+  <div class="db"><p>The licence is released on the licence server so it can be activated on another computer. SENTIENT on this server is then unlicensed.</p>
+   ${pw('System administrator password','<span style="letter-spacing:3px">••••••••</span>',true)}
+   <details style="color:var(--text2)"><summary class="small">The licence server cannot be reached</summary><p class="small" style="margin-top:6px">Remove without the licence server deletes the licence here only. The licence server still counts it as in use until support releases it.</p><div class="row" style="margin-top:8px"><span class="btn" style="color:var(--bad);border-color:var(--bad)">Remove without the licence server…</span></div></details>
+  </div><div class="df"><span class="btn">Cancel</span><span class="btn dan">Deactivate</span></div></div></div>`}));
+document.querySelector('#l6 details').open=true;
+
+// L7 stopped
+put('l7',lshell({page:'Licence',body:ltitle()+`<div class="banner warn">${I.warn}<div class="tx"><b style="font-weight:500">SENTIENT is stopped.</b> The licence is kept by SENTIENT itself, so it has to run to show or change it.</div><span class="btn">${I.power}Start SENTIENT</span></div>`}));
+
+})();
+</script>
