@@ -1524,6 +1524,37 @@ mod tests {
         assert!(y.contains("name: sentient-ch-ch-data"));
     }
 
+    /// Setup's installs (db_loopback): PostgreSQL and ClickHouse published
+    /// on 127.0.0.1 only, SENTIENT's own ports on every address; a stack
+    /// without it keeps its ports as they were.
+    #[test]
+    fn loopback_publishes_the_databases_on_127_0_0_1_only() {
+        for flavor in [Flavor::Stock, Flavor::Timescaledb, Flavor::Clickhouse] {
+            let cfg = DeployConfig { flavor, db_loopback: true, ..DeployConfig::default() };
+            let y = compose(&cfg);
+            assert!(y.contains("- \"127.0.0.1:5432:5432\""), "{flavor:?}:\n{y}");
+            assert!(!y.contains("- \"5432:5432\""));
+            if flavor.uses_clickhouse() {
+                assert!(y.contains("- \"127.0.0.1:8123:8123\"") && y.contains("- \"127.0.0.1:9000:9000\""), "{y}");
+            } else {
+                assert!(!y.contains(":8123\"") && !y.contains(":9000\""));
+            }
+            // Every published database port is on loopback.
+            for l in y.lines().map(str::trim).filter(|l| l.starts_with("- \"") && (l.ends_with(":5432\"") || l.ends_with(":8123\"") || l.ends_with(":9000\""))) {
+                assert!(l.starts_with("- \"127.0.0.1:"), "{l}");
+            }
+            // SENTIENT itself stays reachable from the network.
+            assert!(y.contains("- \"8080:8080\"") && y.contains("- \"1883:1883\""));
+        }
+        let ch = compose_clickhouse_only(&DeployConfig { flavor: Flavor::Clickhouse, db_loopback: true, ..DeployConfig::default() });
+        assert!(ch.contains("- \"127.0.0.1:8123:8123\"") && ch.contains("- \"127.0.0.1:9000:9000\""));
+        // A record without the flag (a stack installed earlier, or taken
+        // over as it was published) is written as before.
+        let old: DeployConfig = serde_json::from_str("{}").unwrap();
+        assert!(!old.db_loopback);
+        assert!(compose(&old).contains("- \"5432:5432\""));
+    }
+
     #[test]
     fn clickhouse_bind_mount_is_one_quoted_scalar() {
         let y = compose(&DeployConfig::default());

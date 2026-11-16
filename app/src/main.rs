@@ -144,7 +144,9 @@ fn main() {
 #[cfg(feature = "gui")]
 fn window_options(mode: AppMode, cx: &mut gpui_kit::App) -> WindowOptions {
     let size = match mode {
-        AppMode::Install => size(px(980.), px(680.)),
+        // Setup at the Platform Manager's scale: its menu and a page of
+        // two cards side by side.
+        AppMode::Install => size(px(1100.), px(760.)),
         AppMode::Maintenance => size(px(820.), px(600.)),
         AppMode::Manager => size(px(1100.), px(720.)),
     };
@@ -157,7 +159,8 @@ fn window_options(mode: AppMode, cx: &mut gpui_kit::App) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::centered(size, cx)),
         // Small enough for a half screen, large enough that nothing breaks.
-        window_min_size: Some(gpui_kit::size(px(560.), px(480.))),
+        // (Setup keeps its steps unfolded beside the page: wider.)
+        window_min_size: Some(if mode == AppMode::Install { gpui_kit::size(px(820.), px(560.)) } else { gpui_kit::size(px(560.), px(480.)) }),
         titlebar: Some(TitlebarOptions {
             title: Some(mode.window_title().into()),
             ..Default::default()
@@ -254,10 +257,28 @@ fn gui_main(args: Vec<String>) {
         }
         let options = window_options(mode, cx);
         let opened = match mode {
-            AppMode::Install => win_frame::open_window(options, cx, |window, cx| {
-                cx.new(|cx| installer::Installer::new(window, cx))
-            })
-            .map(|_| ()),
+            AppMode::Install => {
+                // Setup's steps are the Platform Manager's menu: translucent
+                // over the blurred desktop where it can be (crate::manager::shell).
+                let mut options = options;
+                if manager::shell::see_through() {
+                    options.window_background = gpui_kit::WindowBackgroundAppearance::Blurred;
+                }
+                win_frame::open_window(options, cx, |window, cx| {
+                    manager::shell::detect_gl(window);
+                    cx.new(|cx| installer::Installer::new(window, cx))
+                })
+                .map(|opened| {
+                    // The toolkit's root would paint over the menu: clear, as
+                    // in the Platform Manager (open_manager_window).
+                    let _ = opened.0.update(cx, |_, window, cx| {
+                        gpui_kit::base::Root::update(window, cx, |root, _, _| {
+                            use gpui_kit::Styled as _;
+                            root.style().background = Some(gpui_kit::transparent_black().into());
+                        });
+                    });
+                })
+            }
             _ => win_frame::open_window(options, cx, |window, cx| {
                 cx.new(|cx| maintenance::Maintenance::new(window, cx))
             })

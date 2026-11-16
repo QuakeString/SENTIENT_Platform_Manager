@@ -225,13 +225,7 @@ impl Manager {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         // OpenGL (no Vulkan driver): the window cannot be translucent, so
         // the menu is solid and About says why.
-        if cfg!(target_os = "linux") {
-            let gl = _window.gpu_specs().is_some_and(|g| g.driver_info.contains("Core Profile") || g.driver_info.contains("OpenGL"));
-            shell::set_gl_only(gl);
-            if gl {
-                _window.set_background_appearance(WindowBackgroundAppearance::Opaque);
-            }
-        }
+        shell::detect_gl(_window);
         // Why the menu is solid or not (SPM_DEBUG_BLUR=1).
         if std::env::var_os("SPM_DEBUG_BLUR").is_some() {
             eprintln!(
