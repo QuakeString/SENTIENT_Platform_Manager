@@ -138,6 +138,7 @@ fn run_job(args: &[String]) -> i32 {
         let newest = || gateway::newest(channel).and_then(|o| o.ok_or_else(|| "No gateway release on this channel.".to_string()));
         let result = match job {
             "gateway-status" => {
+                sentient_installer_core::distro::gateway_docker::set_cache_dir(crate::updates::prefs_dir());
                 let s = gateway::status();
                 let kind = s.kind();
                 // Values with spaces in them are %20-escaped (the line splits on spaces).

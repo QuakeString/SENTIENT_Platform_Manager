@@ -603,6 +603,7 @@ pub(crate) fn remove_panel(theme: &gpui_kit::component::Theme, id: &'static str,
 /// The gateway on this computer (gateway::status). Screens: SPM_DEBUG_GATEWAY
 /// holds a canned `gateway-status` line (`none` for no gateway).
 pub(crate) fn local_status() -> Status {
+    sentient_installer_core::distro::gateway_docker::set_cache_dir(crate::updates::prefs_dir());
     #[cfg(debug_assertions)]
     if let Ok(t) = std::env::var("SPM_DEBUG_GATEWAY") {
         let kv: std::collections::HashMap<String, String> = t.split([' ', '+']).filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.replace("%20", " "))).collect();

@@ -124,7 +124,7 @@ pub fn page_url(gateway_file: Option<&str>, env: &dyn Fn(&str) -> Option<String>
 
 /// A gateway image of ours: the Rust gateway, or the Python one it
 /// replaces (quakestring/sentient-gateway). Not other gateways
-/// (thingsboard/tb-gateway and the like).
+/// (other vendors' gateway images).
 pub fn is_gateway_image(image: &str) -> bool {
     let image = image.split('@').next().unwrap_or(image);
     let repo = image.rsplit_once(':').map(|(r, t)| if t.contains('/') { image } else { r }).unwrap_or(image);
@@ -579,7 +579,7 @@ mod tests {
         assert!(is_gateway_image("quakestring/sentient-gateway:3.7.10"));
         assert!(is_gateway_image("sentient-gateway-rs:dev"));
         assert!(is_gateway_image("registry.local:5000/quakestring/sentient-gateway-rs:4.16.2"));
-        assert!(!is_gateway_image("thingsboard/tb-gateway"));
+        assert!(!is_gateway_image("example/other-gateway"));
         assert!(!is_gateway_image("kong/kong-gateway:3.8"));
         assert!(!is_gateway_image("my-sentient-gateway:1"));
         assert!(!is_gateway_image("quakestring/sentient:4.3.0.53"));

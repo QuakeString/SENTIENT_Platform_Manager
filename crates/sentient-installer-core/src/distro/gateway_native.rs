@@ -372,14 +372,14 @@ sshd.service                                 disabled        disabled\n";
         assert_eq!(our_unit("plant-collector.service", exec, None), None);
         assert_eq!(our_unit("plant-collector.service", exec, Some("something else 1.0")), None);
         // Another program under our unit's name is not ours.
-        assert_eq!(our_unit(UNIT, "{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -m thingsboard_gateway }", None), None);
+        assert_eq!(our_unit(UNIT, "{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -m other_gateway }", None), None);
     }
 
     #[test]
     fn finds_a_plain_process_but_not_ours() {
         let ps = "  12 /opt/sentient-platform-manager/sentient-platform-manager --job gateway-status\n 40 /usr/lib/systemd/systemd-journal-gatewayd\n 77 /usr/local/bin/sentient-gateway --config /etc/x.json\n";
         assert_eq!(pick_process(ps), Some(("77".into(), "/usr/local/bin/sentient-gateway".into())));
-        assert_eq!(pick_process(" 1 python3 -m thingsboard_gateway.tb_gateway\n 40 /usr/lib/systemd/systemd-journal-gatewayd\n"), None);
+        assert_eq!(pick_process(" 1 python3 -m other_gateway.main\n 40 /usr/lib/systemd/systemd-journal-gatewayd\n"), None);
         assert_eq!(pick_process(" 2 bash\n"), None);
     }
 

@@ -52,6 +52,8 @@ pub struct Container {
     pub volumes: Vec<String>,
     /// The image's `org.opencontainers.image.version` label.
     pub version_label: Option<String>,
+    /// The image's id (`.Image`, sha256:…).
+    pub image_id: Option<String>,
 }
 
 impl Container {
@@ -67,7 +69,7 @@ impl Container {
     }
 }
 
-const INSPECT_FORMAT: &str = "{{.Name}}\t{{.Config.Image}}\t{{json .Config.Entrypoint}}\t{{.State.Running}}\t{{index .Config.Labels \"com.docker.compose.project\"}}\t{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}\t{{range .Mounts}}{{if eq .Type \"volume\"}}{{.Name}},{{end}}{{end}}\t{{index .Config.Labels \"org.opencontainers.image.version\"}}";
+const INSPECT_FORMAT: &str = "{{.Name}}\t{{.Config.Image}}\t{{json .Config.Entrypoint}}\t{{.State.Running}}\t{{index .Config.Labels \"com.docker.compose.project\"}}\t{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}\t{{range .Mounts}}{{if eq .Type \"volume\"}}{{.Name}},{{end}}{{end}}\t{{index .Config.Labels \"org.opencontainers.image.version\"}}\t{{.Image}}";
 
 /// `docker inspect --format INSPECT_FORMAT` lines.
 pub fn parse_inspect(out: &str) -> Vec<Container> {
@@ -83,7 +85,8 @@ pub fn parse_inspect(out: &str) -> Vec<Container> {
             let working_dir = some(f.next());
             let volumes = f.next().unwrap_or_default().split(',').map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).collect();
             let version_label = some(f.next());
-            (!name.is_empty()).then_some(Container { name, image, entrypoint, running, project, working_dir, volumes, version_label })
+            let image_id = some(f.next());
+            (!name.is_empty()).then_some(Container { name, image, entrypoint, running, project, working_dir, volumes, version_label, image_id })
         })
         .collect()
 }
@@ -149,7 +152,8 @@ pub fn status() -> Status {
         .flatten()
         .filter(|(ok, _)| *ok)
         .and_then(|(_, o)| crate::gateway::parse_version(&o))
-        .or_else(|| image_version(&c));
+        .or_else(|| image_version(&c))
+        .or_else(|| c.image_id.as_deref().and_then(probed_version));
     // Its gateway file, for the page's settings and (compose files often
     // commission through it) the platform host.
     let file = running
@@ -174,6 +178,71 @@ pub fn status() -> Status {
         volumes: c.volumes.clone(),
         ..Status::default()
     }
+}
+
+/// Where probed versions are kept between runs (the app sets its prefs
+/// folder; unset: memory only).
+static CACHE_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+/// Image id → version (None: the probe failed; not retried this run).
+static PROBED: std::sync::Mutex<Option<std::collections::HashMap<String, Option<String>>>> = std::sync::Mutex::new(None);
+
+pub fn set_cache_dir(dir: std::path::PathBuf) {
+    let _ = CACHE_DIR.set(dir);
+}
+
+fn cache_file() -> Option<std::path::PathBuf> {
+    CACHE_DIR.get().map(|d| d.join("gateway-image-versions.json"))
+}
+
+/// A gateway image's version when nothing else says it: `sentient-gateway
+/// --version` in a throwaway container of the image (never the gateway's
+/// own container, never pulled, no network, 10 seconds at most), once per
+/// image id. Answers are kept in memory and in the cache file.
+fn probed_version(image_id: &str) -> Option<String> {
+    if !image_id.starts_with("sha256:") || image_id.len() < 20 {
+        return None;
+    }
+    {
+        let mut g = PROBED.lock().ok()?;
+        let map = g.get_or_insert_with(|| {
+            cache_file()
+                .and_then(|f| std::fs::read_to_string(f).ok())
+                .and_then(|t| serde_json::from_str::<std::collections::HashMap<String, String>>(&t).ok())
+                .map(|m| m.into_iter().map(|(k, v)| (k, Some(v))).collect())
+                .unwrap_or_default()
+        });
+        if let Some(v) = map.get(image_id) {
+            return v.clone();
+        }
+    }
+    let version = run_probe(image_id);
+    if let Ok(mut g) = PROBED.lock() {
+        let map = g.get_or_insert_with(Default::default);
+        map.insert(image_id.to_string(), version.clone());
+        if let Some(f) = cache_file() {
+            let known: std::collections::HashMap<&String, &String> = map.iter().filter_map(|(k, v)| v.as_ref().map(|v| (k, v))).collect();
+            if let Ok(t) = serde_json::to_string(&known) {
+                let _ = f.parent().map(std::fs::create_dir_all);
+                let _ = std::fs::write(f, t);
+            }
+        }
+    }
+    version
+}
+
+fn run_probe(image_id: &str) -> Option<String> {
+    let name = format!("spm-gw-version-{}", &image_id[7..19]);
+    let args = ["run", "--rm", "--pull=never", "--network", "none", "--name", &name, "--entrypoint", "sentient-gateway", image_id, "--version"];
+    #[cfg(windows)]
+    let out = crate::sys::output_limited("docker", &args, std::time::Duration::from_secs(10)).map(|(ok, o, _)| (ok, crate::sys::decode(&o)));
+    #[cfg(not(windows))]
+    let out = {
+        let line: Vec<String> = args.iter().map(|a| super::shell_quote(a)).collect();
+        super::run_output(&format!("timeout -k 2 10 docker {} 2>/dev/null", line.join(" ")))
+    };
+    // A probe cut short leaves its container behind.
+    let _ = docker(&["rm", "-f", &name]);
+    out.filter(|(ok, _)| *ok).and_then(|(_, o)| crate::gateway::parse_version(&o))
 }
 
 /// A stopped container's version: its image's tag (not `latest`), else
@@ -342,7 +411,7 @@ mod tests {
     fn finds_the_gateway_container_by_image_or_program() {
         let out = "/sentient\tquakestring/sentient:4.3.0.58\t[\"/app/entrypoint.sh\"]\ttrue\t\t\t\t\n\
 /kong-gateway\tkong/kong-gateway:3.8\t[\"/entrypoint.sh\"]\ttrue\t\t\t\t\n\
-/st-gateway\tquakestring/sentient-gateway-rs:latest\t[\"/usr/local/bin/sentient-gateway\"]\tfalse\tdfal\t/home/mz/dfal\tst-gw-config,st-gw-data,st-gw-logs,\t<no value>\n";
+/st-gateway\tquakestring/sentient-gateway-rs:latest\t[\"/usr/local/bin/sentient-gateway\"]\tfalse\tdfal\t/home/mz/dfal\tst-gw-config,st-gw-data,st-gw-logs,\t<no value>\tsha256:fdd9ed12884efda7151420b1fc003afe7c9b73e48e14d2e60ff0248f944cc95b\n";
         let all = parse_inspect(out);
         assert_eq!(all.len(), 3);
         let (c, managed) = pick(&all).unwrap();
@@ -351,6 +420,7 @@ mod tests {
         assert_eq!(c.working_dir.as_deref(), Some("/home/mz/dfal"));
         assert_eq!(c.volumes, vec!["st-gw-config", "st-gw-data", "st-gw-logs"]);
         assert_eq!(c.version_label, None);
+        assert_eq!(c.image_id.as_deref(), Some("sha256:fdd9ed12884efda7151420b1fc003afe7c9b73e48e14d2e60ff0248f944cc95b"));
         // A locally built image: its entrypoint is the gateway's program.
         let local = parse_inspect("/plant-gw\tsha256:fdd9ed12884e\t[\"/usr/local/bin/sentient-gateway\"]\ttrue\t\t\t\t4.16.2\n");
         assert_eq!(names(pick(&local)), Some(("plant-gw".into(), false)));
