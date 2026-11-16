@@ -510,3 +510,28 @@ fn restart_windows() {
     #[cfg(windows)]
     let _ = std::process::Command::new("shutdown.exe").args(["/r", "/t", "5", "/c", "Restarting to finish turning WSL off"]).spawn();
 }
+
+/// The dialog for this computer's installation (the Platform Manager's
+/// Repair page and Setup's maintenance screen). On native Linux the job is
+/// one root job (one password); the shortcuts in this account's home go as
+/// this account after it.
+pub fn open_local(record: crate::installation::InstallationRecord, on_done: Rc<dyn Fn(&mut App)>, cx: &mut App) {
+    let r1 = record.clone();
+    let load: LoadFacts = Arc::new(move || Ok(uninstall::facts_full(&r1)));
+    let r2 = record;
+    let run: RunUninstall = Arc::new(move |args: Vec<String>, sink| {
+        if crate::rootjob::needed(&r2) {
+            crate::rootjob::run(&args, &sink)?;
+            if args.iter().any(|a| a.split(',').any(|p| p == "shortcuts")) {
+                crate::shortcuts::remove(crate::shortcuts::Owner::Sentient, &r2.shortcuts, &sink);
+            }
+            Ok(())
+        } else {
+            let choice = uninstall::from_args(&args[1..])?;
+            let mut facts = uninstall::facts_quick(&r2);
+            facts.pg_others = Some(uninstall::pg_others(&r2));
+            uninstall::run(r2.clone(), choice, facts, sink)
+        }
+    });
+    open(Opts { name: uninstall::computer_name(), load, run, remote: false, on_done, on_close: Rc::new(finish_local) }, cx);
+}

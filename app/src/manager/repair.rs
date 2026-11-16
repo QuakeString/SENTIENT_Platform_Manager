@@ -118,43 +118,18 @@ impl RepairPage {
     /// The Uninstall dialog (crate::manager::uninstall_dialog).
     fn open_uninstall(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
-        let r1 = record.clone();
-        let load: crate::manager::uninstall_dialog::LoadFacts = std::sync::Arc::new(move || Ok(crate::uninstall::facts_full(&r1)));
-        let r2 = record.clone();
-        let run: crate::manager::uninstall_dialog::RunUninstall = std::sync::Arc::new(move |args: Vec<String>, sink| {
-            if crate::rootjob::needed(&r2) {
-                // One root job (one password), then this account's own copies
-                // of the shortcuts and its menu cache.
-                crate::rootjob::run(&args, &sink)?;
-                if args.iter().any(|a| a.split(',').any(|p| p == "shortcuts")) {
-                    crate::shortcuts::remove(crate::shortcuts::Owner::Sentient, &r2.shortcuts, &sink);
-                }
-                Ok(())
-            } else {
-                let choice = crate::uninstall::from_args(&args[1..])?;
-                let mut facts = crate::uninstall::facts_quick(&r2);
-                facts.pg_others = Some(crate::uninstall::pg_others(&r2));
-                crate::uninstall::run(r2.clone(), choice, facts, sink)
-            }
-        });
         let page = cx.entity().downgrade();
         self.running = Some(Action::Uninstall);
-        crate::manager::uninstall_dialog::open(
-            crate::manager::uninstall_dialog::Opts {
-                name: crate::uninstall::computer_name(),
-                load,
-                run,
-                remote: false,
-                on_done: std::rc::Rc::new(move |cx: &mut App| {
-                    page.update(cx, |p, cx| {
-                        p.record = InstallationRecord::load();
-                        cx.emit(RecordChanged);
-                        cx.notify();
-                    })
-                    .ok();
-                }),
-                on_close: std::rc::Rc::new(|after, cx: &mut App| crate::manager::uninstall_dialog::finish_local(after, cx)),
-            },
+        crate::manager::uninstall_dialog::open_local(
+            record,
+            std::rc::Rc::new(move |cx: &mut App| {
+                page.update(cx, |p, cx| {
+                    p.record = InstallationRecord::load();
+                    cx.emit(RecordChanged);
+                    cx.notify();
+                })
+                .ok();
+            }),
             cx,
         );
     }

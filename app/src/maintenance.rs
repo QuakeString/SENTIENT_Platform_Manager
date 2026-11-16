@@ -241,6 +241,23 @@ impl Maintenance {
             return;
         }
         let this = cx.entity().downgrade();
+        // Uninstall: the same dialog as the Platform Manager's (a switch per part).
+        if action == Action::Uninstall {
+            if let Some(record) = self.record.clone() {
+                crate::manager::uninstall_dialog::open_local(
+                    record,
+                    std::rc::Rc::new(move |cx: &mut App| {
+                        this.update(cx, |page, cx| {
+                            page.record = InstallationRecord::load();
+                            cx.notify();
+                        })
+                        .ok();
+                    }),
+                    cx,
+                );
+            }
+            return;
+        }
         let keep = self.keep_data;
         crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
@@ -446,15 +463,6 @@ impl Maintenance {
                     .label(action.title())
                     .on_click(cx.listener(move |this, _, window, cx| this.confirm(action, window, cx)))
             })))
-            .child(
-                Checkbox::new("keep-data")
-                    .label("When uninstalling, keep the database")
-                    .checked(self.keep_data)
-                    .on_change(cx.listener(|this, value: &bool, _, cx| {
-                        this.keep_data = *value;
-                        cx.notify();
-                    })),
-            )
     }
 
     /// C7b: the Platform Manager was removed, SENTIENT is still here.
@@ -632,16 +640,6 @@ impl Maintenance {
                         .into_any_element(),
                 );
             }
-            out.push(
-                Checkbox::new("keep-data")
-                    .label("When uninstalling, keep the database")
-                    .checked(self.keep_data)
-                    .on_change(cx.listener(|this, value: &bool, _, cx| {
-                        this.keep_data = *value;
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-            );
         }
         out
     }
