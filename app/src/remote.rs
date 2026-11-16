@@ -2276,3 +2276,48 @@ fn direct_copy(src: &Instance, dst: &Instance, path: &str, part: &str) -> Result
     cleanup();
     r
 }
+
+/// Ask the restore running on the server to stop before its switch.
+pub fn restore_cancel(inst: &Instance) -> Result<(), String> {
+    spm_job(inst, "restore-cancel").map(|_| ())
+}
+
+/// The backups in another folder on the server.
+pub fn backups_in(inst: &Instance, folder: &str) -> Result<Vec<crate::backups::Entry>, String> {
+    #[cfg(debug_assertions)]
+    if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_BACKUPS") {
+        return serde_json::from_str::<RemoteBackups>(&t.to_string_lossy()).map(|b| b.list).map_err(|e| e.to_string());
+    }
+    let out = spm_job(inst, &format!("backup-list {}", job_arg(folder)?))?;
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or("The server's Platform Manager gave no answer.")?;
+    serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
+}
+
+/// Copy a backup from a server into `folder` on this computer (another
+/// instance's backup restored here), with its `.sha256`.
+pub fn download_backup(src: &Instance, path: &str, folder: &Path, progress: &(dyn Fn(u64, u64) + Sync)) -> Result<PathBuf, String> {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
+    let total = remote_size(src, path);
+    std::fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    let dest = folder.join(&name);
+    let part = folder.join(format!("{name}.part"));
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let r = std::thread::scope(|s| {
+        s.spawn(|| {
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                progress(std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0), total);
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        });
+        let r = sftp_batch(src, &format!("reget \"{}\" \"{}\"", sftp_path(src, path), part.display())).or_else(|_| sftp_batch(src, &format!("get \"{}\" \"{}\"", sftp_path(src, path), part.display())));
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        r
+    });
+    r?;
+    if std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0) != total {
+        return Err("The copy here does not have the backup's size. Try again.".into());
+    }
+    std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
+    let _ = sftp_batch(src, &format!("get \"{}.sha256\" \"{}.sha256\"", sftp_path(src, path), dest.display()));
+    Ok(dest)
+}

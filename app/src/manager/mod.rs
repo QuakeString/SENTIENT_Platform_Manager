@@ -13,6 +13,8 @@ mod gateway;
 mod instances;
 pub(crate) mod logs;
 pub(crate) mod migration;
+pub(crate) mod movedata;
+pub(crate) mod restore;
 pub(crate) mod remote_pages;
 mod repair;
 mod takeover;
@@ -1704,13 +1706,6 @@ impl Manager {
             Page::Backup => {
                 if self.backup.is_none() {
                     let page = cx.new(|cx| backup::BackupPage::new(record, window, cx));
-                    self._subscriptions.push(cx.subscribe(&page, |this, _, go: &backup::Go, cx| {
-                        this.page = match go {
-                            backup::Go::Update => Page::Update,
-                            backup::Go::Settings => Page::Settings,
-                        };
-                        cx.notify();
-                    }));
                     self.backup = Some(page);
                 }
                 self.backup.clone().unwrap().into_any_element()
@@ -1819,6 +1814,12 @@ impl Render for Manager {
         // A Control row's "Logs" asked for the Logs page.
         if crate::logsource::take_go() {
             self.page = Page::Logs;
+        }
+        // The Restore flow asked for another page (its blocks' buttons).
+        if let Some(id) = restore::take_go() {
+            if let Some(p) = Page::ALL.iter().copied().chain([Page::Instances, Page::About]).find(|p| p.id() == id) {
+                self.page = p;
+            }
         }
         let menu_w = if Self::folded(width) { shell::MENU_FOLDED_W } else { shell::MENU_W };
         let top = self.top_bar(width - menu_w, window, cx);

@@ -23,6 +23,7 @@ use crate::installation::{InstallationRecord, flavor_label};
 
 /// What a backup file says about itself.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // the whole summary travels; `--job replace` reads part of it
 pub struct Summary {
     pub file: PathBuf,
     pub file_bytes: u64,
@@ -96,6 +97,7 @@ pub(crate) fn from_manifest(file: &Path, file_bytes: u64, encrypted: bool, m: &M
 
 /// The backup against this installation.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)] // `--job replace` reads the refusal; the lines are for a window
 pub struct Check {
     pub type_line: String,
     pub version_line: String,
@@ -161,6 +163,7 @@ pub const STEP_RESTORE: &str = "Restoring the backup beside the live data (and c
 pub const STEP_SWITCH: &str = "Switching SENTIENT to the restored data and checking it answers";
 pub const STEP_DELETE: &str = "Deleting the previous data";
 
+#[cfg(test)]
 pub fn planned_steps(delete_old: bool) -> Vec<String> {
     let mut v = vec![STEP_CHECK.to_string(), STEP_RESTORE.to_string(), STEP_SWITCH.to_string()];
     if delete_old {

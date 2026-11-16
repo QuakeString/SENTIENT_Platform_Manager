@@ -203,10 +203,6 @@ impl Inspection {
         matches!((self.manifest.source.schema_version, self.here.schema_version), (Some(t), Some(o)) if t > o)
     }
 
-    pub fn older_schema(&self) -> bool {
-        matches!((self.manifest.source.schema_version, self.here.schema_version), (Some(t), Some(o)) if t < o)
-    }
-
     pub fn newer_format(&self) -> bool {
         self.manifest.format_version > FORMAT_VERSION
     }
@@ -281,6 +277,8 @@ pub fn inspect(record: Option<&InstallationRecord>, file: &Path, passphrase: Opt
     let file_bytes = sentient_backup_core::parts::total_size(file);
     let total: u64 = manifest.files.iter().map(|f| f.bytes).sum::<u64>().max(1);
     step(sink, "Checking the backup");
+    let listed: Vec<(String, u64)> = manifest.files.iter().map(|f| (sentient_backup_core::restore::member_label(&f.path), f.bytes)).collect();
+    sink(data_line("parts", &listed));
     log(sink, format!("PART\tFormat {}, made by Platform Manager {}\t0", manifest.format_version, manifest.tool_version));
     let mut read = 0u64;
     let report = sentient_backup_core::restore::check_with(file, passphrase, |path, bytes| {
@@ -851,6 +849,14 @@ fn live_facts(setup: &Setup, status: &crate::dbstatus::DbStatus, hybrid: bool) -
 // 3. Run
 // ---------------------------------------------------------------------------
 
+/// The watch's word for a cancel.
+const CANCELLED: &str = "the restore (cancelled)";
+
+/// A cancel in plain words, for the messages that carry the watch's.
+fn plain(e: String) -> String {
+    if e.contains(CANCELLED) { "Cancelled.".into() } else { e }
+}
+
 pub const STEP_SAFETY: &str = "Backing up the current data";
 pub const STEP_CHECK: &str = crate::replace::STEP_CHECK;
 pub const STEP_RESTORE: &str = crate::replace::STEP_RESTORE;
@@ -997,6 +1003,15 @@ struct ResumeState {
     file: PathBuf,
     safety: Option<String>,
     checked: bool,
+}
+
+/// Asking a running restore to stop before the switch: this file.
+pub fn cancel_path() -> PathBuf {
+    crate::installation::record_path().with_file_name("restore-cancel")
+}
+
+pub fn request_cancel() -> Result<(), String> {
+    std::fs::write(cancel_path(), b"").map_err(|e| e.to_string())
 }
 
 fn state_path() -> PathBuf {
@@ -1150,14 +1165,24 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
     // The watch, over every disk this run writes to.
     let mut places: Vec<(String, Place)> = store_places(record, &setup).into_iter().map(|(l, p)| (l.to_string(), p)).collect();
     places.push(("temporary files".into(), Place::Host(req.temp_dir.clone().or_else(|| req.file.parent().map(Path::to_path_buf)).unwrap_or_else(std::env::temp_dir))));
-    let mut watch = SpaceWatch::new(probe(places));
+    let _ = std::fs::remove_file(cancel_path());
+    let free_probe = probe(places);
+    // Cancel rides on the watch: it stops pg_restore and the copies the same way.
+    let mut watch = SpaceWatch::new(move || {
+        if cancel_path().exists() {
+            return vec![DiskFree { label: CANCELLED.into(), free: 0 }];
+        }
+        free_probe()
+    });
     watch.min_free = req.min_free();
     #[cfg(debug_assertions)]
     if let Some(secs) = std::env::var("SPM_DEBUG_WATCH_EVERY_MS").ok().and_then(|s| s.parse().ok()) {
         watch.every = std::time::Duration::from_millis(secs);
     }
     let stopped = |e: &str, entry: &mut Entry| {
-        if e.starts_with("Stopped: ") {
+        if e.contains(CANCELLED) {
+            entry.result = Result_::Failed;
+        } else if e.starts_with("Stopped: ") {
             entry.result = Result_::Stopped;
         }
     };
@@ -1184,7 +1209,7 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
                 let e = e.to_string();
                 stopped(&e, entry);
                 fail_at(entry, STEP_INTO_LIVE);
-                Err(format!("{e} Nothing on this instance changed: the telemetry added so far was taken out again."))
+                Err(format!("{} Nothing on this instance changed: the telemetry added so far was taken out again.", plain(e)))
             }
         };
     }
@@ -1228,7 +1253,7 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
         stopped(&e, entry);
         fail_at(entry, STEP_RESTORE);
         drop_restored(&setup, &target, sink);
-        return Err(format!("{e} Nothing on this instance changed: SENTIENT runs on its own data. The half-restored database was removed."));
+        return Err(format!("{} Nothing on this instance changed: SENTIENT runs on its own data. The half-restored database was removed.", plain(e)));
     }
     entry.restored_db = Some(target.clone());
 
@@ -1242,8 +1267,13 @@ fn run_inner(record: &InstallationRecord, req: &Request, passphrase: Option<Stri
             stopped(&e, entry);
             fail_at(entry, STEP_KEEP);
             drop_restored(&setup, &target, sink);
-            return Err(format!("{e} Nothing on this instance changed: SENTIENT runs on its own data. The half-restored database was removed."));
+            return Err(format!("{} Nothing on this instance changed: SENTIENT runs on its own data. The half-restored database was removed.", plain(e)));
         }
+    }
+    if cancel_path().exists() {
+        fail_at(entry, STEP_SCHEMA);
+        drop_restored(&setup, &target, sink);
+        return Err("Cancelled before the switch. Nothing on this instance changed; the half-restored database was removed.".into());
     }
 
     step(sink, STEP_SCHEMA);

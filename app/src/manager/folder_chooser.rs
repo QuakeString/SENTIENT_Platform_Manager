@@ -80,6 +80,10 @@ pub struct Opening {
     pub full_bytes: Option<u64>,
     /// The folder chosen, and whether the backups there move along.
     pub done: Rc<dyn Fn(PathBuf, bool, &mut App)>,
+    /// Another title than "Choose the backup folder on …" (a restore's
+    /// folders); with it, the backups in the current folder are never asked
+    /// about.
+    pub title: Option<String>,
 }
 
 #[derive(Clone)]
@@ -124,7 +128,7 @@ pub const OLD_W: f32 = 520.;
 
 /// Open the chooser in the shared dialog.
 pub fn open(o: Opening, window: &mut Window, cx: &mut App) {
-    let title = format!("Choose the backup folder on {}", o.on);
+    let title = o.title.clone().unwrap_or_else(|| format!("Choose the backup folder on {}", o.on));
     let view = cx.new(|cx| FolderChooser::new(o, window, cx));
     let footer = cx.new(|cx| ChooserFooter { _observe: cx.observe(&view, |_, _, cx| cx.notify()), chooser: view.clone() });
     crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: CHOOSE_W, icon: Some(Icon::new(TITLE_ICON)), on_close: None }, cx);

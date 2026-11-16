@@ -39,7 +39,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
+use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | backup-list <folder> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
 
 /// A console for the output: release builds on Windows have none of their
@@ -298,6 +298,25 @@ pub fn run(args: &[String]) -> i32 {
     // The restore history (crate::restore_flow): one JSON line, and a run's log.
     if job == "restore-history-json" {
         println!("{}", serde_json::to_string(&crate::restore_flow::history()).unwrap_or_default());
+        return 0;
+    }
+    // Stop a running restore before its switch (crate::restore_flow).
+    if job == "restore-cancel" {
+        return match crate::restore_flow::request_cancel() {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+    }
+    // The backups in a folder other than the backup folder (Restore from…).
+    if job == "backup-list" {
+        let Some(folder) = args.get(1) else {
+            eprintln!("{USAGE}");
+            return 2;
+        };
+        println!("{}", serde_json::to_string(&crate::backups::list(std::path::Path::new(folder))).unwrap_or_default());
         return 0;
     }
     if job == "restore-log" {
