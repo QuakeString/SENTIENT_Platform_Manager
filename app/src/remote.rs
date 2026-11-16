@@ -1126,6 +1126,11 @@ pub fn uninstall_facts(inst: &Instance) -> Result<crate::uninstall::Facts, Strin
     read_json(inst, "uninstall-facts-json")
 }
 
+/// Set when the instance list changed outside the Instances page (a
+/// server forgotten after its uninstall): the window takes the new list on
+/// its next frame (Manager::take_list_change).
+pub static LIST_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Forget a server here (Uninstall's "Remove from Instances").
 pub fn forget_instance(id: &str) {
     let mut list = load();
@@ -1136,6 +1141,7 @@ pub fn forget_instance(id: &str) {
     reuse::forget(id);
     list.retain(|i| i.id != id);
     let _ = save(&list);
+    LIST_CHANGED.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 pub fn services(inst: &Instance) -> Result<Vec<RemoteService>, String> {

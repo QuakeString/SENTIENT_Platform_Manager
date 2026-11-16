@@ -512,7 +512,7 @@ pub fn deletes_data(c: &Choice, rows: &[Row]) -> bool {
 }
 
 pub fn human(bytes: u64) -> String {
-    sentient_backup_core::db::human_bytes(bytes as i64)
+    sentient_installer_core::size::label(bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -1362,13 +1362,13 @@ mod tests {
         let mut c = default_choice(&r);
         assert_eq!(
             summary(&c, &r),
-            ("Removes: SENTIENT server, PostgreSQL, shortcuts. Frees 580.0 MB.".into(), "Keeps: PostgreSQL's data, file stores and backups, Gateway, Platform Manager.".into())
+            ("Removes: SENTIENT server, PostgreSQL, shortcuts. Frees 580 MB.".into(), "Keeps: PostgreSQL's data, file stores and backups, Gateway, Platform Manager.".into())
         );
         c.set(Key::KeepPgData, false);
         let (rm, kp) = summary(&c, &r);
-        assert!(rm.contains("PostgreSQL's data") && rm.contains("Frees 37.9 GB"), "{rm}");
+        assert!(rm.contains("PostgreSQL's data") && rm.contains("Frees 38 GB"), "{rm}");
         assert!(!kp.contains("PostgreSQL's data"));
-        assert_eq!(size_text(&r[2], &c, &r), "37.3 GB");
+        assert_eq!(size_text(&r[2], &c, &r), "37 GB");
         c.set(Key::KeepPgData, true);
         assert_eq!(size_text(&r[2], &c, &r), "kept");
         let none = Choice::default();

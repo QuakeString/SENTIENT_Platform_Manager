@@ -21,10 +21,7 @@ use sentient_installer_core::progress::{Progress, ProgressFn};
 use super::fs::{self, Fs, Place};
 /// Sizes as the Files mockup writes them: "38.2 MB", "412 KB", "2 KB".
 pub fn size_label(b: u64) -> String {
-    const K: f64 = 1024.0;
-    let f = b as f64;
-    let (v, unit) = if f >= K * K * K * K { (f / (K * K * K * K), "TB") } else if f >= K * K * K { (f / (K * K * K), "GB") } else if f >= K * K { (f / (K * K), "MB") } else if f >= K { (f / K, "KB") } else { return format!("{b} B") };
-    if v >= 100. || unit == "KB" { format!("{v:.0} {unit}") } else { format!("{v:.1} {unit}") }
+    sentient_installer_core::size::label(b)
 }
 
 use size_label as bytes_label;

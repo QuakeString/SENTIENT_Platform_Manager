@@ -278,19 +278,7 @@ fn capture(bash: &str) -> Result<String, String> {
 
 /// "612 GB", "2.1 GB", "840 MB".
 pub fn human(bytes: u64) -> String {
-    let b = bytes as f64;
-    const K: f64 = 1000.;
-    if b >= K * K * K * K {
-        format!("{:.1} TB", b / (K * K * K * K))
-    } else if b >= 100. * K * K * K {
-        format!("{:.0} GB", b / (K * K * K))
-    } else if b >= K * K * K {
-        format!("{:.1} GB", b / (K * K * K))
-    } else if b >= K * K {
-        format!("{:.0} MB", b / (K * K))
-    } else {
-        format!("{:.0} kB", (b / K).max(if bytes > 0 { 1. } else { 0. }))
-    }
+    crate::size::label(bytes)
 }
 
 fn now_rfc3339() -> String {
@@ -1346,8 +1334,9 @@ mod tests {
         assert!(within("/mnt/a/b", "/mnt/a"));
         assert!(!within("/mnt/ab", "/mnt/a"));
         assert!(within("/x", "/"));
-        assert_eq!(human(612_000_000_000), "612 GB");
-        assert_eq!(human(2_100_000_000), "2.1 GB");
+        // The shared formatter (binary units, crate::size).
+        assert_eq!(human(612 << 30), "612 GB");
+        assert_eq!(human((21 << 30) / 10), "2.1 GB");
         assert_eq!(grouped(2812440118), "2\u{2009}812\u{2009}440\u{2009}118");
         assert_eq!(about(42 * 60), "about 42 minutes");
     }

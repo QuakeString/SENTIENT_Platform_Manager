@@ -331,19 +331,7 @@ pub fn parse_df(text: &str) -> Option<u64> {
 
 /// `1.2 GB`, `340 MB`, `12 KB`, `512 B`.
 pub fn bytes_label(b: u64) -> String {
-    const K: f64 = 1024.0;
-    let f = b as f64;
-    if f >= K * K * K * K {
-        format!("{:.1} TB", f / (K * K * K * K))
-    } else if f >= K * K * K {
-        format!("{:.1} GB", f / (K * K * K))
-    } else if f >= K * K {
-        format!("{:.0} MB", f / (K * K))
-    } else if f >= K {
-        format!("{:.0} KB", f / K)
-    } else {
-        format!("{b} B")
-    }
+    sentient_installer_core::size::label(b)
 }
 
 /// `1 234 567` rows as `1.2 million`.

@@ -101,6 +101,16 @@ impl EventEmitter<OpenInstance> for InstancesPage {}
 impl EventEmitter<ListChanged> for InstancesPage {}
 
 impl InstancesPage {
+    /// The list again from the saved instances (one was removed elsewhere).
+    pub fn reload_list(&mut self, cx: &mut Context<Self>) {
+        self.list = remote::load();
+        self.statuses.retain(|id, _| id == LOCAL || self.list.iter().any(|i| &i.id == id));
+        if self.open.as_ref().is_some_and(|id| !self.list.iter().any(|i| &i.id == id)) {
+            self.open = None;
+        }
+        cx.notify();
+    }
+
     /// A server's state as its card shows it (the switcher's dots), from
     /// the cached status; None before it was first read.
     pub fn tone_of(&self, id: &str) -> Option<Tone> {

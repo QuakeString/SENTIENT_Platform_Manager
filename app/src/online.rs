@@ -103,11 +103,7 @@ pub fn download(version: Option<&str>, sink: &ProgressFn) -> Result<(String, Pat
 
 /// "1.2 GB" / "450 MB"
 pub fn size_label(bytes: u64) -> String {
-    if bytes >= 1 << 30 {
-        format!("{:.1} GB", bytes as f64 / (1u64 << 30) as f64)
-    } else {
-        format!("{} MB", bytes >> 20)
-    }
+    sentient_installer_core::size::label(bytes)
 }
 
 #[cfg(test)]

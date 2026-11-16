@@ -2073,15 +2073,7 @@ fn cluster_port(data: &Path) -> u16 {
 
 /// "1.2 GB", "310 MB", "12 KB".
 pub fn size_words(bytes: u64) -> String {
-    const GB: u64 = 1 << 30;
-    const MB: u64 = 1 << 20;
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{} MB", bytes / MB)
-    } else {
-        format!("{} KB", bytes / 1024)
-    }
+    crate::size::label(bytes)
 }
 
 /// The PostgreSQL folder the leftover service runs from (`-D <pg>\data`).

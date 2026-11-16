@@ -302,5 +302,5 @@ pub fn decode(line: &str) -> Option<Kept> {
 
 /// "1.2 GB"
 pub fn human(bytes: Option<i64>) -> String {
-    bytes.map(sentient_backup_core::db::human_bytes).unwrap_or_default()
+    bytes.map(|b| sentient_installer_core::size::label(b.max(0) as u64)).unwrap_or_default()
 }

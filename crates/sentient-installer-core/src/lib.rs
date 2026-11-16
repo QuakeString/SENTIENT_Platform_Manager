@@ -5,6 +5,7 @@
 pub mod autologin;
 pub mod cancel;
 pub mod checks;
+pub mod size;
 /// ClickHouse for a native Windows install: Docker in WSL2, owned by a
 /// hidden service account so it runs from boot.
 pub mod clickhouse_wsl;

@@ -1093,16 +1093,7 @@ pub fn last_error_lines(ev: &Evidence) -> Vec<String> {
 
 /// "1.2 GB", "450 MB", "12 KB"
 pub fn human(bytes: u64) -> String {
-    let b = bytes as f64;
-    if b >= 1e9 {
-        format!("{:.1} GB", b / 1e9)
-    } else if b >= 1e6 {
-        format!("{:.0} MB", b / 1e6)
-    } else if b >= 1e3 {
-        format!("{:.0} KB", b / 1e3)
-    } else {
-        format!("{bytes} B")
-    }
+    crate::size::label(bytes)
 }
 
 /// Everything, for "Copy details".

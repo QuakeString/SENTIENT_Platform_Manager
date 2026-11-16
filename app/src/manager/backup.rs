@@ -1412,11 +1412,7 @@ pub(crate) fn folder_value(theme: &gpui_kit::component::Theme, folder: &std::pat
 
 /// Free space as the mockup writes it: "412 GB", "64.1 GB", "1.8 TB".
 pub(crate) fn free_label(b: u64) -> String {
-    let l = crate::dbstatus::bytes_label(b);
-    match l.split_once(' ') {
-        Some((n, unit)) if n.parse::<f64>().is_ok_and(|v| v >= 100.) => format!("{:.0} {unit}", n.parse::<f64>().unwrap_or(0.)),
-        _ => l,
-    }
+    sentient_installer_core::size::label(b)
 }
 
 /// A choice as a menu button (the card's segments on a narrow window).

@@ -1999,8 +1999,28 @@ impl Manager {
     }
 }
 
+impl Manager {
+    /// A server forgotten outside the Instances page (after its uninstall):
+    /// the switcher and Instances take the new list at once, and the window
+    /// goes back to this computer when it was the open one.
+    fn take_list_change(&mut self, cx: &mut Context<Self>) {
+        if !crate::remote::LIST_CHANGED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let before = std::mem::replace(&mut self.remotes, crate::remote::load());
+        self.prune_kept(&before);
+        if self.open_remote.as_ref().is_some_and(|id| !self.remotes.iter().any(|r| &r.id == id)) {
+            self.open_instance(None, cx);
+        }
+        if let Some(p) = &self.instances {
+            p.update(cx, |p, cx| p.reload_list(cx));
+        }
+    }
+}
+
 impl Render for Manager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.take_list_change(cx);
         // Windows 10: the app's caption and rounded corners (crate::win_frame).
         let root = self.render_root(window, cx).into_any_element();
         crate::win_frame::frame(crate::mode::AppMode::Manager.window_title(), root, window, cx)
