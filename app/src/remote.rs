@@ -2401,7 +2401,8 @@ mod restore_live {
         let sum = run(&inst, &format!("sha256sum {path}"), None).unwrap();
         let mine = sentient_backup_core::util::sha256_file(&local).unwrap().0;
         assert!(sum.starts_with(&mine), "{sum} vs {mine}");
-        eprintln!("upload: {} progress readings, last {:?}", seen.lock().unwrap().len(), seen.lock().unwrap().last());
+        let readings = seen.lock().unwrap().clone();
+        eprintln!("upload: {} progress readings, last {:?}", readings.len(), readings.last());
         // Resume: cut the file on the server to a part and send again.
         run(&inst, &format!("head -c 12000000 {path} > {path}.part && rm {path}"), None).unwrap();
         let path = upload_backup(&inst, &local, "/tmp/spme/up", &|_, _| {}).expect("resumed upload");
