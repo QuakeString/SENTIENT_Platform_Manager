@@ -433,6 +433,20 @@ impl Manager {
                     cx.defer(move |cx| remote_pages::ask_sudo_password(inst, std::rc::Rc::new(|_: &mut App| {}), cx));
                 }
             }
+            // The Stop dialog: "others" lists a shared PostgreSQL's other
+            // databases, "error" a listing that failed, "checking" waits.
+            if let Some(v) = std::env::var_os("SPM_DEBUG_STOP_DIALOG") {
+                let v = v.to_string_lossy().to_string();
+                let probe: status::PgProbe = std::sync::Arc::new(move || match v.as_str() {
+                    "error" => Err("psql: connection to server on socket failed".into()),
+                    "checking" => {
+                        std::thread::sleep(std::time::Duration::from_secs(600));
+                        Ok(Vec::new())
+                    }
+                    _ => Ok(vec!["erp".into(), "wiki".into(), "grafana".into()]),
+                });
+                cx.defer(move |cx| status::confirm_stop(cx, Some(probe), std::rc::Rc::new(|_, _: &mut App| {})));
+            }
             if std::env::var_os("SPM_DEBUG_PARTS_DIALOG").is_some() {
                 let part = |t: &str, m: &str, n: &str, b: u64| crate::dbstatus::DetachedPart { table: t.into(), partition: m.into(), name: n.into(), reason: "broken-on-start".into(), bytes: b };
                 let list = vec![
@@ -1828,7 +1842,7 @@ impl Manager {
                     "stop" => "stop",
                     _ => "restart",
                 };
-                cx.defer(move |cx| page.update(cx, |c, cx| c.run(verb, cx)));
+                cx.defer(move |cx| page.update(cx, |c, cx| c.run(verb, false, cx)));
             }
         }
     }

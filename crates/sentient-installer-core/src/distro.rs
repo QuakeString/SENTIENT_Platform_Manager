@@ -1206,6 +1206,31 @@ pub fn control(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Result<(),
     Ok(())
 }
 
+/// Start, stop or restart the whole stack: compose over all of the
+/// project's services, which it orders by their dependencies
+/// (crate::stack_order::docker_commands); a start waits for SENTIENT to
+/// answer.
+pub fn control_stack(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Result<(), String> {
+    use crate::stack_order::{docker_commands, wait_until, SENTIENT_READY_SECS};
+    let subs = docker_commands(action, cfg.external.is_some())?;
+    for sub in &subs {
+        sink(Progress::Step { name: if *sub == "stop" { "Stopping SENTIENT and its databases".into() } else { "Starting the databases, then SENTIENT".into() } });
+        run_stream(&sink, &cfg.control_cmd(sub))?;
+    }
+    if action != "stop" {
+        sink(Progress::Step { name: "Waiting for SENTIENT to answer".into() });
+        if !wait_until(SENTIENT_READY_SECS, || crate::native::http_answers(cfg.http_port)) {
+            return Err(format!(
+                "SENTIENT was started but does not answer on port {} after {} minutes. Its log says why.",
+                cfg.http_port,
+                SENTIENT_READY_SECS / 60
+            ));
+        }
+    }
+    sink(Progress::Done { message: format!("{action}: done.") });
+    Ok(())
+}
+
 /// Start, stop or restart one container of the stack. `container` must come
 /// from the stack's own list (the caller checks it).
 pub fn service_control(sink: ProgressFn, container: &str, action: &str) -> Result<(), String> {

@@ -204,6 +204,26 @@ pub fn alert(window: &mut Window, cx: &mut App, build: impl FnOnce(Alert, &mut W
     open(Modal { title, body: view.into(), width: 480., icon: None, on_close: None }, cx);
 }
 
+/// A dialog's destructive action: a solid red fill with white text, as tall
+/// as Cancel (the toolkit's danger variant is a pale tint that reads as
+/// disabled).
+pub fn danger_button(theme: &gpui_kit::component::Theme, id: &'static str, label: SharedString, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
+    h_flex()
+        .id(id)
+        .h(px(32.))
+        .px_3()
+        .items_center()
+        .rounded(theme.radius)
+        .bg(theme.danger)
+        .text_color(gpui_kit::white())
+        .text_sm()
+        .font_weight(FontWeight::MEDIUM)
+        .cursor_pointer()
+        .hover(|d| d.opacity(0.9))
+        .child(label)
+        .on_click(on_click)
+}
+
 struct AlertBody {
     a: Alert,
 }
@@ -225,21 +245,7 @@ impl Render for AlertBody {
         // fill with white text, as tall as Cancel (the toolkit's danger
         // variant is a pale tint that reads as disabled).
         let ok: AnyElement = if destructive {
-            h_flex()
-                .id("alert-ok")
-                .h(px(32.))
-                .px_3()
-                .items_center()
-                .rounded(theme.radius)
-                .bg(theme.danger)
-                .text_color(gpui_kit::white())
-                .text_sm()
-                .font_weight(FontWeight::MEDIUM)
-                .cursor_pointer()
-                .hover(|d| d.opacity(0.9))
-                .child(self.a.ok.clone())
-                .on_click(click)
-                .into_any_element()
+            danger_button(&theme, "alert-ok", self.a.ok.clone(), click).into_any_element()
         } else {
             crate::ui::button("alert-ok").label(self.a.ok.clone()).primary().on_click(click).into_any_element()
         };

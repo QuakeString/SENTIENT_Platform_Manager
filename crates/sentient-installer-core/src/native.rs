@@ -1609,6 +1609,166 @@ pub fn control(sink: ProgressFn, cfg: &NativeConfig, action: &str) -> Result<(),
     }
 }
 
+/// The PostgreSQL databases that are not SENTIENT's, where PostgreSQL may be
+/// shared: the distribution's service on Linux. On Windows PostgreSQL is
+/// SENTIENT's own service: none.
+pub fn pg_other_databases(cfg: &NativeConfig) -> Result<Vec<String>, String> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::native_linux::pg_other_databases(cfg)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = cfg;
+        Ok(Vec::new())
+    }
+}
+
+/// Start, stop or restart the whole stack in order (crate::stack_order).
+/// `stop_shared_pg`: stop a shared PostgreSQL anyway (Linux).
+pub fn control_stack(sink: ProgressFn, cfg: &NativeConfig, action: &str, stop_shared_pg: bool) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::native_linux::control_stack(sink, cfg, action, stop_shared_pg)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = stop_shared_pg;
+        let steps = crate::stack_order::plan(action, cfg.flavor == Flavor::Clickhouse, None)?;
+        for s in &windows_steps(&steps) {
+            run_windows_step(&sink, cfg, s)?;
+        }
+        sink(Progress::Done { message: format!("{action}: done.") });
+        Ok(())
+    }
+}
+
+/// One Windows action of a stack plan.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WinStep {
+    /// `sc stop`, then wait until it reports stopped.
+    StopService(&'static str),
+    StartService(&'static str),
+    /// The keep-alive task stops ClickHouse in WSL2 cleanly.
+    StopClickHouse,
+    /// The keep-alive task starts ClickHouse in WSL2 again.
+    StartClickHouse,
+    WaitPostgres,
+    WaitClickHouse,
+    WaitSentient,
+}
+
+/// A stack plan as Windows runs it: services by name, ClickHouse through
+/// its WSL2 keep-alive task.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn windows_steps(steps: &[crate::stack_order::Step]) -> Vec<WinStep> {
+    use crate::stack_order::{Part, Step};
+    steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::Stop(Part::Sentient) => Some(WinStep::StopService(APP_SERVICE)),
+            Step::Stop(Part::ClickHouse) => Some(WinStep::StopClickHouse),
+            Step::Stop(Part::Postgres) => Some(WinStep::StopService(PG_SERVICE)),
+            Step::Start(Part::Postgres) => Some(WinStep::StartService(PG_SERVICE)),
+            Step::Start(Part::ClickHouse) => Some(WinStep::StartClickHouse),
+            Step::Start(Part::Sentient) => Some(WinStep::StartService(APP_SERVICE)),
+            Step::Ready(Part::Postgres) => Some(WinStep::WaitPostgres),
+            Step::Ready(Part::ClickHouse) => Some(WinStep::WaitClickHouse),
+            Step::Ready(Part::Sentient) => Some(WinStep::WaitSentient),
+            Step::KeepPostgres(_) => None,
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run_windows_step(sink: &ProgressFn, cfg: &NativeConfig, s: &WinStep) -> Result<(), String> {
+    use crate::stack_order::{SENTIENT_READY_SECS, wait_until};
+    let label = |svc: &str| if svc == APP_SERVICE { "SENTIENT" } else { "PostgreSQL" };
+    match *s {
+        WinStep::StopService(svc) => {
+            if !service_exists(svc) {
+                return Ok(());
+            }
+            step(sink, &format!("Stopping {}", label(svc)));
+            let _ = sc(&["stop", svc]);
+            if !wait_until(90, || matches!(service_state(svc).as_str(), "stopped" | "absent")) {
+                return Err(format!("{} did not stop within a minute and a half.", label(svc)));
+            }
+        }
+        WinStep::StartService(svc) => {
+            if !service_exists(svc) {
+                return Ok(());
+            }
+            step(sink, &format!("Starting {}", label(svc)));
+            let _ = sc(&["start", svc]);
+        }
+        WinStep::StopClickHouse => {
+            #[cfg(windows)]
+            {
+                step(sink, "Stopping ClickHouse");
+                if !crate::clickhouse_wsl::stop_clickhouse(cfg.ch_http_port, std::time::Duration::from_secs(150), |_| {}) {
+                    return Err("ClickHouse did not stop cleanly in time.".into());
+                }
+            }
+        }
+        WinStep::StartClickHouse => {
+            #[cfg(windows)]
+            {
+                step(sink, "Starting ClickHouse");
+                let task = crate::clickhouse_wsl::KEEPALIVE_TASK;
+                let _ = sys::output("schtasks.exe", &["/end", "/tn", task]);
+                let _ = sys::output("schtasks.exe", &["/run", "/tn", task]);
+            }
+        }
+        WinStep::WaitPostgres => {
+            if service_exists(PG_SERVICE) {
+                let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cfg.pg_port));
+                let answers = || std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1)).is_ok();
+                if !wait_until(120, answers) {
+                    return Err(format!("PostgreSQL did not answer on port {} within 2 minutes.", cfg.pg_port));
+                }
+            }
+        }
+        WinStep::WaitClickHouse => {
+            if !wait_until(240, || crate::distro::clickhouse_answers(cfg.ch_http_port)) {
+                return Err("ClickHouse did not answer within 4 minutes.".into());
+            }
+        }
+        WinStep::WaitSentient => {
+            step(sink, "Waiting for SENTIENT to answer");
+            if !wait_until(SENTIENT_READY_SECS, || is_running(cfg.http_port)) {
+                return Err(format!(
+                    "SENTIENT was started but does not answer on port {} after {} minutes. Its log says why.",
+                    cfg.http_port,
+                    SENTIENT_READY_SECS / 60
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod stack_tests {
+    use super::*;
+    use crate::stack_order::plan;
+
+    #[test]
+    fn windows_stops_and_starts_the_services_in_order() {
+        use WinStep::*;
+        assert_eq!(windows_steps(&plan("stop", true, None).unwrap()), [StopService(APP_SERVICE), StopClickHouse, StopService(PG_SERVICE)]);
+        assert_eq!(
+            windows_steps(&plan("start", true, None).unwrap()),
+            [StartService(PG_SERVICE), WaitPostgres, StartClickHouse, WaitClickHouse, StartService(APP_SERVICE), WaitSentient]
+        );
+        assert_eq!(
+            windows_steps(&plan("restart", false, None).unwrap()),
+            [StopService(APP_SERVICE), StopService(PG_SERVICE), StartService(PG_SERVICE), WaitPostgres, StartService(APP_SERVICE), WaitSentient]
+        );
+    }
+}
+
 pub fn logs(cfg: &NativeConfig, tail: u32) -> String {
     #[cfg(target_os = "linux")]
     {
