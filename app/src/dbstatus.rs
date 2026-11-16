@@ -435,7 +435,32 @@ pub fn db_password(record: &InstallationRecord) -> Result<String, String> {
 /// Whether reading asks for the administrator password (native Linux): the
 /// screen then reads only when asked, not on a timer.
 pub fn needs_admin(record: &InstallationRecord) -> bool {
-    cfg!(target_os = "linux") && record.engine == Engine::Native
+    #[cfg(target_os = "linux")]
+    {
+        use sentient_installer_core::native_linux::{env_access, EnvAccess};
+        record.engine == Engine::Native && !crate::rootjob::is_root() && env_access() != EnvAccess::Readable
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = record;
+        false
+    }
+}
+
+/// Reading would ask for the password, but signing in again makes it
+/// readable without one (the account was just added to sentient-admin):
+/// the screen says so instead of offering a password prompt.
+pub fn after_sign_in(record: &InstallationRecord) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use sentient_installer_core::native_linux::{env_access, EnvAccess};
+        record.engine == Engine::Native && !crate::rootjob::is_root() && env_access() == EnvAccess::AfterSignIn
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = record;
+        false
+    }
 }
 
 /// Read everything, within [`LIMIT`]. Blocking: run it in the background.

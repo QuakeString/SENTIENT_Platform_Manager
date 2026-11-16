@@ -98,6 +98,11 @@ fn main() {
     // Agent mode runs as the hidden ClickHouse account: no window, no
     // elevation (that account is not an administrator).
     let args: Vec<String> = std::env::args().collect();
+    // The root helper a job's one password prompt starts (pkexec <this>
+    // --root-session): it runs the job's root steps sent over its pipe.
+    if let Some(code) = sentient_installer_core::elevation::serve_if_requested(&args) {
+        std::process::exit(code);
+    }
     if args.get(1).map(String::as_str) == Some("--clickhouse-agent") {
         std::process::exit(agent::run(args.get(2).map(String::as_str).unwrap_or("")));
     }

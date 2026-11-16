@@ -33,6 +33,10 @@ const APP_USER: &str = "sentient";
 const ENV_FILE: &str = "/etc/sentient/sentient.env";
 const UNIT_FILE: &str = "/etc/systemd/system/sentient.service";
 const LOG_DIR: &str = "/var/log/sentient";
+/// Who may read SENTIENT's configuration without root: the account that
+/// installed it (added at install and repair) and the service's own user.
+/// The Platform Manager's pages then read it without asking for a password.
+pub const ADMIN_GROUP: &str = "sentient-admin";
 
 /// ClickHouse version installed natively — the same 24.8 LTS line the Docker
 /// engine pins (`clickhouse/clickhouse-server:24.8`). Newer majors changed the
@@ -495,7 +499,7 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     script.push_str(&format!(
         "echo '>> Writing the configuration'\n\
          cat > {ENV_FILE} <<'SENTIENTEOF'\n{env}SENTIENTEOF\n\
-         chown root:{APP_USER} {ENV_FILE} && chmod 640 {ENV_FILE}\n\
+         {access}\
          if runuser -u postgres -- psql -p {pgport} -d {db} -tAc \"SELECT to_regclass('public.tb_user') IS NOT NULL\" 2>/dev/null | grep -q t; then\n\
            echo '>> Checking the SENTIENT database (nothing is changed when it is already installed)'\n\
          else\n\
@@ -511,7 +515,7 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
          systemctl daemon-reload\n\
          systemctl enable {APP_UNIT} >/dev/null 2>&1\n\
          systemctl restart {APP_UNIT}\n",
-        env = env_file_body(cfg), unit = unit_body(cfg), inst = shq(&install_dir), url = shq(&db_url),
+        env = env_file_body(cfg), unit = unit_body(cfg), inst = shq(&install_dir), url = shq(&db_url), access = admin_group_script(),
         pgport = cfg.pg_port, db = shq(&cfg.db_name),
         stock_fix = if cfg.flavor == stack::Flavor::Stock {
             format!(
@@ -557,11 +561,95 @@ fn env_value(text: &str, key: &str) -> Option<String> {
     Some(inner.replace("'\\''", "'"))
 }
 
-pub fn read_secrets(_cfg: &NativeConfig) -> Result<EnvSecrets, String> {
-    let (ok, out, err) = exec::privileged_output(&format!("cat {ENV_FILE}")).ok_or("could not read the SENTIENT environment")?;
-    if !ok {
-        return Err(format!("read {ENV_FILE}: {}", err.trim()));
+/// The root part of install and repair that lets the Platform Manager read
+/// SENTIENT's configuration without root: the [`ADMIN_GROUP`] group with
+/// the installing account (the user behind pkexec or sudo) and the service
+/// user in it, `/etc/sentient` root:group 0750 and the environment file
+/// root:group 0640. systemd reads `EnvironmentFile=` as root; the service
+/// user reads beside it as a member.
+fn admin_group_script() -> String {
+    format!(
+        "getent group {G} >/dev/null 2>&1 || groupadd --system {G}\n\
+         if id -u {APP_USER} >/dev/null 2>&1; then usermod -aG {G} {APP_USER} || true; fi\n\
+         WHO=\"${{PKEXEC_UID:-${{SUDO_UID:-}}}}\"\n\
+         if [ -n \"$WHO\" ] && [ \"$WHO\" != 0 ]; then\n\
+           WHO_NAME=$(id -nu \"$WHO\" 2>/dev/null || true)\n\
+           if [ -n \"$WHO_NAME\" ]; then usermod -aG {G} \"$WHO_NAME\" && echo \">> $WHO_NAME may now read the SENTIENT configuration (after signing in again)\"; fi\n\
+         fi\n\
+         mkdir -p /etc/sentient\n\
+         chown root:{G} /etc/sentient && chmod 0750 /etc/sentient\n\
+         if [ -f {ENV_FILE} ]; then chown root:{G} {ENV_FILE} && chmod 0640 {ENV_FILE}; fi\n",
+        G = ADMIN_GROUP,
+    )
+}
+
+/// May this account read SENTIENT's configuration (and so its passwords)
+/// without asking for the administrator password?
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvAccess {
+    /// Yes (root, or a member of [`ADMIN_GROUP`] in this session).
+    Readable,
+    /// It is a member, but this session started before it was added.
+    AfterSignIn,
+    /// Not a member: an install from before the group, until Repair.
+    NeedsRepair,
+    /// There is no configuration file.
+    Missing,
+}
+
+pub const AFTER_SIGN_IN: &str = "Available after you sign in again (your account was given access to SENTIENT's settings).";
+pub const NEEDS_REPAIR: &str = "Needs the administrator password. Repair once and the Platform Manager reads it without one.";
+
+fn user_listed_in(group: &str) -> bool {
+    let me = sys::output("id", &["-un"]).map(|(_, o, _)| String::from_utf8_lossy(&o).trim().to_string()).unwrap_or_default();
+    let groups = std::fs::read_to_string("/etc/group").unwrap_or_default();
+    !me.is_empty() && listed(&groups, group, &me)
+}
+
+/// `name` among the members of `group` in /etc/group's text.
+fn listed(groups: &str, group: &str, name: &str) -> bool {
+    groups
+        .lines()
+        .find_map(|l| {
+            let mut f = l.split(':');
+            (f.next() == Some(group)).then(|| f.nth(2).unwrap_or("").split(',').any(|m| m.trim() == name))
+        })
+        .unwrap_or(false)
+}
+
+pub fn env_access() -> EnvAccess {
+    match std::fs::File::open(ENV_FILE) {
+        Ok(_) => EnvAccess::Readable,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => EnvAccess::Missing,
+        Err(_) if user_listed_in(ADMIN_GROUP) => EnvAccess::AfterSignIn,
+        Err(_) => EnvAccess::NeedsRepair,
     }
+}
+
+/// The environment file's text: read directly when this account may, else
+/// through the root helper — which asks for the password only inside an
+/// action the user started (crate::elevation); a page gets a message.
+fn read_env_text() -> Result<String, String> {
+    match std::fs::read_to_string(ENV_FILE) {
+        Ok(t) => return Ok(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("{ENV_FILE} is missing")),
+        Err(_) => {}
+    }
+    let (ok, out, err) = exec::privileged_output(&format!("cat {ENV_FILE}")).ok_or("could not read the SENTIENT environment")?;
+    if ok {
+        return Ok(out);
+    }
+    if crate::elevation::ElevationError::from_message(&err) == Some(crate::elevation::ElevationError::NotNow) {
+        return Err(match env_access() {
+            EnvAccess::AfterSignIn => AFTER_SIGN_IN.to_string(),
+            _ => NEEDS_REPAIR.to_string(),
+        });
+    }
+    Err(format!("read {ENV_FILE}: {}", err.trim()))
+}
+
+pub fn read_secrets(_cfg: &NativeConfig) -> Result<EnvSecrets, String> {
+    let out = read_env_text()?;
     // postgresql://user:password@host:port/db
     let url = env_value(&out, "DATABASE_URL").ok_or("the environment file has no DATABASE_URL")?;
     let db_password = url
@@ -618,7 +706,7 @@ const ENGINE_ENV: &[&str] = &[
 pub fn read_installed() -> Option<Result<FoundNative, String>> {
     let install_dir = installed_dir()?;
     Some((|| {
-        let text = read_private_file(ENV_FILE)?.ok_or_else(|| format!("{ENV_FILE} is missing"))?;
+        let text = read_env_text()?;
         let env: Vec<(String, String)> = text
             .lines()
             .map(str::trim)
@@ -677,12 +765,15 @@ pub fn read_installed() -> Option<Result<FoundNative, String>> {
             ch_http_port,
             ch_native_port,
         };
-        // PostgreSQL's settings as the server has them.
+        // PostgreSQL's settings as the server has them: through SENTIENT's
+        // own database login when it answers, else as the postgres account
+        // (through the root helper, never a new password prompt on a page).
+        let probe = cfg.clone();
         let show = |name: &str| {
-            exec::privileged_output(&format!("runuser -u postgres -- psql -p {} -qAt -c {}", cfg.pg_port, shq(&format!("SHOW {name}"))))
+            pg_show_tcp(&probe, name).or_else(|| exec::privileged_output(&format!("runuser -u postgres -- psql -p {} -qAt -c {}", probe.pg_port, shq(&format!("SHOW {name}"))))
                 .filter(|(ok, _, _)| *ok)
                 .map(|(_, out, _)| out.trim().to_string())
-                .filter(|v| !v.is_empty())
+                .filter(|v| !v.is_empty()))
         };
         if let Some(v) = show("max_connections").and_then(|v| v.parse().ok()) {
             cfg.pg.pg_max_connections = v;
@@ -701,6 +792,22 @@ pub fn read_installed() -> Option<Result<FoundNative, String>> {
         }
         Ok(FoundNative { cfg, running: installed_running(), notes, problem })
     })())
+}
+
+/// `SHOW name` as SENTIENT's database user over TCP (its password is in
+/// `cfg`), without root.
+fn pg_show_tcp(cfg: &NativeConfig, name: &str) -> Option<String> {
+    if cfg.db_password.is_empty() {
+        return None;
+    }
+    let out = sys::command("psql")
+        .args(["-h", "127.0.0.1", "-p", &cfg.pg_port.to_string(), "-U", &cfg.db_user, "-d", &cfg.db_name, "-w", "-qAt", "-c", &format!("SHOW {name}")])
+        .env("PGPASSWORD", &cfg.db_password)
+        .env("PGCONNECT_TIMEOUT", "5")
+        .output()
+        .ok()?;
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !v.is_empty()).then_some(v)
 }
 
 /// Check the Platform Manager can do its work on a found installation.
@@ -739,6 +846,11 @@ pub fn verify_installed(found: &FoundNative) -> Result<(), String> {
 /// A root-only file of SENTIENT's (as root, through polkit unless already
 /// root); `None` if it is not there.
 pub fn read_private_file(path: &str) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(t) => return Ok(Some(t)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => {}
+    }
     let (ok, out, err) = exec::privileged_output(&format!("if [ -f {p} ]; then cat {p}; else echo __missing__ >&2; fi", p = shq(path)))
         .ok_or("could not run the administrator command")?;
     match (ok, err.contains("__missing__")) {
@@ -763,6 +875,11 @@ pub fn write_private_file(sink: &ProgressFn, path: &str, text: &str) -> Result<(
 /// Whether SENTIENT's environment file (where Linux keeps the passwords) is
 /// there.
 pub fn env_file_exists() -> bool {
+    match std::fs::metadata(ENV_FILE) {
+        Ok(_) => return true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(_) => {}
+    }
     exec::privileged_output(&format!("test -f {ENV_FILE}")).is_some_and(|(ok, _, _)| ok)
 }
 
@@ -799,8 +916,9 @@ pub fn reconfigure(sink: &ProgressFn, cfg: &NativeConfig, pg_changed: bool) -> R
         "set -e\n\
          systemctl stop {APP_UNIT}\n\
          cat > {ENV_FILE} <<'SENTIENTEOF'\n{env}SENTIENTEOF\n\
-         chown root:{APP_USER} {ENV_FILE} && chmod 640 {ENV_FILE}\n",
-        env = env_file_body(cfg)
+         {access}",
+        env = env_file_body(cfg),
+        access = admin_group_script()
     );
     if pg_changed {
         let mut alter = String::new();
@@ -1093,6 +1211,15 @@ mod start_tests {
     #[test]
     fn exit_codes_say_why() {
         assert!(setup_error("bash exited with 42", 5432).contains("another PostgreSQL version"));
+        let groups = "root:x:0:\nsentient-admin:x:961:sentient,mz\nwheel:x:998:mz\n";
+        assert!(listed(groups, "sentient-admin", "mz"));
+        assert!(listed(groups, "sentient-admin", "sentient"));
+        assert!(!listed(groups, "sentient-admin", "ops"));
+        assert!(!listed(groups, "docker", "mz"));
+        let access = admin_group_script();
+        assert!(access.contains("chown root:sentient-admin /etc/sentient && chmod 0750 /etc/sentient"));
+        assert!(access.contains("chmod 0640"));
+        assert!(access.contains("PKEXEC_UID"));
         assert!(setup_error("pkexec exited with 43", 5433).contains("5433"));
         assert!(setup_error("x exited with 41", 5432).contains("stopped while starting"));
         assert_eq!(setup_error("x exited with 1", 5432), "x exited with 1");

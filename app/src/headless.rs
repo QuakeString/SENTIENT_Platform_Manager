@@ -79,12 +79,31 @@ fn json_printer() -> ProgressFn {
 }
 
 pub fn run(args: &[String]) -> i32 {
+    let code = run_job(args);
+    // Tests count the password prompts a job causes.
+    if std::env::var_os("SPM_ELEVATION_STATS").is_some() {
+        use sentient_installer_core::elevation;
+        eprintln!("elevation: {} password prompt(s), {} root step(s)", elevation::prompts(), elevation::steps());
+    }
+    code
+}
+
+fn run_job(args: &[String]) -> i32 {
     attach_console();
     let json = args.first().is_some_and(|a| a == "--json");
     let args = if json { &args[1..] } else { args };
     if !crate::elevate::is_admin() {
         eprintln!("Run this from an elevated prompt (Run as administrator).");
         return 2;
+    }
+    // Typed in a terminal, the job is the user's own action: its root steps
+    // may ask for the password (once, sentient_installer_core::elevation).
+    // A timer's job (stats-sample, scheduled-backup) never asks.
+    {
+        use std::io::IsTerminal as _;
+        if std::io::stdin().is_terminal() || std::io::stderr().is_terminal() {
+            sentient_installer_core::elevation::allow_in_process();
+        }
     }
     let job = args.first().map(String::as_str).unwrap_or("");
     if job == "install" {

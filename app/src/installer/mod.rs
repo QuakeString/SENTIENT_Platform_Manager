@@ -1055,11 +1055,15 @@ impl Installer {
     fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let failed = matches!(self.install.read(cx).state(), JobState::Failed(_));
+        let again = match self.install.read(cx).state() {
+            JobState::Failed(m) => crate::ui::retry_label(m, "Retry"),
+            _ => "Retry",
+        };
         // While the page can't be left, Next is off and says why.
         let blocked = if self.step < SUMMARY { self.validate(cx).err() } else { None };
         let next_label = match self.step {
             SUMMARY => "Install",
-            INSTALL if failed => "Retry",
+            INSTALL if failed => again,
             INSTALL => "Installing…",
             FINISH => "Close",
             _ => "Next",

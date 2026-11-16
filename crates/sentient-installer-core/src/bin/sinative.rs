@@ -119,6 +119,12 @@ fn sink() -> sentient_installer_core::progress::ProgressFn {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // The root helper of the one elevation (sentient_installer_core::elevation).
+    if let Some(code) = sentient_installer_core::elevation::serve_if_requested(&args) {
+        std::process::exit(code);
+    }
+    // A harness run from a terminal: its root steps may ask, once.
+    sentient_installer_core::elevation::allow_in_process();
     if args.len() < 3 {
         eprintln!("usage: sinative <stage|setup|deploy|status|control|logs|cleanup> <root|-> [arg]");
         eprintln!("       '-' as <root> uses the production default layout");
