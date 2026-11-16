@@ -7,9 +7,11 @@
 //! copy…"; a failure switched back). The same screens for this computer and
 //! a server; the work is crate::movedata's.
 //!
-//! The flow takes Platform settings' place while it is open, for the
-//! instance it was opened on: [`open`] from anywhere (Migration's fourth
-//! card, Status's low-disk warning, the restore flow).
+//! The flow is a sub-flow of the page it was opened from (Migration's
+//! fourth card, Status's low-disk warning, the restore flow in Backup and
+//! restore, Platform settings' Data locations): it takes that page's place
+//! while open, for the instance it was opened on, the menu keeps that page
+//! selected, and its back arrow returns there (crate::manager's SubFlow).
 
 use std::collections::HashMap;
 
@@ -38,6 +40,11 @@ use crate::ui::{self, Tone};
 struct FlowSlot(Option<(Option<String>, Entity<MoveFlow>)>);
 impl Global for FlowSlot {}
 
+/// Counts the openings (also one that kept a running move): the shell
+/// shows the flow, a sub-flow of the page it was opened from, each time.
+struct Opened(usize);
+impl Global for Opened {}
+
 /// A page the flow asks the shell to show ("Free space in Files").
 static GO: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
 
@@ -54,23 +61,27 @@ fn go(page: &'static str, cx: &mut App) {
 }
 
 /// Open "Move data to another disk" on `target` (`on`: its name, "this
-/// computer"), with `store` ticked when one was asked for. Platform settings
-/// shows it until it is closed.
+/// computer"), with `store` ticked when one was asked for. The page it was
+/// opened from shows it until it is closed.
 pub fn open(target: Target, on: impl Into<String>, store: Option<Store>, window: &mut Window, cx: &mut App) {
     let key = match &target {
         Target::Local => None,
         Target::Remote(i) => Some(i.id.clone()),
     };
     // A move still running there stays.
+    let n = cx.try_global::<Opened>().map(|o| o.0).unwrap_or(0) + 1;
+    cx.set_global(Opened(n));
     if let Some((k, flow)) = cx.try_global::<FlowSlot>().and_then(|s| s.0.clone()) {
         if k == key && flow.read(cx).running(cx) {
             cx.set_global(FlowSlot(Some((k, flow))));
+            cx.refresh_windows();
             return;
         }
     }
     let on = on.into();
     let flow = cx.new(|cx| MoveFlow::new(target, on, store, window, cx));
     cx.set_global(FlowSlot(Some((key, flow))));
+    cx.refresh_windows();
 }
 
 /// The flow open for this instance (None: this computer), if any.
@@ -79,10 +90,16 @@ pub fn shown(instance: Option<&String>, cx: &App) -> Option<Entity<MoveFlow>> {
     (k.as_ref() == instance).then_some(f)
 }
 
-/// Whether a flow was opened since `seen` (the shell switches to Platform
-/// settings then).
+/// How many times the flow was opened: a new count is a new opening (the
+/// shell shows it as a sub-flow of the page it was opened from).
 pub fn generation(cx: &App) -> usize {
-    cx.try_global::<FlowSlot>().and_then(|s| s.0.as_ref().map(|(_, f)| f.entity_id().as_u64() as usize)).unwrap_or(0)
+    cx.try_global::<Opened>().map(|o| o.0).unwrap_or(0)
+}
+
+/// The flow open for this instance, by its entity (the shell's sub-flow
+/// token), if any.
+pub fn open_flow(instance: Option<&String>, cx: &App) -> Option<u64> {
+    shown(instance, cx).map(|f| f.entity_id().as_u64())
 }
 
 fn close(cx: &mut App) {
@@ -491,10 +508,12 @@ impl MoveFlow {
     // -- disk -------------------------------------------------------------
 
     /// What a disk says for a store: (selectable, text, tone).
-    fn verdict(&self, d: &Disk, s: Store) -> (bool, String, Tone) {
-        let Some(ov) = self.overview() else { return (false, String::new(), Tone::Neutral) };
+    /// Whether `d` can hold `s`: selectable, the answer ("Yes", "No"), the
+    /// reason under it, and its tone.
+    fn verdict(&self, d: &Disk, s: Store) -> (bool, &'static str, Option<String>, Tone) {
+        let Some(ov) = self.overview() else { return (false, "", None, Tone::Neutral) };
         if self.place(s).and_then(|p| p.mount.as_ref()) == Some(&d.mount) {
-            return (false, format!("Yes · {} is here now", s.label()), Tone::Neutral);
+            return (false, "Yes", Some(format!("{} is here now", s.label())), Tone::Neutral);
         }
         let blocks = move_data::disk_blocks(d, s, self.needed(s), s.label());
         if let Some(b) = blocks.first() {
@@ -505,11 +524,11 @@ impl MoveFlow {
                 BlockKind::TooSmall => "Too small".to_string(),
                 _ => b.title.clone(),
             };
-            return (true, t, Tone::Bad);
+            return (true, "No", Some(t), Tone::Bad);
         }
         let here: Vec<&str> = ov.places.iter().filter(|p| p.store != s && p.store != Store::Backups && p.mount.as_ref() == Some(&d.mount)).map(|p| p.store.label()).collect();
-        let t = if here.is_empty() { "Yes".to_string() } else { format!("Yes · {} {} here", here.join(" and "), if here.len() == 1 { "is" } else { "are" }) };
-        (true, t, Tone::Good)
+        let reason = (!here.is_empty()).then(|| format!("{} {} here", here.join(" and "), if here.len() == 1 { "is" } else { "are" }));
+        (true, "Yes", reason, Tone::Good)
     }
 
     fn choose_disk(&mut self, s: Store, mount: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -641,6 +660,11 @@ impl MoveFlow {
             Stage::Disk(i) => Stage::Folder(i - 1),
             Stage::Folder(i) => Stage::Disk(i),
             Stage::Plan => Stage::Folder(self.chosen.len().saturating_sub(1)),
+            // Ended: back to the page it was opened from.
+            Stage::Run if !self.running(cx) => {
+                close(cx);
+                return;
+            }
             Stage::Run => Stage::Run,
         };
         cx.notify();
@@ -849,6 +873,7 @@ impl MoveFlow {
                     .outline()
                     .icon(Icon::new(Lucide::ChevronLeft))
                     .tooltip("Back")
+                    .disabled(self.stage == Stage::Run && self.running(cx))
                     .on_click(cx.listener(|me, _, _, cx| me.back(cx))),
             )
             .child(
@@ -897,9 +922,11 @@ impl MoveFlow {
             .gap(crate::ui::button_gap())
             .items_center()
             .mt_auto()
-            .child(crate::ui::probed(ui::button("md-back").outline().label("Back").on_click(cx.listener(|me, _, _, cx| me.back(cx)))))
+            // Every action on the right: the secondary ones first, the
+            // primary rightmost.
             .child(div().flex_1())
             .child(crate::ui::probed(ui::button("md-cancel").ghost().label("Cancel").on_click(|_, _, cx| close(cx))))
+            .child(crate::ui::probed(ui::button("md-back").outline().label("Back").on_click(cx.listener(|me, _, _, cx| me.back(cx)))))
             .children(primary.map(ui::probed))
     }
 
@@ -946,15 +973,39 @@ impl MoveFlow {
         let Some(ov) = self.overview() else { return div() };
         let picked = self.picks.get(&s).and_then(|p| p.mount.clone());
         let head = |t: &'static str| div().text_size(px(12.5)).text_color(theme.muted_foreground).child(t);
+        // The columns fit any width: the disk and its mount point share
+        // what the fixed columns leave (cut, the full name in a tooltip);
+        // "Fits?" says yes or no with the reason wrapping under it. Narrow:
+        // the mount point with the device under it, Free and Fits?.
+        let fits_w = if narrow { 124. } else { 164. };
         let cols = |r: Stateful<Div>, radio: AnyElement, disk: AnyElement, mount: AnyElement, ty: AnyElement, size: AnyElement, free: AnyElement, verdict: AnyElement| {
             r.child(div().w(px(28.)).flex_shrink_0().child(radio))
-                .when(!narrow, |r| r.child(div().w(px(150.)).flex_shrink_0().child(disk)))
-                .child(div().w(px(if narrow { 110. } else { 150. })).flex_shrink_0().min_w_0().overflow_hidden().child(mount))
-                .when(!narrow, |r| r.child(div().w(px(64.)).flex_shrink_0().child(ty)))
-                .when(!narrow, |r| r.child(h_flex().w(px(76.)).flex_shrink_0().justify_end().child(size)))
-                .child(h_flex().w(px(76.)).flex_shrink_0().justify_end().child(free))
-                .child(div().flex_1().min_w_0().pl(px(20.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(verdict))
+                .when(!narrow, |r| r.child(div().flex_1().flex_basis(px(0.)).min_w_0().overflow_hidden().pr(px(10.)).child(disk)))
+                .child(div().flex_1().flex_basis(px(0.)).min_w_0().overflow_hidden().pr(px(10.)).child(mount))
+                .when(!narrow, |r| r.child(div().w(px(56.)).flex_shrink_0().child(ty)))
+                .when(!narrow, |r| r.child(h_flex().w(px(72.)).flex_shrink_0().justify_end().child(size)))
+                .child(h_flex().w(px(72.)).flex_shrink_0().justify_end().child(free))
+                .child(div().w(px(fits_w)).flex_shrink_0().min_w_0().pl(px(16.)).child(verdict))
         };
+        // A name cut to its column, the full name in a tooltip.
+        let cut = |id: String, text: String| {
+            let tip = text.clone();
+            div()
+                .id(SharedString::from(id))
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .font_family(theme.mono_font_family.clone())
+                .text_size(px(13.))
+                .child(text)
+                .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx))
+        };
+        let fits_help = format!(
+            "Whether the disk can hold {} ({}): enough free space for it, and a local disk that is not FAT or read-only. The line under the answer says why.",
+            store_label(s, self.windows),
+            size_label(self.needed(s))
+        );
         let mut table = v_flex().rounded(px(8.)).border_1().border_color(theme.border).overflow_hidden().child(cols(
             h_flex().id("md-disk-head").h(px(32.)).px(px(10.)).items_center().bg(theme.muted.opacity(0.5)),
             div().into_any_element(),
@@ -963,10 +1014,10 @@ impl MoveFlow {
             head("Type").into_any_element(),
             head("Size").into_any_element(),
             head("Free").into_any_element(),
-            div().text_size(px(12.5)).text_color(theme.muted_foreground).child(format!("Can hold {} ({})", s.label(), size_label(self.needed(s)))).into_any_element(),
+            h_flex().gap(px(4.)).items_center().child(head("Fits?")).child(ui::info("md-fits-help".into(), fits_help.into())).into_any_element(),
         ));
         for (n, d) in ov.disks.iter().enumerate() {
-            let (selectable, text, tone) = self.verdict(d, s);
+            let (selectable, answer, reason, tone) = self.verdict(d, s);
             let on = picked.as_deref() == Some(d.mount.as_str());
             let color = match tone {
                 Tone::Good => good_green(theme),
@@ -983,6 +1034,7 @@ impl MoveFlow {
             let row = h_flex()
                 .id(SharedString::from(format!("md-disk-{n}")))
                 .min_h(px(34.))
+                .py(px(6.))
                 .px(px(10.))
                 .items_center()
                 .text_size(px(13.5))
@@ -990,15 +1042,31 @@ impl MoveFlow {
                 .border_color(theme.border)
                 .when(selectable, |r| r.cursor_pointer().hover(|r| r.bg(theme.list_hover)))
                 .when(selectable, |r| r.on_click(cx.listener(move |me, _, window, cx| me.choose_disk(s, mount.clone(), window, cx))));
+            let device = h_flex()
+                .gap(px(6.))
+                .items_center()
+                .min_w_0()
+                .child(Icon::new(Lucide::HardDrive).size_4().flex_shrink_0().text_color(theme.muted_foreground))
+                .child(cut(format!("md-disk-dev-{n}"), d.source.clone()));
+            let mount_cell = if narrow {
+                // The device under the mount point (cut, in its tooltip).
+                v_flex().min_w_0().child(cut(format!("md-disk-mnt-{n}"), d.mount.clone())).child(cut(format!("md-disk-dev-{n}"), d.source.clone()).text_size(px(12.)).text_color(theme.muted_foreground))
+            } else {
+                v_flex().min_w_0().child(cut(format!("md-disk-mnt-{n}"), d.mount.clone()))
+            };
+            let verdict = v_flex()
+                .min_w_0()
+                .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(color).child(answer))
+                .when_some(reason, |c, r| c.child(div().text_size(px(12.)).line_height(px(16.)).text_color(theme.muted_foreground).child(r)));
             table = table.child(cols(
                 row,
                 radio.into_any_element(),
-                h_flex().gap(px(6.)).items_center().min_w_0().child(Icon::new(Lucide::HardDrive).size_4().text_color(theme.muted_foreground)).child(mono_value(theme, d.source.clone())).into_any_element(),
-                mono_value(theme, d.mount.clone()).into_any_element(),
+                device.into_any_element(),
+                mount_cell.into_any_element(),
                 div().child(d.fstype.clone()).into_any_element(),
-                div().font_features(ui::tabular()).child(free_label(d.size)).into_any_element(),
-                div().font_features(ui::tabular()).child(free_label(d.avail)).into_any_element(),
-                div().text_size(px(13.)).text_color(color).child(text).into_any_element(),
+                div().font_features(ui::tabular()).whitespace_nowrap().child(free_label(d.size)).into_any_element(),
+                div().font_features(ui::tabular()).whitespace_nowrap().child(free_label(d.avail)).into_any_element(),
+                verdict.into_any_element(),
             ));
         }
         let title = if self.windows { format!("Disk for {}", store_label(s, true)) } else { format!("Disk for {}", s.label()) };
@@ -1032,6 +1100,8 @@ impl MoveFlow {
                 h_flex()
                     .gap(crate::ui::button_gap())
                     .flex_wrap()
+                    .justify_end()
+                    .when(too_small, |r| r.child(crate::ui::probed(ui::button("md-free-space").outline().icon(Icon::new(Lucide::Folder)).label("Free space in Files").on_click(|_, _, cx| go("files", cx)))))
                     .child(crate::ui::probed(ui::button("md-pick-another").primary().label(if matches!(stage, Stage::Folder(_)) { "Pick another folder" } else { "Pick another disk" }).on_click(cx.listener(move |me, _, _, cx| {
                         if let Stage::Disk(i) = me.stage {
                             let s = me.chosen[i];
@@ -1040,8 +1110,7 @@ impl MoveFlow {
                             }
                         }
                         cx.notify();
-                    }))))
-                    .when(too_small, |r| r.child(crate::ui::probed(ui::button("md-free-space").outline().icon(Icon::new(Lucide::Folder)).label("Free space in Files").on_click(|_, _, cx| go("files", cx))))),
+                    })))),
             )
     }
 
@@ -1054,14 +1123,16 @@ impl MoveFlow {
         let top = h_flex()
             .gap_2()
             .items_center()
-            .child(ui::button("md-up").outline().icon(Icon::new(Lucide::ChevronLeft)).tooltip("Up one folder").disabled(up.is_none()).on_click(cx.listener(move |me, _, window, cx| {
+            // Probed: the layout test takes their edges for buttons, not a
+            // row divider broken by the gaps beside the path.
+            .child(crate::ui::probed(ui::button("md-up").outline().icon(Icon::new(Lucide::ChevronLeft)).tooltip("Up one folder").disabled(up.is_none()).on_click(cx.listener(move |me, _, window, cx| {
                 if let Some(u) = up.clone() {
                     me.set_path(s, u.clone(), window, cx);
                     me.list(s, u, cx);
                 }
-            })))
+            }))))
             .child(div().flex_1().min_w_0().font_family(theme.mono_font_family.clone()).child(Input::new(&p.input)))
-            .child(ui::button("md-new").outline().icon(Icon::empty().path("icons/folder-plus.svg")).label("New folder").on_click(cx.listener(move |me, _, window, cx| {
+            .child(crate::ui::probed(ui::button("md-new").outline().icon(Icon::empty().path("icons/folder-plus.svg")).label("New folder").on_click(cx.listener(move |me, _, window, cx| {
                 let input = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
                 let sub = cx.subscribe(&input, move |me: &mut Self, input, e: &InputEvent, cx| {
                     if let InputEvent::PressEnter { .. } = e {
@@ -1075,7 +1146,7 @@ impl MoveFlow {
                     p.new_name = Some(input);
                 }
                 cx.notify();
-            })));
+            }))));
         let header = h_flex()
             .h(px(30.))
             .px(px(10.))
@@ -1354,8 +1425,9 @@ impl MoveFlow {
                         .gap(crate::ui::button_gap())
                         .items_center()
                         .flex_wrap()
-                        .child(ui::button("md-run-cancel").outline().label("Cancel").on_click(cx.listener(|me, _, _, cx| me.cancel_run(cx))))
-                        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Cancel puts everything back as it was and starts SENTIENT.")),
+                        .child(div().flex_1().min_w(px(160.)).text_size(px(13.)).text_color(theme.muted_foreground).child("Cancel puts everything back as it was and starts SENTIENT."))
+                        // On the right, also when wrapped under the text.
+                        .child(crate::ui::probed(ui::button("md-run-cancel").outline().label("Cancel").on_click(cx.listener(|me, _, _, cx| me.cancel_run(cx)))).ml_auto()),
                 );
             }
             JobState::Done(_) => {
@@ -1386,22 +1458,24 @@ impl MoveFlow {
                 let mine: Vec<move_data::OldCopy> = outcome.as_ref().map(|o| o.old_copies.iter().filter(|c| !c.partial && self.moves.iter().any(|m| m.store == c.store)).cloned().collect()).unwrap_or_default();
                 let newest = mine.iter().map(|c| c.at.clone()).max().unwrap_or_default();
                 let old: Vec<move_data::OldCopy> = mine.into_iter().filter(|c| c.at == newest).collect();
+                // The text on the left; the buttons on the right (also when
+                // wrapped under it): Remove old copy…, then Done.
                 let mut row = h_flex().gap(crate::ui::button_gap()).items_center().flex_wrap();
+                let mut buttons = h_flex().gap(crate::ui::button_gap()).items_center().ml_auto();
                 if let Some(c) = old.first().filter(|_| !self.removed) {
                     let paths: Vec<String> = old.iter().map(|c| c.path.clone()).collect();
                     let at = ov.disks.iter().filter(|d| c.path.starts_with(&d.mount)).max_by_key(|d| d.mount.len()).map(|d| d.mount.clone()).unwrap_or_else(|| c.path.clone());
                     row = row
-                        .child(ui::button("md-rm-old").outline().icon(Icon::empty().path("icons/trash.svg")).label(if old.len() > 1 { "Remove old copies…" } else { "Remove old copy…" }).loading(self.removing).on_click(cx.listener(move |me, _, window, cx| me.remove_copy(paths.clone(), window, cx))))
                         .child(div().flex_1().min_w(px(160.)).text_size(px(13.)).text_color(theme.muted_foreground).child(format!(
                             "{} {} {at}. Remove {} once SENTIENT has run well for a while.",
                             size_label(old.iter().map(|c| c.bytes).sum()),
                             if c.path.contains("/spm-moved/") { "in Docker's folder on" } else { "on" },
                             if old.len() > 1 { "them" } else { "it" }
                         )));
-                } else {
-                    row = row.child(div().flex_1());
+                    buttons = buttons
+                        .child(crate::ui::probed(ui::button("md-rm-old").outline().icon(Icon::empty().path("icons/trash.svg")).label(if old.len() > 1 { "Remove old copies…" } else { "Remove old copy…" }).loading(self.removing).on_click(cx.listener(move |me, _, window, cx| me.remove_copy(paths.clone(), window, cx)))));
                 }
-                card = card.child(row.child(ui::button("md-done").primary().label("Done").on_click(|_, _, cx| close(cx))));
+                card = card.child(row.child(buttons.child(crate::ui::probed(ui::button("md-done").primary().label("Done").on_click(|_, _, cx| close(cx))))));
             }
             JobState::Failed(msg) => {
                 let title = format!("{what} {} not moved", if self.moves.len() == 1 { "was" } else { "were" });
@@ -1450,14 +1524,15 @@ impl MoveFlow {
                     h_flex()
                         .gap(crate::ui::button_gap())
                         .flex_wrap()
-                        .when_some(partial.filter(|_| !self.removed), |r, p| {
-                            r.child(crate::ui::probed(ui::button("md-rm-partial").outline().icon(Icon::empty().path("icons/trash.svg")).label("Remove the partial copy…").loading(self.removing).on_click(cx.listener(move |me, _, window, cx| me.remove_copy(vec![p.clone()], window, cx)))))
-                        })
-                        .child(crate::ui::probed(ui::button("md-try-other").primary().label("Try another disk").on_click(cx.listener(|me, _, _, cx| me.try_again(cx)))))
+                        .justify_end()
                         .child(crate::ui::probed(ui::button("md-show-log").outline().label(if self.show_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|me, _, _, cx| {
                             me.show_log = !me.show_log;
                             cx.notify();
-                        })))),
+                        }))))
+                        .when_some(partial.filter(|_| !self.removed), |r, p| {
+                            r.child(crate::ui::probed(ui::button("md-rm-partial").outline().icon(Icon::empty().path("icons/trash.svg")).label("Remove the partial copy…").loading(self.removing).on_click(cx.listener(move |me, _, window, cx| me.remove_copy(vec![p.clone()], window, cx)))))
+                        })
+                        .child(crate::ui::probed(ui::button("md-try-other").primary().label("Try another disk").on_click(cx.listener(|me, _, _, cx| me.try_again(cx))))),
                 );
             }
         }
@@ -1562,12 +1637,10 @@ impl Render for MoveFlow {
             self.locations = Some(cx.new(|cx| LocationsCard::new(t, on, w, cx)));
         }
         let page = v_flex().id("page").flex_1().min_w_0().h_full().overflow_y_scroll().p(px(ui::PAGE_PAD)).gap(px(ui::GAP)).bg(theme.muted);
+        // The run keeps the flow's title (the menu keeps the page it was
+        // opened from); its back arrow closes it once the move has ended.
         if self.stage == Stage::Run {
-            let title = v_flex()
-                .gap_0p5()
-                .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Platform settings"))
-                .child(div().text_sm().text_color(theme.muted_foreground).child("Ports, addresses and data of SENTIENT on this server."));
-            return page.child(title).child(self.run_view(&theme, window, cx));
+            return page.child(self.title_row(&theme, cx)).child(self.run_view(&theme, window, cx));
         }
         let page = page.child(self.title_row(&theme, cx)).child(self.stepper(&theme));
         let body: Div = match &self.ov {
@@ -1613,7 +1686,8 @@ impl Render for MoveFlow {
 impl MoveFlow {
     /// `SPM_DEBUG_MOVEDATA_FRAME=M4|M5|M6|M7b|M7c|M8|M9|M10|M11|M12|M13b`.
     fn debug_frame(&mut self, cx: &mut Context<Self>) {
-        let Ok(f) = std::env::var("SPM_DEBUG_MOVEDATA_FRAME") else { return };
+        // SPM_DEBUG_MOVE_STEP: the layout tests' wizard steps (below).
+        let Some(f) = std::env::var("SPM_DEBUG_MOVEDATA_FRAME").ok().or_else(|| std::env::var("SPM_DEBUG_MOVE_STEP").ok().map(|s| format!("step:{s}"))) else { return };
         let Some(window) = cx.windows().first().copied() else { return };
         let me = cx.entity().downgrade();
         cx.defer(move |cx| {
@@ -1646,7 +1720,35 @@ impl MoveFlow {
             me.chosen = vec![ch];
             me.choose_disk(ch, "/mnt/disk-c".into(), window, cx);
         };
+        // The wizard's steps for PostgreSQL (the layout tests): the disk
+        // table with the root disk's long device name, a folder, the plan,
+        // the result of a scripted move.
+        let pg = Store::Pg;
+        let pg_to_c = |me: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+            me.chosen = vec![pg];
+            me.choose_disk(pg, "/mnt/disk-c".into(), window, cx);
+        };
         match f {
+            "step:what" => self.chosen = vec![pg],
+            "step:disk" => {
+                pg_to_c(self, window, cx);
+                self.stage = Stage::Disk(0);
+            }
+            "step:folder" => {
+                pg_to_c(self, window, cx);
+                self.list_typed(pg, cx);
+                self.stage = Stage::Folder(0);
+            }
+            "step:plan" => {
+                pg_to_c(self, window, cx);
+                self.estimate(cx);
+                self.stage = Stage::Plan;
+            }
+            "step:run" => {
+                pg_to_c(self, window, cx);
+                self.stage = Stage::Run;
+                self.start(cx);
+            }
             "M4" => self.chosen = vec![ch],
             "M5" => {
                 to_c(self, window, cx);

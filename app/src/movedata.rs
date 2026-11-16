@@ -245,7 +245,9 @@ pub mod debug {
     /// `SPM_DEBUG_MOVEDATA=1`: the mockup's server (disks A–C, a NAS, a USB
     /// stick); `=win`: the Windows server.
     pub fn on() -> Option<String> {
-        std::env::var("SPM_DEBUG_MOVEDATA").ok().filter(|v| !v.is_empty())
+        // A wizard step for the layout tests (SPM_DEBUG_MOVE_STEP) brings
+        // the canned server with it.
+        std::env::var("SPM_DEBUG_MOVEDATA").ok().filter(|v| !v.is_empty()).or_else(|| std::env::var_os("SPM_DEBUG_MOVE_STEP").map(|_| "1".to_string()))
     }
 
     fn slow() {
@@ -290,7 +292,7 @@ pub mod debug {
                 Place { store: Store::Backups, volume: String::new(), path: "/var/backups/sentient".into(), bind: true, bytes: Some(17 * G + 400 * (1 << 20)), mount: Some("/".into()) },
             ],
             disks: vec![
-                d("/dev/sda1", "/", "ext4", 500 * G, 64 * G + 100 * (1 << 20), DiskKind::Local),
+                d("/dev/mapper/ubuntu--vg-ubuntu--lv", "/", "ext4", 500 * G, 64 * G + 100 * (1 << 20), DiskKind::Local),
                 d("/dev/sdb1", "/mnt/disk-a", "ext4", 2 * T, 1400 * G, DiskKind::Local),
                 d("/dev/sdc1", "/mnt/disk-b", "xfs", 4 * T, 3100 * G, DiskKind::Local),
                 d("/dev/sdd1", "/mnt/disk-c", "xfs", 2 * T, if moved { 1300 * G } else { 1900 * G }, DiskKind::Local),
