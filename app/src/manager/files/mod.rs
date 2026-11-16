@@ -1,0 +1,1020 @@
+// Copyright © 2016-2026 The SENTIENT Authors
+
+//! Files (mockup C1–C7): this computer on the left, the open instance on the
+//! right (over SFTP on its SSH sign-in; this computer again when none is
+//! open). Drag between the panes, Ctrl+C / Ctrl+V (folders too), rename,
+//! new folder and delete with a confirmation. Copies run in the background
+//! (crate::manager::files::transfers). A folder the account may not change
+//! is read only, with "Open as administrator" on a server (sudo, its
+//! password asked once).
+
+pub(crate) mod fs;
+pub(crate) mod transfers;
+
+use std::collections::BTreeSet;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+
+use gpui_kit::component::{
+    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex,
+    button::ButtonVariants as _,
+    input::{Input, InputEvent, InputState},
+    menu::{ContextMenuExt as _, PopupMenuItem},
+};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+
+use self::fs::{Entry, Fs, Listing, Place, Shortcut};
+use self::transfers::{Request, Transfers};
+use self::transfers::size_label as bytes_label;
+use crate::ui::{self, Tone};
+
+const ROW_H: f32 = 34.;
+const COL_SIZE: f32 = 84.;
+const COL_TIME: f32 = 110.;
+const COL_OWNER: f32 = 70.;
+/// The panes' side padding (the layout test's card padding).
+const PANE_PX: f32 = 16.;
+
+/// What Ctrl+C took.
+#[derive(Clone)]
+struct Clip {
+    place: Place,
+    admin: bool,
+    dir: String,
+    names: Vec<String>,
+}
+
+struct ClipSlot(Option<Clip>);
+impl Global for ClipSlot {}
+
+/// What a drag carries (and draws by the pointer, C2).
+#[derive(Clone)]
+struct Drag {
+    side: usize,
+    names: Vec<String>,
+    dir: bool,
+}
+
+impl Render for Drag {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        drag_card(cx.theme(), &self.names, self.dir)
+    }
+}
+
+fn drag_card(theme: &gpui_kit::component::Theme, names: &[String], dir: bool) -> Div {
+    h_flex()
+        .w(px(260.))
+        .p(px(16.))
+        .gap(px(16.))
+        .items_center()
+        .rounded(px(8.))
+        .bg(theme.background)
+        .border_1()
+        .border_color(theme.primary)
+        .shadow_lg()
+        .child(file_icon(dir).size(px(48.)).text_color(if dir { folder_color() } else { theme.foreground }))
+        .child(div().flex_1().min_w_0().text_sm().child(names.first().cloned().unwrap_or_default()))
+        .when(names.len() > 1, |c| {
+            c.child(div().flex_shrink_0().px(px(7.)).rounded_full().bg(theme.primary).text_color(theme.primary_foreground).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(names.len().to_string()))
+        })
+}
+
+struct Pane {
+    place: Place,
+    admin: bool,
+    /// Where "Open as administrator" was asked: leaving it drops the rights,
+    /// so nothing elsewhere is made as root by accident.
+    admin_root: String,
+    conn: Arc<Mutex<Option<Box<dyn Fs>>>>,
+    path: String,
+    listing: Option<Listing>,
+    loading: bool,
+    error: Option<String>,
+    shortcuts: Vec<Shortcut>,
+    selected: BTreeSet<String>,
+    anchor: Option<usize>,
+    focus: FocusHandle,
+    rename: Option<(String, Entity<InputState>)>,
+    new_folder: Option<Entity<InputState>>,
+    seq: u64,
+}
+
+impl Pane {
+    fn new(place: Place, cx: &mut Context<FilesPage>) -> Pane {
+        Pane {
+            place,
+            admin: false,
+            admin_root: String::new(),
+            conn: Arc::new(Mutex::new(None)),
+            path: String::new(),
+            listing: None,
+            loading: true,
+            error: None,
+            shortcuts: Vec::new(),
+            selected: BTreeSet::new(),
+            anchor: None,
+            focus: cx.focus_handle(),
+            rename: None,
+            new_folder: None,
+            seq: 0,
+        }
+    }
+
+    /// The listing's entries as shown: folders first, then by name (hidden
+    /// ones last); the
+    /// parts of copies under way are hidden.
+    fn rows(&self) -> Vec<Entry> {
+        let mut rows: Vec<Entry> = self.listing.as_ref().map(|l| l.entries.iter().filter(|e| !e.name.ends_with(".spm-part")).cloned().collect()).unwrap_or_default();
+        // Hidden names (".env") after the others, in each group.
+        rows.sort_by(|a, b| b.dir.cmp(&a.dir).then(a.name.starts_with('.').cmp(&b.name.starts_with('.'))).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+        rows
+    }
+
+    /// May change things here.
+    fn writable(&self) -> bool {
+        self.admin || self.listing.as_ref().is_some_and(|l| l.writable)
+    }
+
+    fn label(&self) -> String {
+        match &self.place {
+            Place::Local => "This computer".into(),
+            Place::Remote(i) => i.name.clone(),
+        }
+    }
+}
+
+pub struct FilesPage {
+    panes: [Pane; 2],
+    drag_over: Option<usize>,
+    /// How many items the drag carries.
+    drag_count: usize,
+    transfers: Entity<Transfers>,
+    _subs: Vec<Subscription>,
+    _tasks: Vec<Task<()>>,
+}
+
+impl FilesPage {
+    /// `remote`: the open instance (else this computer on both sides).
+    pub fn new(remote: Option<crate::remote::Instance>, cx: &mut Context<Self>) -> Self {
+        let transfers = transfers::get(cx);
+        let subs = vec![cx.subscribe(&transfers, |this: &mut Self, _, e: &transfers::Changed, cx| {
+            for side in 0..2 {
+                let (key, path) = (this.panes[side].place.key(), this.panes[side].path.clone());
+                if e.0.iter().any(|(k, d)| *k == key && *d == path) {
+                    this.load(side, path.clone(), None, cx);
+                }
+            }
+        }), cx.observe(&transfers, |_, _, cx| cx.notify())];
+        let right = remote.map(Place::Remote).unwrap_or(Place::Local);
+        let mut me = FilesPage { panes: [Pane::new(Place::Local, cx), Pane::new(right, cx)], drag_over: None, drag_count: 0, transfers, _subs: subs, _tasks: Vec::new() };
+        for side in 0..2 {
+            // Click tests: where each side starts (SPM_DEBUG_FILES_START=<left>|<right>).
+            #[cfg(debug_assertions)]
+            let start = std::env::var("SPM_DEBUG_FILES_START").ok().and_then(|v| v.split('|').nth(side).map(String::from)).unwrap_or_default();
+            #[cfg(not(debug_assertions))]
+            let start = String::new();
+            me.load(side, start, None, cx);
+        }
+        #[cfg(debug_assertions)]
+        me.debug_state(cx);
+        me
+    }
+
+    /// Screens: a selection and a state (SPM_DEBUG_FILES_SELECT=1:a+b and
+    /// SPM_DEBUG_FILES_STATE=drag|copying|ask|delete).
+    #[cfg(debug_assertions)]
+    fn debug_state(&mut self, cx: &mut Context<Self>) {
+        if let Ok(sel) = std::env::var("SPM_DEBUG_FILES_SELECT") {
+            for part in sel.split(';') {
+                if let Some((side, names)) = part.split_once(':') {
+                    let side: usize = side.parse().unwrap_or(0).min(1);
+                    self.panes[side].selected = names.split('+').map(String::from).collect();
+                }
+            }
+        }
+        match std::env::var("SPM_DEBUG_FILES_STATE").as_deref() {
+            Ok("drag") => self.drag_over = Some(1),
+            Ok("copying") => {
+                let to = self.panes[1].place.clone();
+                self.transfers.update(cx, |t, cx| t.debug_fill(to, cx));
+            }
+            Ok("ask") => cx.defer(transfers::debug_ask),
+            Ok("delete") => {
+                let task = cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(std::time::Duration::from_secs(4)).await;
+                    this.update(cx, |p, cx| p.confirm_delete(1, cx)).ok();
+                });
+                self._tasks.push(task);
+            }
+            _ => {}
+        }
+    }
+
+    /// Run `op` on a side's connection (made when there is none), then
+    /// `then` here.
+    fn run<T: Send + 'static>(
+        &mut self,
+        side: usize,
+        op: impl FnOnce(&mut dyn Fs) -> Result<T, String> + Send + 'static,
+        then: impl FnOnce(&mut Self, Result<T, String>, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let p = &self.panes[side];
+        let (conn, place, admin) = (p.conn.clone(), p.place.clone(), p.admin);
+        let task = cx.spawn(async move |this, cx| {
+            let r = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut g = conn.lock().map_err(|_| "The connection is busy.".to_string())?;
+                    if g.is_none() {
+                        *g = Some(fs::open(&place, admin)?);
+                    }
+                    let f = g.as_mut().expect("opened");
+                    let r = op(f.as_mut());
+                    if let Err(e) = &r {
+                        if f.broken(e) {
+                            *g = None;
+                        }
+                    }
+                    r
+                })
+                .await;
+            this.update(cx, |p, cx| {
+                then(p, r, cx);
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
+    /// List `path` (empty: home), and pick `select` in it.
+    fn load(&mut self, side: usize, path: String, select: Option<String>, cx: &mut Context<Self>) {
+        let pane = &mut self.panes[side];
+        if pane.admin && !(path.starts_with(&pane.admin_root) && !path.is_empty()) {
+            pane.admin = false;
+            pane.conn = Arc::new(Mutex::new(None));
+        }
+        pane.seq += 1;
+        let seq = pane.seq;
+        pane.loading = true;
+        pane.error = None;
+        let first = pane.shortcuts.is_empty();
+        self.run(
+            side,
+            move |f| {
+                let path = if path.is_empty() { f.home() } else { path };
+                let shortcuts = if first { f.shortcuts() } else { Vec::new() };
+                Ok((f.list(&path)?, shortcuts))
+            },
+            move |this, r, cx| {
+                let pane = &mut this.panes[side];
+                if pane.seq != seq {
+                    return;
+                }
+                pane.loading = false;
+                match r {
+                    Ok((l, shortcuts)) => {
+                        if !shortcuts.is_empty() {
+                            pane.shortcuts = shortcuts;
+                        }
+                        if !pane.path.is_empty() && pane.path != l.path {
+                            pane.selected.clear();
+                            pane.anchor = None;
+                            pane.rename = None;
+                        }
+                        pane.path = l.path.clone();
+                        let names: BTreeSet<String> = l.entries.iter().map(|e| e.name.clone()).collect();
+                        pane.selected.retain(|n| names.contains(n));
+                        if let Some(s) = select.filter(|s| names.contains(s)) {
+                            pane.selected = [s].into();
+                        }
+                        pane.listing = Some(l);
+                    }
+                    Err(e) => pane.error = Some(e),
+                }
+                cx.notify();
+            },
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn reload(&mut self, side: usize, cx: &mut Context<Self>) {
+        let path = self.panes[side].path.clone();
+        self.load(side, path, None, cx);
+    }
+
+    fn open_dir(&mut self, side: usize, name: &str, cx: &mut Context<Self>) {
+        let p = &self.panes[side];
+        let path = p.place.join(&p.path, name);
+        self.load(side, path, None, cx);
+    }
+
+    fn up(&mut self, side: usize, cx: &mut Context<Self>) {
+        let p = &self.panes[side];
+        if let Some(up) = p.place.parent(&p.path) {
+            let from = p.path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().map(String::from);
+            self.load(side, up, from, cx);
+        }
+    }
+
+    /// A row clicked: select it (Ctrl adds, Shift a range); twice opens a folder.
+    fn click_row(&mut self, side: usize, i: usize, e: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.panes[side].rows();
+        let Some(row) = rows.get(i) else { return };
+        let pane = &mut self.panes[side];
+        window.focus(&pane.focus, cx);
+        if e.click_count() >= 2 {
+            if row.dir {
+                let name = row.name.clone();
+                self.open_dir(side, &name, cx);
+            }
+            return;
+        }
+        let m = e.modifiers();
+        if m.shift {
+            let a = pane.anchor.unwrap_or(i);
+            let (lo, hi) = (a.min(i), a.max(i));
+            pane.selected = rows[lo..=hi].iter().map(|r| r.name.clone()).collect();
+        } else if m.control || m.platform {
+            if !pane.selected.remove(&row.name) {
+                pane.selected.insert(row.name.clone());
+            }
+            pane.anchor = Some(i);
+        } else {
+            pane.selected = [row.name.clone()].into();
+            pane.anchor = Some(i);
+        }
+        cx.notify();
+    }
+
+    /// Copy the names from one side into the other side's folder (or the
+    /// clipboard's into this one).
+    fn copy(&mut self, from: usize, names: Vec<String>, to: usize, cx: &mut Context<Self>) {
+        if names.is_empty() {
+            return;
+        }
+        if !self.panes[to].writable() {
+            ui::show_error("This folder is read only", read_only_text(&self.panes[to]), cx);
+            return;
+        }
+        let (f, t) = (&self.panes[from], &self.panes[to]);
+        let r = Request { from: f.place.clone(), from_admin: f.admin, from_dir: f.path.clone(), names, to: t.place.clone(), to_admin: t.admin, to_dir: t.path.clone() };
+        self.transfers.update(cx, |q, cx| q.add(r, cx));
+    }
+
+    fn clip_copy(&mut self, side: usize, cx: &mut Context<Self>) {
+        let p = &self.panes[side];
+        if p.selected.is_empty() {
+            return;
+        }
+        cx.set_global(ClipSlot(Some(Clip { place: p.place.clone(), admin: p.admin, dir: p.path.clone(), names: p.selected.iter().cloned().collect() })));
+        cx.notify();
+    }
+
+    fn clip_paste(&mut self, side: usize, cx: &mut Context<Self>) {
+        let Some(c) = cx.try_global::<ClipSlot>().and_then(|c| c.0.clone()) else { return };
+        let t = &self.panes[side];
+        if !t.writable() {
+            ui::show_error("This folder is read only", read_only_text(t), cx);
+            return;
+        }
+        let r = Request { from: c.place, from_admin: c.admin, from_dir: c.dir, names: c.names, to: t.place.clone(), to_admin: t.admin, to_dir: t.path.clone() };
+        self.transfers.update(cx, |q, cx| q.add(r, cx));
+    }
+
+    fn start_rename(&mut self, side: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.panes[side].selected.iter().next().cloned() else { return };
+        if !self.panes[side].writable() {
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(name.clone()));
+        let sub = cx.subscribe_in(&input, window, move |this: &mut Self, input, e: &InputEvent, _, cx| match e {
+            InputEvent::PressEnter { .. } => {
+                let to = input.read(cx).value().trim().to_string();
+                this.finish_rename(side, to, cx);
+            }
+            InputEvent::Blur => {
+                this.panes[side].rename = None;
+                cx.notify();
+            }
+            _ => {}
+        });
+        input.update(cx, |s, cx| s.focus(window, cx));
+        self._subs.push(sub);
+        self.panes[side].rename = Some((name, input));
+        cx.notify();
+    }
+
+    fn finish_rename(&mut self, side: usize, to: String, cx: &mut Context<Self>) {
+        let Some((from, _)) = self.panes[side].rename.take() else { return };
+        if to.is_empty() || to == from || to.contains(['/', '\\']) {
+            cx.notify();
+            return;
+        }
+        let p = &self.panes[side];
+        let (a, b) = (p.place.join(&p.path, &from), p.place.join(&p.path, &to));
+        let path = p.path.clone();
+        self.run(
+            side,
+            move |f| {
+                if f.meta(&b)?.is_some() {
+                    return Err(format!("{to} is already there."));
+                }
+                f.rename(&a, &b).map(|_| to)
+            },
+            move |this, r, cx| match r {
+                Ok(to) => this.load(side, path, Some(to), cx),
+                Err(e) => ui::show_error("Not renamed", e, cx),
+            },
+            cx,
+        );
+    }
+
+    fn start_new_folder(&mut self, side: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.panes[side].writable() {
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
+        let sub = cx.subscribe_in(&input, window, move |this: &mut Self, input, e: &InputEvent, _, cx| {
+            if let InputEvent::PressEnter { .. } = e {
+                let name = input.read(cx).value().trim().to_string();
+                this.make_folder(side, name, cx);
+            }
+        });
+        input.update(cx, |s, cx| s.focus(window, cx));
+        self._subs.push(sub);
+        self.panes[side].new_folder = Some(input);
+        cx.notify();
+    }
+
+    fn make_folder(&mut self, side: usize, name: String, cx: &mut Context<Self>) {
+        if name.is_empty() || name.contains(['/', '\\']) || name == "." || name == ".." {
+            return;
+        }
+        self.panes[side].new_folder = None;
+        let p = &self.panes[side];
+        let (path, dir) = (p.place.join(&p.path, &name), p.path.clone());
+        self.run(
+            side,
+            move |f| f.mkdir(&path).map(|_| name),
+            move |this, r, cx| match r {
+                Ok(name) => this.load(side, dir, Some(name), cx),
+                Err(e) => ui::show_error("No new folder", e, cx),
+            },
+            cx,
+        );
+    }
+
+    /// C7: what goes, asked first.
+    fn confirm_delete(&mut self, side: usize, cx: &mut Context<Self>) {
+        let p = &self.panes[side];
+        if p.selected.is_empty() || !p.writable() {
+            return;
+        }
+        let rows: Vec<Entry> = p.rows().into_iter().filter(|r| p.selected.contains(&r.name)).collect();
+        let n = rows.len();
+        let on = if p.place.is_remote() { p.label() } else { "this computer".into() };
+        let title = if n == 1 { format!("Delete {} on {on}?", rows[0].name) } else { format!("Delete {n} items on {on}?") };
+        let note = if p.place.is_remote() { "The server has no recycle bin; they are gone for good." } else { "They are deleted for good, not moved to the recycle bin." };
+        let me = cx.entity().downgrade();
+        let body = cx.new(|_| DeleteBody { rows, note });
+        let footer = cx.new(|_| DeleteFooter { me, side });
+        crate::modal::open(crate::modal::Modal { title: title.into(), body: body.into(), width: 520., icon: Some(Icon::empty().path("icons/trash.svg")), on_close: None }, cx);
+        crate::modal::set_footer(footer.into(), cx);
+    }
+
+    fn delete(&mut self, side: usize, cx: &mut Context<Self>) {
+        let p = &self.panes[side];
+        let paths: Vec<String> = p.selected.iter().map(|n| p.place.join(&p.path, n)).collect();
+        let dir = p.path.clone();
+        crate::manager::strip::quiet(true, cx);
+        self.run(
+            side,
+            move |f| {
+                for path in &paths {
+                    f.remove_tree(path)?;
+                }
+                Ok(())
+            },
+            move |this, r, cx| {
+                crate::manager::strip::quiet(false, cx);
+                if let Err(e) = r {
+                    ui::show_error("Not everything was deleted", e, cx);
+                }
+                this.panes[side].selected.clear();
+                this.load(side, dir, None, cx);
+            },
+            cx,
+        );
+    }
+
+    /// C6: as administrator (sudo there; its password asked once).
+    fn open_as_admin(&mut self, side: usize, cx: &mut Context<Self>) {
+        let Place::Remote(inst) = self.panes[side].place.clone() else { return };
+        let me = cx.entity().downgrade();
+        let task = cx.spawn(async move |_, cx| {
+            let i2 = inst.clone();
+            let needs = cx.background_executor().spawn(async move { i2.user != "root" && crate::remote::sudo_needs_password(&i2) }).await;
+            let go = move |cx: &mut App| {
+                me.update(cx, |p, cx| {
+                    let pane = &mut p.panes[side];
+                    pane.admin = true;
+                    pane.admin_root = pane.path.clone();
+                    pane.conn = Arc::new(Mutex::new(None));
+                    p.reload(side, cx);
+                })
+                .ok();
+            };
+            let _ = cx.update(|cx| if needs { crate::manager::remote_pages::ask_sudo_password(inst, Rc::new(go), cx) } else { go(cx) });
+        });
+        self._tasks.push(task);
+    }
+
+    fn key(&mut self, side: usize, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panes[side].rename.is_some() || self.panes[side].new_folder.is_some() {
+            return;
+        }
+        let k = &e.keystroke;
+        let ctrl = k.modifiers.control || k.modifiers.platform;
+        match k.key.as_str() {
+            "c" if ctrl => self.clip_copy(side, cx),
+            "v" if ctrl => self.clip_paste(side, cx),
+            "a" if ctrl => {
+                let names = self.panes[side].rows().into_iter().map(|r| r.name).collect();
+                self.panes[side].selected = names;
+                cx.notify();
+            }
+            "delete" => self.confirm_delete(side, cx),
+            "f2" => self.start_rename(side, window, cx),
+            "backspace" => self.up(side, cx),
+            "enter" => {
+                let p = &self.panes[side];
+                if let Some(r) = p.rows().into_iter().find(|r| p.selected.len() == 1 && p.selected.contains(&r.name) && r.dir) {
+                    self.open_dir(side, &r.name, cx);
+                }
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+}
+
+fn read_only_text(p: &Pane) -> String {
+    let owner = p.listing.as_ref().map(|l| l.owner.clone()).filter(|o| !o.is_empty()).unwrap_or_else(|| "another account".into());
+    format!("This folder belongs to {owner}. You can look, but not change anything.")
+}
+
+fn folder_color() -> Hsla {
+    rgb(0xd9a23a).into()
+}
+
+fn file_icon(dir: bool) -> Icon {
+    if dir { Icon::empty().path("icons/folder-fill.svg") } else { Icon::new(IconName::File) }
+}
+
+/// "16 Nov 06:40" in this computer's time.
+fn when(t: Option<i64>) -> String {
+    use chrono::TimeZone as _;
+    t.and_then(|t| chrono::Local.timestamp_opt(t, 0).single()).map(|d| d.format("%-d %b %H:%M").to_string()).unwrap_or_default()
+}
+
+fn shortcut_icon(name: &str) -> Icon {
+    match name {
+        "house" => Icon::empty().path("icons/house.svg"),
+        "download" => Icon::empty().path("icons/download.svg"),
+        "server" => Icon::empty().path("icons/server.svg"),
+        "archive" => Icon::empty().path("icons/archive.svg"),
+        "scroll-text" => Icon::empty().path("icons/scroll-text.svg"),
+        _ => Icon::new(IconName::HardDrive),
+    }
+}
+
+/// A narrow window: the panes stack.
+fn narrow(window: &Window) -> bool {
+    window.viewport_size().width < px(980.)
+}
+
+impl FilesPage {
+    fn pane(&self, side: usize, narrow: bool, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let p = &self.panes[side];
+        let other = 1 - side;
+        let remote_cols = p.place.is_remote();
+        let writable = p.writable();
+        let read_only = p.listing.is_some() && !writable;
+        let drop_here = self.drag_over == Some(side) && writable;
+        let rows = p.rows();
+
+        // The title: where, and New folder and Read again.
+        let title = h_flex()
+            .h(px(52.))
+            .px(px(PANE_PX))
+            .gap_2()
+            .items_center()
+            .child(match &p.place {
+                Place::Local => Icon::empty().path("icons/monitor.svg").size_4().text_color(theme.muted_foreground).into_any_element(),
+                Place::Remote(i) => div().size(px(10.)).rounded_full().bg(rgb(u32::from_str_radix(i.color.trim_start_matches('#'), 16).unwrap_or(0x1f9d55))).into_any_element(),
+            })
+            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::MEDIUM).child(p.label()))
+            .when(p.admin, |r| r.child(ui::pill(&theme, Tone::Warn, "Administrator").text_size(px(12.))))
+            .child(
+                crate::ui::button(SharedString::from(format!("f-new-{side}")))
+                    .ghost()
+                    .small()
+                    .icon(Icon::empty().path("icons/folder-plus.svg"))
+                    .tooltip("New folder")
+                    .disabled(!writable)
+                    .on_click(cx.listener(move |this, _, window, cx| this.start_new_folder(side, window, cx))),
+            )
+            .child(crate::ui::button(SharedString::from(format!("f-reload-{side}"))).ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(move |this, _, _, cx| this.reload(side, cx))));
+
+        // Where: the path's parts, each a way back.
+        let crumbs = p.place.crumbs(&p.path);
+        let last = crumbs.len().saturating_sub(1);
+        let bar = h_flex()
+            .h(px(34.))
+            .px(px(10.))
+            .gap_1()
+            .items_center()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme.border)
+            .overflow_hidden()
+            .text_sm()
+            .children(crumbs.into_iter().enumerate().flat_map(|(i, (name, path))| {
+                let sep = (i > 0).then(|| div().text_color(theme.muted_foreground).child("›").into_any_element());
+                let part = div()
+                    .id(SharedString::from(format!("f-crumb-{side}-{i}")))
+                    .flex_shrink_0()
+                    .px_1()
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(|d| d.bg(theme.list_hover))
+                    .when(i == last, |d| d.text_color(theme.foreground).font_weight(FontWeight::MEDIUM))
+                    .when(i != last, |d| d.text_color(theme.muted_foreground))
+                    .child(name)
+                    .on_click(cx.listener(move |this, _, _, cx| this.load(side, path.clone(), None, cx)))
+                    .into_any_element();
+                sep.into_iter().chain([part])
+            }));
+
+        // Shortcuts; the one the folder is in is marked.
+        let marked = p.shortcuts.iter().find(|(_, _, s)| s.trim_end_matches(['/', '\\']) == p.path.trim_end_matches(['/', '\\'])).map(|(_, _, s)| s.clone());
+        let chips = h_flex().flex_wrap().gap_2().children(p.shortcuts.iter().enumerate().map(|(i, (label, icon, path))| {
+            let on = marked.as_deref() == Some(path.as_str());
+            let path = path.clone();
+            h_flex()
+                .id(SharedString::from(format!("f-chip-{side}-{i}")))
+                .h(px(28.))
+                .px(px(10.))
+                .gap(px(6.))
+                .items_center()
+                .rounded_full()
+                .border_1()
+                .text_size(px(13.))
+                .cursor_pointer()
+                .when(on, |c| c.border_color(theme.primary).bg(theme.primary.opacity(0.08)).text_color(theme.primary))
+                .when(!on, |c| c.border_color(theme.border).hover(|c| c.bg(theme.list_hover)))
+                .child(shortcut_icon(icon).size_3p5())
+                .child(label.clone())
+                .on_click(cx.listener(move |this, _, _, cx| this.load(side, path.clone(), None, cx)))
+        }));
+
+        // C6: read only, and the way out on a server.
+        let amber: Hsla = if theme.background.l < 0.5 { rgb(0xfcd34d).into() } else { rgb(0x9a3412).into() };
+        let banner = read_only.then(|| {
+            h_flex()
+                .gap_3()
+                .px(px(14.))
+                .py(px(10.))
+                .items_center()
+                .rounded(px(8.))
+                .bg(rgb(0xfdf3c7))
+                .when(theme.background.l < 0.5, |b| b.bg(rgb(0x3d3413)))
+                .child(Icon::empty().path("icons/lock.svg").size_4().flex_shrink_0().text_color(amber))
+                .child(div().flex_1().min_w_0().text_sm().text_color(amber).child(read_only_text(p)))
+                .when(matches!(&p.place, Place::Remote(i) if !crate::remote::is_windows(i)), |b| {
+                    b.child(crate::ui::button(SharedString::from(format!("f-admin-{side}"))).outline().label("Open as administrator").on_click(cx.listener(move |this, _, _, cx| this.open_as_admin(side, cx))))
+                })
+        });
+
+        let head = v_flex()
+            .relative()
+            .px(px(PANE_PX))
+            .pb(px(10.))
+            .gap(px(10.))
+            // The layout test checks this part's right padding.
+            .child(crate::ui::layout_probe("panel"))
+            .child(bar)
+            .child(chips)
+            .children(banner);
+
+        // The table.
+        let cols = |name: AnyElement, size: AnyElement, time: AnyElement, owner: Option<AnyElement>| {
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .gap(px(8.))
+                .items_center()
+                .child(div().flex_1().min_w_0().child(name))
+                .child(div().w(px(COL_SIZE)).flex_shrink_0().flex().justify_end().child(size))
+                .child(div().w(px(COL_TIME)).flex_shrink_0().flex().justify_end().child(time))
+                .when(remote_cols, |r| r.child(div().w(px(COL_OWNER)).flex_shrink_0().pl(px(8.)).children(owner)))
+        };
+        let header = h_flex()
+            .h(px(30.))
+            .px(px(PANE_PX))
+            .items_center()
+            .border_b_1()
+            .border_color(theme.border)
+            .text_size(px(12.5))
+            .text_color(theme.muted_foreground)
+            .child(cols(div().child("Name").into_any_element(), div().child("Size").into_any_element(), div().child("Modified").into_any_element(), Some(div().child("Owner").into_any_element())));
+        let mut list = v_flex().id(SharedString::from(format!("f-rows-{side}"))).flex_1().min_h_0().overflow_y_scroll();
+        if let Some(input) = &p.new_folder {
+            list = list.child(
+                h_flex()
+                    .h(px(40.))
+                    .px(px(PANE_PX))
+                    .gap_2()
+                    .items_center()
+                    .child(file_icon(true).size_4().text_color(folder_color()))
+                    .child(div().flex_1().child(Input::new(input).small()))
+                    .child(crate::ui::button(SharedString::from(format!("f-make-{side}"))).primary().small().label("Make").on_click(cx.listener(move |this, _, _, cx| {
+                        let name = this.panes[side].new_folder.as_ref().map(|i| i.read(cx).value().trim().to_string()).unwrap_or_default();
+                        this.make_folder(side, name, cx);
+                    })))
+                    .child(crate::ui::button(SharedString::from(format!("f-make-no-{side}"))).ghost().small().label("Cancel").on_click(cx.listener(move |this, _, _, cx| {
+                        this.panes[side].new_folder = None;
+                        cx.notify();
+                    }))),
+            );
+        }
+        if p.loading && p.listing.is_none() {
+            for i in 0..5 {
+                list = list.child(h_flex().h(px(ROW_H)).px(px(PANE_PX)).gap_3().items_center().child(crate::ui::skeleton_line(&theme, format!("f-sk-{side}-{i}"), 180.)).child(div().flex_1()).child(crate::ui::skeleton_line(&theme, format!("f-sk2-{side}-{i}"), 60.)));
+            }
+        } else if let Some(e) = &p.error {
+            list = list.child(div().px(px(PANE_PX)).py_3().text_sm().text_color(theme.danger).child(e.clone()));
+        } else if rows.is_empty() && p.new_folder.is_none() && self.transfers.read(cx).copying_into(&p.place.key(), &p.path).is_empty() {
+            list = list.child(div().px(px(PANE_PX)).py_3().text_sm().text_color(theme.muted_foreground).child("Nothing here."));
+        }
+        let me = cx.entity().downgrade();
+        let other_label = if self.panes[other].place.is_remote() { format!("Copy to {}", self.panes[other].label()) } else { "Copy to this computer".to_string() };
+        for (i, r) in rows.iter().enumerate() {
+            let on = p.selected.contains(&r.name);
+            let renaming = p.rename.as_ref().filter(|(n, _)| *n == r.name).map(|(_, i)| i.clone());
+            let name_el = h_flex()
+                .gap(px(10.))
+                .items_center()
+                .min_w_0()
+                .child(file_icon(r.dir).size_4().flex_shrink_0().text_color(if r.dir { folder_color() } else { theme.muted_foreground }))
+                .child(match renaming {
+                    Some(input) => div().flex_1().child(Input::new(&input).small()).into_any_element(),
+                    None => div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(r.name.clone()).into_any_element(),
+                })
+                .into_any_element();
+            let size = div().text_color(theme.muted_foreground).font_features(ui::tabular()).child(if r.dir { "—".to_string() } else { bytes_label(r.size) }).into_any_element();
+            let time = div().text_color(theme.muted_foreground).font_features(ui::tabular()).child(when(r.mtime)).into_any_element();
+            let owner = div().text_color(theme.muted_foreground).overflow_hidden().whitespace_nowrap().child(r.owner.clone()).into_any_element();
+            let drag = Drag { side, names: if on { p.selected.iter().cloned().collect() } else { vec![r.name.clone()] }, dir: r.dir };
+            let (m, name, ol) = (me.clone(), r.name.clone(), other_label.clone());
+            let row = h_flex()
+                .id(SharedString::from(format!("f-row-{side}-{i}")))
+                .h(px(ROW_H))
+                .flex_shrink_0()
+                .px(px(PANE_PX))
+                .text_sm()
+                .when(on, |r| r.bg(theme.sidebar_accent))
+                .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))
+                .child(cols(name_el, size, time, Some(owner)))
+                .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| this.click_row(side, i, e, window, cx)))
+                .on_mouse_down(MouseButton::Right, cx.listener(move |this, _, window, cx| {
+                    let p = &mut this.panes[side];
+                    window.focus(&p.focus, cx);
+                    if !p.selected.contains(&name) {
+                        p.selected = [name.clone()].into();
+                        p.anchor = Some(i);
+                    }
+                    cx.notify();
+                }))
+                .on_drag(drag, |d, _, _, cx| cx.new(|_| d.clone()))
+                .context_menu(move |menu, _, _| {
+                    let act = |f: fn(&mut FilesPage, usize, &mut Window, &mut Context<FilesPage>)| {
+                        let m = m.clone();
+                        move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                            m.update(cx, |p, cx| f(p, side, window, cx)).ok();
+                        }
+                    };
+                    menu.item(PopupMenuItem::new(ol.clone()).icon(Icon::empty().path("icons/download.svg")).on_click(act(|p, side, _, cx| {
+                        let names = p.panes[side].selected.iter().cloned().collect();
+                        p.copy(side, names, 1 - side, cx);
+                    })))
+                    .separator()
+                    .item(PopupMenuItem::new("Copy").icon(IconName::Copy).on_click(act(|p, side, _, cx| p.clip_copy(side, cx))))
+                    .item(PopupMenuItem::new("Paste").icon(Icon::empty().path("icons/clipboard.svg")).disabled(!writable).on_click(act(|p, side, _, cx| p.clip_paste(side, cx))))
+                    .item(PopupMenuItem::new("Rename").icon(Icon::empty().path("icons/pencil.svg")).disabled(!writable).on_click(act(|p, side, w, cx| p.start_rename(side, w, cx))))
+                    .item(PopupMenuItem::new("New folder").icon(Icon::empty().path("icons/folder-plus.svg")).disabled(!writable).on_click(act(|p, side, w, cx| p.start_new_folder(side, w, cx))))
+                    .separator()
+                    .item(PopupMenuItem::new("Delete").icon(Icon::empty().path("icons/trash.svg")).disabled(!writable).on_click(act(|p, side, _, cx| p.confirm_delete(side, cx))))
+                });
+            list = list.child(row);
+        }
+        // C3: copies arriving here.
+        for (k, (name, done)) in self.transfers.read(cx).copying_into(&p.place.key(), &p.path).into_iter().enumerate() {
+            if rows.iter().any(|r| r.name == name) {
+                continue;
+            }
+            list = list.child(
+                h_flex()
+                    .id(SharedString::from(format!("f-incoming-{side}-{k}")))
+                    .h(px(ROW_H))
+                    .flex_shrink_0()
+                    .px(px(PANE_PX))
+                    .text_sm()
+                    .child(cols(
+                        h_flex().gap(px(10.)).items_center().min_w_0().child(file_icon(false).size_4().text_color(theme.muted_foreground)).child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name)).into_any_element(),
+                        div().text_color(theme.muted_foreground).child(bytes_label(done)).into_any_element(),
+                        div().text_color(theme.muted_foreground).child("copying…").into_any_element(),
+                        None,
+                    )),
+            );
+        }
+
+        // The foot: what is selected and the copy across, or what is here;
+        // while a drag hovers, where it goes (C2).
+        let selected_bytes: u64 = rows.iter().filter(|r| p.selected.contains(&r.name)).map(|r| r.size).sum();
+        let n = rows.len();
+        let foot_text = if drop_here {
+            let k = if self.drag_count > 0 { self.drag_count } else { self.panes[other].selected.len().max(1) };
+            format!("Drop to copy {k} item{} into {}", if k == 1 { "" } else { "s" }, p.path)
+        } else if !p.selected.is_empty() {
+            if selected_bytes > 0 { format!("{} selected · {}", p.selected.len(), bytes_label(selected_bytes)) } else { format!("{} selected", p.selected.len()) }
+        } else {
+            let free = p.listing.as_ref().and_then(|l| l.free).filter(|_| p.place.is_remote()).map(|f| format!(" · {} free", crate::manager::backup::free_label(f))).unwrap_or_default();
+            format!("{n} item{}{}{}", if n == 1 { "" } else { "s" }, if read_only { " · read only" } else { &free }, "")
+        };
+        let foot = h_flex()
+            .min_h(px(56.))
+            .px(px(PANE_PX))
+            .gap_3()
+            .items_center()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(div().flex_1().min_w_0().text_sm().text_color(if drop_here { theme.primary } else { theme.muted_foreground }).overflow_hidden().whitespace_nowrap().text_ellipsis().child(foot_text))
+            .when(!p.selected.is_empty() && !drop_here, |r| {
+                let label = if self.panes[other].place.is_remote() { "Copy to server".to_string() } else if p.place.is_remote() { "Copy to this computer".to_string() } else { "Copy to the other side".to_string() };
+                r.child(crate::ui::button(SharedString::from(format!("f-copy-{side}"))).primary().icon(IconName::ArrowRight).label(label).disabled(!self.panes[other].writable()).on_click(cx.listener(move |this, _, _, cx| {
+                    let names = this.panes[side].selected.iter().cloned().collect();
+                    this.copy(side, names, 1 - side, cx);
+                })))
+            });
+
+        let focus = p.focus.clone();
+        v_flex()
+            .id(SharedString::from(format!("f-pane-{side}")))
+            .track_focus(&focus)
+            .on_key_down(cx.listener(move |this, e: &KeyDownEvent, window, cx| this.key(side, e, window, cx)))
+            .flex_1()
+            .min_w_0()
+            .when(narrow, |c| c.h(px(460.)).flex_none())
+            .when(!narrow, |c| c.h_full())
+            .overflow_hidden()
+            .rounded(px(ui::PANEL_RADIUS))
+            .bg(theme.background)
+            .border_1()
+            .border_color(if drop_here { theme.primary } else { theme.border })
+            .when(drop_here, |c| c.border_2())
+            .child(title)
+            .child(head)
+            .child(header)
+            .child(list)
+            .child(foot)
+            .on_drag_move::<Drag>(cx.listener(move |this, e: &DragMoveEvent<Drag>, _, cx| {
+                let inside = e.bounds.contains(&e.event.position);
+                let (src, count) = { let d = e.drag(cx); (d.side, d.names.len()) };
+                this.drag_count = count;
+                let want = if inside && src != side { Some(side) } else if this.drag_over == Some(side) { None } else { this.drag_over };
+                if this.drag_over != want {
+                    this.drag_over = want;
+                    cx.notify();
+                }
+            }))
+            .on_drop(cx.listener(move |this, d: &Drag, _, cx| {
+                this.drag_over = None;
+                if d.side != side {
+                    this.copy(d.side, d.names.clone(), side, cx);
+                }
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+}
+
+impl Render for FilesPage {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        if !cx.has_active_drag() && self.drag_over.is_some() && std::env::var_os("SPM_DEBUG_FILES_STATE").is_none() {
+            self.drag_over = None;
+        }
+        let narrow = narrow(window);
+        let left = self.pane(0, narrow, cx);
+        let right = self.pane(1, narrow, cx);
+        // Screens: the drag's card over the right pane (C2).
+        let fake_drag = (self.drag_over == Some(1) && !cx.has_active_drag()).then(|| {
+            let names: Vec<String> = self.panes[0].selected.iter().cloned().collect();
+            div().absolute().top(px(250.)).left(px(120.)).child(drag_card(&theme, &names, false))
+        });
+        let refresh = crate::ui::button("f-reload").outline().icon(IconName::RefreshCw).tooltip("Read both sides again").on_click(cx.listener(|this, _, _, cx| {
+            this.reload(0, cx);
+            this.reload(1, cx);
+        }));
+        let panes = if narrow {
+            v_flex().gap(px(16.)).child(left).child(div().relative().child(right).children(fake_drag)).into_any_element()
+        } else {
+            h_flex().flex_1().min_h_0().gap(px(16.)).items_stretch().child(left).child(div().relative().flex_1().min_w_0().h_full().flex().child(right).children(fake_drag)).into_any_element()
+        };
+        let page = v_flex()
+            .id("page")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .p(px(ui::PAGE_PAD))
+            .gap(px(ui::GAP))
+            .bg(theme.muted)
+            .when(narrow, |p| p.overflow_y_scroll())
+            .child(h_flex().min_h(px(32.)).items_center().child(div().flex_1().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Files")).child(refresh))
+            .child(panes);
+        page
+    }
+}
+
+// -- C7: delete ----------------------------------------------------------------
+
+struct DeleteBody {
+    rows: Vec<Entry>,
+    note: &'static str,
+}
+
+impl Render for DeleteBody {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let mut list = v_flex().id("del-list").max_h(px(240.)).overflow_y_scroll().rounded(px(8.)).border_1().border_color(theme.border).py_1();
+        for r in &self.rows {
+            list = list.child(
+                h_flex()
+                    .h(px(34.))
+                    .px(px(14.))
+                    .gap(px(10.))
+                    .items_center()
+                    .text_sm()
+                    .child(file_icon(r.dir).size_4().text_color(if r.dir { folder_color() } else { theme.muted_foreground }))
+                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(r.name.clone()))
+                    .child(div().text_color(theme.muted_foreground).child(if r.dir { "folder".to_string() } else { bytes_label(r.size) })),
+            );
+        }
+        v_flex().gap(px(14.)).child(list).child(div().text_sm().text_color(theme.muted_foreground).child(self.note))
+    }
+}
+
+struct DeleteFooter {
+    me: WeakEntity<FilesPage>,
+    side: usize,
+}
+
+impl Render for DeleteFooter {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (me, side) = (self.me.clone(), self.side);
+        let _ = cx;
+        h_flex()
+            .w_full()
+            .gap_2()
+            .justify_end()
+            .child(crate::ui::button("del-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx)))
+            // The mockup's solid red (the kit's danger is a tint).
+            .child(
+                div()
+                    .id("del-go")
+                    .h(px(32.))
+                    .px(px(14.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(6.))
+                    .bg(rgb(0xef4444))
+                    .hover(|d| d.bg(rgb(0xdc2626)))
+                    .active(|d| d.bg(rgb(0xb91c1c)))
+                    .text_color(white())
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .cursor_pointer()
+                    .child("Delete")
+                    .on_click(move |_, _, cx| {
+                        crate::modal::close(cx);
+                        me.update(cx, |p, cx| p.delete(side, cx)).ok();
+                    }),
+            )
+    }
+}

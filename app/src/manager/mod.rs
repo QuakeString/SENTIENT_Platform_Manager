@@ -7,6 +7,7 @@
 mod about;
 pub(crate) mod backup;
 pub(crate) mod control;
+pub(crate) mod files;
 pub(crate) mod folder_chooser;
 mod gateway;
 mod instances;
@@ -48,6 +49,8 @@ enum Page {
     Status,
     Control,
     Logs,
+    /// Files on this computer and the open instance (SFTP).
+    Files,
     Update,
     Gateway,
     Backup,
@@ -67,11 +70,12 @@ enum Page {
 
 impl Page {
     /// The menu, in its order: Platform settings last.
-    const ALL: [Page; 11] = [
+    const ALL: [Page; 12] = [
         Page::Status,
         Page::Statistics,
         Page::Control,
         Page::Logs,
+        Page::Files,
         Page::Update,
         Page::Gateway,
         Page::Backup,
@@ -86,6 +90,7 @@ impl Page {
             Page::Status => "status",
             Page::Control => "control",
             Page::Logs => "logs",
+            Page::Files => "files",
             Page::Update => "update",
             Page::Gateway => "gateway",
             Page::Backup => "backup",
@@ -104,6 +109,7 @@ impl Page {
             Page::Status => "Status",
             Page::Control => "Control",
             Page::Logs => "Logs",
+            Page::Files => "Files",
             Page::Update => "Update",
             Page::Gateway => "Gateway",
             Page::Backup => "Backup and restore",
@@ -123,6 +129,7 @@ impl Page {
             Page::Status => "activity",
             Page::Control => "power",
             Page::Logs => "square-terminal",
+            Page::Files => "folder",
             Page::Update => "refresh-cw",
             Page::Gateway => "network",
             Page::Backup => "archive",
@@ -164,6 +171,8 @@ pub struct Manager {
     stats: Option<(Option<String>, Entity<stats::StatsPage>)>,
     /// The Licence page, for the open instance (None: this computer).
     licence: Option<(Option<String>, Entity<licence::LicencePage>)>,
+    /// Files, for the instance open when it was made (None: this computer).
+    files: Option<(Option<String>, Entity<files::FilesPage>)>,
     /// Takes the keyboard while a dialog is open (Escape closes it).
     modal_focus: FocusHandle,
     /// The instance switcher's menu is open.
@@ -281,6 +290,7 @@ impl Manager {
             remote_pages: None,
             stats: None,
             licence: None,
+            files: None,
             modal_focus: cx.focus_handle(),
             strip: strip.clone(),
             switcher_open: false,
@@ -1508,6 +1518,14 @@ impl Manager {
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let record = self.record.clone();
         // Statistics: the same view for this computer and a server.
+        if self.page == Page::Files {
+            let key = self.open_remote.clone();
+            if self.files.as_ref().is_none_or(|(k, _)| *k != key) {
+                let inst = key.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned();
+                self.files = Some((key, cx.new(|cx| files::FilesPage::new(inst, cx))));
+            }
+            return self.files.as_ref().map(|(_, p)| p.clone().into_any_element()).unwrap_or_else(|| div().into_any_element());
+        }
         if self.page == Page::Statistics {
             let key = self.open_remote.clone();
             if self.stats.as_ref().is_none_or(|(k, _)| *k != key) {
@@ -1684,7 +1702,7 @@ impl Manager {
                 self.settings.clone().unwrap().into_any_element()
             }
             // Handled at the top of content().
-            Page::Statistics | Page::Licence => div().into_any_element(),
+            Page::Statistics | Page::Licence | Page::Files => div().into_any_element(),
             Page::About => {
                 if self.about.is_none() {
                     let updates = self.updates.clone();

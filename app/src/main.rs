@@ -66,6 +66,8 @@ mod rootjob;
 mod secrets;
 mod secrets_key;
 mod self_install;
+#[cfg(feature = "gui")]
+mod sftp;
 mod sentient_admin;
 mod settings;
 #[cfg(feature = "gui")]
