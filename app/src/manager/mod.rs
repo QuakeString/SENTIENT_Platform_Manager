@@ -32,6 +32,7 @@ pub(crate) mod update;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, h_flex, v_flex,
+    scroll::ScrollableElement as _,
     button::ButtonVariants as _,
 };
 use gpui_kit::component::Sizable as _;
@@ -567,8 +568,15 @@ impl Manager {
         };
         let strip = self.strip.clone();
         let this = cx.entity().downgrade();
+        // Each entry a rounded card in a faint tint of what happened (teal
+        // done, red failed, amber a warning): 8 % light / 14 % dark, a little
+        // stronger while unread, a step darker on hover. The instance's own
+        // colour is the dot by its name.
+        let dark = theme::is_dark(cx);
         let row = |key: SharedString, icon: IconName, icon_color: Hsla, title: String, detail: String, meta: String, color: &str, unread: bool, clear: AnyElement| {
             let c = crate::remote::parse_hex(color).unwrap_or(0x187074);
+            let base = if dark { 0.14 } else { 0.08 };
+            let tint = base + if unread { 0.05 } else { 0. };
             h_flex()
                 .id(key.clone())
                 .group(key)
@@ -578,12 +586,10 @@ impl Manager {
                 .pl(px(10.))
                 .pr_2()
                 .py(px(9.))
-                .rounded(px(6.))
+                .rounded(px(8.))
+                .bg(icon_color.opacity(tint))
                 .cursor_pointer()
-                .hover(|r| r.bg(theme.list_hover))
-                // Along the left, the colour of what happened (the icon's);
-                // the instance's own colour is the dot by its name.
-                .child(div().absolute().left(px(2.)).top(px(6.)).bottom(px(6.)).w(px(3.)).rounded(px(2.)).bg(icon_color))
+                .hover(move |r| r.bg(icon_color.opacity(tint + 0.06)))
                 .child(Icon::new(icon).size_4().text_color(icon_color).mt(px(2.)))
                 .child(
                     v_flex()
@@ -635,7 +641,9 @@ impl Manager {
         let cond_keys: Vec<String> = conditions.iter().map(|c| c.0.clone()).collect();
         for (i, (key, at, (title, detail, page, inst, name, color))) in conditions.into_iter().enumerate() {
             let (t, t2) = (this.clone(), this.clone());
-            let icon = if title.contains("available") || title.contains("waiting") { (IconName::ArrowUp, theme.primary) } else { (IconName::TriangleAlert, rgb(0xd97706).into()) };
+            // Per type: information (an update waiting) in the info blue, a
+            // warning in amber.
+            let icon = if title.contains("available") || title.contains("waiting") { (IconName::ArrowUp, theme::info(cx)) } else { (IconName::TriangleAlert, theme.warning) };
             let clear = clear_button(
                 SharedString::from(format!("cond-clear-{i}")),
                 Box::new(move |cx| {
@@ -666,7 +674,7 @@ impl Manager {
         for e in events.iter() {
             let (id, inst) = (e.id, e.instance.clone());
             let (s1, s2, t) = (strip.clone(), strip.clone(), this.clone());
-            let icon = if e.failed { (IconName::CircleX, theme.danger) } else { (IconName::CircleCheck, theme.primary) };
+            let icon = if e.failed { (IconName::CircleX, theme.danger) } else { (IconName::CircleCheck, theme.success_foreground) };
             let clear = clear_button(SharedString::from(format!("clear-{id}")), Box::new(move |cx| s1.update(cx, |s, cx| s.clear(Some(id), cx))));
             rows.push((
                 e.at,
@@ -685,7 +693,8 @@ impl Manager {
         }
         rows.sort_by(|a, b| b.0.cmp(&a.0));
         let empty = rows.is_empty();
-        let list = v_flex().gap_px().children(rows.into_iter().map(|(_, r)| r));
+        let n_rows = rows.len();
+        let list = v_flex().gap(px(6.)).children(rows.into_iter().map(|(_, r)| r));
         let (s3, s4, close) = (strip.clone(), strip.clone(), this.clone());
         let header = h_flex()
             .px_2()
@@ -708,7 +717,13 @@ impl Manager {
                         .ok();
                 }))
             });
-        let max_h = (f32::from(self.window_h.get()) * 0.6).max(260.);
+        // As tall as its entries, at most the window below the bar less
+        // 24 px, and never over 560 px; the list scrolls inside, the header
+        // stays (the 50 newest events are kept, crate::manager::strip).
+        let max_h = (f32::from(self.window_h.get()) - shell::BAR_H - 24.).min(560.).max(240.);
+        // A long list: the panel takes its full height and the list scrolls
+        // in it (a scrolling child has no height of its own to grow by).
+        let full = 52. + n_rows as f32 * 82. > max_h;
         deferred(
             div().absolute().top(px(theme::BAR_CTRL_H + 10.)).right(px(-6.)).child(
                 div()
@@ -723,6 +738,7 @@ impl Manager {
                             .p_2()
                             .min_h(px(240.))
                             .max_h(px(max_h))
+                            .when(full, |p| p.h(px(max_h)))
                             .rounded(px(ui::PANEL_RADIUS))
                             .bg(theme.popover)
                             .text_color(theme.popover_foreground)
@@ -741,7 +757,7 @@ impl Manager {
                                     .child(div().text_sm().text_color(theme.muted_foreground).child("No new notifications"))
                                     .into_any_element()
                             } else {
-                                div().id("bell-list").flex_1().min_h_0().overflow_y_scroll().child(list).into_any_element()
+                                div().id("bell-list").flex_1().min_h_0().child(list).overflow_y_scrollbar().into_any_element()
                             })
                             .on_mouse_down_out(move |_, _, cx| {
                                 close.update(cx, |m, cx| {
@@ -764,7 +780,6 @@ impl Manager {
     fn top_bar(&self, width: f32, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dark = theme::is_dark(cx);
         let menu_theme = cx.theme().clone();
-        let theme_radius = menu_theme.radius;
         let remote = self.open_remote.as_ref().and_then(|id| self.remotes.iter().find(|i| &i.id == id)).cloned();
         // The bar is tinted like the tile headers: the instance's colour
         // mixed into the card colour (26 % light, 42 % dark), the theme's
@@ -1084,7 +1099,7 @@ impl Manager {
                     };
                     let mut rows = vec![ui::MenuRow::Item {
                         id: "switch-local".into(),
-                        icon: Some(Icon::new(Lucide::Monitor).size_4().into_any_element()),
+                        icon: Some(Icon::new(Lucide::Monitor).size(px(18.)).into_any_element()),
                         label: if self.open_remote.is_some() { "Back to this computer".into() } else { "This computer".into() },
                         secondary: None,
                         on: self.open_remote.is_none(),
@@ -1108,7 +1123,7 @@ impl Manager {
                     let t = this.clone();
                     rows.push(ui::MenuRow::Item {
                         id: "switch-manage".into(),
-                        icon: Some(Icon::new(Lucide::Settings).size_4().into_any_element()),
+                        icon: Some(Icon::new(Lucide::Settings).size(px(18.)).into_any_element()),
                         label: "Manage instances…".into(),
                         secondary: None,
                         on: false,
@@ -1492,7 +1507,7 @@ impl Manager {
                     let this = this.clone();
                     ui::MenuRow::Item {
                         id: SharedString::from(format!("theme-{}", c.label())),
-                        icon: Some(icon_of(c).size_4().into_any_element()),
+                        icon: Some(icon_of(c).size(px(18.)).into_any_element()),
                         label: c.label().into(),
                         secondary: None,
                         on: c == choice,

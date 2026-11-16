@@ -927,18 +927,20 @@ pub fn popover_menu(theme: &Theme, id: &'static str, width: f32, rows: Vec<MenuR
     use gpui_kit::component::{h_flex, v_flex};
     let rows = rows.into_iter().map(|r| match r {
         MenuRow::Divider => div().my_1().mx_1().h(px(1.)).bg(theme.border).into_any_element(),
+        // The same rows as the toolkit's menus: 32 px, an 18 px icon slot,
+        // 10 px to the text.
         MenuRow::Item { id, icon, label, secondary, on, click } => h_flex()
             .id(id)
-            .gap_2()
+            .gap(px(10.))
             .items_center()
             .px_2()
-            .py(px(6.))
+            .h(px(32.))
             .rounded(px(6.))
             .cursor_pointer()
             .text_sm()
             .when(on, |r| r.bg(theme.primary.opacity(0.10)).text_color(theme.primary).font_weight(FontWeight::MEDIUM))
             .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))
-            .children(icon)
+            .children(icon.map(|i| div().relative().flex_shrink_0().size(px(18.)).flex().items_center().justify_center().child(i).child(layout_probe("menu-item-icon"))))
             .child(
                 h_flex()
                     .flex_1()
@@ -949,7 +951,7 @@ pub fn popover_menu(theme: &Theme, id: &'static str, width: f32, rows: Vec<MenuR
                     .child(div().flex_shrink_0().child(label))
                     .when_some(secondary, |r, s| r.child(div().min_w_0().overflow_hidden().text_ellipsis().font_weight(FontWeight::NORMAL).text_color(theme.muted_foreground).child(s))),
             )
-            .when(on, |r| r.child(gpui_kit::component::Icon::new(gpui_kit::component::IconName::Check).size_4()))
+            .when(on, |r| r.child(gpui_kit::component::Icon::new(gpui_kit::component::IconName::Check).size(px(18.))))
             .on_click(move |_, window, cx| click(window, cx))
             .into_any_element(),
     });

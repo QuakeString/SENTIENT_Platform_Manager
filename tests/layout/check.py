@@ -113,6 +113,13 @@ def main():
         if len(hits) >= MIN_PIXELS:
             x, y = hits[0]
             bad.append(f"menu edge: {len(hits)} px of line inside the selected row's opening, first at ({x / scale:.1f}, {y / scale:.1f})")
+    # Menu icons (an open popup or context menu): at least 18 px.
+    for l in open(log, errors="replace").read().splitlines():
+        if l.startswith("LAYOUT menu-item-icon "):
+            x0, x1, y0, y1 = (float(v) for v in l.split()[2:])
+            if x1 - x0 < 17.5 or y1 - y0 < 17.5:
+                bad.append(f"menu icon {x1 - x0:.1f}x{y1 - y0:.1f} px, under 18")
+                break
     # One height for the top bar's controls (and centred in the bar).
     ctrls = bar_controls(log)
     if ctrls:

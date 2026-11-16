@@ -279,6 +279,9 @@ impl PopupMenuItem {
     }
 }
 
+/// SENTIENT: every menu icon is this size.
+const MENU_ICON: f32 = 18.;
+
 pub struct PopupMenu {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) menu_items: Vec<PopupMenuItem>,
@@ -1179,7 +1182,36 @@ impl PopupMenu {
             Icon::empty()
         };
 
-        Some(icon.xsmall())
+        // SENTIENT: menu icons at 18 px, the side menu's weight; the layout
+        // test reads their size (SPM_DEBUG_LAYOUT).
+        Some(
+            div()
+                .relative()
+                .flex_shrink_0()
+                .size(px(MENU_ICON))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon.size(px(MENU_ICON)))
+                .when(cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_LAYOUT").is_some(), |d| {
+                    d.child(
+                        gpui::canvas(
+                            |b, _, _| {
+                                eprintln!(
+                                    "LAYOUT menu-item-icon {:.1} {:.1} {:.1} {:.1}",
+                                    f32::from(b.origin.x),
+                                    f32::from(b.origin.x + b.size.width),
+                                    f32::from(b.origin.y),
+                                    f32::from(b.origin.y + b.size.height)
+                                )
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                }),
+        )
     }
 
     #[inline]
@@ -1216,7 +1248,7 @@ impl PopupMenu {
         let has_left_icon = options.has_left_icon;
         let is_left_check = options.check_side.is_left() && item.is_checked();
         let right_check_icon = if options.check_side.is_right() && item.is_checked() {
-            Some(Icon::new(IconName::Check).xsmall())
+            Some(Icon::new(IconName::Check).size(px(MENU_ICON)))
         } else {
             None
         };
@@ -1227,9 +1259,10 @@ impl PopupMenu {
 
         let is_submenu = matches!(item, PopupMenuItem::Submenu { .. });
 
+        // SENTIENT: one row height for every item, room for the 18 px icon.
         let (item_height, radius) = match self.size {
-            Size::Small => (px(20.), options.radius.half()),
-            _ => (px(26.), options.radius),
+            Size::Small => (px(28.), options.radius.half()),
+            _ => (px(32.), options.radius),
         };
 
         let this = MenuItemElement::new(ix)
@@ -1279,7 +1312,7 @@ impl PopupMenu {
                 h_flex()
                     .cursor_default()
                     .items_center()
-                    .gap_x_1()
+                    .gap_x(px(10.))
                     .children(Self::render_icon(has_left_icon, false, None, window, cx))
                     .child(div().flex_1().child(label.clone())),
             ),
@@ -1300,7 +1333,7 @@ impl PopupMenu {
                         .flex_1()
                         .min_h(item_height)
                         .items_center()
-                        .gap_x_1()
+                        .gap_x(px(10.))
                         .children(Self::render_icon(
                             has_left_icon,
                             is_left_check,
@@ -1330,7 +1363,7 @@ impl PopupMenu {
                 })
                 .disabled(*disabled)
                 .h(item_height)
-                .gap_x_1()
+                .gap_x(px(10.))
                 .children(Self::render_icon(
                     has_left_icon,
                     is_left_check,
@@ -1377,7 +1410,7 @@ impl PopupMenu {
                         .min_h(item_height)
                         .size_full()
                         .items_center()
-                        .gap_x_1()
+                        .gap_x(px(10.))
                         .children(Self::render_icon(
                             has_left_icon,
                             false,
