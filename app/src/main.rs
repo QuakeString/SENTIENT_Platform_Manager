@@ -236,12 +236,14 @@ fn gui_main(args: Vec<String>) {
             background::StartPlan::Forward if background::forward(&request) => return,
             // A stale lock: nothing runs after all.
             background::StartPlan::Forward => cfg!(windows) && !background_start,
-            background::StartPlan::TakeOver => {
-                if !background::take_over() {
+            background::StartPlan::TakeOver => match background::take_over(&request) {
+                background::TakeOver::Forwarded => return,
+                background::TakeOver::Done => false,
+                background::TakeOver::NoAnswer => {
                     maintenance_ops::log_line("The running Platform Manager did not hand over; starting anyway");
+                    false
                 }
-                false
-            }
+            },
             background::StartPlan::Run { elevate } => elevate,
         };
         if request == "action exit" {

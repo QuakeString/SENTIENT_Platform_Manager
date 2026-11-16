@@ -44,6 +44,8 @@ pub enum Command {
     Exit,
     /// An elevated copy takes over: remove the tray and quit.
     Handover,
+    /// The elevated copy the tray started did not start (UAC declined).
+    TakeoverDeclined,
 }
 
 /// The taskbar actions (`--action <name>`): the Linux menu entry's Desktop
@@ -149,7 +151,11 @@ pub enum StartPlan {
 /// sign-in. `window_needs_admin`: the window must run elevated (Windows).
 pub fn start_plan(running: Option<bool>, admin: bool, takeover: bool, background: bool, window_needs_admin: bool) -> StartPlan {
     match running {
-        Some(_) if takeover => StartPlan::TakeOver,
+        // The tray's elevated copy takes over from the unelevated tray, but
+        // never from another elevated copy (two quick clicks): it hands
+        // its request to that one instead.
+        Some(false) if takeover => StartPlan::TakeOver,
+        Some(true) if takeover => StartPlan::Forward,
         Some(_) if background => StartPlan::Exit,
         // An elevated start finds an unelevated tray: it becomes the copy.
         Some(false) if admin && window_needs_admin => StartPlan::TakeOver,
@@ -161,9 +167,34 @@ pub fn start_plan(running: Option<bool>, admin: bool, takeover: bool, background
     }
 }
 
+/// How a takeover went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TakeOver {
+    /// The tray let go: this copy is the one copy now.
+    Done,
+    /// Another elevated copy holds the lock: `request` was forwarded to it,
+    /// and this start ends.
+    Forwarded,
+    /// Nobody answered (a stale lock): run as the one copy anyway.
+    NoAnswer,
+}
+
 /// Ask the running copy to hand over to this one, and wait (up to 10 s)
-/// until it has let go. False when it did not answer.
-pub fn take_over() -> bool {
+/// until it has let go. The lock is read again first: when an elevated
+/// copy holds it by now (it won a race), `request` goes to it instead.
+///
+/// Known limit: when UAC elevates to a different administrator account (a
+/// standard user typing an administrator's credentials), the elevated copy
+/// reads that account's preferences folder, finds no lock, and runs beside
+/// the tray instead of taking over from it.
+pub fn take_over(request: &str) -> TakeOver {
+    if running() == Some(true) {
+        return if forward(request) { TakeOver::Forwarded } else { TakeOver::NoAnswer };
+    }
+    if take_over_lock() { TakeOver::Done } else { TakeOver::NoAnswer }
+}
+
+fn take_over_lock() -> bool {
     if !forward("takeover") {
         return false;
     }
@@ -382,6 +413,9 @@ mod tests {
         assert_eq!(start_plan(Some(false), false, false, false, true), Forward);
         // The tray's elevated copy, or any elevated start: takes over.
         assert_eq!(start_plan(Some(false), true, true, false, true), TakeOver);
+        // Two quick tray clicks: the second elevated copy finds the first
+        // already holding the lock and forwards to it.
+        assert_eq!(start_plan(Some(true), true, true, false, true), Forward);
         assert_eq!(start_plan(Some(false), true, false, false, true), TakeOver);
         // An elevated copy runs: everything goes to it.
         assert_eq!(start_plan(Some(true), false, false, false, true), Forward);

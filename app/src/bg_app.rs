@@ -35,6 +35,29 @@ struct Bg {
     manager: Option<WeakEntity<Manager>>,
     window: Option<AnyWindowHandle>,
     options: fn(&mut App) -> WindowOptions,
+    /// An unelevated tray started its elevated copy at this time and waits
+    /// for it to take over; requests that come meanwhile wait in `queued`.
+    takeover_since: Option<std::time::Instant>,
+    queued: Vec<String>,
+}
+
+/// How long a started elevated copy has to take over before another click
+/// starts a new one (the UAC prompt may sit unanswered).
+const TAKEOVER_WAIT: Duration = Duration::from_secs(30);
+
+/// A click on an unelevated tray that needs the elevated copy: start one,
+/// or, while one is on its way, keep the request for it.
+#[derive(Debug, PartialEq)]
+enum Click {
+    Launch,
+    Queue,
+}
+
+fn tray_click(pending_for: Option<Duration>) -> Click {
+    match pending_for {
+        Some(d) if d < TAKEOVER_WAIT => Click::Queue,
+        _ => Click::Launch,
+    }
 }
 
 impl Global for Bg {}
@@ -113,7 +136,7 @@ pub fn start(options: fn(&mut App) -> WindowOptions, open_window: bool, request:
         None
     };
     let running = tray.is_some();
-    cx.set_global(Bg { prefs, tray, tx, manager: None, window: None, options });
+    cx.set_global(Bg { prefs, tray, tx, manager: None, window: None, options, takeover_since: None, queued: Vec::new() });
     // The bell's strip lives as long as the app (jobs survive a closed window).
     crate::manager::strip::install(cx);
     // Screens: problems as the checks would find them.
@@ -211,33 +234,69 @@ fn needs_elevated_copy(cmd: &Command, admin: bool, window_needs_admin: bool) -> 
     match cmd {
         Command::Show | Command::Toggle => Some("show".into()),
         Command::Action(a) => Some(format!("action {a}")),
-        Command::Exit | Command::Handover => None,
+        Command::Exit | Command::Handover | Command::TakeoverDeclined => None,
     }
 }
 
 /// Start the elevated copy (one UAC prompt) that takes over with `request`.
 /// Declined: the tray stays as it is, and says so in its log.
-fn hand_over(request: String) {
+fn hand_over(request: String, tx: UnboundedSender<Command>) {
     std::thread::spawn(move || {
         let args = vec!["--manager".to_string(), "--takeover".to_string(), "--request".to_string(), request];
         if !crate::elevate::relaunch_elevated(&args) {
             crate::maintenance_ops::log_line("Administrator rights were not given: the window stays closed");
+            let _ = tx.unbounded_send(Command::TakeoverDeclined);
         }
     });
 }
 
 fn handle(cmd: Command, cx: &mut App) {
     if let Some(request) = needs_elevated_copy(&cmd, crate::elevate::is_admin(), cfg!(windows)) {
-        hand_over(request);
+        let b = cx.global_mut::<Bg>();
+        match tray_click(b.takeover_since.map(|t| t.elapsed())) {
+            Click::Launch => {
+                b.takeover_since = Some(std::time::Instant::now());
+                b.queued.clear();
+                hand_over(request, b.tx.clone());
+            }
+            // One elevated copy is on its way: it gets this request too.
+            Click::Queue => {
+                if !b.queued.contains(&request) {
+                    b.queued.push(request);
+                }
+            }
+        }
         return;
     }
     match cmd {
+        Command::TakeoverDeclined => {
+            let b = cx.global_mut::<Bg>();
+            b.takeover_since = None;
+            b.queued.clear();
+        }
         Command::Handover => {
-            // The elevated copy is the one copy from now on.
+            // The elevated copy is the one copy from now on. Requests clicked
+            // while it was on its way follow it once it listens.
             crate::maintenance_ops::log_line("Handing over to the elevated Platform Manager");
             crate::background::release();
+            let queued = std::mem::take(&mut cx.global_mut::<Bg>().queued);
             cx.global_mut::<Bg>().tray = None;
-            cx.quit();
+            cx.spawn(async move |cx| {
+                if !queued.is_empty() {
+                    cx.background_executor()
+                        .spawn(async move {
+                            let up = sentient_installer_core::stack_order::wait_until(15, || crate::background::running() == Some(true));
+                            if up {
+                                for r in &queued {
+                                    let _ = crate::background::forward(r);
+                                }
+                            }
+                        })
+                        .await;
+                }
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
         }
         Command::Show => show(cx),
         Command::Toggle => {
@@ -478,7 +537,19 @@ fn transition(before: Option<Seen>, now: Seen, name: &str) -> Option<Note> {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
-    use super::{Seen, needs_elevated_copy, transition};
+    use super::{Click, Seen, TAKEOVER_WAIT, needs_elevated_copy, transition, tray_click};
+    use std::time::Duration;
+
+    /// Two quick clicks: the first starts the elevated copy, the next ones
+    /// wait for it; after the wait (the prompt left unanswered) a click
+    /// starts a new one.
+    #[test]
+    fn a_second_click_waits_for_the_coming_copy() {
+        assert_eq!(tray_click(None), Click::Launch);
+        assert_eq!(tray_click(Some(Duration::from_millis(300))), Click::Queue);
+        assert_eq!(tray_click(Some(TAKEOVER_WAIT - Duration::from_secs(1))), Click::Queue);
+        assert_eq!(tray_click(Some(TAKEOVER_WAIT)), Click::Launch);
+    }
     use crate::background::Command;
 
     /// An unelevated Windows tray hands the window and actions to an
