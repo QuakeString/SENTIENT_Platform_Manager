@@ -154,7 +154,9 @@ def broken_dividers(im, panels, scale, top_bar, charts=()):
     inner width is one flat colour other than the card's; inside its first
     and last pixel there may be no gap of 6 px or more of card colour.
     Rows inside a chart (`LAYOUT chart l r t b`: its scale and plot) are
-    not dividers: a grid line starts after the scale's labels."""
+    not dividers: a grid line starts after the scale's labels. Nor are the
+    edges of buttons and of input fields (`LAYOUT field`) side by side: a
+    row of fields is not one line."""
     W, H = im.size
     out = []
     for (l, r, t, b) in panels:
@@ -300,7 +302,7 @@ def main():
     if not dialog:
         # A row of outlined buttons' top or bottom edges is not a divider
         # either: the rows inside a button's box are left out like a chart's.
-        bad.extend(broken_dividers(im, panels, scale, top_bar, frame_probes(log, "chart") + frame_probes(log, "button")))
+        bad.extend(broken_dividers(im, panels, scale, top_bar, frame_probes(log, "chart") + frame_probes(log, "button") + frame_probes(log, "field")))
     # The menu's selected row opens into the page: no edge line between
     # its curves (the page's colour all across the menu's edge there).
     sel = menu_selection(log)
