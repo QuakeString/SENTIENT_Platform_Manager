@@ -372,12 +372,20 @@ mod tests {
         assert_eq!(find_in(Family::Arch, &dir, Some(18)), None);
     }
 
+    // The scripts run on a Linux server: their text is checked everywhere,
+    // and run through bash where there is one (cfg(unix)).
     #[test]
     fn every_script_is_valid_shell() {
         for fam in [Family::Arch, Family::Rhel, Family::Debian] {
             for ch in [OldPgChoice::Upgrade, OldPgChoice::KeepAside] {
                 let s = fix_script(fam, ch);
+                assert!(!s.trim().is_empty(), "{fam:?} {ch:?}");
+                if ch == OldPgChoice::KeepAside {
+                    assert!(!s.contains("rm -rf \"$DATA\"") && !s.contains("rm -rf $DATA"), "{fam:?} keep-aside deletes the data:\n{s}");
+                }
+                #[cfg(unix)]
                 let ok = std::process::Command::new("bash").arg("-n").arg("-c").arg(&s).status().unwrap();
+                #[cfg(unix)]
                 assert!(ok.success(), "{fam:?} {ch:?}:\n{s}");
             }
         }
@@ -386,6 +394,16 @@ mod tests {
 
     #[test]
     fn keep_aside_moves_and_never_deletes() {
+        let text = keep_aside("/var/lib/postgres/data");
+        assert!(text.contains("mv \"$DATA\" \"$ASIDE\""));
+        assert!(!text.contains("rm "), "{text}");
+        // Run it for real where there is a bash (the server's shell).
+        #[cfg(unix)]
+        keep_aside_runs();
+    }
+
+    #[cfg(unix)]
+    fn keep_aside_runs() {
         // Run it for real on a temporary folder (systemctl absent or harmless).
         let base = std::env::temp_dir().join(format!("spm-aside-{}", std::process::id()));
         let data = base.join("data");
