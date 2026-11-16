@@ -178,6 +178,17 @@ refreshes that repository's Downloads table.
   (group sentient-admin), so Status, Statistics and Licence read the
   database without root; until the next sign-in they say the values are
   available after signing in again.
+- Statistics shows its first cards at once and never asks for a password.
+  Processor, memory, disk, network and "Running for" come straight from
+  this computer (a reader shared with the top bar, under 0.1 s after the
+  page opens); Services and Database are read side by side and fill their
+  own cards when they come. On native Linux, where the database's password
+  is not readable yet, its numbers show "—" with a note (or "available
+  after you sign in again") instead of the administrator password prompt
+  that held the whole page and came back every few seconds; the
+  sampler's timer no longer asks either. On a server, each part is its own agent call
+  (`stats-live system|services|db`); an older agent's whole reading still
+  works.
 - Setting up a remote server: the first copy of the Platform Manager
   failed ("stat remote: No such file or directory"), and a key with a
   passphrase or a password sign-in could not copy at all. A Linux server

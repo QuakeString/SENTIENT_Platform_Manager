@@ -50,6 +50,22 @@ def frame_panels(log):
     return (w, h), keep, dialog or bool(overlays)
 
 
+def frame_probes(log, name):
+    """The `LAYOUT <name> l r t b` probes of the last complete frame."""
+    lines = open(log, errors="replace").read().splitlines()
+    marks = [i for i, l in enumerate(lines) if l.startswith("LAYOUT-FRAME ")]
+    if not marks:
+        return []
+    start = marks[-2] if len(marks) > 1 else marks[-1]
+    end = marks[-1] if len(marks) > 1 else len(lines)
+    out = set()
+    for l in lines[start + 1:end]:
+        p = l.split()
+        if len(p) == 6 and p[0] == "LAYOUT" and p[1] == name:
+            out.add(tuple(float(x) for x in p[2:]))
+    return sorted(out)
+
+
 def menu_selection(log):
     lines = open(log, errors="replace").read().splitlines()
     sels = [l.split()[2:] for l in lines if l.startswith("LAYOUT menu-sel ")]
@@ -123,12 +139,14 @@ def differs(a, b):
     return max(abs(a[i] - b[i]) for i in range(3)) > TOL
 
 
-def broken_dividers(im, panels, scale, top_bar):
+def broken_dividers(im, panels, scale, top_bar, charts=()):
     """A card's horizontal row dividers are one continuous line each (his
     rc12-22 note: a line per column left a gap before the action column).
     A divider is a pixel row inside the card where at least half of the
     inner width is one flat colour other than the card's; inside its first
-    and last pixel there may be no gap of 6 px or more of card colour."""
+    and last pixel there may be no gap of 6 px or more of card colour.
+    Rows inside a chart (`LAYOUT chart l r t b`: its scale and plot) are
+    not dividers: a grid line starts after the scale's labels."""
     W, H = im.size
     out = []
     for (l, r, t, b) in panels:
@@ -141,6 +159,8 @@ def broken_dividers(im, panels, scale, top_bar):
             continue
         gap = 6 * scale
         for y in range(int(max(T + 4 * scale, top_bar + 2)), int(min(B - 4 * scale, H - 1))):
+            if any(cl < r and cr > l and ct - 1 <= y / scale <= cb + 1 for (cl, cr, ct, cb) in charts):
+                continue
             bg = im.getpixel((int(L + 6 * scale), y))
             px = [im.getpixel((x, y)) for x in range(x0, x1)]
             # Dividers are faint (the theme border over the card): a finer
@@ -217,7 +237,7 @@ def main():
             bad.append(f"card {l:.0f}-{r:.0f} x {t:.0f}-{b:.0f}: {len(hits)} px in its right padding, first at ({x / scale:.0f}, {y / scale:.0f})")
     # Row dividers: one continuous line per row.
     if not dialog:
-        bad.extend(broken_dividers(im, panels, scale, top_bar))
+        bad.extend(broken_dividers(im, panels, scale, top_bar, frame_probes(log, "chart")))
     # The menu's selected row opens into the page: no edge line between
     # its curves (the page's colour all across the menu's edge there).
     sel = menu_selection(log)

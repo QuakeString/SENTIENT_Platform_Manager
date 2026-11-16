@@ -1202,13 +1202,14 @@ pub fn ch_parts(inst: &Instance, attach: bool, parts: &[(String, String)]) -> Re
     spm_job(inst, &format!("{} {}", if attach { "ch-attach" } else { "ch-drop" }, args.join(" ")))
 }
 
-/// A live statistics reading of the server (crate::stats).
-pub fn stats_live(inst: &Instance) -> Result<crate::stats::Sample, String> {
+/// One part of a live reading of the server (crate::stats::Part). An agent
+/// from before the parts answers the whole reading.
+pub fn stats_live_part(inst: &Instance, part: crate::stats::Part) -> Result<crate::stats::Sample, String> {
     #[cfg(debug_assertions)]
     if let Some(d) = std::env::var_os("SPM_DEBUG_STATS") {
-        return crate::stats::debug_live(std::path::Path::new(&d));
+        return crate::stats::debug_part(std::path::Path::new(&d), part);
     }
-    read_json(inst, "stats-live")
+    read_json(inst, &format!("stats-live {}", part.arg()))
 }
 
 /// The server's statistics history of the last `secs` seconds.
@@ -1764,8 +1765,9 @@ mod tests {
         let h = stats_history(&inst, 3600).unwrap();
         assert!(h.len() >= 2, "{} readings", h.len());
         assert!(h.iter().all(|s| s.mem_total > 0 && s.cores > 0), "{h:?}");
-        let live = stats_live(&inst).unwrap();
+        let live = stats_live_part(&inst, crate::stats::Part::System).unwrap();
         assert!(live.mem_total > 0 && live.boot > 0, "{live:?}");
+        assert!(live.services.is_empty() && live.db.is_none(), "the system part alone: {live:?}");
         eprintln!("stats: {} readings, live cpu {:.1} %, {} cores", h.len(), live.cpu, live.cores);
         // Opening a server with an older agent on it (crate::manager::
         // remote_pages::refresh_agent: ready, then deploy) replaces it.

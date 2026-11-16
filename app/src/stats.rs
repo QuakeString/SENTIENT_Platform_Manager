@@ -102,60 +102,213 @@ impl Sample {
 // One reading
 // ---------------------------------------------------------------------------
 
-/// Read the computer over `window` (the processor, network and disk figures
-/// are rates over it). Blocking. `with_db`: also read the database numbers.
-pub fn read(record: Option<&InstallationRecord>, window: Duration, with_db: bool) -> Sample {
-    use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, Networks, RefreshKind, System};
-    let mut sys = System::new_with_specifics(
-        RefreshKind::new().with_cpu(CpuRefreshKind::new().with_cpu_usage()).with_memory(MemoryRefreshKind::everything()),
-    );
-    let mut nets = Networks::new_with_refreshed_list();
-    let io_before = disk_io_bytes();
-    let svc_before = service_cpu_ns(record);
-    let window = window.max(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-    std::thread::sleep(window);
-    sys.refresh_cpu_usage();
-    nets.refresh();
-    let secs = window.as_secs_f64();
-    let (rx, tx) = nets
-        .iter()
-        .filter(|(name, _)| !is_loopback(name))
-        .fold((0u64, 0u64), |(r, t), (_, n)| (r + n.received(), t + n.transmitted()));
-    let io = match (io_before, disk_io_bytes()) {
-        (Some(a), Some(b)) => Some(b.saturating_sub(a) as f64 / secs),
-        _ => None,
-    };
-    let data_dir = record
-        .map(|r| if r.pg_dir.as_os_str().is_empty() { r.install_dir.clone() } else { r.pg_dir.clone() })
-        .unwrap_or_else(|| PathBuf::from(if cfg!(windows) { "C:\\" } else { "/" }));
-    let disks = Disks::new_with_refreshed_list();
-    let disk = disks
-        .list()
-        .iter()
-        .filter(|d| data_dir.starts_with(d.mount_point()))
-        .max_by_key(|d| d.mount_point().as_os_str().len())
-        .or_else(|| disks.list().iter().max_by_key(|d| d.total_space()));
-    let load = System::load_average();
-    let cores = sys.cpus().len() as u32;
-    let services = record.map(|r| services(r, svc_before, secs, cores)).unwrap_or_default();
-    Sample {
-        t: chrono::Utc::now().timestamp(),
-        cpu: sys.global_cpu_usage(),
-        cores,
-        load: (!cfg!(windows)).then_some(load.one as f32),
-        mem_used: sys.used_memory(),
-        mem_total: sys.total_memory(),
-        swap_used: sys.used_swap(),
-        swap_total: sys.total_swap(),
-        disk_free: disk.map(|d| d.available_space()).unwrap_or(0),
-        disk_total: disk.map(|d| d.total_space()).unwrap_or(0),
-        rx: rx as f64 / secs,
-        tx: tx as f64 / secs,
-        io,
-        boot: System::boot_time() as i64,
-        services,
-        db: if with_db { record.and_then(db) } else { None },
+/// The quick part of a reading: processor, memory, swap, load, disk,
+/// network and uptime, all from /proc and sysinfo (no service manager, no
+/// database, no password). It keeps the counters of the reading before, so
+/// each reading is a rate since the last one and never waits, except the
+/// very first, which waits [`FIRST_WINDOW`].
+pub struct Reader {
+    sys: sysinfo::System,
+    nets: sysinfo::Networks,
+    io: Option<u64>,
+    at: std::time::Instant,
+    data_dir: PathBuf,
+}
+
+/// The first reading's window: long enough for a processor figure, short
+/// enough that the page's first cards show within a fifth of a second.
+pub const FIRST_WINDOW: Duration = Duration::from_millis(120);
+
+impl Reader {
+    pub fn new(record: Option<&InstallationRecord>) -> Self {
+        use sysinfo::{CpuRefreshKind, MemoryRefreshKind, Networks, RefreshKind, System};
+        let sys = System::new_with_specifics(RefreshKind::new().with_cpu(CpuRefreshKind::new().with_cpu_usage()).with_memory(MemoryRefreshKind::everything()));
+        Self { sys, nets: Networks::new_with_refreshed_list(), io: disk_io_bytes(), at: std::time::Instant::now(), data_dir: data_dir(record) }
     }
+
+    /// A reading over the time since the last one (at least `min_window`:
+    /// it waits for the rest). Blocking. No services, no database.
+    pub fn read(&mut self, min_window: Duration) -> Sample {
+        use sysinfo::{Disks, System};
+        let since = self.at.elapsed();
+        if since < min_window {
+            std::thread::sleep(min_window - since);
+        }
+        self.sys.refresh_cpu_usage();
+        self.sys.refresh_memory();
+        self.nets.refresh();
+        let secs = self.at.elapsed().as_secs_f64().max(0.001);
+        self.at = std::time::Instant::now();
+        let (rx, tx) = self
+            .nets
+            .iter()
+            .filter(|(name, _)| !is_loopback(name))
+            .fold((0u64, 0u64), |(r, t), (_, n)| (r + n.received(), t + n.transmitted()));
+        let io_now = disk_io_bytes();
+        let io = match (self.io, io_now) {
+            (Some(a), Some(b)) => Some(b.saturating_sub(a) as f64 / secs),
+            _ => None,
+        };
+        self.io = io_now;
+        let disks = Disks::new_with_refreshed_list();
+        let disk = disks
+            .list()
+            .iter()
+            .filter(|d| self.data_dir.starts_with(d.mount_point()))
+            .max_by_key(|d| d.mount_point().as_os_str().len())
+            .or_else(|| disks.list().iter().max_by_key(|d| d.total_space()));
+        let load = System::load_average();
+        let sys = &self.sys;
+        Sample {
+            t: chrono::Utc::now().timestamp(),
+            cpu: sys.global_cpu_usage(),
+            cores: sys.cpus().len() as u32,
+            load: (!cfg!(windows)).then_some(load.one as f32),
+            mem_used: sys.used_memory(),
+            mem_total: sys.total_memory(),
+            swap_used: sys.used_swap(),
+            swap_total: sys.total_swap(),
+            disk_free: disk.map(|d| d.available_space()).unwrap_or(0),
+            disk_total: disk.map(|d| d.total_space()).unwrap_or(0),
+            rx: rx as f64 / secs,
+            tx: tx as f64 / secs,
+            io,
+            boot: System::boot_time() as i64,
+            services: Vec::new(),
+            db: None,
+        }
+    }
+}
+
+/// This computer's reader, shared by the top bar's monitor and the
+/// Statistics page: the top bar reads every few seconds, so when Statistics
+/// opens its first reading is a rate over those seconds and waits for
+/// nothing.
+static LOCAL: std::sync::Mutex<Option<Reader>> = std::sync::Mutex::new(None);
+
+/// A reading of this computer from the shared reader (at least
+/// `min_window` since the one before it). Blocking.
+pub fn local_read(record: Option<&InstallationRecord>, min_window: Duration) -> Sample {
+    // The lock is held only while reading, never while waiting (the other
+    // reader would wait too) and never across an await.
+    let wait = {
+        let mut guard = LOCAL.lock().unwrap_or_else(|e| e.into_inner());
+        let reader = guard.get_or_insert_with(|| Reader::new(record));
+        min_window.saturating_sub(reader.at.elapsed())
+    };
+    std::thread::sleep(wait);
+    let mut guard = LOCAL.lock().unwrap_or_else(|e| e.into_inner());
+    let reader = guard.get_or_insert_with(|| Reader::new(record));
+    reader.data_dir = data_dir(record);
+    reader.read(Duration::ZERO)
+}
+
+/// The folder whose disk the figures show: the data's.
+fn data_dir(record: Option<&InstallationRecord>) -> PathBuf {
+    record
+        .map(|r| if r.pg_dir.as_os_str().is_empty() { r.install_dir.clone() } else { r.pg_dir.clone() })
+        .unwrap_or_else(|| PathBuf::from(if cfg!(windows) { "C:\\" } else { "/" }))
+}
+
+/// One part of a reading, read on its own so a slow part never holds the
+/// others back (the page and `--job stats-live <part>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    /// Processor, memory, disk, network, uptime ([`Reader`]).
+    System,
+    /// Each SENTIENT service (systemctl or docker stats: a second or two).
+    Services,
+    /// The database numbers (a query; on native Linux only when its
+    /// password is readable without asking).
+    Db,
+}
+
+impl Part {
+    pub fn arg(self) -> &'static str {
+        match self {
+            Part::System => "system",
+            Part::Services => "services",
+            Part::Db => "db",
+        }
+    }
+
+    pub fn from_arg(s: &str) -> Option<Part> {
+        [Part::System, Part::Services, Part::Db].into_iter().find(|p| p.arg() == s)
+    }
+}
+
+/// The database numbers as a page or the sampler may read them: never
+/// asking for a password.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DbRead {
+    Read(Db),
+    /// Its password is readable only by the administrator here (native
+    /// Linux): not read, and nothing asked. The last backup needs no
+    /// password.
+    /// `after_sign_in`: this account was just given read access (group
+    /// sentient-admin), which takes effect at its next sign-in.
+    NeedsAdmin { last_backup: Option<(String, Option<u64>)>, after_sign_in: bool },
+    /// No installation, or the database did not answer.
+    None,
+}
+
+/// Read the database numbers unless that needs the administrator password.
+pub fn db_unprompted(record: Option<&InstallationRecord>) -> DbRead {
+    let Some(r) = record else { return DbRead::None };
+    if crate::dbstatus::needs_admin(r) && !crate::rootjob::is_root() {
+        return DbRead::NeedsAdmin { last_backup: crate::dbstatus::last_backup().map(|b| (b.at, b.bytes)), after_sign_in: crate::dbstatus::after_sign_in(r) };
+    }
+    db(r).map(DbRead::Read).unwrap_or(DbRead::None)
+}
+
+/// Each SENTIENT service's processor (over `window`) and memory. Blocking.
+pub fn services_over(record: Option<&InstallationRecord>, window: Duration) -> Vec<Service> {
+    let Some(r) = record else { return Vec::new() };
+    let window = window.max(Duration::from_millis(100));
+    let before = service_cpu_ns(Some(r));
+    if r.engine == Engine::Native && !cfg!(windows) {
+        std::thread::sleep(window);
+    }
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as u32;
+    services(r, before, window.as_secs_f64(), cores)
+}
+
+/// One part only, as `--job stats-live <part>` answers it.
+pub fn read_part(record: Option<&InstallationRecord>, part: Part) -> Sample {
+    match part {
+        Part::System => {
+            let mut r = Reader::new(record);
+            r.read(Duration::from_millis(300))
+        }
+        Part::Services => Sample { t: chrono::Utc::now().timestamp(), services: services_over(record, Duration::from_secs(1)), ..Default::default() },
+        Part::Db => Sample {
+            t: chrono::Utc::now().timestamp(),
+            db: match db_unprompted(record) {
+                DbRead::Read(d) => Some(d),
+                _ => None,
+            },
+            ..Default::default()
+        },
+    }
+}
+
+/// Read the computer over `window` (the processor, network and disk figures
+/// are rates over it): the three parts side by side. Blocking. `with_db`:
+/// also read the database numbers (never asking for a password).
+pub fn read(record: Option<&InstallationRecord>, window: Duration, with_db: bool) -> Sample {
+    let window = window.max(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+    std::thread::scope(|scope| {
+        let services = scope.spawn(|| services_over(record, window));
+        let db = with_db.then(|| scope.spawn(|| db_unprompted(record)));
+        let mut reader = Reader::new(record);
+        let mut s = reader.read(window);
+        s.services = services.join().unwrap_or_default();
+        s.db = match db.map(|h| h.join()) {
+            Some(Ok(DbRead::Read(d))) => Some(d),
+            _ => None,
+        };
+        s
+    })
 }
 
 fn is_loopback(name: &str) -> bool {
@@ -499,6 +652,28 @@ pub fn debug_live(dir: &Path) -> Result<Sample, String> {
     Ok(s)
 }
 
+/// Screens: one part of the canned reading, after the delay
+/// SPM_DEBUG_STATS_DELAY gives it ("services=4,db=8": seconds per part).
+#[cfg(debug_assertions)]
+pub fn debug_part(dir: &Path, part: Part) -> Result<Sample, String> {
+    if let Some(secs) = std::env::var("SPM_DEBUG_STATS_DELAY")
+        .ok()
+        .and_then(|v| v.split(',').find_map(|kv| kv.split_once('=').filter(|(k, _)| *k == part.arg()).and_then(|(_, n)| n.parse::<f64>().ok())))
+    {
+        std::thread::sleep(Duration::from_secs_f64(secs));
+    }
+    let mut s = debug_live(dir)?;
+    match part {
+        Part::System => {
+            s.services.clear();
+            s.db = None;
+        }
+        Part::Services => s.db = None,
+        Part::Db => s.services.clear(),
+    }
+    Ok(s)
+}
+
 /// Screens: a canned history made from `live.json`: a week of minutes with
 /// a daily rhythm and a few spikes.
 #[cfg(debug_assertions)]
@@ -588,6 +763,27 @@ mod tests {
         assert!(t.len() <= 101 && t.len() >= 99, "{}", t.len());
         assert_eq!(t.last().unwrap().t, 999);
         assert!(t.iter().any(|s| s.db.as_ref().is_some_and(|d| d.pg_bytes == 7)));
+    }
+
+    #[test]
+    fn parts_name_themselves_and_read_alone() {
+        for p in [Part::System, Part::Services, Part::Db] {
+            assert_eq!(Part::from_arg(p.arg()), Some(p));
+        }
+        assert_eq!(Part::from_arg("all"), None);
+        // The quick part: a first reading within its window, the next one
+        // at once (a rate since the first), no services, no database.
+        let mut r = Reader::new(None);
+        let started = std::time::Instant::now();
+        let a = r.read(FIRST_WINDOW);
+        let b = r.read(Duration::ZERO);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(a.mem_total > 0 && a.cores > 0 && b.boot > 0);
+        assert!(b.rx >= 0. && b.tx >= 0.);
+        assert!(a.services.is_empty() && a.db.is_none());
+        // Nothing installed: no services and no database to read.
+        assert!(services_over(None, Duration::ZERO).is_empty());
+        assert_eq!(db_unprompted(None), DbRead::None);
     }
 
     #[test]
