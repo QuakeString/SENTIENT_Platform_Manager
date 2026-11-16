@@ -256,22 +256,22 @@ section{display:flex;flex-direction:column;gap:18px}
       <button data-t="light">Light</button><button data-t="dark">Dark</button><button data-t="">System</button>
     </div>
   </div>
-  <nav class="jump"><a href="#l1">L1 Sign in</a><a href="#l2">L2 Licensed</a><a href="#l3">L3 Replace key</a><a href="#l4">L4 Over a limit</a><a href="#l5">L5 No licence</a><a href="#l6">L6 Deactivate</a><a href="#l7">L7 SENTIENT stopped</a></nav>
+  <nav class="jump"><a href="#l1">L1 Sign in</a><a href="#l2">L2 Licensed</a><a href="#l4">L4 Over a limit</a><a href="#l5">L5 No licence</a><a href="#l6">L6 Deactivate</a><a href="#l7">L7 SENTIENT stopped</a></nav>
   <section>
     <div class="state" id="l1s"><div class="cap"><span class="code">L1</span><b>Opened</b><span>Asks for the system administrator once per visit; nothing about the licence shows before that</span></div><div class="scroll" id="l1"></div></div>
     <div class="state" id="l2s"><div class="cap"><span class="code">L2</span><b>Signed in, licence active</b><span>The licence card in the centre; buttons under it open the rest</span></div><div class="scroll" id="l2"></div></div>
     <div class="state"><div class="cap"><span class="code">L2b</span><b>Details opened</b><span>Buttons under the card open one panel at a time; pressed again, it closes</span></div><div class="scroll" id="l2b"></div></div>
     <div class="state"><div class="cap"><span class="code">L2c</span><b>Limits opened</b><span>"All limits…" lists every limit SENTIENT has</span></div><div class="scroll" id="l2c"></div></div>
-    <div class="state"><div class="cap"><span class="code">L2d</span><b>Manage</b><span>Check now, Replace and Deactivate sit in one menu</span></div><div class="scroll" id="l2d"></div></div>
-    <div class="state" id="l3s"><div class="cap"><span class="code">L3</span><b>Replace the licence</b><span>Paste a key or choose a .key file; segmented choice, password asked again</span></div><div class="scroll" id="l3"></div></div>
+    <div class="state"><div class="cap"><span class="code">L2d</span><b>Manage</b><span>The same three actions as SENTIENT's licence page: Refresh, Deactivate, Force-delete local licence</span></div><div class="scroll" id="l2d"></div></div>
     <div class="state" id="l4s"><div class="cap"><span class="code">L4</span><b>Over a limit</b><span>The same warning SENTIENT shows, with the days left before it blocks</span></div><div class="scroll" id="l4"></div></div>
-    <div class="state" id="l5s"><div class="cap"><span class="code">L5</span><b>No licence</b><span>Activate a key or file, or request a demo or a quote with SENTIENT's own forms</span></div><div class="scroll" id="l5"></div></div>
-    <div class="state" id="l6s"><div class="cap"><span class="code">L6</span><b>Deactivate</b><span>Frees the licence for another computer; the forced removal sits behind it</span></div><div class="scroll" id="l6"></div></div>
+    <div class="state" id="l5s"><div class="cap"><span class="code">L5</span><b>No licence</b><span>As in SENTIENT: key and Activate, Import key file, Request demo, Buy</span></div><div class="scroll" id="l5"></div></div>
+    <div class="state" id="l6s"><div class="cap"><span class="code">L6</span><b>Deactivate</b><span>SENTIENT's wording, password asked again</span></div><div class="scroll" id="l6"></div></div>
+    <div class="state"><div class="cap"><span class="code">L6b</span><b>Force-delete local licence</b><span>SENTIENT's warning, password asked again</span></div><div class="scroll" id="l6b"></div></div>
     <div class="state" id="l7s"><div class="cap"><span class="code">L7</span><b>SENTIENT not running</b><span>Licence actions need a running SENTIENT; one button starts it</span></div><div class="scroll" id="l7"></div></div>
     <div class="notes"><h3>Rules behind the mockup</h3><ul>
       <li>The page calls SENTIENT's licence functions on the server (over the SSH connection for a remote instance), exactly what the Licence page in SENTIENT does. The licence server sees the same SENTIENT, so hardware binding and the build check are unchanged.</li>
       <li>Sign-in uses SENTIENT's normal system administrator sign-in, including its lockout after wrong passwords. The session is kept in memory while the page is open and ends on Sign out, on closing the app, or after 15 minutes idle.</li>
-      <li>Activate, Replace, Deactivate and Remove each ask for the password again in their own dialog, so a forgotten open session cannot change the licence. Refresh and reading need only the sign-in.</li>
+      <li>The actions are exactly SENTIENT's: Refresh, Deactivate and Force-delete local licence when a licence is active; Activate (key or .key file), Request demo and Buy when there is none. To change a licence, deactivate it and activate the new one, as in SENTIENT.</li><li>Activate, Deactivate and Force-delete each ask for the password again in their own dialog, so a forgotten open session cannot change the licence. Refresh and reading need only the sign-in.</li>
       <li>Every change is written to SENTIENT's audit log as that administrator, as it is today from the web page.</li>
       <li>Open question for you: should each instance tile on the Instances page also show a one-word licence state (Active, ends in N days, Over a limit, None)? That read would happen without the sign-in.</li>
     </ul></div>
@@ -395,7 +395,7 @@ function center(open,over,menu){
  const t=(id,ic,l)=>`<span class="btn tog${open===id?' on':''}">${I[ic]}${l}${P(open===id?'<path d="m18 15-6-6-6 6"/>':'<path d="m6 9 6 6 6-6"/>')}</span>`;
  return `<div class="lcenter${open?' open':''}">${licCard('Active',false)}
   <div class="lbtns" style="position:relative">${t('d','info','Details')}${t('u','stats','Limits')}<span class="btn tog${menu?' on':''}">${I.key}Manage${P('<path d="m6 9 6 6 6-6"/>')}</span>
-  ${menu?`<div class="menu" style="right:0;top:40px"><div>${I.refresh}Check now with the licence server</div><div class="on">${I.key}Replace the licence…</div><div class="dng">${I.unlink}Deactivate…</div></div>`:''}</div>
+  ${menu?`<div class="menu" style="right:0;top:40px"><div>${I.refresh}Refresh</div><div class="on">${I.unlink}Deactivate…</div><div class="dng">${I.trash}Force-delete local licence…</div></div>`:''}</div>
   ${open==='d'?facts():open==='u'?usage(over):''}</div>`}
 put('l2',lshell({page:'Licence',tall:true,body:ltitle(signed)+center('')}));
 
@@ -403,34 +403,29 @@ put('l2',lshell({page:'Licence',tall:true,body:ltitle(signed)+center('')}));
 put('l2b',lshell({page:'Licence',xtall:true,body:ltitle(signed)+center('d')}));
 put('l2c',lshell({page:'Licence',xtall:true,body:ltitle(signed)+center('u')}));
 put('l2d',lshell({page:'Licence',body:ltitle(signed)+center('',false,true)}));
-put('l3',lshell({page:'Licence',tall:true,body:ltitle(signed)+center(''),
- over:`<div class="scrim"><div class="dlg"><div class="dh">${I.key}<span>Replace the licence</span><span class="sp"></span><span class="ib">${I.x}</span></div>
-  <div class="db"><div class="row"><span class="seg"><span class="on">Licence key</span><span>Licence file</span></span></div>
-   <div class="inp focus" style="height:auto;min-height:72px;align-items:flex-start;padding:8px 10px"><span class="mono" style="overflow-wrap:anywhere">ST4-PRO-9F2C-71AB-55E0-D3C8-0A4E-B71F</span></div>
-   <p class="mut small">The current licence is released on the licence server first, then the new one is activated. Needs internet on the server once.</p>
-   ${pw('System administrator password','<span style="letter-spacing:3px">••••••••</span>')}
-  </div><div class="df"><span class="btn">Cancel</span><span class="btn pri">Replace</span></div></div></div>`}));
-
-// L4 over limit
-put('l4',lshell({page:'Licence',xtall:true,body:ltitle(signed)+`<div class="banner bad">${I.warn}<div class="tx"><b style="font-weight:500">Over the device limit for 3 days.</b> 512 devices on a 500-device licence. SENTIENT is blocked in 4 days unless devices are removed or the licence is raised.</div><span class="btn">${I.cart}Raise the limit…</span></div>`
+put('l4',lshell({page:'Licence',xtall:true,body:ltitle(signed)+`<div class="banner bad">${I.warn}<div class="tx"><b style="font-weight:500">Over the device limit for 3 days.</b> 512 devices on a 500-device licence. SENTIENT is blocked in 4 days unless devices are removed or the licence is raised.</div><span class="btn">${I.cart}Buy a licence…</span></div>`
  +center('u',true)}));
 
 // L5 none
-put('l5',lshell({page:'Licence',body:ltitle(signed)+`<div class="card" style="max-width:720px">
+put('l5',lshell({page:'Licence',body:ltitle(signed)+`<div class="lcenter"><div class="card" style="width:600px;box-sizing:border-box">
   <div class="row"><b style="font-weight:500;font-size:16px">No licence on INVENIA IIoT</b><span class="sp"></span><span class="pill mute">Not licensed</span></div>
-    <div class="row"><span class="seg"><span class="on">Licence key</span><span>Licence file</span></span></div>
-  <div class="row" style="flex-wrap:nowrap"><div class="inp" style="flex:1"><span class="mut">Paste the licence key</span></div><span class="btn pri">Activate…</span></div>
+    <div class="row" style="flex-wrap:nowrap"><div class="inp" style="flex:1"><span class="mut">Enter your licence key</span></div><span class="btn pri">Activate…</span></div>
+  <div class="row"><span class="mut">Or import a licence key from a file:</span><span class="btn">${I.file}Import key file…</span></div>
   <div style="border-top:1px solid var(--border);padding-top:12px" class="row"><span class="mut">No key yet?</span><span class="btn">${I.mail}Request a demo licence</span><span class="btn">${I.cart}Buy a licence</span></div>
- </div>`}));
+ </div></div>`}));
 
 // L6 deactivate
-put('l6',lshell({page:'Licence',tall:true,body:ltitle(signed)+center(''),
- over:`<div class="scrim"><div class="dlg"><div class="dh">${I.unlink}<span>Deactivate the licence on INVENIA IIoT?</span></div>
-  <div class="db"><p>The licence is released on the licence server so it can be activated on another computer. SENTIENT on this server is then unlicensed.</p>
-   ${pw('System administrator password','<span style="letter-spacing:3px">••••••••</span>',true)}
-   <details style="color:var(--text2)"><summary class="small">The licence server cannot be reached</summary><p class="small" style="margin-top:6px">Remove without the licence server deletes the licence here only. The licence server still counts it as in use until support releases it.</p><div class="row" style="margin-top:8px"><span class="btn" style="color:var(--bad);border-color:var(--bad)">Remove without the licence server…</span></div></details>
-  </div><div class="df"><span class="btn">Cancel</span><span class="btn dan">Deactivate</span></div></div></div>`}));
-document.querySelector('#l6 details').open=true;
+put('l6',lshell({page:'Licence',body:ltitle(signed)+center(''),
+ over:`<div class="scrim"><div class="dlg"><div class="dh">${I.unlink}<span>Deactivate licence</span></div>
+  <div class="db"><p>This releases the binding on the licence server and removes the licence from INVENIA IIoT. The same key can then be activated on another computer.</p>
+   ${pw('System administrator password','<span style="letter-spacing:3px">••••••••</span>',true)}</div>
+  <div class="df"><span class="btn">Cancel</span><span class="btn dan">Deactivate</span></div></div></div>`}));
+put('l6b',lshell({page:'Licence',body:ltitle(signed)+center(''),
+ over:`<div class="scrim"><div class="dlg"><div class="dh">${I.trash}<span>Force-delete local licence</span></div>
+  <div class="db"><div class="banner bad" style="padding:10px 12px">${I.warn}<div class="tx">Deletes the licence from INVENIA IIoT without contacting the licence server. The binding there is not released and the slot stays taken until an administrator force-unbinds it on the licence server.</div></div>
+   <p class="mut small">Use this only when Deactivate keeps failing, for example when the licence server cannot be reached.</p>
+   ${pw('System administrator password','<span style="letter-spacing:3px">••••••••</span>',true)}</div>
+  <div class="df"><span class="btn">Cancel</span><span class="btn dan">Delete locally</span></div></div></div>`}));
 
 // L7 stopped
 put('l7',lshell({page:'Licence',body:ltitle()+`<div class="banner warn">${I.warn}<div class="tx"><b style="font-weight:500">SENTIENT is stopped.</b> The licence is kept by SENTIENT itself, so it has to run to show or change it.</div><span class="btn">${I.power}Start SENTIENT</span></div>`}));
