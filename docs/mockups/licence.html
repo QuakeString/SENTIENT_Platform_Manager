@@ -47,6 +47,7 @@ section{display:flex;flex-direction:column;gap:18px}
 /* ---------- app window ---------- */
 .win{width:1260px;height:720px;border-radius:10px;overflow:hidden;border:1px solid var(--border);display:flex;flex-direction:column;background:var(--page);position:relative;box-shadow:var(--pop)}
 .win.tall{height:780px}
+.win.xtall{height:860px}
 .tbar{flex:none;height:52px;white-space:nowrap;display:flex;align-items:center;gap:14px;padding:0 14px;color:#fff;background:var(--ic,#187074)}
 .tbar .app{width:30px;height:30px;border-radius:8px;background:rgba(255,255,255,.92);display:flex;align-items:center;justify-content:center;color:#187074}
 .tbar .sw{display:flex;align-items:center;gap:8px;background:rgba(0,0,0,.14);border-radius:8px;padding:5px 10px;font-weight:600}
@@ -210,6 +211,27 @@ section{display:flex;flex-direction:column;gap:18px}
 .bl.h{border-top:0;height:28px;color:var(--text2);font-size:12px;font-weight:500}
 .bl .n{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;gap:8px;align-items:center}
 @media (max-width:700px){ h1{font-size:21px} }
+
+/* SENTIENT licence card, Professional tier (copied from SENTIENT's licence page) */
+.lic-card{--rim-color:rgba(243,197,182,.45);position:relative;width:100%;max-width:540px;aspect-ratio:540/340;border-radius:22px;padding:24px 28px 30px;box-sizing:border-box;overflow:hidden;color:#fff;
+ box-shadow:0 16px 40px rgba(0,0,0,.22),0 6px 14px rgba(0,0,0,.12),inset 0 0 0 1px var(--rim-color);display:flex;flex-direction:column;
+ background:radial-gradient(ellipse at 50% 0%,rgba(232,180,163,.18),transparent 70%),linear-gradient(135deg,#0f1832 0%,#0a1126 55%,#040814 100%)}
+.lic-card.over{--rim-color:rgba(239,68,68,.55)}
+.lic-deco{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
+.lic-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;position:relative;z-index:2}
+.lic-top .bn{font-size:18px;font-weight:700;letter-spacing:3px}
+.lic-top .bs{margin-top:2px;font-size:9px;font-weight:500;letter-spacing:3px;opacity:.7}
+.lic-tier{padding:6px 14px;border-radius:4px;font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase;background:linear-gradient(90deg,#e6a191,#f3c5b6,#b67864);color:#2c1814}
+.lic-marks{display:flex;align-items:center;gap:14px;margin-top:22px;margin-inline-start:19px;position:relative;z-index:2}
+.lic-marks svg{width:48px;height:43px}
+.lic-key{font-family:Menlo,Consolas,ui-monospace,monospace;font-size:19px;font-weight:600;letter-spacing:4px;margin-top:20px;position:relative;z-index:2;white-space:pre}
+.lic-bottom{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;gap:20px;align-items:end;margin-top:auto;padding-top:14px;position:relative;z-index:2}
+.lic-bottom .ml{font-size:9px;font-weight:500;letter-spacing:2px;opacity:.6;text-transform:uppercase}
+.lic-bottom .mv{margin-top:4px;font-size:14px;font-weight:600;white-space:nowrap}
+.lic-bottom>div:first-child .mv{white-space:normal;overflow-wrap:anywhere;line-height:1.2}
+.lic-bottom .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#34d399;margin-right:6px}
+.lic-bottom .dot.bad{background:#ef4444}
+.licol{display:flex;flex-direction:column;gap:16px;min-width:0}
 </style>
 
 <main>
@@ -297,7 +319,7 @@ const MENU=[['status','Status'],['stats','Statistics'],['power','Control'],['log
 function shell(o){
   const menu=MENU.filter(m=>o.files||m[1]!=='Files').map(([ic,l])=>`<div class="it${l===o.page?' on':''}${l==='Files'?' new':''}">${I[ic]}<span>${l}</span></div>`).join('');
   const chip=o.chip?`<div class="chip">${o.chip}</div>`:'';
-  return `<div class="win${o.tall?' tall':''}" style="--ic:${GREEN}">
+  return `<div class="win${o.tall?' tall':''}${o.xtall?' xtall':''}" style="--ic:${GREEN}">
    <div class="tbar"><div class="app">${I.server}</div>
     <div class="sw"><span class="dot"></span>INVENIA IIoT <small>129.154.247.56 over SSH</small></div><span class="tag">REMOTE</span>
     <div class="mon">${chip}<span>CPU <i><b style="width:15%"></b></i> 15%</span><span>Memory <i><b style="width:60%"></b></i> 0.6 / 1 GB</span><span>Disk <i><b style="width:30%"></b></i> 64.1 GB free</span><div class="bell">${I.bell}</div></div></div>
@@ -331,15 +353,24 @@ put('l1',lshell({page:'Licence',body:ltitle()+`<div class="card" style="max-widt
 
 // L2 licensed
 const lim=(n,u,m,warn)=>{const p=Math.min(100,Math.round(u/m*100));return `<span class="k">${n}</span><span><span class="bar" style="flex:1;max-width:260px"><i style="width:${p}%;${warn?'background:var(--bad)':''}"></i></span></span><span class="mono" style="justify-content:flex-end;${warn?'color:var(--bad)':''}">${u.toLocaleString('en-IN')} / ${m.toLocaleString('en-IN')}</span>`};
-function summary(status,valid){return `<div class="card"><div class="row" style="min-height:28px"><b style="font-weight:500">Licence</b><span class="sp"></span>${status}</div>
-  <div class="kv" style="grid-template-columns:170px minmax(0,1fr)">
-   <span class="k f">Licensed to</span><span class="f">Sunoil Industries Pvt Ltd</span>
-   <span class="k">Type</span><span>Professional</span>
-   <span class="k">Valid through</span><span>${valid}</span>
-   <span class="k">Versions</span><span>4.x <span class="mut small">· this build 4.4.0.2 is covered</span></span>
-   <span class="k">Bound to</span><span>This server's hardware <span class="pill ok">Matches</span></span>
-   <span class="k">Last check</span><span>Licence server answered 07:02</span>
-  </div></div>`}
+function licCard(status,bad){return `<div class="lic-card${bad?' over':''}">
+ <svg class="lic-deco" viewBox="0 0 540 340" preserveAspectRatio="none"><defs>
+  <pattern id="lw" width="120" height="60" patternUnits="userSpaceOnUse"><path d="M0 30 Q30 0 60 30 T120 30" fill="none" stroke="#fff" stroke-opacity=".045" stroke-width=".75"/></pattern>
+  <linearGradient id="lcp" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#dca18d"/><stop offset=".5" stop-color="#f4cdb8"/><stop offset="1" stop-color="#9a6151"/></linearGradient></defs>
+  <rect width="540" height="340" fill="url(#lw)"/>
+  <path d="M540 340 Q420 220 540 100" fill="none" stroke="#f3c5b6" stroke-width="3" opacity=".6"/>
+  <path d="M540 340 Q480 240 540 160" fill="none" stroke="#f3c5b6" stroke-width="2" opacity=".4"/></svg>
+ <div class="lic-top"><div><div class="bn">INVENIA SYSTEMS</div><div class="bs">SENTIENT LICENSE</div></div><div class="lic-tier">Professional</div></div>
+ <div class="lic-marks">
+  <svg viewBox="0 0 9.2604168 8.329258" fill="url(#lcp)"><path d="M 7.7914277,1.0348821 C 7.7153998,1.6069896 6.8573008,2.7562433 5.1657725,2.7562433 H 1.1478738 v 0.3129756 h 5.6802166 v 4.2251615 c 0.7093826,0 1.28445,-0.5604969 1.28445,-1.2519036 V 1.0348821 Z"/><path d="M 6.3464966,1.0348765 H 2.3287052 a 1.1807798,1.2519341 0 0 0 -1.1808199,1.251892 h 4.017877 A 1.1807334,1.2518849 0 0 0 6.3464966,1.0348828 Z"/><path d="M 1.1478765,3.5386825 H 5.0946208 A 1.2518863,1.2518863 0 0 1 6.3465069,4.7905706 V 5.181801 H 2.3997607 A 1.2518847,1.2518847 0 0 1 1.1478765,3.9299149 Z"/><path d="m 1.1478736,7.2943805 3.9467472,1e-6 A 1.251886,1.251886 0 0 0 6.3465069,6.0424934 V 5.651263 l -3.9467492,-9e-7 a 1.2518844,1.2518844 0 0 0 -1.2518841,1.251886 z"/></svg>
+  <svg viewBox="-12 -12 105 105" fill="url(#lcp)" stroke="url(#lcp)" stroke-width="1.5" stroke-linejoin="round"><path transform="translate(2 0)" d="M 21.093685,36.04892 64.760524,68.802188 80.931399,80.929302 V 0.06650616 L 64.760524,12.197822 V 48.587543 L 21.093685,15.834284 Z"/><path transform="translate(-2 0)" d="M 16.24368,12.197822 0.06860324,0.06650616 V 80.933495 L 16.24368,68.802188 c 0,-18.868122 0,-37.736244 0,-56.604366 z"/></svg></div>
+ <div class="lic-key">INVE  PROF  9F2C  ····  B71F</div>
+ <div class="lic-bottom"><div><div class="ml">Licensed to</div><div class="mv">Sunoil Industries Pvt Ltd</div></div><div><div class="ml">Versions</div><div class="mv">v4</div></div><div><div class="ml">Valid through</div><div class="mv">06 / 2027</div></div><div><div class="ml">Status</div><div class="mv"><span class="dot${bad?' bad':''}"></span>${status}</div></div></div></div>`}
+function summary(status,valid,bad){return `<div class="licol">${licCard('Active',false)}
+ <div class="card" style="padding:12px 18px"><div class="kv" style="grid-template-columns:150px minmax(0,1fr)">
+  <span class="k f">Days left</span><span class="f">${status}</span>
+  <span class="k">Bound to</span><span>This server's hardware <span class="pill ok">Matches</span></span>
+  <span class="k">Last check</span><span>Licence server answered 07:02</span></div></div></div>`}
 function usage(over){return `<div class="card"><div class="row" style="min-height:28px"><b style="font-weight:500">Use against the limits</b><span class="sp"></span><span class="btn ghost" style="height:28px;padding:0 6px">All limits…</span></div>
   <div class="kv" style="grid-template-columns:170px minmax(0,1fr) 140px">
    ${lim('Devices',over?512:186,500,over).replace('class="k"','class="k f"').replace('<span><span class="bar"','<span class="f"><span class="bar"').replace('<span class="mono" style="justify-content','<span class="mono f" style="justify-content')}
@@ -348,10 +379,10 @@ function usage(over){return `<div class="card"><div class="row" style="min-heigh
 const actions=`<div class="card"><div class="row"><b style="font-weight:500">Actions</b></div><div class="row">
   <span class="btn">${I.refresh}Check with the licence server</span><span class="btn">${I.key}Replace licence…</span><span class="btn">${I.unlink}Deactivate…</span></div></div>`;
 const twocol=(a,b)=>`<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:stretch">${a}${b}</div>`;
-put('l2',lshell({page:'Licence',tall:true,body:ltitle(signed)+twocol(summary('<span class="pill ok">Active · 228 days left</span>','30 Jun 2027'),usage(false))+actions}));
+put('l2',lshell({page:'Licence',tall:true,body:ltitle(signed)+twocol(summary('228 days, until 30 Jun 2027','',false),usage(false))+actions}));
 
 // L3 replace
-put('l3',lshell({page:'Licence',tall:true,body:ltitle(signed)+twocol(summary('<span class="pill ok">Active · 228 days left</span>','30 Jun 2027'),usage(false))+actions,
+put('l3',lshell({page:'Licence',tall:true,body:ltitle(signed)+twocol(summary('228 days, until 30 Jun 2027','',false),usage(false))+actions,
  over:`<div class="scrim"><div class="dlg"><div class="dh">${I.key}<span>Replace the licence</span><span class="sp"></span><span class="ib">${I.x}</span></div>
   <div class="db"><div class="row"><span class="seg"><span class="on">Licence key</span><span>Licence file</span></span></div>
    <div class="inp focus" style="height:auto;min-height:72px;align-items:flex-start;padding:8px 10px"><span class="mono" style="overflow-wrap:anywhere">ST4-PRO-9F2C-71AB-55E0-D3C8-0A4E-B71F</span></div>
@@ -360,8 +391,8 @@ put('l3',lshell({page:'Licence',tall:true,body:ltitle(signed)+twocol(summary('<s
   </div><div class="df"><span class="btn">Cancel</span><span class="btn pri">Replace</span></div></div></div>`}));
 
 // L4 over limit
-put('l4',lshell({page:'Licence',tall:true,body:ltitle(signed)+`<div class="banner bad">${I.warn}<div class="tx"><b style="font-weight:500">Over the device limit for 3 days.</b> 512 devices on a 500-device licence. SENTIENT is blocked in 4 days unless devices are removed or the licence is raised.</div><span class="btn">${I.cart}Raise the limit…</span></div>`
- +twocol(summary('<span class="pill" style="background:var(--bad-bg);color:var(--bad)">Over a limit</span>','30 Jun 2027'),usage(true))+actions}));
+put('l4',lshell({page:'Licence',xtall:true,body:ltitle(signed)+`<div class="banner bad">${I.warn}<div class="tx"><b style="font-weight:500">Over the device limit for 3 days.</b> 512 devices on a 500-device licence. SENTIENT is blocked in 4 days unless devices are removed or the licence is raised.</div><span class="btn">${I.cart}Raise the limit…</span></div>`
+ +twocol(summary('228 days, until 30 Jun 2027','',true),usage(true))+actions}));
 
 // L5 none
 put('l5',lshell({page:'Licence',body:ltitle(signed)+`<div class="card" style="max-width:720px">
@@ -372,7 +403,7 @@ put('l5',lshell({page:'Licence',body:ltitle(signed)+`<div class="card" style="ma
  </div>`}));
 
 // L6 deactivate
-put('l6',lshell({page:'Licence',tall:true,body:ltitle(signed)+twocol(summary('<span class="pill ok">Active · 228 days left</span>','30 Jun 2027'),usage(false))+actions,
+put('l6',lshell({page:'Licence',tall:true,body:ltitle(signed)+twocol(summary('228 days, until 30 Jun 2027','',false),usage(false))+actions,
  over:`<div class="scrim"><div class="dlg"><div class="dh">${I.unlink}<span>Deactivate the licence on INVENIA IIoT?</span></div>
   <div class="db"><p>The licence is released on the licence server so it can be activated on another computer. SENTIENT on this server is then unlicensed.</p>
    ${pw('System administrator password','<span style="letter-spacing:3px">••••••••</span>',true)}
