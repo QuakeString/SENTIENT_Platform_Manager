@@ -153,6 +153,8 @@ pub struct SettingsPage {
     /// The last administration result.
     admin_result: Option<(Tone, String)>,
     admin_busy: bool,
+    /// Database: where each store keeps its data (crate::manager::movedata).
+    locations: Option<Entity<super::movedata::LocationsCard>>,
     _subscriptions: Vec<Subscription>,
     _admin_tasks: Vec<Task<()>>,
 }
@@ -262,8 +264,15 @@ impl SettingsPage {
             custom_db: false,
             ram_mb: catalog::total_ram_mb(),
             job,
+            locations: None,
             _subscriptions: subscriptions,
         };
+        // Data locations, where the data can move (Docker; ClickHouse in WSL
+        // on Windows), or in the mockup's screens.
+        let movable = page.record.as_ref().is_some_and(|r| crate::movedata::unsupported(r).is_none()) || (cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_MOVEDATA").is_some());
+        if movable {
+            page.locations = Some(cx.new(|cx| super::movedata::LocationsCard::new(crate::movedata::Target::Local, "This computer".into(), cfg!(windows), cx)));
+        }
         // Development aid: open on a tab (screens).
         #[cfg(debug_assertions)]
         if let Ok(t) = std::env::var("SPM_SETTINGS_TAB") {
@@ -911,6 +920,10 @@ impl SettingsPage {
                 s = s.child(self.catalog_row(theme, k, 160., cx).when(i == 0, |r| r));
             }
             out.push(s.into_any_element());
+        }
+        if let Some(l) = &self.locations {
+            out.push(l.clone().into_any_element());
+            return out;
         }
         out.push(
             section(theme, "Where the data is", Some("Sizes, free disk and growth are on Status."))

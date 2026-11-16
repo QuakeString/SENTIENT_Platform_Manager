@@ -783,6 +783,10 @@ pub fn deploy_with(sink: ProgressFn, cfg: &DeployConfig, keep_existing: Option<b
     pull_images(&sink, cfg)?;
     bail_if_cancelled!();
 
+    // Data locations chosen at Setup: the folders the volumes are bound to.
+    move_data::prepare_locations(&sink, cfg)?;
+    bail_if_cancelled!();
+
     // The server validates the schema at boot and REFUSES to start on an
     // empty database (with `restart: always` it would crash-loop). Run the
     // one-time installer first: `compose run` brings the databases up via

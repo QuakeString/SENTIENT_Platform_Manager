@@ -987,6 +987,31 @@ fn job_arg(a: &str) -> Result<String, String> {
     Ok(format!("'{a}'"))
 }
 
+/// Where each store keeps its data on the server, its disks and the old
+/// copies kept (crate::movedata there).
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+pub fn movedata_overview(inst: &Instance) -> Result<sentient_installer_core::distro::move_data::Overview, String> {
+    read_json(inst, "movedata-json")
+}
+
+/// A folder on the server checked for a store.
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+pub fn movedata_check(inst: &Instance, store: sentient_installer_core::distro::move_data::Store, path: &str) -> Result<sentient_installer_core::distro::move_data::Check, String> {
+    read_json(inst, &format!("movedata-check {} {}", store.as_str(), job_arg(path)?))
+}
+
+/// How long the moves would take, measured on the server's disks.
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+pub fn movedata_estimate(inst: &Instance, moves: &[sentient_installer_core::distro::move_data::Move]) -> Result<sentient_installer_core::distro::move_data::Estimate, String> {
+    read_json(inst, &format!("movedata-estimate {}", job_arg(&crate::movedata::moves_arg(moves))?))
+}
+
+/// Ask the move running on the server to stop and put everything back.
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+pub fn movedata_cancel(inst: &Instance) -> Result<(), String> {
+    spm_job(inst, "move-data-cancel").map(|_| ())
+}
+
 /// The backup folder chooser on the server (crate::backups::dir_list there).
 pub fn dir_list(inst: &Instance, path: &str) -> Result<crate::backups::DirList, String> {
     #[cfg(debug_assertions)]

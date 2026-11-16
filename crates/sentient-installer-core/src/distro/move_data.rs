@@ -377,24 +377,26 @@ fn helper_image(cfg: &DeployConfig) -> String {
     pg.to_string()
 }
 
+/// A name of its own per helper run: two readings at once (the card and
+/// the flow) must not remove each other's helper.
 fn helper_name(cfg: &DeployConfig) -> String {
-    format!("{}-spm-move", cfg.stack_name)
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    format!("{}-spm-move-{}-{}", cfg.stack_name, std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
 /// `docker run` of the helper with `script` (sh, busybox), the host's `/`
 /// at `/host`.
-fn helper_cmd(cfg: &DeployConfig, image: &str, script: &str) -> String {
+fn helper_cmd(name: &str, image: &str, script: &str) -> String {
     format!(
         "docker run --rm --name {} --label spm.helper=move-data --network none --user 0:0 --entrypoint sh -v /:/host {} -c {}",
-        shell_quote(&helper_name(cfg)),
+        shell_quote(name),
         shell_quote(image),
         shell_quote(script)
     )
 }
 
 fn helper_capture(cfg: &DeployConfig, image: &str, script: &str) -> Result<String, String> {
-    let _ = run_output(&format!("docker rm -f {} >/dev/null 2>&1", shell_quote(&helper_name(cfg))));
-    capture(&helper_cmd(cfg, image, script))
+    capture(&helper_cmd(&helper_name(cfg), image, script))
 }
 
 /// The cancel request file of a stack's move (the agent's Cancel writes it).
@@ -416,8 +418,7 @@ fn cancelled(cfg: &DeployConfig) -> bool {
 fn helper_stream(cfg: &DeployConfig, image: &str, script: &str, mut on_line: impl FnMut(&str)) -> Result<(), String> {
     use std::io::BufRead;
     let name = helper_name(cfg);
-    let _ = run_output(&format!("docker rm -f {} >/dev/null 2>&1", shell_quote(&name)));
-    let (prog, args) = shell_args(&format!("{} 2>&1", helper_cmd(cfg, image, script)));
+    let (prog, args) = shell_args(&format!("{} 2>&1", helper_cmd(&name, image, script)));
     let mut child = sys::command(&prog)
         .args(&args)
         .stdout(std::process::Stdio::piped())
@@ -480,7 +481,7 @@ pub fn kind_of(fstype: &str, read_only: bool) -> DiskKind {
         DiskKind::Network
     } else if ["vfat", "fat", "msdos", "exfat", "ntfs", "ntfs3", "ntfs-3g", "fuseblk"].contains(&t) {
         DiskKind::Fat
-    } else if ["tmpfs", "devtmpfs", "proc", "sysfs", "overlay", "cgroup", "cgroup2", "devpts", "mqueue", "debugfs", "tracefs", "securityfs", "pstore", "efivarfs", "bpf", "autofs", "hugetlbfs", "fusectl", "configfs", "binfmt_misc", "ramfs", "nsfs", "rpc_pipefs", "unknown"].contains(&t) {
+    } else if ["tmpfs", "devtmpfs", "proc", "sysfs", "cgroup", "cgroup2", "devpts", "mqueue", "debugfs", "tracefs", "securityfs", "pstore", "efivarfs", "bpf", "autofs", "hugetlbfs", "fusectl", "configfs", "binfmt_misc", "ramfs", "nsfs", "rpc_pipefs", "unknown"].contains(&t) {
         DiskKind::Pseudo
     } else if read_only || ["squashfs", "iso9660", "udf", "erofs"].contains(&t) {
         DiskKind::ReadOnly
@@ -642,7 +643,7 @@ pub fn disk_blocks(disk: &Disk, store: Store, needed: u64, label: &str) -> Vec<B
         )),
         DiskKind::Fat if store != Store::Backups => out.push(block(
             BlockKind::Fat,
-            format!("{} cannot hold {name}", disk.mount),
+            format!("{} cannot hold {}", disk.mount, if store.is_database() { "a database" } else { name }),
             format!("It is {} ({}): no owners or permissions, and no file over 4 GB. {name} would not start on it.", if disk.fstype.contains("ntfs") { "NTFS" } else { "FAT" }, disk.fstype),
             &["Pick another disk, or", "format it as ext4 or xfs outside the Platform Manager (this erases it)."],
         )),
@@ -752,13 +753,20 @@ pub fn estimate(cfg: &DeployConfig, moves: &[Move], places: &[Place]) -> Estimat
     for m in moves {
         let script = format!(
             "d={}; while [ ! -e \"$d\" ]; do d=$(dirname \"$d\"); done; f=\"$d/.spm-speed-$$\"; \
-             s=$(date +%s%N 2>/dev/null || date +%s000000000); dd if=/dev/zero of=\"$f\" bs=1M count=256 conv=fsync 2>/dev/null; \
-             e=$(date +%s%N 2>/dev/null || date +%s000000000); rm -f \"$f\"; echo \"SPMNS $((e-s))\"",
+             s=$(cut -d' ' -f1 /proc/uptime); dd if=/dev/zero of=\"$f\" bs=1M count=256 conv=fsync 2>/dev/null; \
+             e=$(cut -d' ' -f1 /proc/uptime); rm -f \"$f\"; echo \"SPMUP $s $e\"",
             h(&m.to)
         );
-        if let Some(ns) = helper_capture(cfg, &image, &script).ok().and_then(|o| o.lines().find_map(|l| l.strip_prefix("SPMNS ").and_then(|v| v.trim().parse::<f64>().ok()))) {
-            if ns > 0. {
-                let r = 256. * 1.048_576 / (ns / 1e9);
+        let secs = helper_capture(cfg, &image, &script).ok().and_then(|o| {
+            o.lines().find_map(|l| {
+                let mut p = l.strip_prefix("SPMUP ")?.split_whitespace().map(|v| v.parse::<f64>().ok());
+                let (start, end) = (p.next()??, p.next()??);
+                Some(end - start)
+            })
+        });
+        if let Some(secs) = secs {
+            if secs > 0. {
+                let r = 256. * 1.048_576 / secs;
                 rate = if rate == 0. { r } else { rate.min(r) };
             }
         }
@@ -1228,6 +1236,49 @@ fn run_inner(sink: &ProgressFn, cfg0: &DeployConfig, moves: &[Move], backups: Op
     }
 }
 
+/// A new install with data locations: make each store's folder, and give
+/// an empty one what a new named volume would get from its image (Docker
+/// copies the image's files into an empty volume, not into a bind mount).
+/// Run after the images are pulled, before anything starts.
+pub fn prepare_locations(sink: &ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
+    let pg_image = if cfg.flavor.uses_timescaledb() || cfg.keep_timescale_image { PG_IMAGE_TIMESCALE } else { PG_IMAGE_STOCK };
+    let stores: Vec<(Store, String, &str, String)> = [
+        (Store::Pg, pg_image.to_string(), "/var/lib/postgresql"),
+        (Store::Ch, CH_IMAGE.to_string(), "/var/lib/clickhouse"),
+        (Store::Data, cfg.image.clone(), "/var/lib/sentient"),
+    ]
+    .into_iter()
+    .filter(|(s, ..)| *s != Store::Ch || cfg.flavor.uses_clickhouse())
+    .filter_map(|(s, img, at)| cfg.locations.get(s).map(|dir| (s, img, at, dir.clone())))
+    .collect();
+    if stores.is_empty() {
+        return Ok(());
+    }
+    step(sink, "Preparing the data folders");
+    let helper = helper_image(cfg);
+    for (s, image, at, dir) in stores {
+        if !dir.starts_with('/') {
+            return Err(format!("{}'s data folder must be a full path: {dir}", s.label()));
+        }
+        helper_capture(cfg, &helper, &format!("mkdir -p {}", h(&dir))).map_err(|e| format!("make {dir}: {e}"))?;
+        let empty = helper_capture(cfg, &helper, &format!("[ -z \"$(ls -A {} 2>/dev/null)\" ] && echo SPMEMPTY", h(&dir))).unwrap_or_default().contains("SPMEMPTY");
+        if !empty {
+            log(sink, format!("{}: {dir} has data already; it is used as it is.", s.label()));
+            continue;
+        }
+        let script = format!("cp -a {at}/. /spm-to/ 2>/dev/null; chown \"$(stat -c %u:%g {at})\" /spm-to; chmod \"$(stat -c %a {at})\" /spm-to; true");
+        capture(&format!(
+            "docker run --rm --network none --user 0:0 --entrypoint sh -v {}:/spm-to {} -c {}",
+            shell_quote(&dir),
+            shell_quote(&image),
+            shell_quote(&script)
+        ))
+        .map_err(|e| format!("prepare {dir} for {}: {e}", s.label()))?;
+        log(sink, format!("{} keeps its data in {dir}", s.label()));
+    }
+    Ok(())
+}
+
 /// Remove a kept old copy (or a failed move's partial copy). Never a place
 /// a store uses now.
 pub fn remove_old(sink: &ProgressFn, cfg: &DeployConfig, path: &str, backups: Option<&str>) -> Result<Vec<OldCopy>, String> {
@@ -1448,7 +1499,7 @@ mod move_e2e {
         assert_eq!(pg0, "1000|500500");
         let to = format!("{}/pg", s.dir);
         let est = estimate(&s.cfg, &[Move { store: Store::Pg, to: to.clone() }], &s.places());
-        assert!(est.down_secs > 0 && est.rate_mb_s > 0., "{est:?}");
+        assert!(est.down_secs > 0 && est.rate_mb_s > 0. && est.rate_mb_s != 150., "measured, not the fallback: {est:?}");
         let out = run(sink(), &s.cfg, &[Move { store: Store::Pg, to: to.clone() }], None);
         assert_eq!(out.ended, Ended::Moved, "{out:?}");
         assert!(out.rows.iter().any(|r| r.starts_with("PostgreSQL holds the same")), "{:?}", out.rows);
@@ -1633,6 +1684,37 @@ mod move_e2e {
         let old = out.old_copies[0].path.clone();
         remove_old(&sink(), &s.cfg, &old, None).unwrap();
         s.down();
+    }
+
+    #[test]
+    #[ignore]
+    fn a_new_install_puts_each_store_where_asked() {
+        let s = Stack::up(0, Flavor::Stock);
+        s.down();
+        // A new stack of its own whose stores are bound from the start.
+        let mut cfg = s.cfg.clone();
+        cfg.locations = crate::distro::Locations::under(&format!("{}/one", s.dir), false);
+        std::fs::create_dir_all(&s.dir).unwrap();
+        write_stack_files_exact(&sink(), &cfg).unwrap();
+        prepare_locations(&sink(), &cfg).unwrap();
+        let (ok, out) = sh(&cfg.compose_cmd("up -d"));
+        assert!(ok, "{out}");
+        let n = cfg.names();
+        let mut up = false;
+        for _ in 0..90 {
+            if sh(&format!("docker exec {} psql -U sentient -d sentient -c 'CREATE TABLE marker(v int); INSERT INTO marker VALUES (1)'", n.pg)).0 {
+                up = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        assert!(up, "PostgreSQL starts in its bound folder");
+        assert_eq!(s.device(&n.vol_pg).as_deref(), Some(format!("{}/one/postgres", s.dir).as_str()));
+        assert_eq!(s.device(&n.vol_data).as_deref(), Some(format!("{}/one/files", s.dir).as_str()));
+        assert!(s.exists(&format!("{}/one/postgres/data/PG_VERSION", s.dir)));
+        assert!(is_running_port(cfg.http_port));
+        let t = Stack { cfg, dir: s.dir.clone() };
+        t.down();
     }
 
     fn is_running_port(p: u16) -> bool {

@@ -13,6 +13,7 @@ mod gateway;
 mod instances;
 pub(crate) mod logs;
 pub(crate) mod migration;
+pub(crate) mod movedata;
 pub(crate) mod remote_pages;
 mod repair;
 mod takeover;
@@ -207,6 +208,9 @@ pub struct Manager {
     /// A tray or taskbar action that runs on its page once the page exists
     /// (crate::background): `backup`, `control:<verb>`.
     pending: Option<String>,
+    /// The "Move data to another disk" flow last seen opened
+    /// (movedata::generation): a new one shows Platform settings.
+    move_gen: usize,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -306,6 +310,7 @@ impl Manager {
             updates,
             updated_from,
             pending: None,
+            move_gen: 0,
             found_notice,
             _subscriptions: subscriptions,
             _tasks: Vec::new(),
@@ -325,6 +330,19 @@ impl Manager {
         if let Some(id) = args.windows(2).find(|w| w[0] == "--instance").map(|w| w[1].clone()) {
             manager.open_instance(Some(id), cx);
             manager.page = page;
+        }
+        // Screens: "Move data to another disk" at a frame of its mockup.
+        #[cfg(debug_assertions)]
+        if std::env::var("SPM_DEBUG_MOVEDATA_FRAME").is_ok_and(|f| !matches!(f.as_str(), "M1" | "M2" | "M3" | "M13" | "M14")) {
+            let target = match manager.open_remote.as_ref().and_then(|id| manager.remotes.iter().find(|r| &r.id == id)).cloned() {
+                Some(inst) => crate::movedata::Target::Remote(inst),
+                None => crate::movedata::Target::Local,
+            };
+            let on = match &target {
+                crate::movedata::Target::Remote(i) => i.name.clone(),
+                crate::movedata::Target::Local => "This computer".to_string(),
+            };
+            movedata::open(target, on, None, _window, cx);
         }
         // Screens: the bell with canned events, the bell or switcher open.
         #[cfg(debug_assertions)]
@@ -1547,6 +1565,12 @@ impl Manager {
 
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let record = self.record.clone();
+        // "Move data to another disk", in Platform settings' place while open.
+        if self.page == Page::Settings {
+            if let Some(flow) = movedata::shown(self.open_remote.as_ref(), cx) {
+                return flow.into_any_element();
+            }
+        }
         // Statistics: the same view for this computer and a server.
         if self.page == Page::Files {
             let key = self.open_remote.clone();
@@ -1819,6 +1843,21 @@ impl Render for Manager {
         // A Control row's "Logs" asked for the Logs page.
         if crate::logsource::take_go() {
             self.page = Page::Logs;
+        }
+        // "Move data to another disk" was opened (Platform settings shows
+        // it), or asked for another page.
+        let gen = movedata::generation(cx);
+        if gen != self.move_gen {
+            self.move_gen = gen;
+            if gen != 0 {
+                self.page = Page::Settings;
+            }
+        }
+        if let Some(p) = movedata::take_go() {
+            self.page = match p {
+                "files" => Page::Files,
+                _ => self.page,
+            };
         }
         let menu_w = if Self::folded(width) { shell::MENU_FOLDED_W } else { shell::MENU_W };
         let top = self.top_bar(width - menu_w, window, cx);
