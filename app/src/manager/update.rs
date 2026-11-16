@@ -498,7 +498,7 @@ impl UpdatePage {
                 let marked = ui::mark_steps(&self.changes_planned(), job.steps(), Some(false));
                 let log: Vec<SharedString> = job.log().to_vec();
                 panel
-                    .child(ui::outcome(theme, Tone::Bad, m.clone()))
+                    .child(crate::diagnosis::outcome(theme, Tone::Bad, m.clone(), job))
                     .child(ui::steps(theme, &marked))
                     .child(
                         h_flex()

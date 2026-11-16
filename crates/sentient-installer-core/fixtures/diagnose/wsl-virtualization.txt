@@ -1,0 +1,4 @@
+# Documented wsl.exe output (Microsoft WSL docs), not recorded: no Windows runtime here.
+Installing, this may take a few minutes...
+WslRegisterDistribution failed with error: 0x80370102
+Please enable the Virtual Machine Platform Windows feature and ensure virtualization is enabled in the BIOS.

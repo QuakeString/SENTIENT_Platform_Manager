@@ -23,6 +23,8 @@ mod catalog;
 mod changes;
 mod dbstatus;
 #[cfg(feature = "gui")]
+mod diagnosis;
+#[cfg(feature = "gui")]
 mod earlier;
 mod elevate;
 mod headless;

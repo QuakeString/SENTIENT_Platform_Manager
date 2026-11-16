@@ -110,13 +110,14 @@ pub fn view(
                         .when_some(job.percent(), |c, v| c.child(Progress::new(SharedString::from(format!("{id}-progress"))).value(v)))
                 })
                 .children(match state {
-                    JobState::Done(m) => Some(ui::outcome(theme, Tone::Good, m.to_string())),
+                    JobState::Done(m) => Some(ui::outcome(theme, Tone::Good, m.to_string()).into_any_element()),
                     JobState::Failed(m) => {
                         let (head, detail) = crate::remote::split_failure(m);
-                        Some(ui::outcome(theme, Tone::Bad, match detail {
+                        // What went wrong and the fix, when it was diagnosed.
+                        Some(crate::diagnosis::outcome(theme, Tone::Bad, match detail {
                             Some(d) if !d.trim().is_empty() => format!("{head}\n{}", d.trim()),
                             _ => head,
-                        }))
+                        }, job).into_any_element())
                     }
                     _ => None,
                 })

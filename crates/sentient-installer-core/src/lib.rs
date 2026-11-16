@@ -21,6 +21,10 @@ pub mod kept_db;
 pub mod manifest;
 pub mod native;
 pub mod net;
+/// A PostgreSQL data folder from an older major: upgrade or keep aside.
+pub mod old_pg;
+/// What went wrong in a failed step, and the fix (Setup and every SPM job).
+pub mod diagnose;
 /// Native Linux deployment (distribution PostgreSQL, optional ClickHouse,
 /// SENTIENT as a systemd unit) — what [`native`] delegates to on Linux.
 #[cfg(target_os = "linux")]

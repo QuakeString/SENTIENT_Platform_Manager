@@ -1,0 +1,5 @@
+Running as unit: clickhouse-server.service; invocation ID: e65bc3fc8a984719afac761204ddedb3
+failed
+clickhouse-server.service: The kernel OOM killer killed some processes in this unit.
+clickhouse-server.service: Main process exited, code=killed, status=9/KILL
+clickhouse-server.service: Failed with result 'oom-kill'.

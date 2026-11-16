@@ -21,6 +21,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::exec::{self, shq};
+use crate::old_pg;
 use crate::native::{ArtifactSource, NativeConfig, NativeStatus, ServiceStatus};
 use crate::progress::{Progress, ProgressFn};
 use crate::stack;
@@ -113,26 +114,33 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         // PostgreSQL from the distribution. ClickHouse is appended below,
         // always from the vendor's static build (pinned; see CH_VERSION).
         Pm::Pacman => format!(
-            "pacman -Sy --noconfirm --needed postgresql{curl}\n\
+            "pacman -Sy --noconfirm --needed postgresql{extra}{curl}\n\
              DATA=/var/lib/postgres/data\n\
-             {same_major}\
+             {resolve}{same_major}\
              [ -f \"$DATA/PG_VERSION\" ] || runuser -u postgres -- initdb -D \"$DATA\" --locale=C.UTF-8 --encoding=UTF8 >/dev/null\n\
              {first_port}",
             curl = if ch { " curl" } else { "" },
+            extra = old_pg::extra_packages(old_pg::Family::Arch, cfg.old_pg),
+            resolve = old_pg::resolve_script(old_pg::Family::Arch, cfg.old_pg),
             same_major = SAME_MAJOR,
             first_port = first_port(cfg.pg_port),
         ),
+        // Debian keeps one cluster per major side by side: an older one is
+        // upgraded or renamed aside here when chosen, else left alone.
         Pm::Apt => format!(
-            "export DEBIAN_FRONTEND=noninteractive\napt-get update -qq\napt-get install -y -qq postgresql{curl}\n",
-            curl = if ch { " curl ca-certificates" } else { "" }
+            "export DEBIAN_FRONTEND=noninteractive\napt-get update -qq\napt-get install -y -qq postgresql{curl}\n{resolve}",
+            curl = if ch { " curl ca-certificates" } else { "" },
+            resolve = old_pg::resolve_script(old_pg::Family::Debian, cfg.old_pg),
         ),
         Pm::Dnf => format!(
-            "dnf install -y postgresql-server postgresql{curl}\n\
+            "dnf install -y postgresql-server postgresql{extra}{curl}\n\
              DATA=/var/lib/pgsql/data\n\
-             {same_major}\
+             {resolve}{same_major}\
              [ -f \"$DATA/PG_VERSION\" ] || postgresql-setup --initdb >/dev/null\n\
              {first_port}",
             curl = if ch { " curl" } else { "" },
+            extra = old_pg::extra_packages(old_pg::Family::Rhel, cfg.old_pg),
+            resolve = old_pg::resolve_script(old_pg::Family::Rhel, cfg.old_pg),
             same_major = SAME_MAJOR,
             first_port = first_port(cfg.pg_port),
         ),
@@ -148,7 +156,8 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     // the next free port; openSUSE initialises on its first start, on 5432.
     let start_port = match pm {
         Pm::Pacman | Pm::Dnf => cfg.pg_port.to_string(),
-        Pm::Apt => "$(pg_lsclusters -h 2>/dev/null | awk 'NR==1{print $3}')".into(),
+        // The newest major's cluster (an older one may still be listed).
+        Pm::Apt => "$(pg_lsclusters -h 2>/dev/null | sort -n | awk 'END{print $3}')".into(),
         Pm::Zypper => "5432".into(),
     };
 
@@ -267,9 +276,14 @@ fn setup_error(e: &str, port: u16) -> String {
     let code = |c: &str| e.contains(&format!("exited with {c}")) || e.contains(&format!("exit status: {c}"));
     if code("42") {
         "The PostgreSQL data folder holds a database from another PostgreSQL version (see the log above). \
-         If you need that data, upgrade it with pg_upgrade first; if not, move the folder aside \
-         (for example sudo mv /var/lib/postgres/data /var/lib/postgres/data.old) and run Setup again."
+         Upgrade it to the installed version, or keep it aside and start fresh: both keep the data."
             .into()
+    } else if code("44") {
+        "The PostgreSQL data could not be upgraded on this computer (see the log above). Nothing was changed; \
+         keep it aside and start fresh, or upgrade it by hand."
+            .into()
+    } else if code("45") {
+        "Upgrading the PostgreSQL data failed (see the log above). The old data is back in its folder, unchanged.".into()
     } else if code("43") {
         format!("PostgreSQL could not listen on its port because another program uses it (see the log above). Stop that program or choose another port than {port} in Network ports, and run Setup again.")
     } else if code("41") {
@@ -676,6 +690,7 @@ pub fn read_installed() -> Option<Result<FoundNative, String>> {
             ch_password: get("CLICKHOUSE_PASSWORD").unwrap_or_default().to_string(),
             ch_http_port,
             ch_native_port,
+            old_pg: Default::default(),
         };
         // PostgreSQL's settings as the server has them.
         let show = |name: &str| {
@@ -1015,6 +1030,7 @@ mod tests {
             tuning: Tuning::default(), pg: PgTuning::default(), ch: ChTuning::default(),
             ch_db: "sentient".into(), ch_user: "sentient".into(), ch_password: "pw".into(),
             ch_http_port: 8123, ch_native_port: 9000,
+            old_pg: Default::default(),
         }
     }
 

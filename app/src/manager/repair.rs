@@ -236,7 +236,7 @@ impl Render for RepairPage {
         .when(uninstalled, |page| {
             page.child(
                 ui::panel(&theme)
-                    .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
+                    .children(outcome.map(|(tone, text)| crate::diagnosis::outcome(&theme, tone, text, self.job.read(cx))))
                     .child(h_flex().child(crate::ui::button("close").primary().label("Close").on_click(|_, window, _| window.remove_window()))),
             )
         })

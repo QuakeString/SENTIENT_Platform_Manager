@@ -9,6 +9,7 @@
 //!
 //! ```text
 //! --job [--json] install <plan.json>   (unattended install; the wizard's plan)
+//! --job diagnose-fix <fix json>         (a failure's one-click fix, as the error panel offers it)
 //! --job install-manager [--no-shortcuts] (the Platform Manager alone)
 //! --job remove-manager                  (the Platform Manager installed alone)
 //! --job [--json] migrate <stock|timescaledb|clickhouse>
@@ -37,7 +38,7 @@ use sentient_installer_core::native::safe_update::RollbackPoint;
 
 use crate::installation::InstallationRecord;
 
-const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | movedata-json | movedata-check <store> <folder> | movedata-estimate <store=folder,…> | move-data <store=folder,…> | move-data-remove-old <folder> | move-data-cancel | \
+const USAGE: &str = "usage: --job install <plan.json> | diagnose-fix <fix json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | movedata-json | movedata-check <store> <folder> | movedata-estimate <store=folder,…> | move-data <store=folder,…> | move-data-remove-old <folder> | move-data-cancel | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
 use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart>";
@@ -58,20 +59,85 @@ fn attach_console() {
     }
 }
 
+/// The job's last output lines, for the diagnosis of a failure.
+static TAIL: std::sync::Mutex<std::collections::VecDeque<String>> = std::sync::Mutex::new(std::collections::VecDeque::new());
+
+fn remember(p: &Progress) {
+    if let Progress::Log { line } = p {
+        if let Ok(mut t) = TAIL.lock() {
+            if t.len() >= 200 {
+                t.pop_front();
+            }
+            t.push_back(line.clone());
+        }
+    }
+}
+
+/// A failed job: what went wrong and the fix
+/// (sentient_installer_core::diagnose), then the error. With `--json` the
+/// diagnosis is one `DIAG\t<json>` line the window reads (and shows in its
+/// error panel); a root copy of this program that already sent one is not
+/// diagnosed twice.
+fn report_failure(e: String, json: bool, sink: &ProgressFn) {
+    use sentient_installer_core::diagnose::{self, Diagnosis, Fix};
+    let lines: Vec<String> = TAIL.lock().map(|t| t.iter().cloned().collect()).unwrap_or_default();
+    let d = match lines.iter().rev().find_map(|l| Diagnosis::decode(l)) {
+        Some(d) => Some(d).filter(|_| !json),
+        None => {
+            let shown: Vec<String> = lines.into_iter().filter(|l| !l.starts_with(diagnose::DIAG_PREFIX)).collect();
+            let d = diagnose::diagnose_failure(&e, &shown, crate::online::downloads_dir("").parent());
+            if json {
+                sink(Progress::Log { line: d.encode() });
+                None
+            } else {
+                Some(d)
+            }
+        }
+    };
+    if json {
+        sink(Progress::Error { message: e });
+        return;
+    }
+    eprintln!("✗ {e}");
+    if let Some(d) = d {
+        eprintln!("  Cause: {}\n  Why:   {}", d.cause, d.why);
+        for f in &d.fixes {
+            match f {
+                Fix::Action { label, action } => eprintln!("  Fix:   {label}  (--job diagnose-fix '{}')", serde_json::to_string(action).unwrap_or_default()),
+                Fix::Command { label, command } => eprintln!("  Fix:   {label}: {command}"),
+                Fix::Steps { text } => eprintln!("  Fix:   {text}"),
+            }
+        }
+        if !d.is_known() {
+            for l in &d.last_lines {
+                eprintln!("  | {l}");
+            }
+        }
+    }
+}
+
 fn printer() -> ProgressFn {
-    Arc::new(|p| match p {
+    Arc::new(|p| {
+        remember(&p);
+        print_plain(p)
+    })
+}
+
+fn print_plain(p: Progress) {
+    match p {
         Progress::Step { name } => println!("== {name}"),
         // Data lines of a root job (crate::kept::encode) are printed decoded.
-        Progress::Log { line } if line.starts_with("KEPT\t") || line.starts_with("ROLLBACK\t") || line.starts_with("FOUND\t") || crate::restore_flow::is_data(&line) => {}
+        Progress::Log { line } if line.starts_with("KEPT\t") || line.starts_with("ROLLBACK\t") || line.starts_with("FOUND\t") || line.starts_with(sentient_installer_core::diagnose::DIAG_PREFIX) || crate::restore_flow::is_data(&line) => {}
         Progress::Log { line } => println!("   {}", crate::maintenance_ops::strip_ansi(&line)),
         Progress::Percent { .. } => {}
         Progress::Done { message } => println!("✓ {message}"),
         Progress::Error { message } => eprintln!("✗ {message}"),
-    })
+    }
 }
 
 fn json_printer() -> ProgressFn {
     Arc::new(|p| {
+        remember(&p);
         if let Ok(line) = serde_json::to_string(&p) {
             println!("{line}");
         }
@@ -98,7 +164,27 @@ pub fn run(args: &[String]) -> i32 {
         return match result {
             Ok(()) => 0,
             Err(e) => {
-                eprintln!("✗ {e}");
+                report_failure(e, json, &sink);
+                1
+            }
+        };
+    }
+    // One of the error panel's one-click fixes, on this computer (the
+    // window sends it to a server's agent the same way):
+    // diagnose-fix '{"do":"upgrade-pg-data","family":"arch"}'.
+    if job == "diagnose-fix" {
+        use sentient_installer_core::diagnose;
+        let sink = if json { json_printer() } else { printer() };
+        let result = args
+            .get(1)
+            .ok_or_else(|| USAGE.to_string())
+            .and_then(|j| serde_json::from_str::<diagnose::FixAction>(j).map_err(|e| format!("the fix: {e}")))
+            .and_then(|a| diagnose::apply(&a, &sink))
+            .map(|message| sink(Progress::Done { message }));
+        return match result {
+            Ok(()) => 0,
+            Err(e) => {
+                report_failure(e, json, &sink);
                 1
             }
         };
@@ -565,7 +651,7 @@ pub fn run(args: &[String]) -> i32 {
                 0
             }
             Err(e) => {
-                eprintln!("✗ {e}");
+                report_failure(e, json, &sink);
                 1
             }
         };
@@ -882,11 +968,7 @@ pub fn run(args: &[String]) -> i32 {
     match result {
         Ok(()) => 0,
         Err(e) => {
-            if json {
-                sink(Progress::Error { message: e });
-            } else {
-                eprintln!("✗ {e}");
-            }
+            report_failure(e, json, &sink);
             1
         }
     }

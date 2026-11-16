@@ -55,6 +55,10 @@ pub struct InstallPlan {
     /// instead of setting it aside.
     #[serde(default)]
     pub delete_existing: bool,
+    /// Linux native: a PostgreSQL data folder from an older major, upgraded
+    /// or kept aside (sentient_installer_core::old_pg).
+    #[serde(default)]
+    pub old_pg: sentient_installer_core::old_pg::OldPgChoice,
 }
 
 impl InstallPlan {
@@ -120,6 +124,7 @@ impl InstallPlan {
             ch_password: st.ch_password.clone(),
             ch_http_port: st.ch_http_port,
             ch_native_port: st.ch_native_port,
+            old_pg: self.old_pg,
         }
     }
 
