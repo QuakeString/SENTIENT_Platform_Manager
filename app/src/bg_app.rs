@@ -357,7 +357,7 @@ fn check_instances(cx: &mut App) {
                             Ok(s) if !s.installed => continue,
                             Ok(s) if s.serving => Seen::Running,
                             Ok(_) => Seen::Stopped,
-                            Err(e) if e == crate::remote::NOT_SET_UP || e == crate::remote::NOT_ADDED => continue,
+                            Err(e) if crate::remote::needs_setup(&e) || e == crate::remote::NOT_ADDED => continue,
                             Err(_) => Seen::NoAnswer,
                         };
                         v.push((Some((inst.id.clone(), inst.name.clone(), inst.color.clone())), seen));

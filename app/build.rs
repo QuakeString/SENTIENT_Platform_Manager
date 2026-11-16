@@ -26,14 +26,15 @@ fn main() {
     res.compile().expect("compile the Windows resources");
 }
 
-/// The server agents this build carries (crate::remote): SPM_LINUX_AGENT and
-/// SPM_WINDOWS_AGENT name the built agent files (`--no-default-features`;
-/// the Linux one static, musl). Without them the program downloads the
-/// agent published with its version instead.
+/// The server agents this build carries (crate::remote): SPM_LINUX_AGENT
+/// (x86_64), SPM_LINUX_AARCH64_AGENT and SPM_WINDOWS_AGENT name the built
+/// agent files (`--no-default-features`; the Linux ones static, musl). A
+/// build without one downloads the agent published with its version
+/// instead, which only a published release has.
 fn embed_agents() {
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("agents.rs");
     let mut code = String::new();
-    for (var, name) in [("SPM_LINUX_AGENT", "LINUX"), ("SPM_WINDOWS_AGENT", "WINDOWS")] {
+    for (var, name) in [("SPM_LINUX_AGENT", "LINUX"), ("SPM_LINUX_AARCH64_AGENT", "LINUX_AARCH64"), ("SPM_WINDOWS_AGENT", "WINDOWS")] {
         println!("cargo:rerun-if-env-changed={var}");
         match std::env::var(var).ok().filter(|p| std::path::Path::new(p).is_file()) {
             Some(path) => {
