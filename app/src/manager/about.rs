@@ -57,7 +57,7 @@ impl AboutPage {
                 theme,
                 "Start at sign-in",
                 Some("In the background, with the tray icon; the window opens when you click it."),
-                Switch::new("bg-signin").checked(p.show_tray && p.start_at_signin).disabled(!p.show_tray).on_click(set(|p, v| p.start_at_signin = v)),
+                Switch::new("bg-signin").checked(p.show_tray && crate::background::autostart_on()).disabled(!p.show_tray).on_click(set(|p, v| p.start_at_signin = v)),
             )
             .into_any_element(),
             pref_row(
@@ -234,7 +234,7 @@ impl Render for AboutPage {
             .child(pref_row(
                 &theme,
                 "See-through menu",
-                Some(if supported { "Shows the desktop blurred behind the menu, on KDE Plasma (Wayland) and Windows." } else { crate::manager::shell::SEE_THROUGH_WHY }),
+                Some(crate::manager::shell::see_through_why_not().unwrap_or("Shows the desktop blurred behind the menu (KDE Plasma, Hyprland, picom, Windows). On X11 a change shows after the Platform Manager starts again.")),
                 see_through,
             ));
         let prefs = ui::panel(&theme)
@@ -315,8 +315,7 @@ impl Render for AboutPage {
             .min_w_0()
             .h_full()
             .overflow_y_scroll()
-            .px(px(24.))
-            .py(px(20.))
+            .p(px(crate::ui::PAGE_PAD))
             .bg(theme.muted)
             .items_center()
             .child(

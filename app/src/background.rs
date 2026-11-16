@@ -192,7 +192,17 @@ fn rand_u128() -> u128 {
 /// Start the background part at sign-in, or stop doing so.
 pub fn set_autostart(on: bool) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    imp::set_autostart(on, &exe)
+    let r = imp::set_autostart(on, &exe);
+    AUTOSTART.store(if r.is_ok() { on } else { imp::present() }, std::sync::atomic::Ordering::Relaxed);
+    r
+}
+
+static AUTOSTART: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the system really starts the manager at sign-in (what About's
+/// switch shows): the entry on Linux; on Windows what the last change left.
+pub fn autostart_on() -> bool {
+    if cfg!(windows) { AUTOSTART.load(std::sync::atomic::Ordering::Relaxed) } else { imp::present() }
 }
 
 #[cfg(not(windows))]
@@ -202,6 +212,10 @@ mod imp {
     fn entry() -> Option<PathBuf> {
         let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
         Some(config.join("autostart").join("sentient-platform-manager.desktop"))
+    }
+
+    pub fn present() -> bool {
+        entry().and_then(|p| std::fs::read_to_string(p).ok()).is_some_and(|t| t.contains("--background"))
     }
 
     pub fn set_autostart(on: bool, exe: &Path) -> Result<(), String> {
@@ -235,6 +249,10 @@ mod imp {
 
     const TASK: &str = "SENTIENT Platform Manager (background)";
     const NO_WINDOW: u32 = 0x0800_0000;
+
+    pub fn present() -> bool {
+        std::process::Command::new("schtasks.exe").args(["/Query", "/TN", TASK]).creation_flags(NO_WINDOW).output().is_ok_and(|o| o.status.success())
+    }
 
     pub fn set_autostart(on: bool, exe: &Path) -> Result<(), String> {
         let out = if on {

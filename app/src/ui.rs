@@ -178,12 +178,20 @@ pub fn start_delay_row(theme: &Theme, state: &Entity<gpui_kit::component::input:
 pub const PANEL_RADIUS: f32 = 12.;
 
 /// A content panel: surface colour, hairline border, panel radius.
+/// The one spacing scale (his rc12-19 ask: everything a little tighter):
+/// the page's padding (left equal to top), the space between cards, and a
+/// card's padding.
+pub const PAGE_PAD: f32 = 18.;
+pub const GAP: f32 = 14.;
+pub const CARD_PY: f32 = 14.;
+pub const CARD_PX: f32 = 16.;
+
 pub fn panel(theme: &Theme) -> Div {
     v_flex()
         .relative()
         .gap_3()
-        .py(px(16.))
-        .px(px(18.))
+        .py(px(CARD_PY))
+        .px(px(CARD_PX))
         .rounded(px(PANEL_RADIUS))
         .bg(theme.background)
         .border_1()
@@ -200,11 +208,10 @@ pub fn page(theme: &Theme, title: &'static str, summary: &'static str) -> Statef
         .min_w_0()
         .h_full()
         .overflow_y_scroll()
-        // The mockup's page: 20 x 24 padding, 16 px between blocks, a 22 px
-        // title with its line of text as one block.
-        .px(px(24.))
-        .py(px(20.))
-        .gap(px(16.))
+        // The page: PAGE_PAD all round, GAP between blocks, a 22 px title
+        // with its line of text as one block.
+        .p(px(PAGE_PAD))
+        .gap(px(GAP))
         .bg(theme.muted)
         .child(
             v_flex()
@@ -219,7 +226,7 @@ pub fn page(theme: &Theme, title: &'static str, summary: &'static str) -> Statef
 /// A page whose title row ends with an action (the remote pages' Read
 /// again), in the same place on every page.
 pub fn page_with(theme: &Theme, title: &'static str, summary: &'static str, action: impl IntoElement) -> Stateful<Div> {
-    v_flex().id("page").flex_1().min_w_0().h_full().overflow_y_scroll().px(px(24.)).py(px(20.)).gap(px(16.)).bg(theme.muted).child(
+    v_flex().id("page").flex_1().min_w_0().h_full().overflow_y_scroll().p(px(PAGE_PAD)).gap(px(GAP)).bg(theme.muted).child(
         h_flex()
             .gap_3()
             .items_start()

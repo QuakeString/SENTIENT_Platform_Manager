@@ -1268,9 +1268,8 @@ impl Render for InstancesPage {
             .min_w_0()
             .h_full()
             .overflow_y_scroll()
-            .px(px(24.))
-            .py(px(20.))
-            .gap(px(16.))
+            .p(px(crate::ui::PAGE_PAD))
+            .gap(px(crate::ui::GAP))
             .bg(theme.muted)
             .child(
                 h_flex()

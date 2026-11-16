@@ -132,7 +132,50 @@ pub fn start(options: fn(&mut App) -> WindowOptions, open_window: bool, request:
     })
     .detach();
 
-    if open_window || !running {
+    // Start at sign-in as set: the entry is written (or removed) on every
+    // start, so a default ON, an update, or a removed file never leaves the
+    // switch ON without it (rc12-19: ON by default, no entry).
+    {
+        let on = cx.global::<Bg>().prefs.start_at_signin && cx.global::<Bg>().prefs.show_tray;
+        std::thread::spawn(move || {
+            if let Err(e) = crate::background::set_autostart(on) {
+                crate::maintenance_ops::log_line(&format!("Start at sign-in could not be set: {e}"));
+                eprintln!("Start at sign-in could not be set: {e}");
+            }
+        });
+    }
+    // Started at sign-in before the desktop's tray is up: wait for it
+    // (every 3 s for 2 minutes) without a window; only then fall back to
+    // the window.
+    let wait_for_tray = !open_window && !running && cx.global::<Bg>().prefs.show_tray;
+    if wait_for_tray {
+        crate::maintenance_ops::log_line("Started in the background; no tray yet, waiting for the desktop's");
+        let tx = cx.global::<Bg>().tx.clone();
+        cx.spawn(async move |cx| {
+            for _ in 0..40 {
+                cx.background_executor().timer(std::time::Duration::from_secs(3)).await;
+                let up = cx.update(|cx| {
+                    if cx.global::<Bg>().tray.is_some() {
+                        return true;
+                    }
+                    let Some(tray) = crate::tray::spawn(tx.clone(), crate::tray::Model::read(None)) else { return false };
+                    cx.global_mut::<Bg>().tray = Some(tray);
+                    crate::maintenance_ops::log_line("The tray is up");
+                    refresh_tray(cx);
+                    check_instances(cx);
+                    true
+                });
+                if up {
+                    return;
+                }
+            }
+            cx.update(|cx| {
+                crate::maintenance_ops::log_line("No tray after 2 minutes: opening the window");
+                show(cx);
+            });
+        })
+        .detach();
+    } else if open_window || !running {
         show(cx);
         if let Some(a) = request.strip_prefix("action ") {
             act(a, cx);

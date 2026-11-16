@@ -734,7 +734,7 @@ impl RemotePages {
                 .child(ui::fact_loading(theme, "Server agent", 180.))
         };
         let services = || ui::panel(theme).gap_2().child(div().font_weight(FontWeight::MEDIUM).child("Services")).children(ui::skeleton_service_rows(theme, "svc", 3));
-        let col = v_flex().gap_4();
+        let col = v_flex().gap(px(ui::GAP));
         match self.kind {
             Kind::Status => col
                 .child(status_card())
@@ -801,7 +801,7 @@ impl RemotePages {
     fn status_page(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.job.read(cx).is_running();
         let theme = cx.theme().clone();
-        let mut col = v_flex().gap_4();
+        let mut col = v_flex().gap(px(ui::GAP));
         match &self.status {
             Read::Loading => return self.skeleton(&theme),
             Read::Failed(e) => col = col.child(Self::failed(&theme, e)),
@@ -1297,7 +1297,7 @@ impl RemotePages {
                     )),
             );
         }
-        v_flex().gap_4().child(now).child(auto).child(list)
+        v_flex().gap(px(ui::GAP)).child(now).child(auto).child(list)
     }
 
     // -- Settings, Migration, Repair, Gateway --------------------------------
@@ -1328,7 +1328,7 @@ impl RemotePages {
         let busy = self.job.read(cx).is_running();
         let value_of = |env: &str, cx: &App| self.inputs.iter().find(|(e, _)| e == env).map(|(_, i)| i.read(cx).value().trim().to_string()).unwrap_or_default();
         let changed: Vec<String> = self.inputs.iter().filter(|(e, i)| values.get(e).cloned().unwrap_or_default() != i.read(cx).value().trim()).map(|(e, _)| e.clone()).collect();
-        let mut col = v_flex().gap_4();
+        let mut col = v_flex().gap(px(ui::GAP));
         // Someone else's compose file: the notice, and Apply stays off (also
         // while the status, which says so, is still being read).
         let external = self.status.got().is_some_and(|s| s.external_compose);
@@ -1552,7 +1552,7 @@ impl RemotePages {
         };
         // Until the status says which type runs, nothing can be picked.
         let locked = busy || external || now.is_none();
-        v_flex().gap_4().children(notice).child(ui::panel(&theme)
+        v_flex().gap(px(ui::GAP)).children(notice).child(ui::panel(&theme)
             .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Database type"))
             .child(crate::manager::migration::type_cards(&theme, "r-", now, chosen, &targets, locked, crate::remote::is_windows(&self.inst), std::rc::Rc::new(move |f, cx| {
                 this.update(cx, |p, cx| {
@@ -1696,7 +1696,7 @@ impl RemotePages {
                 )
                 .child(h_flex().child(self.take_over_button("r-take-over", busy, cx)))
         });
-        v_flex().gap_4().children(take_over).child(ui::panel(&theme)
+        v_flex().gap(px(ui::GAP)).children(take_over).child(ui::panel(&theme)
             .child(div().font_weight(FontWeight::MEDIUM).child("Repair"))
             .child(div().text_sm().text_color(theme.muted_foreground).child(
                 "For a SENTIENT that does not start or a service that went missing: the services and their configuration are written again from this installation's record, and SENTIENT is started. Data and settings are kept.",

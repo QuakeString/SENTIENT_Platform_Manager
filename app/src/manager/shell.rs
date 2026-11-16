@@ -80,25 +80,51 @@ impl Appearance {
     }
 }
 
-/// Whether the desktop blurs what is behind a see-through window: Windows,
-/// and KDE Plasma on Wayland (its blur protocol). Elsewhere the menu is
-/// solid and the preference says why.
-pub fn see_through_supported() -> bool {
+/// Where see-through cannot work, why (None: it can). Windows blurs behind
+/// any window (acrylic); KDE Plasma does on Wayland (ext-background-effect,
+/// or its own blur protocol) and on X11 (its blur property); Hyprland blurs
+/// every translucent window by itself, and picom when it runs (with blur in
+/// its settings). GNOME and the rest have no blur: solid. On Linux the
+/// window also needs Vulkan graphics: on OpenGL it cannot be translucent.
+pub fn see_through_why_not() -> Option<&'static str> {
     if cfg!(windows) {
-        return true;
+        return None;
     }
-    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
-    let kde = std::env::var("XDG_CURRENT_DESKTOP").map(|d| d.to_uppercase().contains("KDE")).unwrap_or(false);
-    wayland && kde
+    if GL_ONLY.with(|g| g.get()) {
+        return Some("The window cannot be see-through without Vulkan graphics: install your graphics card's Vulkan driver (on Arch vulkan-intel, vulkan-radeon or nvidia-utils; on Debian and Ubuntu mesa-vulkan-drivers), then start the Platform Manager again.");
+    }
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_uppercase();
+    let blurs = desktop.contains("KDE") || desktop.contains("HYPRLAND") || picom_runs();
+    if blurs { None } else { Some("Needs a desktop that blurs what is behind a window: KDE Plasma, Hyprland, picom, or Windows. Here the menu is solid.") }
+}
+
+pub fn see_through_supported() -> bool {
+    see_through_why_not().is_none()
+}
+
+/// picom (an X11 compositor that can blur) is running.
+fn picom_runs() -> bool {
+    static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *R.get_or_init(|| {
+        std::env::var_os("WAYLAND_DISPLAY").is_none()
+            && std::fs::read_dir("/proc").is_ok_and(|d| d.flatten().any(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim() == "picom")))
+    })
+}
+
+thread_local! {
+    /// The window draws with OpenGL (no Vulkan driver): it cannot be
+    /// translucent (crate::manager::Manager::new sets it).
+    static GL_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn set_gl_only(gl: bool) {
+    GL_ONLY.with(|g| g.set(gl));
 }
 
 /// See-through on: chosen and possible.
 pub fn see_through() -> bool {
     see_through_supported() && Appearance::get().see_through
 }
-
-/// Why see-through cannot be used here, for the preference's (i).
-pub const SEE_THROUGH_WHY: &str = "Needs a desktop that blurs what is behind a window: KDE Plasma (Wayland) or Windows. Here the menu is solid.";
 
 // ---------------------------------------------------------------------------
 // The menu's selection: where each row is, and the slide between rows
@@ -111,7 +137,22 @@ const FILLET: f32 = 14.;
 /// The selected row's own corner radius (its left end).
 const SEL_RADIUS: f32 = 10.;
 /// A row's height.
-pub const ROW_H: f32 = 38.;
+pub const ROW_H: f32 = 34.;
+/// The top bar's height, and the brand row's beside it (their lines meet).
+pub const BAR_H: f32 = 60.;
+/// Where every menu icon's centre is, folded or not: the middle of the
+/// folded menu. Folding only hides the labels; nothing moves.
+pub const ICON_X: f32 = 32.;
+/// The menu's left padding (the selection's left end), the same folded or not.
+const MENU_PAD: f32 = 8.;
+/// A row's icon size and its left padding inside the row (icon centre at ICON_X).
+const ICON: f32 = 18.;
+const ROW_PL: f32 = ICON_X - MENU_PAD - ICON / 2.;
+
+/// A menu icon from the heavier set (assets/icons/menu).
+pub fn menu_icon(name: &str) -> Icon {
+    Icon::empty().path(SharedString::from(format!("icons/menu/{name}.svg")))
+}
 
 #[derive(Default)]
 struct Rows {
@@ -120,6 +161,9 @@ struct Rows {
     /// The menu's right edge (its border included) and its left content edge.
     right: f32,
     left: f32,
+    /// The menu's top and bottom (the edge line runs between them).
+    top_y: f32,
+    bottom_y: f32,
     /// The slide: from, to, since; and the row it is for.
     from: f32,
     to: f32,
@@ -153,6 +197,8 @@ fn menu_probe(left_pad: f32) -> impl IntoElement {
                 let mut r = r.borrow_mut();
                 r.right = f32::from(b.origin.x + b.size.width);
                 r.left = f32::from(b.origin.x) + left_pad;
+                r.top_y = f32::from(b.origin.y);
+                r.bottom_y = f32::from(b.origin.y + b.size.height);
             })
         },
         |_, _, _, _| {},
@@ -165,18 +211,22 @@ fn ease_out(t: f32) -> f32 {
     1. - (1. - t.clamp(0., 1.)).powi(3)
 }
 
-/// The selected row joined to the page: the page's colour from the row's
-/// rounded left end to the menu's edge, with concave curves above and
-/// below; its outline runs unbroken from the menu's edge, along the curve,
-/// the row's top, left and bottom, and the lower curve back to the edge.
-/// It slides to a newly selected row.
+/// The menu's right edge and the selected row joined to the page, drawn as
+/// ONE shape in device pixels (his rc12-19 HiDPI crops: a border plus an
+/// overlay never met at fractional scales). The edge is a line one device
+/// pixel (rounded scale) wide on the menu's last pixels; at the selected
+/// row it opens: a concave curve leaves the line tangent, runs along the
+/// row's top, round its left end and bottom, and back into the line. Inside
+/// the opening the page's colour, so the row and the page are one. It
+/// slides to a newly selected row.
 fn selection(active: &'static str, page: Hsla, line: Hsla, motion: bool) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |_, _, window, _| {
-            let (y, moving, left, right) = ROWS.with(|r| {
+            let (y, moving, left, right, top_y, bottom_y) = ROWS.with(|r| {
                 let mut r = r.borrow_mut();
-                let Some(target) = r.top.get(active).copied() else { return (None, false, 0., 0.) };
+                let (left, right, top_y, bottom_y) = (r.left, r.right, r.top_y, r.bottom_y);
+                let Some(target) = r.top.get(active).copied() else { return (None, false, left, right, top_y, bottom_y) };
                 let now = Instant::now();
                 let current = match r.since {
                     Some(s) => r.from + (r.to - r.from) * ease_out(now.duration_since(s).as_secs_f32() / SLIDE.as_secs_f32()),
@@ -207,40 +257,70 @@ fn selection(active: &'static str, page: Hsla, line: Hsla, motion: bool) -> impl
                     }
                     None => r.to,
                 };
-                (Some(y), r.since.is_some(), r.left, r.right)
+                (Some(y), r.since.is_some(), left, right, top_y, bottom_y)
             });
-            let Some(top) = y else { return };
             if moving {
                 window.request_animation_frame();
             }
-            let (l, r, t, b) = (left, right, top, top + ROW_H);
+            if right <= 0. {
+                return;
+            }
+            // Device pixels: the edge on whole pixels, the line a whole
+            // number of them wide; everything then in logical units again.
+            let sc = window.scale_factor();
+            let edge_dev = (right * sc).round();
+            let w_dev = sc.round().max(1.);
+            let edge = edge_dev / sc;
+            let lw = w_dev / sc;
+            let xc = (edge_dev - w_dev / 2.) / sc;
+            let p = |x: f32, y: f32| point(px(x), px(y));
+            let Some(top) = y else {
+                // No row selected (About): the plain edge.
+                let mut stroke = PathBuilder::stroke(px(lw));
+                stroke.move_to(p(xc, top_y));
+                stroke.line_to(p(xc, bottom_y));
+                if let Ok(path) = stroke.build() {
+                    window.paint_path(path, line);
+                }
+                return;
+            };
+            let (l, t, b) = (left, top, top + ROW_H);
+            // The layout test checks the opening (tests/layout/check.py).
+            if cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
+                eprintln!("LAYOUT menu-sel {:.2} {:.2} {:.2} {:.2}", l, edge, t, b);
+            }
             let f = FILLET;
             let rad = SEL_RADIUS;
-            let p = |x: f32, y: f32| point(px(x), px(y));
-            // The page-coloured shape.
+            // The page-coloured opening: out to the menu's edge (over the
+            // line there), the curves tangent to it.
             let mut fill = PathBuilder::fill();
-            fill.move_to(p(r, t - f));
-            fill.arc_to(p(f, f), px(0.), false, true, p(r - f, t));
+            fill.move_to(p(edge, t - f));
+            fill.line_to(p(xc, t - f));
+            fill.arc_to(p(f, f), px(0.), false, true, p(xc - f, t));
             fill.line_to(p(l + rad, t));
             fill.arc_to(p(rad, rad), px(0.), false, false, p(l, t + rad));
             fill.line_to(p(l, b - rad));
             fill.arc_to(p(rad, rad), px(0.), false, false, p(l + rad, b));
-            fill.line_to(p(r - f, b));
-            fill.arc_to(p(f, f), px(0.), false, true, p(r, b + f));
+            fill.line_to(p(xc - f, b));
+            fill.arc_to(p(f, f), px(0.), false, true, p(xc, b + f));
+            fill.line_to(p(edge, b + f));
             fill.close();
             if let Ok(path) = fill.build() {
                 window.paint_path(path, page);
             }
-            // Its outline: the same path without the edge it joins.
-            let mut stroke = PathBuilder::stroke(px(1.));
-            stroke.move_to(p(r - 0.5, t - f));
-            stroke.arc_to(p(f - 0.5, f - 0.5), px(0.), false, true, p(r - f, t + 0.5));
-            stroke.line_to(p(l + rad, t + 0.5));
-            stroke.arc_to(p(rad - 0.5, rad - 0.5), px(0.), false, false, p(l + 0.5, t + rad));
-            stroke.line_to(p(l + 0.5, b - rad));
-            stroke.arc_to(p(rad - 0.5, rad - 0.5), px(0.), false, false, p(l + rad, b - 0.5));
-            stroke.line_to(p(r - f, b - 0.5));
-            stroke.arc_to(p(f - 0.5, f - 0.5), px(0.), false, true, p(r - 0.5, b + f));
+            // The edge and the opening's outline: one line, top to bottom.
+            let h = lw / 2.;
+            let mut stroke = PathBuilder::stroke(px(lw));
+            stroke.move_to(p(xc, top_y));
+            stroke.line_to(p(xc, t - f));
+            stroke.arc_to(p(f - h, f - h), px(0.), false, true, p(xc - f + h, t + h));
+            stroke.line_to(p(l + rad, t + h));
+            stroke.arc_to(p(rad - h, rad - h), px(0.), false, false, p(l + h, t + rad));
+            stroke.line_to(p(l + h, b - rad));
+            stroke.arc_to(p(rad - h, rad - h), px(0.), false, false, p(l + rad, b - h));
+            stroke.line_to(p(xc - f + h, b - h));
+            stroke.arc_to(p(f - h, f - h), px(0.), false, true, p(xc, b + f));
+            stroke.line_to(p(xc, bottom_y));
             if let Ok(path) = stroke.build() {
                 window.paint_path(path, line);
             }
@@ -253,6 +333,11 @@ fn selection(active: &'static str, page: Hsla, line: Hsla, motion: bool) -> impl
 // ---------------------------------------------------------------------------
 // The menu
 // ---------------------------------------------------------------------------
+
+/// The brand logo, the footer's logo and the preferences button.
+const LOGO: f32 = 32.;
+const FOOT_LOGO: f32 = 26.;
+const PREFS: f32 = 32.;
 
 /// The menu's width, unfolded and folded.
 pub const MENU_W: f32 = 232.;
@@ -277,7 +362,7 @@ impl Manager {
         let forced = width < FOLD_BELOW;
         let motion = !ui::reduce_motion();
         let active: &'static str = if self.page == Page::Instances { "instances" } else if self.page == Page::About { "about" } else { self.page.id() };
-        let left_pad = if rail { 8. } else { 16. };
+        let left_pad = MENU_PAD;
         let row = |id: &'static str, icon: Icon, title: SharedString, on: bool| {
             h_flex()
                 .id(id)
@@ -285,16 +370,16 @@ impl Manager {
                 .h(px(ROW_H))
                 .flex_shrink_0()
                 .gap(px(12.))
-                .when(rail, |r| r.justify_center())
-                .when(!rail, |r| r.px(px(12.)).mr(px(10.)))
+                .pl(px(ROW_PL))
+                .when(!rail, |r| r.pr(px(12.)).mr(px(10.)))
                 .rounded(px(8.))
                 .cursor_pointer()
                 .text_sm()
                 .text_color(if on { theme.primary } else { theme.foreground })
-                .when(on, |r| r.font_weight(FontWeight::MEDIUM))
+                .font_weight(if on { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
                 .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))
                 .child(row_probe(id))
-                .child(icon.size(px(18.)).text_color(if on { theme.primary } else { theme.muted_foreground }))
+                .child(div().relative().flex_shrink_0().child(icon.size(px(ICON)).text_color(if on { theme.primary } else { theme.muted_foreground })).child(ui::layout_probe("menu-icon")))
                 .when(!rail, |r| r.child(div().relative().whitespace_nowrap().opacity(names).child(title.clone())))
                 .when(rail, move |r| r.tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(title.clone()).build(w, cx)))
         };
@@ -319,12 +404,14 @@ impl Manager {
             let logo_hover = self.logo_hover;
             let logo = div()
                 .id("brand-logo")
-                .size(px(36.))
+                .relative()
+                .size(px(LOGO))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
                 .justify_center()
                 .rounded(px(8.))
+                .child(ui::layout_probe("menu-icon"))
                 .when(rail && !forced, |d| {
                     d.cursor_pointer()
                         .on_hover(cx.listener(|this, h: &bool, _, cx| {
@@ -349,18 +436,19 @@ impl Manager {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(Icon::new(Lucide::PanelLeftOpen).size(px(20.)).text_color(theme.muted_foreground))
+                        .child(menu_icon("panel-left-open").size(px(ICON)).text_color(theme.muted_foreground))
                         .into_any_element()
                 } else {
-                    ui::product_logo(ui::Product::Manager, 36.).into_any_element()
+                    ui::product_logo(ui::Product::Manager, LOGO).into_any_element()
                 });
             h_flex()
-                .h(px(72.))
+                .h(px(BAR_H))
                 .flex_shrink_0()
                 .items_center()
                 .gap(px(10.))
-                .when(rail, |r| r.justify_center())
-                .when(!rail, |r| r.pl(px(16.)).pr(px(10.)))
+                // The logo's centre on ICON_X, folded or not.
+                .pl(px(ICON_X - LOGO / 2.))
+                .when(!rail, |r| r.pr(px(10.)))
                 .border_b_1()
                 .border_color(theme.sidebar_border)
                 .child(logo)
@@ -385,7 +473,7 @@ impl Manager {
                             .cursor_pointer()
                             .text_color(theme.muted_foreground)
                             .hover(|d| d.bg(theme.list_hover))
-                            .child(Icon::new(Lucide::PanelLeftClose).size(px(18.)))
+                            .child(menu_icon("panel-left-close").size(px(ICON)))
                             .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Fold menu").build(w, cx))
                             .on_click(cx.listener(|_, _, _, cx| {
                                 Appearance::set(|a| a.folded = true);
@@ -403,19 +491,22 @@ impl Manager {
             let update = self.updates.read(cx).notices().1.is_some();
             let prefs = div()
                 .id("prefs")
-                .size(px(34.))
+                .relative()
+                .size(px(PREFS))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
                 .justify_center()
                 .rounded(px(8.))
+                // Folded it sits on ICON_X; unfolded it is at the right end.
+                .when(rail, |d| d.child(ui::layout_probe("menu-icon")))
                 .border_1()
                 .border_color(if on { theme.primary } else { theme.border })
                 .bg(if on { theme.sidebar_accent } else { theme.background })
                 .text_color(if on { theme.primary } else { theme.foreground })
                 .cursor_pointer()
                 .when(!on, |d| d.hover(|d| d.bg(theme.list_hover)))
-                .child(Icon::new(Lucide::SlidersHorizontal).size(px(18.)))
+                .child(menu_icon("sliders-horizontal").size(px(ICON)))
                 .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("About and preferences").build(w, cx))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.page = Page::About;
@@ -427,8 +518,10 @@ impl Manager {
                 .gap(px(4.))
                 .border_t_1()
                 .border_color(theme.sidebar_border)
-                .when(rail, |r| r.flex_col().py(px(8.)).justify_center())
-                .when(!rail, |r| r.py(px(10.)).pl(px(12.)).pr(px(10.)))
+                // Folded: the preferences button on ICON_X; unfolded: the
+                // product logo there.
+                .when(rail, |r| r.flex_col().items_start().py(px(8.)).pl(px(ICON_X - PREFS / 2.)))
+                .when(!rail, |r| r.py(px(9.)).pl(px(ICON_X - FOOT_LOGO / 2.)).pr(px(10.)))
                 .when(!rail, |r| {
                     r.child(
                         h_flex()
@@ -436,7 +529,7 @@ impl Manager {
                             .min_w_0()
                             .gap(px(8.))
                             .items_center()
-                            .child(ui::product_logo(ui::Product::Manager, 26.))
+                            .child(div().relative().child(ui::product_logo(ui::Product::Manager, FOOT_LOGO)).child(ui::layout_probe("menu-icon")))
                             .child(
                                 v_flex()
                                     .min_w_0()
@@ -482,8 +575,8 @@ impl Manager {
             .flex_shrink_0()
             .relative()
             .bg(menu_bg)
-            .border_r_1()
-            .border_color(theme.sidebar_border)
+            // No border: the selection canvas draws the edge (one shape
+            // with the selected row's opening).
             .child(menu_probe(left_pad))
             // Under the rows: the selection, joined to the page.
             .child(selection(active, theme.muted, theme.sidebar_border, motion))
@@ -497,11 +590,11 @@ impl Manager {
                     .min_h_0()
                     .overflow_y_scroll()
                     .gap(px(2.))
-                    .pt(px(16.))
+                    .pt(px(12.))
                     .pl(px(left_pad))
-                    .when(rail, |m| m.pr(px(8.)))
+                    .when(rail, |m| m.pr(px(MENU_PAD)))
                     .children(items)
-                    .child(div().mt(px(14.)).mb(px(14.)).ml(px(2.)).mr(px(10.)).h(px(1.)).flex_shrink_0().bg(theme.sidebar_border))
+                    .child(div().mt(px(12.)).mb(px(12.)).ml(px(2.)).mr(px(10.)).h(px(1.)).flex_shrink_0().bg(theme.sidebar_border))
                     .child(instances),
             )
             .child(footer)
