@@ -236,7 +236,7 @@ fn kv(theme: &gpui_kit::component::Theme, rows: Vec<(AnyElement, AnyElement)>) -
             .items_start()
             .text_sm()
             .when(i + 1 < n, |r| r.border_b_1().border_color(theme.border))
-            .child(h_flex().w(px(186.)).flex_shrink_0().gap_1().items_center().text_color(theme.muted_foreground).child(k))
+            .child(h_flex().w(px(if ui::narrow() { 128. } else { 186. })).flex_shrink_0().gap_1().items_center().text_color(theme.muted_foreground).child(k))
             .child(div().flex_1().min_w_0().child(v))
     }))
 }
@@ -2647,7 +2647,7 @@ impl Render for HistoryDialog {
         let e = &self.entry;
         let took = |s: u64| if s >= 60 { format!("{} min {:02} s", s / 60, s % 60) } else { format!("{s} s") };
         let mut rows: Vec<(AnyElement, AnyElement)> = vec![
-            (txt("Result"), h_flex().flex_wrap().gap_2().items_center().child(result_pill(&theme, e.result)).child(div().text_sm().child(e.message.lines().next().unwrap_or("").to_string())).into_any_element()),
+            (txt("Result"), v_flex().gap_1().child(h_flex().child(result_pill(&theme, e.result))).child(div().text_sm().child(e.message.lines().next().unwrap_or("").to_string())).into_any_element()),
             (txt("From"), h_flex().flex_wrap().gap_2().items_baseline().child(div().font_family(theme.mono_font_family.clone()).text_size(px(13.)).child(e.backup.clone())).children(e.source.clone().map(|s| muted(&theme, s))).into_any_element()),
             (txt("What"), txt(format!("{}{}", e.scope, e.converted.as_ref().map(|c| format!("; {c}")).unwrap_or_default()))),
             (txt("By"), txt(format!("{}{}", e.by, if e.manager.is_empty() { String::new() } else { format!(", Platform Manager {}", e.manager) }))),

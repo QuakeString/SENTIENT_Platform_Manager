@@ -2350,9 +2350,11 @@ mod restore_live {
         let take = || std::mem::take(&mut *lines.lock().unwrap());
         deploy(&inst, &sink).expect("deploy");
         run(&inst, "rm -rf /tmp/spme && mkdir -p /tmp/spme/up /tmp/spme/copy && chmod 777 /tmp/spme /tmp/spme/up /tmp/spme/copy", None).unwrap();
-        let file = "/tmp/spme/b1.sentient-backup";
-        run_followed(&inst, &["backup".into(), file.into()], &sink).expect("backup");
-        take();
+        // A small, well-formed backup (SPM_E2E_BACKUP, made by the test's
+        // script): the test bed's SENTIENT is a stand-in with no schema.
+        let fake = PathBuf::from(std::env::var("SPM_E2E_BACKUP").expect("SPM_E2E_BACKUP"));
+        let file = upload_backup(&inst, &fake, "/tmp/spme", &|_, _| {}).expect("first upload");
+        let file = file.as_str();
         // Inspect: sound, the parts listed and checked.
         let req = crate::restore_flow::Request { file: file.into(), ..Default::default() };
         let args = restore_args(&inst, "restore-inspect", &req, None).unwrap();
@@ -2373,7 +2375,9 @@ mod restore_live {
         for scope in [sentient_backup_core::restore_scope::Scope::Configuration, sentient_backup_core::restore_scope::Scope::Everything] {
             let req = crate::restore_flow::Request { file: file.into(), scope: scope.clone(), keep_telemetry: true, safety_backup: true, ..Default::default() };
             let args = restore_args(&inst, "restore-precheck", &req, None).unwrap();
-            run_followed(&inst, &args, &sink).expect("precheck");
+            if let Err(e) = run_followed(&inst, &args, &sink) {
+                panic!("precheck: {e}\n{}", take().join("\n"));
+            }
             let p: crate::restore_flow::Precheck = crate::restore_flow::read_data(&take(), "precheck").expect("precheck answer");
             eprintln!("precheck {scope:?}: disks {:?}\n  estimate {:?} upgrade {:?} settings {} same {} orphans {:?} live {:?}", p.disks, p.estimate, p.upgrade, p.settings.len(), p.same, p.orphans, p.live);
             assert!(!p.disks.is_empty() && p.disks.iter().all(|d| d.free.is_some()));
