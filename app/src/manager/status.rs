@@ -238,9 +238,6 @@ impl StatusPage {
     pub(crate) fn run(&mut self, action: &'static str, cx: &mut Context<Self>) {
         let Some(record) = &self.record else { return };
         let platform = record.platform();
-        if action == "restart" {
-            note_restart(LOCAL);
-        }
         self.job.update(cx, |job, cx| {
             job.set_label(match action {
                 "start" => "Starting SENTIENT",
@@ -256,9 +253,6 @@ impl StatusPage {
     fn run_service(&mut self, name: String, action: &'static str, cx: &mut Context<Self>) {
         let Some(record) = &self.record else { return };
         let platform = record.platform();
-        if action == "restart" {
-            note_restart(LOCAL);
-        }
         self.svc_busy = Some(name.clone());
         let label = service_job_label(&name, action);
         self.job.update(cx, |job, cx| {
@@ -622,7 +616,7 @@ impl Render for StatusPage {
                 let total = services.len();
                 services_card = services_card
                     .children(ui::service_rows(&theme, services.into_iter().map(|svc| (svc.name.into(), svc.running, svc.starting, svc.detail.into())), (act, service_log(), self.svc_busy.clone())))
-                    .children(ui::card_foot(&theme, ui::services_foot(&theme, up, total, restarts_today(LOCAL))));
+                    .children(ui::card_foot(&theme, ui::services_foot(&theme, up, total)));
             }
         }
 
@@ -668,35 +662,6 @@ impl StatusPage {
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(OpenGateway))),
                     ),
             )
-    }
-}
-
-/// The restart count's key for this computer (a remote instance uses its id).
-pub(crate) const LOCAL: &str = "";
-
-fn restarts_path() -> std::path::PathBuf {
-    crate::updates::prefs_dir().join("restarts.json")
-}
-
-/// Restarts of SENTIENT or one of its services started from this Platform
-/// Manager today, for this computer (LOCAL) or a remote instance's id.
-pub(crate) fn restarts_today(key: &str) -> u32 {
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let all: std::collections::HashMap<String, (String, u32)> =
-        std::fs::read_to_string(restarts_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-    all.get(key).filter(|(day, _)| *day == today).map(|(_, n)| *n).unwrap_or(0)
-}
-
-/// Count one restart started now.
-pub(crate) fn note_restart(key: &str) {
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let mut all: std::collections::HashMap<String, (String, u32)> =
-        std::fs::read_to_string(restarts_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-    let n = all.get(key).filter(|(day, _)| *day == today).map(|(_, n)| *n).unwrap_or(0);
-    all.insert(key.to_string(), (today, n + 1));
-    if let Ok(t) = serde_json::to_string(&all) {
-        let _ = std::fs::create_dir_all(crate::updates::prefs_dir());
-        let _ = std::fs::write(restarts_path(), t);
     }
 }
 

@@ -864,7 +864,6 @@ impl RemotePages {
                     }),
                     std::rc::Rc::new(move |_, cx| {
                         t2.update(cx, |p, cx| {
-                            crate::manager::status::note_restart(&p.inst.id);
                             p.run_job("Restarting SENTIENT", vec!["control".into(), "restart".into()], cx)
                         })
                         .ok();
@@ -996,9 +995,6 @@ impl RemotePages {
         let this = cx.entity().downgrade();
         let act = crate::manager::status::service_act(serving, std::rc::Rc::new(move |name, action, cx| {
             this.update(cx, |p, cx| {
-                if action == "restart" {
-                    crate::manager::status::note_restart(&p.inst.id);
-                }
                 p.svc_busy = Some(name.clone());
                 p.run_job(crate::manager::status::service_job_label(&name, action), vec!["service".into(), action.into(), name.clone()], cx);
             })
@@ -1011,7 +1007,7 @@ impl RemotePages {
                 let up = list.iter().filter(|s| s.running).count();
                 p = p
                     .children(ui::service_rows(&theme, list.iter().map(|s| (s.name.clone().into(), s.running, s.starting, s.detail.clone().into())), (act, crate::manager::status::service_log(), self.svc_busy.clone())))
-                    .children(ui::card_foot(&theme, ui::services_foot(&theme, up, list.len(), crate::manager::status::restarts_today(&self.inst.id))));
+                    .children(ui::card_foot(&theme, ui::services_foot(&theme, up, list.len())));
             }
         }
         p

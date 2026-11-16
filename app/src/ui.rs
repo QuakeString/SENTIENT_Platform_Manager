@@ -909,22 +909,13 @@ pub fn service_rows(
         .collect()
 }
 
-/// The Services card's foot: "2 of 3 running · Restarts today: 1".
-pub fn services_foot(theme: &Theme, running: usize, total: usize, restarts_today: u32) -> Div {
+/// The Services card's foot: "2 of 3 running".
+pub fn services_foot(theme: &Theme, running: usize, total: usize) -> Div {
     gpui_kit::component::h_flex()
-        .gap_4()
-        .flex_wrap()
         .items_center()
         .text_size(px(13.))
         .text_color(theme.muted_foreground)
         .child(format!("{running} of {total} running"))
-        .child(
-            gpui_kit::component::h_flex()
-                .gap_1()
-                .items_center()
-                .child(format!("Restarts today: {restarts_today}"))
-                .child(info("restarts-today".into(), "Restarts of SENTIENT or one of its services started from the Platform Manager today.".into())),
-        )
 }
 
 /// A popover's pointer under it, at `x` from its left: a 12 px wide

@@ -601,9 +601,6 @@ impl InstancesPage {
                 let ctl = |icon: Lucide, label: &'static str, action: &'static str, title: &'static str| {
                     let id = id.clone();
                     item(icon, label, can_work, Box::new(move |p, _, cx| {
-                        if action == "restart" {
-                            crate::manager::status::note_restart(&id);
-                        }
                         p.run_job(&id, title, vec!["control", action], cx)
                     }))
                 };
