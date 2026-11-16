@@ -161,7 +161,7 @@ fn window_options_manager(cx: &mut gpui_kit::App) -> WindowOptions {
     } else if let Some(b) = manager::session::window_bounds(cx, gpui_kit::size(gpui_kit::px(560.), gpui_kit::px(480.))) {
         o.window_bounds = Some(b);
     }
-    // The see-through menu: the desktop shows blurred behind it (where the
+    // The translucent menu: the desktop shows blurred behind it (where the
     // desktop can; crate::manager::shell).
     if manager::shell::see_through() {
         o.window_background = gpui_kit::WindowBackgroundAppearance::Blurred;
@@ -178,8 +178,8 @@ pub(crate) fn open_manager_window(options: WindowOptions, cx: &mut gpui_kit::App
         cx.new(|cx| manager::Manager::new(window, cx))
     })?;
     // The toolkit's root paints the theme's background over the whole
-    // window, which hid the see-through menu everywhere: the manager paints
-    // its own (opaque unless see-through), so the root stays clear.
+    // window, which hid the translucent menu everywhere: the manager paints
+    // its own (opaque unless translucent), so the root stays clear.
     let _ = opened.0.update(cx, |_, window, cx| {
         gpui_kit::base::Root::update(window, cx, |root, _, _| {
             use gpui_kit::Styled as _;

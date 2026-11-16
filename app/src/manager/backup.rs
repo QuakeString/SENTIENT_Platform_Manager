@@ -1242,7 +1242,7 @@ impl BackupPage {
             theme,
             narrow,
             "What to back up",
-            Some("Everything: the whole database and its files. Last 90 days: the same with only the last 90 days of telemetry. Configuration only: devices, dashboards, users and settings, without telemetry history. Choose: pick the parts and save the file anywhere."),
+            Some("Everything: settings and all telemetry.\nLast 90 days: settings and the last 90 days of telemetry.\nConfiguration only: devices, dashboards, users and settings, no telemetry."),
             what_control,
             None,
             false,
@@ -1522,7 +1522,7 @@ pub(crate) fn card_row(theme: &gpui_kit::component::Theme, narrow: bool, label: 
         .text_sm()
         .text_color(theme.muted_foreground)
         .child(label)
-        .when_some(help, |c, h| c.child(crate::ui::button(SharedString::from(format!("bhelp-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h)));
+        .when_some(help, |c, h| c.child(crate::ui::info(SharedString::from(format!("bhelp-{label}")), h.into())));
     // A narrow window: the label above, the value and its action under it.
     if narrow {
         return line(v_flex().py(px(8.)).gap_1())

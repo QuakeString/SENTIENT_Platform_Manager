@@ -365,7 +365,12 @@ impl Manager {
                 let plan = move |compose: Option<String>| -> Result<TakeOverPlan, String> {
                     let mut p = TakeOverPlan {
                         project: "sentient-prod".into(),
-                        files: vec![("/home/ops/deploy/sentient/docker-compose.yml".into(), kind != "missing"), ("/home/ops/deploy/sentient/docker-compose.override.yml".into(), kind != "missing")],
+                        files: if kind == "stale" {
+                            // His case: the live file, and a temporary override that was deleted.
+                            vec![("/home/mz/INVENIA/SENTIENT/docker/docker-compose.clickhouse.yml".into(), true), ("/tmp/claude-1000/-home-mz-INVENIA-SENTIENT/b3581689-33ec-54c1-816f-64cf65838705/scratchpad/compose.licdlg.yml".into(), false)]
+                        } else {
+                            vec![("/home/ops/deploy/sentient/docker-compose.yml".into(), kind != "missing"), ("/home/ops/deploy/sentient/docker-compose.override.yml".into(), kind != "missing")]
+                        },
                         env_files: vec![("/home/ops/deploy/sentient/.env".into(), true), ("/home/ops/deploy/sentient/sentient.env".into(), kind != "missing")],
                         containers: vec!["sentient".into(), "sentient-postgres".into(), "sentient-clickhouse".into()],
                         image: "quakestring/sentient:4.4.0.1".into(),

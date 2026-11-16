@@ -68,3 +68,4 @@ default-features = false
 # (vendor/gpui-pre-linux/SENTIENT-PATCHES.md).
 [patch.crates-io]
 gpui-pre-linux = { path = "vendor/gpui-pre-linux" }
+gpui-component = { path = "vendor/gpui-component" }

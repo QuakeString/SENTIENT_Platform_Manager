@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use super::*;
 
 // ---------------------------------------------------------------------------
-// Appearance preferences: the folded menu, the see-through menu and bar
+// Appearance preferences: the folded menu, the translucent menu and bar
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,7 +80,7 @@ impl Appearance {
     }
 }
 
-/// Where see-through cannot work, why (None: it can). Windows blurs behind
+/// Where the translucent menu cannot work, why (None: it can). Windows blurs behind
 /// any window (acrylic); KDE Plasma does on Wayland (ext-background-effect,
 /// or its own blur protocol) and on X11 (its blur property); Hyprland blurs
 /// every translucent window by itself, and picom when it runs (with blur in
@@ -91,7 +91,7 @@ pub fn see_through_why_not() -> Option<&'static str> {
         return None;
     }
     if GL_ONLY.with(|g| g.get()) {
-        return Some("The window cannot be see-through without Vulkan graphics: install your graphics card's Vulkan driver (on Arch vulkan-intel, vulkan-radeon or nvidia-utils; on Debian and Ubuntu mesa-vulkan-drivers), then start the Platform Manager again.");
+        return Some("The menu cannot be translucent without Vulkan graphics: install your graphics card's Vulkan driver (on Arch vulkan-intel, vulkan-radeon or nvidia-utils; on Debian and Ubuntu mesa-vulkan-drivers), then start the Platform Manager again.");
     }
     let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_uppercase();
     let blurs = desktop.contains("KDE") || desktop.contains("HYPRLAND") || picom_runs();
@@ -121,7 +121,7 @@ pub fn set_gl_only(gl: bool) {
     GL_ONLY.with(|g| g.set(gl));
 }
 
-/// See-through on: chosen and possible.
+/// The translucent menu on: chosen and possible.
 pub fn see_through() -> bool {
     see_through_supported() && Appearance::get().see_through
 }

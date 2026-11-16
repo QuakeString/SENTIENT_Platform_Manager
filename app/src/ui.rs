@@ -320,7 +320,7 @@ impl RenderOnce for InfoIcon {
 }
 
 /// The one tooltip style: an inverted surface (dark on the light theme, a
-/// lighter raised one on the dark theme), at most 360 px wide, wrapping, a
+/// lighter raised one on the dark theme), at most 320 px wide, wrapping, a
 /// little below the pointer so it never sits on the (i) itself.
 struct InfoTip(SharedString);
 
@@ -331,9 +331,9 @@ impl Render for InfoTip {
         // light on the dark theme, dark on the light one.
         let (bg, fg, border) = if dark { (rgb(0xeef3f5), rgb(0x16211f), rgb(0xffffff)) } else { (rgb(0x1f2a30), rgb(0xffffff), rgb(0x1f2a30)) };
         // Laid out at its smallest size, so the width is set: the longest
-        // line's length, at most 360 px.
+        // line's length, at most 320 px.
         let longest = self.0.lines().map(|l| l.chars().count()).max().unwrap_or(0) as f32;
-        let w = (longest * 6.9 + 22.).clamp(60., 360.);
+        let w = (longest * 6.9 + 22.).clamp(60., 320.);
         let shadow = BoxShadow { color: black().opacity(if dark { 0.45 } else { 0.25 }), offset: point(px(0.), px(4.)), blur_radius: px(12.), spread_radius: px(0.), inset: false };
         div().pt(px(8.)).pl(px(4.)).child(
             gpui_kit::component::v_flex()
@@ -349,7 +349,20 @@ impl Render for InfoTip {
                 .text_size(px(13.))
                 .line_height(px(18.))
                 .text_color(fg)
-                .children(self.0.split("\n\n").map(|p| div().child(p.trim().to_string()))),
+                .children(self.0.split("\n\n").map(|p| {
+                    // A paragraph of "Name: what it is" lines (the choices
+                    // of a setting): one line each, the name in medium.
+                    v_flex().gap(px(4.)).children(p.trim().lines().map(|line| {
+                        let line = line.trim().to_string();
+                        match line.split_once(": ").filter(|(name, _)| name.chars().count() <= 24 && !name.contains('.')) {
+                            Some((name, _)) if p.trim().lines().count() > 1 => {
+                                let n = name.len() + 1;
+                                div().child(StyledText::new(line.clone()).with_highlights([(0..n, HighlightStyle { font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() })])).into_any_element()
+                            }
+                            _ => div().child(line).into_any_element(),
+                        }
+                    }))
+                })),
         )
     }
 }
