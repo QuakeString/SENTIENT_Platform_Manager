@@ -232,6 +232,18 @@ section{display:flex;flex-direction:column;gap:18px}
 .lic-bottom .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#34d399;margin-right:6px}
 .lic-bottom .dot.bad{background:#ef4444}
 .licol{display:flex;flex-direction:column;gap:16px;min-width:0}
+.lcenter{display:flex;flex-direction:column;align-items:center;gap:16px;flex:1;justify-content:center;padding-bottom:40px}
+.lcenter.open{justify-content:flex-start;padding-bottom:0}
+.lcenter .lic-card{width:540px}
+.lbtns{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;width:540px}
+.lbtns .btn{justify-content:center}
+.lpanel .kv{column-gap:0}.lpanel .kv>*{padding-right:16px}
+.menu{position:absolute;background:var(--card);border:1px solid var(--border);border-radius:8px;box-shadow:var(--pop);padding:4px;min-width:200px;z-index:5}
+.menu div{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:6px}.menu div svg{width:16px;height:16px;color:var(--text2)}.menu div.on{background:var(--hover)}.menu .dng{color:var(--bad)}.menu .dng svg{color:var(--bad)}
+.lpanel{width:540px;box-sizing:border-box}
+.btn.tog{border-color:var(--input)}
+.btn.tog.on{background:var(--tint);border-color:var(--primary);color:var(--primary)}
+
 </style>
 
 <main>
@@ -247,7 +259,10 @@ section{display:flex;flex-direction:column;gap:18px}
   <nav class="jump"><a href="#l1">L1 Sign in</a><a href="#l2">L2 Licensed</a><a href="#l3">L3 Replace key</a><a href="#l4">L4 Over a limit</a><a href="#l5">L5 No licence</a><a href="#l6">L6 Deactivate</a><a href="#l7">L7 SENTIENT stopped</a></nav>
   <section>
     <div class="state" id="l1s"><div class="cap"><span class="code">L1</span><b>Opened</b><span>Asks for the system administrator once per visit; nothing about the licence shows before that</span></div><div class="scroll" id="l1"></div></div>
-    <div class="state" id="l2s"><div class="cap"><span class="code">L2</span><b>Signed in, licence active</b><span>Summary, use against the limits, actions; "Signed in as" with Sign out in the title row</span></div><div class="scroll" id="l2"></div></div>
+    <div class="state" id="l2s"><div class="cap"><span class="code">L2</span><b>Signed in, licence active</b><span>The licence card in the centre; buttons under it open the rest</span></div><div class="scroll" id="l2"></div></div>
+    <div class="state"><div class="cap"><span class="code">L2b</span><b>Details opened</b><span>Buttons under the card open one panel at a time; pressed again, it closes</span></div><div class="scroll" id="l2b"></div></div>
+    <div class="state"><div class="cap"><span class="code">L2c</span><b>Limits opened</b><span>"All limits…" lists every limit SENTIENT has</span></div><div class="scroll" id="l2c"></div></div>
+    <div class="state"><div class="cap"><span class="code">L2d</span><b>Manage</b><span>Check now, Replace and Deactivate sit in one menu</span></div><div class="scroll" id="l2d"></div></div>
     <div class="state" id="l3s"><div class="cap"><span class="code">L3</span><b>Replace the licence</b><span>Paste a key or choose a .key file; segmented choice, password asked again</span></div><div class="scroll" id="l3"></div></div>
     <div class="state" id="l4s"><div class="cap"><span class="code">L4</span><b>Over a limit</b><span>The same warning SENTIENT shows, with the days left before it blocks</span></div><div class="scroll" id="l4"></div></div>
     <div class="state" id="l5s"><div class="cap"><span class="code">L5</span><b>No licence</b><span>Activate a key or file, or request a demo or a quote with SENTIENT's own forms</span></div><div class="scroll" id="l5"></div></div>
@@ -366,23 +381,29 @@ function licCard(status,bad){return `<div class="lic-card${bad?' over':''}">
   <svg viewBox="-12 -12 105 105" fill="url(#lcp)" stroke="url(#lcp)" stroke-width="1.5" stroke-linejoin="round"><path transform="translate(2 0)" d="M 21.093685,36.04892 64.760524,68.802188 80.931399,80.929302 V 0.06650616 L 64.760524,12.197822 V 48.587543 L 21.093685,15.834284 Z"/><path transform="translate(-2 0)" d="M 16.24368,12.197822 0.06860324,0.06650616 V 80.933495 L 16.24368,68.802188 c 0,-18.868122 0,-37.736244 0,-56.604366 z"/></svg></div>
  <div class="lic-key">INVE  PROF  9F2C  ····  B71F</div>
  <div class="lic-bottom"><div><div class="ml">Licensed to</div><div class="mv">Sunoil Industries Pvt Ltd</div></div><div><div class="ml">Versions</div><div class="mv">v4</div></div><div><div class="ml">Valid through</div><div class="mv">06 / 2027</div></div><div><div class="ml">Status</div><div class="mv"><span class="dot${bad?' bad':''}"></span>${status}</div></div></div></div>`}
-function summary(status,valid,bad){return `<div class="licol">${licCard('Active',false)}
- <div class="card" style="padding:12px 18px"><div class="kv" style="grid-template-columns:150px minmax(0,1fr)">
-  <span class="k f">Days left</span><span class="f">${status}</span>
+function facts(){return `<div class="card lpanel"><div class="kv" style="grid-template-columns:150px minmax(0,1fr)">
+  <span class="k f">Days left</span><span class="f">228 days, until 30 Jun 2027</span>
   <span class="k">Bound to</span><span>This server's hardware <span class="pill ok">Matches</span></span>
-  <span class="k">Last check</span><span>Licence server answered 07:02</span></div></div></div>`}
-function usage(over){return `<div class="card"><div class="row" style="min-height:28px"><b style="font-weight:500">Use against the limits</b><span class="sp"></span><span class="btn ghost" style="height:28px;padding:0 6px">All limits…</span></div>
+  <span class="k">This build</span><span>4.4.0.2 <span class="mut small">· covered by v4</span></span>
+  <span class="k">Last check</span><span>Licence server answered 07:02</span></div></div>`}
+function usage(over){return `<div class="card lpanel"><div class="row" style="min-height:28px"><b style="font-weight:500">Limits</b><span class="sp"></span><span class="btn ghost" style="height:28px;padding:0 6px">All limits…</span></div>
   <div class="kv" style="grid-template-columns:170px minmax(0,1fr) 140px">
    ${lim('Devices',over?512:186,500,over).replace('class="k"','class="k f"').replace('<span><span class="bar"','<span class="f"><span class="bar"').replace('<span class="mono" style="justify-content','<span class="mono f" style="justify-content')}
    ${lim('Users',14,50)}${lim('Dashboards',63,200)}${lim('Telemetry keys',1840,5000)}${lim('Rule chains',9,50)}
   </div></div>`}
-const actions=`<div class="card"><div class="row"><b style="font-weight:500">Actions</b></div><div class="row">
-  <span class="btn">${I.refresh}Check with the licence server</span><span class="btn">${I.key}Replace licence…</span><span class="btn">${I.unlink}Deactivate…</span></div></div>`;
-const twocol=(a,b)=>`<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:stretch">${a}${b}</div>`;
-put('l2',lshell({page:'Licence',tall:true,body:ltitle(signed)+twocol(summary('228 days, until 30 Jun 2027','',false),usage(false))+actions}));
+function center(open,over,menu){
+ const t=(id,ic,l)=>`<span class="btn tog${open===id?' on':''}">${I[ic]}${l}${P(open===id?'<path d="m18 15-6-6-6 6"/>':'<path d="m6 9 6 6 6-6"/>')}</span>`;
+ return `<div class="lcenter${open?' open':''}">${licCard('Active',false)}
+  <div class="lbtns" style="position:relative">${t('d','info','Details')}${t('u','stats','Limits')}<span class="btn tog${menu?' on':''}">${I.key}Manage${P('<path d="m6 9 6 6 6-6"/>')}</span>
+  ${menu?`<div class="menu" style="right:0;top:40px"><div>${I.refresh}Check now with the licence server</div><div class="on">${I.key}Replace the licence…</div><div class="dng">${I.unlink}Deactivate…</div></div>`:''}</div>
+  ${open==='d'?facts():open==='u'?usage(over):''}</div>`}
+put('l2',lshell({page:'Licence',tall:true,body:ltitle(signed)+center('')}));
 
 // L3 replace
-put('l3',lshell({page:'Licence',tall:true,body:ltitle(signed)+twocol(summary('228 days, until 30 Jun 2027','',false),usage(false))+actions,
+put('l2b',lshell({page:'Licence',xtall:true,body:ltitle(signed)+center('d')}));
+put('l2c',lshell({page:'Licence',xtall:true,body:ltitle(signed)+center('u')}));
+put('l2d',lshell({page:'Licence',body:ltitle(signed)+center('',false,true)}));
+put('l3',lshell({page:'Licence',tall:true,body:ltitle(signed)+center(''),
  over:`<div class="scrim"><div class="dlg"><div class="dh">${I.key}<span>Replace the licence</span><span class="sp"></span><span class="ib">${I.x}</span></div>
   <div class="db"><div class="row"><span class="seg"><span class="on">Licence key</span><span>Licence file</span></span></div>
    <div class="inp focus" style="height:auto;min-height:72px;align-items:flex-start;padding:8px 10px"><span class="mono" style="overflow-wrap:anywhere">ST4-PRO-9F2C-71AB-55E0-D3C8-0A4E-B71F</span></div>
@@ -392,7 +413,7 @@ put('l3',lshell({page:'Licence',tall:true,body:ltitle(signed)+twocol(summary('22
 
 // L4 over limit
 put('l4',lshell({page:'Licence',xtall:true,body:ltitle(signed)+`<div class="banner bad">${I.warn}<div class="tx"><b style="font-weight:500">Over the device limit for 3 days.</b> 512 devices on a 500-device licence. SENTIENT is blocked in 4 days unless devices are removed or the licence is raised.</div><span class="btn">${I.cart}Raise the limit…</span></div>`
- +twocol(summary('228 days, until 30 Jun 2027','',true),usage(true))+actions}));
+ +center('u',true)}));
 
 // L5 none
 put('l5',lshell({page:'Licence',body:ltitle(signed)+`<div class="card" style="max-width:720px">
@@ -403,7 +424,7 @@ put('l5',lshell({page:'Licence',body:ltitle(signed)+`<div class="card" style="ma
  </div>`}));
 
 // L6 deactivate
-put('l6',lshell({page:'Licence',tall:true,body:ltitle(signed)+twocol(summary('228 days, until 30 Jun 2027','',false),usage(false))+actions,
+put('l6',lshell({page:'Licence',tall:true,body:ltitle(signed)+center(''),
  over:`<div class="scrim"><div class="dlg"><div class="dh">${I.unlink}<span>Deactivate the licence on INVENIA IIoT?</span></div>
   <div class="db"><p>The licence is released on the licence server so it can be activated on another computer. SENTIENT on this server is then unlicensed.</p>
    ${pw('System administrator password','<span style="letter-spacing:3px">••••••••</span>',true)}
