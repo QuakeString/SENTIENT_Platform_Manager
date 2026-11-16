@@ -9,8 +9,14 @@
 //!   hands its request over (`show`, or `action <name>` from a taskbar
 //!   action) and exits.
 //! - Start at sign-in: an XDG autostart entry on Linux; on Windows a
-//!   scheduled task at logon with the highest privileges (the window runs
-//!   as administrator, and a Run key would ask UAC at every sign-in).
+//!   scheduled task at logon, unelevated: no UAC prompt at sign-in.
+//! - Windows elevation (the same rule as Linux: only a user action asks):
+//!   the tray runs unelevated. Opening the window or an action starts an
+//!   elevated copy (`--takeover --request <request>`, one UAC prompt),
+//!   which asks the running copy to hand over; that one confirms, removes
+//!   its tray and quits, and the elevated copy becomes the running one.
+//!   The lock records whether the running copy is elevated, so a later
+//!   start forwards to it or takes over from it (see [`start_plan`]).
 //! - Preferences (About): start at sign-in, show in the tray, closing the
 //!   window quits. Without the tray there is no background part at all:
 //!   closing the window quits and nothing starts at sign-in.
@@ -36,6 +42,10 @@ pub enum Command {
     Action(String),
     /// Quit the Platform Manager (tray Exit, taskbar Exit).
     Exit,
+    /// An elevated copy takes over: remove the tray and quit.
+    Handover,
+    /// The elevated copy the tray started did not start (UAC declined).
+    TakeoverDeclined,
 }
 
 /// The taskbar actions (`--action <name>`): the Linux menu entry's Desktop
@@ -94,20 +104,114 @@ fn lock_path() -> PathBuf {
     crate::updates::prefs_dir().join("running.lock")
 }
 
-/// The request this start carries: `--action <name>`, else `show`.
+/// The request this start carries: `--request <text>` (a tray's handover),
+/// `--action <name>`, else `show`.
 pub fn request_of(args: &[String]) -> String {
+    if let Some(r) = args.iter().position(|a| a == "--request").and_then(|i| args.get(i + 1)) {
+        return r.clone();
+    }
     match args.iter().position(|a| a == "--action").and_then(|i| args.get(i + 1)) {
         Some(a) => format!("action {a}"),
         None => "show".into(),
     }
 }
 
+/// The running copy as its lock says: port, token, and whether it runs
+/// elevated. A lock from before the flag was an elevated copy.
+pub fn parse_lock(text: &str) -> Option<(u16, String, bool)> {
+    let mut parts = text.split_whitespace();
+    let port = parts.next()?.parse::<u16>().ok()?;
+    let token = parts.next()?.to_string();
+    let elevated = parts.next().is_none_or(|f| f == "1");
+    Some((port, token, elevated))
+}
+
+/// Whether a copy runs (its lock is there), and if so whether it is
+/// elevated. A stale lock reads as running; [`forward`] then fails.
+pub fn running() -> Option<bool> {
+    parse_lock(&std::fs::read_to_string(lock_path()).ok()?).map(|(_, _, e)| e)
+}
+
+/// What a start does about the copy already running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartPlan {
+    /// Hand the request to it and end.
+    Forward,
+    /// Ask it to hand over, then run as the one copy.
+    TakeOver,
+    /// Run as the one copy; `elevate`: ask for administrator rights first.
+    Run { elevate: bool },
+    /// Nothing to do (a sign-in start while a copy already runs).
+    Exit,
+}
+
+/// The rule: only a user action elevates. `running`: a copy runs, and
+/// whether elevated. `admin`: this start is elevated. `takeover`: a tray
+/// started this copy elevated to hand over to it. `background`: started at
+/// sign-in. `window_needs_admin`: the window must run elevated (Windows).
+pub fn start_plan(running: Option<bool>, admin: bool, takeover: bool, background: bool, window_needs_admin: bool) -> StartPlan {
+    match running {
+        // The tray's elevated copy takes over from the unelevated tray, but
+        // never from another elevated copy (two quick clicks): it hands
+        // its request to that one instead.
+        Some(false) if takeover => StartPlan::TakeOver,
+        Some(true) if takeover => StartPlan::Forward,
+        Some(_) if background => StartPlan::Exit,
+        // An elevated start finds an unelevated tray: it becomes the copy.
+        Some(false) if admin && window_needs_admin => StartPlan::TakeOver,
+        // Otherwise the running copy takes the request (an unelevated tray
+        // elevates itself for it).
+        Some(_) => StartPlan::Forward,
+        None if background => StartPlan::Run { elevate: false },
+        None => StartPlan::Run { elevate: window_needs_admin && !admin },
+    }
+}
+
+/// How a takeover went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TakeOver {
+    /// The tray let go: this copy is the one copy now.
+    Done,
+    /// Another elevated copy holds the lock: `request` was forwarded to it,
+    /// and this start ends.
+    Forwarded,
+    /// Nobody answered (a stale lock): run as the one copy anyway.
+    NoAnswer,
+}
+
+/// Ask the running copy to hand over to this one, and wait (up to 10 s)
+/// until it has let go. The lock is read again first: when an elevated
+/// copy holds it by now (it won a race), `request` goes to it instead.
+///
+/// Known limit: when UAC elevates to a different administrator account (a
+/// standard user typing an administrator's credentials), the elevated copy
+/// reads that account's preferences folder, finds no lock, and runs beside
+/// the tray instead of taking over from it.
+pub fn take_over(request: &str) -> TakeOver {
+    if running() == Some(true) {
+        return if forward(request) { TakeOver::Forwarded } else { TakeOver::NoAnswer };
+    }
+    if take_over_lock() { TakeOver::Done } else { TakeOver::NoAnswer }
+}
+
+fn take_over_lock() -> bool {
+    if !forward("takeover") {
+        return false;
+    }
+    for _ in 0..50 {
+        if !lock_path().exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    false
+}
+
 /// Hand `request` to the copy already running. True: it took it, and this
 /// start ends here.
 pub fn forward(request: &str) -> bool {
     let Ok(text) = std::fs::read_to_string(lock_path()) else { return false };
-    let mut parts = text.split_whitespace();
-    let (Some(port), Some(token)) = (parts.next().and_then(|p| p.parse::<u16>().ok()), parts.next()) else { return false };
+    let Some((port, token, _)) = parse_lock(&text) else { return false };
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(400)) else { return false };
     let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
@@ -128,7 +232,8 @@ pub fn listen(tx: UnboundedSender<Command>) -> bool {
     if let Some(d) = path.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    if std::fs::write(&path, format!("{port} {token}\n")).is_err() {
+    let elevated = if crate::elevate::is_admin() { 1 } else { 0 };
+    if std::fs::write(&path, format!("{port} {token} {elevated}\n")).is_err() {
         return false;
     }
     #[cfg(unix)]
@@ -152,6 +257,7 @@ pub fn listen(tx: UnboundedSender<Command>) -> bool {
                 }
                 let cmd = match it.next().unwrap_or("show") {
                     "show" => Command::Show,
+                    "takeover" => Command::Handover,
                     r => match r.strip_prefix("action ") {
                         Some("exit") => Command::Exit,
                         Some("open") | None => Command::Show,
@@ -193,6 +299,10 @@ fn rand_u128() -> u128 {
 pub fn set_autostart(on: bool) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let r = imp::set_autostart(on, &exe);
+    #[cfg(not(windows))]
+    if on && r.is_ok() {
+        crate::shortcuts::remember(crate::shortcuts::Owner::Manager, imp::entry().into_iter().collect());
+    }
     AUTOSTART.store(if r.is_ok() { on } else { imp::present() }, std::sync::atomic::Ordering::Relaxed);
     r
 }
@@ -209,7 +319,7 @@ pub fn autostart_on() -> bool {
 mod imp {
     use std::path::{Path, PathBuf};
 
-    fn entry() -> Option<PathBuf> {
+    pub(super) fn entry() -> Option<PathBuf> {
         let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
         Some(config.join("autostart").join("sentient-platform-manager.desktop"))
     }
@@ -258,7 +368,9 @@ mod imp {
         let out = if on {
             let tr = format!("\"{}\" --manager --background", exe.display());
             std::process::Command::new("schtasks.exe")
-                .args(["/Create", "/TN", TASK, "/SC", "ONLOGON", "/RL", "HIGHEST", "/TR", &tr, "/F"])
+                // Unelevated: the tray asks for administrator rights only
+                // when the user opens the window or starts an action.
+                .args(["/Create", "/TN", TASK, "/SC", "ONLOGON", "/RL", "LIMITED", "/TR", &tr, "/F"])
                 .creation_flags(NO_WINDOW)
                 .output()
         } else {
@@ -276,6 +388,54 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lock_says_whether_the_running_copy_is_elevated() {
+        assert_eq!(parse_lock("41234 abc 0\n"), Some((41234, "abc".into(), false)));
+        assert_eq!(parse_lock("41234 abc 1\n"), Some((41234, "abc".into(), true)));
+        // A lock from before the flag: that copy was elevated.
+        assert_eq!(parse_lock("41234 abc\n"), Some((41234, "abc".into(), true)));
+        assert_eq!(parse_lock("garbage"), None);
+    }
+
+    #[test]
+    fn only_a_user_action_elevates_on_windows() {
+        use StartPlan::*;
+        // Sign-in start, nothing running: an unelevated tray, no UAC.
+        assert_eq!(start_plan(None, false, false, true, true), Run { elevate: false });
+        // A sign-in start while a copy runs: nothing to do.
+        assert_eq!(start_plan(Some(false), false, false, true, true), Exit);
+        // The menu entry with nothing running: the window asks for UAC.
+        assert_eq!(start_plan(None, false, false, false, true), Run { elevate: true });
+        assert_eq!(start_plan(None, true, false, false, true), Run { elevate: false });
+        // The menu entry while the unelevated tray runs: the tray takes the
+        // request (and elevates itself for it).
+        assert_eq!(start_plan(Some(false), false, false, false, true), Forward);
+        // The tray's elevated copy, or any elevated start: takes over.
+        assert_eq!(start_plan(Some(false), true, true, false, true), TakeOver);
+        // Two quick tray clicks: the second elevated copy finds the first
+        // already holding the lock and forwards to it.
+        assert_eq!(start_plan(Some(true), true, true, false, true), Forward);
+        assert_eq!(start_plan(Some(false), true, false, false, true), TakeOver);
+        // An elevated copy runs: everything goes to it.
+        assert_eq!(start_plan(Some(true), false, false, false, true), Forward);
+        assert_eq!(start_plan(Some(true), true, false, false, true), Forward);
+        // The tray went away before its elevated copy started.
+        assert_eq!(start_plan(None, true, true, false, true), Run { elevate: false });
+    }
+
+    #[test]
+    fn linux_never_elevates_the_window() {
+        use StartPlan::*;
+        assert_eq!(start_plan(None, true, false, false, false), Run { elevate: false });
+        assert_eq!(start_plan(Some(true), true, false, false, false), Forward);
+    }
+
+    #[test]
+    fn a_handover_carries_the_request() {
+        let args: Vec<String> = ["spm", "--manager", "--takeover", "--request", "action control:stop"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(request_of(&args), "action control:stop");
+    }
 
     #[test]
     fn requests_from_the_command_line() {

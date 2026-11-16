@@ -36,6 +36,11 @@ pub struct StatusPage {
     job: Entity<Job>,
     /// The service whose own action runs now.
     svc_busy: Option<String>,
+    /// SENTIENT's start, stop or restart while it runs (the pill says so).
+    stack_action: Option<&'static str>,
+    /// That action came from the tray (its result is also a desktop
+    /// notification).
+    from_tray: bool,
     /// SENTIENT's version as shown ("4.4.0.2 (image tag latest)").
     shown_version: Option<String>,
     /// The gateway on this computer (None while looking).
@@ -169,7 +174,21 @@ impl StatusPage {
         let _job_observe = cx.observe(&job, |page: &mut Self, job, cx| {
             // An action ended: read the services again at once.
             if !job.read(cx).is_running() && matches!(job.read(cx).state(), JobState::Done(_) | JobState::Failed(_)) {
+                // A stop or restart that kept a shared PostgreSQL running
+                // says so in the bell, and from the tray as a notification.
+                if let (Some(_), JobState::Done(m)) = (page.stack_action, job.read(cx).state()) {
+                    if let Some(note) = sentient_installer_core::stack_order::kept_postgres_note(m) {
+                        let state = m[..m.len() - note.len()].trim().trim_end_matches('.').to_string();
+                        let note = note.to_string();
+                        if page.from_tray {
+                            crate::bg_app::desktop_notification(&format!("This computer: {state}"), &note);
+                        }
+                        crate::manager::strip::push_condition(None, false, "PostgreSQL stays running".into(), note, cx);
+                    }
+                }
                 page.svc_busy = None;
+                page.stack_action = None;
+                page.from_tray = false;
                 page.refresh(cx);
             }
             cx.notify();
@@ -188,6 +207,8 @@ impl StatusPage {
             adopt_job,
             job,
             svc_busy: None,
+            stack_action: None,
+            from_tray: false,
             shown_version: None,
             gateway: None,
             updates,
@@ -240,19 +261,28 @@ impl StatusPage {
         self._tasks.push(task);
     }
 
-    /// Start, stop or restart SENTIENT (also the tray's and the taskbar's).
-    pub(crate) fn run(&mut self, action: &'static str, cx: &mut Context<Self>) {
+    /// Start, stop or restart SENTIENT with its databases, in order.
+    /// `stop_shared_pg`: the Stop dialog's "Stop it anyway".
+    pub(crate) fn run(&mut self, action: &'static str, stop_shared_pg: bool, cx: &mut Context<Self>) {
         let Some(record) = &self.record else { return };
         let platform = record.platform();
+        self.stack_action = Some(action);
         self.job.update(cx, |job, cx| {
             job.set_label(match action {
                 "start" => "Starting SENTIENT",
                 "stop" => "Stopping SENTIENT",
                 _ => "Restarting SENTIENT",
             });
-            job.start(move |sink| platform.control(sink, action), cx)
+            job.start(move |sink| platform.control_stack(sink, action, stop_shared_pg), cx)
         });
         cx.notify();
+    }
+
+    /// The tray's Start, Stop or Restart: no dialog, so a shared PostgreSQL
+    /// stays running (the notification says so).
+    pub(crate) fn run_from_tray(&mut self, action: &'static str, cx: &mut Context<Self>) {
+        self.run(action, false, cx);
+        self.from_tray = true;
     }
 
     /// One service's own start, stop or restart.
@@ -497,15 +527,10 @@ impl Render for StatusPage {
             return page.child(ui::not_installed(&theme)).children(existing).child(gw);
         };
 
+        let busy_action = self.stack_action.filter(|_| self.job.read(cx).is_running());
         let (overall, tone) = match &self.snapshot {
             None => ("Checking…", Tone::Neutral),
-            // Its port answers but none of its own services runs: some
-            // other program is serving there.
-            Some(s) if s.serving && !s.services.is_empty() && !s.services.iter().any(|svc| svc.running || svc.starting) => ("Another program answers on SENTIENT's port", Tone::Warn),
-            Some(s) if s.serving => ("SENTIENT is running", Tone::Good),
-            Some(s) if s.services.iter().any(|svc| svc.running) => ("Starting or partly stopped", Tone::Warn),
-            Some(s) if s.services.iter().any(|svc| svc.starting) => ("SENTIENT is starting with Windows", Tone::Warn),
-            Some(_) => ("SENTIENT is stopped", Tone::Bad),
+            Some(s) => overall_state(s.serving, &s.services.iter().map(|v| (v.name.as_str(), v.running, v.starting)).collect::<Vec<_>>(), busy_action),
         };
         let stopped = self.snapshot.as_ref().is_some_and(|s| !s.serving);
         let services = self.snapshot.as_ref().map(|s| s.services.clone()).unwrap_or_default();
@@ -557,9 +582,21 @@ impl Render for StatusPage {
         });
 
         let busy = self.job.read(cx).is_running();
-        let running = self.snapshot.as_ref().filter(|s| !s.services.is_empty()).map(|s| s.serving);
+        let running = self.snapshot.as_ref().filter(|s| !s.services.is_empty()).map(|s| Running { serving: s.serving, any_up: s.serving || s.services.iter().any(|v| v.running) });
         let this = cx.entity().downgrade();
         let (t1, t2, t3) = (this.clone(), this.clone(), this.clone());
+        // Native Linux runs on the distribution's shared PostgreSQL: the
+        // Stop dialog looks at what else it holds.
+        let probe: Option<PgProbe> = (cfg!(target_os = "linux") && record.engine == crate::installation::Engine::Native).then(|| {
+            let platform = record.platform();
+            // Opening Stop… is the user's action: the listing may ask for the
+            // password, and the root helper it starts serves the Stop job too
+            // (one prompt for both).
+            std::sync::Arc::new(move || {
+                let _action = sentient_installer_core::elevation::user_action();
+                platform.pg_other_databases()
+            }) as PgProbe
+        });
         let sentient = ui::panel(&theme)
             .child(
                 h_flex()
@@ -612,15 +649,15 @@ impl Render for StatusPage {
                     busy,
                     running,
                     std::rc::Rc::new(move |_, cx| {
-                        t1.update(cx, |p, cx| p.run("start", cx)).ok();
+                        t1.update(cx, |p, cx| p.run("start", false, cx)).ok();
                     }),
                     std::rc::Rc::new(move |_, cx| {
-                        t2.update(cx, |p, cx| p.run("restart", cx)).ok();
+                        t2.update(cx, |p, cx| p.run("restart", false, cx)).ok();
                     }),
-                    std::rc::Rc::new(move |w, cx| {
+                    std::rc::Rc::new(move |_, cx| {
                         let t3 = t3.clone();
-                        confirm_stop(w, cx, std::rc::Rc::new(move |cx| {
-                            t3.update(cx, |p, cx| p.run("stop", cx)).ok();
+                        confirm_stop(cx, probe.clone(), std::rc::Rc::new(move |force, cx| {
+                            t3.update(cx, |p, cx| p.run("stop", force, cx)).ok();
                         }));
                     }),
                 ),
@@ -742,21 +779,147 @@ pub(crate) fn service_act(serving: bool, run: std::rc::Rc<dyn Fn(String, &'stati
     })
 }
 
-/// Stopping takes every device connection down, so it is confirmed. The
-/// same here and on a server.
-pub(crate) fn confirm_stop(window: &mut Window, cx: &mut App, stop: std::rc::Rc<dyn Fn(&mut App)>) {
-    crate::modal::alert(window, cx, move |dialog, _, _| {
-        let stop = stop.clone();
-        dialog
-            .title("Stop SENTIENT?")
-            .description("Devices lose their connection and dashboards stop updating until SENTIENT is started again.")
-            .confirm()
-            .ok_text("Stop")
-            .on_ok(move |_, _, cx| {
-                stop(cx);
-                true
+/// The pill on the SENTIENT card, from whether SENTIENT answers, its
+/// services (name, running, starting) and the stack action we run now.
+/// "Starting" (and the others) only while our own action runs; "Partly
+/// running" only when SENTIENT itself runs and a database is down; a
+/// stopped SENTIENT with its database still up reads "stopped".
+pub(crate) fn overall_state(serving: bool, services: &[(&str, bool, bool)], action: Option<&str>) -> (&'static str, Tone) {
+    // The databases by name; the gateway counts for neither; the rest is
+    // SENTIENT (a stack may name its containers freely).
+    let is_db = |n: &str| matches!(ui::service_label(n), Some("Database (PostgreSQL)" | "ClickHouse"));
+    let is_app = |n: &str| !is_db(n) && ui::service_label(n) != Some("Gateway");
+    match action {
+        Some("start") => return ("Starting", Tone::Warn),
+        Some("restart") => return ("Restarting", Tone::Warn),
+        Some("stop") => return ("Stopping", Tone::Warn),
+        _ => {}
+    }
+    // Its port answers but none of its own services runs: some other
+    // program is serving there.
+    if serving && !services.is_empty() && !services.iter().any(|s| s.1 || s.2) {
+        return ("Another program answers on SENTIENT's port", Tone::Warn);
+    }
+    let has_app = services.iter().any(|s| is_app(s.0));
+    let app_up = serving || services.iter().any(|s| is_app(s.0) && s.1);
+    let dep_down = services.iter().any(|s| is_db(s.0) && !s.1);
+    if app_up && dep_down {
+        return ("Partly running", Tone::Warn);
+    }
+    if serving {
+        return ("SENTIENT is running", Tone::Good);
+    }
+    if has_app && app_up {
+        return ("SENTIENT does not answer yet", Tone::Warn);
+    }
+    if services.iter().any(|s| s.2) {
+        return ("SENTIENT is starting with Windows", Tone::Warn);
+    }
+    ("SENTIENT is stopped", Tone::Bad)
+}
+
+/// Lists the databases that keep a shared PostgreSQL running (blocking).
+pub(crate) type PgProbe = std::sync::Arc<dyn Fn() -> Result<Vec<String>, String> + Send + Sync>;
+
+/// Stopping takes every device connection down, so it is confirmed. With a
+/// `probe` (a shared PostgreSQL), the dialog says when PostgreSQL stays
+/// running and offers "Stop it anyway", off by default; `stop` gets that
+/// switch. The same here and on a server.
+pub(crate) fn confirm_stop(cx: &mut App, probe: Option<PgProbe>, stop: std::rc::Rc<dyn Fn(bool, &mut App)>) {
+    let view = cx.new(|cx: &mut Context<StopDialog>| {
+        let d = StopDialog { others: None, probing: probe.is_some(), force: false, stop };
+        if let Some(probe) = probe {
+            cx.spawn(async move |this, cx| {
+                let got = cx.background_executor().spawn(async move { probe() }).await;
+                this.update(cx, |d: &mut StopDialog, cx| {
+                    d.others = Some(got);
+                    d.probing = false;
+                    cx.notify();
+                })
+                .ok();
             })
+            .detach();
+        }
+        d
     });
+    crate::modal::open(crate::modal::Modal { title: "Stop SENTIENT?".into(), body: view.into(), width: 480., icon: None, on_close: None }, cx);
+}
+
+struct StopDialog {
+    /// The other databases in PostgreSQL, once listed.
+    others: Option<Result<Vec<String>, String>>,
+    probing: bool,
+    /// "Stop it anyway".
+    force: bool,
+    stop: std::rc::Rc<dyn Fn(bool, &mut App)>,
+}
+
+impl Render for StopDialog {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let kept: Option<(String, Option<String>)> = match &self.others {
+            Some(Ok(list)) if !list.is_empty() => Some((format!("{}.", sentient_installer_core::stack_order::stays_running_text(list)), None)),
+            Some(Err(e)) => Some(("PostgreSQL stays running: its databases could not be listed.".into(), Some(e.clone()))),
+            _ => None,
+        };
+        let force = self.force;
+        let stop = self.stop.clone();
+        v_flex()
+            .gap_4()
+            .child(div().text_sm().text_color(theme.muted_foreground).child(
+                "SENTIENT stops, then its databases. Devices lose their connection and dashboards stop updating until SENTIENT is started again.",
+            ))
+            .when(self.probing, |c| {
+                c.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child(ui::skeleton_block(&theme, "stop-probe", px(14.).into(), 14.))
+                        .child("Checking what else PostgreSQL holds…"),
+                )
+            })
+            .when_some(kept, |c, (text, why)| {
+                c.child(ui::notice(&theme, Tone::Warn, text).when_some(why, |n, why| n.child(ui::info("stop-probe-why".into(), why.into()))))
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .items_center()
+                            .justify_between()
+                            .text_sm()
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .child("Stop it anyway")
+                                    .child(ui::info("stop-pg-anyway".into(), "Stops PostgreSQL with SENTIENT. Every other program that uses its databases loses them until it is started again.".into())),
+                            )
+                            .child(gpui_kit::component::switch::Switch::new("stop-pg-anyway-switch").checked(force).on_click(cx.listener(|d, v: &bool, _, cx| {
+                                d.force = *v;
+                                cx.notify();
+                            }))),
+                    )
+            })
+            .child(
+                h_flex()
+                    .gap_2()
+                    .justify_end()
+                    .child(crate::ui::button("stop-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx)))
+                    .child(crate::modal::danger_button(&theme, "stop-ok", "Stop".into(), move |_, _, cx| {
+                        crate::modal::close(cx);
+                        stop(force, cx);
+                    })),
+            )
+    }
+}
+
+/// Whether SENTIENT answers, and whether anything of the stack runs (Stop
+/// stays offered while only a database does).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Running {
+    pub serving: bool,
+    pub any_up: bool,
 }
 
 /// The SENTIENT card's Start, Stop… and Restart, in that order here and on
@@ -767,23 +930,24 @@ pub(crate) fn control_buttons(
     theme: &gpui_kit::component::Theme,
     id: &str,
     busy: bool,
-    running: Option<bool>,
+    running: Option<Running>,
     start: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
     restart: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
     stop: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
 ) -> Div {
     use gpui_kit::component::{Icon, IconName};
-    let up = running == Some(true);
-    let down = running == Some(false);
+    let serving = running.is_some_and(|r| r.serving);
+    let any_up = running.is_some_and(|r| r.any_up);
+    let down = running.is_some_and(|r| !r.serving);
     let btn = |key: &str, label: &'static str, icon: IconName, primary: bool, on: bool| {
         let b = crate::ui::button(SharedString::from(format!("{id}{key}"))).label(label).icon(Icon::new(icon)).disabled(busy || running.is_none() || !on);
         if primary { b.primary() } else { b.outline() }
     };
     let (bg, border, fg) = ui::stop_hover(theme);
     ui::button_row(vec![
-        btn("start", "Start", IconName::Play, down, !up).on_click(move |_, w, cx| start(w, cx)).into_any_element(),
-        btn("stop", "Stop…", IconName::Square, false, !down).hover_colors(bg, border, fg).on_click(move |_, w, cx| stop(w, cx)).into_any_element(),
-        btn("restart", "Restart", IconName::RotateCw, false, !down).on_click(move |_, w, cx| restart(w, cx)).into_any_element(),
+        btn("start", "Start", IconName::Play, down, !serving).on_click(move |_, w, cx| start(w, cx)).into_any_element(),
+        btn("stop", "Stop…", IconName::Square, false, any_up).hover_colors(bg, border, fg).on_click(move |_, w, cx| stop(w, cx)).into_any_element(),
+        btn("restart", "Restart", IconName::RotateCw, false, any_up).on_click(move |_, w, cx| restart(w, cx)).into_any_element(),
     ])
 }
 
@@ -1225,3 +1389,39 @@ pub(crate) fn db_details(
     });
     panel.child(h_flex().pt_2().gap_8().items_start().flex_wrap().child(pg_col).children(ch_col))
     }
+
+#[cfg(test)]
+mod tests {
+    use super::{Tone, overall_state};
+
+    const APP: &str = "sentient.service";
+    const PG: &str = "postgresql.service";
+    const CH: &str = "clickhouse-server.service";
+
+    #[test]
+    fn stopped_sentient_with_its_database_up_reads_stopped() {
+        // The owner's screen: SENTIENT stopped, PostgreSQL running.
+        let (text, tone) = overall_state(false, &[(APP, false, false), (PG, true, false)], None);
+        assert_eq!(text, "SENTIENT is stopped");
+        assert!(matches!(tone, Tone::Bad));
+        assert_eq!(overall_state(false, &[(APP, false, false), (PG, false, false)], None).0, "SENTIENT is stopped");
+    }
+
+    #[test]
+    fn partly_running_only_when_sentient_runs_and_a_database_is_down() {
+        assert_eq!(overall_state(true, &[(APP, true, false), (PG, true, false), (CH, false, false)], None).0, "Partly running");
+        assert_eq!(overall_state(false, &[(APP, true, false), (PG, false, false)], None).0, "Partly running");
+        assert_eq!(overall_state(true, &[(APP, true, false), (PG, true, false), (CH, true, false)], None).0, "SENTIENT is running");
+        // A stopped gateway container is not SENTIENT's database.
+        assert_eq!(overall_state(true, &[("sentient", true, false), ("sentient-postgres", true, false), ("st-gateway", false, false)], None).0, "SENTIENT is running");
+    }
+
+    #[test]
+    fn starting_only_during_our_start() {
+        assert_eq!(overall_state(false, &[(APP, false, false), (PG, true, false)], Some("start")).0, "Starting");
+        assert_eq!(overall_state(true, &[(APP, true, false), (PG, true, false)], Some("stop")).0, "Stopping");
+        // Its service runs but does not answer, without a start of ours.
+        assert_eq!(overall_state(false, &[(APP, true, false), (PG, true, false)], None).0, "SENTIENT does not answer yet");
+        assert_eq!(overall_state(false, &[("SentientServer", false, true), ("sentient-postgresql", true, false)], None).0, "SENTIENT is starting with Windows");
+    }
+}

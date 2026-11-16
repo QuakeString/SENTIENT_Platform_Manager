@@ -7,9 +7,12 @@ name: build-installers
 # release build for a shippable installer). A release-candidate tag (v*-rc*)
 # builds release and publishes a pre-release. On a version tag the installers
 # and the Arch package are attached to a GitHub Release (see the release job).
-# Also runs on a PR that edits this file, so a change to the installer build
-# is proven before it merges; the Windows setup is then a release build (a
-# testable installer, the rc version from an spm/rcNN-... branch).
+# Also runs on a PR from a release-candidate branch (head spm/rc*), and on
+# any PR that edits this file or packaging/arch, so a change to the installer
+# build is proven before it merges; the Windows setup is then a release build
+# (a testable installer, the rc version from an spm/rcNN-... branch). The
+# gate job below decides for a PR: every PR triggers the workflow, and the
+# gate skips the build for the others.
 #
 # Nightly: every night at 02:00 IST, when master has commits the last
 # nightly does not, a release build is published as the release tagged
@@ -29,7 +32,6 @@ on:
   push:
     tags: ["v*"]
   pull_request:
-    paths: [".github/workflows/build-installers.yml", "packaging/arch/**"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -48,8 +50,22 @@ jobs:
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.head_ref }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           base=$(sed -n 's/^version = "\(.*\)"/\1/p' app/Cargo.toml | head -1)
+          # A PR builds when it comes from an spm/rc* branch or changes the
+          # installer build itself.
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            build=false
+            case "$HEAD_REF" in spm/rc*) build=true ;; esac
+            if [ "$build" = false ] && gh pr diff "$PR" --repo "$GITHUB_REPOSITORY" --name-only \
+                 | grep -qE '^(\.github/workflows/build-installers\.yml|packaging/arch/)'; then
+              build=true
+            fi
+            echo "PR from $HEAD_REF: build=$build"
+            echo "build=$build" >> "$GITHUB_OUTPUT"; echo "version=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           if [ "$GITHUB_EVENT_NAME" != "schedule" ]; then
             echo "build=true" >> "$GITHUB_OUTPUT"; echo "version=" >> "$GITHUB_OUTPUT"; exit 0
           fi

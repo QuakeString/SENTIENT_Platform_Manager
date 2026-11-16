@@ -1095,6 +1095,33 @@ pub fn dbstatus(inst: &Instance) -> Result<crate::dbstatus::DbStatus, String> {
     read_json(inst, "dbstatus-json")
 }
 
+/// The databases that keep the server's shared PostgreSQL running when its
+/// stack stops (crate::installation::Platform::pg_other_databases there).
+pub fn pg_others(inst: &Instance) -> Result<Vec<String>, String> {
+    #[cfg(debug_assertions)]
+    if let Some(secs) = std::env::var("SPM_DEBUG_REMOTE_SLOW").ok().and_then(|s| s.parse::<u64>().ok()) {
+        std::thread::sleep(std::time::Duration::from_secs(secs));
+    }
+    #[cfg(debug_assertions)]
+    if let Some(v) = std::env::var_os("SPM_DEBUG_REMOTE_PG_OTHERS") {
+        let v = v.to_string_lossy().to_string();
+        return match v.strip_prefix("error:") {
+            Some(e) => Err(e.to_string()),
+            None => Ok(v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect()),
+        };
+    }
+    #[derive(serde::Deserialize)]
+    struct Answer {
+        names: Vec<String>,
+        error: Option<String>,
+    }
+    let a: Answer = read_json(inst, "pg-others-json")?;
+    match a.error {
+        Some(e) => Err(e),
+        None => Ok(a.names),
+    }
+}
+
 /// The server's settings by catalog name (crate::settings::current there).
 pub fn settings(inst: &Instance) -> Result<HashMap<String, String>, String> {
     #[cfg(debug_assertions)]
@@ -2284,6 +2311,7 @@ mod tests {
             installed_at: "2026-11-15T00:00:00Z".into(),
             kiosk: None,
             changes_done: Vec::new(),
+            shortcuts: Vec::new(),
         };
         let dir = std::env::temp_dir().join(format!("spm-e2e-bk-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

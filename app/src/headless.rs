@@ -41,7 +41,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | movedata-json | movedata-check <store> <folder> | movedata-estimate <store=folder,…> | move-data <store=folder,…> | move-data-remove-old <folder> | move-data-cancel | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live [system|services|db] | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | agent-info | agents | \
+use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> [--stop-shared-pg] | service <start|stop|restart> <name> | uninstall [--delete-data] | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live [system|services|db] | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | agent-info | agents | pg-others-json | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart> | gateway-remove [--delete-data] [--remove-image] | gateway-adopt
 
 Administrator password (native Linux): a job typed in a terminal may ask for it, once for the
@@ -242,7 +242,7 @@ fn run_job(args: &[String]) -> i32 {
         let sink = if json { json_printer() } else { printer() };
         let result = if job == "remove-manager" {
             if InstallationRecord::load().is_some() {
-                Err("SENTIENT is installed: uninstall it instead (--job uninstall), which removes the Platform Manager too.".into())
+                Err("SENTIENT is installed: uninstall it first (--job uninstall), then remove the Platform Manager.".into())
             } else {
                 crate::maintenance_ops::run_remove_manager(sink)
             }
@@ -421,6 +421,20 @@ fn run_job(args: &[String]) -> i32 {
     }
     // The pages of a remote instance read this computer through these
     // (crate::remote): services, database, backups. One JSON line each.
+    // The databases that keep a shared PostgreSQL running when the stack
+    // stops (Status's Stop dialog on a remote instance): one JSON line.
+    if job == "pg-others-json" {
+        let answer = match InstallationRecord::load() {
+            Some(record) => record.platform().pg_other_databases(),
+            None => Ok(Vec::new()),
+        };
+        let line = match answer {
+            Ok(names) => serde_json::json!({ "names": names }),
+            Err(e) => serde_json::json!({ "names": [], "error": e }),
+        };
+        println!("{line}");
+        return 0;
+    }
     if job == "services-json" || job == "dbstatus-json" || job == "backups-json" || job == "settings-json" {
         let Some(record) = InstallationRecord::load() else {
             println!("null");
@@ -817,7 +831,9 @@ fn run_job(args: &[String]) -> i32 {
         "repair" => crate::maintenance_ops::run_repair(record, sink.clone()),
         // Start, stop or restart SENTIENT (a remote instance's Status).
         "control" => match args.get(1).map(String::as_str) {
-            Some(a @ ("start" | "stop" | "restart")) => record.platform().control(sink.clone(), a),
+            // The whole stack in order; --stop-shared-pg also stops a
+            // PostgreSQL that holds other databases.
+            Some(a @ ("start" | "stop" | "restart")) => record.platform().control_stack(sink.clone(), a, args.iter().any(|x| x == "--stop-shared-pg")),
             _ => Err(USAGE.into()),
         },
         // service <start|stop|restart> <name>: one of the install's own

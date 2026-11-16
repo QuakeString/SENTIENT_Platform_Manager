@@ -43,7 +43,9 @@ impl RepairPage {
     pub fn new(record: Option<InstallationRecord>, cx: &mut Context<Self>) -> Self {
         let job = cx.new(|_| Job::new());
         let _observe = cx.observe(&job, |page: &mut Self, job, cx| {
-            if page.running == Some(Action::TakeOver) && matches!(job.read(cx).state(), JobState::Done(_)) {
+            // A takeover changes the record; an uninstall removes it, and
+            // the manager goes on without SENTIENT.
+            if matches!(page.running, Some(Action::TakeOver | Action::Uninstall)) && matches!(job.read(cx).state(), JobState::Done(_)) {
                 page.record = InstallationRecord::load();
                 cx.emit(RecordChanged);
             }
@@ -152,7 +154,19 @@ impl RepairPage {
                 if action == Action::Uninstall && !keep {
                     args.push("--delete-data".into());
                 }
-                job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx)
+                job.start(
+                    move |sink| {
+                        crate::rootjob::run(&args, &sink)?;
+                        // The root job cleaned by the record's manifest; this
+                        // account's own copies (older installs) and its menu
+                        // cache are cleaned as this account.
+                        if action == Action::Uninstall {
+                            crate::shortcuts::remove(crate::shortcuts::Owner::Sentient, &[], &sink);
+                        }
+                        Ok(())
+                    },
+                    cx,
+                )
             } else {
                 match action {
                     Action::Repair => job.start(move |sink| crate::maintenance_ops::run_repair(record, sink), cx),
@@ -173,14 +187,14 @@ impl RepairPage {
             ),
             Action::Uninstall if keep => (
                 "Uninstall SENTIENT?",
-                "SENTIENT and the Platform Manager are removed. The database is kept and can be used by a new install.",
+                "SENTIENT and its services are removed. The database is kept and can be used by a new install. The Platform Manager stays.",
                 "Uninstall",
             ),
             // Confirmed in their own dialogs.
             Action::TakeOver | Action::RemoveGateway => return,
             Action::Uninstall => (
                 "Uninstall SENTIENT and delete its data?",
-                "SENTIENT, the Platform Manager, the databases and everything kept are removed. This can't be undone.",
+                "SENTIENT, its databases and everything kept are removed. This can't be undone. The Platform Manager stays.",
                 "Delete everything",
             ),
         };
@@ -218,10 +232,19 @@ impl Render for RepairPage {
         );
         if self.record.is_none() {
             // Without SENTIENT, Repair keeps one thing: removing the
-            // Platform Manager itself.
+            // Platform Manager itself. Just after an uninstall from here,
+            // what it did comes first; the Gateway panel after it.
             let gw = self.gateway_panel(&theme, self.job.read(cx).is_running(), cx);
             let gw_outcome = self.gateway_outcome(&theme, cx);
-            return page.child(ui::not_installed(&theme)).children(gw).children(gw_outcome).child(
+            let done = match self.job.read(cx).state() {
+                JobState::Done(m) if self.running == Some(Action::Uninstall) => Some(m.clone()),
+                _ => None,
+            };
+            let page = match done {
+                Some(m) => page.child(ui::panel(&theme).child(ui::outcome(&theme, Tone::Good, m))),
+                None => page.child(ui::not_installed(&theme)),
+            };
+            return page.children(gw).children(gw_outcome).child(
                 ui::panel(&theme)
                     .child(div().font_weight(FontWeight::MEDIUM).child("Remove the Platform Manager"))
                     .child(
@@ -298,7 +321,7 @@ impl Render for RepairPage {
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Uninstall"))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
-                    "Removes SENTIENT, its services and the Platform Manager. Keeping the database lets a new install use it.",
+                    "Removes SENTIENT and its services. The Platform Manager stays; removing it is its own step once SENTIENT is gone. Keeping the database lets a new install use it.",
                 ))
                 .child(
                     Checkbox::new("keep-data")

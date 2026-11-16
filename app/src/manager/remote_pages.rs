@@ -943,26 +943,25 @@ impl RemotePages {
             }
             Read::Got(s) => {
                 let det = self.inst.detected.clone().unwrap_or_default();
-                // Its port answers but none of its own services runs: some
-                // other program is serving there.
-                let none_running = matches!(&self.services, Read::Got(list) if !list.is_empty() && !list.iter().any(|v| v.running || v.starting));
-                let (tone, state) = if !s.installed {
-                    (Tone::Neutral, "SENTIENT is not installed")
-                } else if s.serving && none_running {
-                    (Tone::Warn, "Another program answers on SENTIENT's port")
-                } else if s.serving {
-                    (Tone::Good, "SENTIENT is running")
-                } else {
-                    (Tone::Bad, "SENTIENT is stopped")
+                // The same pill as on this computer (status::overall_state);
+                // "Starting" and the like only while our own action runs.
+                let list: Vec<(&str, bool, bool)> = match &self.services {
+                    Read::Got(list) => list.iter().map(|v| (v.name.as_str(), v.running, v.starting)).collect(),
+                    _ => Vec::new(),
                 };
+                let label = self.job_label.as_ref().map(|l| l.to_string()).unwrap_or_default();
+                let action = busy.then(|| if label.starts_with("Starting SENTIENT") { Some("start") } else if label.starts_with("Stopping SENTIENT") { Some("stop") } else if label.starts_with("Restarting SENTIENT") { Some("restart") } else { None }).flatten();
+                let (state, tone) = crate::manager::status::overall_state(s.serving, &list, action);
+                let any_up = s.serving || list.iter().any(|v| v.1);
                 let url = format!("http://{}:{}", self.inst.host, s.http_port.unwrap_or(8080));
                 let this = cx.entity().downgrade();
                 let (t1, t2, t3) = (this.clone(), this.clone(), this);
+                let inst = self.inst.clone();
                 let controls = crate::manager::status::control_buttons(
                     &theme,
                     "r-",
                     busy,
-                    Some(s.serving),
+                    Some(crate::manager::status::Running { serving: s.serving, any_up }),
                     std::rc::Rc::new(move |_, cx| {
                         t1.update(cx, |p, cx| p.run_job("Starting SENTIENT", vec!["control".into(), "start".into()], cx)).ok();
                     }),
@@ -972,10 +971,18 @@ impl RemotePages {
                         })
                         .ok();
                     }),
-                    std::rc::Rc::new(move |w, cx| {
+                    std::rc::Rc::new(move |_, cx| {
                         let t3 = t3.clone();
-                        crate::manager::status::confirm_stop(w, cx, std::rc::Rc::new(move |cx| {
-                            t3.update(cx, |p, cx| p.run_job("Stopping SENTIENT", vec!["control".into(), "stop".into()], cx)).ok();
+                        // The server's PostgreSQL may be shared (native Linux):
+                        // the agent lists what else it holds.
+                        let inst = inst.clone();
+                        let probe: crate::manager::status::PgProbe = std::sync::Arc::new(move || crate::remote::pg_others(&inst));
+                        crate::manager::status::confirm_stop(cx, Some(probe), std::rc::Rc::new(move |force, cx| {
+                            let mut args: Vec<String> = vec!["control".into(), "stop".into()];
+                            if force {
+                                args.push("--stop-shared-pg".into());
+                            }
+                            t3.update(cx, |p, cx| p.run_job("Stopping SENTIENT", args, cx)).ok();
                         }));
                     }),
                 );

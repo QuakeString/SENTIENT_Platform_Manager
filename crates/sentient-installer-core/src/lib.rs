@@ -13,6 +13,7 @@ pub mod distro;
 pub mod elevation;
 pub(crate) mod exec;
 pub mod stack;
+pub mod stack_order;
 pub mod gateway;
 pub mod kiosk;
 pub mod kept_db;
