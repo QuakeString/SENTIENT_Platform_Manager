@@ -245,7 +245,9 @@ pub enum DbRead {
     /// Its password is readable only by the administrator here (native
     /// Linux): not read, and nothing asked. The last backup needs no
     /// password.
-    NeedsAdmin { last_backup: Option<(String, Option<u64>)> },
+    /// `after_sign_in`: this account was just given read access (group
+    /// sentient-admin), which takes effect at its next sign-in.
+    NeedsAdmin { last_backup: Option<(String, Option<u64>)>, after_sign_in: bool },
     /// No installation, or the database did not answer.
     None,
 }
@@ -254,7 +256,7 @@ pub enum DbRead {
 pub fn db_unprompted(record: Option<&InstallationRecord>) -> DbRead {
     let Some(r) = record else { return DbRead::None };
     if crate::dbstatus::needs_admin(r) && !crate::rootjob::is_root() {
-        return DbRead::NeedsAdmin { last_backup: crate::dbstatus::last_backup().map(|b| (b.at, b.bytes)) };
+        return DbRead::NeedsAdmin { last_backup: crate::dbstatus::last_backup().map(|b| (b.at, b.bytes)), after_sign_in: crate::dbstatus::after_sign_in(r) };
     }
     db(r).map(DbRead::Read).unwrap_or(DbRead::None)
 }

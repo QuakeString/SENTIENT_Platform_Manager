@@ -24,6 +24,8 @@
 //! that product with a signature, or when this computer has seen one before
 //! (the caller keeps that memory, so a feed that later hides its signatures
 //! does not bring the unsigned path back).
+//!
+//! The key, its handling and rotation: docs/security/RELEASE_SIGNING.md.
 
 use minisign_verify::{PublicKey, Signature};
 

@@ -531,6 +531,7 @@ mod exclude_tests {
     fn the_licence_state_rows_never_go_in_a_backup() {
         let full = exclude_data_args(&Selection::full(), &[]);
         assert!(full.contains(&"--exclude-table-data=public.license_state".to_string()));
+        assert!(full.contains(&"--exclude-table-data=public.license_time_anchor".to_string()));
         assert!(!full.iter().any(|a| a == "--exclude-table-data=public.license*"));
         let without = exclude_data_args(&Selection::skipping(&["licensing".into()]), &[]);
         assert!(without.contains(&"--exclude-table-data=public.license*".to_string()));

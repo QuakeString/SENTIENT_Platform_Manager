@@ -57,17 +57,10 @@ impl Source {
     }
 }
 
-/// The gateway's container on this computer, when it runs in Docker.
+/// The gateway's container on this computer, when it runs in Docker
+/// (only a container of the gateway's image or program).
 fn gateway_container() -> Option<String> {
-    let out = Command::new("docker").args(["ps", "-a", "--format", "{{.Names}}\t{{.Image}}"]).output().ok()?;
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    let rows: Vec<(&str, &str)> = text.lines().filter_map(|l| l.split_once('\t')).map(|(n, i)| (n.trim(), i.trim())).collect();
-    let named = |n: &str| ["sentient-gateway", "st-gateway", "tb-gateway", "thingsboard-gateway"].iter().any(|g| n.contains(g));
-    rows.iter()
-        .find(|(n, _)| *n == "sentient-gateway")
-        .or_else(|| rows.iter().find(|(_, i)| sentient_installer_core::gateway::is_gateway_image(i)))
-        .or_else(|| rows.iter().find(|(n, _)| named(n)))
-        .map(|(n, _)| n.to_string())
+    sentient_installer_core::distro::gateway_docker::container()
 }
 
 /// A gateway that runs as a systemd service (no Docker).

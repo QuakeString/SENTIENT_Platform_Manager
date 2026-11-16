@@ -35,48 +35,125 @@ fn docker(args: &[&str]) -> Option<(bool, String)> {
     }
 }
 
+/// One container, from `docker inspect` (INSPECT_FORMAT).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Container {
+    pub name: String,
+    /// The image it was created from, as named then (`.Config.Image`).
+    pub image: String,
+    /// `.Config.Entrypoint` as JSON (`["/usr/local/bin/sentient-gateway"]`).
+    pub entrypoint: String,
+    pub running: bool,
+    /// The compose project and its folder (compose's labels), when it came
+    /// from a compose file.
+    pub project: Option<String>,
+    pub working_dir: Option<String>,
+    /// Its named volumes.
+    pub volumes: Vec<String>,
+    /// The image's `org.opencontainers.image.version` label.
+    pub version_label: Option<String>,
+    /// The image's id (`.Image`, sha256:…).
+    pub image_id: Option<String>,
+}
+
+impl Container {
+    /// The Sentient Gateway: a gateway image of ours
+    /// (crate::gateway::is_gateway_image), or an image built from the
+    /// gateway's Dockerfile (its program is the entrypoint). Never by name.
+    pub fn is_ours(&self) -> bool {
+        crate::gateway::is_gateway_image(&self.image)
+            || serde_json::from_str::<Vec<String>>(&self.entrypoint)
+                .ok()
+                .and_then(|e| e.first().cloned())
+                .is_some_and(|p| crate::gateway::is_gateway_program(&p))
+    }
+}
+
+const INSPECT_FORMAT: &str = "{{.Name}}\t{{.Config.Image}}\t{{json .Config.Entrypoint}}\t{{.State.Running}}\t{{index .Config.Labels \"com.docker.compose.project\"}}\t{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}\t{{range .Mounts}}{{if eq .Type \"volume\"}}{{.Name}},{{end}}{{end}}\t{{index .Config.Labels \"org.opencontainers.image.version\"}}\t{{.Image}}";
+
+/// `docker inspect --format INSPECT_FORMAT` lines.
+pub fn parse_inspect(out: &str) -> Vec<Container> {
+    let some = |s: Option<&str>| s.map(str::trim).filter(|s| !s.is_empty() && *s != "<no value>").map(str::to_string);
+    out.lines()
+        .filter_map(|l| {
+            let mut f = l.split('\t');
+            let name = f.next()?.trim().trim_start_matches('/').to_string();
+            let image = f.next()?.trim().to_string();
+            let entrypoint = f.next().unwrap_or("null").trim().to_string();
+            let running = f.next().is_some_and(|r| r.trim() == "true");
+            let project = some(f.next());
+            let working_dir = some(f.next());
+            let volumes = f.next().unwrap_or_default().split(',').map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).collect();
+            let version_label = some(f.next());
+            let image_id = some(f.next());
+            (!name.is_empty()).then_some(Container { name, image, entrypoint, running, project, working_dir, volumes, version_label, image_id })
+        })
+        .collect()
+}
+
+/// The gateway among `all`: the one the Platform Manager starts, else the
+/// first other one of ours. (container, managed)
+pub fn pick(all: &[Container]) -> Option<(Container, bool)> {
+    let ours: Vec<&Container> = all.iter().filter(|c| c.is_ours()).collect();
+    if let Some(c) = ours.iter().find(|c| c.name == CONTAINER) {
+        return Some(((*c).clone(), true));
+    }
+    ours.first().map(|c| ((*c).clone(), false))
+}
+
+/// Every container, running or stopped.
+fn containers() -> Vec<Container> {
+    let Some((true, ids)) = docker(&["ps", "-aq"]) else {
+        return Vec::new();
+    };
+    let ids: Vec<&str> = ids.split_whitespace().collect();
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let mut args = vec!["inspect", "--format", INSPECT_FORMAT];
+    args.extend(ids);
+    match docker(&args) {
+        // A container removed between the two calls fails the call but
+        // prints the others.
+        Some((_, out)) => parse_inspect(&out),
+        None => Vec::new(),
+    }
+}
+
 /// The gateway container: ours when it is there, else the first container
-/// of a gateway image.
+/// of the gateway.
 fn find() -> Option<(String, bool)> {
-    let (ok, out) = docker(&["ps", "-a", "--format", "{{.Names}}\t{{.Image}}"])?;
-    if !ok {
-        return None;
-    }
-    let rows: Vec<(String, String)> = out
-        .lines()
-        .filter_map(|l| l.split_once('\t').map(|(n, i)| (n.trim().to_string(), i.trim().to_string())))
-        .collect();
-    if rows.iter().any(|(n, _)| n == CONTAINER) {
-        return Some((CONTAINER.to_string(), true));
-    }
-    // Any gateway image; else a container named like a gateway (an image
-    // built or retagged locally).
-    let named = |n: &str| n.to_ascii_lowercase().contains("gateway") || n.contains("st-gw") || n.contains("st_gw");
-    rows.iter()
-        .find(|(_, image)| crate::gateway::is_gateway_image(image))
-        .or_else(|| rows.iter().find(|(_, image)| image.to_ascii_lowercase().contains("gateway")))
-        .or_else(|| rows.iter().find(|(n, _)| named(n)))
-        .map(|(n, _)| (n.clone(), false))
+    find_container().map(|(c, m)| (c.name, m))
+}
+
+/// The gateway container, read in full: (container, managed).
+pub fn find_container() -> Option<(Container, bool)> {
+    pick(&containers())
+}
+
+/// The gateway container's name, running or stopped.
+pub fn container() -> Option<String> {
+    find().map(|(n, _)| n)
 }
 
 pub fn status() -> Status {
-    let Some((name, managed)) = find() else {
+    let Some((c, managed)) = find_container() else {
         return Status::default();
     };
-    let inspect = docker(&["inspect", &name, "--format", "{{.State.Running}}\t{{.Config.Image}}\n{{range .Config.Env}}{{println .}}{{end}}"])
+    let name = c.name.clone();
+    let env: Vec<String> = docker(&["inspect", &name, "--format", "{{range .Config.Env}}{{println .}}{{end}}"])
         .filter(|(ok, _)| *ok)
-        .map(|(_, o)| o)
+        .map(|(_, o)| o.lines().map(str::to_string).collect())
         .unwrap_or_default();
-    let mut lines = inspect.lines();
-    let (running, image) = lines.next().and_then(|h| h.split_once('\t')).map(|(r, i)| (r == "true", i.to_string())).unwrap_or_default();
-    let env: Vec<String> = lines.map(str::to_string).collect();
     let get = |k: &str| env.iter().find_map(|l| l.strip_prefix(&format!("{k}=")).map(str::to_string));
+    let running = c.running;
     let version = running
         .then(|| docker(&["exec", &name, "sentient-gateway", "--version"]))
         .flatten()
         .filter(|(ok, _)| *ok)
         .and_then(|(_, o)| crate::gateway::parse_version(&o))
-        .or_else(|| image.rsplit_once(':').map(|(_, t)| t.to_string()).filter(|t| t != "latest"));
+        .or_else(|| image_version(&c))
+        .or_else(|| c.image_id.as_deref().and_then(probed_version));
     // Its gateway file, for the page's settings and (compose files often
     // commission through it) the platform host.
     let file = running
@@ -95,8 +172,89 @@ pub fn status() -> Status {
         page_url,
         container: Some(name),
         managed,
+        image: Some(c.image.clone()),
+        compose_project: c.project.clone(),
+        compose_dir: c.working_dir.clone(),
+        volumes: c.volumes.clone(),
         ..Status::default()
     }
+}
+
+/// Where probed versions are kept between runs (the app sets its prefs
+/// folder; unset: memory only).
+static CACHE_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+/// Image id → version (None: the probe failed; not retried this run).
+static PROBED: std::sync::Mutex<Option<std::collections::HashMap<String, Option<String>>>> = std::sync::Mutex::new(None);
+
+pub fn set_cache_dir(dir: std::path::PathBuf) {
+    let _ = CACHE_DIR.set(dir);
+}
+
+fn cache_file() -> Option<std::path::PathBuf> {
+    CACHE_DIR.get().map(|d| d.join("gateway-image-versions.json"))
+}
+
+/// A gateway image's version when nothing else says it: `sentient-gateway
+/// --version` in a throwaway container of the image (never the gateway's
+/// own container, never pulled, no network, 10 seconds at most), once per
+/// image id. Answers are kept in memory and in the cache file.
+fn probed_version(image_id: &str) -> Option<String> {
+    if !image_id.starts_with("sha256:") || image_id.len() < 20 {
+        return None;
+    }
+    {
+        let mut g = PROBED.lock().ok()?;
+        let map = g.get_or_insert_with(|| {
+            cache_file()
+                .and_then(|f| std::fs::read_to_string(f).ok())
+                .and_then(|t| serde_json::from_str::<std::collections::HashMap<String, String>>(&t).ok())
+                .map(|m| m.into_iter().map(|(k, v)| (k, Some(v))).collect())
+                .unwrap_or_default()
+        });
+        if let Some(v) = map.get(image_id) {
+            return v.clone();
+        }
+    }
+    let version = run_probe(image_id);
+    if let Ok(mut g) = PROBED.lock() {
+        let map = g.get_or_insert_with(Default::default);
+        map.insert(image_id.to_string(), version.clone());
+        if let Some(f) = cache_file() {
+            let known: std::collections::HashMap<&String, &String> = map.iter().filter_map(|(k, v)| v.as_ref().map(|v| (k, v))).collect();
+            if let Ok(t) = serde_json::to_string(&known) {
+                let _ = f.parent().map(std::fs::create_dir_all);
+                let _ = std::fs::write(f, t);
+            }
+        }
+    }
+    version
+}
+
+fn run_probe(image_id: &str) -> Option<String> {
+    let name = format!("spm-gw-version-{}", &image_id[7..19]);
+    let args = ["run", "--rm", "--pull=never", "--network", "none", "--name", &name, "--entrypoint", "sentient-gateway", image_id, "--version"];
+    #[cfg(windows)]
+    let out = crate::sys::output_limited("docker", &args, std::time::Duration::from_secs(10)).map(|(ok, o, _)| (ok, crate::sys::decode(&o)));
+    #[cfg(not(windows))]
+    let out = {
+        let line: Vec<String> = args.iter().map(|a| super::shell_quote(a)).collect();
+        super::run_output(&format!("timeout -k 2 10 docker {} 2>/dev/null", line.join(" ")))
+    };
+    // A probe cut short leaves its container behind.
+    let _ = docker(&["rm", "-f", &name]);
+    out.filter(|(ok, _)| *ok).and_then(|(_, o)| crate::gateway::parse_version(&o))
+}
+
+/// A stopped container's version: its image's tag (not `latest`), else
+/// the image's version label.
+pub fn image_version(c: &Container) -> Option<String> {
+    let image = c.image.split('@').next().unwrap_or(&c.image);
+    image
+        .rsplit_once(':')
+        .filter(|(_, t)| !t.contains('/'))
+        .map(|(_, t)| t.to_string())
+        .filter(|t| t != "latest" && t.chars().next().is_some_and(|ch| ch.is_ascii_digit()))
+        .or_else(|| c.version_label.clone())
 }
 
 pub fn install(sink: &ProgressFn, version: &str, settings: &Settings) -> Result<(), String> {
@@ -171,5 +329,109 @@ pub fn control(sink: &ProgressFn, action: &str) -> Result<(), String> {
             Ok(())
         }
         _ => Err(format!("docker {verb} {name} failed.")),
+    }
+}
+
+/// Remove the gateway container (only a container of ours, read again
+/// here): stop it, remove it, then its named volumes unless `keep_data`
+/// (a volume another container still uses is left), and its image when
+/// `remove_image` and no other container uses it. A compose file it came
+/// from is not changed.
+pub fn remove(sink: &ProgressFn, keep_data: bool, remove_image: bool) -> Result<String, String> {
+    let Some((c, _)) = find_container() else {
+        return Err("There is no Sentient Gateway container.".into());
+    };
+    // pick() returns only ours; checked once more, the last line of defence.
+    if !c.is_ours() {
+        return Err(format!("The container {} is not the Sentient Gateway's; it was left alone.", c.name));
+    }
+    let name = c.name.clone();
+    if c.running {
+        sink(Progress::Step { name: format!("Stopping the container {name}") });
+        match docker(&["stop", "-t", "25", &name]) {
+            Some((true, _)) => {}
+            _ => return Err(format!("docker stop {name} failed.")),
+        }
+    }
+    sink(Progress::Step { name: format!("Removing the container {name}") });
+    match docker(&["rm", &name]) {
+        Some((true, _)) => {}
+        _ => return Err(format!("docker rm {name} failed.")),
+    }
+    let mut kept = Vec::new();
+    let mut notes = Vec::new();
+    if keep_data {
+        kept.extend(c.volumes.iter().cloned());
+    } else {
+        for v in &c.volumes {
+            let users = docker(&["ps", "-aq", "--filter", &format!("volume={v}")]).map(|(_, o)| o.trim().to_string()).unwrap_or_default();
+            if !users.is_empty() {
+                notes.push(format!("the volume {v} is used by another container and was kept"));
+                continue;
+            }
+            sink(Progress::Step { name: format!("Removing the volume {v}") });
+            if !matches!(docker(&["volume", "rm", v]), Some((true, _))) {
+                notes.push(format!("the volume {v} could not be removed"));
+            }
+        }
+    }
+    if remove_image {
+        let users = docker(&["ps", "-aq", "--filter", &format!("ancestor={}", c.image)]).map(|(_, o)| o.trim().to_string()).unwrap_or_default();
+        if users.is_empty() {
+            sink(Progress::Step { name: format!("Removing the image {}", c.image) });
+            if !matches!(docker(&["image", "rm", &c.image]), Some((true, _))) {
+                notes.push(format!("the image {} could not be removed", c.image));
+            }
+        } else {
+            notes.push(format!("the image {} is used by another container and was kept", c.image));
+        }
+    }
+    let mut msg = format!("The Sentient Gateway container {name} is removed.");
+    if !kept.is_empty() {
+        msg.push_str(&format!(" Its configuration and data are kept in the volumes {}.", kept.join(", ")));
+    }
+    if let Some(dir) = &c.working_dir {
+        msg.push_str(&format!(" Its compose file in {dir} is unchanged."));
+    }
+    if !notes.is_empty() {
+        msg.push_str(&format!(" Note: {}.", notes.join("; ")));
+    }
+    Ok(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(p: Option<(Container, bool)>) -> Option<(String, bool)> {
+        p.map(|(c, m)| (c.name, m))
+    }
+
+    #[test]
+    fn finds_the_gateway_container_by_image_or_program() {
+        let out = "/sentient\tquakestring/sentient:4.3.0.58\t[\"/app/entrypoint.sh\"]\ttrue\t\t\t\t\n\
+/kong-gateway\tkong/kong-gateway:3.8\t[\"/entrypoint.sh\"]\ttrue\t\t\t\t\n\
+/st-gateway\tquakestring/sentient-gateway-rs:latest\t[\"/usr/local/bin/sentient-gateway\"]\tfalse\tdfal\t/home/mz/dfal\tst-gw-config,st-gw-data,st-gw-logs,\t<no value>\tsha256:fdd9ed12884efda7151420b1fc003afe7c9b73e48e14d2e60ff0248f944cc95b\n";
+        let all = parse_inspect(out);
+        assert_eq!(all.len(), 3);
+        let (c, managed) = pick(&all).unwrap();
+        assert_eq!((c.name.as_str(), managed, c.running), ("st-gateway", false, false));
+        assert_eq!(c.project.as_deref(), Some("dfal"));
+        assert_eq!(c.working_dir.as_deref(), Some("/home/mz/dfal"));
+        assert_eq!(c.volumes, vec!["st-gw-config", "st-gw-data", "st-gw-logs"]);
+        assert_eq!(c.version_label, None);
+        assert_eq!(c.image_id.as_deref(), Some("sha256:fdd9ed12884efda7151420b1fc003afe7c9b73e48e14d2e60ff0248f944cc95b"));
+        // A locally built image: its entrypoint is the gateway's program.
+        let local = parse_inspect("/plant-gw\tsha256:fdd9ed12884e\t[\"/usr/local/bin/sentient-gateway\"]\ttrue\t\t\t\t4.16.2\n");
+        assert_eq!(names(pick(&local)), Some(("plant-gw".into(), false)));
+        assert_eq!(image_version(&local[0]).as_deref(), Some("4.16.2"));
+        // Named like a gateway, but not ours.
+        let other = parse_inspect("/sentient-gateway\tnginx:1.27\t[\"/docker-entrypoint.sh\"]\ttrue\n/journal-gatewayd\tdebian:12\tnull\tfalse\n");
+        assert_eq!(names(pick(&other)), None);
+        // Ours, started by the Platform Manager, wins.
+        let both = parse_inspect("/st-gateway\tquakestring/sentient-gateway-rs:4.16.0\tnull\ttrue\n/sentient-gateway\tquakestring/sentient-gateway-rs:4.16.2\tnull\tfalse\n");
+        assert_eq!(names(pick(&both)), Some(("sentient-gateway".into(), true)));
+        assert_eq!(image_version(&both[0]).as_deref(), Some("4.16.0"));
+        assert_eq!(image_version(&all[2]), None);
     }
 }

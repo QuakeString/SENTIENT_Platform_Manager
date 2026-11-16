@@ -97,7 +97,7 @@ impl Source {
                     let d = std::path::Path::new(&d);
                     if d.join("needs-admin").exists() {
                         let _ = crate::stats::debug_part(d, Part::Db);
-                        return Ok(DbRead::NeedsAdmin { last_backup: None });
+                        return Ok(DbRead::NeedsAdmin { last_backup: None, after_sign_in: d.join("after-sign-in").exists() });
                     }
                     return crate::stats::debug_part(d, Part::Db).map(|s| some(s.db));
                 }
@@ -160,6 +160,16 @@ pub struct StatsPage {
     /// The last 24 hours, for the database's growth and "Disk full in".
     day: Vec<Sample>,
     live_err: Option<String>,
+    /// Its instance is not the open one (a kept page): no reading meanwhile.
+    paused: bool,
+    /// A read asked for (shown again, Refresh) has not come back yet: the
+    /// Refresh icon turns.
+    refreshing: bool,
+    /// Per part: the last re-read failed while what was read before still
+    /// shows (the first one is said, softly, in the title row).
+    stale: Vec<(&'static str, String)>,
+    /// When a reading last came back (HH:MM).
+    updated_at: Option<String>,
     /// Each source fills its own card: None while it is being read.
     services: Option<Result<Vec<crate::stats::Service>, String>>,
     db: Option<DbRead>,
@@ -202,6 +212,10 @@ impl StatsPage {
             hist: None,
             day: Vec::new(),
             live_err: None,
+            paused: false,
+            refreshing: false,
+            stale: Vec::new(),
+            updated_at: None,
             services: none.then(|| Ok(Vec::new())),
             db: none.then_some(DbRead::None),
             whole: Arc::new(AtomicBool::new(false)),
@@ -231,6 +245,36 @@ impl StatsPage {
         let _ = what;
     }
 
+    /// Hidden behind another instance: no reading until shown again.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
+    /// Shown again after another instance was open: what was read stays
+    /// and every part is read again behind it.
+    pub fn reshow(&mut self, cx: &mut Context<Self>) {
+        self.paused = false;
+        self.read_again(cx);
+    }
+
+    /// Read every part again now, keeping what shows (the Refresh icon turns).
+    fn read_again(&mut self, cx: &mut Context<Self>) {
+        self.refreshing = true;
+        self.restart(false, cx);
+        self.read_day(cx);
+        cx.notify();
+    }
+
+    /// A part came back: `Some(why)` when it failed while its last reading
+    /// still shows.
+    fn set_stale(&mut self, part: &'static str, why: Option<String>) {
+        self.stale.retain(|(p, _)| *p != part);
+        match why {
+            Some(e) => self.stale.push((part, e)),
+            None => self.updated_at = Some(chrono::Local::now().format("%H:%M").to_string()),
+        }
+    }
+
     fn push_live(&mut self, sample: Sample) {
         // An agent from before the parts: its reading carries the rest.
         if !sample.services.is_empty() || sample.db.is_some() {
@@ -247,14 +291,20 @@ impl StatsPage {
             self.live.remove(0);
         }
         self.live_err = None;
+        self.set_stale("system", None);
         self.timing("system");
     }
 
     /// Read now and then on the range's rhythm, while the page is shown:
     /// each source on its own, so a slow one never holds the others back.
     fn start(&mut self, cx: &mut Context<Self>) {
+        self.restart(true, cx);
+    }
+
+    /// `clear`: a new range, whose history is not read yet.
+    fn restart(&mut self, clear: bool, cx: &mut Context<Self>) {
         let range = self.range;
-        if range != Range::Live {
+        if range != Range::Live && clear {
             self.hist = None;
         }
         self._poll.clear();
@@ -277,13 +327,20 @@ impl StatsPage {
         self._poll.push(cx.spawn(async move |this, cx| {
             let mut round = 0u32;
             loop {
-                if round == 0 || OPEN.load(Ordering::Relaxed) {
+                let Ok(paused) = this.update(cx, |p, _| p.paused) else { break };
+                if round == 0 || (OPEN.load(Ordering::Relaxed) && !paused) {
                     let s = src.clone();
                     let got = cx.background_executor().spawn(async move { s.system() }).await;
                     let ok = this
                         .update(cx, |p, cx| {
+                            if range == Range::Live {
+                                p.refreshing = false;
+                            }
                             match got {
                                 Ok(sample) => p.push_live(sample),
+                                // With readings shown: they stay, said
+                                // softly to be stale.
+                                Err(e) if !p.live.is_empty() => p.set_stale("system", Some(e)),
                                 Err(e) => p.live_err = Some(e),
                             }
                             cx.notify();
@@ -307,16 +364,23 @@ impl StatsPage {
                     if whole.load(Ordering::Relaxed) {
                         break;
                     }
-                    if first || OPEN.load(Ordering::Relaxed) {
+                    let Ok(paused) = this.update(cx, |p, _| p.paused) else { break };
+                    if first || (OPEN.load(Ordering::Relaxed) && !paused) {
                         first = false;
                         let s = src.clone();
                         let got = cx.background_executor().spawn(async move { s.services() }).await;
                         if this
                             .update(cx, |p, cx| {
                                 if !p.whole.load(Ordering::Relaxed) {
-                                    // A failed re-read keeps what was read.
-                                    if got.is_ok() || !matches!(p.services, Some(Ok(_))) {
-                                        p.services = Some(got);
+                                    match got {
+                                        // A failed re-read keeps what was read.
+                                        Err(e) if matches!(p.services, Some(Ok(_))) => p.set_stale("services", Some(e)),
+                                        got => {
+                                            if got.is_ok() {
+                                                p.set_stale("services", None);
+                                            }
+                                            p.services = Some(got);
+                                        }
                                     }
                                     p.timing("services");
                                     cx.notify();
@@ -339,7 +403,8 @@ impl StatsPage {
                     if whole.load(Ordering::Relaxed) {
                         break;
                     }
-                    if first || OPEN.load(Ordering::Relaxed) {
+                    let Ok(paused) = this.update(cx, |p, _| p.paused) else { break };
+                    if first || (OPEN.load(Ordering::Relaxed) && !paused) {
                         first = false;
                         let s = src.clone();
                         let got = cx.background_executor().spawn(async move { s.db() }).await;
@@ -347,8 +412,11 @@ impl StatsPage {
                             .update(cx, |p, cx| {
                                 if !p.whole.load(Ordering::Relaxed) {
                                     match got {
-                                        Ok(d) => p.db = Some(d),
-                                        Err(_) if matches!(p.db, Some(DbRead::Read(_))) => {}
+                                        Ok(d) => {
+                                            p.set_stale("db", None);
+                                            p.db = Some(d);
+                                        }
+                                        Err(e) if matches!(p.db, Some(DbRead::Read(_))) => p.set_stale("db", Some(e)),
                                         Err(_) => p.db = Some(DbRead::None),
                                     }
                                     p.timing("db");
@@ -371,13 +439,24 @@ impl StatsPage {
             self._poll.push(cx.spawn(async move |this, cx| {
                 let mut first = true;
                 loop {
-                    if first || OPEN.load(Ordering::Relaxed) {
+                    let Ok(paused) = this.update(cx, |p, _| p.paused) else { break };
+                    if first || (OPEN.load(Ordering::Relaxed) && !paused) {
                         first = false;
                         let s = src.clone();
                         let got = cx.background_executor().spawn(async move { s.history(range.secs()) }).await;
                         if this
                             .update(cx, |p, cx| {
-                                p.hist = Some(got);
+                                p.refreshing = false;
+                                match got {
+                                    // A failed re-read keeps the history shown.
+                                    Err(e) if matches!(p.hist, Some(Ok(_))) => p.set_stale("history", Some(e)),
+                                    got => {
+                                        if got.is_ok() {
+                                            p.set_stale("history", None);
+                                        }
+                                        p.hist = Some(got);
+                                    }
+                                }
                                 p.timing("history");
                                 cx.notify();
                             })
@@ -635,8 +714,11 @@ impl StatsPage {
             )
             .child(
                 h_flex()
+                    .relative()
                     .gap(px(6.))
                     .items_start()
+                    // Layout tests: the scale and plot are not row dividers.
+                    .child(ui::layout_probe("chart"))
                     // The scale: its widest label decides the column, for every chart alike.
                     .child(v_flex().w(px(26.)).h(px(PLOT_H)).justify_between().items_end().when(!empty, |c| c.child(axis(1.)).child(axis(0.5)).child(axis(0.))))
                     .child(
@@ -767,13 +849,11 @@ impl Render for StatsPage {
             seg = seg.child(ui::seg_item(&theme, SharedString::from(format!("range-{}", r.label())), r.label(), self.range == r).on_click(cx.listener(move |p, _, _, cx| p.pick(r, cx))));
         }
         let me = cx.entity().downgrade();
-        let refresh = crate::ui::refresh_button("stats-refresh", false, window, move |_, cx| {
-            me.update(cx, |p, cx| {
-                p.start(cx);
-                p.read_day(cx);
-            })
-            .ok();
+        let refresh = crate::ui::refresh_button("stats-refresh", self.refreshing, window, move |_, cx| {
+            me.update(cx, |p, cx| p.read_again(cx)).ok();
         });
+        let dbg = ui::debug_stale().filter(|_| !self.live.is_empty());
+        let stale = self.stale.first().map(|(_, e)| e.as_str()).or(dbg.as_deref()).filter(|_| !self.refreshing).map(|e| ui::stale_note(&theme, "stats-stale", e, self.updated_at.as_deref()));
         // Title only; the range and Read again at its right, under it when narrow.
         let header = h_flex()
             .flex_wrap()
@@ -781,6 +861,8 @@ impl Render for StatsPage {
             .items_center()
             .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Statistics"))
             .child(div().flex_1())
+            // The stale note wraps on its own: the range and Refresh never move.
+            .children(stale.map(|n| div().max_w_full().child(n)))
             .child(h_flex().gap_2().items_center().child(seg).child(refresh));
 
         let latest = self.live.last().cloned().or_else(|| self.points().last().cloned());
@@ -984,9 +1066,9 @@ fn database_panel(theme: &gpui_kit::component::Theme, read: &DbRead, latest: Opt
             db.clone()
         }
         _ => {
-            let last_backup = match read {
-                DbRead::NeedsAdmin { last_backup } => last_backup.clone(),
-                _ => None,
+            let (last_backup, after) = match read {
+                DbRead::NeedsAdmin { last_backup, after_sign_in } => (last_backup.clone(), *after_sign_in),
+                _ => (None, false),
             };
             p = p.child(
                 h_flex()
@@ -994,7 +1076,7 @@ fn database_panel(theme: &gpui_kit::component::Theme, read: &DbRead, latest: Opt
                     .gap_1()
                     .items_center()
                     .child(div().font_weight(FontWeight::MEDIUM).child("Database"))
-                    .child(ui::info("stats-db-admin".into(), NEEDS_ADMIN.into())),
+                    .child(ui::info("stats-db-admin".into(), if after { AFTER_SIGN_IN } else { NEEDS_ADMIN }.into())),
             );
             p = p.child(fact("Connections", "—".into())).child(fact("Size", "—".into()));
             p = p.child(fact("Disk full in", disk_full_in(latest, day)));
@@ -1020,7 +1102,10 @@ fn database_panel(theme: &gpui_kit::component::Theme, read: &DbRead, latest: Opt
 }
 
 /// Why the database's numbers show "—" (native Linux, its password root-only).
-const NEEDS_ADMIN: &str = "Connections and size: Statistics never asks for the administrator password, and the database's password can be read only by the administrator on this computer. They show here after you sign in again, once this account is in the sentient-admin group.";
+const NEEDS_ADMIN: &str = "Connections and size: they need the database's password, which only the administrator can read on this computer, and Statistics never asks for it. Read on Status reads it once; after a Repair it reads without a password.";
+/// The same, once this account was given read access (sentient-admin) and
+/// only has to sign in again.
+const AFTER_SIGN_IN: &str = "Connections and size: available after you sign in again. This account can now read SENTIENT's settings; that takes effect at its next sign-in.";
 
 /// When the disk is full at the last 24 hours' rate.
 fn disk_full_in(latest: Option<&Sample>, day: &[Sample]) -> String {

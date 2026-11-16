@@ -894,6 +894,21 @@ pub struct RemoteBackups {
     pub free: Option<u64>,
 }
 
+/// No JSON line came back: say what did (the last lines it printed), or
+/// that it printed nothing at all, instead of only "no answer".
+fn no_answer(out: &str) -> String {
+    let lines: Vec<&str> = out.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if lines.is_empty() {
+        failed(
+            "The server's Platform Manager printed nothing for this request.",
+            "It may have stopped at once (a missing file or a blocked program), or it is a windowed build that was not waited for. Run Set up again; if it stays, run it there by hand with --job status-json and look at what it says.",
+        )
+    } else {
+        let tail = lines[lines.len().saturating_sub(6)..].join("\n");
+        failed("The server's Platform Manager answered, but not with the data asked for. What it printed:", &tail)
+    }
+}
+
 /// Ask the server's Platform Manager for `job` (as administrator) and read
 /// the one JSON line it prints.
 fn read_json<T: serde::de::DeserializeOwned>(inst: &Instance, job: &str) -> Result<T, String> {
@@ -902,7 +917,7 @@ fn read_json<T: serde::de::DeserializeOwned>(inst: &Instance, job: &str) -> Resu
     if out.lines().any(|l| l.trim() == "null") {
         return Err(NOT_ADDED.into());
     }
-    let line = out.lines().rev().find(|l| { let t = l.trim_start(); t.starts_with('{') || t.starts_with('[') }).ok_or("The server's Platform Manager gave no answer. Try again; if it stays, Show details on the job, or run Set up again.")?;
+    let line = out.lines().rev().find(|l| { let t = l.trim_start(); t.starts_with('{') || t.starts_with('[') }).ok_or_else(|| no_answer(&out))?;
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 
@@ -961,11 +976,12 @@ pub fn put_text(inst: &Instance, path: &str, text: &str) -> Result<(), String> {
 pub fn gateway(inst: &Instance) -> Result<HashMap<String, String>, String> {
     #[cfg(debug_assertions)]
     if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_GATEWAY") {
-        return Ok(t.to_string_lossy().split(' ').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect());
+        return Ok(t.to_string_lossy().split([' ', '+']).filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect());
     }
     let out = spm_job(inst, "gateway-status")?;
     let line = out.lines().rev().find(|l| l.starts_with("installed=")).ok_or("The server's Platform Manager gave no gateway state.")?;
-    Ok(line.split(' ').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect())
+    // Values with spaces come %20-escaped (headless's gateway-status).
+    Ok(line.split(' ').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.replace("%20", " ").replace("%25", "%"))).collect())
 }
 
 /// The account's home folder on the server.
@@ -1233,7 +1249,10 @@ pub fn is_windows(inst: &Instance) -> bool {
 /// and return what it printed.
 fn spm_job(inst: &Instance, job: &str) -> Result<String, String> {
     let r = if is_windows(inst) {
-        win::ps(inst, &format!("& '{}' --job {job}", win::EXE))
+        // Piped, so PowerShell waits for it and reads its output even when
+        // it is the windowed build (an installed Platform Manager); its
+        // errors folded into the output.
+        win::ps(inst, &format!("& '{}' --job {job} 2>&1 | ForEach-Object {{ \"$_\" }}", win::EXE))
     } else {
         agent_run(inst, &format!("--job {job}"))
     };
@@ -1322,7 +1341,7 @@ pub fn licence_api(inst: &Instance, req: &crate::licence::Request) -> Result<cra
     let out = spm_job(inst, &format!("licence-api --request-file '{}'", file.replace('\'', "")));
     remove_file(inst, &file);
     let out = out?;
-    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's agent gave no answer.")?;
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or_else(|| no_answer(&out))?;
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 
@@ -2067,7 +2086,7 @@ pub fn restore_history(inst: &Instance) -> Result<Vec<crate::restore_flow::Entry
         return std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()));
     }
     let out = spm_job(inst, "restore-history-json")?;
-    let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or("The server's Platform Manager gave no answer.")?;
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or_else(|| no_answer(&out))?;
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 
@@ -2391,7 +2410,7 @@ pub fn backups_in(inst: &Instance, folder: &str) -> Result<Vec<crate::backups::E
         return serde_json::from_str::<RemoteBackups>(&t.to_string_lossy()).map(|b| b.list).map_err(|e| e.to_string());
     }
     let out = spm_job(inst, &format!("backup-list {}", job_arg(folder)?))?;
-    let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or("The server's Platform Manager gave no answer.")?;
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or_else(|| no_answer(&out))?;
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 
