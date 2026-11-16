@@ -26,7 +26,7 @@ use crate::db::ConnConfig;
 use crate::error::{Error, Result};
 use crate::progress::{Progress, ProgressFn};
 
-const COLS: &str = "entity_id, key, ts, bool_v, str_v, long_v, dbl_v, json_v";
+pub(crate) const COLS: &str = "entity_id, key, ts, bool_v, str_v, long_v, dbl_v, json_v";
 
 /// A ClickHouse insert of PostgreSQL's text rows into `table`. The double
 /// column is read as text and converted with `precise_float_parsing`: the
@@ -198,7 +198,7 @@ pub async fn create_partitioned(pg: &Client) -> Result<()> {
 
 /// The month's partition of a partitioned `ts_kv`, named and bounded as
 /// SENTIENT names and bounds it (`ts_kv_YYYY_MM`, UTC month in ms).
-async fn ensure_partition(pg: &Client, w: &Window) -> Result<()> {
+pub(crate) async fn ensure_partition(pg: &Client, w: &Window) -> Result<()> {
     let (y, m) = w.label.split_at(4);
     pg.batch_execute(&format!(
         "CREATE TABLE IF NOT EXISTS ts_kv_{y}_{m} PARTITION OF ts_kv FOR VALUES FROM ({}) TO ({})",
@@ -260,7 +260,7 @@ fn window_filter(w: &Window, cutover: i64) -> String {
 /// is already there.
 type Fingerprint = (i64, i128, i128);
 
-async fn pg_fingerprint(pg: &Client, table: &str, filter: &str) -> Result<Fingerprint> {
+pub(crate) async fn pg_fingerprint(pg: &Client, table: &str, filter: &str) -> Result<Fingerprint> {
     let row = pg
         .query_one(
             &format!(
@@ -331,7 +331,7 @@ impl Read for ChannelReader {
 }
 
 /// `COPY (select) TO STDOUT` into `INSERT INTO <table> FORMAT TabSeparated`.
-async fn pg_to_ch_stream(pg: &Client, select: &str, ch: &ChConn, insert: &str) -> Result<()> {
+pub(crate) async fn pg_to_ch_stream(pg: &Client, select: &str, ch: &ChConn, insert: &str) -> Result<()> {
     let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(32);
     let ch = ch.clone();
     let insert = insert.to_string();

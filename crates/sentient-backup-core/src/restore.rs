@@ -14,6 +14,7 @@ use crate::files;
 use crate::manifest::Manifest;
 use crate::pg_tools::PgTools;
 use crate::progress::{Progress, ProgressFn, Steps};
+use crate::space::WatchGuard;
 use crate::util::sha256_file;
 
 const DUMP_MEMBER: &str = "db/dump.pgc.zst";
@@ -91,7 +92,7 @@ impl TelemetryInto {
 }
 
 /// The staging table a converted restore loads telemetry into first.
-const STAGING: &str = "spm_restore_ts_kv";
+pub(crate) const STAGING: &str = "spm_restore_ts_kv";
 
 #[derive(Debug, Clone)]
 pub struct RestoreSummary {
@@ -105,22 +106,47 @@ pub async fn run(
     opts: &RestoreOptions,
     sink: ProgressFn,
 ) -> Result<RestoreSummary> {
-    let restorable_stores: Vec<_> = opts.file_store_paths.iter().cloned().collect();
-    let (manifest, members) = read_archive(&opts.input, opts.passphrase.as_deref())?;
-    if manifest.format_version > crate::manifest::FORMAT_VERSION {
-        return Err(Error::msg(format!(
-            "this backup was made by a newer Platform Manager (format {}); update the Platform Manager to restore it",
-            manifest.format_version
-        )));
+    let guard = opts.watch.as_ref().map(|w| w.start()).unwrap_or_else(WatchGuard::none);
+    let result = run_watched(cfg, opts, &guard, sink).await;
+    guard.stop();
+    // The watch stopped the run: say so, whatever error the stop caused.
+    match (result, guard.tripped()) {
+        (Err(_), Some(why)) => Err(Error::SpaceLow(why)),
+        (r, _) => r,
     }
-    let has_telemetry = !telemetry_members(&members).is_empty();
-    let mut steps = Steps::new(sink.clone(), 7 + u32::from(has_telemetry));
-    steps.step("Reading backup");
+}
+
+async fn run_watched(
+    cfg: &ConnConfig,
+    opts: &RestoreOptions,
+    guard: &WatchGuard,
+    sink: ProgressFn,
+) -> Result<RestoreSummary> {
+    use crate::restore_scope::Scope;
+    let restorable_stores: Vec<_> = opts.file_store_paths.iter().cloned().collect();
+    let (manifest, members) = read_archive(
+        &opts.input,
+        opts.passphrase.as_deref(),
+        opts.temp_dir.as_deref(),
+        Some(&|m: &Manifest| crate::restore_scope::members_for(m, &opts.scope, &opts.skip_members)),
+        guard,
+    )?;
     let cleanup = || {
         for p in members.values() {
             let _ = std::fs::remove_file(p);
         }
     };
+    if manifest.format_version > crate::manifest::FORMAT_VERSION {
+        cleanup();
+        return Err(Error::msg(format!(
+            "this backup was made by a newer Platform Manager (format {}); update the Platform Manager to restore it",
+            manifest.format_version
+        )));
+    }
+    let wanted = crate::restore_scope::members_for(&manifest, &opts.scope, &opts.skip_members);
+    let has_telemetry = !telemetry_members(&members).is_empty();
+    let mut steps = Steps::new(sink.clone(), 7 + u32::from(has_telemetry));
+    steps.step("Reading backup");
     steps.log(format!(
         "Backup of '{}' ({}), created {}",
         manifest.source.database,
@@ -132,18 +158,30 @@ pub async fn run(
             .unwrap_or_else(|| "no TimescaleDB".into()),
         manifest.created_at.to_rfc3339()
     ));
+    if opts.scope != Scope::Everything {
+        steps.log(format!("Restoring: {}", opts.scope.label()));
+    }
+    for skipped in &opts.skip_members {
+        steps.log(format!("Left out: {}", member_label(skipped)));
+    }
 
     steps.step("Verifying integrity");
-    if let Err(e) = verify_all(&manifest, &members) {
+    if let Err(e) = verify_all(&manifest, &members, &wanted).and_then(|_| guard.check()) {
         cleanup();
         return Err(e);
     }
 
     steps.step("Checking target database");
-    let db = DbInspector::connect(cfg).await?;
-    let server = db.server_info().await?;
-    let existing = db.list_public_tables().await?;
-    if !existing.is_empty() && !opts.allow_nonempty {
+    let db = match DbInspector::connect(cfg).await {
+        Ok(db) => db,
+        Err(e) => {
+            cleanup();
+            return Err(e);
+        }
+    };
+    let server = db.server_info().await.inspect_err(|_| cleanup())?;
+    let existing = db.list_public_tables().await.inspect_err(|_| cleanup())?;
+    if !existing.is_empty() && !opts.allow_nonempty && !opts.scope.into_live() {
         cleanup();
         return Err(Error::msg(format!(
             "target database '{}' is not empty ({} tables). v1 restores into an empty database only.",
@@ -151,14 +189,24 @@ pub async fn run(
             existing.len()
         )));
     }
+    if opts.scope.into_live() && existing.iter().all(|t| t.name != "key_dictionary") {
+        cleanup();
+        return Err(Error::msg(format!(
+            "telemetry goes into a running SENTIENT database; '{}' has no key_dictionary",
+            server.database
+        )));
+    }
     let has_timescale = server.timescaledb_version.is_some();
 
     steps.step("Reading the database dump");
-    let dump_tmp = members
-        .get(DUMP_MEMBER)
-        .cloned()
-        .ok_or_else(|| Error::msg("backup has no database dump"))?;
-    let tools = PgTools::resolve()?;
+    let dump_tmp = match members.get(DUMP_MEMBER).cloned() {
+        Some(d) => d,
+        None => {
+            cleanup();
+            return Err(Error::msg("backup has no database dump"));
+        }
+    };
+    let tools = PgTools::resolve().inspect_err(|_| cleanup())?;
     let (archive, toc) = {
         let tools = tools.clone();
         let dump = dump_tmp.clone();
@@ -167,6 +215,16 @@ pub async fn run(
             .map_err(|e| Error::msg(format!("reading the dump panicked: {e}")))?
     }
     .inspect_err(|_| cleanup())?;
+
+    if opts.scope.into_live() {
+        let result = crate::restore_scope::into_live(cfg, opts, &manifest, &members, &tools, &archive, guard, &sink, &mut steps).await;
+        let _ = std::fs::remove_file(&archive);
+        cleanup();
+        let rows = result?;
+        steps.done(format!("{rows} telemetry rows restored into '{}'", server.database));
+        return Ok(RestoreSummary { database: server.database, restored_from: opts.input.clone(), file_stores_restored: 0 });
+    }
+
     let source = source_store(&manifest, &toc);
     let convert = opts.telemetry_into.as_ref().filter(|into| into.store() != source).cloned();
     if let Some(into) = &convert {
@@ -176,18 +234,24 @@ pub async fn run(
             into.store().label()
         ));
     }
+    // Configuration only: the latest values are telemetry too.
+    let toc: Vec<String> = if opts.scope == Scope::Configuration {
+        toc.into_iter().filter(|l| !is_latest_data_entry(l)).collect()
+    } else {
+        toc
+    };
 
     let result = match &convert {
         None => {
-            restore_as_backed_up(cfg, &db, &tools, &archive, &toc, has_timescale, &manifest, &members, opts, &mut steps, &sink)
+            restore_as_backed_up(cfg, &db, &tools, &archive, &toc, has_timescale, &manifest, &members, opts, guard, &mut steps, &sink)
                 .await
         }
         Some(into) => {
-            restore_converted(cfg, &db, &tools, &archive, &toc, source, into, &members, opts, &mut steps, &sink).await
+            restore_converted(cfg, &db, &tools, &archive, &toc, source, into, &members, opts, guard, &mut steps, &sink).await
         }
     };
     let _ = std::fs::remove_file(&archive);
-    if let Err(e) = result {
+    if let Err(e) = result.and_then(|_| guard.check()) {
         cleanup();
         return Err(e);
     }
@@ -201,9 +265,12 @@ pub async fn run(
             .map(|(_, p)| p.clone());
         match target {
             Some(dest) => {
-                steps.log(format!("Restoring file store '{}' → {}", entry.id, dest.display()));
                 if let Some(member_tmp) = members.get(&entry.member) {
-                    files::extract_dir(member_tmp, &dest)?;
+                    steps.log(format!("Restoring file store '{}' → {}", entry.id, dest.display()));
+                    if let Err(e) = files::extract_dir(member_tmp, &dest) {
+                        cleanup();
+                        return Err(e);
+                    }
                     restored_stores += 1;
                 }
             }
@@ -223,6 +290,14 @@ pub async fn run(
     })
 }
 
+/// A table-of-contents line restoring the latest values' rows.
+fn is_latest_data_entry(line: &str) -> bool {
+    let Some((_, rest)) = line.split_once("; ") else { return false };
+    let t: Vec<&str> = rest.split_whitespace().collect();
+    // "<oid> <oid> TABLE DATA public ts_kv_latest owner"
+    t.len() >= 6 && t[2] == "TABLE" && t[3] == "DATA" && t[5] == "ts_kv_latest"
+}
+
 /// The original restore: the dump, then telemetry where it was backed up from.
 #[allow(clippy::too_many_arguments)]
 async fn restore_as_backed_up(
@@ -235,6 +310,7 @@ async fn restore_as_backed_up(
     manifest: &Manifest,
     members: &HashMap<String, PathBuf>,
     opts: &RestoreOptions,
+    guard: &WatchGuard,
     steps: &mut Steps,
     sink: &ProgressFn,
 ) -> Result<()> {
@@ -253,7 +329,7 @@ async fn restore_as_backed_up(
     // TimescaleDB database should.
     let list: Vec<String> =
         toc.iter().filter(|l| !l.contains("TABLE DATA _timescaledb_catalog metadata ")).cloned().collect();
-    let restore_res = run_pg_restore(tools, cfg, archive, list, sink).await;
+    let restore_res = run_pg_restore(tools, cfg, archive, list, guard, sink).await;
 
     if has_timescale {
         steps.step("Finalizing (timescaledb_post_restore)");
@@ -267,13 +343,14 @@ async fn restore_as_backed_up(
         steps.step("Restoring telemetry (COPY)");
         let mut rows = 0;
         for tmp in telemetry {
+            guard.check()?;
             rows += db.copy_in_compressed("COPY ts_kv FROM STDIN WITH (FORMAT binary)", tmp).await?;
         }
         steps.log(format!("  {rows} telemetry rows"));
     }
 
     // ClickHouse telemetry: into an empty store, every part counted.
-    if let Some(section) = &manifest.clickhouse {
+    if let Some(section) = manifest.clickhouse.as_ref().filter(|_| opts.scope.restores_telemetry()) {
         steps.step("Restoring ClickHouse telemetry");
         let ch = opts.clickhouse.clone().ok_or_else(|| {
             Error::msg("this backup holds ClickHouse telemetry; restore it into a PostgreSQL + ClickHouse install")
@@ -284,9 +361,11 @@ async fn restore_as_backed_up(
             .filter_map(|m| members.get(&m.member).map(|p| (m.clone(), p.clone())))
             .collect();
         let sink_ch = sink.clone();
+        let g = guard.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
             crate::clickhouse::ensure_empty(&ch)?;
             for (entry, file) in files {
+                g.check()?;
                 let rows = crate::clickhouse::import(&ch, &entry, &file)?;
                 sink_ch(Progress::Log { line: format!("  ClickHouse {} {}: {rows} rows", entry.table, entry.partition) });
             }
@@ -313,14 +392,17 @@ async fn restore_converted(
     into: &TelemetryInto,
     members: &HashMap<String, PathBuf>,
     opts: &RestoreOptions,
+    guard: &WatchGuard,
     steps: &mut Steps,
     sink: &ProgressFn,
 ) -> Result<()> {
     use crate::telemetry_move as mv;
+    // Configuration only needs no ClickHouse: the app clones its schema empty.
     let ch = match into {
-        TelemetryInto::Clickhouse => Some(opts.clickhouse.clone().ok_or_else(|| {
+        TelemetryInto::Clickhouse if opts.scope.restores_telemetry() => Some(opts.clickhouse.clone().ok_or_else(|| {
             Error::msg("restoring into PostgreSQL + ClickHouse needs the ClickHouse database to restore into")
         })?),
+        TelemetryInto::Clickhouse => opts.clickhouse.clone(),
         _ => None,
     };
 
@@ -334,7 +416,8 @@ async fn restore_converted(
 
     steps.step("Restoring database (pg_restore)");
     let list: Vec<String> = toc.iter().filter(|l| !is_telemetry_store_entry(l)).cloned().collect();
-    run_pg_restore(tools, cfg, archive, list, sink).await?;
+    run_pg_restore(tools, cfg, archive, list, guard, sink).await?;
+    guard.check()?;
 
     steps.step("Converting telemetry");
     pg.batch_execute(&format!(
@@ -344,12 +427,14 @@ async fn restore_converted(
     .await?;
     let mut loaded = 0u64;
     for tmp in telemetry_members(members) {
+        guard.check()?;
         loaded += db.copy_in_compressed(&format!("COPY {STAGING} FROM STDIN WITH (FORMAT binary)"), tmp).await?;
     }
     if source == TelemetryStore::Clickhouse {
         loaded += load_clickhouse_history(&pg, members, sink).await?;
     }
     steps.log(format!("  {loaded} telemetry rows read"));
+    guard.check()?;
     let msink = sink.clone();
     match &ch {
         Some(ch) => {
@@ -376,7 +461,7 @@ async fn restore_converted(
 /// The ClickHouse history members of a backup into the staging table, one
 /// row per key and time (ClickHouse may hold a row twice until it merges; the
 /// newest write wins, as it does there).
-async fn load_clickhouse_history(
+pub(crate) async fn load_clickhouse_history(
     pg: &tokio_postgres::Client,
     members: &HashMap<String, PathBuf>,
     sink: &ProgressFn,
@@ -500,7 +585,20 @@ pub fn inspect(input: &Path, passphrase: Option<&str>) -> Result<Manifest> {
     serde_json::from_str(&buf).map_err(|e| Error::msg(format!("bad manifest: {e}")))
 }
 
-fn read_archive(input: &Path, passphrase: Option<&str>) -> Result<(Manifest, HashMap<String, PathBuf>)> {
+/// Picks the members to unpack, once the manifest is read.
+pub(crate) type MemberFilter<'a> = &'a dyn Fn(&Manifest) -> Vec<String>;
+
+/// Unpack the archive's members to temp files (in `temp_dir`, else beside
+/// the file). With `only`, just the members that scope reads (the manifest is
+/// the first member, so it is known before any other is written). The guard
+/// is checked after each member: a disk running low stops the unpacking.
+pub(crate) fn read_archive(
+    input: &Path,
+    passphrase: Option<&str>,
+    temp_dir: Option<&Path>,
+    only: Option<MemberFilter<'_>>,
+    guard: &WatchGuard,
+) -> Result<(Manifest, HashMap<String, PathBuf>)> {
     let (base, f) = crate::parts::open(input)?;
     let input = base.as_path();
     let reader: Box<dyn Read> = if is_encrypted(input)? {
@@ -520,31 +618,59 @@ fn read_archive(input: &Path, passphrase: Option<&str>) -> Result<(Manifest, Has
     } else {
         Box::new(f)
     };
+    let stem = input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "backup".into());
+    let temp_path = |safe: &str| match temp_dir {
+        Some(d) => d.join(format!("{stem}.{safe}.tmp")),
+        None => input.with_extension(format!("{safe}.tmp")),
+    };
     let mut ar = tar::Archive::new(reader);
     let mut manifest: Option<Manifest> = None;
+    let mut wanted: Option<Vec<String>> = None;
     let mut members: HashMap<String, PathBuf> = HashMap::new();
-
-    for entry in ar.entries().map_err(|e| Error::msg(e.to_string()))? {
-        let mut e = entry.map_err(|e| Error::msg(e.to_string()))?;
-        let path = e.path().map_err(|e| Error::msg(e.to_string()))?.to_string_lossy().into_owned();
-        if path == "manifest.json" {
-            let mut buf = String::new();
-            e.read_to_string(&mut buf).map_err(|e| Error::msg(e.to_string()))?;
-            manifest = Some(serde_json::from_str(&buf).map_err(|e| Error::msg(format!("bad manifest: {e}")))?);
-        } else if path.starts_with("db/") || path.starts_with("clickhouse/") || path.starts_with("files/") {
-            let safe = path.replace(['/', '\\'], "_");
-            let tmp = input.with_extension(format!("{safe}.tmp"));
-            let mut out = File::create(&tmp).map_err(|e| Error::msg(e.to_string()))?;
-            io::copy(&mut e, &mut out).map_err(|e| Error::msg(e.to_string()))?;
-            members.insert(path, tmp);
+    let drop_all = |m: &HashMap<String, PathBuf>| {
+        for p in m.values() {
+            let _ = std::fs::remove_file(p);
         }
+    };
+
+    let result = (|| -> Result<()> {
+        for entry in ar.entries().map_err(|e| Error::msg(e.to_string()))? {
+            let mut e = entry.map_err(|e| Error::msg(e.to_string()))?;
+            let path = e.path().map_err(|e| Error::msg(e.to_string()))?.to_string_lossy().into_owned();
+            if path == "manifest.json" {
+                let mut buf = String::new();
+                e.read_to_string(&mut buf).map_err(|e| Error::msg(e.to_string()))?;
+                let m: Manifest = serde_json::from_str(&buf).map_err(|e| Error::msg(format!("bad manifest: {e}")))?;
+                wanted = only.map(|f| f(&m));
+                manifest = Some(m);
+            } else if path.starts_with("db/") || path.starts_with("clickhouse/") || path.starts_with("files/") {
+                if wanted.as_ref().is_some_and(|w| !w.contains(&path)) {
+                    continue;
+                }
+                let safe = path.replace(['/', '\\'], "_");
+                let tmp = temp_path(&safe);
+                let mut out = File::create(&tmp).map_err(|e| Error::msg(format!("{}: {e}", tmp.display())))?;
+                members.insert(path, tmp.clone());
+                io::copy(&mut e, &mut out).map_err(|e| Error::msg(format!("unpacking to {}: {e}", tmp.display())))?;
+                guard.check()?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(e) = result {
+        drop_all(&members);
+        return Err(e);
     }
-    let manifest = manifest.ok_or_else(|| Error::msg("backup has no manifest.json"))?;
+    let Some(manifest) = manifest else {
+        drop_all(&members);
+        return Err(Error::msg("backup has no manifest.json"));
+    };
     Ok((manifest, members))
 }
 
-fn verify_all(manifest: &Manifest, members: &HashMap<String, PathBuf>) -> Result<()> {
-    for fe in &manifest.files {
+/// Every wanted member against its checksum.
+fn verify_all(manifest: &Manifest, members: &HashMap<String, PathBuf>, wanted: &[String]) -> Result<()> {
+    for fe in manifest.files.iter().filter(|f| wanted.contains(&f.path)) {
         let tmp = members
             .get(&fe.path)
             .ok_or_else(|| Error::msg(format!("archive is missing member '{}'", fe.path)))?;
@@ -561,7 +687,7 @@ fn verify_all(manifest: &Manifest, members: &HashMap<String, PathBuf>) -> Result
 
 /// The PostgreSQL telemetry members, oldest month first (format 2), or the
 /// one member of format 1.
-fn telemetry_members(members: &HashMap<String, PathBuf>) -> Vec<&PathBuf> {
+pub(crate) fn telemetry_members(members: &HashMap<String, PathBuf>) -> Vec<&PathBuf> {
     let mut months: Vec<(&String, &PathBuf)> = members.iter().filter(|(k, _)| k.starts_with(crate::backup::TELEMETRY_MONTH_PREFIX)).collect();
     months.sort_by(|a, b| a.0.cmp(b.0));
     let mut out: Vec<&PathBuf> = months.into_iter().map(|(_, v)| v).collect();
@@ -693,7 +819,7 @@ pub fn check(input: &Path, passphrase: Option<&str>) -> Result<CheckReport> {
 }
 
 /// Decompress the dump to a file pg_restore can list, and list it.
-fn unpack_dump(tools: &PgTools, dump_zst: &Path) -> Result<(PathBuf, Vec<String>)> {
+pub(crate) fn unpack_dump(tools: &PgTools, dump_zst: &Path) -> Result<(PathBuf, Vec<String>)> {
     let archive = dump_zst.with_extension("dump");
     {
         let zf = File::open(dump_zst).map_err(|e| Error::msg(format!("open dump: {e}")))?;
@@ -718,14 +844,14 @@ fn unpack_dump(tools: &PgTools, dump_zst: &Path) -> Result<(PathBuf, Vec<String>
 }
 
 /// pg_restore the entries in `list` (a table of contents from [`unpack_dump`]).
-async fn run_pg_restore(tools: &PgTools, cfg: &ConnConfig, archive: &Path, list: Vec<String>, sink: &ProgressFn) -> Result<()> {
-    let (tools, cfg, archive, sink) = (tools.clone(), cfg.clone(), archive.to_path_buf(), sink.clone());
-    tokio::task::spawn_blocking(move || pg_restore_stream(&tools, &cfg, &archive, &list, sink))
+async fn run_pg_restore(tools: &PgTools, cfg: &ConnConfig, archive: &Path, list: Vec<String>, guard: &WatchGuard, sink: &ProgressFn) -> Result<()> {
+    let (tools, cfg, archive, sink, guard) = (tools.clone(), cfg.clone(), archive.to_path_buf(), sink.clone(), guard.clone());
+    tokio::task::spawn_blocking(move || pg_restore_stream(&tools, &cfg, &archive, &list, &guard, sink))
         .await
         .map_err(|e| Error::msg(format!("restore task panicked: {e}")))?
 }
 
-fn pg_restore_stream(tools: &PgTools, cfg: &ConnConfig, archive: &Path, list: &[String], sink: ProgressFn) -> Result<()> {
+fn pg_restore_stream(tools: &PgTools, cfg: &ConnConfig, archive: &Path, list: &[String], guard: &WatchGuard, sink: ProgressFn) -> Result<()> {
     // Pass a full conninfo (with TCP keepalives) via -d so long server-side
     // steps like index ATTACH don't get their idle connection dropped by a
     // NAT/firewall on a remote/wifi link. Password stays in PGPASSWORD.
@@ -754,7 +880,21 @@ fn pg_restore_stream(tools: &PgTools, cfg: &ConnConfig, archive: &Path, list: &[
     let sink_e = sink.clone();
     let err_t = std::thread::spawn(move || drain(stderr, sink_e));
 
-    let status = child.wait().map_err(|e| Error::msg(e.to_string()))?;
+    // Polled, so a disk running low stops pg_restore at once.
+    let status = loop {
+        if let Some(st) = child.try_wait().map_err(|e| Error::msg(e.to_string()))? {
+            break st;
+        }
+        if let Some(why) = guard.tripped() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = out_t.join();
+            let _ = err_t.join();
+            let _ = std::fs::remove_file(&list_file);
+            return Err(Error::SpaceLow(why));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
     let _ = out_t.join();
     let last_err = err_t.join().unwrap_or_default();
     let _ = std::fs::remove_file(&list_file);
