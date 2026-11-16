@@ -15,6 +15,10 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-17
+
+Manage SENTIENT on other computers, with errors that name their cause and fix.
+
 ### Added
 - The server agent: the Platform Manager's job code without the window,
   built static for Linux (musl) and for Windows. Every package carries it,
