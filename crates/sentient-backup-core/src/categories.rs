@@ -243,10 +243,11 @@ pub fn catalog() -> &'static [Category] {
             default_selected: false,
             locked: false,
             kind: Db,
-            // license_state is NOT_CARRIED (below), checked before this prefix.
+            // license_state and license_time_anchor are NOT_CARRIED (below),
+            // checked before this prefix.
             tables: &[Prefix("license")],
             file_store: None,
-            notes: "Machine-bound. Off by default so a portable backup doesn't carry a license that won't validate on the target host. The licence's own state on the server (its grace timer) never travels.",
+            notes: "Machine-bound. Off by default so a portable backup doesn't carry a license that won't validate on the target host. The licence's own state on the server (its grace timer and clock anchor) never travels.",
         },
         // MUST be last — the catch-all.
         Category {
@@ -263,11 +264,13 @@ pub fn catalog() -> &'static [Category] {
 }
 
 /// Tables whose rows never travel in a backup, whatever is selected: the
-/// server's own licence state (`license_state`: the over-limit grace timer
-/// and its integrity hash). It belongs to the server it was written on;
-/// restoring an older copy would move that timer. The table itself (its
-/// schema) is still dumped and restored, empty; the server fills it again.
-pub const NOT_CARRIED: &[TableMatch] = &[TableMatch::Exact("license_state")];
+/// server's own licence state. `license_state` holds the over-limit grace
+/// timer and its integrity hash; `license_time_anchor` the highest clock
+/// time the server has seen (its clock-rollback guard). Both belong to the
+/// server they were written on: restoring an older copy would move the
+/// timer back or lower the rollback mark. The tables themselves (their
+/// schema) are still dumped and restored, empty; the server fills them again.
+pub const NOT_CARRIED: &[TableMatch] = &[TableMatch::Exact("license_state"), TableMatch::Exact("license_time_anchor")];
 
 /// The pseudo-category id [`category_for_table`] gives a [`NOT_CARRIED`] table.
 pub const NOT_CARRIED_ID: &str = "not_carried";
@@ -321,7 +324,6 @@ mod tests {
         assert_eq!(category_for_table("audit_log_2026_07"), "audit_event_logs");
         assert_eq!(category_for_table("report_2026"), "reports");
         assert_eq!(category_for_table("license"), "licensing");
-        assert_eq!(category_for_table("license_time_anchor"), "licensing");
         // config rules must NOT be swallowed by the notifications history category
         assert_eq!(category_for_table("notification_rule"), "configuration");
         assert_eq!(category_for_table("notification"), "notifications");
@@ -337,7 +339,9 @@ mod tests {
     #[test]
     fn license_state_is_never_carried() {
         assert_eq!(category_for_table("license_state"), NOT_CARRIED_ID);
+        assert_eq!(category_for_table("license_time_anchor"), NOT_CARRIED_ID);
         assert!(is_not_carried("license_state"));
+        assert!(is_not_carried("license_time_anchor"));
         assert!(!is_not_carried("license"));
         assert!(!is_not_carried("license_state_audit"));
         assert!(catalog().iter().all(|c| c.id != NOT_CARRIED_ID));

@@ -72,6 +72,12 @@ pub fn show_error(title: impl Into<SharedString>, text: impl Into<SharedString>,
 
 /// An error in the shared dialog: the headline, the details (the step that
 /// failed and what it printed) to read and Copy, and Retry when given.
+/// What a failure's retry button says: "Ask again" when the failure is a
+/// closed password prompt (sentient_installer_core::elevation), else `usual`.
+pub fn retry_label(failure: &str, usual: &'static str) -> &'static str {
+    if sentient_installer_core::elevation::ElevationError::is_cancelled(failure) { "Ask again" } else { usual }
+}
+
 pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedString>, retry: Option<std::rc::Rc<dyn Fn(&mut App)>>, cx: &mut App) {
     struct ErrorBody(SharedString, Option<std::rc::Rc<dyn Fn(&mut App)>>);
     impl Render for ErrorBody {
@@ -81,6 +87,7 @@ pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedStr
             let theme = cx.theme().clone();
             let (head, detail) = crate::remote::split_failure(&self.0);
             let copy = self.0.to_string();
+            let again = retry_label(&self.0, "Retry");
             gpui_kit::component::v_flex()
                 .gap_3()
                 .child(div().text_sm().child(head))
@@ -93,7 +100,7 @@ pub fn show_error_with(title: impl Into<SharedString>, text: impl Into<SharedStr
                         .justify_end()
                         .child(crate::ui::probed(button("error-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))))
                         .when_some(self.1.clone(), |r, retry| {
-                            r.child(crate::ui::probed(button("error-retry").outline().label("Retry").on_click(move |_, _, cx| {
+                            r.child(crate::ui::probed(button("error-retry").outline().label(again).on_click(move |_, _, cx| {
                                 crate::modal::close(cx);
                                 retry(cx);
                             })))
@@ -240,6 +247,31 @@ pub fn page_with(theme: &Theme, title: &'static str, summary: &'static str, acti
             )
             .child(action),
     )
+}
+
+/// A refresh that failed while the page keeps what it read before: a muted
+/// "Couldn't refresh · last updated HH:MM" beside the title's Refresh, the
+/// reason in its (i). One line, cut rather than wrapped.
+/// Screens: every page with data shows its stale note (SPM_DEBUG_STALE=<why>).
+pub fn debug_stale() -> Option<String> {
+    if cfg!(debug_assertions) { std::env::var("SPM_DEBUG_STALE").ok() } else { None }
+}
+
+pub fn stale_note(theme: &Theme, id: &'static str, why: &str, at: Option<&str>) -> AnyElement {
+    let text = match at {
+        Some(t) => format!("Couldn't refresh · last updated {t}"),
+        None => "Couldn't refresh".to_string(),
+    };
+    h_flex()
+        .gap_1()
+        .items_center()
+        .min_w_0()
+        .flex_shrink(1.)
+        .text_sm()
+        .text_color(theme.muted_foreground)
+        .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(text))
+        .child(info(SharedString::from(id), SharedString::from(why.to_string())))
+        .into_any_element()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -887,19 +919,26 @@ pub fn service_rows(
             let (tone, label) = if running { (Tone::Good, "Running") } else if starting { (Tone::Warn, "Starting") } else { (Tone::Bad, "Stopped") };
             let plain = service_label(&name);
             let busy = busy_name.as_ref().is_some_and(|b| *b == *name);
-            let state_pill = if busy { pill(theme, Tone::Warn, "Working…") } else { pill(theme, tone, label) }.min_w(px(86.)).justify_center();
+            // The pill hugs its word; the uptime goes on its own line under
+            // the name, so the name and the unit keep the row's room.
+            let state_pill = if busy { pill(theme, Tone::Warn, "Working…") } else { pill(theme, tone, label) };
             let piece = |d: Div| d.min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis();
-            let names = gpui_kit::component::h_flex()
+            let names = gpui_kit::component::v_flex()
                 .flex_1()
                 .min_w_0()
-                .flex_wrap()
-                .gap_x_2()
-                .gap_y_0p5()
-                .child(piece(div()).child(SharedString::from(plain.unwrap_or(&name).to_string())))
-                .when(plain.is_some(), |r| {
-                    r.child(piece(div()).text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(name.clone()))
-                })
-                .when(!detail.is_empty(), |r| r.child(piece(div()).text_color(theme.muted_foreground).child(SharedString::from(format!("· {detail}")))));
+                .gap_0p5()
+                .child(
+                    gpui_kit::component::h_flex()
+                        .min_w_0()
+                        .flex_wrap()
+                        .gap_x_2()
+                        .gap_y_0p5()
+                        .child(piece(div()).child(SharedString::from(plain.unwrap_or(&name).to_string())))
+                        .when(plain.is_some(), |r| {
+                            r.child(piece(div()).text_size(px(12.)).font_family(theme.mono_font_family.clone()).text_color(theme.muted_foreground).child(name.clone()))
+                        }),
+                )
+                .when(!detail.is_empty(), |r| r.child(piece(div()).text_color(theme.muted_foreground).child(detail.clone())));
             let icon = |action: &'static str, icon: gpui_kit::component::Icon, tip: &'static str, enabled: bool| {
                 let (act, n) = (act.clone(), name.to_string());
                 svc_icon_button(theme, SharedString::from(format!("svc-{action}-{name}")), icon, tip, enabled && !any_busy, action == "stop")
@@ -1492,7 +1531,7 @@ pub fn skeleton_service_rows(theme: &Theme, key: &'static str, n: usize) -> Vec<
                 .gap_3()
                 .items_center()
                 .min_h(px(SVC_ROW_H))
-                .child(skeleton_block(theme, format!("{key}-p{i}"), px(86.).into(), 25.))
+                .child(skeleton_block(theme, format!("{key}-p{i}"), px(72.).into(), 25.))
                 .child(skeleton_line(theme, format!("{key}-n{i}"), [200., 240., 180.][i % 3]))
                 .child(gpui_kit::component::h_flex().gap(button_gap()).flex_shrink_0().children((0..4).map(|b| skeleton_block_r(theme, format!("{key}-b{i}-{b}"), px(32.).into(), 32., 6.))))
         })

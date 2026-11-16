@@ -737,6 +737,8 @@ impl BackupPage {
                     if !schedule {
                         return Ok(None);
                     }
+                    // Saved by the user: it may ask for the password, once.
+                    let _action = sentient_installer_core::elevation::user_action();
                     match record.as_ref().filter(|r| crate::rootjob::needed(r)) {
                         Some(_) => crate::rootjob::run(&["backup-schedule".to_string()], &sentient_installer_core::progress::noop()).map(|_| ()),
                         None => crate::backups::apply_schedule(&prefs),

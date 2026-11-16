@@ -50,6 +50,22 @@ def frame_panels(log):
     return (w, h), keep, dialog or bool(overlays)
 
 
+def frame_probes(log, name):
+    """The `LAYOUT <name> l r t b` probes of the last complete frame."""
+    lines = open(log, errors="replace").read().splitlines()
+    marks = [i for i, l in enumerate(lines) if l.startswith("LAYOUT-FRAME ")]
+    if not marks:
+        return []
+    start = marks[-2] if len(marks) > 1 else marks[-1]
+    end = marks[-1] if len(marks) > 1 else len(lines)
+    out = set()
+    for l in lines[start + 1:end]:
+        p = l.split()
+        if len(p) == 6 and p[0] == "LAYOUT" and p[1] == name:
+            out.add(tuple(float(x) for x in p[2:]))
+    return sorted(out)
+
+
 def menu_selection(log):
     lines = open(log, errors="replace").read().splitlines()
     sels = [l.split()[2:] for l in lines if l.startswith("LAYOUT menu-sel ")]
@@ -123,12 +139,14 @@ def differs(a, b):
     return max(abs(a[i] - b[i]) for i in range(3)) > TOL
 
 
-def broken_dividers(im, panels, scale, top_bar):
+def broken_dividers(im, panels, scale, top_bar, charts=()):
     """A card's horizontal row dividers are one continuous line each (his
     rc12-22 note: a line per column left a gap before the action column).
     A divider is a pixel row inside the card where at least half of the
     inner width is one flat colour other than the card's; inside its first
-    and last pixel there may be no gap of 6 px or more of card colour."""
+    and last pixel there may be no gap of 6 px or more of card colour.
+    Rows inside a chart (`LAYOUT chart l r t b`: its scale and plot) are
+    not dividers: a grid line starts after the scale's labels."""
     W, H = im.size
     out = []
     for (l, r, t, b) in panels:
@@ -141,6 +159,8 @@ def broken_dividers(im, panels, scale, top_bar):
             continue
         gap = 6 * scale
         for y in range(int(max(T + 4 * scale, top_bar + 2)), int(min(B - 4 * scale, H - 1))):
+            if any(cl < r and cr > l and ct - 1 <= y / scale <= cb + 1 for (cl, cr, ct, cb) in charts):
+                continue
             bg = im.getpixel((int(L + 6 * scale), y))
             px = [im.getpixel((x, y)) for x in range(x0, x1)]
             # Dividers are faint (the theme border over the card): a finer
@@ -242,11 +262,18 @@ def main():
     bad = []
     # The bar over the page (the shell's 60 px).
     top_bar = 60 * scale
+    # A window with a bar under the page (Setup's buttons) reports where the
+    # page ends (`LAYOUT page-area`): cards and the margin are checked down
+    # to there, not under the bar.
+    bottom = H
+    areas = [l.split()[2:] for l in open(log, errors="replace").read().splitlines() if l.startswith("LAYOUT page-area ")]
+    if areas:
+        bottom = min(H, int(float(areas[-1][3]) * scale))
     for (l, r, t, b) in panels:
         L, R, T, B = (v * scale for v in (l, r, t, b))
         if R <= 0 or L >= W or B <= top_bar or T >= H or R - L < 80 * scale:
             continue
-        y0, y1 = int(max(T + 14 * scale, top_bar + 2)), int(min(B - 14 * scale, H - 2))
+        y0, y1 = int(max(T + 14 * scale, top_bar + 2)), int(min(B - 14 * scale, bottom - 2))
         x0, x1 = int(R - (PAD - 2) * scale), int(R - 3 * scale)
         if y1 <= y0 or x1 <= x0 or x1 >= W:
             continue
@@ -263,7 +290,7 @@ def main():
             bad.append(f"card {l:.0f}-{r:.0f} x {t:.0f}-{b:.0f}: {len(hits)} px in its right padding, first at ({x / scale:.0f}, {y / scale:.0f})")
     # Row dividers: one continuous line per row.
     if not dialog:
-        bad.extend(broken_dividers(im, panels, scale, top_bar))
+        bad.extend(broken_dividers(im, panels, scale, top_bar, frame_probes(log, "chart")))
     # The menu's selected row opens into the page: no edge line between
     # its curves (the page's colour all across the menu's edge there).
     sel = menu_selection(log)
@@ -313,8 +340,8 @@ def main():
             print(f"{png.split('/')[-1]}: {b}")
         return 1 if bad else 0
     x0, x1 = int(W - (PAGE_PAD - 3) * scale), int(W - 3 * scale)
-    ref = im.getpixel((W - int(PAGE_PAD * scale / 2), H - int(6 * scale)))
-    hits = [(x, y) for y in range(int(top_bar + 60 * scale), H - int(4 * scale), 2) for x in range(x0, x1) if differs(im.getpixel((x, y)), ref)]
+    ref = im.getpixel((W - int(PAGE_PAD * scale / 2), bottom - int(6 * scale)))
+    hits = [(x, y) for y in range(int(top_bar + 60 * scale), bottom - int(4 * scale), 2) for x in range(x0, x1) if differs(im.getpixel((x, y)), ref)]
     if len(hits) >= MIN_PIXELS:
         x, y = hits[0]
         bad.append(f"page margin: {len(hits)} px, first at ({x / scale:.0f}, {y / scale:.0f})")

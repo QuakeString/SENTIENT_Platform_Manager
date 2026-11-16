@@ -9,6 +9,7 @@ use gpui_kit::component::{
     input::{Input, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
     progress::Progress,
+    scroll::ScrollableElement as _,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -22,24 +23,68 @@ use crate::ui::{self, Tone};
 
 const LICENCE: &str = include_str!("../../assets/licence.txt");
 
+/// A field's label: the body size, muted.
+fn label(theme: &Theme, text: &'static str) -> Div {
+    h_flex().gap_1().items_center().text_sm().font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(text)
+}
+
 /// A labelled input.
-fn field(theme: &Theme, label: &'static str, state: &Entity<InputState>) -> Div {
-    v_flex()
-        .gap_1p5()
-        .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(label))
-        .child(Input::new(state))
+fn field(theme: &Theme, text: &'static str, state: &Entity<InputState>) -> Div {
+    v_flex().gap_1p5().child(label(theme, text)).child(Input::new(state))
 }
 
 /// A labelled masked input with a show/hide toggle.
-fn secret_field(theme: &Theme, label: &'static str, state: &Entity<InputState>) -> Div {
+fn secret_field(theme: &Theme, text: &'static str, state: &Entity<InputState>) -> Div {
+    v_flex().gap_1p5().child(label(theme, text)).child(Input::new(state).mask_toggle())
+}
+
+/// The help on a database password Setup fills in (an (i) beside its label).
+const DEFAULT_PASSWORD_HELP: &str = "Default password. Change it if the database port is reachable from other computers.";
+
+/// [`secret_field`] holding Setup's default password, with its (i).
+fn default_password_field(theme: &Theme, id: &'static str, text: &'static str, state: &Entity<InputState>) -> Div {
     v_flex()
         .gap_1p5()
-        .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(label))
+        .child(label(theme, text).child(ui::info(id.into(), DEFAULT_PASSWORD_HELP.into())))
         .child(Input::new(state).mask_toggle())
 }
 
-fn lead(theme: &Theme, text: &'static str) -> Div {
-    div().max_w(px(640.)).text_color(theme.muted_foreground).child(text)
+/// One choice of several as a Platform Manager card (ui::radio_card),
+/// reported to the layout test like every card.
+fn choice_card(theme: &Theme, id: impl Into<ElementId>, title: AnyElement, desc: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
+    ui::radio_card_el(theme, id, title, desc, selected, true).relative().child(ui::layout_probe("panel"))
+}
+
+/// A card's title with an optional "Recommended" pill.
+fn choice_title(theme: &Theme, title: impl Into<SharedString>, recommended: bool) -> AnyElement {
+    h_flex()
+        .gap_2()
+        .items_center()
+        .child(div().font_weight(FontWeight::MEDIUM).child(title.into()))
+        .when(recommended, |r| r.child(ui::pill(theme, Tone::Good, "Recommended")))
+        .into_any_element()
+}
+
+/// Two choice cards at one height, side by side (ui::card_pair).
+fn pair(a: Stateful<Div>, b: Stateful<Div>) -> Div {
+    ui::card_pair(v_flex().child(a.flex_1()), v_flex().child(b.flex_1()))
+}
+
+/// Why the install stopped: the Platform Manager's error banner
+/// (ui::notice, Tone::Bad: a faint red tint, the danger colour, the panel
+/// radius), one block of its own under the progress. Retry is the footer's
+/// Next.
+fn install_failed(theme: &Theme, message: SharedString) -> Div {
+    ui::notice(
+        theme,
+        Tone::Bad,
+        format!("The install stopped\n{message}\nFix the cause and press Retry. Tasks already done are skipped or repeated safely."),
+    )
+}
+
+/// A page's blocks, a page gap apart.
+fn column() -> Div {
+    v_flex().w_full().gap(px(ui::GAP))
 }
 
 fn check_tone(status: Status) -> (Tone, &'static str) {
@@ -53,6 +98,31 @@ fn check_tone(status: Status) -> (Tone, &'static str) {
 }
 
 impl Installer {
+    /// The line under the step's title (as under every Platform Manager
+    /// page's title).
+    pub(super) fn subtitle(&self) -> Option<SharedString> {
+        let text: &str = match self.step {
+            0 => "Nothing changes on the computer until you press Install on the Summary page.",
+            1 => "What SENTIENT needs on this computer. Items marked “Will be installed” are handled by setup.",
+            2 if self.engine == Engine::Docker => "SENTIENT and its databases keep their data in Docker volumes. Put them on the disk with the most room: telemetry grows.",
+            2 => "Where SENTIENT and its database go. Put the database on the disk with the most free space: telemetry grows.",
+            3 if cfg!(windows) => "How SENTIENT stores its data. SENTIENT and PostgreSQL always run directly on Windows; the type can be changed later with Migration.",
+            3 => "How SENTIENT stores its data. The type can be changed later with Migration in the Platform Manager.",
+            4 => "The database SENTIENT signs in to. Setup checks that its ports are free.",
+            5 => "Setup checks that each port is free before moving on.",
+            6 => "The first SENTIENT sign-in, with full system rights. More users can be added in SENTIENT.",
+            7 => "SENTIENT's settings, sized for this computer. All of them can be changed later in the Platform Manager.",
+            8 if !cfg!(windows) && !self.manager_only => "Where to find SENTIENT. It starts with the computer: as a systemd service, or through Docker's restart policy.",
+            8 => "Where to find SENTIENT and how it starts.",
+            9 => "Check your choices. Nothing has been installed yet.",
+            INSTALL => "Setup is installing. This takes a few minutes.",
+            FINISH if self.manager_only => "The Platform Manager is installed. Open it to install SENTIENT later.",
+            FINISH => "SENTIENT is installed and running.",
+            _ => return None,
+        };
+        Some(text.into())
+    }
+
     pub(super) fn page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         match self.step {
             0 => self.welcome(cx).into_any_element(),
@@ -73,7 +143,9 @@ impl Installer {
 
     /// With no package next to Setup: the published versions to install,
     /// the newest picked. None when the list could not be read (the latest
-    /// release alone, as before) or a package is next to Setup.
+    /// release alone, as before) or a package is next to Setup. A Platform
+    /// Manager select: an outline button with the choice and a chevron,
+    /// as tall as the top bar's controls.
     fn version_menu(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         if self.bundle.is_some() || self.manager_only {
             return None;
@@ -84,10 +156,14 @@ impl Installer {
         };
         let chosen = self.chosen_version.clone().unwrap_or_else(|| list[0].version.clone());
         let this = cx.entity().downgrade();
+        let label = if chosen == list[0].version { format!("{chosen} (newest)") } else { chosen.clone() };
         Some(
             crate::ui::button("sentient-version")
                 .outline()
-                .label(format!("{chosen} ▾"))
+                .h(px(crate::theme::BAR_CTRL_H))
+                .px_3()
+                .label(label)
+                .dropdown_caret(true)
                 .dropdown_menu(move |menu, _, _| {
                     let mut menu = menu.max_h(px(320.)).scrollable(true);
                     for v in &list {
@@ -122,116 +198,93 @@ impl Installer {
                 "No SENTIENT package next to Setup and no SENTIENT download for this computer: Docker installs pull the image; a native install needs the package".into()
             }
         };
-        let choice = |manager_only: bool, id: &'static str, title: &'static str, desc: &'static str| {
-            let selected = self.manager_only == manager_only;
-            h_flex()
-                .id(id)
-                .flex_1()
-                .min_w_0()
-                .gap_3()
-                .p_3()
-                .rounded(px(ui::PANEL_RADIUS))
-                .bg(theme.background)
-                .border_1()
-                .border_color(if selected { theme.primary } else { theme.input })
-                .when(selected, |c| c.bg(theme.list_active))
-                .cursor_pointer()
-                .child(
-                    div()
-                        .size_4()
-                        .flex_shrink_0()
-                        .rounded_full()
-                        .border_2()
-                        .border_color(if selected { theme.primary } else { theme.muted_foreground })
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .when(selected, |r| r.child(div().size_2().rounded_full().bg(theme.primary))),
-                )
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_1()
-                        .child(div().font_weight(FontWeight::MEDIUM).child(title))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(desc)),
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.manager_only = manager_only;
-                    this.problem = None;
-                    cx.notify();
-                }))
+        let manager_version = if self.adding_sentient {
+            format!("{}, installed", crate::updates::manager_version())
+        } else {
+            crate::updates::manager_version().to_string()
         };
-        v_flex()
-            .flex_1()
-            .gap_4()
-            .child(lead(
-                &theme,
-                "Nothing changes on the computer until you press Install on the Summary page.",
-            ))
-            .when(!self.adding_sentient, |c| c.child(
+        // What is installed: the versions and where SENTIENT comes from.
+        let what = ui::panel(&theme)
+            .flex_shrink_0()
+            .child(
                 h_flex()
-                    .gap_3()
-                    .items_stretch()
-                    .child(choice(
+                    .gap_4()
+                    .text_sm()
+                    .items_center()
+                    .child(div().w(px(ui::CARD_LABEL_W)).flex_shrink_0().text_color(theme.muted_foreground).child("SENTIENT"))
+                    .child(match self.version_menu(cx) {
+                        Some(menu) => h_flex().child(menu).into_any_element(),
+                        None => div().flex_1().min_w_0().child(self.sentient_version.clone()).into_any_element(),
+                    }),
+            )
+            .child(ui::card_fact(&theme, "Platform Manager", manager_version))
+            .child(ui::card_fact(&theme, "Package", package));
+        let choice = |manager_only: bool, id: &'static str, title: &'static str, desc: &'static str| {
+            choice_card(&theme, id, choice_title(&theme, title, false), desc, self.manager_only == manager_only).on_click(cx.listener(move |this, _, _, cx| {
+                this.manager_only = manager_only;
+                this.problem = None;
+                cx.notify();
+            }))
+        };
+        // The licence fills what is left of the window and scrolls inside
+        // the card, its scrollbar beside the text (room on the right, as in
+        // the notifications panel).
+        let licence = ui::panel(&theme)
+            .flex_1()
+            .min_h(px(120.))
+            .child(
+                div()
+                    .id("licence")
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        v_flex()
+                            .pr(px(12.))
+                            .gap_2()
+                            .text_sm()
+                            .text_color(theme.foreground)
+                            // One block per paragraph or list item: line breaks
+                            // inside a text run are not kept.
+                            .children(LICENCE.lines().filter(|l| !l.trim().is_empty()).map(|l| {
+                                // Headings are the short all-capitals lines.
+                                let heading = l.len() < 60 && l == l.to_uppercase();
+                                div().when(heading, |d| d.font_weight(FontWeight::SEMIBOLD).pt_1()).child(l.to_string())
+                            })),
+                    )
+                    .overflow_y_scrollbar(),
+            );
+        column()
+            .flex_1()
+            .min_h_0()
+            .when(!self.adding_sentient, |c| {
+                c.child(pair(
+                    choice(
                         false,
                         "install-both",
                         "SENTIENT and the Platform Manager",
                         "The platform, its database and the Platform Manager. You choose the database and every setting on the next pages.",
-                    ))
-                    .child(choice(
+                    ),
+                    choice(
                         true,
                         "install-manager",
                         "Only the Platform Manager",
                         "The Platform Manager alone, without SENTIENT and its database. SENTIENT can be installed from it later, from a SENTIENT package.",
-                    )),
-            ))
+                    ),
+                ))
+            })
+            .child(what)
+            .child(licence)
             .child(
-                ui::box_row()
-                    .child(ui::panel(&theme).flex_1().gap_1()
-                        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("SENTIENT"))
-                        .child(match self.version_menu(cx) {
-                            Some(menu) => h_flex().child(menu).into_any_element(),
-                            None => div().font_weight(FontWeight::MEDIUM).child(self.sentient_version.clone()).into_any_element(),
-                        }))
-                    .child(ui::panel(&theme).flex_1().gap_1()
-                        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Platform Manager"))
-                        .child(div().font_weight(FontWeight::MEDIUM).child(if self.adding_sentient {
-                            format!("{}, installed", crate::updates::manager_version())
-                        } else {
-                            crate::updates::manager_version().to_string()
-                        })))
-                    .child(ui::panel(&theme).flex_1().min_w(px(300.)).gap_1()
-                        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Package"))
-                        .child(div().w_full().whitespace_normal().text_sm().child(package))),
-            )
-            .child(
-                ui::panel(&theme)
-                    .id("licence")
-                    // Fills what is left of the window; scrolls inside.
-                    .flex_1()
-                    .min_h(px(140.))
-                    .overflow_y_scroll()
-                    .gap_2()
-                    .text_size(px(13.))
-                    .text_color(theme.muted_foreground)
-                    // One block per paragraph or list item: line breaks
-                    // inside a text run are not kept.
-                    .children(LICENCE.lines().filter(|l| !l.trim().is_empty()).map(|l| {
-                        // Headings are the short all-capitals lines.
-                        let heading = l.len() < 60 && l == l.to_uppercase();
-                        div().when(heading, |d| d.font_weight(FontWeight::MEDIUM).text_color(theme.foreground).pt_1()).child(l.to_string())
-                    })),
-            )
-            .child(
-                Checkbox::new("accept")
-                    .label("I accept the licence agreement")
-                    .checked(self.accepted)
-                    .on_change(cx.listener(|this, value: &bool, _, cx| {
-                        this.accepted = *value;
-                        this.problem = None;
-                        cx.notify();
-                    })),
+                div().flex_shrink_0().child(
+                    Checkbox::new("accept")
+                        .label("I accept the licence agreement")
+                        .checked(self.accepted)
+                        .on_change(cx.listener(|this, value: &bool, _, cx| {
+                            this.accepted = *value;
+                            this.problem = None;
+                            cx.notify();
+                        })),
+                ),
             )
     }
 
@@ -240,43 +293,13 @@ impl Installer {
         let rows = self.checks.clone();
         let engine_choice = (!cfg!(windows)).then(|| {
             let option = |engine: Engine, id: &'static str, title: &'static str, desc: &'static str, recommended: bool| {
-                let selected = self.engine == engine;
-                h_flex()
-                    .id(id)
-                    .flex_1()
-                    .min_w_0()
-                    .gap_3()
-                    .p_3()
-                    .rounded(px(ui::PANEL_RADIUS))
-                    .bg(theme.background)
-                    .border_1()
-                    .border_color(if selected { theme.primary } else { theme.input })
-                    .when(selected, |c| c.bg(theme.list_active))
-                    .cursor_pointer()
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_1()
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .child(div().font_weight(FontWeight::MEDIUM).child(title))
-                                    .when(recommended, |r| r.child(ui::pill(&theme, Tone::Good, "Recommended"))),
-                            )
-                            .child(div().text_sm().text_color(theme.muted_foreground).child(desc)),
-                    )
+                choice_card(&theme, id, choice_title(&theme, title, recommended), desc, self.engine == engine)
                     .on_click(cx.listener(move |this, _, _, cx| this.set_engine(engine, cx)))
             };
-            v_flex()
-                .gap_2()
-                .child(div().font_weight(FontWeight::MEDIUM).child("How should SENTIENT run?"))
-                .child(
-                    h_flex()
-                        .gap_3()
-                        .child(option(Engine::Docker, "engine-docker", "Docker on this machine", "SENTIENT and its databases as containers. Every database type.", true))
-                        .child(option(Engine::Native, "engine-native", "Natively with systemd", "Services from the distribution's packages. PostgreSQL, or PostgreSQL + ClickHouse.", false)),
-                )
+            pair(
+                option(Engine::Docker, "engine-docker", "Docker on this machine", "SENTIENT and its databases as containers. Every database type.", true),
+                option(Engine::Native, "engine-native", "Natively with systemd", "Services from the distribution's packages. PostgreSQL, or PostgreSQL + ClickHouse.", false),
+            )
         });
         let cleanup = self.cleanup.read(cx);
         let (cleaning, cleanup_state, cleanup_step) = (cleanup.is_running(), cleanup.state().clone(), cleanup.step_with_time());
@@ -313,25 +336,23 @@ impl Installer {
                     |p, o| p.child(o),
                 )
         });
-        v_flex()
-            .gap_4()
+        column()
             .children(engine_choice)
             .children(leftovers)
-            .child(lead(&theme, "What SENTIENT needs on this computer. Items marked “Will be installed” are handled by setup."))
             .child(match rows {
                 None => ui::panel(&theme).child(div().text_sm().child("Checking this computer…")),
                 Some(rows) => ui::panel(&theme).gap_0().children(rows.into_iter().enumerate().map(|(i, row)| {
                     let (tone, text) = check_tone(row.status);
                     h_flex()
                         .gap_3()
-                        .py_2()
+                        .py(px(10.))
                         .items_start()
                         .when(i > 0, |r| r.border_t_1())
                         .border_color(theme.border)
                         .text_sm()
                         // The label keeps its own width in a fixed column.
-                        .child(h_flex().w(px(136.)).flex_shrink_0().child(ui::pill(&theme, tone, text)))
-                        .child(div().w(px(150.)).flex_shrink_0().font_weight(FontWeight::MEDIUM).child(row.label))
+                        .child(h_flex().w(px(148.)).flex_shrink_0().child(ui::pill(&theme, tone, text)))
+                        .child(div().w(px(ui::CARD_LABEL_W + 30.)).flex_shrink_0().font_weight(FontWeight::MEDIUM).child(row.label))
                         .child(div().flex_1().min_w_0().text_color(theme.muted_foreground).child(row.detail))
                 })),
             })
@@ -368,24 +389,17 @@ impl Installer {
         let program = self.fields.install_dir.clone();
         let data = self.fields.data_dir.clone();
         if self.engine == Engine::Docker {
-            return v_flex().gap_4().max_w(px(760.)).child(lead(
-                &theme,
-                "With Docker, SENTIENT and its databases keep their data in Docker volumes (st-pg-data, st-data, st-ch-data). They stay in Docker's own folder unless you give them a place below; put them on the disk with the most room, as telemetry grows.",
-            ))
-            .child(self.data_locations(&theme, cx));
+            return column().child(self.data_locations(&theme, cx));
         }
         if !cfg!(windows) {
-            return v_flex()
-                .gap_4()
-                .max_w(px(640.))
+            return column().child(ui::panel(&theme)
                 .child(field(&theme, "Program folder", &program))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
                     "PostgreSQL keeps its data where the distribution puts it (/var/lib/postgresql); SENTIENT's own files go to /var/lib/sentient.",
-                ));
+                )));
         }
-        v_flex()
+        column().child(ui::panel(&theme)
             .gap_4()
-            .max_w(px(640.))
             .child(
                 h_flex()
                     .gap_2()
@@ -404,9 +418,7 @@ impl Installer {
                         cx.listener(move |this, _, window, cx| this.browse(data.clone(), window, cx)),
                     )),
             )
-            .child(div().text_sm().text_color(theme.muted_foreground).child(
-                "Put the database folder on the disk with the most free space: telemetry grows over time.",
-            ))
+        )
     }
 
     /// Docker: Advanced, data locations (mockup M14): one folder for
@@ -437,7 +449,7 @@ impl Installer {
         };
         let mut card = crate::ui::panel(theme)
             .gap_0()
-            .child(div().pb_2().font_weight(FontWeight::MEDIUM).child("Advanced: data locations"))
+            .child(div().pb_2().font_weight(FontWeight::MEDIUM).child("Data locations"))
             .child(
                 h_flex()
                     .gap_3()
@@ -447,7 +459,7 @@ impl Installer {
                     .border_color(theme.border)
                     .child(h_flex().w(px(150.)).flex_shrink_0().gap_1().items_center().text_sm().text_color(theme.muted_foreground).child("Data").child(crate::ui::info(
                         "loc-help".into(),
-                        "One folder keeps everything together (postgres, clickhouse and files under it; Docker's own folder when left empty); a place per store puts each database on its own disk. The volumes keep their names (st-pg-data, st-ch-data, st-data).".into(),
+                        "One folder keeps everything together (postgres, clickhouse and files under it; Docker's own folder when left empty); a place per store puts each database on its own disk. The volumes keep their names (st-pg-data, st-ch-data, st-data): they stay in Docker's own folder unless you give them a place here.".into(),
                     )))
                     .child(seg),
             );
@@ -486,69 +498,29 @@ impl Installer {
         let cards = options.into_iter().filter(|o| offered.contains(&o.0)).map(|(flavor, desc, runs, recommended)| {
             let runs = if docker_linux { "Docker" } else if cfg!(windows) { runs } else { "Native" };
             let selected = self.flavor == Some(flavor);
-            h_flex()
-                .id(flavor.as_str())
-                .gap_4()
-                .p_4()
-                .rounded(px(ui::PANEL_RADIUS))
-                .bg(theme.background)
-                .border_1()
-                .border_color(if selected { theme.primary } else { theme.input })
-                .when(selected, |c| c.bg(theme.list_active))
-                .cursor_pointer()
-                .child(
-                    div()
-                        .size_4()
-                        .flex_shrink_0()
-                        .rounded_full()
-                        .border_2()
-                        .border_color(if selected { theme.primary } else { theme.muted_foreground })
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .when(selected, |r| r.child(div().size_2().rounded_full().bg(theme.primary))),
-                )
-                .child(ui::flavor_logos(flavor, 18.).w(px(52.)))
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .gap_1()
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .child(div().font_weight(FontWeight::MEDIUM).child(flavor_label(flavor)))
-                                .when(recommended, |r| r.child(ui::pill(&theme, Tone::Good, "Recommended"))),
-                        )
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(desc)),
-                )
-                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(runs))
+            let title = h_flex()
+                .gap_2()
+                .items_center()
+                .child(ui::flavor_logos(flavor, 18.))
+                .child(div().font_weight(FontWeight::MEDIUM).child(flavor_label(flavor)))
+                .when(recommended, |r| r.child(ui::pill(&theme, Tone::Good, "Recommended")))
+                .into_any_element();
+            choice_card(&theme, flavor.as_str(), title, desc, selected)
+                .child(div().flex_shrink_0().text_sm().text_color(theme.muted_foreground).child(runs))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.flavor = Some(flavor);
                     this.problem = None;
                     cx.notify();
                 }))
         });
-        v_flex()
-            .gap_3()
-            .child(lead(
-                &theme,
-                if cfg!(windows) {
-                    "Choose how SENTIENT stores its data. SENTIENT and PostgreSQL always run directly on Windows. The database type can be changed later with Migration in the Platform Manager."
-                } else {
-                    "Choose how SENTIENT stores its data. The database type can be changed later with Migration in the Platform Manager."
-                },
-            ))
+        column()
             .children(cards)
             .when(cfg!(windows) && self.flavor == Some(Flavor::Clickhouse), |col| {
-                col.child(
-                    div()
-                        .p_3()
-                        .rounded(theme.radius)
-                        .bg(theme.info)
-                        .text_color(theme.info_foreground)
-                        .text_sm()
-                        .child("ClickHouse runs in Docker inside WSL2 under its own hidden service account, so it starts at boot with nobody signed in. If WSL2 is not enabled, Windows restarts once and setup continues by itself."),
-                )
+                col.child(ui::notice(
+                    &theme,
+                    Tone::Neutral,
+                    "ClickHouse runs in Docker inside WSL2\nUnder its own hidden service account, so it starts at boot with nobody signed in. If WSL2 is not enabled, Windows restarts once and setup continues by itself.",
+                ))
             })
     }
 
@@ -570,7 +542,7 @@ impl Installer {
                 if selected { b.primary() } else { b.outline() }
             };
             ui::panel(&theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child("Earlier database found"))
+                .child(div().font_weight(FontWeight::SEMIBOLD).child("Earlier database found"))
                 .child(div().text_sm().child(where_))
                 .child(
                     h_flex()
@@ -615,12 +587,12 @@ impl Installer {
                     })
                 })
         });
-        v_flex()
-            .gap_4()
+        column()
             .children(existing)
             .child(
                 ui::panel(&theme)
-                    .child(div().font_weight(FontWeight::MEDIUM).child(pg_title))
+                    .gap_4()
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child(pg_title))
                     .child(
                         h_flex()
                             .gap_3()
@@ -631,20 +603,27 @@ impl Installer {
                     .child(
                         h_flex()
                             .gap_3()
-                            .child(secret_field(&theme, "Password", &f.pg_password).flex_1())
+                            .child(default_password_field(&theme, "pg-password-help", "Password", &f.pg_password).flex_1())
                             .child(secret_field(&theme, "PostgreSQL admin password", &f.pg_admin_password).flex_1()),
                     ),
             )
             .when(self.flavor == Some(Flavor::Clickhouse), |col| {
                 col.child(
                     ui::panel(&theme)
-                        .child(div().font_weight(FontWeight::MEDIUM).child("ClickHouse (Docker in WSL2)"))
+                        .gap_4()
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child(if cfg!(windows) {
+                            "ClickHouse (Docker in WSL2)"
+                        } else if self.engine == Engine::Docker {
+                            "ClickHouse (Docker)"
+                        } else {
+                            "ClickHouse"
+                        }))
                         .child(
                             h_flex()
                                 .gap_3()
                                 .child(field(&theme, "Database", &f.ch_db).flex_1())
                                 .child(field(&theme, "User", &f.ch_user).flex_1())
-                                .child(secret_field(&theme, "Password", &f.ch_password).flex_1()),
+                                .child(default_password_field(&theme, "ch-password-help", "Password", &f.ch_password).flex_1()),
                         )
                         .child(
                             h_flex()
@@ -670,8 +649,7 @@ impl Installer {
             v_flex()
                 .gap_2()
                 .p_3()
-                .max_w(px(640.))
-                .rounded(theme.radius)
+                .rounded(px(ui::PANEL_RADIUS))
                 .bg(theme.warning)
                 .text_color(theme.warning_foreground)
                 .text_sm()
@@ -728,15 +706,12 @@ impl Installer {
             h_flex()
                 .gap_3()
                 .items_center()
-                .child(div().w_48().text_sm().child(label))
-                .child(div().w_32().child(Input::new(state)))
+                .child(div().w(px(ui::CARD_LABEL_W + 30.)).text_sm().child(label))
+                .child(div().w(px(140.)).child(Input::new(state)))
         };
-        v_flex()
-            .gap_4()
-            .child(lead(&theme, "Setup checks that each port is free before moving on."))
+        column()
             .child(
                 ui::panel(&theme)
-                    .max_w(px(480.))
                     .child(row("Web (HTTP)", &f.http_port))
                     .child(row("MQTT", &f.mqtt_port))
                     .child(row("MQTT over TLS", &f.mqtts_port))
@@ -749,13 +724,10 @@ impl Installer {
     fn administrator(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let f = &self.fields;
-        v_flex()
-            .gap_4()
-            .child(lead(&theme, "The first SENTIENT sign-in, with full system rights. More users can be added in SENTIENT."))
+        column()
             .child(
                 ui::panel(&theme)
                     .gap_4()
-                    .max_w(px(520.))
                     .child(field(&theme, "E-mail", &f.admin_email))
                     .child(secret_field(&theme, "Password (at least 8 characters)", &f.admin_password))
                     .child(secret_field(&theme, "Confirm password", &f.admin_confirm)),
@@ -783,7 +755,7 @@ impl Installer {
                 cx.notify();
             })));
         let body = if self.customize { self.customize_panel(cx) } else { self.recommended_panel(cx) };
-        v_flex().gap_4().child(h_flex().child(toggle)).child(body)
+        column().child(h_flex().child(toggle)).child(body)
     }
 
     fn recommended_panel(&self, cx: &mut Context<Self>) -> Div {
@@ -894,17 +866,6 @@ impl Installer {
                 ("open-at-signin", "Open SENTIENT full screen when the computer starts (operator screens)", self.open_at_signin),
             ]
         };
-        let note = {
-            let theme = cx.theme().clone();
-            lead(
-                &theme,
-                if !cfg!(windows) && !self.manager_only {
-                    "Where to find SENTIENT. It starts with the computer: as a systemd service, or through Docker's restart policy."
-                } else {
-                    "Where to find SENTIENT and how it starts."
-                },
-            )
-        };
         let theme = cx.theme().clone();
         // How long SENTIENT waits after Windows starts (crate::ui::start_delay_row).
         let mut start_delay = (cfg!(windows) && !self.manager_only && (self.autostart || self.open_at_signin))
@@ -943,9 +904,8 @@ impl Installer {
                     ))
                 })
         });
-        v_flex()
-            .gap_3()
-            .child(note)
+        column().child(ui::panel(&theme)
+            .gap_4()
             .children(options.into_iter().flat_map(|(id, label, checked)| {
                 let delay_here = id == "autostart";
                 let checkbox = Checkbox::new(id)
@@ -967,7 +927,7 @@ impl Installer {
                 let delay = if delay_here { start_delay.take().map(IntoElement::into_any_element) } else { None };
                 std::iter::once(checkbox).chain(delay)
             }))
-            .children(autologin)
+            .children(autologin))
     }
 
     fn summary(&mut self, cx: &mut Context<Self>) -> Div {
@@ -1054,16 +1014,16 @@ impl Installer {
                 rows.push(("Operator screen", screen, 8));
             }
         }
-        ui::panel(&theme).gap_0().children(rows.into_iter().enumerate().map(|(i, (label, value, step))| {
+        column().child(ui::panel(&theme).gap_0().py(px(8.)).children(rows.into_iter().enumerate().map(|(i, (label, value, step))| {
             let empty = value.trim().is_empty();
             h_flex()
-                .gap_3()
-                .py_1p5()
+                .gap_4()
+                .py(px(6.))
                 .items_center()
                 .when(i > 0, |r| r.border_t_1())
                 .border_color(theme.border)
                 .text_sm()
-                .child(div().w_40().flex_shrink_0().text_color(theme.muted_foreground).child(label))
+                .child(div().w(px(ui::CARD_LABEL_W + 30.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
                 .child(if empty {
                     div().flex_1().min_w_0().text_color(theme.muted_foreground).child("Not entered")
                 } else {
@@ -1075,7 +1035,7 @@ impl Installer {
                         .label("Change")
                         .on_click(cx.listener(move |this, _, _, cx| this.go(step, cx))),
                 )
-        }))
+        })))
     }
 
     fn installing(&mut self, cx: &mut Context<Self>) -> Div {
@@ -1085,57 +1045,33 @@ impl Installer {
         let step = job.step_with_time();
         let percent = job.percent();
         let log: Vec<SharedString> = job.log().iter().rev().take(16).rev().cloned().collect();
-        v_flex()
-            .gap_4()
+        column()
             .child(
-                v_flex()
+                ui::panel(&theme)
                     .gap_2()
-                    .child(div().text_sm().child(step))
+                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(step))
                     .when_some(percent, |c, p| c.child(Progress::new("install-progress").value(p))),
             )
             .when(matches!(&state, JobState::Failed(m) if m.as_ref() == super::plan::RESTART_REQUIRED), |c| {
-                c.child(
-                    v_flex()
-                        .gap_2()
-                        .p_3()
-                        .rounded(theme.radius)
-                        .bg(theme.info)
-                        .text_color(theme.info_foreground)
-                        .text_sm()
-                        .child(div().font_weight(FontWeight::MEDIUM).child("Restart required"))
-                        .child("Windows must restart to finish enabling WSL2 for ClickHouse. Setup continues by itself after you sign in again; your choices are kept.")
-                        .child(h_flex().child(
-                            crate::ui::button("restart-now")
-                                .primary()
-                                .label("Restart now")
-                                .on_click(|_, _, _| super::plan::restart_now()),
-                        )),
-                )
+                c.child(ui::notice_with(
+                    &theme,
+                    Tone::Neutral,
+                    "Restart required\nWindows must restart to finish enabling WSL2 for ClickHouse. Setup continues by itself after you sign in again; your choices are kept.",
+                    Some(crate::ui::button("restart-now").primary().label("Restart now").on_click(|_, _, _| super::plan::restart_now()).into_any_element()),
+                ))
             })
             .when_some(
                 match &state {
                     JobState::Failed(m) if m.as_ref() != super::plan::RESTART_REQUIRED => Some(m.clone()),
                     _ => None,
                 },
-                |c, message| {
-                    c.child(
-                        v_flex()
-                            .gap_1()
-                            .p_3()
-                            .rounded(theme.radius)
-                            .bg(theme.danger)
-                            .text_color(theme.danger_foreground)
-                            .text_sm()
-                            .child(div().font_weight(FontWeight::MEDIUM).child("The install stopped"))
-                            .child(message)
-                            .child("Fix the cause and press Retry. Tasks already done are skipped or repeated safely."),
-                    )
-                },
+                |c, message| c.child(install_failed(&theme, message)),
             )
             .child(
                 ui::panel(&theme)
-                    .gap_0p5()
+                    .gap_1()
                     .text_size(px(13.))
+                    .line_height(px(20.))
                     .font_family(theme.mono_font_family.clone())
                     .text_color(theme.muted_foreground)
                     .children(log.into_iter().map(|line| div().child(line))),
@@ -1145,8 +1081,7 @@ impl Installer {
     fn finish(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         if self.manager_only {
-            return v_flex()
-                .gap_4()
+            return column()
                 .child(
                     div()
                         .size_12()
@@ -1158,10 +1093,7 @@ impl Installer {
                         .justify_center()
                         .child(Icon::new(IconName::Check).large()),
                 )
-                .child(lead(
-                    &theme,
-                    "The Platform Manager is installed. To install SENTIENT later, open it and choose Download and install SENTIENT (or Install from local files).",
-                ))
+                .child(div().text_sm().child("To install SENTIENT later, open it and choose Download and install SENTIENT (or Install from local files)."))
                 .child(h_flex().child(crate::ui::button("open-manager").primary().label("Open Platform Manager").on_click(
                     |_, _, _| {
                         let _ = std::process::Command::new(crate::self_install::manager_exe()).arg("--manager").spawn();
@@ -1172,8 +1104,7 @@ impl Installer {
         let email = self.value(&self.fields.admin_email, cx);
         let port = self.fields.http_port.read(cx).value().trim().parse::<u16>().unwrap_or(8080);
         let kiosk = self.kiosk;
-        v_flex()
-            .gap_4()
+        column()
             .child(
                 div()
                     .size_12()
@@ -1187,10 +1118,9 @@ impl Installer {
             )
             .child(
                 ui::panel(&theme)
-                    .max_w(px(620.))
-                    .child(ui::fact(&theme, "Address", url))
-                    .child(ui::fact(&theme, "Sign in as", if email.trim().is_empty() { "The e-mail entered under Administrator".to_string() } else { email }))
-                    .child(ui::fact(
+                    .child(ui::card_fact(&theme, "Address", url))
+                    .child(ui::card_fact(&theme, "Sign in as", if email.trim().is_empty() { "The e-mail entered under Administrator".to_string() } else { email }))
+                    .child(ui::card_fact(
                         &theme,
                         "Managed by",
                         if cfg!(windows) {
@@ -1200,16 +1130,11 @@ impl Installer {
                         },
                     )),
             )
-            .child(
-                div()
-                    .max_w(px(620.))
-                    .p_3()
-                    .rounded(theme.radius)
-                    .bg(theme.info)
-                    .text_color(theme.info_foreground)
-                    .text_sm()
-                    .child("Next: sign in to SENTIENT as the system administrator and activate your licence under Licence. Activation needs internet once."),
-            )
+            .child(ui::notice(
+                &theme,
+                Tone::Neutral,
+                "Next: activate your licence\nSign in to SENTIENT as the system administrator and activate it under Licence. Activation needs internet once.",
+            ))
             .child(
                 h_flex()
                     .gap(crate::ui::button_gap())

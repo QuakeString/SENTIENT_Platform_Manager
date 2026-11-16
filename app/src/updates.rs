@@ -616,7 +616,8 @@ impl UpdateState {
     /// A newer gateway than the one installed here, not dismissed.
     pub fn gateway_notice(&self) -> Option<gateway::Offer> {
         let f = self.found.as_ref()?;
-        let installed = f.gateway_installed.as_deref()?;
+        // An unknown version is never compared (nor called up to date).
+        let installed = f.gateway_installed.as_deref().filter(|v| !v.is_empty())?;
         let offer = f.gateway.as_ref().ok()?.as_ref()?;
         (releases::is_newer(&offer.version, installed, false) && self.prefs.dismissed_gateway.as_deref() != Some(&offer.version))
             .then(|| offer.clone())

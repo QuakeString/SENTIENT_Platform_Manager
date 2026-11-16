@@ -66,6 +66,10 @@ pub struct LicencePage {
     reading: bool,
     /// The last action's result, above the card.
     note: Option<(Tone, String)>,
+    /// A re-read failed while what was read before still shows.
+    stale: Option<String>,
+    /// When a reading last came back (HH:MM).
+    updated_at: Option<String>,
     /// Start SENTIENT, or update the server's agent.
     job: Entity<crate::jobs::Job>,
     /// The page's content width, measured.
@@ -103,6 +107,8 @@ impl LicencePage {
             sign_in_error: None,
             reading: false,
             note: None,
+            stale: None,
+            updated_at: None,
             job: cx.new(|_| crate::jobs::Job::new()),
             width: Rc::new(Cell::new(0.)),
             pending: None,
@@ -133,7 +139,13 @@ impl LicencePage {
             let got = cx.background_executor().spawn(async move { target.serving() }).await;
             this.update(cx, |p, cx| {
                 p.reading = false;
+                if got.is_ok() {
+                    p.stale = None;
+                    p.updated_at = Some(chrono::Local::now().format("%H:%M").to_string());
+                }
                 match got {
+                    // No answer while a state shows: it stays, said softly.
+                    Err(e) if e != crate::remote::AGENT_OLD && matches!(p.view, View::NotInstalled | View::Stopped | View::SignIn) => p.stale = Some(e),
                     Ok((false, _)) => p.view = View::NotInstalled,
                     Ok((true, false)) => p.view = View::Stopped,
                     Ok((true, true)) => match crate::licence::session(&p.target.key()) {
@@ -193,7 +205,11 @@ impl LicencePage {
             this.update(cx, |p, cx| {
                 p.reading = false;
                 match got {
-                    Ok(r) => p.view = View::Ready(Box::new(r)),
+                    Ok(r) => {
+                        p.stale = None;
+                        p.updated_at = Some(chrono::Local::now().format("%H:%M").to_string());
+                        p.view = View::Ready(Box::new(r));
+                    }
                     Err(e) if e == crate::licence::SESSION_ENDED => {
                         crate::licence::end_session(&key);
                         // The token ran out: renew it from what is kept.
@@ -205,6 +221,8 @@ impl LicencePage {
                         }
                     }
                     Err(e) if e == crate::remote::AGENT_OLD => p.view = View::AgentOld,
+                    // A failed re-read keeps the licence shown.
+                    Err(e) if matches!(p.view, View::Ready(_)) => p.stale = Some(e),
                     Err(e) => p.view = View::Failed(e),
                 }
                 p.debug_open(cx);
@@ -214,6 +232,14 @@ impl LicencePage {
         });
         self._tasks.push(task);
         cx.notify();
+    }
+
+    /// Shown again after another instance was open: read again behind
+    /// what shows.
+    pub fn reshow(&mut self, cx: &mut Context<Self>) {
+        if !self.reading && !self.signing_in {
+            self.reload(cx);
+        }
     }
 
     /// Read again (the title's Refresh, and after an action).
@@ -664,9 +690,12 @@ impl LicencePage {
                 me.update(cx, |p, cx| p.reload(cx)).ok();
             }
         });
+        let dbg = ui::debug_stale().filter(|_| !matches!(self.view, View::Checking | View::Loading));
+        let stale = self.stale.as_deref().or(dbg.as_deref()).filter(|_| !self.reading).map(|e| ui::stale_note(&theme, "licence-stale", e, self.updated_at.as_deref()));
         h_flex()
             .gap(crate::ui::button_gap())
             .items_center()
+            .children(stale)
             .when_some(signed, |r, s| {
                 r.child(
                     h_flex()

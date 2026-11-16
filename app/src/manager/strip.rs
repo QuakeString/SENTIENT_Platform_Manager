@@ -556,6 +556,10 @@ impl Render for JobDetails {
             JobState::Idle => div(),
         };
         let retry = matches!(job.state(), JobState::Failed(_)).then(|| job.retry()).flatten();
+        let again = match job.state() {
+            JobState::Failed(m) => crate::ui::retry_label(m, "Retry"),
+            _ => "Retry",
+        };
         let lines: Vec<SharedString> = job.steps().iter().map(|s| SharedString::from(format!("▸ {s}"))).chain(job.log().iter().cloned()).collect();
         let text = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         v_flex()
@@ -580,7 +584,7 @@ impl Render for JobDetails {
                     .justify_end()
                     .child(crate::ui::probed(crate::ui::button("job-details-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone())))))
                     .when_some(retry.clone(), |r, retry| {
-                        r.child(crate::ui::probed(crate::ui::button("job-details-retry").outline().label("Retry").on_click(move |_, _, cx| {
+                        r.child(crate::ui::probed(crate::ui::button("job-details-retry").outline().label(again).on_click(move |_, _, cx| {
                             crate::modal::close(cx);
                             retry(cx);
                         })))

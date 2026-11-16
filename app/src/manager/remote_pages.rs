@@ -164,6 +164,12 @@ pub(crate) fn preflight_notice(theme: &gpui_kit::component::Theme, why: &str, ta
     ui::notice_with(theme, Tone::Warn, format!("The database type cannot be changed now.\n{why}"), take_over)
 }
 
+/// An answer that is the server's state, not a failure to read it: it
+/// replaces what was read before.
+fn definite(e: &str) -> bool {
+    e == remote::AGENT_OLD || e == remote::NOT_SET_UP || e == remote::NOT_ADDED || needs_sudo_password(e)
+}
+
 /// How long a reading may take before the page says the server does not answer.
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -203,6 +209,14 @@ pub struct RemotePages {
     pending_migrate: Option<String>,
     /// Readings under way (fetch).
     in_flight: usize,
+    /// The last reading's generation (fetch), and each slot's newest
+    /// answer applied: an older answer never overwrites a newer one.
+    gen: u64,
+    applied: std::collections::HashMap<usize, u64>,
+    /// Slots whose last refresh failed (the cached value still shows).
+    stale: std::collections::HashMap<usize, String>,
+    /// When a reading last came back (HH:MM).
+    updated_at: Option<String>,
     /// A small save under way (run_quiet), by its section.
     saving: Option<&'static str>,
     /// The last small save: its section, how it went and its job (Retry).
@@ -317,6 +331,10 @@ impl RemotePages {
             shown_job: None,
             pending_migrate: None,
             in_flight: 0,
+            gen: 0,
+            applied: Default::default(),
+            stale: Default::default(),
+            updated_at: None,
             saving: None,
             // Screens: "Saved" shown on a section (SPM_DEBUG_SAVED=folder).
             saved: std::env::var("SPM_DEBUG_SAVED").ok().filter(|_| cfg!(debug_assertions)).map(|s| (&*s.leak(), Ok(()), Vec::new())),
@@ -358,6 +376,27 @@ impl RemotePages {
         p.reload(cx);
         p.refresh_agent(cx);
         p
+    }
+
+    /// Shown again after another instance was open: what it read before
+    /// shows at once and is read again behind it.
+    pub fn reshow(&mut self, kind: Kind, cx: &mut Context<Self>) {
+        self.kind = kind;
+        self.set_hidden(false, cx);
+        self.reload(cx);
+        cx.notify();
+    }
+
+    /// Switch timing (SPM_DEBUG_SWITCH): Status shows what it read.
+    pub fn has_data(&self) -> bool {
+        matches!(self.ready, Read::Got(_)) && self.status.got().is_some() && (self.kind != Kind::Status || (self.services.got().is_some() && self.db.got().is_some()))
+    }
+
+    /// Another instance is open: the log stops following meanwhile.
+    pub fn set_hidden(&mut self, hidden: bool, cx: &mut Context<Self>) {
+        if let Some(v) = self.log_view.clone() {
+            v.update(cx, |v, cx| v.set_paused(hidden, cx));
+        }
     }
 
     pub fn show(&mut self, kind: Kind, cx: &mut Context<Self>) {
@@ -462,36 +501,38 @@ impl RemotePages {
     pub(crate) fn after_job(&mut self, cx: &mut Context<Self>) {
         if self.shown_job.is_some() {
             let inst = self.inst.clone();
-            self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r);
+            self.fetch(cx, move || remote::status(&inst), |p| &mut p.status);
         } else {
             self.reload(cx);
         }
     }
 
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
+        // Only what this reading fails to refresh is said to be stale.
+        self.stale.clear();
         if let Some(l) = self.locations.clone() {
             l.update(cx, |l, cx| l.reload(cx));
         }
         let inst = self.inst.clone();
-        self.fetch(cx, move || remote::ready(&inst), |p, r| p.ready = r);
+        self.fetch(cx, move || remote::ready(&inst), |p| &mut p.ready);
         // Every page needs to know whether a SENTIENT is added there.
         if !matches!(self.kind, Kind::Status | Kind::Update | Kind::Migration | Kind::Repair) {
             let inst = self.inst.clone();
-            self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r);
+            self.fetch(cx, move || remote::status(&inst), |p| &mut p.status);
         }
         let inst = self.inst.clone();
         match self.kind {
             Kind::Status => {
-                self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r);
+                self.fetch(cx, move || remote::status(&inst), |p| &mut p.status);
                 let inst = self.inst.clone();
-                self.fetch(cx, move || remote::services(&inst), |p, r| p.services = r);
+                self.fetch(cx, move || remote::services(&inst), |p| &mut p.services);
                 let inst = self.inst.clone();
-                self.fetch(cx, move || remote::dbstatus(&inst), |p, r| p.db = r);
+                self.fetch(cx, move || remote::dbstatus(&inst), |p| &mut p.db);
             }
             Kind::Logs => {}
             Kind::Update => {
                 let i2 = inst.clone();
-                self.fetch(cx, move || remote::status(&i2), |p, r| p.status = r);
+                self.fetch(cx, move || remote::status(&i2), |p| &mut p.status);
                 let native = inst.detected.as_ref().is_some_and(|d| d.install != "Docker");
                 self.pick = None;
                 self.fetch(
@@ -504,7 +545,7 @@ impl RemotePages {
                         }
                         crate::online::versions(native)
                     },
-                    |p, r| p.versions = r,
+                    |p| &mut p.versions,
                 );
                 self.fetch(
                     cx,
@@ -517,12 +558,12 @@ impl RemotePages {
                         let channel = crate::updates::Prefs::load().channel;
                         crate::updates::check(channel, Some(installed), native).sentient
                     },
-                    |p, r| p.offer = r,
+                    |p| &mut p.offer,
                 );
             }
             Kind::Backup => {
                 let i2 = inst.clone();
-                self.fetch(cx, move || remote::backups(&i2), |p, r| p.backups = r);
+                self.fetch(cx, move || remote::backups(&i2), |p| &mut p.backups);
                 self.fetch(
                     cx,
                     move || {
@@ -532,19 +573,76 @@ impl RemotePages {
                         }
                         remote::restore_history(&inst)
                     },
-                    |p, r| p.restores = r,
+                    |p| &mut p.restores,
                 );
             }
             Kind::Settings => {
                 self.inputs.clear();
-                self.fetch(cx, move || remote::settings(&inst), |p, r| p.settings = r);
+                self.fetch(cx, move || remote::settings(&inst), |p| &mut p.settings);
             }
-            Kind::Migration | Kind::Repair => self.fetch(cx, move || remote::status(&inst), |p, r| p.status = r),
-            Kind::Gateway => self.fetch(cx, move || remote::gateway(&inst), |p, r| p.gateway = r),
+            Kind::Migration => self.fetch(cx, move || remote::status(&inst), |p| &mut p.status),
+            Kind::Repair => {
+                let i2 = inst.clone();
+                self.fetch(cx, move || remote::status(&inst), |p| &mut p.status);
+                self.fetch(cx, move || remote::gateway(&i2), |p| &mut p.gateway);
+            }
+            Kind::Gateway => self.fetch(cx, move || remote::gateway(&inst), |p| &mut p.gateway),
         }
     }
 
+    /// Read one of the page's values in the background (stale-while-
+    /// revalidate): what was read before stays shown while it is read
+    /// again; a reading that fails for want of an answer keeps it and says
+    /// so softly (`stale`); an answer that IS the state (not set up, not
+    /// added, agent too old, sudo) replaces it. Each reading carries this
+    /// page's instance id and a generation: an older answer never overwrites
+    /// a newer one.
     fn fetch<T: Send + 'static>(
+        &mut self,
+        cx: &mut Context<Self>,
+        work: impl FnOnce() -> Result<T, String> + Send + 'static,
+        slot: fn(&mut Self) -> &mut Read<T>,
+    ) {
+        // The slot's key: its place in the page (no pointer is followed).
+        let key = (slot(self) as *mut Read<T> as usize).wrapping_sub(self as *mut Self as usize);
+        self.gen += 1;
+        let gen = self.gen;
+        let id = self.inst.id.clone();
+        // Click tests: refreshes fail while this file exists.
+        #[cfg(debug_assertions)]
+        let fail = std::env::var_os("SPM_DEBUG_REFRESH_FAIL").filter(|f| std::path::Path::new(f).exists()).is_some();
+        #[cfg(not(debug_assertions))]
+        let fail = false;
+        let work = move || if fail { Err("ssh: connect to host: Connection timed out".to_string()) } else { work() };
+        self.fetch_raw(cx, work, move |p, r| {
+            if p.inst.id != id || p.applied.get(&key).is_some_and(|g| *g > gen) {
+                return;
+            }
+            p.applied.insert(key, gen);
+            match r {
+                Read::Failed(e) if matches!(slot(p), Read::Got(_)) && !definite(&e) => {
+                    p.stale.insert(key, e);
+                }
+                r => {
+                    if matches!(r, Read::Got(_)) {
+                        p.updated_at = Some(chrono::Local::now().format("%H:%M").to_string());
+                    }
+                    *slot(p) = r;
+                    p.stale.remove(&key);
+                }
+            }
+        });
+    }
+
+    /// The soft "Couldn't refresh" beside the title's Refresh: the last
+    /// failure, while nothing is being read.
+    fn stale_note(&self, theme: &gpui_kit::component::Theme, cx: &App) -> Option<AnyElement> {
+        let log = if self.kind == Kind::Logs { self.log_view.as_ref().and_then(|v| v.read(cx).stale().map(String::from)) } else { None };
+        let e = log.or_else(|| self.stale.values().next().cloned()).or_else(|| ui::debug_stale().filter(|_| self.has_data()))?;
+        (self.in_flight == 0).then(|| ui::stale_note(theme, "remote-stale", &e, self.updated_at.as_deref()))
+    }
+
+    fn fetch_raw<T: Send + 'static>(
         &mut self,
         cx: &mut Context<Self>,
         work: impl FnOnce() -> Result<T, String> + Send + 'static,
@@ -1623,7 +1721,7 @@ impl RemotePages {
         }
         self.file_checks.insert(env.clone(), Read::Loading);
         let inst = self.inst.clone();
-        self.fetch(cx, move || remote::file_exists(&inst, &path), move |p, r| {
+        self.fetch_raw(cx, move || remote::file_exists(&inst, &path), move |p, r| {
             p.file_checks.insert(env, r);
         });
         cx.notify();
@@ -1860,12 +1958,25 @@ impl RemotePages {
                 )
                 .child(h_flex().child(self.take_over_button("r-take-over", busy, cx)))
         });
+        // The Gateway choice, when the server has one.
+        let gw = self.gateway.got().filter(|g| g.get("installed").is_some_and(|v| v == "true")).map(|g| {
+            let get = |k: &str| g.get(k).cloned().unwrap_or_default();
+            let target = crate::manager::gateway::RemoveTarget::of_remote(&get, self.inst.name.clone());
+            let line = crate::manager::gateway::runs_as(&get("kind"), &target.name, get("managed") == "true", get("recorded") == "true");
+            let button = crate::ui::button("r-repair-gw-remove")
+                .danger()
+                .label("Remove the Gateway…")
+                .disabled(busy)
+                .on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx)))
+                .into_any_element();
+            crate::manager::gateway::remove_panel(&theme, "r-repair-gw", line, button)
+        });
         v_flex().gap(px(ui::GAP)).children(take_over).child(ui::panel(&theme)
             .child(div().font_weight(FontWeight::MEDIUM).child("Repair"))
             .child(div().text_sm().text_color(theme.muted_foreground).child(
                 "For a SENTIENT that does not start or a service that went missing: the services and their configuration are written again from this installation's record, and SENTIENT is started. Data and settings are kept.",
             ))
-            .child(h_flex().child(crate::ui::button("r-repair").outline().label("Repair").disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job("Repairing", vec!["repair".into()], cx))))))
+            .child(h_flex().child(crate::ui::button("r-repair").outline().label("Repair").disabled(busy || !installed).on_click(cx.listener(|this, _, _, cx| this.run_job("Repairing", vec!["repair".into()], cx)))))).children(gw)
     }
 
     fn gateway_page(&self, cx: &mut Context<Self>) -> Div {
@@ -1907,13 +2018,13 @@ impl RemotePages {
             );
         }
         let kind = get("kind");
-        let runs_as = match kind.as_str() {
-            "docker" => format!("Docker container {}", get("container")),
-            "service" => format!("Service {}", get("service")),
-            "process" => format!("A process ({}), started outside a service", get("process")),
-            "windows-service" => "Windows service".to_string(),
-            _ => "Not known".to_string(),
-        };
+        let recorded = get("recorded") == "true";
+        let managed = get("managed") == "true";
+        let target = crate::manager::gateway::RemoveTarget::of_remote(&get, self.inst.name.clone());
+        let runs_as = if kind.is_empty() { "Not known".to_string() } else { crate::manager::gateway::runs_as(&kind, &target.name, managed, recorded) };
+        let outside = !managed && !recorded && kind != "windows-service" && !kind.is_empty();
+        let compose = get("compose");
+        let volumes = get("volumes");
         // A row only when it has a value.
         let host = get("host");
         let version = get("version");
@@ -1922,6 +2033,11 @@ impl RemotePages {
             .when(!version.is_empty(), |p| p.child(ui::fact(&theme, "Version", version.clone())))
             .when(!kind.is_empty(), |p| p.child(ui::fact(&theme, "Runs as", runs_as.clone())))
             .when(!host.is_empty(), |p| p.child(ui::fact(&theme, "Connects to", format!("{host}:{}", get("port")))))
+            .when(!compose.is_empty(), |p| {
+                let proj = get("project");
+                p.child(ui::fact(&theme, "Compose", if proj.is_empty() { compose.clone() } else { format!("{proj}, in {compose}") }))
+            })
+            .when(!volumes.is_empty(), |p| p.child(ui::fact(&theme, "Volumes", volumes.replace(',', ", "))))
             .when(!page.is_empty(), |p| {
                 p.child(if page == "off" {
                     ui::fact_help(&theme, "Web page", "Off", "The gateway's own web page is off. In a container it is turned on with ST_GW_UI=on.")
@@ -1949,33 +2065,93 @@ impl RemotePages {
                 })))
                 .when(updatable, |r| {
                     r.child(crate::ui::probed(crate::ui::button("r-gw-update").primary().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx)))))
-                }),
+                })
+                .when(outside, |r| {
+                    r.child(crate::ui::probed(
+                        h_flex().gap_1().items_center().child(crate::ui::button("r-gw-adopt").outline().label("Manage it here").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Recording the gateway", vec!["gateway-adopt".into()], cx)))).child(ui::info(
+                            "r-gw-adopt-help".into(),
+                            "Records this gateway as the one the Platform Manager manages on this server. Nothing about it changes: the container, its compose file and its volumes stay as they are.".into(),
+                        )),
+                    ))
+                })
+                .child(div().flex_1())
+                .child(crate::ui::probed(crate::ui::button("r-gw-remove").danger().label("Remove the Gateway…").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx))))),
         )
     }
 
+    /// "Remove the Gateway…" on the server: the same dialog as here, then
+    /// the agent's gateway-remove job (it runs as root there).
+    pub(crate) fn open_gateway_remove(&mut self, target: crate::manager::gateway::RemoveTarget, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        crate::manager::gateway::open_remove_dialog(
+            target,
+            std::rc::Rc::new(move |keep, image, cx: &mut App| {
+                let mut args = vec!["gateway-remove".to_string()];
+                if !keep {
+                    args.push("--delete-data".into());
+                }
+                if image {
+                    args.push("--remove-image".into());
+                }
+                this.update(cx, |p, cx| p.run_job("Removing the gateway", args, cx)).ok();
+            }),
+            cx,
+        );
+    }
+
     /// One calm panel for a server that is not set up or cannot be reached:
-    /// what is the matter and the one thing that solves it.
+    /// what is the matter and the one thing that solves it. A Platform
+    /// Manager installed there (crate::remote::reuse) is offered as the agent
+    /// when it does the jobs the same way.
     fn gate_panel(&self, e: String, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
         let not_set_up = e == remote::NOT_SET_UP;
+        let installed = remote::reuse::is_offer(&e);
+        let usable = installed && remote::reuse::found(&self.inst.id).is_some_and(|f| remote::reuse::fit(&f.info, &remote::reuse::AgentInfo::this()) == remote::reuse::Fit::Compatible);
+        let title = if installed {
+            "Platform Manager installed on this server"
+        } else if not_set_up {
+            "Server agent not set up"
+        } else {
+            "The server does not answer"
+        };
+        let set_up = |primary: bool| {
+            let b = crate::ui::button("r-setup").label(if installed { "Set up the agent" } else { "Set up" }).loading(busy).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.set_up(cx)));
+            if primary { b.primary() } else { b.outline() }
+        };
         ui::panel(&theme)
-            .child(div().font_weight(FontWeight::MEDIUM).child(if not_set_up { "Server agent not set up" } else { "The server does not answer" }))
+            .child(div().font_weight(FontWeight::MEDIUM).child(title))
             .child(div().text_sm().text_color(theme.muted_foreground).child(if not_set_up {
                 "The Platform Manager works on a server through its server agent. Set up copies the matching agent over SSH and checks it; nothing else on the server changes.".to_string()
             } else {
                 e.clone()
             }))
-            .child(
-                h_flex().gap(crate::ui::button_gap()).child(if not_set_up {
-                    crate::ui::button("r-setup").primary().label("Set up").loading(busy).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.set_up(cx)))
-                } else {
-                    crate::ui::button("r-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
-                        this.ready = Read::Loading;
-                        this.reload(cx);
-                    }))
-                }),
-            )
+            .child(if usable {
+                ui::button_group(vec![
+                    crate::ui::button("r-use-installed").primary().label("Use it").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.use_installed(cx))).into_any_element(),
+                    set_up(false).into_any_element(),
+                ])
+            } else if not_set_up || installed {
+                h_flex().child(set_up(true))
+            } else {
+                h_flex().child(crate::ui::button("r-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
+                    this.ready = Read::Loading;
+                    this.reload(cx);
+                })))
+            })
+    }
+
+    /// "Use it anyway": the installed Platform Manager does the jobs.
+    fn use_installed(&mut self, cx: &mut Context<Self>) {
+        match remote::use_installed(&self.inst) {
+            Ok(()) => {
+                self.ready = Read::Loading;
+                self.reload(cx);
+            }
+            Err(e) => self.ready = Read::Failed(e),
+        }
+        cx.notify();
     }
 
     fn set_up(&mut self, cx: &mut Context<Self>) {
@@ -2108,6 +2284,7 @@ impl Render for RemotePages {
         let reload = crate::ui::refresh_button("remote-reload", self.in_flight > 0, window, move |_, cx| {
             me.update(cx, |this, cx| this.reload(cx)).ok();
         });
+        let reload = h_flex().gap_3().items_center().min_h(px(32.)).children(self.stale_note(&theme, cx)).child(reload);
         ui::page_with(&theme, title, summary, reload).child(body).into_any_element()
     }
 }

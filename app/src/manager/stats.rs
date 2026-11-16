@@ -11,7 +11,8 @@
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::{ActiveTheme, Disableable as _, button::ButtonVariants as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -19,7 +20,7 @@ use gpui_kit::*;
 
 use crate::dbstatus::bytes_label;
 use crate::installation::InstallationRecord;
-use crate::stats::Sample;
+use crate::stats::{DbRead, Part, Sample};
 use crate::ui;
 
 /// Live: one reading every this many seconds, the last LIVE_KEEP kept (about
@@ -28,6 +29,11 @@ const LIVE_EVERY: Duration = Duration::from_secs(3);
 const LIVE_KEEP: usize = 100;
 /// The longer ranges read their history again this often while shown.
 const HISTORY_EVERY: Duration = Duration::from_secs(60);
+/// Live: the second reading this soon after the first, so the charts have
+/// a line within about a second.
+const SECOND_AFTER: Duration = Duration::from_secs(1);
+/// The database numbers change slowly and cost a query: this often.
+const DB_EVERY: Duration = Duration::from_secs(60);
 
 static OPEN: AtomicBool = AtomicBool::new(false);
 
@@ -43,16 +49,61 @@ pub enum Source {
 }
 
 impl Source {
-    fn live(&self) -> Result<Sample, String> {
+    /// Processor, memory, disk, network, uptime: /proc and sysinfo here,
+    /// never a service manager, a database or a password; on a server one
+    /// agent call. An agent from before the parts answers the whole
+    /// reading (services and database in it).
+    fn system(&self) -> Result<Sample, String> {
         match self {
             Source::Local(r) => {
                 #[cfg(debug_assertions)]
                 if let Some(d) = std::env::var_os("SPM_DEBUG_STATS") {
-                    return crate::stats::debug_live(std::path::Path::new(&d));
+                    return crate::stats::debug_part(std::path::Path::new(&d), Part::System);
                 }
-                Ok(crate::stats::read(r.as_ref(), Duration::from_secs(1), true))
+                Ok(crate::stats::local_read(r.as_ref(), crate::stats::FIRST_WINDOW))
             }
-            Source::Remote(i) => crate::remote::stats_live(i),
+            Source::Remote(i) => crate::remote::stats_live_part(i, Part::System),
+        }
+    }
+
+    /// Whether there are services and a database to read at all.
+    fn has_install(&self) -> bool {
+        match self {
+            Source::Local(r) => r.is_some(),
+            Source::Remote(_) => true,
+        }
+    }
+
+    fn services(&self) -> Result<Vec<crate::stats::Service>, String> {
+        match self {
+            Source::Local(r) => {
+                #[cfg(debug_assertions)]
+                if let Some(d) = std::env::var_os("SPM_DEBUG_STATS") {
+                    return crate::stats::debug_part(std::path::Path::new(&d), Part::Services).map(|s| s.services);
+                }
+                Ok(crate::stats::services_over(r.as_ref(), Duration::from_secs(1)))
+            }
+            Source::Remote(i) => crate::remote::stats_live_part(i, Part::Services).map(|s| s.services),
+        }
+    }
+
+    /// The database numbers, never asking for a password.
+    fn db(&self) -> Result<DbRead, String> {
+        let some = |db: Option<crate::stats::Db>| db.map(DbRead::Read).unwrap_or(DbRead::None);
+        match self {
+            Source::Local(r) => {
+                #[cfg(debug_assertions)]
+                if let Some(d) = std::env::var_os("SPM_DEBUG_STATS") {
+                    let d = std::path::Path::new(&d);
+                    if d.join("needs-admin").exists() {
+                        let _ = crate::stats::debug_part(d, Part::Db);
+                        return Ok(DbRead::NeedsAdmin { last_backup: None, after_sign_in: d.join("after-sign-in").exists() });
+                    }
+                    return crate::stats::debug_part(d, Part::Db).map(|s| some(s.db));
+                }
+                Ok(crate::stats::db_unprompted(r.as_ref()))
+            }
+            Source::Remote(i) => crate::remote::stats_live_part(i, Part::Db).map(|s| some(s.db)),
         }
     }
 
@@ -103,11 +154,31 @@ impl Range {
 pub struct StatsPage {
     src: Source,
     range: Range,
+    /// Processor, memory, disk, network, uptime: the figures and the live charts.
     live: Vec<Sample>,
     hist: Option<Result<Vec<Sample>, String>>,
     /// The last 24 hours, for the database's growth and "Disk full in".
     day: Vec<Sample>,
     live_err: Option<String>,
+    /// Its instance is not the open one (a kept page): no reading meanwhile.
+    paused: bool,
+    /// A read asked for (shown again, Refresh) has not come back yet: the
+    /// Refresh icon turns.
+    refreshing: bool,
+    /// Per part: the last re-read failed while what was read before still
+    /// shows (the first one is said, softly, in the title row).
+    stale: Vec<(&'static str, String)>,
+    /// When a reading last came back (HH:MM).
+    updated_at: Option<String>,
+    /// Each source fills its own card: None while it is being read.
+    services: Option<Result<Vec<crate::stats::Service>, String>>,
+    db: Option<DbRead>,
+    /// The server's agent answers whole readings (from before the parts):
+    /// services and database come with the processor reading.
+    whole: Arc<AtomicBool>,
+    /// Debug builds: when the page opened, for SPM_DEBUG_STATS_TIMING.
+    opened: Instant,
+    timed: Vec<&'static str>,
     /// (chart, point) under the pointer.
     hover: Option<(usize, usize)>,
     /// Each chart's plot bounds, for the pointer.
@@ -115,7 +186,7 @@ pub struct StatsPage {
     /// Update agent (a server whose agent is too old for these readings).
     job: Entity<crate::jobs::Job>,
     _watch: Option<Subscription>,
-    _poll: Option<Task<()>>,
+    _poll: Vec<Task<()>>,
     _tasks: Vec<Task<()>>,
 }
 
@@ -132,6 +203,8 @@ impl StatsPage {
                 _ => Range::Live,
             };
         }
+        // Nothing installed here: no Services and no Database to wait for.
+        let none = !src.has_install();
         let mut p = Self {
             src,
             range,
@@ -139,11 +212,20 @@ impl StatsPage {
             hist: None,
             day: Vec::new(),
             live_err: None,
+            paused: false,
+            refreshing: false,
+            stale: Vec::new(),
+            updated_at: None,
+            services: none.then(|| Ok(Vec::new())),
+            db: none.then_some(DbRead::None),
+            whole: Arc::new(AtomicBool::new(false)),
+            opened: Instant::now(),
+            timed: Vec::new(),
             hover: None,
             plots: (0..6).map(|_| Rc::new(Cell::new(Bounds::default()))).collect(),
             job: cx.new(|_| crate::jobs::Job::new()),
             _watch: None,
-            _poll: None,
+            _poll: Vec::new(),
             _tasks: Vec::new(),
         };
         p.start(cx);
@@ -151,13 +233,81 @@ impl StatsPage {
         p
     }
 
-    /// Read now and then on the range's rhythm, while the page is shown.
+    /// Debug builds with SPM_DEBUG_STATS_TIMING: when each source first
+    /// came back, after the page opened.
+    fn timing(&mut self, what: &'static str) {
+        #[cfg(debug_assertions)]
+        if std::env::var_os("SPM_DEBUG_STATS_TIMING").is_some() && !self.timed.contains(&what) {
+            self.timed.push(what);
+            eprintln!("stats timing: {what} after {} ms", self.opened.elapsed().as_millis());
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = what;
+    }
+
+    /// Hidden behind another instance: no reading until shown again.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
+    /// Shown again after another instance was open: what was read stays
+    /// and every part is read again behind it.
+    pub fn reshow(&mut self, cx: &mut Context<Self>) {
+        self.paused = false;
+        self.read_again(cx);
+    }
+
+    /// Read every part again now, keeping what shows (the Refresh icon turns).
+    fn read_again(&mut self, cx: &mut Context<Self>) {
+        self.refreshing = true;
+        self.restart(false, cx);
+        self.read_day(cx);
+        cx.notify();
+    }
+
+    /// A part came back: `Some(why)` when it failed while its last reading
+    /// still shows.
+    fn set_stale(&mut self, part: &'static str, why: Option<String>) {
+        self.stale.retain(|(p, _)| *p != part);
+        match why {
+            Some(e) => self.stale.push((part, e)),
+            None => self.updated_at = Some(chrono::Local::now().format("%H:%M").to_string()),
+        }
+    }
+
+    fn push_live(&mut self, sample: Sample) {
+        // An agent from before the parts: its reading carries the rest.
+        if !sample.services.is_empty() || sample.db.is_some() {
+            self.whole.store(true, Ordering::Relaxed);
+        }
+        if self.whole.load(Ordering::Relaxed) {
+            self.services = Some(Ok(sample.services.clone()));
+            self.db = Some(sample.db.clone().map(DbRead::Read).unwrap_or(DbRead::None));
+            self.timing("services");
+            self.timing("db");
+        }
+        self.live.push(sample);
+        if self.live.len() > LIVE_KEEP {
+            self.live.remove(0);
+        }
+        self.live_err = None;
+        self.set_stale("system", None);
+        self.timing("system");
+    }
+
+    /// Read now and then on the range's rhythm, while the page is shown:
+    /// each source on its own, so a slow one never holds the others back.
     fn start(&mut self, cx: &mut Context<Self>) {
-        let src = self.src.clone();
+        self.restart(true, cx);
+    }
+
+    /// `clear`: a new range, whose history is not read yet.
+    fn restart(&mut self, clear: bool, cx: &mut Context<Self>) {
         let range = self.range;
-        if range != Range::Live {
+        if range != Range::Live && clear {
             self.hist = None;
         }
+        self._poll.clear();
         // 20 seconds without a first reading: say so, with Retry.
         let timeout = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(Duration::from_secs(20)).await;
@@ -170,57 +320,155 @@ impl StatsPage {
             .ok();
         });
         self._tasks.push(timeout);
-        self._poll = Some(cx.spawn(async move |this, cx| {
-            let mut first = true;
+        let every = if range == Range::Live { LIVE_EVERY } else { HISTORY_EVERY };
+
+        // Processor, memory, disk, network, uptime.
+        let src = self.src.clone();
+        self._poll.push(cx.spawn(async move |this, cx| {
+            let mut round = 0u32;
             loop {
-                if first || OPEN.load(Ordering::Relaxed) {
-                    first = false;
+                let Ok(paused) = this.update(cx, |p, _| p.paused) else { break };
+                if round == 0 || (OPEN.load(Ordering::Relaxed) && !paused) {
                     let s = src.clone();
-                    if range == Range::Live {
-                        let got = cx.background_executor().spawn(async move { s.live() }).await;
-                        let ok = this
-                            .update(cx, |p, cx| {
-                                match got {
-                                    Ok(sample) => {
-                                        p.live.push(sample);
-                                        if p.live.len() > LIVE_KEEP {
-                                            p.live.remove(0);
-                                        }
-                                        p.live_err = None;
-                                    }
-                                    Err(e) => p.live_err = Some(e),
-                                }
-                                cx.notify();
-                            })
-                            .is_ok();
-                        if !ok {
-                            break;
-                        }
-                    } else {
-                        // The history, and one live reading for the figures,
-                        // Services and Database above and below the charts.
-                        let s2 = s.clone();
-                        let got = cx.background_executor().spawn(async move { s.history(range.secs()) }).await;
-                        let now = cx.background_executor().spawn(async move { s2.live() }).await;
-                        if this.update(cx, |p, cx| {
-                            p.hist = Some(got);
-                            if let Ok(sample) = now {
-                                p.live.push(sample);
-                                if p.live.len() > LIVE_KEEP {
-                                    p.live.remove(0);
-                                }
+                    let got = cx.background_executor().spawn(async move { s.system() }).await;
+                    let ok = this
+                        .update(cx, |p, cx| {
+                            if range == Range::Live {
+                                p.refreshing = false;
+                            }
+                            match got {
+                                Ok(sample) => p.push_live(sample),
+                                // With readings shown: they stay, said
+                                // softly to be stale.
+                                Err(e) if !p.live.is_empty() => p.set_stale("system", Some(e)),
+                                Err(e) => p.live_err = Some(e),
                             }
                             cx.notify();
                         })
-                        .is_err()
+                        .is_ok();
+                    if !ok {
+                        break;
+                    }
+                }
+                round += 1;
+                cx.background_executor().timer(if round == 1 && range == Range::Live { SECOND_AFTER } else { every }).await;
+            }
+        }));
+
+        // Each SENTIENT service (systemctl or docker stats: a second or two).
+        if self.src.has_install() {
+            let (src, whole) = (self.src.clone(), self.whole.clone());
+            self._poll.push(cx.spawn(async move |this, cx| {
+                let mut first = true;
+                loop {
+                    if whole.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let Ok(paused) = this.update(cx, |p, _| p.paused) else { break };
+                    if first || (OPEN.load(Ordering::Relaxed) && !paused) {
+                        first = false;
+                        let s = src.clone();
+                        let got = cx.background_executor().spawn(async move { s.services() }).await;
+                        if this
+                            .update(cx, |p, cx| {
+                                if !p.whole.load(Ordering::Relaxed) {
+                                    match got {
+                                        // A failed re-read keeps what was read.
+                                        Err(e) if matches!(p.services, Some(Ok(_))) => p.set_stale("services", Some(e)),
+                                        got => {
+                                            if got.is_ok() {
+                                                p.set_stale("services", None);
+                                            }
+                                            p.services = Some(got);
+                                        }
+                                    }
+                                    p.timing("services");
+                                    cx.notify();
+                                }
+                            })
+                            .is_err()
                         {
                             break;
                         }
                     }
+                    cx.background_executor().timer(every).await;
                 }
-                cx.background_executor().timer(if range == Range::Live { LIVE_EVERY } else { HISTORY_EVERY }).await;
-            }
-        }));
+            }));
+
+            // The database numbers (never asking for a password).
+            let (src, whole) = (self.src.clone(), self.whole.clone());
+            self._poll.push(cx.spawn(async move |this, cx| {
+                let mut first = true;
+                loop {
+                    if whole.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let Ok(paused) = this.update(cx, |p, _| p.paused) else { break };
+                    if first || (OPEN.load(Ordering::Relaxed) && !paused) {
+                        first = false;
+                        let s = src.clone();
+                        let got = cx.background_executor().spawn(async move { s.db() }).await;
+                        if this
+                            .update(cx, |p, cx| {
+                                if !p.whole.load(Ordering::Relaxed) {
+                                    match got {
+                                        Ok(d) => {
+                                            p.set_stale("db", None);
+                                            p.db = Some(d);
+                                        }
+                                        Err(e) if matches!(p.db, Some(DbRead::Read(_))) => p.set_stale("db", Some(e)),
+                                        Err(_) => p.db = Some(DbRead::None),
+                                    }
+                                    p.timing("db");
+                                    cx.notify();
+                                }
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    cx.background_executor().timer(DB_EVERY).await;
+                }
+            }));
+        }
+
+        // The longer ranges' history.
+        if range != Range::Live {
+            let src = self.src.clone();
+            self._poll.push(cx.spawn(async move |this, cx| {
+                let mut first = true;
+                loop {
+                    let Ok(paused) = this.update(cx, |p, _| p.paused) else { break };
+                    if first || (OPEN.load(Ordering::Relaxed) && !paused) {
+                        first = false;
+                        let s = src.clone();
+                        let got = cx.background_executor().spawn(async move { s.history(range.secs()) }).await;
+                        if this
+                            .update(cx, |p, cx| {
+                                p.refreshing = false;
+                                match got {
+                                    // A failed re-read keeps the history shown.
+                                    Err(e) if matches!(p.hist, Some(Ok(_))) => p.set_stale("history", Some(e)),
+                                    got => {
+                                        if got.is_ok() {
+                                            p.set_stale("history", None);
+                                        }
+                                        p.hist = Some(got);
+                                    }
+                                }
+                                p.timing("history");
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    cx.background_executor().timer(HISTORY_EVERY).await;
+                }
+            }));
+        }
     }
 
     /// Update the server's agent (the progress chip; Retry on failure),
@@ -255,6 +503,7 @@ impl StatsPage {
             let got = cx.background_executor().spawn(async move { src.history(86_400) }).await;
             this.update(cx, |p, cx| {
                 p.day = got.unwrap_or_default();
+                p.timing("day history");
                 cx.notify();
             })
             .ok();
@@ -465,8 +714,11 @@ impl StatsPage {
             )
             .child(
                 h_flex()
+                    .relative()
                     .gap(px(6.))
                     .items_start()
+                    // Layout tests: the scale and plot are not row dividers.
+                    .child(ui::layout_probe("chart"))
                     // The scale: its widest label decides the column, for every chart alike.
                     .child(v_flex().w(px(26.)).h(px(PLOT_H)).justify_between().items_end().when(!empty, |c| c.child(axis(1.)).child(axis(0.5)).child(axis(0.))))
                     .child(
@@ -549,6 +801,29 @@ fn figure(theme: &gpui_kit::component::Theme, name: &'static str, big: String, u
         .child(div().mt(px(5.)).text_size(px(12.)).text_color(theme.muted_foreground).overflow_hidden().whitespace_nowrap().text_ellipsis().child(line))
 }
 
+/// A figure while its reading comes.
+fn skeleton_figure(theme: &gpui_kit::component::Theme, i: usize, name: &'static str) -> AnyElement {
+    ui::panel(theme)
+        .flex_1()
+        .gap_0()
+        .child(div().text_sm().text_color(theme.muted_foreground).child(name))
+        .child(div().h(px(30.)).flex().items_center().child(ui::skeleton_block(theme, format!("fig-{i}"), px(70.).into(), 18.)))
+        .child(div().mt(px(7.)).child(ui::skeleton_block(theme, format!("figbar-{i}"), relative(1.).into(), 5.)))
+        .child(div().mt(px(5.)).child(ui::skeleton_line(theme, format!("figline-{i}"), 110.)))
+        .into_any_element()
+}
+
+/// A chart while its points come.
+fn skeleton_chart(theme: &gpui_kit::component::Theme, i: usize, title: &'static str) -> AnyElement {
+    ui::panel(theme)
+        .flex_1()
+        .gap_1()
+        .child(div().font_weight(FontWeight::MEDIUM).child(title))
+        .child(ui::skeleton_block(theme, format!("plot-{i}"), relative(1.).into(), 96.))
+        .child(div().h(px(15.)))
+        .into_any_element()
+}
+
 /// The Services table's number columns.
 const PROC_W: f32 = 118.;
 const MEM_W: f32 = 124.;
@@ -574,13 +849,11 @@ impl Render for StatsPage {
             seg = seg.child(ui::seg_item(&theme, SharedString::from(format!("range-{}", r.label())), r.label(), self.range == r).on_click(cx.listener(move |p, _, _, cx| p.pick(r, cx))));
         }
         let me = cx.entity().downgrade();
-        let refresh = crate::ui::refresh_button("stats-refresh", false, window, move |_, cx| {
-            me.update(cx, |p, cx| {
-                p.start(cx);
-                p.read_day(cx);
-            })
-            .ok();
+        let refresh = crate::ui::refresh_button("stats-refresh", self.refreshing, window, move |_, cx| {
+            me.update(cx, |p, cx| p.read_again(cx)).ok();
         });
+        let dbg = ui::debug_stale().filter(|_| !self.live.is_empty());
+        let stale = self.stale.first().map(|(_, e)| e.as_str()).or(dbg.as_deref()).filter(|_| !self.refreshing).map(|e| ui::stale_note(&theme, "stats-stale", e, self.updated_at.as_deref()));
         // Title only; the range and Read again at its right, under it when narrow.
         let header = h_flex()
             .flex_wrap()
@@ -588,64 +861,40 @@ impl Render for StatsPage {
             .items_center()
             .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Statistics"))
             .child(div().flex_1())
+            // The stale note wraps on its own: the range and Refresh never move.
+            .children(stale.map(|n| div().max_w_full().child(n)))
             .child(h_flex().gap_2().items_center().child(seg).child(refresh));
 
         let latest = self.live.last().cloned().or_else(|| self.points().last().cloned());
         let mut col = v_flex().gap(px(crate::ui::GAP)).child(header);
         let page = |col: Div| v_flex().id("stats-page").flex_1().min_w_0().h_full().overflow_y_scroll().p(px(crate::ui::PAGE_PAD)).bg(theme.muted).child(col);
-        // Nothing read: one notice in the page and nothing else (no empty
-        // boxes, no endless "Reading…").
+        // Nothing could be read: one notice in the page and nothing else (no
+        // empty boxes, no endless "Reading…").
         if latest.is_none() {
-            let busy = self.job.read(cx).is_running();
-            col = col.child(match &self.live_err {
-                Some(e) if e == crate::remote::AGENT_OLD => ui::notice_with(
-                    &theme,
-                    ui::Tone::Warn,
-                    "The agent on this server is out of date.\nUpdate it to read the server's statistics. Nothing else on the server changes.",
-                    Some(crate::ui::button("stats-agent-update").primary().label("Update agent").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.update_agent(cx))).into_any_element()),
-                ),
-                Some(e) => ui::notice_with(
-                    &theme,
-                    ui::Tone::Bad,
-                    format!("The statistics could not be read.\n{e}"),
-                    Some(crate::ui::button("stats-retry").outline().label("Retry").on_click(cx.listener(|p, _, _, cx| {
-                        p.live_err = None;
-                        p.start(cx);
-                        p.read_day(cx);
-                        cx.notify();
-                    })).into_any_element()),
-                ),
-                // Loading: the page's final layout with placeholders.
-                None => {
-                    let fig = |i: usize, name: &'static str| {
-                        ui::panel(&theme)
-                            .flex_1()
-                            .gap_0()
-                            .child(div().text_sm().text_color(theme.muted_foreground).child(name))
-                            .child(div().h(px(30.)).flex().items_center().child(ui::skeleton_block(&theme, format!("fig-{i}"), px(70.).into(), 18.)))
-                            .child(div().mt(px(7.)).child(ui::skeleton_block(&theme, format!("figbar-{i}"), relative(1.).into(), 5.)))
-                            .child(div().mt(px(5.)).child(ui::skeleton_line(&theme, format!("figline-{i}"), 110.)))
-                            .into_any_element()
-                    };
-                    let figs = ["Processor", "Memory", "Disk", "Running for"].into_iter().enumerate().map(|(i, n)| fig(i, n)).collect();
-                    let chart = |i: usize, title: &'static str| {
-                        ui::panel(&theme)
-                            .flex_1()
-                            .gap_1()
-                            .child(div().font_weight(FontWeight::MEDIUM).child(title))
-                            .child(ui::skeleton_block(&theme, format!("plot-{i}"), relative(1.).into(), 96.))
-                            .child(div().h(px(15.)))
-                            .into_any_element()
-                    };
-                    let charts = ["Processor", "Memory", "Processor load", "Network received", "Network sent", "Disk activity"].into_iter().enumerate().map(|(i, t)| chart(i, t)).collect();
-                    v_flex()
-                        .gap(px(crate::ui::GAP))
-                        .child(grid(fig_cols, figs))
-                        .child(grid(chart_cols, charts))
-                        .child(ui::skeleton_card(&theme, "stats-svc", Some("Services"), &["", "", ""]))
-                }
-            });
-            return page(col);
+            if let Some(e) = &self.live_err {
+                let busy = self.job.read(cx).is_running();
+                col = col.child(if e == crate::remote::AGENT_OLD {
+                    ui::notice_with(
+                        &theme,
+                        ui::Tone::Warn,
+                        "The agent on this server is out of date.\nUpdate it to read the server's statistics. Nothing else on the server changes.",
+                        Some(crate::ui::button("stats-agent-update").primary().label("Update agent").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.update_agent(cx))).into_any_element()),
+                    )
+                } else {
+                    ui::notice_with(
+                        &theme,
+                        ui::Tone::Bad,
+                        format!("The statistics could not be read.\n{e}"),
+                        Some(crate::ui::button("stats-retry").outline().label("Retry").on_click(cx.listener(|p, _, _, cx| {
+                            p.live_err = None;
+                            p.start(cx);
+                            p.read_day(cx);
+                            cx.notify();
+                        })).into_any_element()),
+                    )
+                });
+                return page(col);
+            }
         }
         if let Some(Err(e)) = &self.hist {
             if self.range != Range::Live {
@@ -653,44 +902,68 @@ impl Render for StatsPage {
             }
         }
 
-        // The four figures.
-        if let Some(s) = &latest {
-            let used = s.disk_total.saturating_sub(s.disk_free);
-            let up = (s.t - s.boot).max(0);
-            let (n, unit) = if up >= 86_400 { (up / 86_400, if up / 86_400 == 1 { "day" } else { "days" }) } else { (up / 3600, if up / 3600 == 1 { "hour" } else { "hours" }) };
-            let started = chrono::DateTime::from_timestamp(s.boot, 0).map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default();
-            let figs = [
-                figure(&theme, "Processor", format!("{:.0}", s.cpu), "%".into(), Some((s.cpu / 100., s.cpu_high())), match s.load {
-                    Some(l) => format!("{} cores · load {l:.2}", s.cores),
-                    None => format!("{} cores", s.cores),
-                }),
-                figure(
-                    &theme,
-                    "Memory",
-                    format!("{:.1}", gb(s.mem_used)),
-                    format!("of {:.0} GB", gb(s.mem_total)),
-                    Some((if s.mem_total > 0 { s.mem_used as f32 / s.mem_total as f32 } else { 0. }, s.mem_high())),
-                    if s.swap_total > 0 { format!("Swap {:.1} of {:.0} GB", gb(s.swap_used), gb(s.swap_total)) } else { "No swap".into() },
-                ),
-                {
-                    let free = bytes_label(s.disk_free);
-                    let (num, unit) = free.split_once(' ').map(|(a, b)| (a.to_string(), format!("{b} free"))).unwrap_or((free.clone(), "free".into()));
-                    figure(&theme, "Disk", num, unit, Some((if s.disk_total > 0 { used as f32 / s.disk_total as f32 } else { 0. }, s.disk_low())), format!("{} of {} used", bytes_label(used), bytes_label(s.disk_total)))
-                },
-                figure(&theme, "Running for", n.to_string(), unit.into(), None, format!("Started {started}")),
-            ];
-            col = col.child(grid(fig_cols, figs.into_iter().map(|f| f.flex_1().into_any_element()).collect()));
+        // The four figures: each fills in place as the reading comes.
+        match &latest {
+            Some(s) => {
+                let used = s.disk_total.saturating_sub(s.disk_free);
+                let up = (s.t - s.boot).max(0);
+                let (n, unit) = if up >= 86_400 { (up / 86_400, if up / 86_400 == 1 { "day" } else { "days" }) } else { (up / 3600, if up / 3600 == 1 { "hour" } else { "hours" }) };
+                let started = chrono::DateTime::from_timestamp(s.boot, 0).map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default();
+                let figs = [
+                    figure(&theme, "Processor", format!("{:.0}", s.cpu), "%".into(), Some((s.cpu / 100., s.cpu_high())), match s.load {
+                        Some(l) => format!("{} cores · load {l:.2}", s.cores),
+                        None => format!("{} cores", s.cores),
+                    }),
+                    figure(
+                        &theme,
+                        "Memory",
+                        format!("{:.1}", gb(s.mem_used)),
+                        format!("of {:.0} GB", gb(s.mem_total)),
+                        Some((if s.mem_total > 0 { s.mem_used as f32 / s.mem_total as f32 } else { 0. }, s.mem_high())),
+                        if s.swap_total > 0 { format!("Swap {:.1} of {:.0} GB", gb(s.swap_used), gb(s.swap_total)) } else { "No swap".into() },
+                    ),
+                    {
+                        let free = bytes_label(s.disk_free);
+                        let (num, unit) = free.split_once(' ').map(|(a, b)| (a.to_string(), format!("{b} free"))).unwrap_or((free.clone(), "free".into()));
+                        figure(&theme, "Disk", num, unit, Some((if s.disk_total > 0 { used as f32 / s.disk_total as f32 } else { 0. }, s.disk_low())), format!("{} of {} used", bytes_label(used), bytes_label(s.disk_total)))
+                    },
+                    figure(&theme, "Running for", n.to_string(), unit.into(), None, format!("Started {started}")),
+                ];
+                self.timing("figures drawn");
+                col = col.child(grid(fig_cols, figs.into_iter().map(|f| f.flex_1().into_any_element()).collect()));
+            }
+            None => {
+                let figs = ["Processor", "Memory", "Disk", "Running for"].into_iter().enumerate().map(|(i, n)| skeleton_figure(&theme, i, n)).collect();
+                col = col.child(grid(fig_cols, figs));
+            }
         }
 
-        // The six charts.
-        let points = self.points().to_vec();
-        let times: Vec<i64> = points.iter().map(|s| s.t).collect();
-        let charts: Vec<AnyElement> = charts(&points).into_iter().enumerate().map(|(i, c)| self.chart(i, c, &times, cx)).collect();
+        // The six charts: placeholders until their points come.
+        let loading = match self.range {
+            Range::Live => self.live.is_empty(),
+            _ => self.hist.is_none(),
+        };
+        let charts: Vec<AnyElement> = if loading {
+            ["Processor", "Memory", "Processor load", "Network received", "Network sent", "Disk activity"].into_iter().enumerate().map(|(i, t)| skeleton_chart(&theme, i, t)).collect()
+        } else {
+            let points = self.points().to_vec();
+            let times: Vec<i64> = points.iter().map(|s| s.t).collect();
+            charts(&points).into_iter().enumerate().map(|(i, c)| self.chart(i, c, &times, cx)).collect()
+        };
         col = col.child(grid(chart_cols, charts));
 
-        // Services and Database: each only with something in it.
-        let services = latest.as_ref().filter(|s| !s.services.is_empty()).map(|s| services_panel(&theme, s));
-        let db = latest.as_ref().filter(|s| s.db.is_some()).map(|_| database_panel(&theme, latest.as_ref(), &self.day));
+        // Services and Database: each its own source, a placeholder while
+        // it is read, left out when there is nothing in it.
+        let services = match &self.services {
+            None => Some(ui::skeleton_card(&theme, "stats-svc", Some("Services"), &["", "", ""])),
+            Some(Ok(list)) if !list.is_empty() => Some(services_panel(&theme, list, self.live.last())),
+            Some(_) => None,
+        };
+        let db = match &self.db {
+            None => Some(ui::skeleton_card(&theme, "stats-db", Some("Database"), &["", "", "", ""])),
+            Some(DbRead::None) => None,
+            Some(d) => Some(database_panel(&theme, d, latest.as_ref(), &self.day)),
+        };
         col = col.child(match (services, db) {
             (Some(services), Some(db)) if side_by_side => {
             // Siblings in a row share its height.
@@ -725,8 +998,10 @@ fn grid(cols: usize, items: Vec<AnyElement>) -> AnyElement {
     rows.into_any_element()
 }
 
-fn services_panel(theme: &gpui_kit::component::Theme, s: &Sample) -> Div {
-    let mem_total = s.mem_total.max(1) as f32;
+/// `list`: the services; `s`: the computer's reading, for "Everything
+/// else" (left out until it comes).
+fn services_panel(theme: &gpui_kit::component::Theme, list: &[crate::stats::Service], s: Option<&Sample>) -> Div {
+    let mem_total = s.map(|s| s.mem_total as f32).filter(|t| *t > 0.).unwrap_or(f32::MAX);
     let head = |t: &'static str, w: Option<f32>, right: bool| {
         div().when_some(w, |d, w| d.w(px(w)).flex_shrink_0()).when(w.is_none(), |d| d.flex_1().min_w_0()).when(right, |d| d.text_right()).text_size(px(12.)).text_color(theme.muted_foreground).child(t)
     };
@@ -748,7 +1023,7 @@ fn services_panel(theme: &gpui_kit::component::Theme, s: &Sample) -> Div {
         .min_w_0()
         .child(div().pb(px(7.)).font_weight(FontWeight::MEDIUM).child("Services"))
         .child(h_flex().gap_3().pb(px(5.)).child(head("Service", None, false)).child(head("Processor", Some(PROC_W), false)).child(head("Memory", Some(MEM_W), false)).child(head("Restarts", Some(RESTART_W), true)));
-    let mut list = s.services.clone();
+    let mut list = list.to_vec();
     list.sort_by_key(|v| match ui::service_label(&v.name) {
         Some("SENTIENT") => 0,
         Some("Database (PostgreSQL)") => 1,
@@ -771,16 +1046,42 @@ fn services_panel(theme: &gpui_kit::component::Theme, s: &Sample) -> Div {
         p = p.child(row(name, v.cpu, v.mem, v.restarts, i));
     }
     let n = list.len();
-    p.child(row(div().child("Everything else on the server"), (s.cpu - cpu_sum).max(0.), s.mem_used.saturating_sub(mem_sum), None, n))
+    match s {
+        Some(s) => p.child(row(div().child("Everything else on the server"), (s.cpu - cpu_sum).max(0.), s.mem_used.saturating_sub(mem_sum), None, n)),
+        None => p,
+    }
 }
 
-fn database_panel(theme: &gpui_kit::component::Theme, latest: Option<&Sample>, day: &[Sample]) -> Div {
-    let mut p = ui::panel(theme).gap(px(6.)).min_w_0().child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Database"));
+/// The database numbers, or "—" where they need the administrator
+/// password here (never asked for on view); "Disk full in" and "Last
+/// backup" need no password.
+fn database_panel(theme: &gpui_kit::component::Theme, read: &DbRead, latest: Option<&Sample>, day: &[Sample]) -> Div {
+    let mut p = ui::panel(theme).gap(px(6.)).min_w_0();
     let fact = |label: &'static str, value: String| {
         h_flex().gap_3().text_sm().child(div().w(px(118.)).flex_shrink_0().text_color(theme.muted_foreground).child(label)).child(div().min_w_0().child(value))
     };
-    let Some(db) = latest.and_then(|s| s.db.clone()) else {
-        return p.child(div().text_sm().text_color(theme.muted_foreground).child("Reading the database…"));
+    let db = match read {
+        DbRead::Read(db) => {
+            p = p.child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Database"));
+            db.clone()
+        }
+        _ => {
+            let (last_backup, after) = match read {
+                DbRead::NeedsAdmin { last_backup, after_sign_in } => (last_backup.clone(), *after_sign_in),
+                _ => (None, false),
+            };
+            p = p.child(
+                h_flex()
+                    .pb_1()
+                    .gap_1()
+                    .items_center()
+                    .child(div().font_weight(FontWeight::MEDIUM).child("Database"))
+                    .child(ui::info("stats-db-admin".into(), if after { AFTER_SIGN_IN } else { NEEDS_ADMIN }.into())),
+            );
+            p = p.child(fact("Connections", "—".into())).child(fact("Size", "—".into()));
+            p = p.child(fact("Disk full in", disk_full_in(latest, day)));
+            return p.child(fact("Last backup", last_backup_label(last_backup)));
+        }
     };
     // The oldest reading of the last 24 hours that has the database's sizes.
     let then = day.iter().find(|s| s.db.is_some());
@@ -796,7 +1097,19 @@ fn database_panel(theme: &gpui_kit::component::Theme, latest: Option<&Sample>, d
     if let Some(ch) = db.ch_bytes {
         p = p.child(fact("ClickHouse size", format!("{}{}", bytes_label(ch), growth(ch, then.and_then(|s| s.db.as_ref().and_then(|d| d.ch_bytes))))));
     }
-    let full = match (latest, day.first()) {
+    p = p.child(fact("Disk full in", disk_full_in(latest, day)));
+    p.child(fact("Last backup", last_backup_label(db.last_backup.clone())))
+}
+
+/// Why the database's numbers show "—" (native Linux, its password root-only).
+const NEEDS_ADMIN: &str = "Connections and size: they need the database's password, which only the administrator can read on this computer, and Statistics never asks for it. Read on Status reads it once; after a Repair it reads without a password.";
+/// The same, once this account was given read access (sentient-admin) and
+/// only has to sign in again.
+const AFTER_SIGN_IN: &str = "Connections and size: available after you sign in again. This account can now read SENTIENT's settings; that takes effect at its next sign-in.";
+
+/// When the disk is full at the last 24 hours' rate.
+fn disk_full_in(latest: Option<&Sample>, day: &[Sample]) -> String {
+    match (latest, day.first()) {
         (Some(now), Some(first)) if now.t - first.t >= 3600 => {
             let used_per_day = (first.disk_free as f64 - now.disk_free as f64) / ((now.t - first.t) as f64 / 86_400.);
             if used_per_day <= 0. {
@@ -807,19 +1120,20 @@ fn database_panel(theme: &gpui_kit::component::Theme, latest: Option<&Sample>, d
             }
         }
         _ => "known after an hour of history".into(),
-    };
-    p = p.child(fact("Disk full in", full));
-    let last = match &db.last_backup {
+    }
+}
+
+fn last_backup_label(last: Option<(String, Option<u64>)>) -> String {
+    match last {
         Some((at, bytes)) => {
-            let when = chrono::DateTime::parse_from_rfc3339(at).map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|_| at.clone());
+            let when = chrono::DateTime::parse_from_rfc3339(&at).map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|_| at.clone());
             match bytes {
-                Some(b) => format!("{when}, {}", bytes_label(*b)),
+                Some(b) => format!("{when}, {}", bytes_label(b)),
                 None => when,
             }
         }
         None => "None".into(),
-    };
-    p.child(fact("Last backup", last))
+    }
 }
 
 #[cfg(test)]

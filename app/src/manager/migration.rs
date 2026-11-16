@@ -184,6 +184,8 @@ impl MigrationPage {
                 .background_executor()
                 .spawn(async move {
                     if crate::rootjob::needed(&record) {
+                        // Only when asked (see above): a user action.
+                        let _action = sentient_installer_core::elevation::user_action();
                         let noop = sentient_installer_core::progress::noop();
                         crate::rootjob::run(&["kept".to_string()], &noop)
                             .map(|lines| lines.iter().filter_map(|l| kept::decode(l)).collect())
@@ -417,7 +419,7 @@ impl MigrationPage {
             .ok();
         });
         let retry = match job.state() {
-            JobState::Failed(_) => job.retry().map(|r| crate::ui::button("mig-job-retry").primary().label("Try again").on_click(move |_, _, cx| r(cx)).into_any_element()),
+            JobState::Failed(m) => job.retry().map(|r| crate::ui::button("mig-job-retry").primary().label(crate::ui::retry_label(m, "Try again")).on_click(move |_, _, cx| r(cx)).into_any_element()),
             _ => None,
         };
         let stages: &[crate::manager::jobview::Stage] = if title.starts_with("Changing the database") { crate::manager::jobview::MIGRATION } else { &[] };

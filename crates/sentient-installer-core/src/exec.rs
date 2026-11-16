@@ -41,12 +41,27 @@ pub(crate) fn stream(sink: &ProgressFn, program: &str, args: &[&str]) -> Result<
 /// that look like errors or milestones always pass through.
 pub(crate) fn throttle_lines<R: std::io::Read>(reader: R, sink: &ProgressFn) {
     use std::io::BufRead;
-    use std::time::{Duration, Instant};
-    let mut last: Option<Instant> = None;
+    let mut gate = Throttle::default();
     for line in std::io::BufReader::new(reader).lines().map_while(Result::ok) {
+        if gate.pass(&line) {
+            sink(Progress::Log { line });
+        }
+    }
+}
+
+/// The rate limit of [`throttle_lines`], line by line.
+#[derive(Default)]
+pub(crate) struct Throttle {
+    last: Option<std::time::Instant>,
+}
+
+impl Throttle {
+    pub(crate) fn pass(&mut self, line: &str) -> bool {
+        use std::time::{Duration, Instant};
         let lower = line.to_ascii_lowercase();
         // ">> " marks a milestone echoed by one of our own scripts.
         let important = line.starts_with(">> ")
+            || line.starts_with("!! ")
             || lower.contains("error")
             || lower.contains("failed")
             || lower.contains("warning")
@@ -55,11 +70,11 @@ pub(crate) fn throttle_lines<R: std::io::Read>(reader: R, sink: &ProgressFn) {
             || line.contains("Started")
             || line.contains("Healthy");
         let now = Instant::now();
-        let due = last.map_or(true, |t| now.duration_since(t) >= Duration::from_millis(150));
+        let due = self.last.map_or(true, |t| now.duration_since(t) >= Duration::from_millis(150));
         if important || due {
-            last = Some(now);
-            sink(Progress::Log { line });
+            self.last = Some(now);
         }
+        important || due
     }
 }
 
@@ -87,55 +102,52 @@ pub(crate) fn is_root() -> bool {
         .unwrap_or(false)
 }
 
-/// How to run `script` as root from a desktop session.
-///
-/// pkexec puts up the desktop's own password dialog and — through polkit's
-/// `auth_admin_keep` — remembers the answer for a few minutes, so a multi-step
-/// install asks once rather than per step. `sudo -n` is the headless
-/// fallback (a harness running under sudo, or a passwordless rule); it fails
-/// fast instead of hanging on a prompt nobody can see.
-#[cfg(unix)]
-pub(crate) fn privileged_args(script: &str) -> (String, Vec<String>) {
-    if is_root() {
-        ("bash".into(), vec!["-c".into(), script.into()])
-    } else if have("pkexec") {
-        ("pkexec".into(), vec!["bash".into(), "-c".into(), script.into()])
-    } else {
-        ("sudo".into(), vec!["-n".into(), "bash".into(), "-c".into(), script.into()])
-    }
-}
-
 /// Run a script as root, streaming its output.
+///
+/// Every root step of this process goes to one helper (crate::elevation):
+/// the first asks for the password, the rest of the job does not. Outside a
+/// user action it never asks; it runs only when a helper is already alive.
 #[cfg(unix)]
 pub(crate) fn run_privileged(sink: &ProgressFn, script: &str) -> Result<(), String> {
-    let (prog, args) = privileged_args(script);
-    // The password dialog can open behind the window that asked for it, and
-    // the job then waits with nothing to show. Say so, once per run.
-    static HINTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if prog == "pkexec" && !HINTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        sink(Progress::Log { line: "Waiting for the administrator password: if nothing moves, look for the password dialog (it may be behind this window).".into() });
+    if is_root() {
+        return stream(sink, "bash", &["-c", script]);
     }
-    let argrefs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    stream(sink, &prog, &argrefs).map_err(|e| {
-        // pkexec itself exits 126 when the dialog is dismissed and 127 when
-        // authorisation fails; the same codes from bash mean something else.
-        if prog == "pkexec" && (e.contains("exited with 126") || e.contains("exited with 127")) {
-            "Administrator authorisation was refused or cancelled.".to_string()
-        } else {
-            e
+    // The password dialog can open behind the window that asked for it, and
+    // the job then waits with nothing to show. Say so when it opens.
+    let hint = || sink(Progress::Log { line: "Waiting for the administrator password: if nothing moves, look for the password dialog (it may be behind this window).".into() });
+    let mut gate = Throttle::default();
+    let mut on_line = |_: crate::elevation::Stream, line: String| {
+        if gate.pass(&line) {
+            sink(Progress::Log { line });
         }
-    })
+    };
+    let argv = ["bash".to_string(), "-c".to_string(), script.to_string()];
+    let cancelled_before = crate::cancel::is_cancelled();
+    let code = crate::elevation::run(&argv, None, true, &mut on_line, &hint).map_err(|e| e.to_string())?;
+    if !cancelled_before && crate::cancel::is_cancelled() {
+        Err("Cancelled.".into())
+    } else if code == 0 {
+        Ok(())
+    } else {
+        Err(format!("bash exited with {code}"))
+    }
 }
 
-/// Run a script as root and capture its output (for probes, not long steps).
+/// Run a script as root and capture its output (for probes, not long
+/// steps). Like [`run_privileged`] it asks for the password only inside a
+/// user action; a page read gets None-like failure instead (ok = false,
+/// stderr saying why).
 #[cfg(unix)]
-#[allow(dead_code)]
 pub(crate) fn privileged_output(script: &str) -> Option<(bool, String, String)> {
-    let (prog, args) = privileged_args(script);
-    let argrefs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    sys::output(&prog, &argrefs).map(|(ok, out, err)| {
-        (ok, String::from_utf8_lossy(&out).into_owned(), String::from_utf8_lossy(&err).into_owned())
-    })
+    if is_root() {
+        return sys::output("bash", &["-c", script]).map(|(ok, out, err)| {
+            (ok, String::from_utf8_lossy(&out).into_owned(), String::from_utf8_lossy(&err).into_owned())
+        });
+    }
+    match crate::elevation::output(&["bash".to_string(), "-c".to_string(), script.to_string()]) {
+        Ok(r) => Some(r),
+        Err(e) => Some((false, String::new(), e.to_string())),
+    }
 }
 
 /// Single-quote a value for a POSIX shell.
