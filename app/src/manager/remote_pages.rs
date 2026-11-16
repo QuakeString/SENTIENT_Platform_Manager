@@ -264,11 +264,17 @@ pub struct RemotePages {
     locations: Option<Entity<super::movedata::LocationsCard>>,
     /// Platform settings: Enter in the fields (made with the inputs).
     settings_enter: Vec<Subscription>,
+    /// All variables: the search box and the All / Set filter, as on the
+    /// local page.
+    vars_search: Entity<InputState>,
+    vars_set_only: bool,
 }
 
 impl RemotePages {
     pub fn new(inst: Instance, kind: Kind, updates: Entity<crate::updates::UpdateState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let job = cx.new(|_| Job::new());
+        let vars_search = cx.new(|cx| InputState::new(_window, cx).placeholder("Search settings and variables"));
+        let vars_sub = cx.subscribe(&vars_search, |_, _, _: &InputEvent, cx| cx.notify());
         let subs = vec![
             cx.observe(&job, |this, job, cx| {
                 if !job.read(cx).is_running() {
@@ -358,13 +364,19 @@ impl RemotePages {
             show_details: false,
             scroll: ScrollHandle::new(),
             _tasks: Vec::new(),
-            _subscriptions: subs,
+            _subscriptions: {
+                let mut s = subs;
+                s.push(vars_sub);
+                s
+            },
             keep_input: None,
             restore_flow: None,
             restore_pending: None,
             restores: Read::Loading,
             locations: None,
             settings_enter: Vec::new(),
+            vars_search,
+            vars_set_only: false,
         };
         #[cfg(debug_assertions)]
         if let (Ok(frame), Kind::Backup) = (std::env::var("SPM_DEBUG_RESTORE"), kind) {
@@ -473,13 +485,31 @@ impl RemotePages {
     }
 
     /// The inputs the open settings tab shows, in order (Enter).
-    fn settings_shown_inputs(&self) -> Vec<Entity<InputState>> {
+    /// All variables: a setting matches the search (label, variable, group,
+    /// help) and, with Set, has a value on the server or a change here.
+    fn var_shown(&self, group: &str, st: &crate::catalog::Setting, cx: &App) -> bool {
+        if self.vars_set_only {
+            let set = matches!(&self.settings, Read::Got(v) if v.get(&st.env).is_some_and(|x| !x.is_empty()));
+            let here = self.inputs.iter().find(|(e, _)| e == &st.env).map(|(_, i)| i.read(cx).value().trim().to_string()).unwrap_or_default();
+            let server = match &self.settings {
+                Read::Got(v) => v.get(&st.env).cloned().unwrap_or_default(),
+                _ => String::new(),
+            };
+            if !set && here == server.trim() {
+                return false;
+            }
+        }
+        let needle = self.vars_search.read(cx).value().trim().to_lowercase();
+        needle.is_empty() || format!("{} {} {} {}", st.label, st.env, group, st.help).to_lowercase().contains(&needle)
+    }
+
+    fn settings_shown_inputs(&self, cx: &App) -> Vec<Entity<InputState>> {
         use crate::manager::settings as local;
         let all: Vec<crate::catalog::Setting> = crate::catalog::groups().into_iter().flat_map(|g| g.settings).collect();
         let keys: Vec<String> = if self.settings_tab < 4 {
             local::TAB_GROUPS[self.settings_tab].iter().flat_map(|(_, k)| k.iter().map(|s| s.to_string())).collect()
         } else {
-            all.iter().map(|s| s.env.clone()).collect()
+            crate::catalog::groups().into_iter().flat_map(|g| g.settings.into_iter().filter(|s| self.var_shown(&g.name, s, cx)).map(|s| s.env).collect::<Vec<_>>()).collect()
         };
         keys.iter()
             .filter(|k| all.iter().find(|s| &s.env == *k).is_some_and(local::is_input))
@@ -1686,10 +1716,10 @@ impl RemotePages {
             // Enter: the next field shown; on the last one Apply, or the
             // first field that is not valid.
             let fields: Vec<Entity<InputState>> = self.inputs.iter().map(|(_, i)| i.clone()).collect();
-            self.settings_enter = ui::enter_moves_on(&fields, window, cx, |p: &Self, _| p.settings_shown_inputs(), |p: &mut Self, _, cx| {
+            self.settings_enter = ui::enter_moves_on(&fields, window, cx, |p: &Self, cx| p.settings_shown_inputs(cx), |p: &mut Self, _, cx| {
                 let bad = p.settings_invalid(cx);
                 if let Some((st, _)) = bad.first() {
-                    let shown = p.settings_shown_inputs();
+                    let shown = p.settings_shown_inputs(cx);
                     let first = shown.into_iter().find(|i| bad.iter().any(|(s, _)| p.inputs.iter().any(|(e, x)| e == &s.env && x == i)));
                     return first.or_else(|| p.inputs.iter().find(|(e, _)| e == &st.env).map(|(_, i)| i.clone()));
                 }
@@ -1816,9 +1846,41 @@ impl RemotePages {
                 body = body.child(ui::group(&theme, "Where the data is", vec![], vec![c.into_any_element()], cx));
             }
         } else {
+            // The same search box and All / Set filter as the local page.
+            let total: usize = groups.iter().map(|g| g.settings.len()).sum();
+            let set_n = match &self.settings {
+                Read::Got(v) => groups.iter().flat_map(|g| g.settings.iter()).filter(|s| v.get(&s.env).is_some_and(|x| !x.is_empty())).count(),
+                _ => 0,
+            };
+            let filter = |id: &'static str, text: String, on: bool, only: bool| {
+                let b = crate::ui::button(id).label(text).on_click(cx.listener(move |this, _, _, cx| {
+                    this.vars_set_only = only;
+                    cx.notify();
+                }));
+                if on { b.primary() } else { b.outline() }
+            };
+            body = body.child(
+                h_flex()
+                    .flex_wrap()
+                    .gap(crate::ui::button_gap())
+                    .items_center()
+                    .px(px(18.))
+                    .pt(px(14.))
+                    .child(div().flex_1().min_w(px(200.)).child(Input::new(&self.vars_search).cleanable(true)))
+                    .child(crate::ui::probed(filter("r-filter-all", format!("All {total}"), !self.vars_set_only, false)))
+                    .child(crate::ui::probed(filter("r-filter-set", format!("Set {set_n}"), self.vars_set_only, true))),
+            );
+            let mut any = false;
             for g in &groups {
-                let rows: Vec<ui::SettingRow> = g.settings.iter().filter_map(|st| row_of(st, Some(st.env.clone()), cx)).collect();
-                body = body.child(ui::group(&theme, &g.name, rows, vec![], cx));
+                let shown: Vec<&crate::catalog::Setting> = g.settings.iter().filter(|st| self.var_shown(&g.name, st, cx)).collect();
+                let rows: Vec<ui::SettingRow> = shown.into_iter().filter_map(|st| row_of(st, Some(st.env.clone()), cx)).collect();
+                if !rows.is_empty() {
+                    any = true;
+                    body = body.child(ui::group(&theme, &g.name, rows, vec![], cx));
+                }
+            }
+            if !any {
+                body = body.child(div().px(px(18.)).py(px(14.)).text_sm().text_color(theme.muted_foreground).child("No setting matches."));
             }
         }
         let (changes, n_invalid) = (changed.len(), invalid.len());
