@@ -1557,3 +1557,38 @@ mod info_tests {
         assert_eq!(info_lines("Backup finished."), ("Backup finished.".to_string(), None));
     }
 }
+
+/// Enter in a form's fields: each field's Enter moves to the next field
+/// shown, the last one's submits (the form's primary button). `order` lists
+/// the fields shown, in their visual order, when Enter is pressed (fields
+/// that come and go stay right). `submit` returns the first field that is
+/// not valid, to focus (its message is the form's to show), or None when it
+/// went ahead. Shift+Enter and the secondary Enter are left to the field.
+pub fn enter_moves_on<T: 'static>(
+    fields: &[Entity<gpui_kit::component::input::InputState>],
+    window: &mut Window,
+    cx: &mut Context<T>,
+    order: impl Fn(&T, &App) -> Vec<Entity<gpui_kit::component::input::InputState>> + 'static,
+    submit: impl Fn(&mut T, &mut Window, &mut Context<T>) -> Option<Entity<gpui_kit::component::input::InputState>> + 'static,
+) -> Vec<Subscription> {
+    use gpui_kit::component::input::InputEvent;
+    let order = std::rc::Rc::new(order);
+    let submit = std::rc::Rc::new(submit);
+    fields
+        .iter()
+        .map(|f| {
+            let (order, submit) = (order.clone(), submit.clone());
+            cx.subscribe_in(f, window, move |this, me, e: &InputEvent, window, cx| {
+                let InputEvent::PressEnter { secondary: false, shift: false } = e else { return };
+                let list = order(this, cx);
+                let next = match list.iter().position(|x| x == me) {
+                    Some(i) if i + 1 < list.len() => Some(list[i + 1].clone()),
+                    _ => submit(this, window, cx),
+                };
+                if let Some(n) = next {
+                    n.update(cx, |s, cx| s.focus(window, cx));
+                }
+            })
+        })
+        .collect()
+}

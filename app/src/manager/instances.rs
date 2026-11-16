@@ -64,6 +64,8 @@ struct Form {
     guide_scroll: ScrollHandle,
     /// The command copied from the guide last, and when (its tick).
     copied: Option<(String, std::time::Instant)>,
+    /// Enter moving through the fields (dropped with the form).
+    enter: Vec<Subscription>,
 }
 
 pub struct InstancesPage {
@@ -306,7 +308,42 @@ impl InstancesPage {
             guide: false,
             guide_scroll: ScrollHandle::new(),
             copied: None,
+            enter: Vec::new(),
         });
+        // Enter: the next field shown, and on the last one Connect.
+        if let Some(f) = &self.form {
+            let fields = [f.name.clone(), f.host.clone(), f.port.clone(), f.user.clone(), f.key_file.clone(), f.secret.clone(), f.sudo_secret.clone()];
+            let subs = crate::ui::enter_moves_on(
+                &fields,
+                window,
+                cx,
+                |this: &Self, _| {
+                    let Some(f) = &this.form else { return Vec::new() };
+                    let mut v = vec![f.name.clone(), f.host.clone(), f.port.clone(), f.user.clone()];
+                    if f.auth == Auth::Key {
+                        v.push(f.key_file.clone());
+                    }
+                    v.push(f.secret.clone());
+                    if f.auth == Auth::Key && f.os == Os::Linux {
+                        v.push(f.sudo_secret.clone());
+                    }
+                    v
+                },
+                |this: &mut Self, _, cx| {
+                    let f = this.form.as_ref()?;
+                    if this.job.read(cx).is_running() {
+                        return None;
+                    }
+                    let empty = |e: &Entity<InputState>| e.read(cx).value().trim().is_empty();
+                    let first_bad = [&f.name, &f.host, &f.user].into_iter().find(|e| empty(e)).cloned();
+                    this.check(cx);
+                    first_bad
+                },
+            );
+            if let Some(f) = &mut self.form {
+                f.enter = subs;
+            }
+        }
         cx.notify();
     }
 
