@@ -386,6 +386,12 @@ impl Manager {
         let motion = !ui::reduce_motion();
         let active: &'static str = if self.page == Page::Instances { "instances" } else if self.page == Page::About { "about" } else { self.page.id() };
         let left_pad = if rail { MENU_PAD } else { MENU_PAD_OPEN };
+        // The selected row's name: the primary colour; in dark lifted 40 %
+        // toward white. Teal on the dark selection was 5:1 against 9.6:1
+        // for the other names, and its fainter edges made it read a size
+        // smaller (his rc12-22 note); lifted it is 7.9:1. The icon keeps
+        // the primary colour.
+        let sel_label: Hsla = if theme.mode.is_dark() { theme.primary.blend(gpui_kit::white().opacity(0.4)) } else { theme.primary };
         let row = |id: &'static str, icon: Icon, title: SharedString, on: bool| {
             h_flex()
                 .id(id)
@@ -398,7 +404,7 @@ impl Manager {
                 .rounded(px(8.))
                 .cursor_pointer()
                 .text_sm()
-                .text_color(if on { theme.primary } else { theme.foreground })
+                .text_color(if on { sel_label } else { theme.foreground })
                 .font_weight(if on { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
                 .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))
                 .child(row_probe(id))
