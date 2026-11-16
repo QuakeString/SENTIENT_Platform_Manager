@@ -14,6 +14,8 @@ mod bg_app;
 mod tray;
 #[cfg(all(windows, feature = "gui"))]
 mod win_icon;
+#[cfg(feature = "gui")]
+mod win_frame;
 mod agent;
 #[cfg(feature = "gui")]
 mod assets;
@@ -176,7 +178,7 @@ fn window_options_manager(cx: &mut gpui_kit::App) -> WindowOptions {
 /// The Platform Manager's window (crate::bg_app opens it, again after a close).
 #[cfg(feature = "gui")]
 pub(crate) fn open_manager_window(options: WindowOptions, cx: &mut gpui_kit::App) -> anyhow::Result<(gpui_kit::AnyWindowHandle, gpui_kit::Entity<manager::Manager>)> {
-    let opened = gpui_kit::open_window(options, cx, |window, cx| {
+    let opened = win_frame::open_window(options, cx, |window, cx| {
         #[cfg(windows)]
         win_icon::use_manager_icon(window);
         cx.new(|cx| manager::Manager::new(window, cx))
@@ -242,11 +244,11 @@ fn gui_main(args: Vec<String>) {
         }
         let options = window_options(mode, cx);
         let opened = match mode {
-            AppMode::Install => gpui_kit::open_window(options, cx, |window, cx| {
+            AppMode::Install => win_frame::open_window(options, cx, |window, cx| {
                 cx.new(|cx| installer::Installer::new(window, cx))
             })
             .map(|_| ()),
-            _ => gpui_kit::open_window(options, cx, |window, cx| {
+            _ => win_frame::open_window(options, cx, |window, cx| {
                 cx.new(|cx| maintenance::Maintenance::new(window, cx))
             })
             .map(|_| ()),
