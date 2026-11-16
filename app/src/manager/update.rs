@@ -705,6 +705,7 @@ impl UpdatePage {
         ui::panel(theme)
             .child(
                 h_flex()
+                    .flex_wrap()
                     .gap_3()
                     .items_center()
                     .child(div().text_sm().child("Channel"))

@@ -1205,17 +1205,22 @@ impl BackupPage {
         for (i, e) in self.list.iter().enumerate() {
             let damaged = e.check.as_ref().is_some_and(|c| !c.ok);
             let (p1, p2, p3) = (e.path.clone(), e.path.clone(), e.path.clone());
+            let restore = (!damaged).then(|| {
+                crate::ui::button(SharedString::from(format!("restore-{}", e.name)))
+                    .outline()
+                    .label("Restore…")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.restore_input = Some(p1.clone());
+                        this.replace_stage = ReplaceStage::Choose;
+                        this.read_summary(cx);
+                    }))
+                    .into_any_element()
+            });
             list = list.child(
                 entry_row(theme, i, e)
-                    .when(!damaged, |r| {
-                        r.child(crate::ui::button(SharedString::from(format!("restore-{}", e.name))).outline().label("Restore…").on_click(cx.listener(move |this, _, _, cx| {
-                            this.restore_input = Some(p1.clone());
-                            this.replace_stage = ReplaceStage::Choose;
-                            this.read_summary(cx);
-                        })))
-                    })
-                    .child(crate::ui::button(SharedString::from(format!("check-{}", e.name))).outline().label(if damaged { "Details" } else { "Verify" }).on_click(cx.listener(move |this, _, _, cx| this.run_check(p2.clone(), cx))))
-                    .child(delete_button(theme, SharedString::from(format!("delete-{}", e.name))).on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), window, cx)))),
+                    .child(action_slot(SLOT_RESTORE, restore))
+                    .child(action_slot(SLOT_VERIFY, Some(crate::ui::button(SharedString::from(format!("check-{}", e.name))).outline().label(if damaged { "Details" } else { "Verify" }).on_click(cx.listener(move |this, _, _, cx| this.run_check(p2.clone(), cx))).into_any_element())))
+                    .child(action_slot(SLOT_DELETE, Some(delete_button(theme, SharedString::from(format!("delete-{}", e.name))).on_click(cx.listener(move |this, _, window, cx| this.confirm_delete(p3.clone(), window, cx))).into_any_element()))),
             );
         }
         out.push(list.into_any_element());
@@ -1396,6 +1401,16 @@ pub(crate) fn entry_row_with(theme: &gpui_kit::component::Theme, i: usize, e: &c
                 .child(ui::pill(theme, tone, text))
                 .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)),
         ))
+}
+
+/// The row's buttons sit in fixed slots, so every row's size, check and
+/// buttons line up (a damaged backup's Restore slot stays empty).
+pub(crate) const SLOT_RESTORE: f32 = 84.;
+pub(crate) const SLOT_VERIFY: f32 = 72.;
+pub(crate) const SLOT_DELETE: f32 = 68.;
+
+pub(crate) fn action_slot(w: f32, button: Option<AnyElement>) -> Div {
+    h_flex().w(px(w)).flex_shrink_0().justify_end().children(button)
 }
 
 /// When a check ran, on the clock of the machine that ran it (as the

@@ -586,13 +586,13 @@ impl Render for StatsPage {
             .flex_wrap()
             .gap_3()
             .items_center()
-            .child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child("Statistics"))
+            .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Statistics"))
             .child(div().flex_1())
             .child(h_flex().gap_2().items_center().child(seg).child(refresh));
 
         let latest = self.live.last().cloned().or_else(|| self.points().last().cloned());
         let mut col = v_flex().gap(px(10.)).child(header);
-        let page = |col: Div| v_flex().id("stats-page").flex_1().min_w_0().h_full().overflow_y_scroll().p_4().bg(theme.muted).child(col);
+        let page = |col: Div| v_flex().id("stats-page").flex_1().min_w_0().h_full().overflow_y_scroll().px(px(24.)).py(px(20.)).bg(theme.muted).child(col);
         // Nothing read: one notice in the page and nothing else (no empty
         // boxes, no endless "Reading…").
         if latest.is_none() {

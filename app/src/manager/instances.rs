@@ -545,7 +545,7 @@ impl InstancesPage {
         } else {
             colour_button("open-local".into(), "Open", remote::LOCAL_COLOR, cx.listener(|_, _, _, cx| cx.emit(OpenInstance(None)))).into_any_element()
         };
-        let more = crate::ui::button("more-local").ghost().small().icon(IconName::Ellipsis).tooltip("More").dropdown_menu({
+        let more = crate::ui::button("more-local").outline().w(px(28.)).h(px(28.)).icon(gpui_kit::component::Icon::new(IconName::Ellipsis).size(px(18.)).text_color(cx.theme().foreground)).tooltip("More").dropdown_menu({
             let this = cx.entity().downgrade();
             move |menu, _, _| {
                 let t = this.clone();
@@ -580,7 +580,7 @@ impl InstancesPage {
         let can_read = matches!(&status, Some(Ok(s)) if s.installed);
         let not_set_up = matches!(&status, Some(Err(e)) if e == remote::NOT_SET_UP);
         let this = cx.entity().downgrade();
-        let more = crate::ui::button(SharedString::from(format!("more-{id}"))).ghost().small().icon(IconName::Ellipsis).tooltip("Work on this instance").dropdown_menu({
+        let more = crate::ui::button(SharedString::from(format!("more-{id}"))).outline().w(px(28.)).h(px(28.)).icon(gpui_kit::component::Icon::new(IconName::Ellipsis).size(px(18.)).text_color(cx.theme().foreground)).tooltip("Work on this instance").dropdown_menu({
             let (this, id) = (this.clone(), id.clone());
             move |menu, _, _| {
                 let item = |icon: Lucide, label: &'static str, enabled: bool, f: Box<dyn Fn(&mut InstancesPage, &mut Window, &mut Context<InstancesPage>)>| {
@@ -1176,8 +1176,9 @@ impl Render for InstancesPage {
             .min_w_0()
             .h_full()
             .overflow_y_scroll()
-            .p_4()
-            .gap(px(14.))
+            .px(px(24.))
+            .py(px(20.))
+            .gap(px(16.))
             .bg(theme.muted)
             .child(
                 h_flex()
@@ -1185,7 +1186,7 @@ impl Render for InstancesPage {
                     .child(probe)
                     .gap_3()
                     .items_center()
-                    .child(v_flex().flex_1().min_w_0().gap_0p5().child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child("Instances")).child(div().text_sm().text_color(theme.muted_foreground).child(summary)))
+                    .child(v_flex().flex_1().min_w_0().gap_0p5().child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Instances")).child(div().text_sm().text_color(theme.muted_foreground).child(summary)))
                     .when(self.form.is_none(), |r| {
                         r.child(crate::ui::button("add").primary().icon(IconName::Plus).label("Add a remote instance").on_click(cx.listener(|this, _, window, cx| this.open_form(None, window, cx))))
                     }),

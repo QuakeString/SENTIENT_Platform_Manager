@@ -182,7 +182,8 @@ pub fn panel(theme: &Theme) -> Div {
     v_flex()
         .relative()
         .gap_3()
-        .p_4()
+        .py(px(16.))
+        .px(px(18.))
         .rounded(px(PANEL_RADIUS))
         .bg(theme.background)
         .border_1()
@@ -199,23 +200,26 @@ pub fn page(theme: &Theme, title: &'static str, summary: &'static str) -> Statef
         .min_w_0()
         .h_full()
         .overflow_y_scroll()
-        // The mockup's page: 16 px padding, 14 px between blocks, the title
-        // and its line of text as one block.
-        .p_4()
-        .gap(px(14.))
+        // The mockup's page: 20 x 24 padding, 16 px between blocks, a 22 px
+        // title with its line of text as one block.
+        .px(px(24.))
+        .py(px(20.))
+        .gap(px(16.))
         .bg(theme.muted)
         .child(
             v_flex()
                 .gap_0p5()
-                .child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(title))
-                .child(div().text_sm().text_color(theme.muted_foreground).child(summary)),
+                .min_h(px(32.))
+                .justify_center()
+                .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child(title))
+                .when(!summary.is_empty(), |c| c.child(div().text_sm().text_color(theme.muted_foreground).child(summary))),
         )
 }
 
 /// A page whose title row ends with an action (the remote pages' Read
 /// again), in the same place on every page.
 pub fn page_with(theme: &Theme, title: &'static str, summary: &'static str, action: impl IntoElement) -> Stateful<Div> {
-    v_flex().id("page").flex_1().min_w_0().h_full().overflow_y_scroll().p_4().gap(px(14.)).bg(theme.muted).child(
+    v_flex().id("page").flex_1().min_w_0().h_full().overflow_y_scroll().px(px(24.)).py(px(20.)).gap(px(16.)).bg(theme.muted).child(
         h_flex()
             .gap_3()
             .items_start()
@@ -224,8 +228,8 @@ pub fn page_with(theme: &Theme, title: &'static str, summary: &'static str, acti
                     .flex_1()
                     .min_w_0()
                     .gap_0p5()
-                    .child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(title))
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(summary)),
+                    .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child(title))
+                    .when(!summary.is_empty(), |c| c.child(div().text_sm().text_color(theme.muted_foreground).child(summary))),
             )
             .child(action),
     )
@@ -684,21 +688,28 @@ pub fn appear<E: IntoElement + Styled + 'static>(el: E, key: impl Into<ElementId
 /// One choice of several, with a real radio mark, a title and a line about
 /// it. Give it `.on_click(...)`.
 pub fn radio_card(theme: &Theme, id: impl Into<ElementId>, title: impl Into<SharedString>, desc: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
+    radio_card_el(theme, id, div().font_weight(FontWeight::MEDIUM).child(title.into()).into_any_element(), desc, selected, true)
+}
+
+/// `radio_card` with its title as an element (a title with a pill).
+/// `interactive`: it can be picked (a pointer and the hover border); off,
+/// it is drawn faded by the caller and reacts to nothing.
+pub fn radio_card_el(theme: &Theme, id: impl Into<ElementId>, title: AnyElement, desc: impl Into<SharedString>, selected: bool, interactive: bool) -> Stateful<Div> {
     gpui_kit::component::h_flex()
         .id(id)
         .gap_3()
-        .p_3()
+        .py(px(14.))
+        .px(px(16.))
         .items_start()
-        .rounded(px(PANEL_RADIUS))
+        .rounded(px(12.))
         .border_1()
         .border_color(if selected { theme.primary } else { theme.border })
-        .when(selected, |c| c.bg(theme.list_active))
-        .cursor_pointer()
-        .hover(|c| c.border_color(theme.primary))
+        .when(selected, |c| c.bg(theme.sidebar_accent))
+        .when(interactive, |c| c.cursor_pointer().hover(|c| c.border_color(theme.primary)))
         .child(
             div()
                 .mt(px(2.))
-                .size_4()
+                .size(px(18.))
                 .flex_shrink_0()
                 .rounded_full()
                 .border_2()
@@ -706,14 +717,14 @@ pub fn radio_card(theme: &Theme, id: impl Into<ElementId>, title: impl Into<Shar
                 .flex()
                 .items_center()
                 .justify_center()
-                .when(selected, |r| r.child(div().size_2().rounded_full().bg(theme.primary))),
+                .when(selected, |r| r.child(div().size(px(8.)).rounded_full().bg(theme.primary))),
         )
         .child(
             v_flex()
                 .flex_1()
                 .min_w_0()
                 .gap_0p5()
-                .child(div().font_weight(FontWeight::MEDIUM).child(title.into()))
+                .child(title)
                 .child(div().text_sm().text_color(theme.muted_foreground).child(desc.into())),
         )
 }

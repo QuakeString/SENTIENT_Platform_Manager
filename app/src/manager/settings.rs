@@ -1320,10 +1320,13 @@ pub(crate) const TAB_KEYS: [&[&str]; 4] = [
 /// The categories of Platform settings, as a list on the left (the
 /// mockup's H2). Shared with a remote server's.
 pub(crate) fn tab_bar(theme: &gpui_kit::component::Theme, id: &str, active: usize, pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
-    v_flex()
-        .w(px(190.))
-        .min_w(px(132.))
-        .flex_shrink(1.)
+    // A narrow window: the categories as a wrapping row above the page,
+    // which then has the whole width.
+    let narrow = ui::narrow();
+    div()
+        .flex()
+        .when(narrow, |d| d.flex_row().flex_wrap().w_full())
+        .when(!narrow, |d| d.flex_col().w(px(190.)).min_w(px(132.)).flex_shrink(1.))
         .gap_0p5()
         .children(TAB_TITLES.iter().enumerate().map(|(i, title)| {
             let on = i == active;
@@ -1353,7 +1356,12 @@ pub(crate) fn layout(theme: &gpui_kit::component::Theme, nav: Div, active: usize
         .h_full()
         .items_start()
         .bg(theme.muted)
-        .child(v_flex().h_full().p_3().border_r_1().border_color(theme.border).child(nav))
+        .when(ui::narrow(), |p| p.flex_col().items_stretch())
+        .child(if ui::narrow() {
+            div().w_full().p_3().border_b_1().border_color(theme.border).child(nav)
+        } else {
+            v_flex().h_full().p_3().border_r_1().border_color(theme.border).child(nav)
+        })
         .child(
             v_flex()
                 .id("settings-body")
@@ -1361,12 +1369,13 @@ pub(crate) fn layout(theme: &gpui_kit::component::Theme, nav: Div, active: usize
                 .min_w_0()
                 .h_full()
                 .overflow_y_scroll()
-                .p_4()
-                .gap(px(14.))
+                .px(px(24.))
+                .py(px(20.))
+                .gap(px(16.))
                 .child(
                     v_flex()
                         .gap_0p5()
-                        .child(div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(TAB_TITLES[active.min(4)]))
+                        .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child(TAB_TITLES[active.min(4)]))
                         .child(div().text_sm().text_color(theme.muted_foreground).child(TAB_ABOUT[active.min(4)])),
                 )
                 .child(body),
