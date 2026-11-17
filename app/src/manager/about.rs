@@ -168,7 +168,7 @@ impl AboutPage {
                             .id("about-company-logo")
                             .cursor_pointer()
                             .child(img(company::LOGO).h(px(logo_h)).w(px(logo_h * company::LOGO_ASPECT)).flex_shrink_0())
-                            .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new(company::NAME).build(w, cx))
+                            .tooltip(ui::tooltip(company::NAME))
                             .on_click(|_, _, cx| ui::open_url(company::WEBSITE, cx)),
                     ),
             )
