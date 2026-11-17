@@ -205,11 +205,46 @@ pub fn package_url(release_json: &str, arm: bool) -> Option<String> {
     })
 }
 
+/// The release page GitHub sends `…/releases/latest` to (not rate-limited
+/// like its API, which refuses an address that asked too often).
+pub const PACKAGE_LATEST: &str = "https://github.com/microsoft/WSL/releases/latest";
+
+/// The tag in a release page's address (`…/releases/tag/3.0.5`).
+pub fn tag_from_release_url(url: &str) -> Option<String> {
+    let tag = url.split("/releases/tag/").nth(1)?.split(['?', '#', '/']).next()?.trim();
+    (!tag.is_empty() && tag.chars().all(|c| c.is_ascii_digit() || c == '.')).then(|| tag.to_string())
+}
+
+/// The MSI of release `tag`, named as Microsoft names it (`wsl.3.0.5.0.x64.msi`).
+pub fn package_url_for_tag(tag: &str, arm: bool) -> String {
+    let version = if tag.split('.').count() >= 4 { tag.to_string() } else { format!("{tag}.0") };
+    format!("https://github.com/microsoft/WSL/releases/download/{tag}/wsl.{version}.{}.msi", if arm { "arm64" } else { "x64" })
+}
+
+/// The newest WSL package's address: from the releases API, else from
+/// where the latest release page lives.
+#[cfg(windows)]
+fn latest_package_url() -> Result<String, String> {
+    let arm = cfg!(target_arch = "aarch64");
+    let api = crate::net::agent()
+        .get(PACKAGE_RELEASES)
+        .set("User-Agent", "sentient-setup")
+        .call()
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.into_string().map_err(|e| e.to_string()))
+        .ok()
+        .and_then(|text| package_url(&text, arm));
+    if let Some(url) = api {
+        return Ok(url);
+    }
+    let page = crate::net::agent().get(PACKAGE_LATEST).set("User-Agent", "sentient-setup").call().map_err(|e| e.to_string())?;
+    let tag = tag_from_release_url(page.get_url()).ok_or_else(|| format!("no release tag in {}", page.get_url()))?;
+    Ok(package_url_for_tag(&tag, arm))
+}
+
 #[cfg(windows)]
 fn install_package(sink: &ProgressFn) -> Result<(), String> {
-    let listing = crate::net::agent().get(PACKAGE_RELEASES).set("User-Agent", "sentient-setup").call().map_err(|e| e.to_string())?;
-    let text = listing.into_string().map_err(|e| e.to_string())?;
-    let url = package_url(&text, cfg!(target_arch = "aarch64")).ok_or("no WSL package in Microsoft's latest release")?;
+    let url = latest_package_url()?;
     let msi = std::env::temp_dir().join("sentient-wsl.msi");
     sink(Progress::Log { line: format!("Downloading {url}") });
     crate::distro::download(&url, &msi, sink)?;
@@ -424,5 +459,14 @@ mod tests {
         assert_eq!(package_url(json, false).as_deref(), Some("https://example.test/x64.msi"));
         assert_eq!(package_url(json, true).as_deref(), Some("https://example.test/arm64.msi"));
         assert_eq!(package_url("{}", false), None);
+    }
+
+    #[test]
+    fn without_the_api_the_package_comes_from_the_latest_release_page() {
+        let tag = tag_from_release_url("https://github.com/microsoft/WSL/releases/tag/3.0.5").unwrap();
+        assert_eq!(package_url_for_tag(&tag, false), "https://github.com/microsoft/WSL/releases/download/3.0.5/wsl.3.0.5.0.x64.msi");
+        assert_eq!(package_url_for_tag("2.6.1", true), "https://github.com/microsoft/WSL/releases/download/2.6.1/wsl.2.6.1.0.arm64.msi");
+        assert_eq!(tag_from_release_url("https://github.com/microsoft/WSL/releases"), None);
+        assert_eq!(tag_from_release_url("https://github.com/microsoft/WSL/releases/tag/evil;rm"), None);
     }
 }
