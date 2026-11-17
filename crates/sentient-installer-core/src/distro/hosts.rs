@@ -58,6 +58,19 @@ pub fn parse_list_verbose(text: &str) -> Vec<(String, bool, Option<u8>)> {
         .collect()
 }
 
+/// Why `wsl -l` listed nothing, from what it printed. Windows without the
+/// WSL feature has only the old wsl.exe, which prints its help (copyright
+/// line, "Usage: wsl.exe …") for `-l`: that is "not installed", not a line
+/// of the help.
+pub fn list_failure(said: &str) -> String {
+    let lower = said.to_ascii_lowercase();
+    if lower.contains("usage: wsl.exe") || lower.contains("copyright (c) microsoft") {
+        return "WSL is not installed".into();
+    }
+    let first = said.trim().lines().next().unwrap_or("").trim().to_string();
+    if first.is_empty() { "wsl -l gave no answer".into() } else { first }
+}
+
 /// Distros discovery does not look in: Docker Desktop's own. The Platform
 /// Manager's own distro ("sentient") is looked in: an install made by an
 /// earlier release (or whose record is gone) lives there.
@@ -96,9 +109,7 @@ pub fn wsl_distros() -> Result<Vec<WslDistro>, String> {
     if !ok {
         // No distro at all is a failure too ("… has no installed
         // distributions"), in Windows' language: say what it said.
-        let said = sys::decode(&[out, err].concat());
-        let said = said.trim().lines().next().unwrap_or("").trim().to_string();
-        return Err(if said.is_empty() { "wsl -l gave no answer".into() } else { said });
+        return Err(list_failure(&sys::decode(&[out, err].concat())));
     }
     let names = parse_list_quiet(&sys::decode(&out));
     // Nothing running is an error exit too: no names, then.
@@ -254,6 +265,14 @@ mod tests {
         // A state of two words, the header translated.
         let text = crate::sys::decode(&utf16("  NAME      STATUS            VERSION\r\n* Ubuntu    Wird ausgeführt   2\r\n  Debian    Beendet           2\r\n"));
         assert_eq!(parse_list_verbose(&text), vec![("Ubuntu".to_string(), true, Some(2)), ("Debian".to_string(), false, Some(2))]);
+    }
+
+    #[test]
+    fn the_old_wsl_help_means_not_installed() {
+        let help = "Copyright (c) Microsoft Corporation. All rights reserved.\r\n\r\nUsage: wsl.exe [Argument] [Options...] [CommandLine]\r\n";
+        assert_eq!(list_failure(help), "WSL is not installed");
+        assert_eq!(list_failure("Windows Subsystem for Linux has no installed distributions.\r\n"), "Windows Subsystem for Linux has no installed distributions.");
+        assert_eq!(list_failure("  "), "wsl -l gave no answer");
     }
 
     #[test]
