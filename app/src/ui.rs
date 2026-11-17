@@ -499,7 +499,7 @@ pub fn not_installed(theme: &Theme) -> Div {
                 crate::ui::button("install-sentient").primary().label("Download and install SENTIENT").on_click(|_, window, cx| crate::standalone::install_sentient(window, cx)).into_any_element()
             },
             {
-                crate::ui::button("install-sentient-package").outline().label("Install from local files…").on_click(|_, window, cx| crate::standalone::install_sentient_from_package(window, cx)).into_any_element()
+                crate::ui::button("install-sentient-package").outline().label("Install from local files").on_click(|_, window, cx| crate::standalone::install_sentient_from_package(window, cx)).into_any_element()
             },
         ]))
 }
@@ -1003,7 +1003,7 @@ pub fn service_rows(
                 .child(
                     button_group(vec![
                         icon("start", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Play), "Start", !running).into_any_element(),
-                        icon("stop", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Square), "Stop…", running).into_any_element(),
+                        icon("stop", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Square), "Stop", running).into_any_element(),
                         icon("restart", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::RotateCw), "Restart", running).into_any_element(),
                         svc_icon_button(theme, SharedString::from(format!("svc-log-{name}")), gpui_kit::component::Icon::empty().path("icons/file-text.svg"), "Logs", true, false)
                             .on_click(move |_, window, cx| log(&n, window, cx))

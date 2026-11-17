@@ -984,7 +984,7 @@ impl SettingsPage {
                                     this.admin_action(move |r| crate::sentient_admin::unlock(r, &e), cx);
                                 }))))
                             })
-                            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("reset-{email}"))).outline().label("Reset password…").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
+                            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("reset-{email}"))).outline().label("Reset password").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                 this.reset_for = Some(e2.clone());
                                 this.admin_result = None;
                                 cx.notify();
@@ -996,7 +996,7 @@ impl SettingsPage {
                     "Everyone signed in",
                     Some("Makes every open session sign in again, on every device.".into()),
                     false,
-                    h_flex().child(crate::ui::probed(crate::ui::button("sign-out-all").outline().label("Sign everyone out…").disabled(self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.confirm_sign_out_all(window, cx))))),
+                    h_flex().child(crate::ui::probed(crate::ui::button("sign-out-all").outline().label("Sign everyone out").disabled(self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.confirm_sign_out_all(window, cx))))),
                 ));
             }
         }
@@ -1400,7 +1400,7 @@ impl Render for SettingsPage {
             crate::manager::remote_pages::foreign_compose_notice(
                 &theme,
                 "The settings cannot be changed now.",
-                crate::ui::button("set-take-over").outline().label("Take over the compose file…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element(),
+                crate::ui::button("set-take-over").outline().label("Take over the compose file").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element(),
             )
         });
         // What no single field shows: two ports alike, an added variable's name.

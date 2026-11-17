@@ -264,7 +264,7 @@ impl Render for TakeOverDialog {
                         .justify_end()
                         .child(crate::ui::probed(crate::ui::button("to-copy").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))))
                         .when_some(sudo, |r, inst| {
-                            r.child(crate::ui::probed(crate::ui::button("to-sudo").outline().label("Enter the sudo password…").on_click(move |_, _, cx| {
+                            r.child(crate::ui::probed(crate::ui::button("to-sudo").outline().label("Enter the sudo password").on_click(move |_, _, cx| {
                                 let this = this.clone();
                                 crate::manager::remote_pages::ask_sudo_password(inst.clone(), std::rc::Rc::new(move |cx: &mut App| {
                                     this.update(cx, |d, cx| d.reload(cx)).ok();
@@ -316,7 +316,7 @@ impl Render for TakeOverDialog {
                     .gap(crate::ui::button_gap())
                     .items_center()
                     .child(div().flex_1().min_w_0().child(Input::new(&self.input)))
-                    .when(self.local, |r| r.child(crate::ui::probed(crate::ui::button("to-choose").outline().label("Choose…").on_click(cx.listener(|d, _, _, cx| d.choose(cx))))))
+                    .when(self.local, |r| r.child(crate::ui::probed(crate::ui::button("to-choose").outline().label("Choose").on_click(cx.listener(|d, _, _, cx| d.choose(cx))))))
                     .child(crate::ui::probed(crate::ui::button("to-use-file").outline().label("Use this file").on_click(cx.listener(|d, _, _, cx| d.use_file(cx)))))
                     .when(self.compose.is_some(), |r| {
                         r.child(crate::ui::probed(crate::ui::button("to-labels").ghost().label("Back to the labels' file").on_click(cx.listener(|d, _, _, cx| {
@@ -376,7 +376,7 @@ impl Render for TakeOverDialog {
                         .child(
                             crate::ui::button(SharedString::from(format!("to-pw-check-{i}")))
                                 .outline()
-                                .label(if c.checking { "Checking…" } else { "Check" })
+                                .label(if c.checking { "Checking" } else { "Check" })
                                 .disabled(c.checking)
                                 .on_click(cx.listener(move |d, _, _, cx| d.check_password(i, cx))),
                         ),

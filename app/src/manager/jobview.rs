@@ -313,7 +313,7 @@ fn log_card(theme: &gpui_kit::component::Theme, id: &'static str, entity: &Entit
                     let text = copy_job.read(cx).log_text();
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                 })))
-                .child(ui::probed(ui::button(SharedString::from(format!("{id}-log-save"))).outline().small().label("Save…").disabled(count == 0).on_click(move |_, _, cx| save_log(&save_job, cx)))),
+                .child(ui::probed(ui::button(SharedString::from(format!("{id}-log-save"))).outline().small().label("Save").disabled(count == 0).on_click(move |_, _, cx| save_log(&save_job, cx)))),
         )
         .child(
             div()

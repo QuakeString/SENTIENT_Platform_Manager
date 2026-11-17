@@ -605,7 +605,7 @@ impl Render for FolderChooser {
                                 crate::ui::button("fc-writable")
                                     .outline()
                                     .icon(Icon::new(Lucide::Lock))
-                                    .label("Make it writable…")
+                                    .label("Make it writable")
                                     .loading(busy == Some("writable"))
                                     .disabled(busy.is_some())
                                     .on_click(cx.listener(|this, _, _, cx| this.make_writable(cx))),

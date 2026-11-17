@@ -333,9 +333,9 @@ impl Render for LocationsCard {
             let (target, on) = (self.target.clone(), self.on.clone());
             let id = SharedString::from(format!("dl-move-{}", store.as_str()));
             let btn = if store == Store::Backups {
-                ui::button(id).outline().small().icon(Icon::new(Lucide::Folder)).label("Change…")
+                ui::button(id).outline().small().icon(Icon::new(Lucide::Folder)).label("Change")
             } else {
-                ui::button(id).outline().small().icon(Icon::empty().path("icons/move-data.svg")).label("Move…")
+                ui::button(id).outline().small().icon(Icon::empty().path("icons/move-data.svg")).label("Move")
             }
             .disabled(!can)
             .when(!can && self.windows, |b| b.tooltip("Not on Windows yet: only ClickHouse's WSL disk moves there."))
@@ -353,7 +353,7 @@ impl Render for LocationsCard {
                 .outline()
                 .small()
                 .icon(Icon::empty().path("icons/trash.svg"))
-                .label("Remove…")
+                .label("Remove")
                 .loading(busy)
                 .disabled(self.removing.is_some())
                 .on_click(cx.listener(move |me, _, window, cx| me.remove(path.clone(), window, cx)));
@@ -1441,7 +1441,7 @@ impl MoveFlow {
                         if c.path.contains("/spm-moved/") { "in Docker's folder on" } else { "on" },
                         if old.len() > 1 { "them" } else { "it" }
                     )));
-                    acts.push(ui::button("md-rm-old").outline().icon(Icon::empty().path("icons/trash.svg")).label(if old.len() > 1 { "Remove old copies…" } else { "Remove old copy…" }).loading(self.removing).on_click(cx.listener(move |me, _, window, cx| me.remove_copy(paths.clone(), window, cx))).into_any_element());
+                    acts.push(ui::button("md-rm-old").outline().icon(Icon::empty().path("icons/trash.svg")).label(if old.len() > 1 { "Remove old copies" } else { "Remove old copy" }).loading(self.removing).on_click(cx.listener(move |me, _, window, cx| me.remove_copy(paths.clone(), window, cx))).into_any_element());
                 }
                 acts.push(ui::button("md-done").primary().label("Done").on_click(|_, _, cx| close(cx)).into_any_element());
                 view = view.actions(acts);
@@ -1466,7 +1466,7 @@ impl MoveFlow {
                 let partial: Option<String> = outcome.as_ref().and_then(|o| o.old_copies.iter().find(|c| c.partial && self.moves.iter().any(|m| m.to.trim_end_matches('/') == c.path.trim_end_matches('/')))).map(|c| c.path.clone());
                 let mut acts: Vec<AnyElement> = Vec::new();
                 if let Some(p) = partial.filter(|_| !self.removed) {
-                    acts.push(ui::button("md-rm-partial").outline().icon(Icon::empty().path("icons/trash.svg")).label("Remove the partial copy…").loading(self.removing).on_click(cx.listener(move |me, _, window, cx| me.remove_copy(vec![p.clone()], window, cx))).into_any_element());
+                    acts.push(ui::button("md-rm-partial").outline().icon(Icon::empty().path("icons/trash.svg")).label("Remove the partial copy").loading(self.removing).on_click(cx.listener(move |me, _, window, cx| me.remove_copy(vec![p.clone()], window, cx))).into_any_element());
                 }
                 acts.push(ui::button("md-try-other").primary().label("Try another disk").on_click(cx.listener(|me, _, _, cx| me.try_again(cx))).into_any_element());
                 view = view.actions(acts);

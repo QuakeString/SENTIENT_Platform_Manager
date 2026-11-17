@@ -611,7 +611,7 @@ impl Render for ActionDialog {
                 .child(if self.busy { "Working…" } else { ok })
                 .into_any_element()
         } else {
-            ui::button("licence-act-ok").primary().label(if self.busy { "Working…" } else { ok }).disabled(self.busy).on_click(click).into_any_element()
+            ui::button("licence-act-ok").primary().label(if self.busy { "Working" } else { ok }).disabled(self.busy).on_click(click).into_any_element()
         };
         body.child(
             h_flex()
@@ -787,7 +787,7 @@ impl LicencePage {
                     .items_center()
                     .child(
                         div().relative().flex_shrink_0().child(
-                            ui::button("licence-sign-in").primary().label(if self.signing_in { "Signing in…" } else { "Sign in" }).disabled(self.signing_in).on_click(cx.listener(|p, _, window, cx| p.sign_in(window, cx))),
+                            ui::button("licence-sign-in").primary().label(if self.signing_in { "Signing in" } else { "Sign in" }).disabled(self.signing_in).on_click(cx.listener(|p, _, window, cx| p.sign_in(window, cx))),
                         ),
                     )
                     .child(div().flex_1())
@@ -905,7 +905,7 @@ impl LicencePage {
                     .min_h(px(28.))
                     .items_center()
                     .child(div().flex_1().text_sm().font_weight(FontWeight::MEDIUM).child("Limits"))
-                    .child(ui::button("licence-all-limits").ghost().text_color(theme.primary).label("All limits…").on_click({
+                    .child(ui::button("licence-all-limits").ghost().text_color(theme.primary).label("Show all limits").on_click({
                         let r = r.clone();
                         cx.listener(move |_, _, _, cx| LimitsDialog::open(r.clone(), cx))
                     })),
@@ -973,8 +973,8 @@ impl LicencePage {
                         });
                         cx.notify();
                     })))
-                    .child(item("licence-m-deactivate", "unlink", "Deactivate…", false).on_click(cx.listener(|p, _, window, cx| p.open_action(Act::Deactivate, window, cx))))
-                    .child(item("licence-m-force", "trash", "Force-delete local licence…", true).on_click(cx.listener(|p, _, window, cx| p.open_action(Act::ForceDelete, window, cx))))
+                    .child(item("licence-m-deactivate", "unlink", "Deactivate", false).on_click(cx.listener(|p, _, window, cx| p.open_action(Act::Deactivate, window, cx))))
+                    .child(item("licence-m-force", "trash", "Force-delete local licence", true).on_click(cx.listener(|p, _, window, cx| p.open_action(Act::ForceDelete, window, cx))))
                     .on_mouse_down_out(move |_, _, cx| {
                         close
                             .update(cx, |p, cx| {
@@ -1028,7 +1028,7 @@ impl LicencePage {
                 .w(px(w))
                 .child(h_flex().gap_2().items_center().child(div().flex_1().min_w_0().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child(title)).child(ui::pill(theme, Tone::Neutral, "Not licensed").text_size(px(12.)).py(px(0.))))
                 .child(
-                    h_flex().gap(px(10.)).items_center().child(div().flex_1().min_w_0().child(Input::new(&self.key))).child(ui::probed(ui::button("licence-activate").primary().label("Activate…").on_click(cx.listener(|p, _, window, cx| p.activate_key(window, cx))))),
+                    h_flex().gap(px(10.)).items_center().child(div().flex_1().min_w_0().child(Input::new(&self.key))).child(ui::probed(ui::button("licence-activate").primary().label("Activate").on_click(cx.listener(|p, _, window, cx| p.activate_key(window, cx))))),
                 )
                 .child(
                     h_flex()
@@ -1036,7 +1036,7 @@ impl LicencePage {
                         .gap(crate::ui::button_gap())
                         .items_center()
                         .child(div().text_sm().text_color(theme.muted_foreground).child("Or import a licence key from a file:"))
-                        .child(ui::probed(ui::button("licence-import").outline().icon(icon("file")).label("Import key file…").on_click(cx.listener(|p, _, window, cx| p.choose_key_file(window, cx))))),
+                        .child(ui::probed(ui::button("licence-import").outline().icon(icon("file")).label("Import key file").on_click(cx.listener(|p, _, window, cx| p.choose_key_file(window, cx))))),
                 )
                 .child(
                     h_flex()
@@ -1075,7 +1075,7 @@ impl LicencePage {
             Some(d) => format!("SENTIENT is blocked in {d} day{} unless {noun}s are removed or the licence is raised.", if d == 1 { "" } else { "s" }),
             None => format!("Remove {noun}s or raise the licence."),
         };
-        let buy = ui::button("licence-over-buy").outline().icon(icon("cart")).label("Buy a licence…").on_click(|_, _, cx| ui::open_url(crate::licence::BUY_URL, cx)).into_any_element();
+        let buy = ui::button("licence-over-buy").outline().icon(icon("cart")).label("Buy a licence").on_click(|_, _, cx| ui::open_url(crate::licence::BUY_URL, cx)).into_any_element();
         Some(banner(theme, Tone::Bad, Some(&lead), text, Some(buy)))
     }
 }
@@ -1133,7 +1133,7 @@ impl Render for LicencePage {
                 Tone::Warn,
                 Some("SENTIENT is stopped."),
                 "The licence is kept by SENTIENT itself, so it has to run to show or change it.".into(),
-                Some(ui::button("licence-start").outline().icon(Icon::empty().path("icons/power.svg")).label(if busy { "Starting…" } else { "Start SENTIENT" }).disabled(busy).on_click(cx.listener(|p, _, _, cx| p.start_sentient(cx))).into_any_element()),
+                Some(ui::button("licence-start").outline().icon(Icon::empty().path("icons/power.svg")).label(if busy { "Starting" } else { "Start SENTIENT" }).disabled(busy).on_click(cx.listener(|p, _, _, cx| p.start_sentient(cx))).into_any_element()),
             )),
             View::AgentOld => page.child(ui::notice_with(
                 &theme,

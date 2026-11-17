@@ -61,6 +61,25 @@ def ink_height(im, box, sc):
     return h / sc
 
 
+def ellipsis_labels():
+    """Button and menu labels in the source that end in "..." or "\u2026"
+    (SPM's rule: a label says what it does, no trailing dots)."""
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "app", "src")
+    pat = re.compile(r'(\.label\(|PopupMenuItem::new\(|RowMenuItem::|stop_label|Slot::Button\()[^\n]*?"([^"\n]*(?:\u2026|\.\.\.))"')
+    found = []
+    for root, _, files in os.walk(src):
+        for f in files:
+            if not f.endswith(".rs"):
+                continue
+            p = os.path.join(root, f)
+            for n, line in enumerate(open(p, errors="replace"), 1):
+                if line.lstrip().startswith("//"):
+                    continue
+                for m in pat.finditer(line):
+                    found.append(f"{os.path.relpath(p, src)}:{n}: label \"{m.group(2)}\" ends in an ellipsis")
+    return found
+
+
 def main():
     out = sys.argv[1]
     groups = defaultdict(lambda: defaultdict(lambda: {"on": [], "off": []}))
@@ -111,6 +130,7 @@ def main():
             for h, name in v["on"]:
                 if abs(h - off) > tol:
                     findings.append(f"{name}: selected label {i} is {h:.2f} px tall, unselected {off:.2f} px")
+    findings += ellipsis_labels()
     for f in findings:
         print(f)
     compared = sum(1 for rows in groups.values() for v in rows.values() if v["on"] and v["off"])

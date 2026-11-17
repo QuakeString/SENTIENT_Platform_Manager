@@ -344,7 +344,7 @@ impl StatusPage {
             .child(
                 crate::ui::button("db-read")
                     .outline()
-                    .label(if self.db_reading { "Reading…" } else if self.db.is_none() { "Read" } else { "Refresh" })
+                    .label(if self.db_reading { "Reading" } else if self.db.is_none() { "Read" } else { "Refresh" })
                     .disabled(self.db_reading)
                     .on_click(cx.listener(|this, _, _, cx| this.read_db(cx))),
             );
@@ -503,7 +503,7 @@ impl StatusPage {
                             .child(
                                 crate::ui::button(("adopt", i))
                                     .primary()
-                                    .label("Add this instance…")
+                                    .label("Add this instance")
                                     .disabled(busy || c.problem.is_some())
                                     .on_click(cx.listener(move |this, _, window, cx| this.confirm_adopt(candidate.clone(), window, cx))),
                             )
@@ -577,7 +577,7 @@ impl Render for StatusPage {
                         crate::updates::manager_version(),
                         if waiting == 1 { "is" } else { "are" }
                     )))
-                    .child(crate::ui::button("changes-waiting").outline().label("Apply…").on_click(cx.listener(|_, _, _, cx| cx.emit(OpenUpdate)))),
+                    .child(crate::ui::button("changes-waiting").outline().label("Apply").on_click(cx.listener(|_, _, _, cx| cx.emit(OpenUpdate)))),
             )
         });
 
@@ -715,7 +715,7 @@ impl StatusPage {
                     .child(
                         crate::ui::button("open-gateway")
                             .outline()
-                            .label(if installed { "Manage" } else { "Install…" })
+                            .label(if installed { "Manage" } else { "Install" })
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(OpenGateway))),
                     ),
             )
@@ -935,7 +935,7 @@ pub(crate) fn control_buttons(
     restart: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
     stop: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
 ) -> Div {
-    ui::button_row(service_buttons(theme, id, busy, running, "Stop…", start, restart, stop))
+    ui::button_row(service_buttons(theme, id, busy, running, "Stop", start, restart, stop))
 }
 
 /// Start, Stop and Restart of a service, the one row every service card
@@ -1142,7 +1142,7 @@ impl Render for BrokenParts {
                         ))
                 })
                 .when(!self.confirm_delete, |r| {
-                    r.child(crate::ui::probed(crate::ui::button("parts-delete").outline().text_color(theme.danger).label("Delete…").disabled(!has || busy).on_click(cx.listener(|v, _, _, cx| {
+                    r.child(crate::ui::probed(crate::ui::button("parts-delete").outline().text_color(theme.danger).label("Delete").disabled(!has || busy).on_click(cx.listener(|v, _, _, cx| {
                         v.confirm_delete = true;
                         cx.notify();
                     }))))
@@ -1207,13 +1207,13 @@ pub(crate) fn db_details(
                         crate::ui::button("low-move")
                             .primary()
                             .icon(gpui_kit::component::Icon::empty().path("icons/move-data.svg"))
-                            .label("Move data to another disk…")
+                            .label("Move data to another disk")
                             .on_click(move |_, window, cx| open(window, cx)),
                     ))
                 })
                 .when(db.hybrid && actions.set_limit.is_some(), |r| {
                     let set_limit = actions.set_limit.clone().unwrap();
-                    r.child(crate::ui::probed(crate::ui::button("low-limit").outline().label("Set a history limit…").on_click({ let f = set_limit.clone(); move |_, _, cx| f(cx) })))
+                    r.child(crate::ui::probed(crate::ui::button("low-limit").outline().label("Set a history limit").on_click({ let f = set_limit.clone(); move |_, _, cx| f(cx) })))
                 })
                 .when_some(kept.zip(actions.remove_kept.clone()), |r, (k, remove_kept)| {
                     r.child(crate::ui::probed(
@@ -1374,7 +1374,7 @@ pub(crate) fn db_details(
                                 Some(d) => format!("{d} days"),
                                 None => "forever".into(),
                             }))
-                            .when_some(actions.set_limit.clone(), |r, f| r.child(crate::ui::button("history-limit").outline().label("Set a limit…").on_click(move |_, _, cx| f(cx)))),
+                            .when_some(actions.set_limit.clone(), |r, f| r.child(crate::ui::button("history-limit").outline().label("Set a limit").on_click(move |_, _, cx| f(cx)))),
                     )
                     .when_some(broken, |c, n| {
                         let open = actions.broken_parts.clone();

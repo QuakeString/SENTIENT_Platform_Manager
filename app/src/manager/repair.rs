@@ -69,7 +69,7 @@ impl RepairPage {
         let has_record = self.gateway_record.is_some();
         let button = crate::ui::button("repair-gw-remove")
             .danger()
-            .label("Remove the Gateway…")
+            .label("Remove the Gateway")
             .disabled(busy)
             .on_click(cx.listener(move |this, _, _, cx| {
                 let page = cx.entity().downgrade();
@@ -283,7 +283,7 @@ impl Render for RepairPage {
                             .child(div().text_sm().text_color(theme.muted_foreground).child("Removes this program from this computer."))
                             .child(ui::info("remove-manager-help".into(), "Its settings, saved servers and logs go too. SENTIENT, its database and backups are not touched.".into())),
                     )
-                    .child(ui::button_row(vec![crate::ui::button("remove-manager").outline().label("Remove the Platform Manager…").on_click(|_, window, cx| crate::standalone::remove_manager(window, cx)).into_any_element()])),
+                    .child(ui::button_row(vec![crate::ui::button("remove-manager").outline().label("Remove the Platform Manager").on_click(|_, window, cx| crate::standalone::remove_manager(window, cx)).into_any_element()])),
             );
         }
         let job = self.job.read(cx);
@@ -321,7 +321,7 @@ impl Render for RepairPage {
                         h_flex().child(
                             crate::ui::button("take-over")
                                 .outline()
-                                .label("Take over the compose file…")
+                                .label("Take over the compose file")
                                 .disabled(done)
                                 .on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))),
                         ),
@@ -356,7 +356,7 @@ impl Render for RepairPage {
                         .child(div().text_sm().text_color(theme.muted_foreground).child("Choose what to remove: SENTIENT, its databases, the shortcuts, the Platform Manager."))
                         .child(ui::info("uninstall-help".into(), "Each part has its own switch, and each database a Keep its data switch, on by default. A database Setup did not install is never removed. Afterwards the Platform Manager checks that nothing is left and lists what is, with the command to remove it.".into())),
                 )
-                .child(ui::button_row(vec![crate::ui::button("uninstall").danger().label("Uninstall…").disabled(done).on_click(cx.listener(|this, _, _, cx| this.open_uninstall(cx))).into_any_element()])),
+                .child(ui::button_row(vec![crate::ui::button("uninstall").danger().label("Uninstall").disabled(done).on_click(cx.listener(|this, _, _, cx| this.open_uninstall(cx))).into_any_element()])),
         )
         .when(uninstalled, |page| {
             page.child(

@@ -1000,7 +1000,7 @@ impl InstancesPage {
                     h_flex()
                         .gap_2()
                         .child(div().flex_1().min_w_0().child(Input::new(&f.key_file)))
-                        .child(crate::ui::button("key-choose").outline().label("Choose…").on_click(cx.listener(|this, _, _, cx| this.choose_key(cx))))
+                        .child(crate::ui::button("key-choose").outline().label("Choose").on_click(cx.listener(|this, _, _, cx| this.choose_key(cx))))
                         .into_any_element(),
                 ))
             })

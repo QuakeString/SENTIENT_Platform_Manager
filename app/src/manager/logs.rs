@@ -411,7 +411,7 @@ impl Render for LogView {
             }))
         }));
         let this = cx.entity().downgrade();
-        let save = crate::ui::button("log-save").outline().label("Save log…").dropdown_menu(move |menu, _, _| {
+        let save = crate::ui::button("log-save").outline().label("Save log").dropdown_menu(move |menu, _, _| {
             let opt = |label: &'static str, what: Option<(u32, bool)>| {
                 let t = this.clone();
                 PopupMenuItem::new(label).on_click(move |_, _, cx| {

@@ -559,7 +559,7 @@ impl Installer {
                 .when(!last, |r| r.border_b_1().border_color(theme.border))
                 .child(div().w(px(150.)).flex_shrink_0().text_sm().text_color(theme.muted_foreground).child(label))
                 .child(div().flex_1().min_w_0().font_family(theme.mono_font_family.clone()).child(probed_input(Input::new(&field))))
-                .child(crate::ui::button(id).outline().icon(Icon::new(IconName::Folder)).label("Change…").on_click(cx.listener(move |this, _, window, cx| this.browse(f2.clone(), window, cx))))
+                .child(crate::ui::button(id).outline().icon(Icon::new(IconName::Folder)).label("Change").on_click(cx.listener(move |this, _, window, cx| this.browse(f2.clone(), window, cx))))
                 .into_any_element()
         };
         let mut card = crate::ui::panel(theme)

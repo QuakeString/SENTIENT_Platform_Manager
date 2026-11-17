@@ -1375,7 +1375,7 @@ impl RemotePages {
                     .child(
                         crate::ui::button("r-check")
                             .outline()
-                            .label(if checking { "Checking…" } else { "Check for updates" })
+                            .label(if checking { "Checking" } else { "Check for updates" })
                             .disabled(checking)
                             .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
                     ),
@@ -1618,7 +1618,7 @@ impl RemotePages {
                 .items_center()
                 .child(ui::layout_probe("header-actions"))
                 .child(div().flex_1().min_w_0().child(self.section_title(&theme, "Backups", "backups", cx)))
-                .child(crate::ui::probed(crate::ui::button("r-restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
+                .child(crate::ui::probed(crate::ui::button("r-restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from file").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
                 .child(crate::ui::probed(crate::ui::button("r-backup").outline().label("Back up now").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Backing up", vec!["backup-now".into()], cx))))),
         );
         if b.list.is_empty() {
@@ -2152,7 +2152,7 @@ impl RemotePages {
     }
 
     fn take_over_button(&self, id: &'static str, busy: bool, cx: &mut Context<Self>) -> AnyElement {
-        crate::ui::button(id).outline().label("Take over the compose file…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element()
+        crate::ui::button(id).outline().label("Take over the compose file").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element()
     }
 
     fn repair_page(&self, cx: &mut Context<Self>) -> Div {
@@ -2180,7 +2180,7 @@ impl RemotePages {
             let line = crate::manager::gateway::runs_as(&get("kind"), &target.name, get("managed") == "true", get("recorded") == "true");
             let button = crate::ui::button("r-repair-gw-remove")
                 .danger()
-                .label("Remove the Gateway…")
+                .label("Remove the Gateway")
                 .disabled(busy)
                 .on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx)))
                 .into_any_element();
@@ -2197,7 +2197,7 @@ impl RemotePages {
                     ui::panel(&theme)
                         .child(div().font_weight(FontWeight::MEDIUM).child("Uninstall"))
                         .child(div().text_sm().text_color(theme.muted_foreground).child("Choose what to remove from this server, the same way as on this computer."))
-                        .child(ui::button_row(vec![crate::ui::button("r-uninstall").danger().label("Uninstall…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_uninstall(cx))).into_any_element()])),
+                        .child(ui::button_row(vec![crate::ui::button("r-uninstall").danger().label("Uninstall").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_uninstall(cx))).into_any_element()])),
                 )
             })
     }
@@ -2317,7 +2317,7 @@ impl RemotePages {
                 // A wrapped line ends at the right too.
                 .justify_end()
                 .items_center()
-                .child(crate::ui::probed(crate::ui::button("r-gw-remove").danger().label("Remove the Gateway…").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx)))))
+                .child(crate::ui::probed(crate::ui::button("r-gw-remove").danger().label("Remove the Gateway").disabled(busy).on_click(cx.listener(move |this, _, _, cx| this.open_gateway_remove(target.clone(), cx)))))
                 .when(outside, |r| {
                     r.child(crate::ui::probed(
                         h_flex().gap_1().items_center().child(crate::ui::button("r-gw-adopt").outline().label("Manage it here").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Recording the gateway", vec!["gateway-adopt".into()], cx)))).child(ui::info(

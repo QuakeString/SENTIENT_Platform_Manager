@@ -1032,7 +1032,7 @@ impl BackupPage {
             _ => "everything",
         };
         // Wide: the mockup's segments; narrow: the same as a menu.
-        let options = [("everything", "Everything"), ("last90", "Last 90 days"), ("configuration", "Configuration only"), ("choose", "Choose…")];
+        let options = [("everything", "Everything"), ("last90", "Last 90 days"), ("configuration", "Configuration only"), ("choose", "Choose")];
         let on = |key: &str| if key == "choose" { self.choose } else { what == key && !self.choose };
         let what_control = if narrow {
             let this = cx.entity().downgrade();
@@ -1092,7 +1092,7 @@ impl BackupPage {
                         this.save_prefs(false, cx);
                     })))
                 }),
-            Some(crate::ui::button("copy-to").outline().label("Choose…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.choose_folder(true, cx))).into_any_element()),
+            Some(crate::ui::button("copy-to").outline().label("Choose").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.choose_folder(true, cx))).into_any_element()),
             false,
         );
         let split_row = card_row(
@@ -1134,10 +1134,10 @@ impl BackupPage {
                 .items_center()
                 .child(ui::layout_probe("header-actions"))
                 .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child("Backups"))
-                .child(crate::ui::probed(crate::ui::button("add-backup").ghost().label("Add a file…").tooltip("Add a backup file from elsewhere to the folder.").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx)))))
-                .child(crate::ui::probed(crate::ui::button("restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
+                .child(crate::ui::probed(crate::ui::button("add-backup").ghost().label("Add a file").tooltip("Add a backup file from elsewhere to the folder.").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx)))))
+                .child(crate::ui::probed(crate::ui::button("restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from file").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
                 .when(!self.choose, |r| {
-                    r.child(crate::ui::probed(crate::ui::button("backup-now").outline().label(if busy { "Backing up…" } else { "Back up now" }).tooltip(now_tip).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_preset_backup(cx)))))
+                    r.child(crate::ui::probed(crate::ui::button("backup-now").outline().label(if busy { "Backing up" } else { "Back up now" }).tooltip(now_tip).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_preset_backup(cx)))))
                 }),
         );
         if let Some(t) = low {
@@ -1325,7 +1325,7 @@ impl Render for BackupPage {
                             .child(
                                 crate::ui::button("output")
                                     .outline()
-                                    .label("Save as…")
+                                    .label("Save as")
                                     .disabled(busy)
                                     .on_click(cx.listener(|this, _, _, cx| this.choose_output(cx))),
                             )
@@ -1464,7 +1464,7 @@ pub(crate) fn narrow(window: &Window) -> bool {
 
 /// "Change…" on the folder row.
 pub(crate) fn change_button(id: &'static str, disabled: bool) -> gpui_kit::component::button::Button {
-    crate::ui::button(id).outline().icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Folder)).label("Change…").disabled(disabled)
+    crate::ui::button(id).outline().icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Folder)).label("Change").disabled(disabled)
 }
 
 /// Column widths of the Backups table: Made, Size, Integrity, the chevron.
@@ -1543,18 +1543,18 @@ pub(crate) fn table_row(theme: &gpui_kit::component::Theme, narrow: bool, i: usi
         action: std::rc::Rc::new(move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(path.clone()))),
     });
     items.push(crate::ui::RowMenuItem::Divider);
-    items.push(crate::ui::RowMenuItem::Danger { label: "Delete…".into(), icon: IconName::Delete, action: delete });
+    items.push(crate::ui::RowMenuItem::Danger { label: "Delete".into(), icon: IconName::Delete, action: delete });
     let menu = crate::ui::row_menu(format!("bk-row-{i}"), "More", busy, items);
     // Restore… on every row, visible; off for a damaged backup.
     let damaged = restore.is_none();
     let mut restore_btn = crate::ui::button(SharedString::from(format!("bk-restore-{i}"))).outline().icon(crate::manager::restore::icon("history")).disabled(busy || damaged);
     if !narrow {
-        restore_btn = restore_btn.label("Restore…");
+        restore_btn = restore_btn.label("Restore");
     }
     if damaged {
         restore_btn = restore_btn.tooltip("A damaged backup cannot be restored");
     } else if narrow {
-        restore_btn = restore_btn.tooltip("Restore…");
+        restore_btn = restore_btn.tooltip("Restore");
     }
     if let Some(r) = restore {
         restore_btn = restore_btn.on_click(move |_, window, cx| r(window, cx));

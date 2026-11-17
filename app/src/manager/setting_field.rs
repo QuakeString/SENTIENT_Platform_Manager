@@ -66,7 +66,7 @@ pub fn control(setting: &Setting, input: &Entity<InputState>, set: SetFn, file: 
         }
         kind => {
             let slot = match (kind, file) {
-                (ValueKind::File, FileButton::Choose(f)) => Some(ui::Slot::Button(SharedString::from(format!("file-{env}")), "Choose…".into(), f)),
+                (ValueKind::File, FileButton::Choose(f)) => Some(ui::Slot::Button(SharedString::from(format!("file-{env}")), "Choose".into(), f)),
                 (ValueKind::File, FileButton::Check(f)) => Some(ui::Slot::Button(SharedString::from(format!("file-{env}")), "Check".into(), f)),
                 _ => unit_of(setting).map(|u| ui::Slot::Unit(u.into())),
             };

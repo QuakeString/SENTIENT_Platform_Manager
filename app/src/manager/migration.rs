@@ -110,7 +110,7 @@ pub(crate) fn move_data_card(theme: &gpui_kit::component::Theme, id: &str, open:
                         .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child("Move data to another disk"))
                         .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("PostgreSQL, ClickHouse, SENTIENT files or backups, each to its own disk or folder.")),
                 )
-                .child(ui::button(SharedString::from(format!("{id}move-data"))).outline().label("Choose…").on_click(move |_, window, cx| open(window, cx))),
+                .child(ui::button(SharedString::from(format!("{id}move-data"))).outline().label("Choose").on_click(move |_, window, cx| open(window, cx))),
         )
 }
 
@@ -606,7 +606,7 @@ impl Render for MigrationPage {
                 crate::manager::remote_pages::foreign_compose_notice(
                     &theme,
                     "The database type cannot be changed now.",
-                    crate::ui::button("mig-take-over").outline().label("Take over the compose file…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element(),
+                    crate::ui::button("mig-take-over").outline().label("Take over the compose file").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element(),
                 )
             } else {
                 crate::manager::remote_pages::preflight_notice(&theme, &why, None)

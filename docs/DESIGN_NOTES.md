@@ -33,7 +33,10 @@ Within any group:
 - secondary actions on the left, the primary rightmost;
 - Cancel or Back immediately left of the primary;
 - a destructive action is never rightmost unless it is the dialog's purpose.
-  In a menu it reads red (`RowMenuItem::Danger`) and still asks first.
+  In a menu it reads red (`RowMenuItem::Danger`) and still asks first;
+- labels have no trailing "…" or "...": they say what happens ("Restore
+  from file", "Pick another folder"), and a dialog that opens says so
+  itself. *Gated* (`labels.py`).
 
 ## Colour
 

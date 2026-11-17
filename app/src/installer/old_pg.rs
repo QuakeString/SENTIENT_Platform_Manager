@@ -132,7 +132,7 @@ impl Installer {
                         h_flex().child(
                             ui::button("old-pg-look")
                                 .outline()
-                                .label(if self.old_pg_probing { "Looking…" } else { "Look inside (asks for the password)" })
+                                .label(if self.old_pg_probing { "Looking" } else { "Look inside (asks for the password)" })
                                 .disabled(self.old_pg_probing)
                                 .on_click(cx.listener(|this, _, _, cx| this.look_inside_old_pg(cx))),
                         ),

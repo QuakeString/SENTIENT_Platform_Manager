@@ -1269,7 +1269,7 @@ impl Manager {
                     rows.push(ui::MenuRow::Item {
                         id: "switch-manage".into(),
                         icon: Some(Icon::new(Lucide::Settings).size(px(18.)).into_any_element()),
-                        label: "Manage instances…".into(),
+                        label: "Manage instances".into(),
                         secondary: None,
                         on: false,
                         click: std::rc::Rc::new(move |_, cx| {
@@ -1638,7 +1638,7 @@ impl Manager {
                 let v = s.version.clone();
                 col = col.child(
                     bar("notice-sentient", crate::ui::Tone::Neutral, format!("SENTIENT {} is available{}.", s.version, dated(&s.date)))
-                        .child(crate::ui::probed(crate::ui::button("notice-sentient-go").primary().label("Update…").on_click(cx.listener(|this, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("notice-sentient-go").primary().label("Update").on_click(cx.listener(|this, _, _, cx| {
                             this.page = Page::Update;
                             cx.notify();
                         }))))
@@ -1655,7 +1655,7 @@ impl Manager {
             let v = o.version.clone();
             col = col.child(
                 bar("notice-gateway", crate::ui::Tone::Neutral, format!("Sentient Gateway {} is available{}.", o.version, dated(&o.date)))
-                    .child(crate::ui::probed(crate::ui::button("notice-gateway-go").primary().label("Update…").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button("notice-gateway-go").primary().label("Update").on_click(cx.listener(|this, _, _, cx| {
                         this.page = Page::Gateway;
                         cx.notify();
                     }))))

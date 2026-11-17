@@ -194,7 +194,7 @@ impl Render for AboutPage {
                         .child(crate::ui::probed(
                             crate::ui::button("about-check")
                                 .outline()
-                                .label(if checking { "Checking…" } else { "Check for updates" })
+                                .label(if checking { "Checking" } else { "Check for updates" })
                                 .disabled(checking)
                                 .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))),
                         )),
