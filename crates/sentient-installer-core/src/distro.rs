@@ -1420,13 +1420,7 @@ pub fn status(cfg: &DeployConfig) -> StackStatus {
 pub fn set_admin_account(cfg: &DeployConfig, email: &str, password_hash: &str) -> Result<(), String> {
     let n = cfg.names();
     let sql = crate::native::admin_account_sql(email, password_hash);
-    let cmd = format!(
-        "docker exec {} psql -U {} -d {} -v ON_ERROR_STOP=1 -qAt -c {}",
-        n.pg,
-        cfg.db_user,
-        cfg.db_name,
-        shell_quote(&sql)
-    );
+    let cmd = admin_account_cmd(&n.pg, &cfg.db_user, &cfg.db_name, &sql);
     match run_output(&cmd) {
         Some((true, _)) => Ok(()),
         _ => Err("could not set the administrator sign-in in the database container".into()),
@@ -1434,6 +1428,17 @@ pub fn set_admin_account(cfg: &DeployConfig, email: &str, password_hash: &str) -
 }
 
 /// Single-quote for bash, which runs every Docker command here.
+/// The command that runs `sql` in the database container. The SQL goes
+/// in as base64 on standard input: on Windows `wsl.exe -- bash -lc …`
+/// runs through the distro's shell first, which expanded the `$` of the
+/// argon2 hash ("$argon2id$v=19$…") and left SENTIENT a hash it could not
+/// read (every sign-in answered 500).
+fn admin_account_cmd(container: &str, user: &str, db: &str, sql: &str) -> String {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(sql);
+    format!("echo {b64} | base64 -d | docker exec -i {container} psql -U {user} -d {db} -v ON_ERROR_STOP=1 -qAt -f -")
+}
+
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -1778,6 +1783,17 @@ fn _uses(_: &EnvVar) {}
 #[cfg(test)]
 mod keepalive_tests {
     use super::*;
+
+    #[test]
+    fn the_admin_sql_crosses_any_shell_without_a_dollar_or_quote() {
+        let sql = crate::native::admin_account_sql("ada@example.test", "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA");
+        let cmd = admin_account_cmd("sentient-postgres", "sentient", "sentient", &sql);
+        assert!(!cmd.contains('$') && !cmd.contains('\'') && !cmd.contains('"'));
+        let b64 = cmd.split_whitespace().nth(1).unwrap();
+        use base64::Engine as _;
+        assert_eq!(String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b64).unwrap()).unwrap(), sql);
+        assert!(cmd.ends_with("docker exec -i sentient-postgres psql -U sentient -d sentient -v ON_ERROR_STOP=1 -qAt -f -"));
+    }
 
     #[test]
     fn the_keepalive_forwards_the_tcp_ports_to_the_distro_and_holds_it() {
