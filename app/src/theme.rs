@@ -194,7 +194,7 @@ pub fn apply(choice: Choice, window: Option<&mut gpui_kit::Window>, cx: &mut App
     match choice {
         Choice::Light => Theme::change(ThemeMode::Light, None, cx),
         Choice::Dark => Theme::change(ThemeMode::Dark, None, cx),
-        Choice::System => match system_dark() {
+        Choice::System => match system_dark_soon() {
             Some(dark) => Theme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, None, cx),
             None => Theme::sync_system_appearance(window, cx),
         },
@@ -210,6 +210,10 @@ pub fn follow_system(cx: &mut App) {
     }
     cx.spawn(async move |cx| loop {
         cx.background_executor().timer(std::time::Duration::from_secs(3)).await;
+        // No window (closed to the tray): nothing to switch.
+        if cx.update(|cx| cx.windows().is_empty()) {
+            continue;
+        }
         let saved = Choice::saved();
         if saved != Choice::System {
             continue;
@@ -241,14 +245,60 @@ pub fn system_dark() -> Option<bool> {
             return Some(dark);
         }
     }
-    let portal = std::process::Command::new("busctl")
+    if let Some(dark) = portal_scheme() {
+        return Some(dark);
+    }
+    gsettings_dark()
+}
+
+/// A desktop portal that did not answer: busctl waits 2 s for it each time,
+/// so it is asked again only after this (no portal, or one without the
+/// Settings interface).
+const PORTAL_QUIET_FOR: std::time::Duration = std::time::Duration::from_secs(300);
+
+static PORTAL_QUIET_UNTIL: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// The desktop portal's color-scheme, unless it did not answer lately.
+fn portal_scheme() -> Option<bool> {
+    if PORTAL_QUIET_UNTIL.lock().ok().and_then(|q| *q).is_some_and(|t| std::time::Instant::now() < t) {
+        return None;
+    }
+    let asked = std::time::Instant::now();
+    let out = std::process::Command::new("busctl")
         .args(["--user", "--timeout=2", "call", "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Settings", "ReadOne", "ss", "org.freedesktop.appearance", "color-scheme"])
         .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| portal_dark(&String::from_utf8_lossy(&o.stdout)));
-    if portal.is_some() {
-        return portal;
+        .ok();
+    let answered = out.as_ref().is_some_and(|o| o.status.success());
+    if !answered && asked.elapsed() >= std::time::Duration::from_millis(1500) {
+        if let Ok(mut q) = PORTAL_QUIET_UNTIL.lock() {
+            *q = Some(std::time::Instant::now() + PORTAL_QUIET_FOR);
+        }
+    }
+    out.filter(|o| o.status.success()).and_then(|o| portal_dark(&String::from_utf8_lossy(&o.stdout)))
+}
+
+/// At start: the window opens after this at most. system_dark on its own
+/// thread; a desktop that has not answered by then (a portal that never
+/// answers took 2 s of every start) gets GNOME's setting, and the
+/// three-second follow (follow_system) switches if the portal says
+/// otherwise later.
+const START_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
+
+fn system_dark_soon() -> Option<bool> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(system_dark());
+    });
+    match rx.recv_timeout(START_WAIT) {
+        Ok(dark) => dark,
+        Err(_) => gsettings_dark(),
+    }
+}
+
+/// GNOME's (and others with GSettings) color-scheme.
+fn gsettings_dark() -> Option<bool> {
+    if !cfg!(target_os = "linux") {
+        return None;
     }
     std::process::Command::new("gsettings")
         .args(["get", "org.gnome.desktop.interface", "color-scheme"])
