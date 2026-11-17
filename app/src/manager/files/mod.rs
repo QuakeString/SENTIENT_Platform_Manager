@@ -419,6 +419,22 @@ impl FilesPage {
         }
     }
 
+    /// The second press of a double click on a folder opens it, at once:
+    /// the click itself is lost when the pointer moves more than GPUI's 2 px
+    /// drag threshold between press and release (rows are drag sources),
+    /// which a real hand often does.
+    fn press_row(&mut self, side: usize, i: usize, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !opens_on_press(e.click_count, e.modifiers) {
+            return;
+        }
+        let Some(row) = self.panes[side].rows().into_iter().nth(i) else { return };
+        if row.dir {
+            window.focus(&self.panes[side].focus, cx);
+            self.open_dir(side, &row.name, cx);
+            cx.stop_propagation();
+        }
+    }
+
     /// A row clicked: select it (Ctrl adds, Shift a range); twice opens a folder.
     fn click_row(&mut self, side: usize, i: usize, e: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         let rows = self.panes[side].rows();
@@ -426,10 +442,9 @@ impl FilesPage {
         let pane = &mut self.panes[side];
         window.focus(&pane.focus, cx);
         if e.click_count() >= 2 {
-            if row.dir {
-                let name = row.name.clone();
-                self.open_dir(side, &name, cx);
-            }
+            // Opened on the second press already (press_row): a hand that
+            // moves a little between down and up starts a drag, and the
+            // click then never comes.
             return;
         }
         let m = e.modifiers();
@@ -726,6 +741,7 @@ impl FilesPage {
             "delete" => self.confirm_delete(side, cx),
             "f2" => self.start_rename(side, window, cx),
             "backspace" => self.up(side, cx),
+            "up" if k.modifiers.alt => self.up(side, cx),
             "enter" => {
                 let p = &self.panes[side];
                 if let Some(r) = p.rows().into_iter().find(|r| p.selected.len() == 1 && p.selected.contains(&r.name) && r.dir) {
@@ -736,6 +752,12 @@ impl FilesPage {
         }
         cx.stop_propagation();
     }
+}
+
+/// A press that opens a folder: the second of a double click, without
+/// Shift or Ctrl (those change the selection).
+fn opens_on_press(click_count: usize, m: Modifiers) -> bool {
+    click_count == 2 && !m.shift && !m.control && !m.platform
 }
 
 fn read_only_text(p: &Pane) -> String {
@@ -1024,6 +1046,7 @@ impl FilesPage {
                 .when(on, |r| r.bg(theme.sidebar_accent))
                 .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))
                 .child(cols(name_el, size, time, Some(owner)))
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, window, cx| this.press_row(side, i, e, window, cx)))
                 .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| this.click_row(side, i, e, window, cx)))
                 .on_mouse_down(MouseButton::Right, cx.listener(move |this, _, window, cx| {
                     let p = &mut this.panes[side];
@@ -1391,6 +1414,17 @@ impl Render for DeleteFooter {
 
 #[cfg(test)]
 mod location_tests {
+    #[test]
+    fn the_second_press_opens_a_folder_but_not_with_shift_or_ctrl() {
+        use gpui_kit::Modifiers;
+        let none = Modifiers::default();
+        assert!(!super::opens_on_press(1, none));
+        assert!(super::opens_on_press(2, none));
+        assert!(!super::opens_on_press(3, none));
+        assert!(!super::opens_on_press(2, Modifiers { shift: true, ..Default::default() }));
+        assert!(!super::opens_on_press(2, Modifiers { control: true, ..Default::default() }));
+    }
+
     use super::os_path;
 
     #[test]

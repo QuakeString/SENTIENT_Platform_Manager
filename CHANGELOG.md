@@ -26,6 +26,10 @@ refreshes that repository's Downloads table.
   (postgres -V) and puts them back from the archive when they do not; the
   data folder is never touched.
 - The support details say "WSL is not installed" instead of wsl.exe's help.
+- Files: double-clicking a folder did not open it when the pointer moved a
+  little between press and release (rows can be dragged, and a drag
+  swallowed the click). The second press now opens the folder. Alt+Up goes
+  to the parent folder too (Backspace already did).
 
 ## [0.9.1] - 2026-11-17
 
