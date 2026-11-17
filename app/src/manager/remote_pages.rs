@@ -188,14 +188,17 @@ fn ask_pg_admin_password_now(inst: Instance, ask: crate::adopt::NeedsPgAdmin, th
     impl Render for PgAdminPrompt {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let theme = cx.theme().clone();
-            let what = if self.ask.kind.is_empty() { "SENTIENT".to_string() } else { format!("SENTIENT ({})", self.ask.kind) };
+            // "Windows services (SentientServer)" reads "Windows services" here:
+            // one parenthesis in the sentence, the details are in the (i).
+            let kind = self.ask.kind.split(" (").next().unwrap_or("").trim();
+            let on = if kind.is_empty() { self.inst.name.clone() } else { format!("{} ({kind})", self.inst.name) };
             v_flex()
                 .gap_3()
                 .child(
                     h_flex()
                         .gap_1()
-                        .items_center()
-                        .child(div().text_sm().child(format!("{what} on {} can be added with its PostgreSQL admin (postgres) password.", self.inst.name)))
+                        .items_start()
+                        .child(div().flex_1().min_w_0().text_sm().child(format!("SENTIENT on {on} can be added with its PostgreSQL admin (postgres) password.")))
                         .child(crate::ui::info(
                             "pg-admin-help".into(),
                             format!(
@@ -206,7 +209,7 @@ fn ask_pg_admin_password_now(inst: Instance, ask: crate::adopt::NeedsPgAdmin, th
                         )),
                 )
                 .child(Input::new(&self.input).mask_toggle().disabled(self.busy))
-                .when_some(self.error.clone(), |c, e| c.child(div().text_sm().text_color(theme.danger).child(e)))
+                .when_some(self.error.clone(), |c, e| c.child(div().min_w_0().text_sm().text_color(theme.danger).child(e)))
                 .child(
                     h_flex()
                         .gap(crate::ui::button_gap())
