@@ -24,7 +24,9 @@ WIDTHS=${WIDTHS:-"560 900 1200"}; SCALES=${SCALES:-"1 1.5"}; THEMES=${THEMES:-"l
 JOBS=${JOBS:-4}
 one() { # where page width scale theme [dialog env]
   local where=$1 page=$2 w=$3 sc=$4 th=$5 dlg=${6:-} h=760
-  local name="$where-$page-$w-x$sc-$th${dlg:+-${dlg//=/-}}" x="$OUT/xdg-$where-$page-$w-$sc-$th${dlg:+-${dlg//=/-}}"
+  # The dialog's env in the file name: "=" and "/" made safe.
+  local tag="${dlg//=/-}"; tag="${tag//\//_}"
+  local name="$where-$page-$w-x$sc-$th${dlg:+-$tag}" x="$OUT/xdg-$where-$page-$w-$sc-$th${dlg:+-$tag}"
   rm -rf "$x"; mkdir -p "$x"
   # "loading": a server page with its readings held back (LOADING_PROFILE
   # points its instance at an address that does not answer).
@@ -43,7 +45,8 @@ one() { # where page width scale theme [dialog env]
   done
   local inst=(); [ "$where" != local ] && [ "$where" != setup ] && inst=(--instance "${INSTANCE:?}")
   local mode=(--manager --page "$page"); [ "$where" = setup ] && mode=(--install)
-  local extra=(); [ -n "$dlg" ] && extra=("$dlg")
+  # A dialog's env: KEY=VAL, several joined with "+".
+  local extra=(); [ -n "$dlg" ] && IFS=+ read -r -a extra <<<"$dlg"
   env "${extra[@]}" GPUI_X11_SCALE_FACTOR=$sc DISPLAY=$d WAYLAND_DISPLAY= XDG_CONFIG_HOME=$x SPM_THEME=$th SPM_WINDOW_SIZE=${w}x${h} \
     SPM_INSTALLATION_RECORD=${SPM_INSTALLATION_RECORD:-/nonexistent} SPM_DEBUG_LAYOUT=1 SPM_REDUCED_MOTION=1 \
     "$BIN" "${mode[@]}" "${inst[@]}" 2>"$OUT/$name.log" >/dev/null & local ap=$!
@@ -73,6 +76,11 @@ for g in $DIALOGS; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES
 # crate::manager::jobview), on the Backup page.
 JOBVIEWS=${JOBVIEWS-"SPM_DEBUG_JOB_LOG=6000:2"}
 for g in $JOBVIEWS; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local backup $w $s $t $g"); done; done; done; done
+# The folder chooser over Backup: a long folder scrolled to its end (only
+# the list scrolls: check.py holds the path bar at the dialog's top), and
+# at the minimum width. CHOOSER_WIDTHS empty leaves them out.
+CW=${CHOOSER_WIDTHS-560 1200}
+for w in $CW; do for s in $SCALES; do for t in $THEMES; do list+=("local backup $w $s $t SPM_DEBUG_FOLDER_CHOOSER=1+SPM_DEBUG_FOLDER_PICK=/usr/lib/x86_64-linux-gnu+SPM_DEBUG_CHOOSER_SCROLL=bottom"); done; done; done
 # Add instance with its Setup guide open (Linux and Windows servers).
 for g in ${GUIDES-SPM_DEBUG_ADD_GUIDE=linux SPM_DEBUG_ADD_GUIDE=windows}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local instances $w $s $t $g"); done; done; done; done
 # "Move data to another disk" at each step, a sub-flow of Migration (the

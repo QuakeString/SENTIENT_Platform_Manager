@@ -104,6 +104,8 @@ enum Stage {
 
 pub struct FolderChooser {
     o: Opening,
+    /// The folder list's scroll (only the list scrolls).
+    rows_scroll: ScrollHandle,
     path: Entity<InputState>,
     /// The folder whose folders are listed.
     listing: Option<DirList>,
@@ -125,7 +127,7 @@ pub struct FolderChooser {
 
 const NEEDS_PASSWORD: &str = "@@SUDO_PASSWORD";
 const TITLE_ICON: Lucide = Lucide::Folder;
-pub const CHOOSE_W: f32 = 640.;
+pub const CHOOSE_W: f32 = 760.;
 pub const OLD_W: f32 = 520.;
 
 /// Open the chooser in the shared dialog.
@@ -135,6 +137,9 @@ pub fn open(o: Opening, window: &mut Window, cx: &mut App) {
     let footer = cx.new(|cx| ChooserFooter { _observe: cx.observe(&view, |_, _, cx| cx.notify()), chooser: view.clone() });
     crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: CHOOSE_W, icon: Some(Icon::new(TITLE_ICON)), on_close: None }, cx);
     crate::modal::set_footer(footer.into(), cx);
+    // Only the folder list scrolls; the path bar, the places, the header
+    // and the status stay put, and the list takes the height there is.
+    crate::modal::set_list_body(cx);
 }
 
 /// The chooser's buttons, in the dialog's footer: Cancel and Use this
@@ -176,6 +181,7 @@ impl FolderChooser {
             }
         })];
         let mut me = Self {
+            rows_scroll: ScrollHandle::new(),
             o,
             path,
             listing: None,
@@ -435,6 +441,10 @@ impl Render for FolderChooser {
             });
         }
 
+        #[cfg(debug_assertions)]
+        if self.listing.is_some() && std::env::var("SPM_DEBUG_CHOOSER_SCROLL").is_ok_and(|v| v == "bottom") {
+            self.rows_scroll.scroll_to_bottom();
+        }
         // The path, up, and New folder.
         let up_to = self.listing.as_ref().and_then(|l| l.parent.clone());
         let top = h_flex()
@@ -520,7 +530,7 @@ impl Render for FolderChooser {
             .text_color(theme.muted_foreground)
             .child(div().flex_1().child("Name"))
             .child("Free space");
-        let mut rows = v_flex().id("fc-rows").max_h(px(5. * 34.)).overflow_y_scroll();
+        let mut rows = v_flex().id("fc-rows").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.rows_scroll).child(crate::ui::layout_probe("fc-rows"));
         if let Some(input) = &self.new_name {
             rows = rows.child(
                 h_flex()
@@ -578,7 +588,7 @@ impl Render for FolderChooser {
                 );
             }
         }
-        let table = v_flex().rounded(px(8.)).border_1().border_color(theme.border).overflow_hidden().child(header).child(rows);
+        let table = v_flex().flex_1().min_h_0().rounded(px(8.)).border_1().border_color(theme.border).overflow_hidden().child(header).child(rows);
 
         // B2/B3: what the picked folder allows.
         let full = self.o.full_bytes;
@@ -616,11 +626,15 @@ impl Render for FolderChooser {
             },
         };
         v_flex()
+            .flex_1()
+            .min_h_0()
             .gap(px(12.))
-            .child(top)
-            .child(chips)
+            // The layout test: the path bar stays where it is when the list
+            // scrolls (fc-top).
+            .child(div().relative().flex_shrink_0().child(top).child(crate::ui::layout_probe("fc-top")))
+            .child(div().flex_shrink_0().child(chips))
             .child(table)
-            .child(status)
+            .child(div().flex_shrink_0().child(status))
             .into_any_element()
     }
 }

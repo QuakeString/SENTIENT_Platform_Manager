@@ -1217,6 +1217,16 @@ impl Render for BackupPage {
                 return page.child(run).into_any_element();
             }
         }
+        // Screens and the layout test: the folder chooser open
+        // (SPM_DEBUG_FOLDER_CHOOSER=1, with SPM_DEBUG_FOLDER_PICK to list a
+        // long folder and SPM_DEBUG_CHOOSER_SCROLL=bottom to scroll it).
+        #[cfg(debug_assertions)]
+        {
+            static OPENED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if std::env::var_os("SPM_DEBUG_FOLDER_CHOOSER").is_some() && !OPENED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                self.change_folder(window, cx);
+            }
+        }
         let Some(record) = self.record.clone() else {
             return page.child(ui::not_installed(&theme)).into_any_element();
         };

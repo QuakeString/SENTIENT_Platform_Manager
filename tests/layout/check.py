@@ -377,6 +377,15 @@ def main():
     # One gap between the buttons of a group (dialogs included).
     for (l, r, t, b), g in button_gaps(log):
         bad.append(f"button gap: {g:.2f} px after the button at x {l:.0f}-{r:.0f}, y {t:.0f}-{b:.0f}, not {BUTTON_GAP:.0f}")
+    # A list dialog (the folder chooser): only its list scrolls, so its
+    # path bar stays at the top of the dialog's body after scrolling.
+    fl = last_frame_lines(log)
+    tops = [[float(v) for v in l.split()[2:6]] for l in fl if l.startswith("LAYOUT fc-top ")]
+    bodies = [[float(v) for v in l.split()[2:6]] for l in fl if l.startswith("LAYOUT dialog ")]
+    if tops and bodies:
+        top, body = tops[-1], bodies[-1]
+        if abs(top[2] - (body[2] + 12)) > 2.5:
+            bad.append(f"folder chooser: the path bar is at y {top[2]:.0f}, not at the dialog body's top {body[2] + 12:.0f} (did the whole body scroll?)")
     # Commit actions in a card foot (ui::card_actions): the buttons end at
     # the foot's right edge (SPM's rule: actions on the right).
     frame_lines = last_frame_lines(log)

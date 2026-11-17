@@ -31,6 +31,22 @@ pub struct ModalFooter(pub Option<AnyView>);
 
 impl Global for ModalFooter {}
 
+/// The open dialog holds a list: it takes the height it is allowed, its
+/// body does not scroll, and only the list inside scrolls (the path bar,
+/// headers and status above and below it stay put). Its width is at most
+/// 70 % of the window. Set after [`open`], which clears it.
+pub struct ModalList(pub bool);
+
+impl Global for ModalList {}
+
+pub fn set_list_body(cx: &mut App) {
+    cx.set_global(ModalList(true));
+    cx.refresh_windows();
+}
+
+/// How tall a list dialog is at most (about ten rows of a folder list).
+pub const LIST_DIALOG_H: f32 = 680.;
+
 pub fn set_footer(view: AnyView, cx: &mut App) {
     cx.set_global(ModalFooter(Some(view)));
     cx.refresh_windows();
@@ -52,6 +68,7 @@ pub fn set_width(width: f32, cx: &mut App) {
 
 pub fn open(modal: Modal, cx: &mut App) {
     cx.set_global(ModalFooter(None));
+    cx.set_global(ModalList(false));
     cx.set_global(ModalSlot(Some(modal)));
     cx.refresh_windows();
 }
@@ -95,7 +112,11 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
     let vw = f32::from(window.viewport_size().width);
     let vh = f32::from(window.viewport_size().height);
     // A width change glides (260 ms), per dialog.
+    let list = cx.try_global::<ModalList>().is_some_and(|l| l.0);
     let w = crate::ui::tween(SharedString::from(format!("modal-w-{}", modal.title)), modal.width, 260, window).min(vw - 32.);
+    // A list dialog: at most 70 % of the window (never under 480 px while
+    // the window allows it).
+    let w = if list { w.min((vw * 0.7).max(480.)).min(vw - 32.) } else { w };
     // Centre in the page area when the panel fits there, else in the window.
     let (area_left, area_w) = if vw - page_left >= w + 32. { (page_left, vw - page_left) } else { (0., vw) };
     let left = area_left + (area_w - w) / 2.;
@@ -106,6 +127,7 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
         .occlude()
         .w(px(w))
         .max_h(px(max_h))
+        .when(list, |p| p.h(px(max_h.min(LIST_DIALOG_H))))
         .rounded(px(crate::ui::PANEL_RADIUS))
         .bg(theme.background)
         .border_1()
@@ -129,7 +151,19 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
         .child(
             // 20 px around the body (the mockup's dialog); the probe lets the
             // layout test check nothing reaches into it.
-            div().id("modal-body").relative().flex_1().min_h_0().overflow_y_scroll().px(px(20.)).pt(px(12.)).pb(px(16.)).child(crate::ui::layout_probe("dialog")).child(modal.body.clone()),
+            div()
+                .id("modal-body")
+                .relative()
+                .flex_1()
+                .min_h_0()
+                // A list dialog: the body fills and the list inside scrolls.
+                .when(!list, |d| d.overflow_y_scroll())
+                .when(list, |d| d.flex().flex_col())
+                .px(px(20.))
+                .pt(px(12.))
+                .pb(px(16.))
+                .child(crate::ui::layout_probe("dialog"))
+                .child(modal.body.clone()),
         )
         .when_some(footer, |p, f| p.child(div().flex_shrink_0().px(px(20.)).py(px(14.)).border_t_1().border_color(theme.border).child(f)));
     Some(
