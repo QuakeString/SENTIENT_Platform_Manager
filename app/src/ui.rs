@@ -939,6 +939,24 @@ pub fn seg_item(theme: &Theme, id: impl Into<ElementId>, label: impl Into<Shared
         .child(label.into())
 }
 
+/// A segment that can't be picked: greyed on a faint fill, nothing reacts,
+/// and its (i) (`why`, a [`info`]) says why.
+pub fn seg_item_off(theme: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, why: impl IntoElement) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h_full()
+        .pl(px(11.))
+        .pr(px(5.))
+        .flex()
+        .items_center()
+        .gap(px(2.))
+        .text_sm()
+        .whitespace_nowrap()
+        .bg(theme.foreground.opacity(0.05))
+        .child(div().text_color(theme.muted_foreground).opacity(OFF_OPACITY).child(label.into()))
+        .child(why)
+}
+
 /// `seg_item` with a 15 px icon before its label.
 pub fn seg_item_with(theme: &Theme, id: impl Into<ElementId>, icon: gpui_kit::component::Icon, label: impl Into<SharedString>, on: bool) -> Stateful<Div> {
     let label = label.into();
@@ -1038,6 +1056,20 @@ pub fn radio_card(theme: &Theme, id: impl Into<ElementId>, title: impl Into<Shar
 /// `interactive`: it can be picked (a pointer and the hover border); off,
 /// it is drawn faded by the caller and reacts to nothing.
 pub fn radio_card_el(theme: &Theme, id: impl Into<ElementId>, title: AnyElement, desc: impl Into<SharedString>, selected: bool, interactive: bool) -> Stateful<Div> {
+    radio_card_inner(theme, id, title, desc, selected, interactive, 1.)
+}
+
+/// How faded a choice that can't be made is drawn (its (i) is not).
+pub const OFF_OPACITY: f32 = 0.55;
+
+/// A `radio_card` that can't be picked: its mark and line faded, nothing
+/// reacts. The caller fades the title's text and keeps its (i) with the
+/// reason at full strength.
+pub fn radio_card_off(theme: &Theme, id: impl Into<ElementId>, title: AnyElement, desc: impl Into<SharedString>) -> Stateful<Div> {
+    radio_card_inner(theme, id, title, desc, false, false, OFF_OPACITY)
+}
+
+fn radio_card_inner(theme: &Theme, id: impl Into<ElementId>, title: AnyElement, desc: impl Into<SharedString>, selected: bool, interactive: bool, fade: f32) -> Stateful<Div> {
     gpui_kit::component::h_flex()
         .id(id)
         .gap_3()
@@ -1060,7 +1092,8 @@ pub fn radio_card_el(theme: &Theme, id: impl Into<ElementId>, title: AnyElement,
                 .flex()
                 .items_center()
                 .justify_center()
-                .when(selected, |r| r.child(div().size(px(8.)).rounded_full().bg(theme.primary))),
+                .when(selected, |r| r.child(div().size(px(8.)).rounded_full().bg(theme.primary)))
+                .when(fade < 1., |r| r.opacity(fade)),
         )
         .child(
             v_flex()
@@ -1068,7 +1101,7 @@ pub fn radio_card_el(theme: &Theme, id: impl Into<ElementId>, title: AnyElement,
                 .min_w_0()
                 .gap_0p5()
                 .child(title)
-                .child(div().text_sm().text_color(theme.muted_foreground).child(desc.into())),
+                .child(div().text_sm().text_color(theme.muted_foreground).when(fade < 1., |d| d.opacity(fade)).child(desc.into())),
         )
 }
 

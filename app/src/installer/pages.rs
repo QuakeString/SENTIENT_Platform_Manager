@@ -16,6 +16,7 @@ use sentient_installer_core::checks::Status;
 use sentient_installer_core::diagnose::{Fix, FixAction};
 use sentient_installer_core::stack::Flavor;
 
+use super::placement::{self, PARTS, Part, Place, Placement, Why, Wsl};
 use super::{FINISH, INSTALL, Installer};
 use crate::installation::{Engine, flavor_label};
 use crate::jobs::JobState;
@@ -93,13 +94,23 @@ fn column() -> Div {
     v_flex().w_full().gap(px(ui::GAP))
 }
 
-/// A sentence continued after a colon: its first letter in lower case.
-fn lower_first(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        Some(f) => f.to_lowercase().chain(c).collect(),
-        None => String::new(),
-    }
+/// A card title that can't be picked: its text faded, its (i) with the
+/// reason at full strength.
+fn off_title(text: &'static str, why: impl IntoElement) -> AnyElement {
+    h_flex().gap_2().items_center().child(div().font_weight(FontWeight::MEDIUM).opacity(ui::OFF_OPACITY).child(text)).child(why).into_any_element()
+}
+
+/// A Database card's right side: where it runs, a line per database when
+/// they run in different places.
+fn runs_column(theme: &Theme, lines: &[&'static str], fade: f32) -> Div {
+    v_flex()
+        .flex_shrink_0()
+        .items_end()
+        .gap_0p5()
+        .text_sm()
+        .text_color(theme.muted_foreground)
+        .when(fade < 1., |c| c.opacity(fade))
+        .children(lines.iter().map(|l| div().whitespace_nowrap().child(*l)))
 }
 
 /// A check's pill: its tone, and its own words when the check gives them
@@ -129,16 +140,15 @@ impl Installer {
         let text: &str = match self.step {
             0 => "Nothing changes on the computer until you press Install on the Summary page.",
             1 => "What SENTIENT needs on this computer. Items marked “Will be installed” are handled by setup.",
-            2 if self.engine == Engine::Docker && !cfg!(windows) => "SENTIENT and its databases keep their data in Docker volumes. Put them on the disk with the most room: telemetry grows.",
+            2 if self.engine == Engine::Docker && self.windows => "SENTIENT's distribution keeps the containers and all their data on one disk. Put it on the disk with the most room: telemetry grows.",
+            2 if self.engine == Engine::Docker => "SENTIENT and its databases keep their data in Docker volumes. Put them on the disk with the most room: telemetry grows.",
             2 => "Where SENTIENT and its database go. Put the database on the disk with the most free space: telemetry grows.",
-            2 if cfg!(windows) && self.engine == Engine::Docker => "SENTIENT's distribution keeps the containers and all their data on one disk. Put it on the disk with the most room: telemetry grows.",
-            3 if cfg!(windows) && self.engine == Engine::Native => "How SENTIENT stores its data. SENTIENT and PostgreSQL run directly on Windows; the type can be changed later with Migration.",
             3 => "How SENTIENT stores its data. The type can be changed later with Migration in the Platform Manager.",
             4 => "The database SENTIENT signs in to. Setup checks that its ports are free.",
             5 => "Setup checks that each port is free before moving on.",
             6 => "The first SENTIENT sign-in, with full system rights. More users can be added in SENTIENT.",
             7 => "SENTIENT's settings, sized for this computer. All of them can be changed later in the Platform Manager.",
-            8 if !cfg!(windows) && !self.manager_only => "Where to find SENTIENT. It starts with the computer: as a systemd service, or through Docker's restart policy.",
+            8 if !self.windows && !self.manager_only => "Where to find SENTIENT. It starts with the computer: as a systemd service, or through Docker's restart policy.",
             8 => "Where to find SENTIENT and how it starts.",
             9 => "Check your choices. Nothing has been installed yet.",
             INSTALL => "Setup is installing. This takes a few minutes.",
@@ -316,17 +326,9 @@ impl Installer {
 
     fn system_check(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
-        let rows = self.checks.clone();
-        let engine_choice = if self.windows_engines() { Some(self.windows_engine_choice(&theme, cx)) } else { None }.or_else(|| (!cfg!(windows)).then(|| {
-            let option = |engine: Engine, id: &'static str, title: &'static str, desc: &'static str, recommended: bool| {
-                choice_card(&theme, id, choice_title(&theme, title, recommended), desc, self.engine == engine)
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_engine(engine, cx)))
-            };
-            column().child(pair(
-                option(Engine::Docker, "engine-docker", "Docker on this machine", "SENTIENT and its databases as containers. Every database type.", true),
-                option(Engine::Native, "engine-native", "Natively with systemd", "Services from the distribution's packages. PostgreSQL, or PostgreSQL + ClickHouse.", false),
-            ))
-        }));
+        // Windows: the WSL 2 row says how WSL stands for the choice.
+        let rows = self.checks.clone().map(|rows| if self.windows { super::with_wsl_row(rows, self.engine, self.docker_choice.as_ref()) } else { rows });
+        let engine_choice = self.engine_choice(&theme, cx);
         let cleanup = self.cleanup.read(cx);
         // jobview: short (removing what an earlier install left, on its check's row).
         let (cleaning, cleanup_state, cleanup_step) = (cleanup.is_running(), cleanup.state().clone(), cleanup.step_with_time());
@@ -366,7 +368,7 @@ impl Installer {
         // An older PostgreSQL's data: upgrade or keep aside, before installing.
         let old_pg = self.old_pg_panel(cx);
         column()
-            .children(engine_choice)
+            .child(engine_choice)
             .children(leftovers)
             .children(old_pg)
             .child(match rows {
@@ -387,42 +389,103 @@ impl Installer {
             )
     }
 
-    /// Windows: where SENTIENT runs. Native (the default) or Docker in
-    /// WSL 2; the Docker card says when WSL 2 must be turned on first, or
-    /// is greyed with the reason when this computer cannot run it.
-    /// The texts wait for the owner's wording (docs/mockups/setup-engine.html).
-    fn windows_engine_choice(&self, theme: &Theme, cx: &mut Context<Self>) -> Div {
-        use sentient_installer_core::wsl::DockerChoice;
-        let native = choice_card(theme, "engine-native", choice_title(theme, "On this computer", true), "SENTIENT and PostgreSQL as Windows services. Start with Windows.", self.engine == Engine::Native)
+    /// Where SENTIENT runs, on Windows and Linux alike: "In the system"
+    /// (the default) or "Docker" (inside WSL 2 on Windows), then the
+    /// Customise rows and, for Docker without WSL 2 yet, the restart notice.
+    /// A Windows where WSL 2 cannot run gets the Docker card greyed with
+    /// the reason (docs/mockups/setup-engine.html, W1 to W3, L1 and L2).
+    fn engine_choice(&self, theme: &Theme, cx: &mut Context<Self>) -> Div {
+        let host = self.host();
+        let (sys_desc, docker_desc) = if host.windows {
+            ("SENTIENT and PostgreSQL as Windows services. They start with Windows.", "SENTIENT and its databases as containers, in Docker Engine inside WSL 2.")
+        } else {
+            ("Services from the distribution's packages, run by systemd.", "SENTIENT and its databases as containers. Every database type.")
+        };
+        let native = choice_card(theme, "engine-native", choice_title(theme, "In the system", true), sys_desc, self.engine == Engine::Native)
             .on_click(cx.listener(|this, _, _, cx| this.set_engine(Engine::Native, cx)));
-        let unavailable = match &self.docker_choice {
-            Some(DockerChoice::Unavailable { reason, detail }) => Some((reason.clone(), detail.clone())),
-            _ => None,
+        let docker = if host.windows && host.wsl == Wsl::Unavailable {
+            let title = off_title("Docker", ui::info("engine-docker-why".into(), format!("Docker is not possible on this computer\n\n{}", self.wsl_detail()).into()));
+            ui::radio_card_off(theme, "engine-docker", title, "Not available on this computer.").relative().child(ui::layout_probe("panel"))
+        } else {
+            choice_card(theme, "engine-docker", choice_title(theme, "Docker", false), docker_desc, self.engine == Engine::Docker)
+                .on_click(cx.listener(|this, _, _, cx| this.set_engine(Engine::Docker, cx)))
         };
-        let title = h_flex()
-            .gap_2()
-            .items_center()
-            .child(div().font_weight(FontWeight::MEDIUM).child("In Docker"))
-            .when_some(unavailable.clone(), |t, (_, detail)| t.child(ui::info("engine-docker-why".into(), detail.into())))
-            .into_any_element();
-        let desc = match &unavailable {
-            Some((reason, _)) => format!("SENTIENT and its databases as containers, in Docker inside WSL 2. Not possible here: {}", lower_first(reason)),
-            None => "SENTIENT and its databases as containers, in Docker inside WSL 2.".to_string(),
-        };
-        let docker = ui::radio_card_el(theme, "engine-docker", title, desc, self.engine == Engine::Docker, unavailable.is_none())
-            .relative()
-            .child(ui::layout_probe("panel"))
-            .when(unavailable.is_some(), |c| c.opacity(0.55))
-            .when(unavailable.is_none(), |c| c.on_click(cx.listener(|this, _, _, cx| this.set_engine(Engine::Docker, cx))));
         column()
             .child(pair(native, docker))
-            .when(self.engine == Engine::Docker && self.docker_choice == Some(DockerChoice::TurnOnWsl), |c| {
+            .child(self.customise(theme, cx))
+            .when(host.windows && self.engine == Engine::Docker && host.wsl == Wsl::TurnOn, |c| {
                 c.child(ui::notice(
                     theme,
                     Tone::Neutral,
-                    "Windows restarts once\nWSL 2 is not on yet. Setup turns it on first, Windows restarts, and after you sign in Setup continues by itself.",
+                    "Windows restarts once\nWSL 2 is not on yet. Setup turns it on during the install, Windows restarts, and Setup continues by itself after you sign in.",
                 ))
             })
+    }
+
+    /// "Customise where each part runs": a row per part (the server,
+    /// PostgreSQL with TimescaleDB, ClickHouse), each "In the system |
+    /// Docker". In this version the rows mirror the card: a choice that
+    /// would mix places is off with its reason (0.9.3), and so is one this
+    /// computer can't run (placement::segment).
+    fn customise(&self, theme: &Theme, cx: &mut Context<Self>) -> Div {
+        let open = self.customise_open;
+        let toggle = h_flex()
+            .id("customise")
+            .gap_2()
+            .items_center()
+            .text_sm()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.primary)
+            .cursor_pointer()
+            .child(Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight }).size(px(16.)))
+            .child("Customise where each part runs")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.customise_open = !this.customise_open;
+                cx.notify();
+            }));
+        let col = v_flex().gap(px(ui::GAP)).child(h_flex().child(toggle));
+        if !open {
+            return col;
+        }
+        let host = self.host();
+        let current = Placement::preset(self.engine, host.windows);
+        let detail = self.wsl_detail();
+        let rows = PARTS.into_iter().enumerate().map(|(i, part)| {
+            let (name, sub, help): (&str, Option<&str>, Option<&str>) = match part {
+                Part::Server => ("SENTIENT server", None, None),
+                Part::Postgres => ("PostgreSQL", Some("and TimescaleDB"), Some("TimescaleDB goes with PostgreSQL\n\nTimescaleDB is an extension inside PostgreSQL, so it always runs where PostgreSQL runs.")),
+                Part::Clickhouse => ("ClickHouse", None, Some("Only with PostgreSQL + ClickHouse\n\nUsed when you choose PostgreSQL + ClickHouse on the Database step.")),
+            };
+            let key = match part {
+                Part::Server => "server",
+                Part::Postgres => "pg",
+                Part::Clickhouse => "ch",
+            };
+            let seg = [(Place::System, "In the system"), (Place::Docker, "Docker")].into_iter().fold(ui::seg_track(theme), |track, (place, label)| {
+                let id = SharedString::from(format!("part-{key}-{}", if place == Place::System { "system" } else { "docker" }));
+                match placement::segment(host, current, part, place) {
+                    Ok(engine) => track.child(ui::seg_item(theme, id, label, current.get(part) == place).on_click(cx.listener(move |this, _, _, cx| this.set_engine(engine, cx)))),
+                    Err(why) => track.child(ui::seg_item_off(theme, id.clone(), label, ui::info(format!("{id}-why").into(), why.text(&detail).into()))),
+                }
+            });
+            h_flex()
+                .gap_3()
+                .items_center()
+                .py(px(10.))
+                .when(i > 0, |r| r.border_t_1())
+                .border_color(theme.border)
+                .child(
+                    v_flex()
+                        .w(px(160.))
+                        .flex_shrink_0()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child(h_flex().gap_1().items_center().child(name).when_some(help, |r, help| r.child(ui::info(format!("part-{key}-help").into(), help.into()))))
+                        .when_some(sub, |c, sub| c.child(div().text_size(px(12.)).child(sub))),
+                )
+                .child(seg)
+        });
+        col.child(ui::panel(theme).gap_0().py(px(4.)).children(rows))
     }
 
     /// One System check row: the pill, the name, the cause, and, when it
@@ -551,7 +614,7 @@ impl Installer {
         let theme = cx.theme().clone();
         let program = self.fields.install_dir.clone();
         let data = self.fields.data_dir.clone();
-        if self.engine == Engine::Docker && cfg!(windows) {
+        if self.engine == Engine::Docker && self.windows {
             return column().child(ui::panel(&theme).child(
                 h_flex()
                     .gap_2()
@@ -565,7 +628,7 @@ impl Installer {
         if self.engine == Engine::Docker {
             return column().child(self.data_locations(&theme, cx));
         }
-        if !cfg!(windows) {
+        if !self.windows {
             return column().child(ui::panel(&theme)
                 .child(field(&theme, "Program folder", &program))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
@@ -646,56 +709,69 @@ impl Installer {
         card
     }
 
+    /// The three databases, each saying where it will run; one this way
+    /// of running can't take is greyed with the reason in its (i)
+    /// (placement::flavor_runs; mockup W2 to W4, L1 and L2).
     fn database(&mut self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
-        let (timescale, clickhouse) = match (cfg!(windows), self.engine) {
-            (true, _) => (
-                "Compressed time-series inside PostgreSQL. Fully native, fully offline.",
-                "Best for large telemetry volumes and long history. ClickHouse runs in Docker inside WSL2.",
-            ),
-            (false, Engine::Docker) => (
-                "Compressed time-series inside PostgreSQL.",
-                "Best for large telemetry volumes and long history. ClickHouse runs as a container.",
-            ),
-            (false, Engine::Native) => (
-                "",
-                "Best for large telemetry volumes and long history. ClickHouse from the vendor's packages.",
-            ),
-        };
-        let options: [(Flavor, &'static str, &'static str, bool); 3] = [
-            (Flavor::Stock, "Simplest and smallest. For small sites and a few hundred devices.", "All native", false),
-            (Flavor::Timescaledb, timescale, "All native", false),
-            (Flavor::Clickhouse, clickhouse, "Native + WSL2", true),
+        let host = self.host();
+        let detail = self.wsl_detail();
+        let options: [(Flavor, &'static str); 3] = [
+            (Flavor::Stock, "Simplest and smallest. For small sites and a few hundred devices."),
+            (Flavor::Timescaledb, "Compressed time-series inside PostgreSQL."),
+            (Flavor::Clickhouse, "Best for large telemetry volumes and long history."),
         ];
-        let offered = self.flavors();
-        let docker_linux = self.engine == Engine::Docker;
-        let cards = options.into_iter().filter(|o| offered.contains(&o.0)).map(|(flavor, desc, runs, recommended)| {
-            let runs = if docker_linux { "Docker" } else if cfg!(windows) { runs } else { "Native" };
-            let selected = self.flavor == Some(flavor);
-            let title = h_flex()
-                .gap_2()
-                .items_center()
-                .child(ui::flavor_logos(flavor, 18.))
-                .child(div().font_weight(FontWeight::MEDIUM).child(flavor_label(flavor)))
-                .when(recommended, |r| r.child(ui::pill(&theme, Tone::Good, "Recommended")))
-                .into_any_element();
-            choice_card(&theme, flavor.as_str(), title, desc, selected)
-                .child(div().flex_shrink_0().text_sm().text_color(theme.muted_foreground).child(runs))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.flavor = Some(flavor);
-                    this.problem = None;
-                    cx.notify();
-                }))
+        let cards = options.into_iter().map(|(flavor, desc)| {
+            let logos = || ui::flavor_logos(flavor, 18.);
+            match placement::flavor_runs(host, self.engine, flavor) {
+                Ok(runs) => {
+                    let recommended = flavor == Flavor::Clickhouse;
+                    // Windows: why ClickHouse is in WSL 2 though the rest is not.
+                    let help = (host.windows && self.engine == Engine::Native && flavor == Flavor::Clickhouse).then(|| {
+                        ui::info(
+                            "ch-wsl-help".into(),
+                            "ClickHouse runs in Docker inside WSL 2\n\nThere is no ClickHouse for Windows. Setup puts it in Docker Engine inside WSL 2, under its own hidden account, so it starts at boot with nobody signed in.".into(),
+                        )
+                    });
+                    let title = h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(logos())
+                        .child(div().font_weight(FontWeight::MEDIUM).child(flavor_label(flavor)))
+                        .when(recommended, |r| r.child(ui::pill(&theme, Tone::Good, "Recommended")))
+                        .children(help)
+                        .into_any_element();
+                    choice_card(&theme, flavor.as_str(), title, desc, self.flavor == Some(flavor))
+                        .child(runs_column(&theme, &runs, 1.))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.flavor = Some(flavor);
+                            this.problem = None;
+                            cx.notify();
+                        }))
+                }
+                Err(why) => {
+                    let text = match (why, flavor) {
+                        (Why::NeedsWsl, Flavor::Clickhouse) => format!("ClickHouse needs WSL 2\n\nClickHouse runs in Docker inside WSL 2, and WSL 2 cannot run on this computer. {detail}").trim_end().to_string(),
+                        _ => why.text(&detail),
+                    };
+                    let title = h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(h_flex().gap_2().items_center().opacity(ui::OFF_OPACITY).child(logos()).child(div().font_weight(FontWeight::MEDIUM).child(flavor_label(flavor))))
+                        .child(ui::info(SharedString::from(format!("{}-why", flavor.as_str())), text.into()))
+                        .into_any_element();
+                    let desc = if why == Why::NeedsWsl { "Not available on this computer." } else { desc };
+                    ui::radio_card_off(&theme, flavor.as_str(), title, desc).relative().child(ui::layout_probe("panel")).child(runs_column(&theme, &["—"], ui::OFF_OPACITY))
+                }
+            }
         });
-        column()
-            .children(cards)
-            .when(cfg!(windows) && self.engine == Engine::Native && self.flavor == Some(Flavor::Clickhouse), |col| {
-                col.child(ui::notice(
-                    &theme,
-                    Tone::Neutral,
-                    "ClickHouse runs in Docker inside WSL2\nUnder its own hidden service account, so it starts at boot with nobody signed in. If WSL2 is not enabled, Windows restarts once and setup continues by itself.",
-                ))
-            })
+        column().children(cards).when(host.windows && self.engine == Engine::Native && self.flavor == Some(Flavor::Clickhouse) && host.wsl == Wsl::TurnOn, |col| {
+            col.child(ui::notice(
+                &theme,
+                Tone::Neutral,
+                "Windows restarts once\nWSL 2 is not on yet. Setup turns it on for ClickHouse and continues by itself after you sign in.",
+            ))
+        })
     }
 
     fn database_settings(&mut self, cx: &mut Context<Self>) -> Div {
@@ -782,12 +858,9 @@ impl Installer {
                 col.child(
                     ui::panel(&theme)
                         .gap_4()
-                        .child(div().font_weight(FontWeight::SEMIBOLD).child(if cfg!(windows) {
-                            "ClickHouse (Docker in WSL2)"
-                        } else if self.engine == Engine::Docker {
-                            "ClickHouse (Docker)"
-                        } else {
-                            "ClickHouse"
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child(match placement::clickhouse_place(self.host(), self.engine) {
+                            Some(place) => format!("ClickHouse ({place})"),
+                            None => "ClickHouse".to_string(),
                         }))
                         .child(grid_row(vec![
                             Some(field(&theme, "Database", &f.ch_db)),
@@ -1122,20 +1195,14 @@ impl Installer {
             if self.adding_sentient {
                 rows.push(("Installs", format!("SENTIENT {} (the Platform Manager {} is already installed)", self.sentient_version, crate::updates::manager_version()), 0));
             }
-            let runs = match (cfg!(windows), self.engine) {
-                (false, Engine::Docker) => "Docker on this machine".to_string(),
-                (false, Engine::Native) => "Natively with systemd".to_string(),
-                (true, Engine::Native) => "On this computer, as Windows services".to_string(),
-                (true, Engine::Docker) if self.docker_choice == Some(sentient_installer_core::wsl::DockerChoice::TurnOnWsl) => {
-                    "In Docker inside WSL 2 (Setup turns WSL 2 on; Windows restarts once)".to_string()
-                }
-                (true, Engine::Docker) => "In Docker inside WSL 2".to_string(),
-            };
-            rows.push(("Runs as", runs, 1));
-            if self.engine == Engine::Native || cfg!(windows) {
+            let host = self.host();
+            rows.push(("Runs as", placement::runs_as(host, self.engine, self.flavor), 1));
+            if self.windows && self.engine == Engine::Docker {
+                rows.push(("WSL distribution folder", v(&f.install_dir), 2));
+            } else if self.engine == Engine::Native {
                 rows.push(("Program folder", v(&f.install_dir), 2));
             }
-            if cfg!(windows) && self.engine == Engine::Native {
+            if self.windows && self.engine == Engine::Native {
                 rows.push(("Database folder", v(&f.data_dir), 2));
             }
             rows.extend(vec![
@@ -1143,10 +1210,10 @@ impl Installer {
                 ("PostgreSQL", format!("{} as {} on port {}", v(&f.pg_db), v(&f.pg_user), v(&f.pg_port)), 4),
             ]);
             if self.flavor == Some(Flavor::Clickhouse) {
-                let place = if cfg!(windows) { "Docker in WSL 2" } else { "Docker" };
+                let place = placement::clickhouse_place(host, self.engine).map(|p| format!(" ({p})")).unwrap_or_default();
                 rows.push((
                     "ClickHouse",
-                    format!("{} as {} on port {} ({place})", v(&f.ch_db), v(&f.ch_user), v(&f.ch_http_port)),
+                    format!("{} as {} on port {}{place}", v(&f.ch_db), v(&f.ch_user), v(&f.ch_http_port)),
                     4,
                 ));
             }
@@ -1175,7 +1242,7 @@ impl Installer {
                 ),
                 (
                     "Startup",
-                    if !cfg!(windows) || self.autostart { "Starts with the computer".into() } else { "Started manually".into() },
+                    if !self.windows || self.autostart { "Starts with the computer".into() } else { "Started manually".into() },
                     8,
                 ),
             ]);
