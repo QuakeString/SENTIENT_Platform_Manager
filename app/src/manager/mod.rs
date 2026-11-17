@@ -5,6 +5,12 @@
 //! its own view, created the first time it is opened.
 
 mod about;
+
+/// The company website (Apps & features "About" link on Windows).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn about_website() -> &'static str {
+    about::company::WEBSITE
+}
 pub(crate) mod backup;
 pub(crate) mod startup;
 pub(crate) mod files;

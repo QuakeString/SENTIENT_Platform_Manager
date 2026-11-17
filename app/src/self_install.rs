@@ -190,6 +190,7 @@ mod imp {
             ("DisplayName", "REG_SZ", PRODUCT.to_string()),
             ("DisplayVersion", "REG_SZ", crate::updates::manager_version().to_string()),
             ("Publisher", "REG_SZ", "INVENIA SYSTEMS".to_string()),
+            ("URLInfoAbout", "REG_SZ", crate::manager::about_website().to_string()),
             ("DisplayIcon", "REG_SZ", exe.clone()),
             ("InstallLocation", "REG_SZ", manager_dir().display().to_string()),
             ("UninstallString", "REG_SZ", format!("\"{exe}\" --uninstall")),

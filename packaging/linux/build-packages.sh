@@ -133,7 +133,7 @@ section: admin
 priority: optional
 maintainer: "INVENIA SYSTEMS <support@invenia.in>"
 vendor: INVENIA SYSTEMS
-homepage: https://github.com/QuakeString/SENTIENT_Platform_Manager
+homepage: https://inveniasystems.com
 license: LicenseRef-SENTIENT-EULA
 description: |-
   SENTIENT Platform Manager

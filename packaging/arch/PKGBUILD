@@ -9,7 +9,7 @@ pkgver=0.0.0
 pkgrel=1
 pkgdesc="Install, run, update and back up the SENTIENT platform"
 arch=('x86_64')
-url="https://github.com/QuakeString/SENTIENT_Platform_Manager"
+url="https://inveniasystems.com"
 license=('LicenseRef-SENTIENT-EULA')
 depends=('glibc' 'gcc-libs' 'fontconfig' 'freetype2' 'libxcb' 'libxkbcommon' 'libxkbcommon-x11'
          'wayland' 'vulkan-icd-loader' 'vulkan-driver' 'alsa-lib' 'polkit' 'hicolor-icon-theme')
