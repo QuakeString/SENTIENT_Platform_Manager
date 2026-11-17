@@ -396,7 +396,6 @@ impl EarlierPage {
     /// every Setup page (Installer::footer): Back, then the removal at the
     /// right end, its purpose (docs/DESIGN_NOTES.md, "Where buttons go").
     fn confirm_footer(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
-        let h = px(crate::theme::BAR_CTRL_H);
         h_flex()
             .flex_shrink_0()
             .px(px(ui::PAGE_PAD))
@@ -407,14 +406,14 @@ impl EarlierPage {
             .border_t_1()
             .border_color(theme.border)
             .child(div().flex_1())
-            .child(crate::ui::probed(crate::ui::button("back").outline().h(h).px_4().label("Back").on_click(cx.listener(|this, _, _, cx| {
+            .child(crate::ui::probed(crate::ui::button("back").outline().h(px(crate::theme::BAR_CTRL_H)).px_4().label("Back").on_click(cx.listener(|this, _, _, cx| {
                 this.screen = Screen::Choices;
                 cx.notify();
             }))))
             .child(crate::ui::probed(
                 crate::ui::button("remove-fresh")
                     .danger()
-                    .h(h)
+                    .h(px(crate::theme::BAR_CTRL_H))
                     .px_5()
                     .label("Remove and install fresh")
                     .disabled(!self.understood)
