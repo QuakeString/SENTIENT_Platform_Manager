@@ -590,7 +590,7 @@ fn header(theme: &gpui_kit::component::Theme, host: Option<&str>, docker: bool, 
         .child(
             h_flex()
                 .flex_shrink_0()
-                .gap(px(8.))
+                .gap(ui::button_gap())
                 .items_center()
                 .child(ui::probed(terminal))
                 .when(a.remote, |r| {
@@ -660,11 +660,10 @@ pub fn card(theme: &gpui_kit::component::Theme, info: Option<&Result<ServerInfo,
         Some(n) if n > 0 => Some(if n == 1 { "1 update waiting".to_string() } else { format!("{n} updates waiting") }),
         _ => info.restart_needed.then(|| "restart needed".to_string()),
     };
-    let upd_warn = upd.is_some();
     push(
         "Running for".into(),
         None,
-        spans(theme, running_for(up), "", None, upd.map(|u| div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).text_color(if upd_warn { warn } else { theme.muted_foreground }).child(u).into_any_element()).into_iter().collect()).into_any_element(),
+        spans(theme, running_for(up), "", None, upd.map(|u| div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).text_color(theme.muted_foreground).child(u).into_any_element()).into_iter().collect()).into_any_element(),
         &mut rows,
     );
     for (k, a) in info.attention().into_iter().enumerate() {
