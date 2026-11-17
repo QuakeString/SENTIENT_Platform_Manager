@@ -2360,20 +2360,9 @@ impl Manager {
                             .bg(cx.theme().muted)
                             .child(top)
                             .children(notices)
-                            .child({
-                                // A new page fades in and rises 6 px.
-                                let page = h_flex().flex_1().min_h_0().w_full().relative().child(content);
-                                if ui::reduce_motion() {
-                                    page.into_any_element()
-                                } else {
-                                    page.with_animation(
-                                        SharedString::from(format!("page-{}", self.page.id())),
-                                        Animation::new(std::time::Duration::from_millis(160)).with_easing(ui::ease_out),
-                                        |el, d| el.opacity(d).top(px(6. * (1. - d))),
-                                    )
-                                    .into_any_element()
-                                }
-                            })
+                            // Pages switch instantly: no fade or rise (the owner's
+                            // choice, 2026-11-17).
+                            .child(h_flex().flex_1().min_h_0().w_full().relative().child(content))
                             // The menu open over the page: a faint scrim on
                             // the page; a click on it closes the menu.
                             .when(self.overlay_t.get() > 0.001, |c| {

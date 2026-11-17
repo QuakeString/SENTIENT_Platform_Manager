@@ -15,6 +15,9 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Changed
+- Pages switch instantly. The fade and rise on a page change are gone; dialogs and menus keep their open animation.
+
 ### Fixed
 - Windows: the install no longer hangs when the PostgreSQL admin password is missing or not accepted. psql never waits on a password prompt now, so the install stops with a clear error instead.
 - Windows: installing SENTIENT from the Platform Manager that Setup opened
