@@ -256,16 +256,10 @@ pub fn ssh(inst: &Instance, remote: &str, once: Option<&str>) -> Command {
 /// [`ssh`] with options before the host (`-s` for a subsystem).
 fn ssh_with(inst: &Instance, before_host: &[&str], remote: &str, once: Option<&str>) -> Command {
     let mut c = Command::new("ssh");
-    c.args(before_host);
-    c.args(["-p", &inst.port.to_string()])
-        .args(["-o", &format!("UserKnownHostsFile={}", known_hosts().display())])
-        .args(["-o", "StrictHostKeyChecking=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "-o", "ConnectTimeout=12"])
-        .args(["-o", if inst.auth == Auth::Password { "PreferredAuthentications=password,keyboard-interactive" } else { "PreferredAuthentications=publickey" }]);
-    if let (Auth::Key, Some(k)) = (inst.auth, &inst.key_file) {
-        c.args(["-i", &k.display().to_string(), "-o", "IdentitiesOnly=yes"]);
+    c.args(ssh_args(inst, before_host, remote));
+    for (k, v) in askpass_vars(inst, once) {
+        c.env(k, v);
     }
-    c.arg(format!("{}@{}", inst.user, inst.host)).arg(remote);
-    askpass_env(&mut c, inst, once);
     c.stdin(Stdio::null());
     #[cfg(windows)]
     {
@@ -275,24 +269,66 @@ fn ssh_with(inst: &Instance, before_host: &[&str], remote: &str, once: Option<&s
     c
 }
 
-fn askpass_env(c: &mut Command, inst: &Instance, once: Option<&str>) {
+/// ssh's arguments (after the program name) for `inst` running `remote`:
+/// the Platform Manager's own known_hosts, the key or password sign-in.
+/// Never a secret: those reach ssh through [`askpass_vars`].
+fn ssh_args(inst: &Instance, before_host: &[&str], remote: &str) -> Vec<String> {
+    let mut a: Vec<String> = before_host.iter().map(|s| s.to_string()).collect();
+    a.extend(["-p".to_string(), inst.port.to_string()]);
+    a.extend(["-o".to_string(), format!("UserKnownHostsFile={}", known_hosts().display())]);
+    for o in ["StrictHostKeyChecking=yes", "ServerAliveInterval=15", "ServerAliveCountMax=4", "ConnectTimeout=12"] {
+        a.extend(["-o".to_string(), o.to_string()]);
+    }
+    a.extend(["-o".to_string(), if inst.auth == Auth::Password { "PreferredAuthentications=password,keyboard-interactive" } else { "PreferredAuthentications=publickey" }.to_string()]);
+    if let (Auth::Key, Some(k)) = (inst.auth, &inst.key_file) {
+        a.extend(["-i".to_string(), k.display().to_string(), "-o".to_string(), "IdentitiesOnly=yes".to_string()]);
+    }
+    a.push(format!("{}@{}", inst.user, inst.host));
+    a.push(remote.to_string());
+    a
+}
+
+/// An interactive session on `inst` for the built-in terminal
+/// (crate::terminal): ssh's full command line (program first) and the
+/// variables to set for it. `-tt` asks the server for a terminal (ssh runs
+/// in the terminal's own pseudo terminal, so its size reaches the server);
+/// LogLevel=ERROR keeps ssh's own notices out of the session. The sign-in
+/// is the connection's: the key, or the kept password through the askpass
+/// helper (a variable, never an argument).
+pub fn terminal_command(inst: &Instance, remote: &str) -> (Vec<String>, Vec<(String, std::ffi::OsString)>) {
+    let mut argv = vec!["ssh".to_string()];
+    argv.extend(ssh_args(inst, &["-tt", "-o", "LogLevel=ERROR"], remote));
+    let mut env = askpass_vars(inst, None);
+    env.push(("TERM".into(), "xterm-256color".into()));
+    env.push(("COLORTERM".into(), "truecolor".into()));
+    (argv, env)
+}
+
+/// The variables that let ssh ask this program for the key's passphrase or
+/// the password (SSH_ASKPASS, see main.rs). `once`: a value to use instead
+/// of the stored one (before it is saved).
+fn askpass_vars(inst: &Instance, once: Option<&str>) -> Vec<(String, std::ffi::OsString)> {
+    let mut v: Vec<(String, std::ffi::OsString)> = Vec::new();
     // Tests have no `--askpass` entry: a stand-in helper.
     #[cfg(test)]
     let helper = std::env::var_os("SPM_TEST_ASKPASS").map(PathBuf::from).ok_or(());
     #[cfg(not(test))]
     let helper = std::env::current_exe();
     if let Ok(me) = helper {
-        c.env("SSH_ASKPASS", me).env("SSH_ASKPASS_REQUIRE", "force").env("SPM_ASKPASS_INSTANCE", &inst.id);
+        v.push(("SSH_ASKPASS".into(), me.into_os_string()));
+        v.push(("SSH_ASKPASS_REQUIRE".into(), "force".into()));
+        v.push(("SPM_ASKPASS_INSTANCE".into(), inst.id.clone().into()));
         if std::env::var_os("DISPLAY").is_none() {
-            c.env("DISPLAY", ":0");
+            v.push(("DISPLAY".into(), ":0".into()));
         }
         // A value kept only in this process (no keyring) reaches the helper
         // the same way as a one-off one.
         let session = || SESSION.lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(&inst.id).cloned()));
-        if let Some(v) = once.map(str::to_string).or_else(session) {
-            c.env("SPM_ASKPASS_VALUE", v);
+        if let Some(val) = once.map(str::to_string).or_else(session) {
+            v.push(("SPM_ASKPASS_VALUE".into(), val.into()));
         }
     }
+    v
 }
 
 /// Run a command on the server and return what it printed.
@@ -908,7 +944,9 @@ fn sftp_batch(inst: &Instance, command: &str) -> Result<(), String> {
         c.args(["-i", &k.display().to_string()]);
     }
     c.arg(format!("{}@{}", inst.user, inst.host));
-    askpass_env(&mut c, inst, None);
+    for (k, v) in askpass_vars(inst, None) {
+        c.env(k, v);
+    }
     c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = c.spawn().map_err(|e| format!("start sftp: {e}"))?;
     if let Some(mut s) = child.stdin.take() {
@@ -2442,6 +2480,27 @@ mod win {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The built-in terminal's ssh: a terminal requested, and the kept
+    /// password only in a variable for the askpass helper, never on the
+    /// command line.
+    #[test]
+    fn the_terminal_ssh_never_carries_the_password_in_argv() {
+        let secret = "Plant-Pw-3141";
+        let inst = Instance { id: "term-pw".into(), name: "t".into(), color: PALETTE[0].into(), os: Os::Linux, host: "198.51.100.4".into(), port: 22, user: "ops".into(), auth: Auth::Password, key_file: None, key_has_passphrase: false, host_key: None, detected: None };
+        SESSION.lock().unwrap().get_or_insert_with(HashMap::new).insert(inst.id.clone(), secret.into());
+        if std::env::var_os("SPM_TEST_ASKPASS").is_none() {
+            std::env::set_var("SPM_TEST_ASKPASS", "/usr/bin/true");
+        }
+        let (argv, env) = terminal_command(&inst, "exec /bin/sh");
+        SESSION.lock().unwrap().as_mut().map(|m| m.remove(&inst.id));
+        assert_eq!(&argv[..2], ["ssh", "-tt"]);
+        assert!(argv.iter().all(|a| !a.contains(secret)), "{argv:?}");
+        assert_eq!(argv.last().map(String::as_str), Some("exec /bin/sh"));
+        assert!(argv.iter().any(|a| a == "PreferredAuthentications=password,keyboard-interactive"), "{argv:?}");
+        assert!(env.iter().any(|(k, v)| k == "SPM_ASKPASS_VALUE" && v == secret));
+        assert!(env.iter().any(|(k, v)| k == "SSH_ASKPASS_REQUIRE" && v == "force"));
+    }
 
     #[test]
     fn a_json_jobs_answer_is_its_done_or_error_line() {

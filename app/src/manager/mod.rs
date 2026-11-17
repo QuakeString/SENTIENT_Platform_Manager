@@ -998,9 +998,14 @@ impl Manager {
         let installed = remote.is_some() || self.record.is_some();
         let (state_dot, state_why): (Hsla, &'static str) = if !installed {
             (rgb(0x94a3b8).into(), "SENTIENT isn't installed on this computer")
-        } else if remote.as_ref().is_some_and(|r| server_card::restarting(&r.id)) {
-            // Restarted from the Server card: not answering is expected.
-            (rgb(0xf59e0b).into(), "The server is restarting: reconnecting")
+        } else if let Some(p) = remote.as_ref().and_then(|r| server_card::power_state(&r.id)) {
+            // Restarted or shut down from the Server card: not answering is
+            // expected, never the "does not answer" state.
+            match p {
+                server_card::Power::Restarting => (rgb(0xf59e0b).into(), "The server is restarting: reconnecting"),
+                server_card::Power::ShuttingDown => (rgb(0xf59e0b).into(), "The server is shutting down"),
+                server_card::Power::Off => (rgb(0x94a3b8).into(), "The server is off: it was shut down from here"),
+            }
         } else if remote.is_some() && (self.remote_monitor.is_none() || self.remote_monitor_stale) {
             (rgb(0x94a3b8).into(), "The server does not answer, or is being read")
         } else if serving == Some(false) {
@@ -1468,6 +1473,8 @@ impl Manager {
                         if open {
                             match m {
                                 Some(m) => {
+                                    // A server shut down from here is on again.
+                                    server_card::answered(&inst.id);
                                     page.remote_monitor = Some(m);
                                     page.remote_monitor_stale = false;
                                     page.monitor_cache.insert(inst.id.clone(), m);
