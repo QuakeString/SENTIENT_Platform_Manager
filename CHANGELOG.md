@@ -20,6 +20,19 @@ refreshes that repository's Downloads table.
 Manage SENTIENT on other computers, with errors that name their cause and fix.
 
 ### Added
+- One open connection per server: every remote page reuses it (status
+  4.8 s → 1.1 s, licence 7.6 s → 1.5 s on a 165 ms link); it reconnects by
+  itself, and an older agent falls back to one call per request.
+- One progress view for every long job (backup, restore, update, move data,
+  repair, uninstall, Setup): all steps listed from the start, one bar, a log
+  that follows the newest line, the result with its cause and fix.
+- Uninstall: a switch for each part that is installed, "Keep its data" on by
+  default, the space each frees, a line naming what goes and what stays, and
+  a check afterwards that nothing is left.
+- Setup's System check names what is in the way (a leftover PostgreSQL, the
+  owner of a busy port) and offers the fix as a button, its command shown.
+- Platform settings: one card with an Apply bar at its bottom, changes
+  counted per tab, fields checked as typed, and a prompt before leaving.
 - The server agent: the Platform Manager's job code without the window,
   built static for Linux (musl) and for Windows. Every package carries it,
   and Set up copies it to a server: it needs no desktop libraries and no
@@ -149,6 +162,12 @@ Manage SENTIENT on other computers, with errors that name their cause and fix.
   box. Not yet tried on a real Windows computer.
 
 ### Changed
+- Action buttons sit on the right everywhere; labels say what they do (no
+  trailing "…"); the menu's selected item is a pill drawn smooth at every
+  scale; tooltips share one style in light and dark.
+- Faster: the licence card shows its last reading at once, hidden pages stop
+  polling, and the window opens about 1.6 s sooner when following the system
+  theme.
 - The menu ends with "Platform settings" (SENTIENT's settings); the
   Platform Manager's own options are under About and preferences. The
   version is shown once, at the bottom of the menu.
@@ -173,6 +192,12 @@ Manage SENTIENT on other computers, with errors that name their cause and fix.
   of "Installing the SENTIENT schema (one-time)".
 
 ### Fixed
+- Windows: Stop keeps a PostgreSQL that other databases use running (it
+  stopped it before), and listing those databases never waits on a password
+  prompt.
+- Windows: updating the agent on a server replaces the old one even while it
+  runs (PowerShell 5.1 does not overwrite files).
+- A failed job on a server shows its real error, not its last progress line.
 - Native Linux asks for the administrator password once per job: Setup,
   Repair, Update and the other jobs start one administrator helper for all
   their root steps instead of one password prompt per step (Setup asked
@@ -214,6 +239,13 @@ Manage SENTIENT on other computers, with errors that name their cause and fix.
   manager never offered its own update; it now reads the public
   sentient-release page (the `spm-v…` releases). Release candidates show
   on the "Release candidate" channel.
+
+### Known issues
+- A Windows server whose OpenSSH default shell is PowerShell does not use
+  the one open connection; the Platform Manager calls it once per request
+  (slower, but everything works). Fixed in 0.9.1.
+- While a server's PostgreSQL is stopped, Uninstall cannot list the other
+  databases it holds: leave "Keep its data" on there. Fixed in 0.9.1.
 
 ## [0.8.0-rc11] - 2026-11-14
 
