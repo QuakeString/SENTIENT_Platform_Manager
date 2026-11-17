@@ -840,6 +840,11 @@ pub fn retag_image(from: &str, to: &str) {
     let _ = capture(&format!("docker tag {} {}", shell_quote(from), shell_quote(to)));
 }
 
+/// Drop the tag `tag` (the image goes with it when nothing else names it).
+pub fn untag_image(tag: &str) {
+    let _ = capture(&format!("docker image rm {}", shell_quote(tag)));
+}
+
 #[derive(Debug, Clone)]
 pub struct RollbackReport {
     pub point: RollbackPoint,

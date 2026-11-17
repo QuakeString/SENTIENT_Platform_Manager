@@ -256,8 +256,21 @@ pub fn rollback(record: InstallationRecord, sink: ProgressFn) -> Result<Installa
     let (point, set_aside) = match record.engine {
         Engine::Docker => {
             let cfg = distro::docker_ops::with_secrets(&record.stack)?;
+            // The image rolled back from keeps a tag of its own until the
+            // compose file names the previous release (the roll back drops
+            // its own tag for it, which would remove the image).
+            let keep = format!("{}:spm-pin-keep", cfg.image.rsplit_once(':').filter(|(_, t)| !t.contains('/')).map(|(r, _)| r).unwrap_or(&cfg.image));
             let current = distro::docker_ops::running_image_id(&cfg);
-            let r = distro::docker_ops::rollback(sink.clone(), &cfg)?;
+            if let Some(id) = &current {
+                distro::docker_ops::retag_image(id, &keep);
+            }
+            let r = match distro::docker_ops::rollback(sink.clone(), &cfg) {
+                Ok(r) => r,
+                Err(e) => {
+                    distro::docker_ops::untag_image(&keep);
+                    return Err(e);
+                }
+            };
             running = distro::docker_ops::running_version(&cfg).or_else(|| r.point.version.clone());
             let tag = distro::docker_ops::image_tag(&cfg.image);
             if let Some(v) = rollback_tag(running.as_deref(), tag, cfg.external.is_some()) {
@@ -268,14 +281,15 @@ pub fn rollback(record: InstallationRecord, sink: ProgressFn) -> Result<Installa
                         // The roll back put the previous image under the
                         // newer release's tag: that tag names its own
                         // image again.
-                        if let Some(id) = &current {
-                            distro::docker_ops::retag_image(id, &cfg.image);
+                        if current.is_some() {
+                            distro::docker_ops::retag_image(&keep, &cfg.image);
                         }
                         pinned_image = Some(p.image);
                     }
                     Err(e) => sink(Progress::Log { line: format!("The image tag could not be set to {v} ({e}); it runs as {}.", cfg.image) }),
                 }
             }
+            distro::docker_ops::untag_image(&keep);
             (r.point, r.set_aside)
         }
         Engine::Native => {
