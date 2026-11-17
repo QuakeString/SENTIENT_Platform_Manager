@@ -15,6 +15,125 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-17
+
+Add an existing SENTIENT on a Windows server however it was installed, a built-in terminal, restart and shut down servers, a Server card on Statistics, and Linux packages for Debian, Ubuntu, Fedora, AppImage and Flatpak.
+
+### Added
+- A built-in terminal: Statistics, Server card, terminal button. bash (or
+  the account's shell) on a Linux server, PowerShell on a Windows server,
+  a local shell for this computer, signed in over the connection the
+  Platform Manager already keeps, with no extra password. Several terminals
+  open as tabs; closing one that still runs asks first. Each session gets
+  the Platform Manager's segmented prompt (system and user, then the
+  folder) unless the account already uses a prompt theme (Powerlevel10k,
+  Oh My Posh, Starship); nothing is written on the server. nano, htop and
+  other full-screen programs work.
+- Restart server and Shut down server for another computer (the Server
+  card's buttons). Both ask first; shutting down needs the server's name
+  typed. A restart is a job with its steps shown: it waits until the server
+  really goes down, comes back (up to 10 minutes), has a new start time,
+  and SENTIENT runs and answers again. Meanwhile the top bar says it is
+  reconnecting instead of raising the connection-lost alarm.
+- Statistics: a Server card in place of the Database card: machine and
+  system, processor and memory, the disk holding SENTIENT's data, how long
+  it has run and updates waiting, with amber lines only when something
+  needs a look. All details opens every disk (health, wear, free space,
+  unmounted ones), graphics, clock, network, updates and Docker.
+- Linux packages beside the Arch one: Debian/Ubuntu (`.deb`, Debian 12+ and
+  Ubuntu 22.04+), Fedora/RHEL/openSUSE (`.rpm`), an AppImage and a Flatpak
+  bundle. Installed from a `.deb` or `.rpm`, the Platform Manager leaves its
+  updates and removal to apt or dnf.
+- The Flatpak is for managing SENTIENT on other computers (remote
+  management); installing or managing SENTIENT on this same computer needs
+  the .deb, .rpm, AppImage or Arch package. Its pages for this computer
+  (Status, Setup and the rest) say so instead of looking empty.
+
+### Fixed
+- Windows servers whose SSH default shell is PowerShell now get the open
+  connection (it was started the way cmd expects, so every request made
+  its own connection there).
+- Uninstall: a stopped PostgreSQL is "could not be checked", never "holds
+  no other databases": PostgreSQL then stays unless you switch it on.
+- The menu's selected row joins the page with curves at the pill's radius,
+  one line colour in light and dark, drawn sharp at every scale.
+- The SENTIENT logo tile's border is drawn on whole pixels at every scale.
+- Windows without WSL: "WSL is not installed" instead of a line of
+  wsl.exe's help.
+- Server details name a graphics card's memory once.
+- Windows: a SENTIENT running in Docker inside a WSL distro set up by hand
+  (Ubuntu, …) was not found, on this computer or on a server through its
+  agent. Add existing instance now looks in every running WSL distro of the
+  account and in Docker Desktop, and offers what it finds ("Docker in WSL
+  distro Ubuntu"), through the same add and take-over steps as on Linux.
+- An instance added from such a distro keeps the distro's name in its
+  installation record: status, logs, start and stop, updates and the rest
+  run their Docker commands there. The Platform Manager never sets up,
+  stops, removes or unregisters that distro; uninstall removes only
+  SENTIENT's containers and volumes. Older records load unchanged.
+- When nothing is found, Status (and Add existing SENTIENT on a server)
+  says where it looked: the Windows services or systemd service, each WSL
+  distro (a stopped one is named, not started), Docker Desktop, Docker on
+  Linux.
+- Adding such an instance on a Windows server showed only the progress
+  bar: the job ran as SYSTEM, which cannot see a WSL distro (distros
+  belong to one Windows account), and wsl.exe waited for ever. Jobs for an
+  operator's WSL distro now run as the account the Platform Manager
+  connects with: finding, adding, start/stop and logs in the connection's
+  session, longer jobs (update, backup, uninstall) as a scheduled task of
+  that account, so they still survive a dropped connection. Every WSL
+  call now has a time limit, and a WSL that does not answer is reported
+  with the account it ran as.
+- Adding the SENTIENT found on a server said only "Adding it needs your
+  choice: open Status", with nothing to choose from in the window on the
+  other computer. It now says what was found and why it cannot be added,
+  or what it needs.
+- Copying the Platform Manager to a server could report "does not match
+  (checksum)" when two copies ran at once (the check after connecting and
+  a job's own); one copy runs at a time now, and a copy already in place
+  counts as up to date.
+- Windows: a Docker install made by an earlier Platform Manager (in its
+  own WSL distro "sentient", stack in /opt/sentient) was not found when
+  its installation record was gone: the Platform Manager's own distro was
+  left out of the search. It is looked in now (started if stopped), and
+  what it finds there is managed as the Platform Manager's own.
+- A server's SENTIENT installed as Windows services by an early Platform
+  Manager, with ClickHouse in WSL2 under its hidden account, could not be
+  added from another computer: adding needs the PostgreSQL admin
+  (postgres) password, which only a window on that server could ask for.
+  The window that adds it now asks for the password itself (Enter adds;
+  Set a new one lets the server give postgres a new password). It goes to
+  the server once, on standard input, is checked there and kept only in
+  that server's secret store; a wrong one shows the server's message and
+  can be typed again. `--job add-existing --native
+  --pg-admin-password-stdin` (and `add-if-one`) read it from standard
+  input; add-if-one prints `@@NEEDS-PG-ADMIN <kind> | <location>` when it
+  needs it.
+- Windows services from releases before 0.7.0 read back with their own
+  port variables (HTTP_PORT, MQTT_PORT, COAP_PORT); PostgreSQL's folder
+  comes from its service's pg_ctl.exe, so a data folder on another disk no
+  longer reads as "has no bin\psql.exe".
+- The ClickHouse of such an install is checked over HTTP (`SELECT 1` on
+  127.0.0.1 with SENTIENT's ClickHouse user), never with wsl as the
+  connecting account, which cannot see the hidden account's distro.
+  Whether it answers, and whether its task "SENTIENT ClickHouse" is
+  there, is a note, never a reason not to add it.
+- An installation record that no longer matches what runs on the computer
+  (an early release's) no longer blocks adding: it is kept beside the new
+  one as installation.json.replaced-<time>.
+
+### Known issues
+- The `.rpm` needs glibc 2.35 or newer: Fedora 39+, openSUSE Tumbleweed,
+  RHEL 10; not RHEL 9.
+- The Flatpak manages SENTIENT on other computers only (see Added).
+- A SENTIENT added from Windows services shows its version as unknown
+  until it is updated by the Platform Manager.
+- Adding SENTIENT in Docker inside a WSL distro, and the Windows services
+  with ClickHouse in WSL layout, were tested in unit tests and on the
+  reporter's own server, not on a test machine with WSL.
+- Restart server and Shut down server were tested in unit tests and in
+  the dialogs and job view, not by restarting a real server.
+
 ## [0.9.0] - 2026-11-17
 
 Manage SENTIENT on other computers, with errors that name their cause and fix.

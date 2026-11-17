@@ -22,6 +22,7 @@ pub(crate) mod jobview;
 mod licence;
 mod licence_card;
 pub(crate) mod settings;
+pub(crate) mod server_card;
 pub(crate) mod session;
 pub(crate) mod setup_guide;
 pub(crate) mod shell;
@@ -985,7 +986,7 @@ impl Manager {
         // The open instance's state: green when SENTIENT runs, red when it
         // is stopped (the page's last reading, else the checker's), amber
         // while the server is being read or does not answer.
-        let status_green: Hsla = rgb(0x3ddc84).into();
+        let status_green: Hsla = rgb(ui::STATUS_GREEN).into();
         let serving = match &remote {
             Some(r) => self.remote_pages.get(&r.id).and_then(|p| p.read(cx).serving()).or_else(|| crate::bg_app::serving(Some(&r.id), cx)),
             None => crate::bg_app::serving(None, cx),
@@ -997,6 +998,14 @@ impl Manager {
         let installed = remote.is_some() || self.record.is_some();
         let (state_dot, state_why): (Hsla, &'static str) = if !installed {
             (rgb(0x94a3b8).into(), "SENTIENT isn't installed on this computer")
+        } else if let Some(p) = remote.as_ref().and_then(|r| server_card::power_state(&r.id)) {
+            // Restarted or shut down from the Server card: not answering is
+            // expected, never the "does not answer" state.
+            match p {
+                server_card::Power::Restarting => (rgb(0xf59e0b).into(), "The server is restarting: reconnecting"),
+                server_card::Power::ShuttingDown => (rgb(0xf59e0b).into(), "The server is shutting down"),
+                server_card::Power::Off => (rgb(0x94a3b8).into(), "The server is off: it was shut down from here"),
+            }
         } else if remote.is_some() && (self.remote_monitor.is_none() || self.remote_monitor_stale) {
             (rgb(0x94a3b8).into(), "The server does not answer, or is being read")
         } else if serving == Some(false) {
@@ -1314,7 +1323,7 @@ impl Manager {
                             Some(ui::Tone::Good) => status_green,
                             Some(ui::Tone::Warn) => rgb(0xf59e0b).into(),
                             Some(ui::Tone::Bad) => rgb(0xef4444).into(),
-                            _ => rgb(0x94a3b8).into(),
+                            _ => rgb(ui::STATUS_GREY).into(),
                         };
                         let probe = match tone {
                             Some(ui::Tone::Good) => "switch-dot-good",
@@ -1464,6 +1473,8 @@ impl Manager {
                         if open {
                             match m {
                                 Some(m) => {
+                                    // A server shut down from here is on again.
+                                    server_card::answered(&inst.id);
                                     page.remote_monitor = Some(m);
                                     page.remote_monitor_stale = false;
                                     page.monitor_cache.insert(inst.id.clone(), m);

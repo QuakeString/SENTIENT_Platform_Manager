@@ -1631,10 +1631,8 @@ pub fn pg_other_databases(cfg: &NativeConfig) -> Result<Vec<String>, String> {
         if !psql.exists() {
             return Err(format!("psql is not where PostgreSQL was installed ({})", psql.display()));
         }
-        let mut c = std::process::Command::new(&psql);
+        let mut c = crate::sys::host_command_env(&psql, &[("PGPASSWORD", cfg.db_password.as_str()), ("PGCONNECT_TIMEOUT", "10")]);
         c.args(["-w", "-h", "127.0.0.1", "-p", &cfg.pg_port.to_string(), "-U", &cfg.db_user, "-d", &cfg.db_name, "-XAtqc", "SELECT datname FROM pg_database"])
-            .env("PGPASSWORD", &cfg.db_password)
-            .env("PGCONNECT_TIMEOUT", "10")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -1663,6 +1661,31 @@ pub fn pg_other_databases(cfg: &NativeConfig) -> Result<Vec<String>, String> {
         let all: Vec<String> = String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
         Ok(crate::stack_order::other_databases(&all, &cfg.db_name))
     }
+}
+
+/// PostgreSQL is there but not running (stopped, failed, or its state could
+/// not be read): what else it holds cannot be listed now. A stack stop
+/// rightly sees nothing to keep then ([`pg_other_databases`] lists none);
+/// removing PostgreSQL must not (crate users: the uninstall facts). Linux:
+/// the PostgreSQL unit; Windows: the sentient-postgresql service, which
+/// can hold other databases too (a shared PostgreSQL).
+pub fn pg_stopped() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let s = crate::native_linux::pg_unit_state();
+        s != "running" && s != "absent"
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        pg_state_says_stopped(&service_state(PG_SERVICE))
+    }
+}
+
+/// A Windows service state (service_state) that means the databases it
+/// holds cannot be listed now.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn pg_state_says_stopped(state: &str) -> bool {
+    state != "running" && state != "absent"
 }
 
 /// Start, stop or restart the whole stack in order (crate::stack_order).
@@ -2362,6 +2385,15 @@ fn _assert_offline_helper_used(s: &ArtifactSource) -> bool {
 
 #[cfg(test)]
 mod start_delay_tests {
+    #[test]
+    fn a_stopped_or_unknown_windows_postgres_service_counts_as_stopped() {
+        assert!(!super::pg_state_says_stopped("running"));
+        assert!(!super::pg_state_says_stopped("absent"));
+        for s in ["stopped", "stop_pending", "start_pending", "paused", "unknown"] {
+            assert!(super::pg_state_says_stopped(s), "{s}");
+        }
+    }
+
     use super::*;
 
     #[test]

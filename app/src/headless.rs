@@ -18,8 +18,14 @@
 //! --job rollback                        (back to what the last update replaced)
 //! --job rollback-info
 //! --job find-existing                   (SENTIENT instances the Platform Manager does not manage yet)
-//! --job add-existing [<n> | --native] [--pg-admin-password <pw>]
-//!                                       (add the n-th one found, 1 by default, or the native one)
+//! --job add-existing [<n> | --native] [--pg-admin-password-stdin]
+//!                                       (add the n-th one found, 1 by default, or the native one;
+//!                                       the PostgreSQL admin password as one line on standard input.
+//!                                       Without it, an unknown one is replaced by a new one)
+//! --job add-if-one [--pg-admin-password-stdin]
+//!                                       (add the one SENTIENT found; when it needs the PostgreSQL
+//!                                       admin password, a "@@NEEDS-PG-ADMIN <kind> | <location>"
+//!                                       log line and exit 0, crate::adopt::NEEDS_PG_ADMIN)
 //! --job open-at-signin <kiosk|window|off> (open SENTIENT when someone signs in)
 //! --job auto-signin <account|off>       (sign in by itself after a restart; on Windows
 //!                                       the password comes from SPM_AUTOSIGNIN_PASSWORD)
@@ -50,7 +56,7 @@ use crate::installation::InstallationRecord;
 
 const USAGE: &str = "usage: --job install <plan.json> | diagnose-fix <fix json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | movedata-json | movedata-check <store> <folder> | movedata-estimate <store=folder,…> | move-data <store=folder,…> | move-data-remove-old <folder> | move-data-cancel | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-existing [<n> | --native] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> [--stop-shared-pg] | service <start|stop|restart> <name> | uninstall [--delete-data] | uninstall --parts <sentient,postgres,pg-database,clickhouse,ch-database,gateway,shortcuts,wsl-distro,wsl,manager> [--keep-files] [--keep-pg-data] [--keep-ch-data] [--wsl-distro] [--wsl] | uninstall-facts-json | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | --request-b64 <base64> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live [system|services|db] | stats-sample | stats-history <seconds> | stats-install | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | agent-info | agents | serve | pg-others-json | \
+use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-if-one [--pg-admin-password-stdin] | add-existing [<n> | --native] [--pg-admin-password-stdin] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> [--stop-shared-pg] | service <start|stop|restart> <name> | uninstall [--delete-data] | uninstall --parts <sentient,postgres,pg-database,clickhouse,ch-database,gateway,shortcuts,wsl-distro,wsl,manager> [--keep-files] [--keep-pg-data] [--keep-ch-data] [--wsl-distro] [--wsl] | uninstall-facts-json | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | --request-b64 <base64> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live [system|services|db] | stats-sample | stats-history <seconds> | stats-install | server-info-json | server-boot-json | server-power <reboot|poweroff> | docker-restart | system-updates | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | agent-info | agents | serve | pg-others-json | \
 gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart> | gateway-remove [--delete-data] [--remove-image] | gateway-adopt
 
 Administrator password (native Linux): a job typed in a terminal may ask for it, once for the
@@ -385,10 +391,12 @@ fn run_job(args: &[String]) -> i32 {
     // Always ends with one Done line saying what happened.
     if job == "add-if-one" {
         let sink = if json { json_printer() } else { printer() };
-        let found = crate::adopt::find();
+        let pg_admin = pg_admin_arg(args);
+        let search = crate::adopt::search();
+        let found = search.found.clone();
         let message = match found.as_slice() {
-            [] => "No SENTIENT found on this server.".to_string(),
-            [c] if c.problem.is_none() && !c.sets_admin_password => match crate::adopt::adopt_as_needed(c, None, sink.clone()) {
+            [] => format!("No SENTIENT found on this server. {}", search.looked_text()).trim_end().to_string(),
+            [c] if c.problem.is_none() && (!c.sets_admin_password || (c.only_needs_pg_admin() && pg_admin.is_some())) => match crate::adopt::adopt_as_needed(c, pg_admin.clone(), sink.clone()) {
                 Ok(()) => format!(
                     "SENTIENT {}{} was found and added. Nothing on it was changed.",
                     c.record.sentient_version,
@@ -399,22 +407,53 @@ fn run_job(args: &[String]) -> i32 {
                     return 1;
                 }
             },
-            [_] => "SENTIENT was found on this server. Adding it needs your choice: open Status to see it.".to_string(),
-            many => format!("{} SENTIENT instances were found on this server. Open Status to choose one.", many.len()),
+            // Say why it was not added: the window on another computer has
+            // no list to choose from, so this line is all the operator sees.
+            [c] => {
+                let what = if c.kind.is_empty() { String::new() } else { format!(" ({}, {})", c.kind, c.location) };
+                match &c.problem {
+                    Some(p) => {
+                        sink(Progress::Error { message: format!("SENTIENT was found on this server{what} but cannot be added: {p}") });
+                        return 1;
+                    }
+                    // The window that started this asks for the password
+                    // (the marker line) and runs add-existing with it.
+                    None if c.only_needs_pg_admin() => {
+                        for n in &c.notes {
+                            sink(Progress::Log { line: n.clone() });
+                        }
+                        sink(Progress::Log { line: crate::adopt::needs_pg_admin_line(c) });
+                        format!("SENTIENT was found on this server{what}. Adding it needs the PostgreSQL admin (postgres) password.")
+                    }
+                    None => format!("SENTIENT was found on this server{what}. Add it with the Platform Manager on that server."),
+                }
+            }
+            many => format!(
+                "{} SENTIENT instances were found on this server: {}. Add the one you want with the Platform Manager on that server.",
+                many.len(),
+                many.iter().map(|c| format!("{} ({})", c.kind, c.location)).collect::<Vec<_>>().join("; ")
+            ),
         };
         sink(Progress::Done { message });
         return 0;
     }
     if job == "find-existing" || job == "add-existing" {
         let sink = if json { json_printer() } else { printer() };
-        let found = crate::adopt::find();
+        let search = crate::adopt::search();
+        let found = search.found.clone();
         if job == "find-existing" {
             if json {
                 for c in &found {
                     sink(Progress::Log { line: crate::adopt::encode(c) });
                 }
+                if found.is_empty() {
+                    sink(Progress::Log { line: format!("No existing SENTIENT instance was found on this computer. {}", search.looked_text()) });
+                }
             } else {
                 print_candidates(&found);
+                if found.is_empty() {
+                    println!("{}", search.looked_text());
+                }
             }
             return 0;
         }
@@ -424,10 +463,21 @@ fn run_job(args: &[String]) -> i32 {
             let n: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(1);
             let n = if found.len() == 1 { 1 } else { n };
             found.get(n.saturating_sub(1)).ok_or_else(|| {
-                if found.is_empty() { "No existing SENTIENT instance was found on this computer.".to_string() } else { format!("Only {} instance(s) were found.", found.len()) }
+                if found.is_empty() {
+                    format!("No existing SENTIENT instance was found on this computer. {}", search.looked_text()).trim_end().to_string()
+                } else {
+                    format!("Only {} instance(s) were found.", found.len())
+                }
             })
         };
-        let pg_admin = args.windows(2).find(|w| w[0] == "--pg-admin-password").map(|w| w[1].clone());
+        let pg_admin = pg_admin_arg(args);
+        // Asked for on standard input and none came: never fall back to
+        // setting a new one.
+        let chosen = if pg_admin.is_none() && args.iter().any(|a| a == "--pg-admin-password-stdin") {
+            Err("No PostgreSQL admin password was given.".to_string())
+        } else {
+            chosen
+        };
         let result = chosen.and_then(|c| crate::adopt::adopt_as_needed(c, pg_admin, sink.clone()));
         return match result {
             Ok(()) => 0,
@@ -760,6 +810,20 @@ fn run_job(args: &[String]) -> i32 {
             // No source named (an older window): SENTIENT's own log, read
             // by container or service, never through the compose files.
             None => return print_log(crate::logsource::read(&record, crate::logsource::Source::Sentient, n, today)),
+        }
+    }
+    // The Server card's reading and actions (crate::server_ops): no
+    // SENTIENT needed on the machine.
+    {
+        let sink = if json { json_printer() } else { printer() };
+        if let Some(r) = crate::server_ops::job(job, args, &sink) {
+            return match r {
+                Ok(()) => 0,
+                Err(e) => {
+                    report_failure(e, json, &sink);
+                    1
+                }
+            };
         }
     }
     let Some(record) = InstallationRecord::load() else {
@@ -1165,7 +1229,7 @@ pub(crate) fn shown_version(record: &InstallationRecord) -> String {
     if numbered || record.engine != crate::installation::Engine::Docker {
         return recorded;
     }
-    let label = std::process::Command::new("docker")
+    let label = sentient_installer_core::host::host_command("docker")
         .args(["inspect", "-f", "{{index .Config.Labels \"org.opencontainers.image.version\"}}", &record.stack.names().app])
         .output()
         .ok()
@@ -1211,6 +1275,7 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
         vanished_files: record.stack.vanished_files(),
         external_compose: record.engine == crate::installation::Engine::Docker && record.stack.external.is_some(),
         licence,
+        wsl_distro: if record.engine == crate::installation::Engine::Docker { record.stack.wsl_distro.clone() } else { None },
     }
 }
 
@@ -1224,6 +1289,20 @@ fn print_log(text: String) -> i32 {
     }
     println!("{text}");
     0
+}
+
+/// The PostgreSQL admin password for add-existing / add-if-one: one line on
+/// standard input (`--pg-admin-password-stdin`, what a window on another
+/// computer sends), or `--pg-admin-password <pw>`, kept for scripts written
+/// for 0.9.0 (it shows in the process list; nothing in the Platform Manager
+/// uses it). Empty: none given.
+fn pg_admin_arg(args: &[String]) -> Option<String> {
+    if args.iter().any(|a| a == "--pg-admin-password-stdin") {
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        return Some(line.trim_end_matches(['\r', '\n']).to_string()).filter(|p| !p.is_empty());
+    }
+    args.windows(2).find(|w| w[0] == "--pg-admin-password").map(|w| w[1].clone()).filter(|p| !p.is_empty())
 }
 
 /// A backup's passphrase: from a file only the account reads (removed at

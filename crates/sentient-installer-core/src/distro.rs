@@ -16,10 +16,16 @@ use crate::progress::{Progress, ProgressFn};
 use crate::stack::{self, ChTuning, ClickhouseConn, EnvVar, Flavor, PgTuning, Tuning};
 use crate::sys;
 
+/// The Platform Manager's own WSL distro (Windows). Its lifecycle (import,
+/// set up, terminate, unregister, move) always names it. Docker commands
+/// run in [`docker_distro`] instead, which is this one unless the
+/// installation was found in the operator's own distro
+/// (`DeployConfig::wsl_distro`), which is never terminated or unregistered.
 pub const DISTRO: &str = "sentient";
 
 pub mod adopt;
 pub mod docker_ops;
+pub mod hosts;
 pub mod move_data;
 pub mod gateway_docker;
 #[cfg(not(windows))]
@@ -94,6 +100,14 @@ pub struct DeployConfig {
     /// from its own compose files, which SPM never rewrites.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external: Option<ExternalCompose>,
+    /// Windows: the WSL distro this stack's Docker runs in when it is not
+    /// the Platform Manager's own (`sentient`, [`DISTRO`]): a stack found
+    /// in the operator's own distro (Ubuntu, …) and added. Every Docker
+    /// command for it runs there ([`with_docker_distro`]); that distro is
+    /// never stopped, unregistered or set up by the Platform Manager. None:
+    /// its own distro (and always on Linux), so older records load as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wsl_distro: Option<String>,
     /// Container and volume names of an adopted stack whose names do not
     /// follow the stack name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -208,6 +222,7 @@ impl Default for DeployConfig {
             load_demo: false,
             keep_timescale_image: false,
             external: None,
+            wsl_distro: None,
             names: None,
             db_loopback: false,
             pgdata: None,
@@ -540,10 +555,81 @@ pub fn compose(cfg: &DeployConfig) -> String {
 // Host shell — the one seam between Windows/WSL and Linux
 // ---------------------------------------------------------------------------
 
-/// Program + args that run `bash` as the Docker-capable user.
+// Which WSL distro Docker runs in (Windows). The Platform Manager's own
+// (`sentient`) unless the installation was found in another one
+// (DeployConfig::wsl_distro). Two layers: the installation record's, set
+// whenever the record is read (`use_docker_distro`), and a per-thread
+// override for work on a stack that is not the record's yet (looking in
+// every distro, adding one) (`with_docker_distro`). Plain values behind a
+// std lock, never held past the read.
+
+static DOCKER_DISTRO: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+thread_local! {
+    static SCOPED_DISTRO: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The distro to run in: the thread's override, else the record's, else
+/// the Platform Manager's own. Blank names count as none.
+fn pick_distro(scoped: Option<&str>, recorded: Option<&str>) -> String {
+    scoped
+        .filter(|d| !d.trim().is_empty())
+        .or(recorded.filter(|d| !d.trim().is_empty()))
+        .unwrap_or(DISTRO)
+        .trim()
+        .to_string()
+}
+
+/// The WSL distro Docker commands run in now (Windows; unused on Linux).
+pub fn docker_distro() -> String {
+    let scoped = SCOPED_DISTRO.with(|s| s.borrow().clone());
+    let recorded = DOCKER_DISTRO.read().map(|g| g.clone()).unwrap_or_else(|e| e.into_inner().clone());
+    pick_distro(scoped.as_deref(), recorded.as_deref())
+}
+
+/// Whether `name` is the Platform Manager's own distro.
+pub fn is_own_distro(name: &str) -> bool {
+    name.trim().eq_ignore_ascii_case(DISTRO)
+}
+
+/// The installation record's distro (its `stack.wsl_distro`): from now
+/// on every Docker command of this process runs there. None: the Platform
+/// Manager's own.
+pub fn use_docker_distro(distro: Option<&str>) {
+    let value = distro.filter(|d| !d.trim().is_empty()).map(|d| d.trim().to_string());
+    match DOCKER_DISTRO.write() {
+        Ok(mut g) => *g = value,
+        Err(e) => *e.into_inner() = value,
+    }
+}
+
+/// Run `f` with this thread's Docker commands in `distro` (None: the
+/// Platform Manager's own), whatever the record says; the previous choice
+/// comes back afterwards, also on a panic.
+pub fn with_docker_distro<T>(distro: Option<&str>, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            SCOPED_DISTRO.with(|s| *s.borrow_mut() = previous);
+        }
+    }
+    let wanted = pick_distro(distro, None);
+    let _restore = Restore(SCOPED_DISTRO.with(|s| s.borrow_mut().replace(wanted)));
+    f()
+}
+
+/// `wsl.exe` arguments that run `bash -lc <bash>` as root in `distro`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn wsl_bash_args(distro: &str, bash: &str) -> Vec<String> {
+    ["-d", distro, "-u", "root", "--", "bash", "-lc", bash].iter().map(|s| s.to_string()).collect()
+}
+
+/// Program + args that run `bash` as the Docker-capable user: root in the
+/// distro Docker runs in ([`docker_distro`]).
 #[cfg(windows)]
 fn shell_args(bash: &str) -> (String, Vec<String>) {
-    ("wsl.exe".into(), ["-d", DISTRO, "-u", "root", "--", "bash", "-lc", bash].iter().map(|s| s.to_string()).collect())
+    ("wsl.exe".into(), wsl_bash_args(&docker_distro(), bash))
 }
 
 /// On Linux: plain bash, or — right after `setup` added the user to the
@@ -591,7 +677,7 @@ fn reset_docker_access() {
 fn run(sink: &ProgressFn, bash: &str) -> Result<(), String> {
     let (prog, args) = shell_args(bash);
     let argrefs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    match sys::output(&prog, &argrefs) {
+    match shell_output(&prog, &argrefs, RUN_LIMIT) {
         Some((ok, out, err)) => {
             exec::emit(sink, &out);
             exec::emit(sink, &err);
@@ -622,7 +708,24 @@ fn run_stream(sink: &ProgressFn, bash: &str) -> Result<(), String> {
 fn run_output(bash: &str) -> Option<(bool, String)> {
     let (prog, args) = shell_args(bash);
     let argrefs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    sys::output(&prog, &argrefs).map(|(ok, out, _)| (ok, sys::decode(&out)))
+    shell_output(&prog, &argrefs, PROBE_LIMIT).map(|(ok, out, _)| (ok, sys::decode(&out)))
+}
+
+/// How long one command through the Docker shell may take before it is
+/// stopped and reported (Windows: a WSL that does not answer must not
+/// leave a job waiting for ever). Long steps stream (`run_stream`).
+const RUN_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
+/// The same for quick reads and checks.
+pub(crate) const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// A command through the Docker shell, stopped after `limit` on Windows.
+pub(crate) fn shell_output(prog: &str, args: &[&str], limit: std::time::Duration) -> Option<(bool, Vec<u8>, Vec<u8>)> {
+    if cfg!(windows) {
+        sys::output_wsl(prog, args, limit)
+    } else {
+        let _ = limit;
+        sys::output(prog, args)
+    }
 }
 
 /// Write `content` to `path` on the Docker host.
@@ -682,7 +785,7 @@ fn write_stack_files_exact(sink: &ProgressFn, cfg: &DeployConfig) -> Result<(), 
 pub fn is_ready() -> bool {
     #[cfg(windows)]
     {
-        distro_present() && run_output("docker version").map(|(ok, _)| ok).unwrap_or(false)
+        distro_listed(&docker_distro()) && run_output("docker version").map(|(ok, _)| ok).unwrap_or(false)
     }
     #[cfg(not(windows))]
     {
@@ -700,9 +803,13 @@ pub fn is_running(http_port: u16) -> bool {
         // shell can print MOTD noise. curl exits 0 on any HTTP response and
         // non-zero when the connection is refused.
         let url = format!("http://localhost:{http_port}");
-        sys::output("wsl.exe", &["-d", DISTRO, "-u", "root", "--", "curl", "-s", "-o", "/dev/null", "--max-time", "4", &url])
+        let distro = docker_distro();
+        let inside = sys::output_wsl("wsl.exe", &["-d", &distro, "-u", "root", "--", "curl", "-s", "-o", "/dev/null", "--max-time", "4", &url], std::time::Duration::from_secs(20))
             .map(|(ok, _, _)| ok)
-            .unwrap_or(false)
+            .unwrap_or(false);
+        // The operator's distro may have no curl: WSL forwards the port to
+        // Windows' localhost, so ask from here too.
+        inside || (!is_own_distro(&distro) && crate::native::http_answers(http_port))
     }
     #[cfg(not(windows))]
     {
@@ -889,37 +996,44 @@ pub fn cleanup(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
 /// Remove SENTIENT but keep its data: the containers go, the volumes (the
 /// databases and SENTIENT's files) and the compose file stay, so a new
 /// install of the same stack name picks them up again.
+///
+/// Windows, the Platform Manager's own distro: it is stopped and stays
+/// registered (the data is on its disk). A stack in the operator's own
+/// distro (`cfg.wsl_distro`): its containers only, as on Linux; that
+/// distro is never stopped.
 pub fn remove_keeping_data(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     #[cfg(windows)]
-    {
+    if cfg.wsl_distro.is_none() {
         // The data is on the distro's disk: stop it and leave it registered.
-        let _ = cfg;
         sink(Progress::Step { name: "Stopping the SENTIENT WSL distro (its data is kept)".into() });
         let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
+        sink(Progress::Done { message: "SENTIENT was removed; its data volumes were kept.".into() });
+        return Ok(());
     }
-    #[cfg(not(windows))]
-    {
+    with_docker_distro(cfg.wsl_distro.as_deref(), || {
         let n = cfg.names();
         sink(Progress::Step { name: "Removing the SENTIENT containers (volumes kept)".into() });
         if cfg.stack_defined() {
             let _ = run_stream(&sink, &format!("{} 2>/dev/null || true", cfg.compose_cmd("down --remove-orphans")));
         }
         let _ = run_stream(&sink, &format!("docker rm -f {} {} {} 2>/dev/null || true", n.app, n.pg, n.ch));
-    }
+    });
     sink(Progress::Done { message: "SENTIENT was removed; its data volumes were kept.".into() });
     Ok(())
 }
 
 /// Remove SENTIENT entirely.
 ///
-/// Windows: unregister the WSL distro, which deletes containers, volumes,
-/// images, Docker and the compose file in one go (everything lives on the
-/// distro's disk). Linux: take the stack down with its volumes and images and
-/// remove the compose directory; Docker itself stays — it is the system's.
+/// Windows, the Platform Manager's own distro: unregister it, which deletes
+/// containers, volumes, images, Docker and the compose file in one go
+/// (everything lives on the distro's disk). Linux, and a stack in the
+/// operator's own WSL distro (`cfg.wsl_distro`, e.g. Ubuntu): take the
+/// stack down with its volumes and images and remove the Platform
+/// Manager's compose file; Docker and that distro stay — they are the
+/// operator's. The operator's distro is never terminated or unregistered.
 pub fn uninstall(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     #[cfg(windows)]
-    {
-        let _ = cfg;
+    if cfg.wsl_distro.is_none() {
         if distro_present() {
             sink(Progress::Step { name: "Removing the SENTIENT WSL distro and all its data".into() });
             let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
@@ -928,10 +1042,9 @@ pub fn uninstall(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
             sink(Progress::Log { line: "No SENTIENT distro found. Nothing to remove.".into() });
         }
         sink(Progress::Done { message: "SENTIENT and its Docker environment were removed.".into() });
-        Ok(())
+        return Ok(());
     }
-    #[cfg(not(windows))]
-    {
+    with_docker_distro(cfg.wsl_distro.as_deref(), || {
         let n = cfg.names();
         sink(Progress::Step { name: "Removing SENTIENT containers, volumes and images".into() });
         if cfg.stack_defined() {
@@ -941,13 +1054,34 @@ pub fn uninstall(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
         let _ = run_stream(&sink, &format!("docker volume rm {} {} {} 2>/dev/null || true", n.vol_pg, n.vol_data, n.vol_ch));
         // An adopted stack's compose files are the operator's: they stay.
         if cfg.external.is_none() {
-            let dir = cfg.stack_dir();
-            let _ = std::fs::remove_file(cfg.compose_path());
-            let _ = std::fs::remove_file(cfg.ch_config_path());
-            let _ = std::fs::remove_dir(&dir); // only if now empty
+            remove_stack_files(cfg);
         }
-        sink(Progress::Done { message: "SENTIENT was removed. Docker itself was left installed.".into() });
-        Ok(())
+    });
+    let message = match &cfg.wsl_distro {
+        Some(d) => format!("SENTIENT was removed. Docker and the WSL distro {d} were left as they are."),
+        None => "SENTIENT was removed. Docker itself was left installed.".to_string(),
+    };
+    sink(Progress::Done { message });
+    Ok(())
+}
+
+/// The Platform Manager's compose file and ClickHouse settings, and their
+/// folder when it is then empty, on the Docker host.
+fn remove_stack_files(cfg: &DeployConfig) {
+    #[cfg(windows)]
+    {
+        let _ = run_output(&format!(
+            "rm -f {} {}; rmdir {} 2>/dev/null; true",
+            shell_quote(&cfg.compose_path()),
+            shell_quote(&cfg.ch_config_path()),
+            shell_quote(&cfg.stack_dir())
+        ));
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::fs::remove_file(cfg.compose_path());
+        let _ = std::fs::remove_file(cfg.ch_config_path());
+        let _ = std::fs::remove_dir(cfg.stack_dir()); // only if now empty
     }
 }
 
@@ -977,6 +1111,15 @@ pub const REUSE_KEPT_DISK: &str = "SPM_REUSE_KEPT_DISK";
 
 #[cfg(windows)]
 fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
+    // Setup creates, resets and configures the Platform Manager's own
+    // distro only: an installation in the operator's distro (Ubuntu, …)
+    // has its Docker set up by the operator.
+    let host = docker_distro();
+    if !is_own_distro(&host) {
+        return Err(format!(
+            "SENTIENT runs in Docker in the WSL distro {host}, which the Platform Manager does not set up or repair. Check Docker there yourself (wsl -d {host} -- docker info)."
+        ));
+    }
     std::fs::create_dir_all(install_dir).map_err(|e| e.to_string())?;
 
     // A distro left half-imported by a cancelled or failed run makes every
@@ -1137,7 +1280,7 @@ pub struct StackStatus {
 pub fn status(cfg: &DeployConfig) -> StackStatus {
     let n = cfg.names();
     #[cfg(windows)]
-    let present = distro_present();
+    let present = distro_listed(&docker_distro());
     #[cfg(not(windows))]
     let present = exec::have("docker");
 
@@ -1307,9 +1450,18 @@ pub fn is_registered() -> bool {
     cfg!(windows) && distro_present()
 }
 
+/// The Platform Manager's own distro is registered (its lifecycle: setup,
+/// uninstall, the ClickHouse agent).
+#[cfg_attr(not(windows), allow(dead_code))]
 fn distro_present() -> bool {
+    distro_listed(DISTRO)
+}
+
+/// A WSL distro of this name is registered for this Windows account.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn distro_listed(name: &str) -> bool {
     sys::output("wsl.exe", &["-l", "-q"])
-        .map(|(_, out, _)| sys::decode(&out).lines().any(|l| l.trim().eq_ignore_ascii_case(DISTRO)))
+        .map(|(_, out, _)| hosts::parse_list_quiet(&sys::decode(&out)).iter().any(|l| l.eq_ignore_ascii_case(name.trim())))
         .unwrap_or(false)
 }
 
@@ -1495,6 +1647,67 @@ fn _uses(_: &EnvVar) {}
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_runner_picks_the_scoped_then_the_recorded_then_its_own_distro() {
+        use super::{DISTRO, pick_distro};
+        assert_eq!(pick_distro(None, None), DISTRO);
+        assert_eq!(pick_distro(None, Some("Ubuntu")), "Ubuntu");
+        assert_eq!(pick_distro(Some("Debian"), Some("Ubuntu")), "Debian");
+        assert_eq!(pick_distro(Some("  "), Some(" Ubuntu ")), "Ubuntu");
+        assert_eq!(pick_distro(Some(""), Some("")), DISTRO);
+    }
+
+    #[test]
+    fn a_scoped_distro_applies_inside_only_and_nests() {
+        use super::{DISTRO, docker_distro, with_docker_distro};
+        // The record's choice is process-wide: this test leaves it alone
+        // and checks the per-thread override, on a thread of its own.
+        std::thread::spawn(|| {
+            let before = docker_distro();
+            let inner = with_docker_distro(Some("Ubuntu"), || {
+                let outer = docker_distro();
+                let nested = with_docker_distro(None, docker_distro);
+                (outer, nested, docker_distro())
+            });
+            assert_eq!(inner, ("Ubuntu".to_string(), DISTRO.to_string(), "Ubuntu".to_string()));
+            assert_eq!(docker_distro(), before);
+            // Restored after a panic too.
+            let _ = std::panic::catch_unwind(|| with_docker_distro(Some("Debian"), || panic!("boom")));
+            assert_eq!(docker_distro(), before);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn the_wsl_command_names_the_distro() {
+        assert_eq!(
+            super::wsl_bash_args("Ubuntu", "docker ps"),
+            vec!["-d", "Ubuntu", "-u", "root", "--", "bash", "-lc", "docker ps"]
+        );
+    }
+
+    #[test]
+    fn a_config_without_wsl_distro_loads_and_saves_as_before() {
+        use super::{DeployConfig, ExternalCompose};
+        // Saved by 0.9.0: no wsl_distro.
+        let old = r#"{"stack_name":"sentient","image":"quakestring/sentient:4.4.0.1","external":{"project":"sentient","files":["/home/op/docker-compose.yml"],"working_dir":"/home/op"}}"#;
+        let cfg: DeployConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(cfg.wsl_distro, None);
+        assert!(!serde_json::to_string(&cfg).unwrap().contains("wsl_distro"));
+        // Found in the operator's distro: kept through a save and a load.
+        let found = DeployConfig {
+            wsl_distro: Some("Ubuntu".into()),
+            external: Some(ExternalCompose { project: "plant_a".into(), files: vec![], working_dir: String::new() }),
+            ..Default::default()
+        };
+        let text = serde_json::to_string(&found).unwrap();
+        assert!(text.contains(r#""wsl_distro":"Ubuntu""#), "{text}");
+        let back: DeployConfig = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.wsl_distro.as_deref(), Some("Ubuntu"));
+        assert_eq!(back, found);
+    }
 
     #[cfg(not(windows))]
     #[test]

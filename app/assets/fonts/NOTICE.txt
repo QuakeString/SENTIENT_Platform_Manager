@@ -1,0 +1,13 @@
+MesloLGS NF (Regular, Bold): the built-in terminal's font.
+
+Source: https://github.com/romkatv/powerlevel10k-media (MesloLGS NF, the
+Meslo LG S font patched with Nerd Fonts glyphs), unmodified.
+
+Meslo LG: Copyright 2009, 2010, 2013 Andre Berg, Apache License 2.0
+(LICENSE-MESLO.txt, LICENSE-APACHE-2.0.txt). Meslo LG is based on Apple's
+Menlo, itself based on Bitstream Vera Sans Mono / DejaVu Sans Mono.
+
+The added icon and Powerline glyphs come from the Nerd Fonts project
+(https://github.com/ryanoasis/nerd-fonts); its licensing, including the
+glyph sets' own licences (SIL Open Font License 1.1, MIT), is in
+LICENSE-NERD-FONTS.txt.

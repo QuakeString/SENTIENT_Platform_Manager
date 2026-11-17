@@ -90,6 +90,7 @@ const EXTRA: &[(&str, &[u8])] = &[
     ("logos/redhat.svg", include_bytes!("../assets/logos/redhat.svg")),
     ("logos/rockylinux.svg", include_bytes!("../assets/logos/rockylinux.svg")),
     ("logos/sentient-mark.svg", include_bytes!("../assets/logos/sentient-mark.svg")),
+    ("logos/sentient-glyph.svg", include_bytes!("../assets/logos/sentient-glyph.svg")),
     ("logos/timescale.svg", include_bytes!("../assets/logos/timescale.svg")),
     ("logos/ubuntu.svg", include_bytes!("../assets/logos/ubuntu.svg")),
     ("logos/windows.svg", include_bytes!("../assets/logos/windows.svg")),
@@ -98,6 +99,13 @@ const EXTRA: &[(&str, &[u8])] = &[
     ("logos/spm.png", include_bytes!("../assets/app-icon/128.png")),
     ("logos/spm-small.png", include_bytes!("../assets/app-icon/small-64.png")),
 ];
+
+/// The built-in terminal's font, MesloLGS NF (Meslo LG, Apache 2.0, with
+/// the Nerd Fonts glyphs for the prompt's icons; assets/fonts/NOTICE.txt).
+/// Registered with the text system when the first terminal opens
+/// (crate::terminal::load_fonts), not at start: 5 MB the other pages do
+/// not need.
+pub const TERMINAL_FONTS: [&[u8]; 2] = [include_bytes!("../assets/fonts/MesloLGS-NF-Regular.ttf"), include_bytes!("../assets/fonts/MesloLGS-NF-Bold.ttf")];
 
 pub struct AppAssets;
 

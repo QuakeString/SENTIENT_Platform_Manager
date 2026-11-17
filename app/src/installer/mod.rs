@@ -1380,7 +1380,7 @@ impl Installer {
             .bg(shell::menu_bg(&theme, false, 0.))
             // No border: the edge and the selection are one shape, under the rows.
             .child(shell::menu_probe(pad, None))
-            .child(shell::selection(active, theme.muted, theme.sidebar_border, !ui::reduce_motion()))
+            .child(shell::selection(active, theme.muted, shell::menu_line(&theme), !ui::reduce_motion()))
             .child(brand)
             .child(
                 v_flex()
@@ -1488,6 +1488,11 @@ impl Installer {
     fn render_root(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(earlier) = &self.earlier {
             return div().size_full().bg(cx.theme().background).child(earlier.clone()).into_any_element();
+        }
+        // Setup installs on this computer, which the Flatpak build cannot.
+        if sentient_installer_core::host::in_flatpak() {
+            let theme = cx.theme().clone();
+            return v_flex().size_full().p(px(24.)).bg(theme.background).text_color(theme.foreground).child(ui::flatpak_local_notice(&theme)).into_any_element();
         }
         let width = f32::from(window.viewport_size().width);
         // Two cards side by side when the page has the room (ui::card_pair).

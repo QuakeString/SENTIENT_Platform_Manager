@@ -454,7 +454,24 @@ fn check_instances(cx: &mut App) {
                         v.push((None, if running { Seen::Running } else { Seen::Stopped }));
                     }
                     for inst in crate::remote::load() {
-                        let seen = match crate::remote::status(&inst) {
+                        use crate::manager::server_card::{self as sc, Power};
+                        // Restarting or shutting down from the Server card:
+                        // not answering (and SENTIENT stopped meanwhile) is
+                        // expected, no alarm; its last state stays, so no
+                        // "answers again" line either once it is back.
+                        if matches!(sc::power_state(&inst.id), Some(Power::Restarting | Power::ShuttingDown)) {
+                            continue;
+                        }
+                        let status = crate::remote::status(&inst);
+                        // Shut down from here: off is not a problem; once it
+                        // answers it is on again.
+                        if sc::power_state(&inst.id) == Some(Power::Off) {
+                            if status.is_err() {
+                                continue;
+                            }
+                            sc::answered(&inst.id);
+                        }
+                        let seen = match status {
                             Ok(s) if !s.installed => continue,
                             Ok(s) if s.serving => Seen::Running,
                             Ok(_) => Seen::Stopped,

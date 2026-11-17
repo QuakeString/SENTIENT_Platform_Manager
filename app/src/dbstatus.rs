@@ -366,8 +366,8 @@ pub fn parse_ch_history(tsv: &str) -> Option<(u64, u64, Option<i64>, Option<i64>
 /// Docker).
 fn disk_linux(path: &str, container: Option<&str>) -> Option<(u64, Option<u64>)> {
     let out = match container {
-        Some(c) => std::process::Command::new("docker").args(["exec", c, "df", "-PB1", path]).output().ok()?,
-        None => std::process::Command::new("df").args(["-PB1", path]).output().ok()?,
+        Some(c) => sentient_installer_core::host::host_command("docker").args(["exec", c, "df", "-PB1", path]).output().ok()?,
+        None => sentient_installer_core::host::host_command("df").args(["-PB1", path]).output().ok()?,
     };
     let text = String::from_utf8_lossy(&out.stdout);
     out.status.success().then(|| parse_df(&text).map(|free| (free, parse_df_total(&text)))).flatten()

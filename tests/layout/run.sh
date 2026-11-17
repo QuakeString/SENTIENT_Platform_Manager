@@ -21,7 +21,7 @@ mkdir -p "$OUT"
 PAGES_LOCAL=${PAGES_LOCAL-"status statistics logs files update gateway backup migration repair licence settings instances about"}
 PAGES_REMOTE=${PAGES_REMOTE-"status statistics logs files update gateway backup migration repair licence settings"}
 WIDTHS=${WIDTHS:-"560 900 1200"}; SCALES=${SCALES:-"1 1.5"}; THEMES=${THEMES:-"light dark"}
-JOBS=${JOBS:-4}
+JOBS=${JOBS:-3}
 one() { # where page width scale theme [dialog env]
   local where=$1 page=$2 w=$3 sc=$4 th=$5 dlg=${6:-} h=760
   # The dialog's env in the file name: "=" and "/" made safe.
@@ -88,6 +88,20 @@ for g in ${GUIDES-SPM_DEBUG_ADD_GUIDE=linux SPM_DEBUG_ADD_GUIDE=windows}; do for
 # width up through the narrow and rail layouts.
 MOVE_WIDTHS=${MOVE_WIDTHS:-"560 760 960 1200"}
 for g in ${MOVE_STEPS-SPM_DEBUG_MOVE_STEP=what SPM_DEBUG_MOVE_STEP=disk SPM_DEBUG_MOVE_STEP=folder SPM_DEBUG_MOVE_STEP=plan SPM_DEBUG_MOVE_STEP=run}; do for w in $MOVE_WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local migration $w $s $t $g"); done; done; done; done
+# Statistics with the Server card (crate::manager::server_card) on canned
+# readings: a physical Linux machine with a graphics card and three disks,
+# one nearly full; a virtual machine; Windows. Each with All details open
+# too, and the restart job mid-way in the shared job view.
+SERVER_FIXTURES=${SERVER_FIXTURES-"linux-gpu vm windows"}
+STATS_FIXTURE="$HERE/fixtures/stats"
+for fx in $SERVER_FIXTURES; do
+  for g in "" "+SPM_DEBUG_SERVER_DIALOG=details"; do
+    for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local statistics $w $s $t SPM_DEBUG_STATS=$STATS_FIXTURE+SPM_DEBUG_SERVER_INFO=$fx$g"); done; done; done
+  done
+done
+[ -n "$SERVER_FIXTURES" ] && for g in ${SERVER_JOBS-SPM_DEBUG_SERVER_DIALOG=shutdown SPM_DEBUG_SERVER_DIALOG=job:restart+SPM_DEBUG_SERVER_RESTART=waiting}; do
+  for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local statistics $w $s $t SPM_DEBUG_STATS=$STATS_FIXTURE+SPM_DEBUG_SERVER_INFO=vm+$g"); done; done; done
+done
 # Setup's window (its first step): the buttons' gaps only.
 [ "${SETUP:-1}" = 1 ] && for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("setup setup $w $s $t"); done; done; done
 if [ -n "${LOADING_PROFILE:-}" ]; then

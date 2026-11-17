@@ -9,7 +9,6 @@
 //! controlled: nothing would start it again.
 
 use std::path::Path;
-use std::process::Command;
 
 use crate::gateway::Status;
 use crate::progress::{Progress, ProgressFn};
@@ -42,7 +41,7 @@ const PROGRAMS: [&str; 4] = [
 const UNIT_DIRS: [&str; 4] = ["/etc/systemd/system", "/usr/local/lib/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"];
 
 fn out(cmd: &str, args: &[&str]) -> Option<String> {
-    let o = Command::new(cmd).args(args).output().ok()?;
+    let o = crate::sys::host_command(cmd).args(args).output().ok()?;
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
@@ -289,7 +288,7 @@ pub fn remove(sink: &ProgressFn, keep_data: bool) -> Result<String, String> {
     let now = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let script = removal_script(&s, keep_data, &now)?;
     sink(Progress::Step { name: format!("Removing the Sentient Gateway ({})", s.service.clone().or(s.program.clone()).unwrap_or_default()) });
-    let o = Command::new("sh").args(["-c", &script]).output().map_err(|e| format!("sh: {e}"))?;
+    let o = crate::sys::host_command("sh").args(["-c", &script]).output().map_err(|e| format!("sh: {e}"))?;
     for l in String::from_utf8_lossy(&o.stdout).lines() {
         sink(Progress::Log { line: l.to_string() });
     }
@@ -319,7 +318,7 @@ pub fn control(sink: &ProgressFn, action: &str) -> Result<(), String> {
             "There is no gateway on this computer.".into()
         });
     };
-    let o = Command::new("systemctl").args([verb, &unit]).output().map_err(|e| format!("systemctl: {e}"))?;
+    let o = crate::sys::host_command("systemctl").args([verb, &unit]).output().map_err(|e| format!("systemctl: {e}"))?;
     if !o.status.success() {
         return Err(format!("systemctl {verb} {unit} failed: {}", String::from_utf8_lossy(&o.stderr).trim()));
     }

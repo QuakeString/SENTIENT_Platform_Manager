@@ -44,6 +44,51 @@ pub fn set_list_body(cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// The open dialog offers a full-screen button beside its close button
+/// (All details, the terminal), and whether it is full screen now: it then
+/// takes the whole window but a 16 px margin. Set after [`open`], which
+/// clears it.
+#[derive(Default, Clone, Copy)]
+pub struct ModalFull {
+    pub offered: bool,
+    pub on: bool,
+}
+
+impl Global for ModalFull {}
+
+pub fn offer_full_screen(cx: &mut App) {
+    cx.set_global(ModalFull { offered: true, on: false });
+    cx.refresh_windows();
+}
+
+/// The open dialog is full screen now.
+pub fn full_screen(cx: &App) -> bool {
+    cx.try_global::<ModalFull>().is_some_and(|f| f.offered && f.on)
+}
+
+fn toggle_full_screen(cx: &mut App) {
+    let f = cx.try_global::<ModalFull>().copied().unwrap_or_default();
+    cx.set_global(ModalFull { offered: f.offered, on: f.offered && !f.on });
+    cx.refresh_windows();
+}
+
+/// Opt-in close rules for the open dialog (the terminal): a click on the
+/// dim layer does nothing, and a guard runs before Escape or the close
+/// button closes it (return false to keep it open, e.g. to ask first).
+/// Set after [`open`], which clears it, so every other dialog keeps the
+/// usual rules.
+#[derive(Default, Clone)]
+pub struct ModalGuard {
+    pub keep_on_backdrop: bool,
+    pub before_close: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App) -> bool>>,
+}
+
+impl Global for ModalGuard {}
+
+pub fn set_guard(guard: ModalGuard, cx: &mut App) {
+    cx.set_global(guard);
+}
+
 /// How tall a list dialog is at most (about ten rows of a folder list).
 pub const LIST_DIALOG_H: f32 = 680.;
 
@@ -66,9 +111,24 @@ pub fn set_width(width: f32, cx: &mut App) {
     }
 }
 
+/// How many dialogs have been opened, and the last one whose opening the
+/// layer has handled ([`layer`]): a dialog opening under a tooltip closes it.
+#[derive(Default)]
+struct ModalOpened {
+    count: u64,
+    seen: u64,
+}
+
+impl Global for ModalOpened {}
+
 pub fn open(modal: Modal, cx: &mut App) {
+    let count = cx.try_global::<ModalOpened>().map(|o| o.count).unwrap_or(0) + 1;
+    let seen = cx.try_global::<ModalOpened>().map(|o| o.seen).unwrap_or(0);
+    cx.set_global(ModalOpened { count, seen });
     cx.set_global(ModalFooter(None));
     cx.set_global(ModalList(false));
+    cx.set_global(ModalFull::default());
+    cx.set_global(ModalGuard::default());
     cx.set_global(ModalSlot(Some(modal)));
     cx.refresh_windows();
 }
@@ -89,6 +149,7 @@ pub fn set_title(title: impl Into<SharedString>, cx: &mut App) {
 pub fn close(cx: &mut App) {
     if cx.try_global::<ModalSlot>().is_some_and(|s| s.0.is_some()) {
         cx.set_global(ModalFooter(None));
+        cx.set_global(ModalGuard::default());
         cx.set_global(ModalSlot(None));
         cx.refresh_windows();
     }
@@ -96,6 +157,10 @@ pub fn close(cx: &mut App) {
 
 /// Close it as the user did (Escape, ✕, the dim layer): calls on_close.
 pub fn dismiss(window: &mut Window, cx: &mut App) {
+    let guard = cx.try_global::<ModalGuard>().and_then(|g| g.before_close.clone());
+    if guard.is_some_and(|f| !f(window, cx)) {
+        return;
+    }
     let closing = cx.try_global::<ModalSlot>().and_then(|s| s.0.clone());
     close(cx);
     if let Some(f) = closing.and_then(|m| m.on_close) {
@@ -107,6 +172,19 @@ pub fn dismiss(window: &mut Window, cx: &mut App) {
 /// area starts (menu width, top bar height).
 pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -> Option<AnyElement> {
     let modal = cx.try_global::<ModalSlot>().and_then(|s| s.0.clone())?;
+    // A tooltip shown when the dialog opened (the button that opened it,
+    // under a pointer that has not moved) stays until the pointer moves.
+    // Once the dialog is drawn over it, the same position is played as a
+    // move: the button is covered then, and its tooltip closes.
+    if let Some(o) = cx.try_global::<ModalOpened>().filter(|o| o.seen != o.count).map(|o| o.count) {
+        if let Some(g) = cx.try_global::<ModalOpened>().map(|g| g.count) {
+            cx.set_global(ModalOpened { count: g, seen: o });
+        }
+        window.on_next_frame(|w, cx| {
+            let event = MouseMoveEvent { position: w.mouse_position(), pressed_button: None, modifiers: w.modifiers() };
+            w.dispatch_event(PlatformInput::MouseMove(event), cx);
+        });
+    }
     let footer = cx.try_global::<ModalFooter>().and_then(|f| f.0.clone());
     let theme = cx.theme().clone();
     let vw = f32::from(window.viewport_size().width);
@@ -117,6 +195,9 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
     // A list dialog: at most 70 % of the window (never under 480 px while
     // the window allows it).
     let w = if list { w.min((vw * 0.7).max(480.)).min(vw - 32.) } else { w };
+    // Full screen: the whole window but a margin.
+    let full = cx.try_global::<ModalFull>().copied().unwrap_or_default();
+    let w = if full.offered && full.on { vw - 32. } else { w };
     // Centre in the page area when the panel fits there, else in the window.
     let (area_left, area_w) = if vw - page_left >= w + 32. { (page_left, vw - page_left) } else { (0., vw) };
     let left = area_left + (area_w - w) / 2.;
@@ -128,6 +209,7 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
         .w(px(w))
         .max_h(px(max_h))
         .when(list, |p| p.h(px(max_h.min(LIST_DIALOG_H))))
+        .when(full.offered && full.on, |p| p.h(px(max_h)))
         .rounded(px(crate::ui::PANEL_RADIUS))
         .bg(theme.background)
         .border_1()
@@ -146,6 +228,16 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
                 .gap_2()
                 .when_some(modal.icon.clone(), |r, i| r.child(i.size_4().text_color(theme.muted_foreground)))
                 .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(modal.title.clone()))
+                .when(full.offered, |r| {
+                    r.child(
+                        crate::ui::button("modal-full")
+                            .ghost()
+                            .small()
+                            .icon(gpui_kit::component::Icon::new(if full.on { gpui_kit::assets::IconName::Minimize } else { gpui_kit::assets::IconName::Maximize }))
+                            .tooltip(if full.on { "Leave full screen" } else { "Full screen" })
+                            .on_click(|_, _, cx| toggle_full_screen(cx)),
+                    )
+                })
                 .child(crate::ui::button("modal-close").ghost().small().icon(IconName::Close).on_click(|_, window, cx| dismiss(window, cx))),
         )
         .child(
@@ -173,7 +265,11 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
             .inset_0()
             .occlude()
             .bg(black().opacity(if crate::theme::is_dark(cx) { 0.55 } else { 0.40 }))
-            .on_click(|_, window, cx| dismiss(window, cx))
+            .on_click(|_, window, cx| {
+                if !cx.try_global::<ModalGuard>().is_some_and(|g| g.keep_on_backdrop) {
+                    dismiss(window, cx);
+                }
+            })
             .child(
                 div()
                     .absolute()

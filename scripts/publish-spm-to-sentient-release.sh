@@ -17,7 +17,15 @@
 #
 # It never becomes that repository's "Latest" release: SENTIENT Setup and the
 # Platform Manager read releases/latest/download/manifest.json there, which
-# must stay SENTIENT's. A release candidate is also a pre-release.
+# must stay SENTIENT's. Every Platform Manager release there is a
+# pre-release, final versions too (0.9.0 went out as a full release because
+# only -rc and nightly versions were marked). After publishing, the script
+# reads the release back and fails unless it is a pre-release, Latest is the
+# same SENTIENT release as before, and every file is there with the source
+# release's digest.
+#
+# The files are downloaded into a temporary folder under TMPDIR (default
+# /tmp, often a small tmpfs): the script checks the free space first.
 # Needs GITHUB_TOKEN (repo scope), or a github.com credential in git.
 set -euo pipefail
 version=${1:?usage: $0 <version> [--replace]}
@@ -32,6 +40,10 @@ token=${GITHUB_TOKEN:-$(printf 'protocol=https\nhost=github.com\n\n' | git crede
 auth=(-H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json")
 
 python3 "$here/release-notes.py" check "$root/CHANGELOG.md" "$version"
+latest_before=$(curl -fsS "${auth[@]}" "https://api.github.com/repos/$dst/releases/latest" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')
+case "$latest_before" in
+  spm-*) echo "$dst's latest release is $latest_before, a Platform Manager release: set a SENTIENT release Latest first" >&2; exit 1 ;;
+esac
 if old=$(curl -fs "${auth[@]}" "https://api.github.com/repos/$dst/releases/tags/$tag"); then
   if ! $replace; then
     echo "$tag is already published on $dst; releases are immutable (--replace corrects a broken publish)." >&2; exit 1
@@ -51,6 +63,27 @@ for a in json.load(open(sys.argv[1]))["assets"]:
     print(f'{a["name"]}\t{a["browser_download_url"]}')
 PY
 [ -s "$work/assets.tsv" ] || { echo "v$version on $src has no files yet" >&2; exit 1; }
+# Every kind of download the release carries (build-installers.yml): a
+# release missing one is not complete yet.
+python3 - "$work/src.json" <<'PY'
+import json, re, sys
+names = [a["name"] for a in json.load(open(sys.argv[1]))["assets"]]
+kinds = {
+    "Windows installer": r"^SENTIENT-Setup-manager-.*\.exe$",
+    "Linux binary": r"^SENTIENT-Setup-manager-.*-linux-x86_64$",
+    "Arch package": r"\.pkg\.tar\.zst$",
+    "Debian/Ubuntu package": r"_amd64\.deb$",
+    "Fedora/RHEL/openSUSE package": r"\.x86_64\.rpm$",
+    "AppImage": r"-x86_64\.AppImage$",
+    "Flatpak bundle": r"-x86_64\.flatpak$",
+}
+missing = [k for k, p in kinds.items() if not any(re.search(p, n) for n in names)]
+if missing:
+    sys.exit("the source release lacks: " + ", ".join(missing))
+PY
+need=$(python3 -c 'import json,sys; print(sum(a["size"] for a in json.load(open(sys.argv[1]))["assets"]) // 1024 + 10240)' "$work/src.json")
+have=$(df -Pk "$work" | awk 'NR==2{print $4}')
+[ "$have" -ge "$need" ] || { echo "$work has $((have / 1024)) MB free, the files need $((need / 1024)) MB: set TMPDIR to a folder on a bigger disk" >&2; exit 1; }
 mkdir "$work/files"
 while IFS=$'\t' read -r name url; do
   echo "downloading $name"
@@ -68,8 +101,11 @@ for a in json.load(open(sys.argv[1]))["assets"]:
 PY
 
 # Each installer signed with the release key: the Platform Manager refuses an
-# unsigned one once a signed release exists (scripts/sign-release.sh).
-"$here/sign-release.sh" "$work"/files/SENTIENT-Setup-manager-*
+# unsigned one once a signed release exists (scripts/sign-release.sh). The
+# AppImage too: it is a program people run as it is downloaded. (The .deb,
+# .rpm, Arch and Flatpak packages are checked by their SHA-256 below; their
+# package managers have their own signing.)
+"$here/sign-release.sh" "$work"/files/SENTIENT-Setup-manager-* "$work"/files/*.AppImage
 
 notes=$(python3 "$here/release-notes.py" extract "$root/CHANGELOG.md" "$version" --public)
 table=$'| File | Size | SHA-256 |\n|---|---|---|\n'
@@ -78,8 +114,8 @@ for f in "$work"/files/*; do
   case "$n" in *.minisig) continue ;; esac
   table+="| \`$n\` | $(du -h "$f" | cut -f1) | \`$(sha256sum "$f" | cut -d' ' -f1)\` |"$'\n'
 done
-body="$notes"$'\n\n'"### Downloads"$'\n\n'"Windows: run \`SENTIENT-Setup-manager-*.exe\`. Linux: \`SENTIENT-Setup-manager-*-linux-x86_64\`, or the Arch package."$'\n\n'"$table"
-pre=false; case "$version" in *-rc*|*nightly*) pre=true ;; esac
+body="$notes"$'\n\n'"### Downloads"$'\n\n'"Windows: run \`SENTIENT-Setup-manager-*.exe\`. Linux: the \`.deb\` (Debian 12+, Ubuntu 22.04+), the \`.rpm\` (Fedora, RHEL, openSUSE), the Arch package, the AppImage, the Flatpak bundle, or the plain program \`SENTIENT-Setup-manager-*-linux-x86_64\`."$'\n\n'"$table"
+pre=true # every Platform Manager release on $dst; see the header
 payload=$(python3 -c 'import json,sys; print(json.dumps({"tag_name": sys.argv[1], "target_commitish": "main", "name": "SENTIENT Platform Manager " + sys.argv[2], "body": sys.argv[3], "prerelease": sys.argv[4] == "true", "make_latest": "false"}))' "$tag" "$version" "$body" "$pre")
 release=$(curl -fsS "${auth[@]}" -X POST "https://api.github.com/repos/$dst/releases" -d "$payload")
 upload=$(printf '%s' "$release" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_url"].split("{")[0])')
@@ -90,11 +126,34 @@ for f in "$work"/files/*; do
 done
 echo "published: https://github.com/$dst/releases/tag/$tag"
 
-# Latest must still be SENTIENT's.
+# Read it back: a pre-release, Latest unchanged, every file with the
+# source release's digest (and a signature beside each installer and the
+# AppImage), and every kind of Linux package.
+curl -fsS "${auth[@]}" "https://api.github.com/repos/$dst/releases/tags/$tag" > "$work/dst.json"
+python3 - "$work/src.json" "$work/dst.json" <<'PY'
+import json, sys
+src, dst = (json.load(open(p)) for p in sys.argv[1:3])
+bad = []
+if not dst["prerelease"]: bad.append("it is not a pre-release")
+if dst["draft"]: bad.append("it is a draft")
+got = {a["name"]: a for a in dst["assets"] if a["state"] == "uploaded"}
+for a in src["assets"]:
+    g = got.get(a["name"])
+    if g is None: bad.append(f'{a["name"]} is missing')
+    elif g["size"] != a["size"] or (a.get("digest") and g.get("digest") != a["digest"]):
+        bad.append(f'{a["name"]} differs from the source release')
+    signed = a["name"].startswith("SENTIENT-Setup-manager-") or a["name"].endswith(".AppImage")
+    if signed and a["name"] + ".minisig" not in got:
+        bad.append(f'{a["name"]}.minisig is missing')
+# Every kind of Linux package is there (the source check above, read back).
+for kind in (".pkg.tar.zst", "_amd64.deb", ".x86_64.rpm", "-x86_64.AppImage", "-x86_64.flatpak"):
+    if not any(n.endswith(kind) for n in got):
+        bad.append(f'no *{kind} file')
+if bad: sys.exit("published release is wrong: " + "; ".join(bad))
+print(f'checked: pre-release, {len(got)} files match the source release')
+PY
 latest=$(curl -fsS "${auth[@]}" "https://api.github.com/repos/$dst/releases/latest" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')
-case "$latest" in
-  [0-9]*) echo "latest is still SENTIENT $latest" ;;
-  *) echo "WARNING: $dst's latest release is now $latest, not a SENTIENT version" >&2; exit 1 ;;
-esac
+[ "$latest" = "$latest_before" ] || { echo "WARNING: $dst's latest release is now $latest, it was $latest_before" >&2; exit 1; }
+echo "latest is still SENTIENT $latest"
 
 "$here/update-sentient-release-readme.sh" spm "$tag"

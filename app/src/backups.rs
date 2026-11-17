@@ -372,11 +372,11 @@ pub fn make_writable(dir: &Path, uid: Option<u32>) -> Result<(), String> {
             // Root itself asked: root writes everywhere already.
             return check_writable(dir);
         };
-        let out = std::process::Command::new("chown").arg(uid.to_string()).arg(dir).output().map_err(|e| e.to_string())?;
+        let out = sentient_installer_core::host::host_command("chown").arg(uid.to_string()).arg(dir).output().map_err(|e| e.to_string())?;
         if !out.status.success() {
             return Err(format!("{} could not be given to user {uid}: {}", dir.display(), String::from_utf8_lossy(&out.stderr).trim()));
         }
-        let _ = std::process::Command::new("chmod").arg("u+rwx").arg(dir).status();
+        let _ = sentient_installer_core::host::host_command("chmod").arg("u+rwx").arg(dir).status();
         Ok(())
     }
     #[cfg(not(unix))]
@@ -662,14 +662,14 @@ pub fn apply_schedule(prefs: &BackupPrefs) -> Result<(), String> {
                 let timer = format!("[Unit]\nDescription={TASK} (daily)\n\n[Timer]\nOnCalendar=*-*-* {h:02}:{m:02}:00\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n");
                 std::fs::write(format!("{unit}.service"), service).map_err(|e| e.to_string())?;
                 std::fs::write(format!("{unit}.timer"), timer).map_err(|e| e.to_string())?;
-                let _ = std::process::Command::new("systemctl").arg("daemon-reload").status();
-                let _ = std::process::Command::new("systemctl").args(["enable", "--now", "sentient-backup.timer"]).status();
+                let _ = sentient_installer_core::host::host_command("systemctl").arg("daemon-reload").status();
+                let _ = sentient_installer_core::host::host_command("systemctl").args(["enable", "--now", "sentient-backup.timer"]).status();
             }
             None => {
-                let _ = std::process::Command::new("systemctl").args(["disable", "--now", "sentient-backup.timer"]).status();
+                let _ = sentient_installer_core::host::host_command("systemctl").args(["disable", "--now", "sentient-backup.timer"]).status();
                 let _ = std::fs::remove_file(format!("{unit}.service"));
                 let _ = std::fs::remove_file(format!("{unit}.timer"));
-                let _ = std::process::Command::new("systemctl").arg("daemon-reload").status();
+                let _ = sentient_installer_core::host::host_command("systemctl").arg("daemon-reload").status();
             }
         }
         Ok(())

@@ -401,7 +401,7 @@ mod unix {
     }
 
     fn have(bin: &str) -> bool {
-        Command::new("sh").args(["-c", &format!("command -v {bin}")]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+        crate::sys::host_command("sh").args(["-c", &format!("command -v {bin}")]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
     }
 
     impl Session {
@@ -419,9 +419,9 @@ mod unix {
             };
             let pkexec = have("pkexec");
             let mut cmd = if pkexec {
-                Command::new("pkexec")
+                crate::sys::host_command("pkexec")
             } else if have("sudo") {
-                let mut c = Command::new("sudo");
+                let mut c = crate::sys::host_command("sudo");
                 c.arg("-n");
                 c
             } else {

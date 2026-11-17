@@ -8,3 +8,7 @@ dist/
 # GPUI app and spike build output
 /app/target/
 /spike/*/target/
+
+# packaging/flatpak/build.sh input and flatpak-builder state
+/packaging/flatpak/input/
+.flatpak-builder/

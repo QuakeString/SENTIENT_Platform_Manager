@@ -32,8 +32,8 @@ const HISTORY_EVERY: Duration = Duration::from_secs(60);
 /// Live: the second reading this soon after the first, so the charts have
 /// a line within about a second.
 const SECOND_AFTER: Duration = Duration::from_secs(1);
-/// The database numbers change slowly and cost a query: this often.
-const DB_EVERY: Duration = Duration::from_secs(60);
+/// The Server card's reading again this often while shown.
+const SERVER_EVERY: Duration = Duration::from_secs(300);
 
 static OPEN: AtomicBool = AtomicBool::new(false);
 
@@ -68,6 +68,10 @@ impl Source {
 
     /// Whether there are services and a database to read at all.
     fn has_install(&self) -> bool {
+        #[cfg(debug_assertions)]
+        if std::env::var_os("SPM_DEBUG_STATS").is_some() {
+            return true;
+        }
         match self {
             Source::Local(r) => r.is_some(),
             Source::Remote(_) => true,
@@ -87,23 +91,12 @@ impl Source {
         }
     }
 
-    /// The database numbers, never asking for a password.
-    fn db(&self) -> Result<DbRead, String> {
-        let some = |db: Option<crate::stats::Db>| db.map(DbRead::Read).unwrap_or(DbRead::None);
+    /// The Server card's reading (crate::server_info): in this process
+    /// here, one agent call on a server.
+    fn server_info(&self) -> Result<crate::server_info::ServerInfo, String> {
         match self {
-            Source::Local(r) => {
-                #[cfg(debug_assertions)]
-                if let Some(d) = std::env::var_os("SPM_DEBUG_STATS") {
-                    let d = std::path::Path::new(&d);
-                    if d.join("needs-admin").exists() {
-                        let _ = crate::stats::debug_part(d, Part::Db);
-                        return Ok(DbRead::NeedsAdmin { last_backup: None, after_sign_in: d.join("after-sign-in").exists() });
-                    }
-                    return crate::stats::debug_part(d, Part::Db).map(|s| some(s.db));
-                }
-                Ok(crate::stats::db_unprompted(r.as_ref()))
-            }
-            Source::Remote(i) => crate::remote::stats_live_part(i, Part::Db).map(|s| some(s.db)),
+            Source::Local(r) => Ok(crate::server_info::gather(r.as_ref())),
+            Source::Remote(i) => crate::manager::server_card::read_remote(i),
         }
     }
 
@@ -157,8 +150,6 @@ pub struct StatsPage {
     /// Processor, memory, disk, network, uptime: the figures and the live charts.
     live: Vec<Sample>,
     hist: Option<Result<Vec<Sample>, String>>,
-    /// The last 24 hours, for the database's growth and "Disk full in".
-    day: Vec<Sample>,
     live_err: Option<String>,
     /// Its instance is not the open one (a kept page): no reading meanwhile.
     paused: bool,
@@ -185,6 +176,21 @@ pub struct StatsPage {
     plots: Vec<Rc<Cell<Bounds<Pixels>>>>,
     /// Update agent (a server whose agent is too old for these readings).
     job: Entity<crate::jobs::Job>,
+    /// The Server card's reading (crate::manager::server_card): None while
+    /// it is read the first time.
+    server: Option<Result<crate::server_info::ServerInfo, String>>,
+    /// The card's jobs (restart, shut down, Docker, updates), shown in the
+    /// shared job view in place of the page until "Back to Statistics".
+    server_job: Entity<crate::jobs::Job>,
+    server_shown: bool,
+    /// The job view was left with Hide while the job runs: read the card
+    /// again when it ends.
+    server_hidden: bool,
+    server_job_label: String,
+    /// Debug builds: the dialog SPM_DEBUG_SERVER_DIALOG asks for was opened.
+    debug_opened: bool,
+    _server_poll: Option<Task<()>>,
+    _server_watch: Option<Subscription>,
     _watch: Option<Subscription>,
     _poll: Vec<Task<()>>,
     _tasks: Vec<Task<()>>,
@@ -210,7 +216,6 @@ impl StatsPage {
             range,
             live: Vec::new(),
             hist: None,
-            day: Vec::new(),
             live_err: None,
             paused: false,
             refreshing: false,
@@ -224,13 +229,180 @@ impl StatsPage {
             hover: None,
             plots: (0..6).map(|_| Rc::new(Cell::new(Bounds::default()))).collect(),
             job: cx.new(|_| crate::jobs::Job::new()),
+            server: None,
+            server_job: cx.new(|_| crate::jobs::Job::new()),
+            server_shown: false,
+            server_hidden: false,
+            server_job_label: String::new(),
+            debug_opened: false,
+            _server_poll: None,
+            _server_watch: None,
             _watch: None,
             _poll: Vec::new(),
             _tasks: Vec::new(),
         };
         p.start(cx);
-        p.read_day(cx);
+        p.poll_server(cx);
+        let w = cx.observe(&p.server_job, |p, job, cx| {
+            // A job that ended changes what the card shows: read it again.
+            if !job.read(cx).is_running() && (p.server_shown || p.server_hidden) {
+                p.server_hidden = false;
+                p.read_server(cx);
+            }
+            cx.notify();
+        });
+        p._server_watch = Some(w);
         p
+    }
+
+    /// The Server card: read on open, then every few minutes while shown
+    /// (nothing on the live ticks; the processor and memory bars use the
+    /// live reading).
+    fn poll_server(&mut self, cx: &mut Context<Self>) {
+        let src = self.src.clone();
+        self._server_poll = Some(cx.spawn(async move |this, cx| {
+            let mut first = true;
+            loop {
+                let Ok(paused) = this.update(cx, |p, _| p.paused) else { break };
+                if first || (OPEN.load(Ordering::Relaxed) && !paused) {
+                    first = false;
+                    let s = src.clone();
+                    let got = cx.background_executor().spawn(async move { s.server_info() }).await;
+                    if this.update(cx, |p, cx| p.got_server(got, cx)).is_err() {
+                        break;
+                    }
+                }
+                cx.background_executor().timer(SERVER_EVERY).await;
+            }
+        }));
+    }
+
+    /// Read the Server card once now (Refresh, shown again, a job ended).
+    fn read_server(&mut self, cx: &mut Context<Self>) {
+        let src = self.src.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let got = cx.background_executor().spawn(async move { src.server_info() }).await;
+            this.update(cx, |p, cx| p.got_server(got, cx)).ok();
+        });
+        self._tasks.push(task);
+    }
+
+    fn got_server(&mut self, got: Result<crate::server_info::ServerInfo, String>, cx: &mut Context<Self>) {
+        match got {
+            // A failed re-read keeps what was read.
+            Err(e) if matches!(self.server, Some(Ok(_))) => self.set_stale("server", Some(e)),
+            got => {
+                if got.is_ok() {
+                    self.set_stale("server", None);
+                    // A server shut down from here is on again.
+                    if let Source::Remote(i) = &self.src {
+                        crate::manager::server_card::answered(&i.id);
+                    }
+                }
+                self.server = Some(got);
+            }
+        }
+        self.timing("server");
+        cx.notify();
+    }
+
+    fn remote_inst(&self) -> Option<crate::remote::Instance> {
+        match &self.src {
+            Source::Remote(i) => Some(i.clone()),
+            Source::Local(_) => None,
+        }
+    }
+
+    /// Screens: SPM_DEBUG_SERVER_DIALOG=details|restart|shutdown opens that
+    /// once the reading is in; =job:<action> starts that job (with
+    /// SPM_DEBUG_SERVER_RESTART, a server that is not there).
+    #[cfg(debug_assertions)]
+    fn debug_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::manager::server_card::{self as sc, Action};
+        let Ok(v) = std::env::var("SPM_DEBUG_SERVER_DIALOG") else { return };
+        let Some(Ok(info)) = self.server.clone() else { return };
+        if self.debug_opened {
+            return;
+        }
+        self.debug_opened = true;
+        let name = self.server_name();
+        cx.defer_in(window, move |p, window, cx| match v.as_str() {
+            "details" => sc::open_details(&name, info, cx),
+            "restart" => sc::confirm_restart(&name, window, cx, Rc::new(|_| {})),
+            "shutdown" => sc::confirm_shutdown(&name, window, cx, Rc::new(|_| {})),
+            j => {
+                let a = match j.strip_prefix("job:").unwrap_or("") {
+                    "shutdown" => Action::Shutdown,
+                    "docker" => Action::Docker,
+                    "updates" => Action::Updates,
+                    _ => Action::Restart,
+                };
+                p.server_action(a, cx);
+            }
+        });
+    }
+
+    /// Start one of the card's jobs (asked first where it says so).
+    fn server_action(&mut self, action: crate::manager::server_card::Action, cx: &mut Context<Self>) {
+        if self.server_job.read(cx).is_running() {
+            return;
+        }
+        let windows = match &self.server {
+            Some(Ok(i)) => i.windows(),
+            _ => self.remote_inst().is_some_and(|i| crate::remote::is_windows(&i)),
+        };
+        let me = cx.entity().downgrade();
+        let retry: Rc<dyn Fn(&mut App)> = Rc::new(move |cx: &mut App| {
+            me.update(cx, |p, cx| p.server_action(action, cx)).ok();
+        });
+        self.server_shown = true;
+        self.server_hidden = false;
+        self.server_job_label = action.title(&self.server_name());
+        crate::manager::server_card::start(&self.server_job, action, self.remote_inst(), windows, retry, cx);
+        cx.notify();
+    }
+
+    fn server_name(&self) -> String {
+        match &self.src {
+            Source::Remote(i) => i.name.clone(),
+            Source::Local(_) => "this computer".into(),
+        }
+    }
+
+    /// The card's actions, each asking first where it should.
+    fn server_actions(&self, cx: &mut Context<Self>) -> crate::manager::server_card::Actions {
+        use crate::manager::server_card::{self as sc, Action};
+        let me = cx.entity().downgrade();
+        let name = self.server_name();
+        let run = move |a: Action| {
+            let me = me.clone();
+            Rc::new(move |cx: &mut App| {
+                me.update(cx, |p, cx| p.server_action(a, cx)).ok();
+            }) as Rc<dyn Fn(&mut App)>
+        };
+        let (n1, n2) = (name.clone(), name.clone());
+        let (r1, r2, r3, r4) = (run(Action::Restart), run(Action::Shutdown), run(Action::Docker), run(Action::Updates));
+        let details_info = self.server.as_ref().and_then(|s| s.as_ref().ok()).cloned();
+        let n3 = name.clone();
+        let me2 = cx.entity().downgrade();
+        let term_inst = self.remote_inst();
+        sc::Actions {
+            remote: matches!(self.src, Source::Remote(_)),
+            busy: self.server_job.read(cx).is_running(),
+            on_terminal: Rc::new(move |w, cx| sc::open_terminal(term_inst.as_ref(), w, cx)),
+            on_restart: Rc::new(move |w, cx| sc::confirm_restart(&n1, w, cx, r1.clone())),
+            on_shutdown: Rc::new(move |w, cx| sc::confirm_shutdown(&n2, w, cx, r2.clone())),
+            on_docker: Rc::new(move |_, cx| r3(cx)),
+            on_updates: Rc::new(move |_, cx| r4(cx)),
+            on_details: Rc::new(move |_, cx| {
+                if let Some(i) = details_info.clone() {
+                    sc::open_details(&n3, i, cx);
+                }
+            }),
+            on_update_agent: Rc::new(move |_, cx| {
+                me2.update(cx, |p, cx| p.update_agent(cx)).ok();
+            }),
+        }
     }
 
     /// Debug builds with SPM_DEBUG_STATS_TIMING: when each source first
@@ -261,7 +433,7 @@ impl StatsPage {
     fn read_again(&mut self, cx: &mut Context<Self>) {
         self.refreshing = true;
         self.restart(false, cx);
-        self.read_day(cx);
+        self.read_server(cx);
         cx.notify();
     }
 
@@ -394,43 +566,6 @@ impl StatsPage {
                     cx.background_executor().timer(every).await;
                 }
             }));
-
-            // The database numbers (never asking for a password).
-            let (src, whole) = (self.src.clone(), self.whole.clone());
-            self._poll.push(cx.spawn(async move |this, cx| {
-                let mut first = true;
-                loop {
-                    if whole.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let Ok(paused) = this.update(cx, |p, _| p.paused) else { break };
-                    if first || (OPEN.load(Ordering::Relaxed) && !paused) {
-                        first = false;
-                        let s = src.clone();
-                        let got = cx.background_executor().spawn(async move { s.db() }).await;
-                        if this
-                            .update(cx, |p, cx| {
-                                if !p.whole.load(Ordering::Relaxed) {
-                                    match got {
-                                        Ok(d) => {
-                                            p.set_stale("db", None);
-                                            p.db = Some(d);
-                                        }
-                                        Err(e) if matches!(p.db, Some(DbRead::Read(_))) => p.set_stale("db", Some(e)),
-                                        Err(_) => p.db = Some(DbRead::None),
-                                    }
-                                    p.timing("db");
-                                    cx.notify();
-                                }
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    cx.background_executor().timer(DB_EVERY).await;
-                }
-            }));
         }
 
         // The longer ranges' history.
@@ -488,27 +623,13 @@ impl StatsPage {
             if matches!(job.read(cx).state(), crate::jobs::JobState::Done(_)) {
                 p.live_err = None;
                 p.start(cx);
-                p.read_day(cx);
+                p.read_server(cx);
             }
             cx.notify();
         });
         let _ = me2;
         self._watch = Some(watch);
         cx.notify();
-    }
-
-    fn read_day(&mut self, cx: &mut Context<Self>) {
-        let src = self.src.clone();
-        let task = cx.spawn(async move |this, cx| {
-            let got = cx.background_executor().spawn(async move { src.history(86_400) }).await;
-            this.update(cx, |p, cx| {
-                p.day = got.unwrap_or_default();
-                p.timing("day history");
-                cx.notify();
-            })
-            .ok();
-        });
-        self._tasks.push(task);
     }
 
     fn pick(&mut self, range: Range, cx: &mut Context<Self>) {
@@ -868,6 +989,53 @@ impl Render for StatsPage {
         let latest = self.live.last().cloned().or_else(|| self.points().last().cloned());
         let mut col = v_flex().gap(px(crate::ui::GAP)).child(header);
         let page = |col: Div| v_flex().id("stats-page").flex_1().min_w_0().h_full().overflow_y_scroll().p(px(crate::ui::PAGE_PAD)).bg(theme.muted).child(col);
+        // One of the Server card's jobs, in the shared job view, until
+        // "Back to Statistics".
+        if self.server_shown && !matches!(self.server_job.read(cx).state(), crate::jobs::JobState::Idle) {
+            let me = cx.entity().downgrade();
+            let back = crate::manager::jobview::back_button("srv-job-back", "Statistics", move |_, cx| {
+                me.update(cx, |p, cx| {
+                    p.server_shown = false;
+                    p.server_job.update(cx, |j, cx| j.reset(cx));
+                    p.read_server(cx);
+                })
+                .ok();
+            });
+            let job = self.server_job.read(cx);
+            let retry = match job.state() {
+                crate::jobs::JobState::Failed(_) => job.retry().map(|r| crate::ui::button("srv-job-retry").primary().label("Try again").on_click(move |_, _, cx| r(cx)).into_any_element()),
+                _ => None,
+            };
+            let label = self.server_job_label.clone();
+            // Nothing to stop half-way (the server restarts by itself once
+            // sent): Hide leaves the view, the job goes on in the progress
+            // chip, and a failure then opens its details.
+            let me = cx.entity().downgrade();
+            let hide = crate::manager::jobview::Cancel::Hide(Rc::new(move |_, cx| {
+                me.update(cx, |p, cx| {
+                    p.server_shown = false;
+                    p.server_hidden = true;
+                    p.server_job.update(cx, |j, _| j.set_on_page(false));
+                    cx.notify();
+                })
+                .ok();
+            }));
+            col = col.child(crate::manager::jobview::JobView::new("srv-job", label, &self.server_job).actions(std::iter::once(back).chain(retry)).cancel(hide).render(cx));
+            return page(col);
+        }
+        // Shut down from here: off, said calmly (not as an error), until
+        // it answers again.
+        if let Source::Remote(i) = &self.src {
+            if crate::manager::server_card::power_state(&i.id) == Some(crate::manager::server_card::Power::Off) {
+                col = col.child(ui::notice_with(
+                    &theme,
+                    ui::Tone::Neutral,
+                    format!("{} is off.\nIt was shut down from here. Platform Manager cannot switch it on again: someone has to, or use the cloud provider's console.", i.name),
+                    Some(crate::ui::button("stats-off-check").outline().label("Check again").on_click(cx.listener(|p, _, _, cx| p.read_again(cx))).into_any_element()),
+                ));
+                return page(col);
+            }
+        }
         // Nothing could be read: one notice in the page and nothing else (no
         // empty boxes, no endless "Reading…").
         if latest.is_none() {
@@ -888,7 +1056,6 @@ impl Render for StatsPage {
                         Some(crate::ui::button("stats-retry").outline().label("Retry").on_click(cx.listener(|p, _, _, cx| {
                             p.live_err = None;
                             p.start(cx);
-                            p.read_day(cx);
                             cx.notify();
                         })).into_any_element()),
                     )
@@ -959,11 +1126,11 @@ impl Render for StatsPage {
             Some(Ok(list)) if !list.is_empty() => Some(services_panel(&theme, list, self.live.last())),
             Some(_) => None,
         };
-        let db = match &self.db {
-            None => Some(ui::skeleton_card(&theme, "stats-db", Some("Database"), &["", "", "", ""])),
-            Some(DbRead::None) => None,
-            Some(d) => Some(database_panel(&theme, d, latest.as_ref(), &self.day)),
-        };
+        // The Server card in the Database card's place (the approved mockup).
+        let actions = self.server_actions(cx);
+        let db = Some(crate::manager::server_card::card(&theme, self.server.as_ref(), self.live.last(), actions));
+        #[cfg(debug_assertions)]
+        self.debug_dialog(window, cx);
         col = col.child(match (services, db) {
             (Some(services), Some(db)) if side_by_side => {
             // Siblings in a row share its height.
@@ -1049,90 +1216,6 @@ fn services_panel(theme: &gpui_kit::component::Theme, list: &[crate::stats::Serv
     match s {
         Some(s) => p.child(row(div().child("Everything else on the server"), (s.cpu - cpu_sum).max(0.), s.mem_used.saturating_sub(mem_sum), None, n)),
         None => p,
-    }
-}
-
-/// The database numbers, or "—" where they need the administrator
-/// password here (never asked for on view); "Disk full in" and "Last
-/// backup" need no password.
-fn database_panel(theme: &gpui_kit::component::Theme, read: &DbRead, latest: Option<&Sample>, day: &[Sample]) -> Div {
-    let mut p = ui::panel(theme).gap(px(6.)).min_w_0();
-    let fact = |label: &'static str, value: String| {
-        h_flex().gap_3().text_sm().child(div().w(px(118.)).flex_shrink_0().text_color(theme.muted_foreground).child(label)).child(div().min_w_0().child(value))
-    };
-    let db = match read {
-        DbRead::Read(db) => {
-            p = p.child(div().pb_1().font_weight(FontWeight::MEDIUM).child("Database"));
-            db.clone()
-        }
-        _ => {
-            let (last_backup, after) = match read {
-                DbRead::NeedsAdmin { last_backup, after_sign_in } => (last_backup.clone(), *after_sign_in),
-                _ => (None, false),
-            };
-            p = p.child(
-                h_flex()
-                    .pb_1()
-                    .gap_1()
-                    .items_center()
-                    .child(div().font_weight(FontWeight::MEDIUM).child("Database"))
-                    .child(ui::info("stats-db-admin".into(), if after { AFTER_SIGN_IN } else { NEEDS_ADMIN }.into())),
-            );
-            p = p.child(fact("Connections", "—".into())).child(fact("Size", "—".into()));
-            p = p.child(fact("Disk full in", disk_full_in(latest, day)));
-            return p.child(fact("Last backup", last_backup_label(last_backup)));
-        }
-    };
-    // The oldest reading of the last 24 hours that has the database's sizes.
-    let then = day.iter().find(|s| s.db.is_some());
-    let growth = |now: u64, before: Option<u64>| match before {
-        Some(b) if now >= b => format!(", +{} in 24 hours", bytes_label(now - b)),
-        Some(b) => format!(", -{} in 24 hours", bytes_label(b - now)),
-        None => String::new(),
-    };
-    p = p.child(fact("Connections", format!("{} open of {} allowed", db.connections, db.max_connections))).child(fact(
-        if db.timescale { "TimescaleDB size" } else { "PostgreSQL size" },
-        format!("{}{}", bytes_label(db.pg_bytes), growth(db.pg_bytes, then.and_then(|s| s.db.as_ref().map(|d| d.pg_bytes)))),
-    ));
-    if let Some(ch) = db.ch_bytes {
-        p = p.child(fact("ClickHouse size", format!("{}{}", bytes_label(ch), growth(ch, then.and_then(|s| s.db.as_ref().and_then(|d| d.ch_bytes))))));
-    }
-    p = p.child(fact("Disk full in", disk_full_in(latest, day)));
-    p.child(fact("Last backup", last_backup_label(db.last_backup.clone())))
-}
-
-/// Why the database's numbers show "—" (native Linux, its password root-only).
-const NEEDS_ADMIN: &str = "Connections and size: they need the database's password, which only the administrator can read on this computer, and Statistics never asks for it. Read on Status reads it once; after a Repair it reads without a password.";
-/// The same, once this account was given read access (sentient-admin) and
-/// only has to sign in again.
-const AFTER_SIGN_IN: &str = "Connections and size: available after you sign in again. This account can now read SENTIENT's settings; that takes effect at its next sign-in.";
-
-/// When the disk is full at the last 24 hours' rate.
-fn disk_full_in(latest: Option<&Sample>, day: &[Sample]) -> String {
-    match (latest, day.first()) {
-        (Some(now), Some(first)) if now.t - first.t >= 3600 => {
-            let used_per_day = (first.disk_free as f64 - now.disk_free as f64) / ((now.t - first.t) as f64 / 86_400.);
-            if used_per_day <= 0. {
-                "not filling up".to_string()
-            } else {
-                let days = now.disk_free as f64 / used_per_day;
-                if days > 365. { "more than a year at this rate".into() } else { format!("about {} days at this rate", days.round() as i64) }
-            }
-        }
-        _ => "known after an hour of history".into(),
-    }
-}
-
-fn last_backup_label(last: Option<(String, Option<u64>)>) -> String {
-    match last {
-        Some((at, bytes)) => {
-            let when = chrono::DateTime::parse_from_rfc3339(&at).map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|_| at.clone());
-            match bytes {
-                Some(b) => format!("{when}, {}", bytes_label(b)),
-                None => when,
-            }
-        }
-        None => "None".into(),
     }
 }
 

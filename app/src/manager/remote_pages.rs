@@ -132,6 +132,115 @@ fn ask_sudo_password_now(inst: Instance, then: std::rc::Rc<dyn Fn(&mut App)>, cx
     });
 }
 
+/// add-if-one found one native SENTIENT on the server that needs the
+/// PostgreSQL admin (postgres) password: ask for it, then add it with
+/// `add-existing --native --pg-admin-password-stdin` (crate::remote::
+/// add_existing_native). A wrong password shows the server's message and
+/// the field stays for another try. The password lives only in this dialog
+/// and the one call's standard input: never saved here, never logged.
+/// `then` runs once it was added (the page reads its state again).
+pub(crate) fn ask_pg_admin_password(inst: Instance, ask: crate::adopt::NeedsPgAdmin, then: std::rc::Rc<dyn Fn(&mut App)>, cx: &mut App) {
+    cx.defer(move |cx| ask_pg_admin_password_now(inst, ask, then, cx));
+}
+
+fn ask_pg_admin_password_now(inst: Instance, ask: crate::adopt::NeedsPgAdmin, then: std::rc::Rc<dyn Fn(&mut App)>, cx: &mut App) {
+    struct PgAdminPrompt {
+        inst: Instance,
+        ask: crate::adopt::NeedsPgAdmin,
+        input: Entity<InputState>,
+        then: std::rc::Rc<dyn Fn(&mut App)>,
+        busy: bool,
+        error: Option<String>,
+        _enter: Subscription,
+    }
+    impl PgAdminPrompt {
+        /// `password` None: the server sets a new one.
+        fn add(&mut self, password: Option<String>, cx: &mut Context<Self>) {
+            if self.busy || password.as_deref().is_some_and(str::is_empty) {
+                return;
+            }
+            self.busy = true;
+            self.error = None;
+            cx.notify();
+            let inst = self.inst.clone();
+            cx.spawn(async move |this, cx| {
+                let r = cx.background_executor().spawn(async move { remote::add_existing_native(&inst, password.as_deref()) }).await;
+                let _ = this.update(cx, |p, cx| match r {
+                    Ok(msg) => {
+                        let then = p.then.clone();
+                        let name = p.inst.name.clone();
+                        crate::modal::close(cx);
+                        cx.defer(move |cx| {
+                            ui::show_info(format!("Added on {name}"), msg, cx);
+                            then(cx);
+                        });
+                    }
+                    Err(e) => {
+                        p.busy = false;
+                        p.error = Some(e);
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+    impl Render for PgAdminPrompt {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let theme = cx.theme().clone();
+            // "Windows services (SentientServer)" reads "Windows services" here:
+            // one parenthesis in the sentence, the details are in the (i).
+            let kind = self.ask.kind.split(" (").next().unwrap_or("").trim();
+            let on = if kind.is_empty() { self.inst.name.clone() } else { format!("{} ({kind})", self.inst.name) };
+            v_flex()
+                .gap_3()
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_start()
+                        .child(div().flex_1().min_w_0().text_sm().child(format!("SENTIENT on {on} can be added with its PostgreSQL admin (postgres) password.")))
+                        .child(crate::ui::info(
+                            "pg-admin-help".into(),
+                            format!(
+                                "{}The Platform Manager needs it for updates, backups and repairs. It goes to the server once, on standard input, and is kept only in that server's secret store: not on this computer, never in a log.\n\nNobody knows it? Set a new one gives postgres a new password through SENTIENT's own database role. Anything else that signs in to PostgreSQL as postgres then needs the new one.",
+                                if self.ask.location.is_empty() { String::new() } else { format!("Found in {}.\n\n", self.ask.location) }
+                            )
+                            .into(),
+                        )),
+                )
+                .child(Input::new(&self.input).mask_toggle().disabled(self.busy))
+                .when_some(self.error.clone(), |c, e| c.child(div().min_w_0().text_sm().text_color(theme.danger).child(e)))
+                .child(
+                    h_flex()
+                        .gap(crate::ui::button_gap())
+                        .justify_end()
+                        .child(crate::ui::probed(crate::ui::button("pg-admin-new").outline().label("Set a new one").disabled(self.busy).on_click(cx.listener(|p, _, _, cx| p.add(None, cx)))))
+                        .child(div().flex_1())
+                        .child(crate::ui::probed(crate::ui::button("pg-admin-cancel").outline().label("Cancel").disabled(self.busy).on_click(|_, _, cx| crate::modal::close(cx))))
+                        .child(crate::ui::probed(crate::ui::button("pg-admin-add").primary().label(if self.busy { "Adding" } else { "Add" }).disabled(self.busy).on_click(cx.listener(|p, _, _, cx| {
+                            let pw = p.input.read(cx).value().to_string();
+                            p.add(Some(pw), cx);
+                        })))),
+                )
+        }
+    }
+    let Some(handle) = cx.active_window().or_else(|| cx.windows().into_iter().next()) else { return };
+    let _ = handle.update(cx, |_, window, cx| {
+        let input = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("PostgreSQL admin password"));
+        let view = cx.new(|cx| {
+            // Enter adds, as the button does.
+            let _enter = cx.subscribe(&input, |p: &mut PgAdminPrompt, input, e: &InputEvent, cx| {
+                if let InputEvent::PressEnter { .. } = e {
+                    let pw = input.read(cx).value().to_string();
+                    p.add(Some(pw), cx);
+                }
+            });
+            PgAdminPrompt { inst, ask, input, then, busy: false, error: None, _enter }
+        });
+        crate::modal::open(crate::modal::Modal { title: "PostgreSQL admin password needed".into(), body: view.into(), width: 520., icon: None, on_close: None }, cx);
+    });
+}
+
 /// A migration's preflight, local or on a server (crate::manager::migration too).
 #[derive(Clone, PartialEq)]
 pub(crate) enum Preflight {
@@ -300,6 +409,14 @@ impl RemotePages {
                     // A takeover for a migration: the migration carries on.
                     match job.read(cx).state() {
                         JobState::Done(_) => {
+                            // add-if-one found a SENTIENT that needs the
+                            // PostgreSQL admin password: ask for it here.
+                            if let Some(ask) = remote::take_needs_pg_admin(&this.inst.id) {
+                                let me = cx.entity().downgrade();
+                                ask_pg_admin_password(this.inst.clone(), ask, std::rc::Rc::new(move |cx: &mut App| {
+                                    me.update(cx, |p, cx| p.reload(cx)).ok();
+                                }), cx);
+                            }
                             if let Some(f) = this.pending_migrate.take() {
                                 let target = f.clone();
                                 let me = cx.entity().downgrade();

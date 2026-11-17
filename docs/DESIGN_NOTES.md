@@ -88,3 +88,9 @@ Within any group:
     connection already), file copies and backup uploads/downloads (sftp,
     server to server), the first connection (detect), and deploy's sudo
     check and copy.
+  - The built-in terminal (crate::terminal): one `ssh -tt` per open
+    terminal, in a pseudo terminal of this computer, with the same key or
+    kept password (askpass, never on a command line) and known_hosts. It
+    writes nothing on the server: SPM's prompt is set for the session only
+    (bash `--rcfile` from a here-document, PowerShell's `prompt` function),
+    and a prompt theme the account uses is kept.

@@ -173,7 +173,7 @@ pub fn stop_service_script(unit: &str) -> String {
 /// The package manager on this computer, by its program's name.
 pub fn package_manager_here() -> Option<&'static str> {
     ["pacman", "apt-get", "dnf", "zypper"].into_iter().find(|b| {
-        std::process::Command::new("sh").arg("-c").arg(format!("command -v {b}")).output().is_ok_and(|o| o.status.success())
+        crate::sys::host_command("sh").arg("-c").arg(format!("command -v {b}")).output().is_ok_and(|o| o.status.success())
     })
 }
 
@@ -1213,7 +1213,7 @@ pub fn apply(action: &FixAction, sink: &ProgressFn) -> Result<String, String> {
             let name = safe_name(name)?;
             // As this user first (the docker group); as administrator when
             // the socket is closed to it.
-            let own = std::process::Command::new("docker").args(["stop", name]).output();
+            let own = crate::sys::host_command("docker").args(["stop", name]).output();
             match own {
                 Ok(o) if o.status.success() => {}
                 _ => crate::exec::run_privileged(sink, &format!("docker stop {}", quote(name)))?,

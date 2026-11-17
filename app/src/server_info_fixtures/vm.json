@@ -1,0 +1,14 @@
+{"system":"linux","host":"iiot-vm-01.example.local","machine":{"virtual":true,"hypervisor":"KVM","model":null},"os":"Ubuntu 22.04","kernel":"6.8",
+"cpu":{"model":"AMD EPYC 7551","cores":2,"threads":2,"temp_c":null},
+"mem_total":1073741824,"swap_total":2147483648,"swap_used":268435456,
+"gpus":[],
+"disks":[
+ {"name":"/","device":"vda","model":null,"kind":"SSD","size":104152956928,"free":68719476736,"sentient":false,"smart_ok":true,"wear":null},
+ {"name":"/mnt/data","device":"vdb","model":null,"kind":"SSD","size":536870912000,"free":332859965440,"sentient":true,"smart_ok":true,"wear":82},
+ {"name":"/mnt/backup","device":"vdc","model":null,"kind":"HDD","size":2199023255552,"free":1759218604441,"sentient":false,"smart_ok":true,"wear":null},
+ {"name":"sdc","device":"sdc","model":"Example USB","kind":"USB","size":1000727379968,"free":null,"sentient":false,"smart_ok":null,"wear":null}],
+"boot":3542400,"clean_restart":true,
+"clock":{"synced":true,"offset":0.02,"zone":"Asia/Kolkata"},
+"nets":[{"name":"eth0","ip":"192.0.2.56","speed":1000},{"name":"eth1","ip":"198.51.100.12","speed":1000}],
+"updates":12,"restart_needed":true,
+"docker":{"version":"27.3.1","on_boot":true}}

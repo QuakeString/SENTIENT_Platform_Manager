@@ -29,6 +29,7 @@ use sentient_installer_core::progress::{Progress, ProgressFn};
 pub mod conn;
 pub mod reuse;
 pub mod serve;
+pub mod winshell;
 
 /// What the agent jobs mean (`--job …`, crate::headless), as one number:
 /// raised whenever a job is added, removed or answers differently, so a
@@ -167,7 +168,7 @@ pub fn set_secret(id: &str, value: &str) {
     }
     #[cfg(not(windows))]
     {
-        let stored = Command::new("secret-tool")
+        let stored = sentient_installer_core::host::host_command("secret-tool")
             .args(["store", "--label", "SENTIENT Platform Manager instance", "service", "sentient-platform-manager", "instance", id])
             .stdin(Stdio::piped())
             .spawn()
@@ -194,7 +195,7 @@ pub fn secret(id: &str) -> Option<String> {
     return crate::secrets::get_named(&format!("instance-{id}"));
     #[cfg(not(windows))]
     {
-        let out = Command::new("secret-tool").args(["lookup", "service", "sentient-platform-manager", "instance", id]).output().ok()?;
+        let out = sentient_installer_core::host::host_command("secret-tool").args(["lookup", "service", "sentient-platform-manager", "instance", id]).output().ok()?;
         out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string()).filter(|s| !s.is_empty())
     }
 }
@@ -202,6 +203,7 @@ pub fn secret(id: &str) -> Option<String> {
 pub fn forget_secret(id: &str) {
     // The server is removed: its connection goes.
     conn::close(id);
+    winshell::forget(id);
     forget_one(&sudo_key(id));
     forget_one(id);
     // The instance's SENTIENT sign-in (Licence) goes with it.
@@ -219,7 +221,7 @@ fn forget_one(id: &str) {
     crate::secrets::forget_named(&format!("instance-{id}"));
     #[cfg(not(windows))]
     {
-        let _ = Command::new("secret-tool").args(["clear", "service", "sentient-platform-manager", "instance", id]).status();
+        let _ = sentient_installer_core::host::host_command("secret-tool").args(["clear", "service", "sentient-platform-manager", "instance", id]).status();
     }
 }
 
@@ -254,16 +256,10 @@ pub fn ssh(inst: &Instance, remote: &str, once: Option<&str>) -> Command {
 /// [`ssh`] with options before the host (`-s` for a subsystem).
 fn ssh_with(inst: &Instance, before_host: &[&str], remote: &str, once: Option<&str>) -> Command {
     let mut c = Command::new("ssh");
-    c.args(before_host);
-    c.args(["-p", &inst.port.to_string()])
-        .args(["-o", &format!("UserKnownHostsFile={}", known_hosts().display())])
-        .args(["-o", "StrictHostKeyChecking=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4", "-o", "ConnectTimeout=12"])
-        .args(["-o", if inst.auth == Auth::Password { "PreferredAuthentications=password,keyboard-interactive" } else { "PreferredAuthentications=publickey" }]);
-    if let (Auth::Key, Some(k)) = (inst.auth, &inst.key_file) {
-        c.args(["-i", &k.display().to_string(), "-o", "IdentitiesOnly=yes"]);
+    c.args(ssh_args(inst, before_host, remote));
+    for (k, v) in askpass_vars(inst, once) {
+        c.env(k, v);
     }
-    c.arg(format!("{}@{}", inst.user, inst.host)).arg(remote);
-    askpass_env(&mut c, inst, once);
     c.stdin(Stdio::null());
     #[cfg(windows)]
     {
@@ -273,24 +269,66 @@ fn ssh_with(inst: &Instance, before_host: &[&str], remote: &str, once: Option<&s
     c
 }
 
-fn askpass_env(c: &mut Command, inst: &Instance, once: Option<&str>) {
+/// ssh's arguments (after the program name) for `inst` running `remote`:
+/// the Platform Manager's own known_hosts, the key or password sign-in.
+/// Never a secret: those reach ssh through [`askpass_vars`].
+fn ssh_args(inst: &Instance, before_host: &[&str], remote: &str) -> Vec<String> {
+    let mut a: Vec<String> = before_host.iter().map(|s| s.to_string()).collect();
+    a.extend(["-p".to_string(), inst.port.to_string()]);
+    a.extend(["-o".to_string(), format!("UserKnownHostsFile={}", known_hosts().display())]);
+    for o in ["StrictHostKeyChecking=yes", "ServerAliveInterval=15", "ServerAliveCountMax=4", "ConnectTimeout=12"] {
+        a.extend(["-o".to_string(), o.to_string()]);
+    }
+    a.extend(["-o".to_string(), if inst.auth == Auth::Password { "PreferredAuthentications=password,keyboard-interactive" } else { "PreferredAuthentications=publickey" }.to_string()]);
+    if let (Auth::Key, Some(k)) = (inst.auth, &inst.key_file) {
+        a.extend(["-i".to_string(), k.display().to_string(), "-o".to_string(), "IdentitiesOnly=yes".to_string()]);
+    }
+    a.push(format!("{}@{}", inst.user, inst.host));
+    a.push(remote.to_string());
+    a
+}
+
+/// An interactive session on `inst` for the built-in terminal
+/// (crate::terminal): ssh's full command line (program first) and the
+/// variables to set for it. `-tt` asks the server for a terminal (ssh runs
+/// in the terminal's own pseudo terminal, so its size reaches the server);
+/// LogLevel=ERROR keeps ssh's own notices out of the session. The sign-in
+/// is the connection's: the key, or the kept password through the askpass
+/// helper (a variable, never an argument).
+pub fn terminal_command(inst: &Instance, remote: &str) -> (Vec<String>, Vec<(String, std::ffi::OsString)>) {
+    let mut argv = vec!["ssh".to_string()];
+    argv.extend(ssh_args(inst, &["-tt", "-o", "LogLevel=ERROR"], remote));
+    let mut env = askpass_vars(inst, None);
+    env.push(("TERM".into(), "xterm-256color".into()));
+    env.push(("COLORTERM".into(), "truecolor".into()));
+    (argv, env)
+}
+
+/// The variables that let ssh ask this program for the key's passphrase or
+/// the password (SSH_ASKPASS, see main.rs). `once`: a value to use instead
+/// of the stored one (before it is saved).
+fn askpass_vars(inst: &Instance, once: Option<&str>) -> Vec<(String, std::ffi::OsString)> {
+    let mut v: Vec<(String, std::ffi::OsString)> = Vec::new();
     // Tests have no `--askpass` entry: a stand-in helper.
     #[cfg(test)]
     let helper = std::env::var_os("SPM_TEST_ASKPASS").map(PathBuf::from).ok_or(());
     #[cfg(not(test))]
     let helper = std::env::current_exe();
     if let Ok(me) = helper {
-        c.env("SSH_ASKPASS", me).env("SSH_ASKPASS_REQUIRE", "force").env("SPM_ASKPASS_INSTANCE", &inst.id);
+        v.push(("SSH_ASKPASS".into(), me.into_os_string()));
+        v.push(("SSH_ASKPASS_REQUIRE".into(), "force".into()));
+        v.push(("SPM_ASKPASS_INSTANCE".into(), inst.id.clone().into()));
         if std::env::var_os("DISPLAY").is_none() {
-            c.env("DISPLAY", ":0");
+            v.push(("DISPLAY".into(), ":0".into()));
         }
         // A value kept only in this process (no keyring) reaches the helper
         // the same way as a one-off one.
         let session = || SESSION.lock().ok().and_then(|g| g.as_ref().and_then(|m| m.get(&inst.id).cloned()));
-        if let Some(v) = once.map(str::to_string).or_else(session) {
-            c.env("SPM_ASKPASS_VALUE", v);
+        if let Some(val) = once.map(str::to_string).or_else(session) {
+            v.push(("SPM_ASKPASS_VALUE".into(), val.into()));
         }
     }
+    v
 }
 
 /// Run a command on the server and return what it printed.
@@ -457,8 +495,9 @@ pub fn detect(inst: &Instance, once: Option<&str>) -> Result<Detected, String> {
             return Ok(Detected { os: Os::Linux, os_name: if pretty.is_empty() { "Linux".into() } else { pretty.into() }, distro: id.into(), arch, install: install.into() });
         }
     }
-    // Windows (OpenSSH Server runs cmd).
-    let out = run(inst, "powershell -NoProfile -Command \"(Get-CimInstance Win32_OperatingSystem).Caption; $env:PROCESSOR_ARCHITECTURE; if (Get-Service SentientServer -ErrorAction SilentlyContinue) {'services'} else {'none'}\"", once)?;
+    // Windows: OpenSSH Server runs cmd or PowerShell (its DefaultShell);
+    // an encoded command reads the same in both (crate::remote::winshell).
+    let out = run(inst, &winshell::encoded("(Get-CimInstance Win32_OperatingSystem).Caption; $env:PROCESSOR_ARCHITECTURE; if (Get-Service SentientServer -ErrorAction SilentlyContinue) {'services'} else {'none'}"), once)?;
     let mut l = out.lines().map(str::trim);
     let name = l.next().unwrap_or("Windows").to_string();
     let arch = match l.next().unwrap_or("") {
@@ -730,7 +769,18 @@ fn debug_plan(compose: Option<&str>) -> sentient_installer_core::distro::adopt::
     }
 }
 
+/// One agent copy per server at a time: the background check after a
+/// connect and a job's own deploy raced, the second hashing an upload the
+/// first had just moved into place ("does not match (checksum)").
+static DEPLOYING: std::sync::Mutex<Option<HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>> = std::sync::Mutex::new(None);
+
 pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
+    let lock = DEPLOYING.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).entry(inst.id.clone()).or_default().clone();
+    let _one_at_a_time = lock.lock().unwrap_or_else(|e| e.into_inner());
+    deploy_locked(inst, sink)
+}
+
+fn deploy_locked(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
     #[cfg(debug_assertions)]
     match std::env::var("SPM_DEBUG_REMOTE_TAKEOVER").as_deref() {
         Ok("old") => {
@@ -894,7 +944,9 @@ fn sftp_batch(inst: &Instance, command: &str) -> Result<(), String> {
         c.args(["-i", &k.display().to_string()]);
     }
     c.arg(format!("{}@{}", inst.user, inst.host));
-    askpass_env(&mut c, inst, None);
+    for (k, v) in askpass_vars(inst, None) {
+        c.env(k, v);
+    }
     c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = c.spawn().map_err(|e| format!("start sftp: {e}"))?;
     if let Some(mut s) = child.stdin.take() {
@@ -1120,6 +1172,11 @@ pub struct RemoteStatus {
     /// (crate::licence::read_tile); None: not read (an older agent too).
     #[serde(default)]
     pub licence: Option<crate::licence::TileLicence>,
+    /// Windows: the operator's own WSL distro the Docker stack runs in
+    /// (e.g. Ubuntu); None for the Platform Manager's own distro and for
+    /// everything else. Jobs for it must run as that Windows account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wsl_distro: Option<String>,
 }
 
 /// One service or container on the server (Status).
@@ -1409,12 +1466,67 @@ pub fn running_job(inst: &Instance) -> Option<String> {
     w.strip_prefix("spm-job-").and_then(|w| w.strip_suffix(".service")).or_else(|| w.strip_prefix("user-job-")).map(str::to_string)
 }
 
+/// Windows servers whose SENTIENT runs in Docker in the operator's own WSL
+/// distro (instance id -> distro), from their last status. WSL distros
+/// belong to one Windows account, so jobs for these must not run as SYSTEM.
+static USER_DISTRO: std::sync::Mutex<Option<HashMap<String, String>>> = std::sync::Mutex::new(None);
+
+fn remember_user_distro(inst: &Instance, distro: Option<&str>) {
+    let mut m = USER_DISTRO.lock().unwrap_or_else(|e| e.into_inner());
+    let m = m.get_or_insert_with(HashMap::new);
+    match distro {
+        Some(d) => {
+            m.insert(inst.id.clone(), d.to_string());
+        }
+        None => {
+            m.remove(&inst.id);
+        }
+    }
+}
+
+fn user_distro(inst: &Instance) -> Option<String> {
+    USER_DISTRO.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(&inst.id).cloned())
+}
+
+/// How a job runs on a Windows server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WinRun {
+    /// A scheduled task as SYSTEM: survives a dropped connection.
+    System,
+    /// A scheduled task as the connecting account (signed in: its desktop
+    /// session; otherwise without one, S4U): sees that account's WSL
+    /// distros and survives a dropped connection.
+    UserTask,
+    /// In the connection's own session, as the connecting account: always
+    /// sees its WSL distros, but stops if the connection drops. Short jobs.
+    InSession,
+}
+
+/// Jobs that look into or act on the operator's WSL distros. Short ones
+/// (finding and adding, start/stop) run in the session; long ones (update,
+/// backup, take-over, uninstall) as a task of the connecting account.
+pub fn win_run_for(args: &[&str], user_distro: bool) -> WinRun {
+    let job = args.first().copied().unwrap_or("");
+    let looks = matches!(job, "add-if-one" | "add-existing" | "find-existing" | "takeover-plan" | "takeover-check-password");
+    if looks {
+        return WinRun::InSession;
+    }
+    if !user_distro {
+        return WinRun::System;
+    }
+    match job {
+        "control" | "service" | "logs" | "repair" => WinRun::InSession,
+        _ => WinRun::UserTask,
+    }
+}
+
 /// Start `--job <args>` on the server, detached from this connection.
 /// Returns the job's id; its progress goes to a file [`follow`] reads.
 pub fn start_job(inst: &Instance, args: &[&str]) -> Result<String, String> {
     let id = format!("{}", chrono::Utc::now().format("%Y%m%d%H%M%S"));
     if is_windows(inst) {
-        return win::start_job(inst, &id, args).map(|_| id);
+        let how = win_run_for(args, user_distro(inst).is_some());
+        return win::start_job(inst, &id, args, how).map(|_| id);
     }
     // One job at a time on a server.
     let busy = run(inst, &running_script(), None).unwrap_or_default();
@@ -1450,6 +1562,7 @@ pub fn start_job(inst: &Instance, args: &[&str]) -> Result<String, String> {
 /// Follow a job's progress until it ends, reconnecting when the connection
 /// drops (the job keeps running there). Blocking.
 pub fn follow(inst: &Instance, id: &str, sink: &ProgressFn) -> Result<(), String> {
+    let sink = &watch_needs_pg_admin(inst, sink);
     if is_windows(inst) {
         return win::follow(inst, id, sink);
     }
@@ -1486,6 +1599,119 @@ pub fn follow(inst: &Instance, id: &str, sink: &ProgressFn) -> Result<(), String
         drops += 1;
         sink(Progress::Log { line: format!("The connection to {} was lost; the job keeps running there. Reconnecting…", inst.name) });
         std::thread::sleep(std::time::Duration::from_secs((2 * drops as u64).min(30)));
+    }
+}
+
+/// add-if-one found one native SENTIENT that needs the PostgreSQL admin
+/// password (its `@@NEEDS-PG-ADMIN` line), per instance id, until the
+/// window that followed the job takes it ([`take_needs_pg_admin`]).
+static NEEDS_PG: Mutex<Option<HashMap<String, crate::adopt::NeedsPgAdmin>>> = Mutex::new(None);
+
+/// `sink`, with add-if-one's marker line taken out and remembered for
+/// this instance (the log shows a plain line instead).
+fn watch_needs_pg_admin(inst: &Instance, sink: &ProgressFn) -> ProgressFn {
+    let (id, inner) = (inst.id.clone(), sink.clone());
+    NEEDS_PG.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&id);
+    std::sync::Arc::new(move |p| {
+        let ask = match &p {
+            Progress::Log { line } => crate::adopt::parse_needs_pg_admin(line),
+            _ => None,
+        };
+        match ask {
+            Some(ask) => {
+                NEEDS_PG.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(id.clone(), ask);
+                inner(Progress::Log { line: "Adding it needs the PostgreSQL admin (postgres) password.".into() });
+            }
+            None => inner(p),
+        }
+    })
+}
+
+/// The PostgreSQL admin password the last followed job on `id` asked for
+/// (once).
+pub fn take_needs_pg_admin(id: &str) -> Option<crate::adopt::NeedsPgAdmin> {
+    NEEDS_PG.lock().unwrap_or_else(|e| e.into_inner()).as_mut().and_then(|m| m.remove(id))
+}
+
+/// Add the native SENTIENT on the server: `add-existing --native`, with
+/// the PostgreSQL admin password as one line on the job's standard input
+/// (`--pg-admin-password-stdin`), never on a command line, in a file or in
+/// a log; None lets the server set a new one. It runs as the connecting
+/// account in the connection's session (WinRun::InSession on Windows), as
+/// root on Linux, and waits for the end (a few seconds of checks). Ok: what
+/// the server said it did; Err: its message (a wrong password says so).
+pub fn add_existing_native(inst: &Instance, pg_admin: Option<&str>) -> Result<String, String> {
+    let mut argv: Vec<String> = ["--json", "add-existing", "--native"].iter().map(|a| a.to_string()).collect();
+    if pg_admin.is_some() {
+        argv.push("--pg-admin-password-stdin".into());
+    }
+    let input = pg_admin.map(|p| format!("{p}\n"));
+    let (ok, out, err) = match conn::call(inst, serve::Work::Job(argv.clone()), input.clone()) {
+        Ok((_, r)) => (r.code == Some(0), r.out, r.err),
+        Err(conn::Fail::Err(e)) => return Err(e),
+        Err(conn::Fail::PerCall) => job_with_input(inst, &argv, input.as_deref())?,
+    };
+    job_answer(ok, &out, &err)
+}
+
+/// `--job <argv>` with `input` on its standard input, over its own ssh
+/// call (an agent without serve mode).
+fn job_with_input(inst: &Instance, argv: &[String], input: Option<&str>) -> Result<(bool, String, String), String> {
+    use std::io::Write as _;
+    let (mut c, sudo_pw) = if is_windows(inst) {
+        use base64::Engine as _;
+        let exe = win::exe(inst)?;
+        let args: Vec<String> = argv.iter().map(|a| format!("'{}'", a.replace('\'', "''"))).collect();
+        // PowerShell reads the line and pipes it to the agent: it never
+        // appears on a command line.
+        let script = format!(
+            "$ProgressPreference='SilentlyContinue'; [Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false; $OutputEncoding = New-Object System.Text.UTF8Encoding $false; \
+             $l = [Console]::In.ReadLine(); $l | & '{}' --job {} 2>&1 | ForEach-Object {{ \"$_\" }}; exit $LASTEXITCODE",
+            exe.replace('\'', "''"),
+            args.join(" ")
+        );
+        let utf16: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let enc = base64::engine::general_purpose::STANDARD.encode(utf16);
+        (ssh(inst, &format!("powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {enc}"), None), None)
+    } else {
+        let pw = sudo_password(inst);
+        let quoted: Vec<String> = argv.iter().map(|a| a.replace('\'', "")).collect();
+        (ssh(inst, &agent_cmd(inst, &format!("--job {}", quoted.join(" ")), pw.is_some()), None), pw)
+    };
+    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = c.spawn().map_err(|e| format!("start ssh: {e}"))?;
+    if let Some(mut s) = child.stdin.take() {
+        // sudo reads its password line first; the job reads the next one.
+        if let Some(pw) = &sudo_pw {
+            let _ = writeln!(s, "{pw}");
+        }
+        let _ = s.write_all(input.unwrap_or("\n").as_bytes());
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    Ok((out.status.success(), String::from_utf8_lossy(&out.stdout).to_string(), String::from_utf8_lossy(&out.stderr).to_string()))
+}
+
+/// A `--json` job's answer: its Error line (or a failed exit) as Err, its
+/// Done line (or its last log line) as Ok.
+fn job_answer(ok: bool, out: &str, err: &str) -> Result<String, String> {
+    let mut done = None;
+    let mut last = None;
+    for line in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        match serde_json::from_str::<Progress>(line) {
+            Ok(Progress::Error { message }) => return Err(message),
+            Ok(Progress::Done { message }) => done = Some(message),
+            Ok(Progress::Log { line }) => last = Some(line),
+            Ok(_) => {}
+            Err(_) => last = Some(line.to_string()),
+        }
+    }
+    match (ok, done) {
+        (true, Some(m)) => Ok(m),
+        (true, None) => Ok(last.unwrap_or_else(|| "Added.".into())),
+        (false, _) => {
+            let e = clean_stderr(err);
+            Err(if !e.is_empty() { explain(&e).unwrap_or(e) } else { last.unwrap_or_else(|| "The server did not say why.".into()) })
+        }
     }
 }
 
@@ -1582,6 +1808,12 @@ fn spm_job(inst: &Instance, job: &str) -> Result<String, String> {
             e
         }
     })
+}
+
+/// Run `--job <job>` with the server's Platform Manager as administrator
+/// and return what it printed (the Server card, crate::manager::server_card).
+pub fn agent_job(inst: &Instance, job: &str) -> Result<String, String> {
+    spm_job(inst, job)
 }
 
 /// What taking the server's SENTIENT over would do (crate::manager::takeover),
@@ -1864,6 +2096,27 @@ pub fn carried_agents() -> Vec<(System, Result<Option<PathBuf>, String>)> {
         .collect()
 }
 
+/// This program as the computer itself can run it, when it runs as a
+/// Flatpak: the host cannot start a file inside the sandbox (/app), and the
+/// GUI build is linked against the Flatpak runtime's libraries. The static
+/// server agent it carries is the same job code and runs anywhere, so the
+/// root helper (`pkexec <agent> --root-session`) and root jobs
+/// (`<agent> --job ...`) use it, written out under prefs_dir, a folder the
+/// host sees at the same path. None outside a Flatpak.
+pub fn host_self() -> Option<PathBuf> {
+    if !sentient_installer_core::host::in_flatpak() {
+        return None;
+    }
+    let system = if cfg!(target_arch = "aarch64") { System::Linux(Arch::Aarch64) } else { System::Linux(Arch::X86_64) };
+    let file = write_out(agent_name(system), embedded_agent(system)?).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).ok()?;
+    }
+    Some(file)
+}
+
 /// Write a carried agent out (crate::updates::prefs_dir/remote-builds), once
 /// per version and build.
 fn write_out(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
@@ -1972,16 +2225,14 @@ mod win {
     /// Run a PowerShell script on the server (encoded, so no quoting
     /// passes through cmd).
     pub fn ps(inst: &Instance, script: &str) -> Result<String, String> {
-        use base64::Engine as _;
-        let utf16: Vec<u8> = format!("$ProgressPreference='SilentlyContinue'; {script}").encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
-        let enc = base64::engine::general_purpose::STANDARD.encode(utf16);
         // Over the open connection (its agent starts PowerShell there).
-        match conn::call(inst, serve::Work::Ps(enc.clone()), None) {
+        match conn::call(inst, serve::Work::Ps(winshell::encode(script)), None) {
             Ok((_, r)) => return run_answer(r.code == Some(0), r.out, &r.err),
             Err(conn::Fail::Err(e)) => return Err(e),
             Err(conn::Fail::PerCall) => {}
         }
-        run(inst, &format!("powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {enc}"), None)
+        // The same line in cmd and in PowerShell (the server's DefaultShell).
+        run(inst, &winshell::encoded(script), None)
     }
 
     /// `--job <job>` with the agent: over the open connection (its agent is
@@ -2017,8 +2268,15 @@ mod win {
             let _ = ps(inst, &format!("Remove-Item -Force -ErrorAction SilentlyContinue '{upload}'"));
             super::sftp_copy(inst, &file, &sftp_path).map_err(|e| super::failed("The agent could not be copied to the server. Nothing on the server was changed.", &e))?;
         }
-        let got = ps(inst, &format!("(Get-FileHash -Algorithm SHA256 '{upload}').Hash"))?;
+        let got = ps(inst, &format!("if (Test-Path '{upload}') {{ (Get-FileHash -Algorithm SHA256 '{upload}').Hash }}"))?;
         if !got.trim().eq_ignore_ascii_case(&want) {
+            // Another copy (another window) may have put this build in
+            // place meanwhile: then it is up to date, not a failure.
+            let now = ps(inst, &format!("if (Test-Path '{EXE}') {{ (Get-FileHash -Algorithm SHA256 '{EXE}').Hash }}")).unwrap_or_default();
+            if now.trim().eq_ignore_ascii_case(&want) {
+                sink(Progress::Log { line: "The Platform Manager on the server is up to date.".into() });
+                return Ok(());
+            }
             let _ = ps(inst, &format!("Remove-Item -Force -ErrorAction SilentlyContinue '{upload}'"));
             return Err("The copy on the server does not match (checksum); nothing was replaced. Try again.".into());
         }
@@ -2070,6 +2328,7 @@ mod win {
         let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's Platform Manager gave no status.")?;
         let mut st: RemoteStatus = serde_json::from_str(line).map_err(|e| format!("unexpected status from the server: {e}"))?;
         st.running_job = running_job(inst);
+        super::remember_user_distro(inst, st.wsl_distro.as_deref());
         Ok(st)
     }
 
@@ -2078,15 +2337,71 @@ mod win {
         out.trim().strip_prefix("spm-job-").map(str::to_string)
     }
 
-    pub fn start_job(inst: &Instance, id: &str, args: &[&str]) -> Result<(), String> {
+    /// Jobs run in the connection's session ([`super::WinRun::InSession`]):
+    /// None while running, then how the call itself ended (the job's own
+    /// result is in its log).
+    static IN_SESSION: Mutex<Option<HashMap<String, Option<Result<(), String>>>>> = Mutex::new(None);
+
+    fn in_session_state(id: &str) -> Option<Option<Result<(), String>>> {
+        IN_SESSION.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(id).cloned())
+    }
+
+    fn set_in_session(id: &str, state: Option<Result<(), String>>) {
+        IN_SESSION.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(id.to_string(), state);
+    }
+
+    pub fn start_job(inst: &Instance, id: &str, args: &[&str], how: super::WinRun) -> Result<(), String> {
         let quoted: Vec<String> = args.iter().map(|a| format!("\"{}\"", a.replace(['"', '\''], ""))).collect();
         let exe = exe(inst)?;
+        if how == super::WinRun::InSession {
+            // As the connecting account, in this connection's session: the
+            // only place its WSL distros are certain to be visible. The
+            // progress file is the same; `.user` marks it, `.done` ends it.
+            let busy = ps(
+                inst,
+                &format!(
+                    "New-Item -ItemType Directory -Force '{JOBS}' | Out-Null; \
+                     if (Get-ScheduledTask -TaskName 'spm-job-*' -ErrorAction SilentlyContinue | Where-Object State -eq 'Running') {{ 'BUSY'; exit }}; \
+                     Remove-Item -Force -ErrorAction SilentlyContinue '{JOBS}\\{id}.done'; Set-Content -Encoding ascii '{JOBS}\\{id}.user' ''; 'READY'"
+                ),
+            )?;
+            if busy.contains("BUSY") {
+                return Err("Another job is still running on this server. Wait until it ends.".into());
+            }
+            if !busy.contains("READY") {
+                return Err(format!("The job did not start on the server: {}", busy.trim()));
+            }
+            let script = format!(
+                "& '{}' --job --json {} > '{JOBS}\\{id}.log' 2> '{JOBS}\\{id}.err'; Set-Content -Encoding ascii '{JOBS}\\{id}.done' \"$LASTEXITCODE\"",
+                exe.replace('\'', "''"),
+                quoted.join(" ")
+            );
+            set_in_session(id, None);
+            let (inst, id) = (inst.clone(), id.to_string());
+            std::thread::spawn(move || {
+                let r = ps(&inst, &script).map(|_| ());
+                set_in_session(&id, Some(r));
+            });
+            return Ok(());
+        }
         let cmdline = format!("/c \"\"{exe}\" --job --json {} > \"{JOBS}\\{id}.log\" 2> \"{JOBS}\\{id}.err\"\"", quoted.join(" "));
+        // SYSTEM, or the connecting account: with its desktop session when
+        // it is signed in there, else S4U (no password stored).
+        let principal = match how {
+            super::WinRun::UserTask => {
+                "$u = [Security.Principal.WindowsIdentity]::GetCurrent().Name; \
+                 $signed = Get-CimInstance Win32_Process -Filter \"Name='explorer.exe'\" -ErrorAction SilentlyContinue | \
+                   Where-Object { $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner; \"$($o.Domain)\\$($o.User)\" -eq $u }; \
+                 $lt = if ($signed) { 'Interactive' } else { 'S4U' }; \
+                 $p = New-ScheduledTaskPrincipal -UserId $u -LogonType $lt -RunLevel Highest;"
+            }
+            _ => "$p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest;",
+        };
         let script = format!(
             "New-Item -ItemType Directory -Force '{JOBS}' | Out-Null; \
              if (Get-ScheduledTask -TaskName 'spm-job-*' -ErrorAction SilentlyContinue | Where-Object State -eq 'Running') {{ 'BUSY'; exit }}; \
              $a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '{}'; \
-             $p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; \
+             {principal} \
              Register-ScheduledTask -TaskName 'spm-job-{id}' -Action $a -Principal $p -Force | Out-Null; \
              Start-ScheduledTask -TaskName 'spm-job-{id}'; 'STARTED'",
             cmdline.replace('\'', "''")
@@ -2113,7 +2428,8 @@ mod win {
                 &format!(
                     "$f='{JOBS}\\{id}.log'; if (Test-Path $f) {{ Get-Content -Encoding UTF8 $f | Select-Object -Skip {skip} }}; \
                      $t = Get-ScheduledTask -TaskName 'spm-job-{id}' -ErrorAction SilentlyContinue; \
-                     if ($t -and $t.State -eq 'Running') {{ '@@RUNNING' }} else {{ '@@END' }}"
+                     $u = (Test-Path '{JOBS}\\{id}.user') -and -not (Test-Path '{JOBS}\\{id}.done'); \
+                     if (($t -and $t.State -eq 'Running') -or $u) {{ '@@RUNNING' }} else {{ '@@END' }}"
                 ),
             )
         };
@@ -2136,6 +2452,17 @@ mod win {
                             }
                         }
                     }
+                    // A job run in the session whose call ended without its
+                    // end marker (the connection dropped): it stopped there.
+                    if !ended {
+                        if let Some(Some(Err(e))) = in_session_state(id) {
+                            failure.get_or_insert(format!(
+                                "The job ran in the connection's session and stopped when the connection to {} ended: {e}",
+                                inst.name
+                            ));
+                            ended = true;
+                        }
+                    }
                     if ended {
                         // What it wrote between the read and the end.
                         if let Ok(rest) = read(seen) {
@@ -2147,7 +2474,13 @@ mod win {
                                 }
                             }
                         }
-                        let _ = ps(inst, &format!("Unregister-ScheduledTask -TaskName 'spm-job-{id}' -Confirm:$false -ErrorAction SilentlyContinue"));
+                        let _ = ps(
+                            inst,
+                            &format!(
+                                "Unregister-ScheduledTask -TaskName 'spm-job-{id}' -Confirm:$false -ErrorAction SilentlyContinue; \
+                                 Remove-Item -Force -ErrorAction SilentlyContinue '{JOBS}\\{id}.user', '{JOBS}\\{id}.done'"
+                            ),
+                        );
                         return match failure {
                             Some(e) => Err(e),
                             None => Ok(()),
@@ -2168,6 +2501,83 @@ mod win {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The built-in terminal's ssh: a terminal requested, and the kept
+    /// password only in a variable for the askpass helper, never on the
+    /// command line.
+    #[test]
+    fn the_terminal_ssh_never_carries_the_password_in_argv() {
+        let secret = "Plant-Pw-3141";
+        let inst = Instance { id: "term-pw".into(), name: "t".into(), color: PALETTE[0].into(), os: Os::Linux, host: "198.51.100.4".into(), port: 22, user: "ops".into(), auth: Auth::Password, key_file: None, key_has_passphrase: false, host_key: None, detected: None };
+        SESSION.lock().unwrap().get_or_insert_with(HashMap::new).insert(inst.id.clone(), secret.into());
+        if std::env::var_os("SPM_TEST_ASKPASS").is_none() {
+            std::env::set_var("SPM_TEST_ASKPASS", "/usr/bin/true");
+        }
+        let (argv, env) = terminal_command(&inst, "exec /bin/sh");
+        SESSION.lock().unwrap().as_mut().map(|m| m.remove(&inst.id));
+        assert_eq!(&argv[..2], ["ssh", "-tt"]);
+        assert!(argv.iter().all(|a| !a.contains(secret)), "{argv:?}");
+        assert_eq!(argv.last().map(String::as_str), Some("exec /bin/sh"));
+        assert!(argv.iter().any(|a| a == "PreferredAuthentications=password,keyboard-interactive"), "{argv:?}");
+        assert!(env.iter().any(|(k, v)| k == "SPM_ASKPASS_VALUE" && v == secret));
+        assert!(env.iter().any(|(k, v)| k == "SSH_ASKPASS_REQUIRE" && v == "force"));
+    }
+
+    #[test]
+    fn a_json_jobs_answer_is_its_done_or_error_line() {
+        let done = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&Progress::Step { name: "Checking".into() }).unwrap(),
+            serde_json::to_string(&Progress::Done { message: "Added: SENTIENT 4.3.0".into() }).unwrap()
+        );
+        assert_eq!(job_answer(true, &done, ""), Ok("Added: SENTIENT 4.3.0".into()));
+        let wrong = serde_json::to_string(&Progress::Error { message: "The PostgreSQL admin (postgres) password you gave does not work.".into() }).unwrap();
+        assert_eq!(job_answer(false, &wrong, ""), Err("The PostgreSQL admin (postgres) password you gave does not work.".into()));
+        assert_eq!(job_answer(false, "", "boom"), Err("boom".into()));
+        assert!(job_answer(false, "", "").is_err());
+    }
+
+    #[test]
+    fn the_pg_admin_marker_is_taken_out_of_the_log_and_kept_once() {
+        let inst = Instance { id: "srv-pg-marker".into(), name: "plant-b".into(), color: PALETTE[0].into(), os: Os::Windows, host: "203.0.113.20".into(), port: 22, user: "ops".into(), auth: Auth::Key, key_file: None, key_has_passphrase: false, host_key: None, detected: None };
+        let seen: std::sync::Arc<Mutex<Vec<String>>> = Default::default();
+        let s2 = seen.clone();
+        let sink: ProgressFn = std::sync::Arc::new(move |p| {
+            if let Progress::Log { line } = p {
+                s2.lock().unwrap().push(line);
+            }
+        });
+        let watched = watch_needs_pg_admin(&inst, &sink);
+        watched(Progress::Log { line: "Looking".into() });
+        watched(Progress::Log { line: "@@NEEDS-PG-ADMIN Windows services (SentientServer) | C:\\SENTIENT".into() });
+        let lines = seen.lock().unwrap().clone();
+        assert_eq!(lines[0], "Looking");
+        assert!(!lines[1].contains("@@"));
+        let ask = take_needs_pg_admin("srv-pg-marker").unwrap();
+        assert_eq!(ask.kind, "Windows services (SentientServer)");
+        assert_eq!(ask.location, "C:\\SENTIENT");
+        assert_eq!(take_needs_pg_admin("srv-pg-marker"), None);
+    }
+
+    #[test]
+    fn windows_jobs_for_a_user_wsl_distro_never_run_as_system() {
+        // Finding and adding always look into the account's distros.
+        for job in ["add-if-one", "add-existing", "find-existing", "takeover-plan"] {
+            assert_eq!(win_run_for(&[job], false), WinRun::InSession, "{job}");
+            assert_eq!(win_run_for(&[job], true), WinRun::InSession, "{job}");
+        }
+        // Without a user distro, jobs stay SYSTEM tasks (survive a drop).
+        for job in ["update", "scheduled-backup", "control", "uninstall"] {
+            assert_eq!(win_run_for(&[job], false), WinRun::System, "{job}");
+        }
+        // With one: short jobs in the session, long ones as the account's task.
+        assert_eq!(win_run_for(&["control", "restart"], true), WinRun::InSession);
+        assert_eq!(win_run_for(&["logs"], true), WinRun::InSession);
+        for job in ["update", "scheduled-backup", "take-over-compose", "uninstall", "replace"] {
+            assert_eq!(win_run_for(&[job], true), WinRun::UserTask, "{job}");
+        }
+        assert_eq!(win_run_for(&[], false), WinRun::System);
+    }
 
     #[test]
     fn stderr_noise_and_clixml_are_cleaned() {

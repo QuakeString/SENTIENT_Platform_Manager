@@ -74,7 +74,7 @@ pub fn noted() -> Option<Installed> {
 fn probe_before(engine: Engine, flavor: sentient_installer_core::stack::Flavor) -> Installed {
     let mut i = Installed { postgres: true, clickhouse: true, wsl: false };
     if cfg!(target_os = "linux") && engine == Engine::Native {
-        let sh = |c: &str| std::process::Command::new("sh").arg("-c").arg(c).output().map(|o| o.status.success()).unwrap_or(false);
+        let sh = |c: &str| sentient_installer_core::host::host_command("sh").arg("-c").arg(c).output().map(|o| o.status.success()).unwrap_or(false);
         i.postgres = !sh("command -v postgres || command -v pg_ctl || [ -x /usr/bin/postgres ] || systemctl cat postgresql.service >/dev/null 2>&1");
         i.clickhouse = !flavor.uses_clickhouse() || !sh("command -v clickhouse-server || systemctl cat clickhouse-server.service >/dev/null 2>&1");
     }
@@ -281,8 +281,11 @@ pub fn rows(f: &Facts) -> Vec<Row> {
 
     // PostgreSQL.
     let pg_title = if f.timescale { "PostgreSQL and TimescaleDB" } else { "PostgreSQL" };
+    // Stopped: unknown, so off unless switched on (below), never locked.
+    let unknown = pg_unknown(f);
     let shared = match &f.pg_others {
         None => Some("Checking what else PostgreSQL holds…".to_string()),
+        Some(Err(_)) if unknown => None,
         Some(Ok(list)) if !list.is_empty() => Some(format!("It also holds {}: another program uses it, so it stays.", and_list(list))),
         Some(Err(e)) => Some(format!("What else it holds could not be checked, so it stays ({e}).")),
         _ => None,
@@ -302,6 +305,9 @@ pub fn rows(f: &Facts) -> Vec<Row> {
         pg.bytes = None;
     } else if let Some(why) = shared.clone() {
         pg.why = Some(why);
+    } else if unknown {
+        pg.default_on = false;
+        pg.extra = Some("PostgreSQL is stopped, so what else it holds could not be checked: it stays unless you switch it on. Switch it on only if no other program keeps databases in it, or start PostgreSQL and open this again to have it checked.".into());
     } else if f.pg_origin == Origin::Unknown {
         pg.help = Some("This install is from before the Platform Manager recorded what Setup installed. Setup installs PostgreSQL unless one was already there; another program using it would be listed here.".into());
     }
@@ -673,13 +679,35 @@ fn unit_file_exists(unit: &str) -> bool {
     ["/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"].iter().any(|d| Path::new(d).join(unit).exists())
 }
 
+/// What [`pg_others`] says when PostgreSQL is stopped: unknown, never
+/// "none" (a stopped cluster lists nothing, yet may hold other programs'
+/// databases). The dialog keeps PostgreSQL unless the operator switches it
+/// on ([`rows`]). An older Platform Manager reading it sees an error and
+/// keeps PostgreSQL fixed: safe either way.
+pub const PG_STOPPED: &str = "PostgreSQL is stopped, so the databases it holds could not be listed";
+
 /// The other databases in PostgreSQL (Linux native, where it is shared).
 pub fn pg_others(record: &InstallationRecord) -> Result<Vec<String>, String> {
     if cfg!(target_os = "linux") && record.engine == Engine::Native {
-        record.platform().pg_other_databases()
+        pg_others_when(sentient_installer_core::native::pg_stopped(), || record.platform().pg_other_databases())
     } else {
         Ok(Vec::new())
     }
+}
+
+/// [`pg_others`] given whether PostgreSQL is stopped: unknown then
+/// ([`PG_STOPPED`]), else its listing.
+fn pg_others_when(stopped: bool, list: impl FnOnce() -> Result<Vec<String>, String>) -> Result<Vec<String>, String> {
+    if stopped {
+        Err(PG_STOPPED.into())
+    } else {
+        list()
+    }
+}
+
+/// What else PostgreSQL holds is unknown because it is stopped.
+pub fn pg_unknown(f: &Facts) -> bool {
+    matches!(&f.pg_others, Some(Err(e)) if e == PG_STOPPED)
 }
 
 /// Bytes under `dir` (what this account can read).
@@ -800,7 +828,7 @@ pub fn parse_docker_size(t: &str) -> Option<u64> {
 /// The PostgreSQL server package's installed size.
 fn package_bytes(pm: Pm) -> Option<u64> {
     let pkg = pm.postgres_packages()[0];
-    let run = |p: &str, a: &[&str]| std::process::Command::new(p).args(a).env("LC_ALL", "C").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    let run = |p: &str, a: &[&str]| sentient_installer_core::host::host_command_env(p, &[("LC_ALL", "C")]).args(a).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
     match pm {
         Pm::Pacman => parse_pacman_size(&run("pacman", &["-Qi", pkg])?),
         Pm::Apt => {
@@ -1059,12 +1087,12 @@ fn removal_shq(s: &str) -> String {
 }
 
 fn docker_out(args: &[&str]) -> Option<String> {
-    let o = std::process::Command::new("docker").args(args).output().ok()?;
+    let o = sentient_installer_core::host::host_command("docker").args(args).output().ok()?;
     Some(String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| o.status.success() && !s.is_empty())
 }
 
 fn run_shell(sink: &ProgressFn, script: &str) -> Result<(), String> {
-    let out = std::process::Command::new("sh").arg("-c").arg(script).output().map_err(|e| format!("run sh: {e}"))?;
+    let out = sentient_installer_core::host::host_command("sh").arg("-c").arg(script).output().map_err(|e| format!("run sh: {e}"))?;
     for l in String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()) {
         log(sink, l.trim_start_matches(">> ").to_string());
     }
@@ -1337,6 +1365,9 @@ mod tests {
         assert_eq!(r.iter().find(|r| r.key == Key::Postgres).unwrap().why.as_deref(), Some("It also holds erp: another program uses it, so it stays."));
         f.pg_others = None;
         assert!(rows(&f).iter().find(|r| r.key == Key::Postgres).unwrap().why.as_deref().unwrap().starts_with("Checking"));
+        // A listing that failed: fixed, kept.
+        f.pg_others = Some(Err("psql: connection refused".into()));
+        assert!(rows(&f).iter().find(|r| r.key == Key::Postgres).unwrap().why.as_deref().unwrap().contains("could not be checked"));
         // Setup's own: removed for real, data kept by default.
         let r = rows(&fixture("lx-pg").unwrap());
         assert_eq!(pg_action(&effective(&default_choice(&r), &r)), Some(DbRemoval::Remove { keep_data: true }));
@@ -1453,6 +1484,42 @@ mod tests {
         let m = done_message(&effective(&default_choice(&r), &r), &r, &checks, &[]);
         assert!(m.starts_with("Removed: SENTIENT server") && m.ends_with("1 thing is left: see the list."), "{m}");
     }
+
+    #[test]
+    fn a_stopped_postgres_is_unknown_never_none() {
+        // Stopped: unknown, and the cluster is not even asked.
+        assert_eq!(pg_others_when(true, || panic!("a stopped PostgreSQL is not asked")), Err(PG_STOPPED.to_string()));
+        assert_eq!(pg_others_when(false, || Ok(vec!["erp".into()])), Ok(vec!["erp".to_string()]));
+        // It survives the server's JSON (a remote Uninstall dialog).
+        let mut f = fixture("lx-pg").unwrap();
+        f.pg_others = Some(pg_others_when(true, || Ok(Vec::new())));
+        let back: Facts = serde_json::from_str(&serde_json::to_string(&f).unwrap()).unwrap();
+        assert!(pg_unknown(&back));
+    }
+
+    #[test]
+    fn an_unknown_postgres_stays_unless_switched_on() {
+        let mut f = fixture("lx-pg").unwrap();
+        f.pg_others = Some(Err(PG_STOPPED.into()));
+        let r = rows(&f);
+        assert_eq!(keys(&r), [Key::Sentient, Key::Postgres, Key::KeepPgData, Key::KeepFiles, Key::Gateway, Key::Shortcuts, Key::Manager]);
+        let pg = r.iter().find(|r| r.key == Key::Postgres).unwrap();
+        // Says why, and can still be picked.
+        assert!(pg.why.is_none());
+        assert!(pg.extra.as_deref().unwrap().contains("PostgreSQL is stopped"));
+        let mut c = default_choice(&r);
+        assert!(!c.has(Key::Postgres));
+        assert_eq!(pg_action(&effective(&c, &r)), None);
+        let (_, kept, _) = gone_and_kept(&c, &r);
+        assert!(kept.contains(&"PostgreSQL".to_string()));
+        // The operator's explicit choice.
+        c.set(Key::Postgres, true);
+        assert_eq!(rule(Key::Postgres, &c, &r), None);
+        // Its data kept by default, as for any PostgreSQL Setup installed.
+        assert_eq!(pg_action(&effective(&c, &r)), Some(DbRemoval::Remove { keep_data: true }));
+        c.set(Key::KeepPgData, false);
+        assert_eq!(pg_action(&effective(&c, &r)), Some(DbRemoval::Remove { keep_data: false }));
+    }
 }
 
 /// This computer's name: what the dialog asks to be typed before data is deleted.
@@ -1460,7 +1527,7 @@ pub fn computer_name() -> String {
     std::env::var("COMPUTERNAME")
         .ok()
         .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
-        .or_else(|| std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()))
+        .or_else(|| sentient_installer_core::host::host_command("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "this computer".into())

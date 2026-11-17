@@ -151,6 +151,17 @@ impl InstancesPage {
                         JobState::Failed(_) if this.job_dialog => crate::modal::set_title(format!("Did not finish on {name}"), cx),
                         _ => {}
                     }
+                    // Set up found a SENTIENT there that needs the PostgreSQL
+                    // admin password: ask for it (after the job dialog).
+                    if matches!(job.read(cx).state(), JobState::Done(_)) {
+                        if let (Some(ask), Some(inst)) = (remote::take_needs_pg_admin(&id), this.instance(&id)) {
+                            let me = cx.entity().downgrade();
+                            let card = id.clone();
+                            crate::manager::remote_pages::ask_pg_admin_password(inst, ask, std::rc::Rc::new(move |cx: &mut App| {
+                                me.update(cx, |p, cx| p.refresh(&card, cx)).ok();
+                            }), cx);
+                        }
+                    }
                 }
             }
             cx.notify();
