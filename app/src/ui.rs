@@ -771,14 +771,64 @@ pub enum Product {
     Gateway,
 }
 
-pub fn product_logo(p: Product, size: f32) -> impl IntoElement {
+pub fn product_logo(p: Product, size: f32) -> AnyElement {
     let path = match p {
         Product::Manager if size <= 24. => "logos/spm-small.png",
         Product::Manager => "logos/spm.png",
-        Product::Sentient => "logos/sentient-mark.svg",
+        // SENTIENT's tile: drawn here, not in the artwork. The artwork's own
+        // frame was a faint stroke on the viewBox's edge, and at most sizes
+        // and scales its right and bottom sides were cut (his rc12-24 note).
+        Product::Sentient => {
+            let line = hsla(0., 0., 0.44, 0.33);
+            return div()
+                .relative()
+                .flex_shrink_0()
+                .size(px(size))
+                // The tile, painted on whole device pixels (as the menu's
+                // selection, manager::shell::selection): its box snapped,
+                // its side a whole number of device pixels and its border
+                // one device pixel per logical one at least. A styled
+                // border_1 sat where layout put it; at fractional scales or
+                // positions its top and bottom lines fell across two
+                // device pixels at part strength.
+                .child(
+                    canvas(
+                        |_, _, _| {},
+                        move |bounds, _, window, _| {
+                            let sc = window.scale_factor();
+                            let x0 = (f32::from(bounds.origin.x) * sc).round();
+                            let y0 = (f32::from(bounds.origin.y) * sc).round();
+                            let side = (size * sc).round();
+                            let w = sc.round().max(1.);
+                            // GPUI floors left and top edges and ceils right
+                            // and bottom ones: a quarter pixel in from each.
+                            let lo = |d: f32| px((d + 0.25) / sc);
+                            let hi = |d: f32| px((d - 0.25) / sc);
+                            let lg = |d: f32| px(d / sc);
+                            // VERIFY: render at 1, 1.5 and 2 (tests/layout/check.py).
+                            window.paint_quad(gpui::quad(
+                                Bounds::from_corners(point(lo(x0), lo(y0)), point(hi(x0 + side), hi(y0 + side))),
+                                Corners::all(lg((size * 0.12 * sc).round())),
+                                gpui_kit::white(),
+                                Edges::all(lg(w)),
+                                line,
+                                BorderStyle::Solid,
+                            ));
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+                .child(div().absolute().inset_0().flex().items_center().justify_center().child(img("logos/sentient-glyph.svg").size(px(size - 2.))))
+                // On the borderless box: its bounds are the tile's outside
+                // (a probe inside a bordered div reports the box inside the
+                // border, where tests/layout/check.py then looked for it).
+                .child(layout_probe("logo-tile"))
+                .into_any_element();
+        }
         Product::Gateway => "logos/gateway.svg",
     };
-    img(path).size(px(size)).flex_shrink_0()
+    img(path).size(px(size)).flex_shrink_0().into_any_element()
 }
 
 /// A brand mark (one colour) by its file under `logos/`.
@@ -1474,7 +1524,7 @@ pub fn layout_probe(name: &'static str) -> impl IntoElement {
                     let (t, b) = (f32::from(bounds.origin.y), f32::from(bounds.origin.y + bounds.size.height));
                     // Buttons to a hundredth: the gap check holds them to
                     // half a pixel at x1.
-                    if matches!(name, "button" | "menu-item-icon" | "svc-button" | "back-button" | "page-title-line" | "page-subtitle") {
+                    if matches!(name, "button" | "menu-item-icon" | "svc-button" | "back-button" | "page-title-line" | "page-subtitle" | "logo-tile") {
                         eprintln!("LAYOUT {name} {l:.2} {r:.2} {t:.2} {b:.2}");
                     } else {
                         eprintln!("LAYOUT {name} {l:.0} {r:.0} {t:.0} {b:.0}");

@@ -90,6 +90,7 @@ const EXTRA: &[(&str, &[u8])] = &[
     ("logos/redhat.svg", include_bytes!("../assets/logos/redhat.svg")),
     ("logos/rockylinux.svg", include_bytes!("../assets/logos/rockylinux.svg")),
     ("logos/sentient-mark.svg", include_bytes!("../assets/logos/sentient-mark.svg")),
+    ("logos/sentient-glyph.svg", include_bytes!("../assets/logos/sentient-glyph.svg")),
     ("logos/timescale.svg", include_bytes!("../assets/logos/timescale.svg")),
     ("logos/ubuntu.svg", include_bytes!("../assets/logos/ubuntu.svg")),
     ("logos/windows.svg", include_bytes!("../assets/logos/windows.svg")),
