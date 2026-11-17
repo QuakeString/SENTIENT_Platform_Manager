@@ -33,7 +33,6 @@ finish-args:
   - --talk-name=org.freedesktop.Flatpak
   # The tray icon (StatusNotifierItem) and its notifications.
   - --talk-name=org.kde.StatusNotifierWatcher
-  - --own-name=org.kde.StatusNotifierItem-*
   - --talk-name=org.freedesktop.Notifications
 modules:
   - name: openssh
