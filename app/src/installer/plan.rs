@@ -11,7 +11,6 @@ use sentient_installer_core::distro::{self, DeployConfig};
 use sentient_installer_core::native::{self, ArtifactSource, NativeConfig};
 use sentient_installer_core::progress::{Progress, ProgressFn};
 use sentient_installer_core::stack::EnvVar;
-#[cfg(windows)]
 use sentient_installer_core::stack::Flavor;
 
 use crate::catalog::PG_PREFIX;
@@ -356,6 +355,52 @@ pub fn run_manager_only(shortcuts: Shortcuts, sink: ProgressFn) -> Result<(), St
 
 /// Run the install. Each task reports through `sink`; the first failure stops
 /// the run and is returned.
+const STEP_CLICKHOUSE: &str = "Setting up ClickHouse";
+const STEP_SENTIENT: &str = "Installing SENTIENT and its database";
+
+/// The install's steps, declared before it starts (the job view shows them
+/// all; crate::jobplan for the other jobs).
+pub fn steps(plan: &InstallPlan) -> Vec<sentient_installer_core::progress::PlanStep> {
+    use sentient_installer_core::progress::PlanStep;
+    let mut v = Vec::new();
+    if plan.bundle.is_none() && plan.engine == Engine::Native {
+        if let Some(version) = &plan.download {
+            v.push(PlanStep::new(format!("Downloading SENTIENT {version}")).detail("Checked against its SHA-256 and signature").when(&["Downloading SENTIENT"]).weight(3.));
+        }
+    }
+    v.push(PlanStep::new("Installing the Platform Manager").weight(0.5));
+    if cfg!(windows) && plan.stack.flavor == Flavor::Clickhouse {
+        v.push(PlanStep::new(STEP_CLICKHOUSE).detail("Its own WSL distribution and account").weight(4.));
+    }
+    v.push(PlanStep::new(STEP_SENTIENT).detail(match plan.engine {
+        Engine::Docker => "The containers, the database and its schema",
+        Engine::Native => "PostgreSQL, the SENTIENT service and its schema",
+    }).weight(6.));
+    v.push(PlanStep::new("Setting the administrator sign-in").detail(plan.admin_email.clone()).weight(0.5));
+    v.push(PlanStep::new("Creating shortcuts").weight(0.5));
+    v.push(PlanStep::new("Saving the installation record").weight(0.3));
+    v
+}
+
+/// Screens: the install's steps without a plan of choices.
+#[cfg(debug_assertions)]
+pub fn screen_steps() -> Vec<sentient_installer_core::progress::PlanStep> {
+    use sentient_installer_core::progress::PlanStep;
+    vec![
+        PlanStep::new("Installing the Platform Manager").weight(0.5),
+        PlanStep::new(STEP_SENTIENT).detail("PostgreSQL, the SENTIENT service and its schema").when(&["Starting PostgreSQL", "Installing PostgreSQL"]).weight(6.),
+        PlanStep::new("Setting the administrator sign-in").weight(0.5),
+        PlanStep::new("Creating shortcuts").weight(0.5),
+        PlanStep::new("Saving the installation record").weight(0.3),
+    ]
+}
+
+/// The Platform Manager alone.
+pub fn manager_only_steps() -> Vec<sentient_installer_core::progress::PlanStep> {
+    use sentient_installer_core::progress::PlanStep;
+    vec![PlanStep::new("Installing the Platform Manager"), PlanStep::new("Creating shortcuts")]
+}
+
 pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
     if plan.bundle.is_none() && plan.engine == Engine::Native {
         if let Some(version) = plan.download.clone() {
@@ -370,9 +415,11 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
     // ClickHouse first: SENTIENT's schema installer creates its tables there.
     #[cfg(windows)]
     if plan.stack.flavor == Flavor::Clickhouse {
+        step(&sink, STEP_CLICKHOUSE);
         install_clickhouse_wsl(&plan, &manager, &sink)?;
     }
     let admin_hash = hash_password(&plan.admin_password)?;
+    step(&sink, STEP_SENTIENT);
 
     match plan.engine {
         Engine::Native => {

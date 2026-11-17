@@ -12,7 +12,44 @@
 use futures::StreamExt as _;
 use gpui_kit::{App, AppContext as _, Context, SharedString, Task};
 use sentient_installer_core::diagnose::{self, Diagnosis, FixAction};
-use sentient_installer_core::progress::{Progress, ProgressFn};
+use sentient_installer_core::progress::{PlanStep, Progress, ProgressFn};
+
+/// How many log lines a job keeps in memory; the whole log is in its file
+/// (`Job::log_file`), which Save copies.
+pub const LOG_KEEP: usize = 5000;
+
+/// Where a planned step is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowState {
+    Pending,
+    Running,
+    Done,
+    Failed,
+    /// The job ended without needing it.
+    Skipped,
+}
+
+/// A planned step as the job went through it.
+#[derive(Debug, Clone)]
+pub struct Row {
+    pub step: PlanStep,
+    pub state: RowState,
+    started: Option<std::time::Instant>,
+    took: Option<std::time::Duration>,
+    /// The engine's own step inside it ("Dumping database"), while it runs.
+    pub sub: Option<SharedString>,
+}
+
+impl Row {
+    fn new(step: PlanStep) -> Self {
+        Self { step, state: RowState::Pending, started: None, took: None, sub: None }
+    }
+
+    /// How long it took, or has been running.
+    pub fn time(&self) -> Option<std::time::Duration> {
+        self.took.or_else(|| self.started.filter(|_| self.state == RowState::Running).map(|t| t.elapsed()))
+    }
+}
 
 /// A page's own handling of a fix (Setup's "Use port NNNN instead", Ask
 /// again): true when it applied it.
@@ -38,7 +75,24 @@ pub struct Job {
     state: JobState,
     step: SharedString,
     percent: Option<f32>,
-    log: Vec<SharedString>,
+    /// The last LOG_KEEP lines; `log_total` counts them all.
+    log: std::collections::VecDeque<SharedString>,
+    log_total: usize,
+    /// The whole log of the current run (crate::manager::jobview's Save).
+    log_file: Option<std::path::PathBuf>,
+    /// The log card's list, and whether it follows the newest line.
+    log_scroll: gpui_kit::UniformListScrollHandle,
+    follow: std::rc::Rc<std::cell::Cell<bool>>,
+    /// The plan of the next run (`set_plan`), and the current run's steps.
+    next_plan: Option<Vec<PlanStep>>,
+    rows: Vec<Row>,
+    /// Whether the job declared its steps (a plan); otherwise its steps
+    /// are added as they start.
+    planned: bool,
+    current: Option<usize>,
+    /// When the run began, and how long it took once ended.
+    began: Option<std::time::Instant>,
+    took: Option<std::time::Duration>,
     /// Every step's name, in the order they started.
     steps: Vec<SharedString>,
     /// The latest completion message a step reported.
@@ -79,7 +133,17 @@ impl Job {
             state: JobState::Idle,
             step: SharedString::default(),
             percent: None,
-            log: Vec::new(),
+            log: Default::default(),
+            log_total: 0,
+            log_file: None,
+            log_scroll: gpui_kit::UniformListScrollHandle::new(),
+            follow: std::rc::Rc::new(std::cell::Cell::new(true)),
+            next_plan: None,
+            rows: Vec::new(),
+            planned: false,
+            current: None,
+            began: None,
+            took: None,
             steps: Vec::new(),
             last_done: None,
             step_started: None,
@@ -101,6 +165,121 @@ impl Job {
     /// Name the job for the progress strip (before `start`).
     pub fn set_label(&mut self, label: impl Into<SharedString>) {
         self.label = Some(label.into());
+    }
+
+    /// The steps the next run takes, before `start` (crate::jobplan): its
+    /// page shows them all from the first frame. The work may send its own
+    /// (`Progress::Plan`), which replaces the ones not started yet.
+    pub fn set_plan(&mut self, steps: Vec<PlanStep>) {
+        self.next_plan = Some(steps);
+    }
+
+    /// The run's steps, in order.
+    pub fn rows(&self) -> &[Row] {
+        &self.rows
+    }
+
+    /// The step running now (an index into `rows`).
+    pub fn current(&self) -> Option<usize> {
+        self.current
+    }
+
+    /// The whole job, 0–100: each step by its weight, the running one by
+    /// its own percent when it reports one.
+    pub fn overall(&self) -> f32 {
+        if matches!(self.state, JobState::Done(_)) {
+            return 100.;
+        }
+        let total: f32 = self.rows.iter().map(|r| r.step.weight.max(0.)).sum();
+        if total <= 0. {
+            return self.percent.unwrap_or(0.);
+        }
+        let done: f32 = self.rows.iter().filter(|r| matches!(r.state, RowState::Done | RowState::Skipped)).map(|r| r.step.weight.max(0.)).sum();
+        let part = match (self.current, self.percent) {
+            (Some(i), Some(p)) if self.rows[i].state == RowState::Running => self.rows[i].step.weight.max(0.) * p / 100.,
+            _ => 0.,
+        };
+        ((done + part) / total * 100.).clamp(0., 100.)
+    }
+
+    /// How long the run has been going, or took.
+    pub fn elapsed(&self) -> Option<std::time::Duration> {
+        self.took.or_else(|| self.began.map(|t| t.elapsed()))
+    }
+
+    /// Log lines `range` of the kept ones (oldest first).
+    pub fn log_lines(&self, range: std::ops::Range<usize>) -> Vec<SharedString> {
+        self.log.range(range.start.min(self.log.len())..range.end.min(self.log.len())).cloned().collect()
+    }
+
+    /// How many lines were written, kept or not.
+    pub fn log_total(&self) -> usize {
+        self.log_total
+    }
+
+    /// The file with the whole log of the current run.
+    pub fn log_file(&self) -> Option<&std::path::Path> {
+        self.log_file.as_deref()
+    }
+
+    /// The whole log as text: its file, else the kept lines.
+    pub fn log_text(&self) -> String {
+        if let Some(t) = self.log_file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()) {
+            return t;
+        }
+        self.log.iter().map(|l| l.as_ref()).collect::<Vec<_>>().join("\n")
+    }
+
+    pub fn log_scroll(&self) -> &gpui_kit::UniformListScrollHandle {
+        &self.log_scroll
+    }
+
+    /// Whether the log card follows the newest line (false once the user
+    /// scrolled up; "Latest" sets it again).
+    pub fn follow(&self) -> std::rc::Rc<std::cell::Cell<bool>> {
+        self.follow.clone()
+    }
+
+    /// Screens and the layout test: a run in the middle, with `lines` log
+    /// lines (SPM_DEBUG_JOB_LOG, crate::manager::jobview::debug_job).
+    #[cfg(debug_assertions)]
+    pub fn debug_fill(&mut self, plan: Vec<PlanStep>, at: usize, lines: usize, cx: &mut Context<Self>) {
+        self.state = JobState::Running;
+        self.rows = plan.into_iter().map(Row::new).collect();
+        self.planned = true;
+        self.began = Some(std::time::Instant::now() - std::time::Duration::from_secs(97));
+        self.took = None;
+        let at = at.min(self.rows.len().saturating_sub(1));
+        for (i, r) in self.rows.iter_mut().enumerate() {
+            if i < at {
+                r.state = RowState::Done;
+                r.took = Some(std::time::Duration::from_secs(12 + 7 * i as u64));
+            } else if i == at {
+                r.state = RowState::Running;
+                r.started = Some(std::time::Instant::now() - std::time::Duration::from_secs(41));
+                r.sub = Some("Exporting ClickHouse telemetry, month 2026-09 of 2026-11".into());
+            }
+        }
+        self.current = Some(at);
+        self.percent = Some(37.);
+        self.log.clear();
+        for i in 0..lines {
+            let l: SharedString = match i % 9 {
+                0 => format!(">> Step {i}").into(),
+                4 => format!("clickhouse: ts_kv partition 2026-{:02} part {i}: 412 MB written, {} rows, a long line that runs past the width of the card to show it is cut, not wrapped, and never scrolls the page sideways", i % 12 + 1, i * 1031).into(),
+                _ => format!("pg_dump: dumping contents of table public.table_{i}").into(),
+            };
+            self.push_line(l);
+        }
+        cx.notify();
+    }
+
+    fn push_line(&mut self, line: SharedString) {
+        if self.log.len() >= LOG_KEEP {
+            self.log.pop_front();
+        }
+        self.log.push_back(line);
+        self.log_total += 1;
     }
 
     /// Shown on its page (see `on_page`).
@@ -179,6 +358,10 @@ impl Job {
         self.state = JobState::Idle;
         self.steps.clear();
         self.log.clear();
+        self.log_total = 0;
+        self.rows.clear();
+        self.current = None;
+        self.planned = false;
         self.diagnosis = None;
         self.diag_view = None;
         cx.notify();
@@ -194,7 +377,8 @@ impl Job {
         self.percent
     }
 
-    pub fn log(&self) -> &[SharedString] {
+    /// The kept log lines (the last LOG_KEEP), oldest first.
+    pub fn log(&self) -> &std::collections::VecDeque<SharedString> {
         &self.log
     }
 
@@ -230,11 +414,20 @@ impl Job {
         self.step = SharedString::default();
         self.percent = None;
         self.log.clear();
+        self.log_total = 0;
+        self.follow.set(true);
         self.steps.clear();
+        let plan = self.next_plan.take();
+        self.planned = plan.as_ref().is_some_and(|p| !p.is_empty());
+        self.rows = plan.unwrap_or_default().into_iter().map(Row::new).collect();
+        self.current = None;
+        self.began = Some(std::time::Instant::now());
+        self.took = None;
         self.last_done = None;
         self.diagnosis = None;
         self.diag_view = None;
         self.step_started = Some(std::time::Instant::now());
+        self.log_file = new_log_file(self.label.as_deref().unwrap_or("job"));
         cx.notify();
         // The global progress strip follows it (crate::manager::strip).
         let me = cx.entity();
@@ -263,6 +456,9 @@ impl Job {
         // lock, held only to push or copy; never across an await).
         let tail: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>> = Default::default();
         let lines = tail.clone();
+        // The whole log, line by line, in its file (a sync lock, held only
+        // to write a line).
+        let file = std::sync::Mutex::new(self.log_file.as_ref().and_then(|p| std::fs::File::create(p).ok()).map(std::io::LineWriter::new));
         let sink: ProgressFn = std::sync::Arc::new(move |p| {
             if let Progress::Log { line } = &p {
                 if let Ok(mut t) = lines.lock() {
@@ -270,6 +466,18 @@ impl Job {
                         t.pop_front();
                     }
                     t.push_back(line.clone());
+                }
+            }
+            let text = match &p {
+                Progress::Log { line } if !line.starts_with(diagnose::DIAG_PREFIX) => Some(crate::ui::strip_ansi(line)),
+                Progress::Step { name } => Some(format!(">> {name}")),
+                Progress::Error { message } => Some(message.clone()),
+                _ => None,
+            };
+            if let (Some(t), Ok(mut f)) = (text, file.lock()) {
+                if let Some(f) = f.as_mut() {
+                    use std::io::Write as _;
+                    let _ = writeln!(f, "{t}");
                 }
             }
             let _ = tx.unbounded_send(p);
@@ -327,26 +535,103 @@ impl Job {
 
     fn apply(&mut self, progress: Progress) {
         match progress {
+            Progress::Plan { steps } => self.take_plan(steps),
             Progress::Step { name } => {
                 activity(&name);
                 self.steps.push(name.clone().into());
-                self.step = name.into();
+                self.step = name.clone().into();
                 self.percent = None;
                 self.step_started = Some(std::time::Instant::now());
+                self.push_line(format!(">> {name}").into());
+                self.enter(&name);
             }
             // An agent's diagnosis: kept by the worker, not a log line.
             Progress::Log { line } if line.starts_with(diagnose::DIAG_PREFIX) => {}
             Progress::Log { line } => {
                 let line = crate::ui::strip_ansi(&line);
                 activity(&format!("  {line}"));
-                self.log.push(line.into());
+                // An engine step an older agent printed as a line
+                // (">> Dumping database"): it still moves the plan on.
+                if let Some(name) = line.strip_prefix(">> ").filter(|_| self.planned) {
+                    let name = name.to_string();
+                    self.enter(&name);
+                }
+                self.push_line(line.into());
             }
             Progress::Percent { value } => self.percent = Some((value * 100.0).clamp(0.0, 100.0)),
             // Steps inside a job report their own completion ("SENTIENT is
             // serving…" from a deploy in the middle of a migration): the job
             // itself ends only when its work returns, with the last message.
             Progress::Done { message } => self.last_done = Some(message.into()),
-            Progress::Error { message } => self.log.push(message.into()),
+            Progress::Error { message } => self.push_line(message.into()),
+        }
+    }
+
+    /// A plan from the work: it replaces the steps not started yet.
+    fn take_plan(&mut self, steps: Vec<PlanStep>) {
+        let keep = match self.current {
+            Some(i) => i + 1,
+            None => 0,
+        };
+        self.rows.truncate(keep);
+        // A step already shown (the one running) is not listed twice.
+        let running: Vec<String> = self.rows.iter().map(|r| r.step.name.clone()).collect();
+        self.rows.extend(steps.into_iter().filter(|s| !running.contains(&s.name)).map(Row::new));
+        self.planned = !self.rows.is_empty();
+    }
+
+    /// A step started: the planned one it names (never one already
+    /// passed), else a step inside the one running.
+    fn enter(&mut self, name: &str) {
+        let now = std::time::Instant::now();
+        if !self.planned {
+            // Not declared: each step is added as it starts.
+            self.close_current(RowState::Done, now);
+            self.rows.push(Row::new(PlanStep::new(name)));
+            self.open(self.rows.len() - 1, now);
+            return;
+        }
+        let from = self.current.unwrap_or(0);
+        match (from..self.rows.len()).find(|&i| self.rows[i].step.matches(name)) {
+            Some(i) if Some(i) == self.current => {
+                self.rows[i].sub = (self.rows[i].step.name != name).then(|| name.to_string().into());
+            }
+            Some(i) => {
+                self.close_current(RowState::Done, now);
+                for r in &mut self.rows[from..i] {
+                    if r.state == RowState::Pending {
+                        r.state = RowState::Skipped;
+                    }
+                }
+                self.open(i, now);
+            }
+            None => match self.current {
+                Some(i) => self.rows[i].sub = Some(name.to_string().into()),
+                None if !self.rows.is_empty() => {
+                    self.open(0, now);
+                    self.rows[0].sub = Some(name.to_string().into());
+                }
+                None => {}
+            },
+        }
+    }
+
+    fn open(&mut self, i: usize, now: std::time::Instant) {
+        let r = &mut self.rows[i];
+        r.state = RowState::Running;
+        r.started = Some(now);
+        r.sub = None;
+        self.current = Some(i);
+    }
+
+    fn close_current(&mut self, state: RowState, now: std::time::Instant) {
+        if let Some(i) = self.current.take() {
+            let r = &mut self.rows[i];
+            r.state = state;
+            r.took = r.started.map(|t| now.duration_since(t));
+            if state == RowState::Done {
+                r.sub = None;
+            }
         }
     }
 
@@ -354,6 +639,27 @@ impl Job {
         match &result {
             Ok(()) => activity(&format!("Done: {}", self.last_done.as_deref().unwrap_or("finished"))),
             Err(e) => activity(&format!("Failed: {e}")),
+        }
+        let now = std::time::Instant::now();
+        self.took = self.began.map(|t| now.duration_since(t));
+        match &result {
+            Ok(()) => {
+                self.close_current(RowState::Done, now);
+                for r in &mut self.rows {
+                    if r.state == RowState::Pending {
+                        r.state = RowState::Skipped;
+                    }
+                }
+            }
+            Err(_) => {
+                if self.current.is_none() {
+                    // It failed before its first step: that step failed.
+                    if let Some(i) = self.rows.iter().position(|r| r.state == RowState::Pending) {
+                        self.open(i, now);
+                    }
+                }
+                self.close_current(RowState::Failed, now);
+            }
         }
         self.state = match result {
             Err(message) => JobState::Failed(message.into()),
@@ -363,6 +669,20 @@ impl Job {
 }
 
 pub use crate::maintenance_ops::activity_log;
+
+/// A new file for a run's whole log, beside the activity log (the last 20
+/// runs are kept).
+fn new_log_file(label: &str) -> Option<std::path::PathBuf> {
+    let dir = activity_log().parent()?.join("jobs");
+    std::fs::create_dir_all(&dir).ok()?;
+    let mut old: Vec<std::path::PathBuf> = std::fs::read_dir(&dir).ok()?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "log")).collect();
+    old.sort();
+    while old.len() >= 20 {
+        let _ = std::fs::remove_file(old.remove(0));
+    }
+    let slug: String = label.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect::<String>().split('-').filter(|s| !s.is_empty()).take(6).collect::<Vec<_>>().join("-");
+    Some(dir.join(format!("{}-{}.log", chrono::Local::now().format("%Y%m%d-%H%M%S%3f"), if slug.is_empty() { "job".into() } else { slug })))
+}
 
 /// A line in the Platform Manager's own log (About → Open the log).
 pub fn log_line(line: &str) {
@@ -380,5 +700,66 @@ fn activity(line: &str) {
     }
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
         let _ = writeln!(f, "{} {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), line.lines().next().unwrap_or(""));
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
+    use super::{Job, JobState, PlanStep, Progress, RowState};
+
+    fn states(j: &Job) -> Vec<RowState> {
+        j.rows().iter().map(|r| r.state).collect()
+    }
+
+    #[test]
+    fn steps_follow_the_plan_inside_and_out() {
+        let mut j = Job::new();
+        j.apply(Progress::Plan { steps: vec![PlanStep::new("Connect"), PlanStep::new("Write").when(&["Writing"]), PlanStep::new("Copy"), PlanStep::new("Check")] });
+        assert_eq!(states(&j), [RowState::Pending; 4]);
+        j.apply(Progress::Step { name: "Connect".into() });
+        // A step of the engine inside the one running.
+        j.apply(Progress::Step { name: "Dumping database".into() });
+        assert_eq!(j.rows()[0].sub.as_deref(), Some("Dumping database"));
+        j.apply(Progress::Step { name: "Writing manifest".into() });
+        assert_eq!(states(&j)[..2], [RowState::Done, RowState::Running]);
+        j.apply(Progress::Percent { value: 0.5 });
+        assert!((j.overall() - 37.5).abs() < 0.1, "{}", j.overall());
+        // Copy is passed over.
+        j.apply(Progress::Step { name: "Check".into() });
+        assert_eq!(states(&j), [RowState::Done, RowState::Done, RowState::Skipped, RowState::Running]);
+        j.finish(Err("no".into()));
+        assert_eq!(states(&j)[3], RowState::Failed);
+        assert!(matches!(j.state(), JobState::Failed(_)));
+    }
+
+    #[test]
+    fn a_later_plan_replaces_what_did_not_start() {
+        let mut j = Job::new();
+        j.apply(Progress::Plan { steps: vec![PlanStep::new("Connect to the server"), PlanStep::new("Guess")] });
+        j.apply(Progress::Step { name: "Connect to the server".into() });
+        // The agent's own list (it may name the running step again).
+        j.apply(Progress::Plan { steps: vec![PlanStep::new("A"), PlanStep::new("B")] });
+        let names: Vec<&str> = j.rows().iter().map(|r| r.step.name.as_str()).collect();
+        assert_eq!(names, ["Connect to the server", "A", "B"]);
+        // An older agent's engine step, printed as a line.
+        j.apply(Progress::Log { line: ">> A".into() });
+        assert_eq!(j.rows()[1].state, RowState::Running);
+        j.finish(Ok(()));
+        assert_eq!(states(&j), [RowState::Done, RowState::Done, RowState::Skipped]);
+        assert_eq!(j.overall(), 100.);
+    }
+
+    #[test]
+    fn without_a_plan_steps_are_added_and_the_log_is_bounded() {
+        let mut j = Job::new();
+        j.apply(Progress::Step { name: "One".into() });
+        j.apply(Progress::Step { name: "Two".into() });
+        assert_eq!(states(&j), [RowState::Done, RowState::Running]);
+        for i in 0..super::LOG_KEEP + 10 {
+            j.apply(Progress::Log { line: format!("line {i}") });
+        }
+        assert_eq!(j.log().len(), super::LOG_KEEP);
+        assert_eq!(j.log_total(), super::LOG_KEEP + 12);
     }
 }

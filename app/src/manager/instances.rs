@@ -190,6 +190,10 @@ impl InstancesPage {
             page.retry = Some(Retry::SetUp(inst.id.clone()));
             let name = inst.name.clone();
             page.job.update(cx, |job, cx| {
+                job.set_plan(vec![
+                    crate::jobplan::connect().when(&["Copying the Platform Manager"]),
+                    sentient_installer_core::progress::PlanStep::new("Looking for SENTIENT on the server"),
+                ]);
                 job.start(
                     move |sink| {
                         sink(Progress::Step { name: "Copying the Platform Manager to the server".into() });
@@ -519,11 +523,24 @@ impl InstancesPage {
             return;
         }
         self.job_for = Some((id.to_string(), format!("{label} on {}", inst.name).into()));
+        // Its steps from the first frame (crate::jobplan); the agent's own
+        // list replaces them when it answers.
+        let owned: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        let docker = inst.detected.as_ref().is_none_or(|d| d.install.eq_ignore_ascii_case("docker"));
+        let mut plan = crate::jobplan::guess(&owned, docker, remote::is_windows(&inst));
+        let generic = plan.len() == 1;
+        if generic {
+            plan.push(sentient_installer_core::progress::PlanStep::new(label).weight(3.));
+        }
         self.job.update(cx, |job, cx| {
+            job.set_plan(plan);
             job.start(
                 move |sink| {
+                    sink(sentient_installer_core::progress::Progress::Step { name: crate::jobplan::CONNECT.into() });
                     remote::deploy(&inst, &sink)?;
-                    sink(sentient_installer_core::progress::Progress::Step { name: label.to_string() });
+                    if generic {
+                        sink(sentient_installer_core::progress::Progress::Step { name: label.to_string() });
+                    }
                     let job_id = remote::start_job(&inst, &args)?;
                     remote::follow(&inst, &job_id, &sink)
                 },
@@ -555,8 +572,13 @@ impl InstancesPage {
         }
         self.job_for = Some((id.to_string(), format!("Setting up {}", inst.name).into()));
         self.job.update(cx, |job, cx| {
+            job.set_plan(vec![
+                crate::jobplan::connect().detail("SSH, and the Platform Manager copied to the server"),
+                sentient_installer_core::progress::PlanStep::new("Looking for SENTIENT on the server").detail("A SENTIENT found there is added; nothing on it changes"),
+            ]);
             job.start(
                 move |sink| {
+                    sink(sentient_installer_core::progress::Progress::Step { name: crate::jobplan::CONNECT.into() });
                     remote::deploy(&inst, &sink)?;
                     // A lone SENTIENT already there is added in the same job
                     // (the agent says what it found and did).
@@ -581,6 +603,7 @@ impl InstancesPage {
         self.job.update(cx, |job, cx| {
             // A server's job: its agent diagnoses a failure there.
             job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
+            // jobview: its plan comes from the agent (the job's log starts with it).
             job.start(move |sink| remote::follow(&inst, &job_id, &sink), cx)
         });
         cx.notify();
@@ -1199,102 +1222,58 @@ impl InstancesPage {
         }
     }
 
+    /// The job on a server, in the shared job view (crate::manager::jobview).
     fn job_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (id, label) = self.job_for.clone()?;
         let theme = cx.theme().clone();
         let job = self.job.read(cx);
-        let log: Vec<SharedString> = job.log().iter().rev().take(14).rev().cloned().collect();
         let inst = self.instance(&id);
-        // Which server this is about: its colour dot, name and address, as on
-        // the page headers.
-        let mut p = v_flex().gap_3().when_some(inst.clone(), |p, i| {
-            p.child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .text_sm()
-                    .child(div().size(px(10.)).rounded_full().bg(rgb(remote::parse_hex(&i.color).unwrap_or(0x187074))))
-                    .child(div().font_weight(FontWeight::MEDIUM).child(i.name.clone()))
-                    .child(div().text_color(theme.muted_foreground).child(i.host.clone())),
-            )
-        });
-        let _ = &label;
-        p = match job.state() {
-            JobState::Running => p.child(div().text_sm().child(job.step_with_time())),
-            JobState::Done(m) => p.child(ui::outcome(&theme, Tone::Good, m.clone())),
-            JobState::Failed(_) if job.diagnosis_view().is_some() => p.children(job.diagnosis_view()),
-            JobState::Failed(m) => {
-                let (headline, details) = remote::split_failure(m);
-                let shown = self.show_details;
-                p.child(ui::outcome(&theme, Tone::Bad, headline)).when_some(details, |p, d| {
-                    p.child(crate::ui::button("job-details").ghost().label(if shown { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
-                        this.show_details = !this.show_details;
-                        cx.notify();
-                    })))
-                    .when(shown, |p| p.child(div().p_2().rounded(theme.radius).bg(theme.muted).text_size(px(13.)).font_family(theme.mono_font_family.clone()).child(d)))
-                })
-            }
-            JobState::Idle => p,
-        };
         let done = !job.is_running();
         let failed = matches!(job.state(), JobState::Failed(_));
-        // The raw steps show while it runs; afterwards only under Show details.
-        let show_log = !done || self.show_details;
-        let shown_toggle = done && !failed && !log.is_empty();
-        let details_on = self.show_details;
+        // Secondary first, the primary at the right end.
+        let mut acts: Vec<AnyElement> = vec![crate::ui::button("job-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
+            this.job_for = None;
+            this.job.update(cx, |j, cx| j.reset(cx));
+            cx.notify();
+        })).into_any_element()];
+        if done && failed && self.retry.is_some() {
+            acts.push(crate::ui::button("job-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
+                this.job.update(cx, |j, cx| j.reset(cx));
+                match this.retry.clone() {
+                    Some(Retry::SetUp(id)) => this.set_up(&id, cx),
+                    Some(Retry::Job(id, label, args)) => this.run_job(&id, label, args, cx),
+                    None => {}
+                }
+            })).into_any_element());
+        } else if done && !failed {
+            let id = id.clone();
+            acts.push(crate::ui::button("job-open").primary().label("Open").on_click(cx.listener(move |this, _, _, cx| {
+                this.job_for = None;
+                this.job.update(cx, |j, cx| j.reset(cx));
+                cx.emit(OpenInstance(Some(id.clone())));
+                cx.notify();
+            })).into_any_element());
+        }
+        // Which server this is about: its colour dot, name and address, as on
+        // the page headers.
         Some(
-            p.when(shown_toggle, |p| {
-                p.child(h_flex().child(crate::ui::button("job-log").ghost().label(if details_on { "Hide details" } else { "Show details" }).on_click(cx.listener(|this, _, _, cx| {
-                    this.show_details = !this.show_details;
-                    cx.notify();
-                }))))
-            })
-            .when(!log.is_empty() && show_log, |p| {
-                p.child(
-                    v_flex()
-                        .p_2()
-                        .rounded(theme.radius)
-                        .bg(theme.muted)
-                        .text_size(px(13.))
-                        .font_family(theme.mono_font_family.clone())
-                        .children(log.into_iter().map(|l| div().child(l))),
-                )
-            })
-            .when(done, |p| {
-                p.child(
-                    h_flex()
-                        .gap(crate::ui::button_gap())
-                        .justify_end()
-                        .when(failed && self.retry.is_some(), |r| {
-                            r.child(crate::ui::probed(crate::ui::button("job-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| {
-                                this.job.update(cx, |j, cx| j.reset(cx));
-                                match this.retry.clone() {
-                                    Some(Retry::SetUp(id)) => this.set_up(&id, cx),
-                                    Some(Retry::Job(id, label, args)) => this.run_job(&id, label, args, cx),
-                                    None => {}
-                                }
-                            }))))
-                        })
-                        .when(!failed, |r| {
-                            let id = id.clone();
-                            r.child(crate::ui::probed(crate::ui::button("job-open").primary().label("Open").on_click(cx.listener(move |this, _, _, cx| {
-                                this.job_for = None;
-                                this.job.update(cx, |j, cx| j.reset(cx));
-                                cx.emit(OpenInstance(Some(id.clone())));
-                                cx.notify();
-                            }))))
-                        })
-                        .child(crate::ui::probed(crate::ui::button("job-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
-                            this.job_for = None;
-                            this.job.update(cx, |j, cx| j.reset(cx));
-                            cx.notify();
-                        })))),
-                )
-            })
-            .into_any_element(),
+            v_flex()
+                .gap_3()
+                .when_some(inst, |p, i| {
+                    p.child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .text_sm()
+                            .child(div().size(px(10.)).rounded_full().bg(rgb(remote::parse_hex(&i.color).unwrap_or(0x187074))))
+                            .child(div().font_weight(FontWeight::MEDIUM).child(i.name.clone()))
+                            .child(div().text_color(theme.muted_foreground).child(i.host.clone())),
+                    )
+                })
+                .child(crate::manager::jobview::JobView::new("inst-job", label.to_string(), &self.job).actions(acts).render(cx))
+                .into_any_element(),
         )
     }
-
 }
 
 impl Render for InstancesPage {

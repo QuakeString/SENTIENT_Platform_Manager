@@ -24,7 +24,6 @@ use gpui_kit::component::{
     ActiveTheme, Disableable as _, Icon, h_flex, v_flex,
     button::ButtonVariants as _,
     checkbox::Checkbox,
-    progress::Progress as ProgressBar,
 };
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -233,7 +232,7 @@ impl EarlierPage {
     fn start(&mut self, run: Run, cx: &mut Context<Self>) {
         let found = self.found.clone();
         let backup = self.backup_first && found.no_backup.is_none();
-        self.planned = match run {
+        let planned = match run {
             Run::Remove => {
                 let mut p = Vec::new();
                 if backup {
@@ -247,6 +246,9 @@ impl EarlierPage {
             Run::Keep if found.record.is_some() => vec![KEEP.into(), CONTINUE.into()],
             Run::Keep => vec![CONTINUE.into()],
         };
+        self.planned = planned.clone();
+        // Its steps from the first frame (the shared job view).
+        self.job.update(cx, |job, _| job.set_plan(planned.into_iter().map(sentient_installer_core::progress::PlanStep::new).collect()));
         self.screen = Screen::Running(run);
         self.show_log = false;
         self.job.update(cx, |job, cx| match run {
@@ -395,64 +397,42 @@ impl EarlierPage {
             (Run::Keep, Some(false)) => "The earlier program was not removed",
             (Run::Keep, _) => "Keeping the old database",
         };
-        let log: Vec<SharedString> = job.log().iter().rev().take(14).rev().cloned().collect();
-        let marked = ui::mark_steps(&self.planned, job.steps(), finished);
-        let mut out = vec![div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(title).into_any_element()];
-        if let JobState::Failed(m) = job.state() {
-            let tail = if run == Run::Repair { " Nothing was deleted." } else { "" };
-            out.push(ui::outcome(theme, Tone::Bad, format!("{m}{tail}")).into_any_element());
-        }
-        out.push(ui::steps(theme, &marked).into_any_element());
-        if finished.is_none() {
-            if let Some(p) = job.percent() {
-                out.push(ProgressBar::new("earlier-progress").value(p).into_any_element());
+        let result = match job.state() {
+            JobState::Failed(m) => {
+                let tail = if run == Run::Repair { " Nothing was deleted." } else { "" };
+                Some(ui::outcome(theme, Tone::Bad, format!("{m}{tail}")))
             }
+            _ => None,
+        };
+        // Secondary first, the primary at the right end.
+        let close = || crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window()).into_any_element();
+        let acts: Vec<AnyElement> = match finished {
+            Some(false) if run == Run::Repair => vec![
+                close(),
+                crate::ui::button("fresh-after-repair").primary().label("Remove it and install fresh").on_click(cx.listener(|this, _, _, cx| {
+                    this.screen = Screen::ConfirmRemove;
+                    this.understood = false;
+                    cx.notify();
+                })).into_any_element(),
+            ],
+            Some(false) => vec![close(), crate::ui::button("retry").primary().label("Try again").on_click(cx.listener(move |this, _, _, cx| this.start(run, cx))).into_any_element()],
+            Some(true) if run == Run::Repair => vec![
+                close(),
+                crate::ui::button("open").primary().label("Open the Platform Manager").on_click(|_, window, _| {
+                    let exe = crate::self_install::manager_exe();
+                    let exe = if exe.exists() { exe } else { std::env::current_exe().unwrap_or(exe) };
+                    if std::process::Command::new(&exe).arg("--manager").spawn().is_ok() {
+                        window.remove_window();
+                    }
+                }).into_any_element(),
+            ],
+            _ => Vec::new(),
+        };
+        let mut view = crate::manager::jobview::JobView::new("earlier-run", title, &self.job).actions(acts);
+        if let Some(r) = result {
+            view = view.result(r);
         }
-        if (self.show_log || finished.is_none()) && !log.is_empty() {
-            out.push(
-                ui::panel(theme)
-                    .text_size(px(13.))
-                    .font_family(theme.mono_font_family.clone())
-                    .text_color(theme.muted_foreground)
-                    .children(log.into_iter().map(|l| div().child(l)))
-                    .into_any_element(),
-            );
-        }
-        match finished {
-            Some(false) => out.push(
-                h_flex()
-                    .gap(crate::ui::button_gap())
-                    .when(run == Run::Repair, |r| {
-                        r.child(crate::ui::probed(crate::ui::button("fresh-after-repair").primary().label("Remove it and install fresh").on_click(cx.listener(|this, _, _, cx| {
-                            this.screen = Screen::ConfirmRemove;
-                            this.understood = false;
-                            cx.notify();
-                        }))))
-                    })
-                    .when(run != Run::Repair, |r| r.child(crate::ui::probed(crate::ui::button("retry").primary().label("Try again").on_click(cx.listener(move |this, _, _, cx| this.start(run, cx))))))
-                    .child(crate::ui::probed(crate::ui::button("log").outline().label(if self.show_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
-                        this.show_log = !this.show_log;
-                        cx.notify();
-                    }))))
-                    .child(crate::ui::probed(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window())))
-                    .into_any_element(),
-            ),
-            Some(true) if run == Run::Repair => out.push(
-                h_flex()
-                    .gap(crate::ui::button_gap())
-                    .child(crate::ui::probed(crate::ui::button("open").primary().label("Open the Platform Manager").on_click(|_, window, _| {
-                        let exe = crate::self_install::manager_exe();
-                        let exe = if exe.exists() { exe } else { std::env::current_exe().unwrap_or(exe) };
-                        if std::process::Command::new(&exe).arg("--manager").spawn().is_ok() {
-                            window.remove_window();
-                        }
-                    })))
-                    .child(crate::ui::probed(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window())))
-                    .into_any_element(),
-            ),
-            _ => {}
-        }
-        out
+        vec![view.render(cx).into_any_element()]
     }
 }
 

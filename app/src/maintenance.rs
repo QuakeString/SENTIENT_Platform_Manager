@@ -23,7 +23,6 @@ use gpui_kit::component::{
     ActiveTheme, Disableable as _, Icon, h_flex, v_flex,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
-    progress::Progress as ProgressBar,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -225,6 +224,12 @@ impl Maintenance {
         let Some(record) = self.record.clone() else { return };
         self.screen = Screen::Action(action);
         let keep = self.keep_data;
+        // Its steps from the first frame (crate::jobplan).
+        let plan = match action {
+            Action::Repair => crate::jobplan::repair(crate::jobplan::Shape::of(&record), record.flavor() == sentient_installer_core::stack::Flavor::Clickhouse),
+            _ => crate::jobplan::uninstall(keep),
+        };
+        self.job.update(cx, |job, _| job.set_plan(plan));
         self.job.update(cx, |job, cx| match action {
             Action::Repair => job.start(move |sink| run_repair(record, sink), cx),
             Action::Uninstall => job.start(move |sink| run_uninstall(record, keep, sink), cx),
@@ -302,6 +307,7 @@ impl Maintenance {
         if let Some((_, v)) = &sentient {
             planned.push(updating_sentient(v));
         }
+        self.job.update(cx, |job, _| job.set_plan(planned.iter().map(|p| sentient_installer_core::progress::PlanStep::new(p.clone())).collect()));
         self.planned = planned;
         self.screen = Screen::Update;
         self.show_log = false;
@@ -717,20 +723,11 @@ impl Maintenance {
             (false, Some(v)) => format!("SENTIENT {} to {v}", record.sentient_version),
             _ => String::new(),
         };
-        let marked = ui::mark_steps(&self.planned, job.steps(), finished);
-        let log: Vec<SharedString> = job.log().iter().rev().take(14).rev().cloned().collect();
-        let mut out: Vec<AnyElement> = vec![
-            div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(title).into_any_element(),
-            div().text_color(theme.muted_foreground).child(versions).into_any_element(),
-        ];
-        match job.state() {
+        let result = match job.state() {
             JobState::Done(_) => {
                 let now = InstallationRecord::load();
                 let sentient_now = now.as_ref().map(|r| r.sentient_version.clone()).unwrap_or_else(|| record.sentient_version.clone());
-                out.push(
-                    ui::outcome(theme, Tone::Good, format!("Platform Manager {} is installed. SENTIENT {sentient_now} is running.", if manager { found.this_manager.clone() } else { found.installed_manager_label() }))
-                        .into_any_element(),
-                );
+                Some(ui::outcome(theme, Tone::Good, format!("Platform Manager {} is installed. SENTIENT {sentient_now} is running.", if manager { found.this_manager.clone() } else { found.installed_manager_label() })))
             }
             JobState::Failed(m) => {
                 let keeps = if manager && !install_only {
@@ -738,87 +735,38 @@ impl Maintenance {
                 } else {
                     String::new()
                 };
-                out.push(ui::outcome(theme, Tone::Bad, format!("{m}{keeps}")).into_any_element());
+                Some(ui::outcome(theme, Tone::Bad, format!("{m}{keeps}")))
             }
-            _ => {}
+            _ => None,
+        };
+        // Secondary first, the primary at the right end.
+        let acts: Vec<AnyElement> = match finished {
+            Some(true) => vec![
+                crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window()).into_any_element(),
+                crate::ui::button("open").primary().label("Open the Platform Manager").on_click(|_, window, _| {
+                    if open_manager(&[]) {
+                        window.remove_window();
+                    }
+                }).into_any_element(),
+            ],
+            Some(false) => vec![
+                crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window()).into_any_element(),
+                crate::ui::button("retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.run_update(cx))).into_any_element(),
+            ],
+            None => Vec::new(),
+        };
+        let mut view = crate::manager::jobview::JobView::new("maint-update", title, &self.job).actions(acts);
+        if let Some(r) = result {
+            view = view.result(r);
         }
-        out.push(ui::steps(theme, &marked).into_any_element());
-        if finished.is_none() {
-            if let Some(p) = job.percent() {
-                out.push(ProgressBar::new("maint").value(p).into_any_element());
-            }
-        }
-        if (self.show_log || finished.is_none()) && !log.is_empty() {
-            out.push(
-                ui::panel(theme)
-                    .text_size(px(13.))
-                    .font_family(theme.mono_font_family.clone())
-                    .text_color(theme.muted_foreground)
-                    .children(log.into_iter().map(|l| div().child(l)))
-                    .into_any_element(),
-            );
-        }
-        match finished {
-            Some(true) => out.push(
-                h_flex()
-                    .gap(crate::ui::button_gap())
-                    .child(crate::ui::probed(crate::ui::button("open").primary().label("Open the Platform Manager").on_click(|_, window, _| {
-                        if open_manager(&[]) {
-                            window.remove_window();
-                        }
-                    })))
-                    .child(crate::ui::probed(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window())))
-                    .into_any_element(),
-            ),
-            Some(false) => out.push(
-                h_flex()
-                    .gap(crate::ui::button_gap())
-                    .child(crate::ui::probed(crate::ui::button("retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.run_update(cx)))))
-                    .child(crate::ui::probed(crate::ui::button("log").outline().label(if self.show_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
-                        this.show_log = !this.show_log;
-                        cx.notify();
-                    }))))
-                    .child(crate::ui::probed(crate::ui::button("close").outline().label("Close").on_click(|_, window, _| window.remove_window())))
-                    .into_any_element(),
-            ),
-            None => {}
-        }
-        out
+        vec![div().text_color(theme.muted_foreground).child(versions).into_any_element(), view.render(cx).into_any_element()]
     }
 
     /// Repair and Uninstall, as before.
     fn action_screen(&self, theme: &gpui_kit::component::Theme, action: Action, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let job = self.job.read(cx);
-        let busy = job.is_running();
-        let outcome = match job.state() {
-            JobState::Done(m) => Some((Tone::Good, m.clone())),
-            JobState::Failed(m) => Some((Tone::Bad, m.clone())),
-            _ => None,
-        };
-        let log: Vec<SharedString> = job.log().iter().rev().take(12).rev().cloned().collect();
-        let mut out = vec![
-            div().text_size(px(19.)).font_weight(FontWeight::MEDIUM).child(action.title()).into_any_element(),
-            div().text_sm().child(job.step_with_time()).into_any_element(),
-        ];
-        if busy {
-            if let Some(v) = job.percent() {
-                out.push(ProgressBar::new("maint").value(v).into_any_element());
-            }
-        }
-        out.extend(outcome.map(|(tone, text)| ui::outcome(theme, tone, text).into_any_element()));
-        out.push(
-            ui::panel(theme)
-                .text_size(px(13.))
-                .font_family(theme.mono_font_family.clone())
-                .text_color(theme.muted_foreground)
-                .children(log.into_iter().map(|l| div().child(l)))
-                .into_any_element(),
-        );
-        if !busy {
-            out.push(h_flex().child(crate::ui::button("close").primary().label("Close").on_click(|_, window, _| window.remove_window())).into_any_element());
-        }
-        let _ = cx;
-        out
+        let _ = theme;
+        let close = crate::ui::button("close").primary().label("Close").on_click(|_, window, _| window.remove_window()).into_any_element();
+        vec![crate::manager::jobview::JobView::new("maint-action", action.title(), &self.job).actions([close]).render(cx).into_any_element()]
     }
 }
 

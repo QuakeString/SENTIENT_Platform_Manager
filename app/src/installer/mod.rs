@@ -388,6 +388,8 @@ impl Installer {
             this.flavor = Some(plan.stack.flavor);
             this.engine = plan.engine;
             this.step = INSTALL;
+            let steps = plan::steps(&plan);
+            this.install.update(cx, |job, _| job.set_plan(steps));
             this.install.update(cx, |job, cx| job.start(move |sink| plan::run(plan, sink), cx));
         }
         if this.bundle.is_none() {
@@ -434,8 +436,10 @@ impl Installer {
             if this.step == INSTALL && std::env::var_os("SPM_DEBUG_DIAGNOSIS").is_some() {
                 this.engine = Engine::Native;
                 this.install.update(cx, |job, cx| {
+                    job.set_plan(plan::screen_steps());
                     job.start(
                         |sink| {
+                            sink(sentient_installer_core::progress::Progress::Step { name: "Installing the Platform Manager".into() });
                             sink(sentient_installer_core::progress::Progress::Step { name: "Installing PostgreSQL from your distribution".into() });
                             Err("pkexec exited with 42".into())
                         },
@@ -624,6 +628,7 @@ impl Installer {
         self.check_fix_at = Some((row, label));
         self.check_fix_watch = true;
         self.check_fix.update(cx, |job, cx| {
+            // jobview: short (a check's one-click fix, shown on its row).
             job.start(
                 move |sink| {
                     sentient_installer_core::diagnose::apply(&action, &sink)
@@ -638,6 +643,7 @@ impl Installer {
     /// Remove what an earlier install left, then look again.
     fn remove_leftovers(&mut self, cx: &mut Context<Self>) {
         let pg_dir = std::path::PathBuf::from(self.value(&self.fields.data_dir, cx));
+        // jobview: short (shown on the check's row).
         self.cleanup.update(cx, |job, cx| job.start(move |sink| crate::leftovers::remove(pg_dir, sink), cx));
         let job = self.cleanup.clone();
         let task = cx.spawn(async move |this, cx| {
@@ -1109,6 +1115,7 @@ impl Installer {
             };
             self.problem = None;
             self.step = INSTALL;
+            self.install.update(cx, |job, _| job.set_plan(plan::manager_only_steps()));
             self.install.update(cx, |job, cx| job.start(move |sink| plan::run_manager_only(shortcuts, sink), cx));
             cx.notify();
             return;
@@ -1123,6 +1130,9 @@ impl Installer {
         };
         self.problem = None;
         self.step = INSTALL;
+        // Its steps from the first frame (the shared job view).
+        let steps = plan::steps(&plan);
+        self.install.update(cx, |job, _| job.set_plan(steps));
         self.install.update(cx, |job, cx| job.start(move |sink| plan::run(plan, sink), cx));
         cx.notify();
     }
@@ -1256,8 +1266,10 @@ impl Installer {
         }
         if self.step == INSTALL {
             self.install.update(cx, |job, cx| {
+                job.set_plan(plan::screen_steps());
                 job.start(
                     move |sink| {
+                        sink(sentient_installer_core::progress::Progress::Step { name: "Installing the Platform Manager".into() });
                         sink(sentient_installer_core::progress::Progress::Step { name: "Starting PostgreSQL".into() });
                         sink(sentient_installer_core::progress::Progress::Percent { value: 0.42 });
                         for i in 0..if long { 24 } else { 4 } {
