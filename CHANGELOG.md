@@ -15,6 +15,48 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.9.1] - Unreleased
+
+Finds SENTIENT in Docker in your own WSL distro on Windows, and manages it there.
+
+### Fixed
+- Windows: a SENTIENT running in Docker inside a WSL distro set up by hand
+  (Ubuntu, …) was not found, on this computer or on a server through its
+  agent. Add existing instance now looks in every running WSL distro of the
+  account and in Docker Desktop, and offers what it finds ("Docker in WSL
+  distro Ubuntu"), through the same add and take-over steps as on Linux.
+- An instance added from such a distro keeps the distro's name in its
+  installation record: status, logs, start and stop, updates and the rest
+  run their Docker commands there. The Platform Manager never sets up,
+  stops, removes or unregisters that distro; uninstall removes only
+  SENTIENT's containers and volumes. Older records load unchanged.
+- When nothing is found, Status (and Add existing SENTIENT on a server)
+  says where it looked: the Windows services or systemd service, each WSL
+  distro (a stopped one is named, not started), Docker Desktop, Docker on
+  Linux.
+- Adding such an instance on a Windows server showed only the progress
+  bar: the job ran as SYSTEM, which cannot see a WSL distro (distros
+  belong to one Windows account), and wsl.exe waited for ever. Jobs for an
+  operator's WSL distro now run as the account the Platform Manager
+  connects with: finding, adding, start/stop and logs in the connection's
+  session, longer jobs (update, backup, uninstall) as a scheduled task of
+  that account, so they still survive a dropped connection. Every WSL
+  call now has a time limit, and a WSL that does not answer is reported
+  with the account it ran as.
+- Adding the SENTIENT found on a server said only "Adding it needs your
+  choice: open Status", with nothing to choose from in the window on the
+  other computer. It now says what was found and why it cannot be added,
+  or what it needs.
+- Copying the Platform Manager to a server could report "does not match
+  (checksum)" when two copies ran at once (the check after connecting and
+  a job's own); one copy runs at a time now, and a copy already in place
+  counts as up to date.
+- Windows: a Docker install made by an earlier Platform Manager (in its
+  own WSL distro "sentient", stack in /opt/sentient) was not found when
+  its installation record was gone: the Platform Manager's own distro was
+  left out of the search. It is looked in now (started if stopped), and
+  what it finds there is managed as the Platform Manager's own.
+
 ## [0.9.0] - 2026-11-17
 
 Manage SENTIENT on other computers, with errors that name their cause and fix.

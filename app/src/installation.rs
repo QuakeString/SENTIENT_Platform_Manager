@@ -66,9 +66,16 @@ pub struct InstallationRecord {
 impl InstallationRecord {
     /// The record on this machine, if SENTIENT is installed.
     /// `SPM_INSTALLATION_RECORD` points somewhere else (development).
+    ///
+    /// Also points this process's Docker commands at the WSL distro the
+    /// record names (`stack.wsl_distro`, a stack found in the operator's
+    /// own distro), or back at the Platform Manager's own: every screen and
+    /// job starts from the record, so each Docker job runs where its
+    /// installation is.
     pub fn load() -> Option<Self> {
-        let text = std::fs::read_to_string(record_path()).ok()?;
-        serde_json::from_str(&text).ok()
+        let record: Option<Self> = std::fs::read_to_string(record_path()).ok().and_then(|text| serde_json::from_str(&text).ok());
+        distro::use_docker_distro(record.as_ref().and_then(|r| r.stack.wsl_distro.as_deref()));
+        record
     }
 
     /// Point the backup engine at the pg_dump and pg_restore that match this
@@ -387,6 +394,20 @@ pub(crate) mod tests {
             // A recorded choice wins over whatever shortcut is on the computer.
             assert_eq!(back.opens_as_kiosk(), chosen);
         }
+    }
+
+    #[test]
+    fn a_docker_record_keeps_the_wsl_distro_it_was_found_in() {
+        // 0.9.0's Docker record: no distro, i.e. the Platform Manager's own.
+        let old = r#"{"sentient_version":"4.4.0.1","manager_version":"0.9.0","engine":"docker","install_dir":"/opt/sentient","pg_dir":"","state_dir":"/opt/sentient","stack":{"external":{"project":"sentient","files":["/home/op/sentient/docker-compose.yml"],"working_dir":"/home/op/sentient"}},"installed_at":"2026-11-09T10:00:00Z"}"#;
+        let r: InstallationRecord = serde_json::from_str(old).unwrap();
+        assert_eq!(r.stack.wsl_distro, None);
+        assert!(!serde_json::to_string(&r).unwrap().contains("wsl_distro"));
+        let mut found = r.clone();
+        found.stack.wsl_distro = Some("Ubuntu".into());
+        let back: InstallationRecord = serde_json::from_str(&serde_json::to_string(&found).unwrap()).unwrap();
+        assert_eq!(back.stack.wsl_distro.as_deref(), Some("Ubuntu"));
+        assert_eq!(back.stack.external, r.stack.external);
     }
 }
 

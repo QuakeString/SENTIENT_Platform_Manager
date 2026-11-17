@@ -385,9 +385,10 @@ fn run_job(args: &[String]) -> i32 {
     // Always ends with one Done line saying what happened.
     if job == "add-if-one" {
         let sink = if json { json_printer() } else { printer() };
-        let found = crate::adopt::find();
+        let search = crate::adopt::search();
+        let found = search.found.clone();
         let message = match found.as_slice() {
-            [] => "No SENTIENT found on this server.".to_string(),
+            [] => format!("No SENTIENT found on this server. {}", search.looked_text()).trim_end().to_string(),
             [c] if c.problem.is_none() && !c.sets_admin_password => match crate::adopt::adopt_as_needed(c, None, sink.clone()) {
                 Ok(()) => format!(
                     "SENTIENT {}{} was found and added. Nothing on it was changed.",
@@ -399,22 +400,46 @@ fn run_job(args: &[String]) -> i32 {
                     return 1;
                 }
             },
-            [_] => "SENTIENT was found on this server. Adding it needs your choice: open Status to see it.".to_string(),
-            many => format!("{} SENTIENT instances were found on this server. Open Status to choose one.", many.len()),
+            // Say why it was not added: the window on another computer has
+            // no list to choose from, so this line is all the operator sees.
+            [c] => {
+                let what = if c.kind.is_empty() { String::new() } else { format!(" ({}, {})", c.kind, c.location) };
+                match &c.problem {
+                    Some(p) => {
+                        sink(Progress::Error { message: format!("SENTIENT was found on this server{what} but cannot be added: {p}") });
+                        return 1;
+                    }
+                    None => format!(
+                        "SENTIENT was found on this server{what}. Adding it needs the PostgreSQL administrator password: add it from the Platform Manager on that server, or with --job add-existing --pg-admin-password there."
+                    ),
+                }
+            }
+            many => format!(
+                "{} SENTIENT instances were found on this server: {}. Add the one you want with the Platform Manager on that server.",
+                many.len(),
+                many.iter().map(|c| format!("{} ({})", c.kind, c.location)).collect::<Vec<_>>().join("; ")
+            ),
         };
         sink(Progress::Done { message });
         return 0;
     }
     if job == "find-existing" || job == "add-existing" {
         let sink = if json { json_printer() } else { printer() };
-        let found = crate::adopt::find();
+        let search = crate::adopt::search();
+        let found = search.found.clone();
         if job == "find-existing" {
             if json {
                 for c in &found {
                     sink(Progress::Log { line: crate::adopt::encode(c) });
                 }
+                if found.is_empty() {
+                    sink(Progress::Log { line: format!("No existing SENTIENT instance was found on this computer. {}", search.looked_text()) });
+                }
             } else {
                 print_candidates(&found);
+                if found.is_empty() {
+                    println!("{}", search.looked_text());
+                }
             }
             return 0;
         }
@@ -424,7 +449,11 @@ fn run_job(args: &[String]) -> i32 {
             let n: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(1);
             let n = if found.len() == 1 { 1 } else { n };
             found.get(n.saturating_sub(1)).ok_or_else(|| {
-                if found.is_empty() { "No existing SENTIENT instance was found on this computer.".to_string() } else { format!("Only {} instance(s) were found.", found.len()) }
+                if found.is_empty() {
+                    format!("No existing SENTIENT instance was found on this computer. {}", search.looked_text()).trim_end().to_string()
+                } else {
+                    format!("Only {} instance(s) were found.", found.len())
+                }
             })
         };
         let pg_admin = args.windows(2).find(|w| w[0] == "--pg-admin-password").map(|w| w[1].clone());
@@ -1225,6 +1254,7 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
         vanished_files: record.stack.vanished_files(),
         external_compose: record.engine == crate::installation::Engine::Docker && record.stack.external.is_some(),
         licence,
+        wsl_distro: if record.engine == crate::installation::Engine::Docker { record.stack.wsl_distro.clone() } else { None },
     }
 }
 

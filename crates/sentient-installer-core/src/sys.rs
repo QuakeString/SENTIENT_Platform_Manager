@@ -84,6 +84,41 @@ pub(crate) fn output_limited(program: &str, args: &[&str], limit: std::time::Dur
     }
 }
 
+/// The Windows account this process runs as (DOMAIN\\user), for messages.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn account_name() -> String {
+    let user = std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_default();
+    match std::env::var("USERDOMAIN") {
+        Ok(d) if !d.is_empty() => format!("{d}\\{user}"),
+        _ => user,
+    }
+}
+
+/// [`output_limited`] for `wsl.exe` and the commands run through it: a
+/// WSL that does not answer (as SYSTEM, or as an account the distro does
+/// not belong to, wsl.exe can wait for ever) becomes a failure that says
+/// which account it ran as. Elsewhere and for other programs, the same
+/// limit without the note.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn output_wsl(program: &str, args: &[&str], limit: std::time::Duration) -> Option<(bool, Vec<u8>, Vec<u8>)> {
+    let r = output_limited(program, args, limit);
+    match r {
+        Some((false, out, mut err)) if String::from_utf8_lossy(&err).contains("did not finish within") => {
+            if program.eq_ignore_ascii_case("wsl.exe") {
+                err.extend_from_slice(
+                    format!(
+                        ". WSL did not answer. WSL distros belong to the Windows account that installed them; this ran as {}. Sign in to that server as the account that owns the distro, or start WSL there once by hand.",
+                        account_name()
+                    )
+                    .as_bytes(),
+                );
+            }
+            Some((false, out, err))
+        }
+        other => other,
+    }
+}
+
 /// [`output_tracked`] with extra environment variables for the child.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn output_tracked_env(
