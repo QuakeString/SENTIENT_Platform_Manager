@@ -20,7 +20,8 @@ default size (ui::control_h, 2 rem: STANDARD px on screen). Checks:
   and its buttons line up top and bottom;
 - a settings row: its name's first line (`setting-label`) and its current
   value (`current-cell`) are STANDARD tall and centred on the control's
-  line in their row.
+  line in their row; in a wide row (a link, buttons, a choice) the first
+  control beside the name is centred on the name's line.
 Prints one line per finding; exits 1 if there is any.
 """
 import sys
@@ -119,6 +120,17 @@ def main():
                 bad.append(f"{kind} at y {r[2]:.0f}: its first line is not on its control's line (control top {m[2]:.0f}, centre {c(m):.1f})")
             elif abs(h(r) - STANDARD) <= TOL and abs(c(r) - c(m)) > TOL:
                 bad.append(f"{kind} at y {r[2]:.0f}: centre {c(r):.1f}, its control's {c(m):.1f}")
+    # A wide settings row (a link, buttons, a choice across the field and
+    # current columns): its control on the name's first line.
+    others = [r for k in ("button", "field", "segmented") for r in f.get(k, [])]
+    for r in f.get("setting-label", []):
+        if abs(h(r) - STANDARD) > TOL or any(min(x[3], r[3]) - max(x[2], r[2]) > 0 for x in rowctl):
+            continue
+        mates = [x for x in others if x[0] >= r[1] - 0.5 and min(x[3], r[3]) - max(x[2], r[2]) > 0]
+        if mates:
+            m = min(mates, key=lambda x: x[0])
+            if abs(c(m) - c(r)) > TOL:
+                bad.append(f"setting-label at y {r[2]:.0f}: centre {c(r):.1f}, the control beside it (x {m[0]:.0f}, {h(m):.0f} px) {c(m):.1f}")
     for b in bad:
         print(f"{log.split('/')[-1]}: {b}")
     return 1 if bad else 0

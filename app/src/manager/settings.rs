@@ -779,7 +779,7 @@ pub(crate) fn row(_theme: &gpui_kit::component::Theme, label: impl Into<SharedSt
 
 /// A plain value in a wide row.
 fn text_value(theme: &gpui_kit::component::Theme, text: impl Into<SharedString>) -> Div {
-    div().pt(px(10.)).text_sm().text_color(theme.foreground).child(text.into())
+    ui::row_text(text).text_color(theme.foreground)
 }
 
 /// The exact PostgreSQL and pool numbers under Database › Custom.
@@ -1073,7 +1073,7 @@ impl SettingsPage {
         let pg_changed = PRESET_KEYS.iter().filter(|k| k.starts_with("pg:")).any(|k| self.is_changed(k, cx));
         let mut rows = vec![
             row(theme, "This computer", None, false, text_value(theme, format!("{} of memory", crate::dbstatus::bytes_label(self.ram_mb << 20)))),
-            row(theme, "Size for", Some("Sets PostgreSQL's memory and connections and SENTIENT's connection pools together. Custom shows the exact numbers.".into()), false, h_flex().pt_1().child(presets)),
+            row(theme, "Size for", Some("Sets PostgreSQL's memory and connections and SENTIENT's connection pools together. Custom shows the exact numbers.".into()), false, h_flex().child(presets)),
         ];
         if open_custom {
             for k in DB_EXACT {
@@ -1235,7 +1235,7 @@ impl SettingsPage {
                         this.set(&key, "", window, cx);
                         cx.notify();
                     }));
-                    r.control = h_flex().gap_2().items_start().child(r.control).child(div().pt(px(8.)).child(reset)).into_any_element();
+                    r.control = h_flex().gap_2().items_start().child(r.control).child(ui::on_control_line(reset)).into_any_element();
                 }
                 rows.push(r);
             }

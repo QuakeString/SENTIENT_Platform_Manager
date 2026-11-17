@@ -307,7 +307,7 @@ impl Render for StartupPanel {
             restart: false,
             changed: signin_changed,
             control: match self.signin {
-                None => div().pt(px(10.)).text_sm().child("Checking…").into_any_element(),
+                None => ui::row_text("Checking…").into_any_element(),
                 Some(_) => {
                     let this = cx.entity().downgrade();
                     ui::chips(&theme, "signin", &["Off", "Kiosk", "Window"], Some(self.signin_choice), std::rc::Rc::new(move |i, _, cx| {
