@@ -45,7 +45,7 @@ fn sources() -> Vec<(String, String)> {
     files
         .into_iter()
         .filter(|p| !p.ends_with("popup_gate.rs"))
-        .map(|p| (p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"), std::fs::read_to_string(&p).unwrap()))
+        .map(|p| (p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"), lf(&std::fs::read_to_string(&p).unwrap())))
         .collect()
 }
 
@@ -60,6 +60,12 @@ fn allowed(file: &str, near: &str) -> bool {
 
 /// Every `deferred(` layer (the bell, the switcher, the theme menu, the
 /// job panel, the licence menu) wraps its popup in a helper.
+/// Source text with LF line ends: a Windows checkout has CRLF, and the
+/// searches below look for "\n}\n".
+fn lf(s: &str) -> String {
+    s.replace("\r\n", "\n")
+}
+
 #[test]
 fn every_deferred_popup_uses_the_helper() {
     let mut bad = Vec::new();
@@ -133,7 +139,7 @@ fn tooltips_open_with_the_menu_motion() {
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
-    let ui = include_str!("ui.rs");
+    let ui = lf(include_str!("ui.rs"));
     let info = &ui[ui.find("impl Render for InfoTip").expect("InfoTip")..];
     let info = &info[..info.find("\n}\n").expect("InfoTip's end")];
     assert!(info.contains("menu_appear("), "the (i) tooltip (InfoTip) opens with ui::menu_appear");
@@ -142,11 +148,11 @@ fn tooltips_open_with_the_menu_motion() {
 /// The dialog layer and the app's popover menu call the helpers.
 #[test]
 fn dialogs_and_popover_menus_use_the_helpers() {
-    let modal = include_str!("modal.rs");
+    let modal = lf(include_str!("modal.rs"));
     let layer = &modal[modal.find("pub fn layer(").expect("modal::layer")..];
     let layer = &layer[..layer.find("\n}\n").expect("layer's end")];
     assert!(layer.contains("crate::ui::appear("), "the dialog (modal::layer) opens with ui::appear");
-    let ui = include_str!("ui.rs");
+    let ui = lf(include_str!("ui.rs"));
     let menu = &ui[ui.find("pub fn popover_menu(").expect("popover_menu")..];
     let menu = &menu[..menu.find("\n}\n").expect("popover_menu's end")];
     assert!(menu.contains("menu_appear("), "ui::popover_menu opens with ui::menu_appear");
@@ -156,7 +162,7 @@ fn dialogs_and_popover_menus_use_the_helpers() {
 /// the vendored patch is in place, with the same numbers.
 #[test]
 fn toolkit_menus_move_like_ours() {
-    let src = include_str!("../vendor/gpui-component/src/menu/popup_menu.rs");
+    let src = lf(include_str!("../vendor/gpui-component/src/menu/popup_menu.rs"));
     let num = |name: &str| -> f64 {
         let at = src.find(&format!("const {name}:")).unwrap_or_else(|| panic!("{name} in the vendored popup_menu.rs"));
         let rest = &src[at..];
@@ -167,7 +173,7 @@ fn toolkit_menus_move_like_ours() {
     assert_eq!(num("SENTIENT_OPEN_RISE"), crate::ui::MENU_APPEAR_RISE as f64, "the vendored menu's rise is ui::MENU_APPEAR_RISE");
     assert!(src.contains(".with_animation(") && src.contains("\"sentient-menu-open\""), "the vendored PopupMenu render plays the open motion");
     // The menus the app opens are PopupMenus.
-    for (f, s) in [("dropdown_menu.rs", include_str!("../vendor/gpui-component/src/menu/dropdown_menu.rs")), ("context_menu.rs", include_str!("../vendor/gpui-component/src/menu/context_menu.rs"))] {
+    for (f, s) in [("dropdown_menu.rs", lf(include_str!("../vendor/gpui-component/src/menu/dropdown_menu.rs"))), ("context_menu.rs", lf(include_str!("../vendor/gpui-component/src/menu/context_menu.rs")))] {
         assert!(s.contains("PopupMenu"), "{f} draws a PopupMenu");
     }
 }
