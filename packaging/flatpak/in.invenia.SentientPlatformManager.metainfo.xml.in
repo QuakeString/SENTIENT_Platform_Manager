@@ -22,7 +22,7 @@
     </p>
   </description>
   <launchable type="desktop-id">in.invenia.SentientPlatformManager.desktop</launchable>
-  <url type="homepage">https://github.com/QuakeString/SENTIENT_Platform_Manager</url>
+  <url type="homepage">https://inveniasystems.com</url>
   <content_rating type="oars-1.1"/>
   <releases>
     <release version="@VERSION@" date="@DATE@"/>

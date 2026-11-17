@@ -24,7 +24,7 @@ use crate::updates::UpdateState;
 pub mod company {
     pub const NAME: &str = "INVENIA SYSTEMS";
     /// Not confirmed yet: the website repository is inveniasystems.com.
-    pub const WEBSITE: &str = "https://invenia.in";
+    pub const WEBSITE: &str = "https://inveniasystems.com";
     pub const SUPPORT_EMAIL: &str = "support@invenia.in";
     /// Not confirmed yet.
     pub const DOCS: &str = "https://docs.invenia.in";
@@ -167,7 +167,7 @@ impl AboutPage {
                             .id("about-company-logo")
                             .cursor_pointer()
                             .child(img(company::LOGO).h(px(logo_h)).w(px(logo_h * company::LOGO_ASPECT)).flex_shrink_0())
-                            .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new(company::NAME).build(w, cx))
+                            .tooltip(ui::tooltip(company::NAME))
                             .on_click(|_, _, cx| ui::open_url(company::WEBSITE, cx)),
                     ),
             )

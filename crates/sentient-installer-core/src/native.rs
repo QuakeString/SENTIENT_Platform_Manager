@@ -1447,6 +1447,7 @@ fn register_uninstall_entry(sink: &ProgressFn, cfg: &NativeConfig) {
     let mut values: Vec<(&str, &str, String)> = vec![
         ("DisplayName", "REG_SZ", "SENTIENT Platform".into()),
         ("Publisher", "REG_SZ", "INVENIA SYSTEMS".into()),
+        ("URLInfoAbout", "REG_SZ", "https://inveniasystems.com".into()),
         ("InstallLocation", "REG_SZ", cfg.install_dir.display().to_string()),
         ("DisplayIcon", "REG_SZ", icon.display().to_string()),
         ("NoModify", "REG_DWORD", "1".into()),
