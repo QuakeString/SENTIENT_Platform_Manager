@@ -1631,10 +1631,8 @@ pub fn pg_other_databases(cfg: &NativeConfig) -> Result<Vec<String>, String> {
         if !psql.exists() {
             return Err(format!("psql is not where PostgreSQL was installed ({})", psql.display()));
         }
-        let mut c = std::process::Command::new(&psql);
+        let mut c = crate::sys::host_command_env(&psql, &[("PGPASSWORD", cfg.db_password.as_str()), ("PGCONNECT_TIMEOUT", "10")]);
         c.args(["-w", "-h", "127.0.0.1", "-p", &cfg.pg_port.to_string(), "-U", &cfg.db_user, "-d", &cfg.db_name, "-XAtqc", "SELECT datname FROM pg_database"])
-            .env("PGPASSWORD", &cfg.db_password)
-            .env("PGCONNECT_TIMEOUT", "10")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());

@@ -188,7 +188,7 @@ fn download_hosts_linux() -> Check {
 
 #[cfg(unix)]
 fn sh(cmd: &str) -> Option<(bool, String)> {
-    let out = std::process::Command::new("sh").args(["-c", cmd]).output().ok()?;
+    let out = crate::sys::host_command("sh").args(["-c", cmd]).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string()
         + &String::from_utf8_lossy(&out.stderr);
     Some((out.status.success(), text.trim().to_string()))

@@ -664,7 +664,7 @@ mod file_store {
     pub fn keyring_has(name: &str) -> bool {
         #[cfg(not(windows))]
         {
-            std::process::Command::new("secret-tool")
+            sentient_installer_core::host::host_command("secret-tool")
                 .args(["lookup", "service", "sentient-platform-manager", "instance", name])
                 .output()
                 .is_ok_and(|o| o.status.success() && !o.stdout.is_empty())

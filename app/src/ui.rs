@@ -533,8 +533,30 @@ impl Render for InfoTip {
     }
 }
 
+/// The Flatpak build manages SENTIENT on other computers only: its sandbox
+/// cannot reach SENTIENT's files and services here. Shown instead of every
+/// "this computer" page (not_installed, Setup), so they do not look empty.
+pub fn flatpak_local_notice(theme: &Theme) -> Div {
+    panel(theme)
+        .child(div().font_weight(FontWeight::MEDIUM).child("This is the Flatpak build of the Platform Manager: it manages SENTIENT on other computers"))
+        .child(
+            gpui_kit::component::h_flex()
+                .gap_1()
+                .items_center()
+                .child(div().text_sm().text_color(theme.muted_foreground).child("To install or manage SENTIENT on this computer, use the .deb, .rpm, AppImage or Arch package."))
+                .child(info(
+                    "flatpak-help".into(),
+                    "The Flatpak runs in a sandbox that cannot reach SENTIENT's files and services on this computer, so it manages SENTIENT on other computers over SSH.\n\nAdd a server from the instance switcher.".into(),
+                )),
+        )
+}
+
 /// Shown on every manager screen when this computer has no installation.
+/// The Flatpak build says why instead (flatpak_local_notice).
 pub fn not_installed(theme: &Theme) -> Div {
+    if sentient_installer_core::host::in_flatpak() {
+        return flatpak_local_notice(theme);
+    }
     // One short line; the how-to behind the (i). The buttons wrap on a
     // narrow window. Removing the Platform Manager lives in Repair.
     panel(theme)
@@ -924,7 +946,7 @@ pub fn reduce_motion() -> bool {
         }
         #[cfg(target_os = "linux")]
         {
-            let out = |cmd: &str, args: &[&str]| std::process::Command::new(cmd).args(args).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+            let out = |cmd: &str, args: &[&str]| sentient_installer_core::host::host_command(cmd).args(args).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
             if out("kreadconfig6", &["--file", "kdeglobals", "--group", "KDE", "--key", "AnimationDurationFactor"]).is_some_and(|v| v == "0") {
                 return true;
             }
@@ -1547,7 +1569,7 @@ pub(crate) fn reduced_motion() -> bool {
     static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *R.get_or_init(|| {
         std::env::var_os("SPM_REDUCED_MOTION").is_some()
-            || std::process::Command::new("gsettings")
+            || sentient_installer_core::host::host_command("gsettings")
                 .args(["get", "org.gnome.desktop.interface", "enable-animations"])
                 .output()
                 .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "false")

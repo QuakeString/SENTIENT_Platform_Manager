@@ -203,7 +203,7 @@ fn desktop_entry_paths() -> Vec<PathBuf> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let data_home = std::env::var("XDG_DATA_HOME").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| format!("{home}/.local/share"));
     let mut v = vec![PathBuf::from(format!("{data_home}/applications/sentient-kiosk.desktop"))];
-    let desktop = std::process::Command::new("xdg-user-dir").arg("DESKTOP").output().ok()
+    let desktop = crate::sys::host_command("xdg-user-dir").arg("DESKTOP").output().ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty())

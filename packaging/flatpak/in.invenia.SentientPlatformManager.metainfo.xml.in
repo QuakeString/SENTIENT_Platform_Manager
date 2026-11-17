@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright © 2016-2026 The SENTIENT Authors -->
+<!-- packaging/flatpak/build.sh fills in the version and date. -->
+<component type="desktop-application">
+  <id>in.invenia.SentientPlatformManager</id>
+  <name>SENTIENT Platform Manager</name>
+  <summary>Manage SENTIENT on other computers (remote management)</summary>
+  <developer id="in.invenia">
+    <name>INVENIA SYSTEMS</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <description>
+    <p>
+      The SENTIENT Platform Manager for remote management: it installs,
+      runs, updates, backs up and restores SENTIENT on other computers it
+      reaches over SSH.
+    </p>
+    <p>
+      Installing or managing SENTIENT on this same computer needs the .deb,
+      .rpm, AppImage or Arch package of the Platform Manager.
+    </p>
+  </description>
+  <launchable type="desktop-id">in.invenia.SentientPlatformManager.desktop</launchable>
+  <url type="homepage">https://github.com/QuakeString/SENTIENT_Platform_Manager</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

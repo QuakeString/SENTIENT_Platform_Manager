@@ -815,10 +815,8 @@ fn pg_show_tcp(cfg: &NativeConfig, name: &str) -> Option<String> {
     if cfg.db_password.is_empty() {
         return None;
     }
-    let out = sys::command("psql")
+    let out = sys::host_command_env("psql", &[("PGPASSWORD", cfg.db_password.as_str()), ("PGCONNECT_TIMEOUT", "5")])
         .args(["-h", "127.0.0.1", "-p", &cfg.pg_port.to_string(), "-U", &cfg.db_user, "-d", &cfg.db_name, "-w", "-qAt", "-c", &format!("SHOW {name}")])
-        .env("PGPASSWORD", &cfg.db_password)
-        .env("PGCONNECT_TIMEOUT", "5")
         .output()
         .ok()?;
     let v = String::from_utf8_lossy(&out.stdout).trim().to_string();

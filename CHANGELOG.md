@@ -19,6 +19,16 @@ refreshes that repository's Downloads table.
 
 Finds SENTIENT in Docker in your own WSL distro on Windows, and manages it there.
 
+### Added
+- Linux packages beside the Arch one: Debian/Ubuntu (`.deb`, Debian 12+ and
+  Ubuntu 22.04+), Fedora/RHEL/openSUSE (`.rpm`), an AppImage and a Flatpak
+  bundle. Installed from a `.deb` or `.rpm`, the Platform Manager leaves its
+  updates and removal to apt or dnf.
+- The Flatpak is for managing SENTIENT on other computers (remote
+  management); installing or managing SENTIENT on this same computer needs
+  the .deb, .rpm, AppImage or Arch package. Its pages for this computer
+  (Status, Setup and the rest) say so instead of looking empty.
+
 ### Fixed
 - Windows: a SENTIENT running in Docker inside a WSL distro set up by hand
   (Ubuntu, …) was not found, on this computer or on a server through its

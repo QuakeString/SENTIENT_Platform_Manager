@@ -544,6 +544,10 @@ impl Render for StatusPage {
         let theme = cx.theme().clone();
         let page = ui::page(&theme, "Status", "Services, version, database type and ports.");
         let Some(record) = &self.record else {
+            // The Flatpak build finds nothing on this computer: it says why.
+            if sentient_installer_core::host::in_flatpak() {
+                return page.child(ui::not_installed(&theme));
+            }
             // "Add existing instance" only when one was found, with its Add
             // button; nothing while looking or when there is none.
             let existing = self.found.as_ref().is_some_and(|f| !f.is_empty()).then(|| self.existing(&theme, cx));

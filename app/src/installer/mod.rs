@@ -1489,6 +1489,11 @@ impl Installer {
         if let Some(earlier) = &self.earlier {
             return div().size_full().bg(cx.theme().background).child(earlier.clone()).into_any_element();
         }
+        // Setup installs on this computer, which the Flatpak build cannot.
+        if sentient_installer_core::host::in_flatpak() {
+            let theme = cx.theme().clone();
+            return v_flex().size_full().p(px(24.)).bg(theme.background).text_color(theme.foreground).child(ui::flatpak_local_notice(&theme)).into_any_element();
+        }
         let width = f32::from(window.viewport_size().width);
         // Two cards side by side when the page has the room (ui::card_pair).
         ui::set_side_by_side(width - crate::manager::shell::MENU_W >= 720.);

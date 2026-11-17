@@ -117,6 +117,14 @@ fn main() {
     // Agent mode runs as the hidden ClickHouse account: no window, no
     // elevation (that account is not an administrator).
     let args: Vec<String> = std::env::args().collect();
+    // Inside a Flatpak: a temporary folder the host sees too, and the root
+    // helper the host can run (sentient_installer_core::host).
+    if sentient_installer_core::host::in_flatpak() {
+        sentient_installer_core::host::flatpak_init();
+        if let Some(agent) = remote::host_self() {
+            sentient_installer_core::elevation::set_helper(vec![agent.display().to_string(), sentient_installer_core::elevation::SESSION_ARG.to_string()]);
+        }
+    }
     // The root helper a job's one password prompt starts (pkexec <this>
     // --root-session): it runs the job's root steps sent over its pipe.
     if let Some(code) = sentient_installer_core::elevation::serve_if_requested(&args) {

@@ -59,9 +59,8 @@ fn desktop_font_families() -> Vec<String> {
 
 #[cfg(target_os = "linux")]
 fn desktop_font_family() -> Option<String> {
-    use std::process::Command;
     let out = |cmd: &str, args: &[&str]| {
-        Command::new(cmd).args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty())
+        sentient_installer_core::host::host_command(cmd).args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty())
     };
     let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_uppercase();
     // KDE: kdeglobals [General] font=Noto Sans,10,-1,5,400,…
@@ -264,7 +263,7 @@ fn portal_scheme() -> Option<bool> {
         return None;
     }
     let asked = std::time::Instant::now();
-    let out = std::process::Command::new("busctl")
+    let out = sentient_installer_core::host::host_command("busctl")
         .args(["--user", "--timeout=2", "call", "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Settings", "ReadOne", "ss", "org.freedesktop.appearance", "color-scheme"])
         .output()
         .ok();
@@ -300,7 +299,7 @@ fn gsettings_dark() -> Option<bool> {
     if !cfg!(target_os = "linux") {
         return None;
     }
-    std::process::Command::new("gsettings")
+    sentient_installer_core::host::host_command("gsettings")
         .args(["get", "org.gnome.desktop.interface", "color-scheme"])
         .output()
         .ok()

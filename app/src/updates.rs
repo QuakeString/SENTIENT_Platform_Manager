@@ -381,8 +381,8 @@ fn mb(bytes: u64) -> String {
 /// it is not used.
 pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
     #[cfg(not(windows))]
-    if crate::self_install::installed_by_package_manager() {
-        return Err("This Platform Manager was installed with pacman: update it with pacman (the new package is on the release page).".into());
+    if let Some(owner) = crate::self_install::owner() {
+        return Err(format!("This Platform Manager was installed with {tool}: update it with {tool} (the new package is on the release page).", tool = owner.tool()));
     }
     let [address, downloading, checking, replacing] = SELF_UPDATE_STEPS;
     sink(Progress::Step { name: address.into() });

@@ -10,7 +10,8 @@
 #
 # What gets signed (the publish scripts call this):
 #   - a SENTIENT release's manifest.json (it lists every file's SHA-256);
-#   - each Platform Manager installer (SENTIENT-Setup-manager-*).
+#   - each Platform Manager installer (SENTIENT-Setup-manager-*) and its
+#     AppImage (*.AppImage).
 #
 # The secret key never enters a repository. It is read from
 # SENTIENT_RELEASE_KEY, default ~/.sentient-keys/release-2026-11/release.key

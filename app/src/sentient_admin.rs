@@ -66,7 +66,7 @@ pub fn run(record: &InstallationRecord, args: &[String], input: Option<&str>) ->
     }
     let mut cmd = match record.engine {
         Engine::Docker => {
-            let mut c = Command::new("docker");
+            let mut c = sentient_installer_core::host::host_command("docker");
             c.args(["exec", "-i", &record.stack.names().app, "/usr/share/sentient/bin/sentient-admin"]);
             c
         }
@@ -76,8 +76,9 @@ pub fn run(record: &InstallationRecord, args: &[String], input: Option<&str>) ->
                 return Err(MISSING.into());
             }
             let cfg = record.native_config_with_secrets()?;
-            let mut c = Command::new(exe);
-            c.env("DATABASE_URL", format!("postgresql://{}:{}@127.0.0.1:{}/{}", cfg.db_user, cfg.db_password, cfg.pg_port, cfg.db_name));
+            let url = format!("postgresql://{}:{}@127.0.0.1:{}/{}", cfg.db_user, cfg.db_password, cfg.pg_port, cfg.db_name);
+            #[allow(unused_mut)]
+            let mut c = sentient_installer_core::host::host_command_env(exe, &[("DATABASE_URL", url.as_str())]);
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;

@@ -74,7 +74,7 @@ pub fn noted() -> Option<Installed> {
 fn probe_before(engine: Engine, flavor: sentient_installer_core::stack::Flavor) -> Installed {
     let mut i = Installed { postgres: true, clickhouse: true, wsl: false };
     if cfg!(target_os = "linux") && engine == Engine::Native {
-        let sh = |c: &str| std::process::Command::new("sh").arg("-c").arg(c).output().map(|o| o.status.success()).unwrap_or(false);
+        let sh = |c: &str| sentient_installer_core::host::host_command("sh").arg("-c").arg(c).output().map(|o| o.status.success()).unwrap_or(false);
         i.postgres = !sh("command -v postgres || command -v pg_ctl || [ -x /usr/bin/postgres ] || systemctl cat postgresql.service >/dev/null 2>&1");
         i.clickhouse = !flavor.uses_clickhouse() || !sh("command -v clickhouse-server || systemctl cat clickhouse-server.service >/dev/null 2>&1");
     }
@@ -828,7 +828,7 @@ pub fn parse_docker_size(t: &str) -> Option<u64> {
 /// The PostgreSQL server package's installed size.
 fn package_bytes(pm: Pm) -> Option<u64> {
     let pkg = pm.postgres_packages()[0];
-    let run = |p: &str, a: &[&str]| std::process::Command::new(p).args(a).env("LC_ALL", "C").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    let run = |p: &str, a: &[&str]| sentient_installer_core::host::host_command_env(p, &[("LC_ALL", "C")]).args(a).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
     match pm {
         Pm::Pacman => parse_pacman_size(&run("pacman", &["-Qi", pkg])?),
         Pm::Apt => {
@@ -1087,12 +1087,12 @@ fn removal_shq(s: &str) -> String {
 }
 
 fn docker_out(args: &[&str]) -> Option<String> {
-    let o = std::process::Command::new("docker").args(args).output().ok()?;
+    let o = sentient_installer_core::host::host_command("docker").args(args).output().ok()?;
     Some(String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| o.status.success() && !s.is_empty())
 }
 
 fn run_shell(sink: &ProgressFn, script: &str) -> Result<(), String> {
-    let out = std::process::Command::new("sh").arg("-c").arg(script).output().map_err(|e| format!("run sh: {e}"))?;
+    let out = sentient_installer_core::host::host_command("sh").arg("-c").arg(script).output().map_err(|e| format!("run sh: {e}"))?;
     for l in String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()) {
         log(sink, l.trim_start_matches(">> ").to_string());
     }
@@ -1527,7 +1527,7 @@ pub fn computer_name() -> String {
     std::env::var("COMPUTERNAME")
         .ok()
         .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
-        .or_else(|| std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()))
+        .or_else(|| sentient_installer_core::host::host_command("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "this computer".into())

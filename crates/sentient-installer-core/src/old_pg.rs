@@ -45,7 +45,7 @@ pub enum Family {
 
 impl Family {
     pub fn here() -> Option<Family> {
-        let have = |b: &str| std::process::Command::new("sh").arg("-c").arg(format!("command -v {b}")).output().is_ok_and(|o| o.status.success());
+        let have = |b: &str| crate::sys::host_command("sh").arg("-c").arg(format!("command -v {b}")).output().is_ok_and(|o| o.status.success());
         if have("pacman") {
             Some(Family::Arch)
         } else if have("apt-get") {
@@ -103,7 +103,7 @@ pub fn major_of(text: &str) -> Option<u32> {
 }
 
 fn out(cmd: &str) -> Option<String> {
-    let o = std::process::Command::new("sh").arg("-c").arg(cmd).output().ok()?;
+    let o = crate::sys::host_command("sh").arg("-c").arg(cmd).output().ok()?;
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty())
 }
 
