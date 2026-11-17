@@ -530,9 +530,18 @@ pub fn adopt(wanted: &Candidate, pg_admin: Option<String>, sink: ProgressFn) -> 
         crate::self_install::restore_menu_entry(&manager);
     }
     sink(Progress::Done {
-        message: format!("Added: the Platform Manager now manages SENTIENT {} ({}).", candidate.record.sentient_version, candidate.kind),
+        message: match version_known(&candidate.record.sentient_version) {
+            Some(v) => format!("Added: the Platform Manager now manages SENTIENT {v} ({}).", candidate.kind),
+            None => format!("Added: the Platform Manager now manages this SENTIENT ({}).", candidate.kind),
+        },
     });
     Ok(candidate.record)
+}
+
+/// A version worth naming: not empty, not "unknown".
+fn version_known(v: &str) -> Option<&str> {
+    let v = v.trim();
+    (!v.is_empty() && !v.eq_ignore_ascii_case("unknown")).then_some(v)
 }
 
 /// The native installation, read and checked (as root on Linux; on

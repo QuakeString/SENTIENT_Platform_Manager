@@ -831,6 +831,15 @@ pub fn clock_word(c: &crate::server_info::Clock) -> (&'static str, Tone) {
     }
 }
 
+
+/// A graphics card's memory beside its name, unless the name already says
+/// it ("NVIDIA RTX A2000 12GB" with 12 GB): case and spaces ignored.
+fn gpu_mem_note(name: &str, mem: Option<String>) -> String {
+    let Some(mem) = mem else { return String::new() };
+    let squash = |t: &str| t.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_ascii_lowercase();
+    if squash(name).contains(&squash(&mem)) { String::new() } else { mem }
+}
+
 fn section(theme: &gpui_kit::component::Theme, title: &'static str, rows: Vec<Div>) -> Div {
     v_flex()
         .min_w_0()
@@ -867,7 +876,7 @@ impl Render for Details {
         if i.gpus.is_empty() {
             add(&mut hw, "Graphics", line(&theme, "sd-gpu-none", "None", "", None).into_any_element());
         } else {
-            let list = v_flex().gap(px(4.)).children(i.gpus.iter().enumerate().map(|(k, g)| line(&theme, format!("sd-gpu-{k}"), g.name.clone(), g.mem.map(gb_label).unwrap_or_default(), None)));
+            let list = v_flex().gap(px(4.)).children(i.gpus.iter().enumerate().map(|(k, g)| line(&theme, format!("sd-gpu-{k}"), g.name.clone(), gpu_mem_note(&g.name, g.mem.map(gb_label)), None)));
             add(&mut hw, "Graphics", list.into_any_element());
         }
         let disks = v_flex().gap(px(12.)).min_w_0().children(i.disks.iter().enumerate().map(|(k, d)| disk_block(&theme, &format!("sd-disk-{k}"), d, true)));
@@ -1049,6 +1058,15 @@ impl Render for ShutdownFooter {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn graphics_memory_is_not_said_twice() {
+        assert_eq!(super::gpu_mem_note("NVIDIA RTX A2000 12GB", Some("12 GB".into())), "");
+        assert_eq!(super::gpu_mem_note("Radeon Pro W6600 8 gb", Some("8 GB".into())), "");
+        assert_eq!(super::gpu_mem_note("NVIDIA RTX A2000", Some("12 GB".into())), "12 GB");
+        assert_eq!(super::gpu_mem_note("NVIDIA RTX A2000 12GB", Some("6 GB".into())), "6 GB");
+        assert_eq!(super::gpu_mem_note("Basic display", None), "");
+    }
+
     use super::{boot_of, clock_word, gb_label, menu_entries, name_matches, power_state, restart_flow, running_for, set_power, shutdown_flow, updates_note, Diagnosis, FakeHost, MenuEntry, Power, PowerFlag, PowerHost, Progress, ProgressFn};
     use crate::ui::Tone;
     use std::sync::{Arc, Mutex as M};
