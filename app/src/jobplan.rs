@@ -237,34 +237,34 @@ pub fn changes(pending: &[crate::changes::Change]) -> Vec<PlanStep> {
 }
 
 /// Restarting a server (crate::manager::server_card): the window drives
-/// these steps itself; the server is down for most of them.
+/// these steps itself; the server is down for most of them. The mockup's
+/// six steps, all shown up front.
 pub const STEP_RESTART_SENT: &str = "Restart sent";
 pub const STEP_WENT_DOWN: &str = "Server went down";
-pub const STEP_COMING_BACK: &str = "Waiting for it to come back";
-pub const STEP_RESTARTED: &str = "Server restarted";
-pub const STEP_RUNNING: &str = "SENTIENT and the database running";
-pub const STEP_ANSWERS: &str = "SENTIENT answers";
+pub const STEP_COMING_BACK: &str = "Waiting for the server to come back";
+pub const STEP_RESTARTED: &str = "Check it really restarted";
+pub const STEP_RUNNING: &str = "SENTIENT and database running";
+pub const STEP_ANSWERS: &str = "SENTIENT answers on its web address";
+pub const STEP_SHUTDOWN_SENT: &str = "Shut down sent";
 
 #[cfg_attr(not(feature = "gui"), allow(dead_code))]
 pub fn server_restart(windows: bool) -> Vec<PlanStep> {
     vec![
-        connect(),
         PlanStep::new(STEP_RESTART_SENT).detail(format!("SENTIENT and its database stopped cleanly first, then {}", if windows { "shutdown /r" } else { "systemctl reboot" })).weight(1.),
-        PlanStep::new(STEP_WENT_DOWN).detail("The connection drops").weight(0.5),
+        PlanStep::new(STEP_WENT_DOWN).detail("Until the connection really drops").weight(0.5),
         PlanStep::new(STEP_COMING_BACK).detail("Reconnecting; gives up after 10 min").weight(3.),
         PlanStep::new(STEP_RESTARTED).detail("Its start time is new").weight(0.5),
         PlanStep::new(STEP_RUNNING).weight(2.),
-        PlanStep::new(STEP_ANSWERS).detail("On its web address").weight(1.),
+        PlanStep::new(STEP_ANSWERS).weight(1.),
     ]
 }
 
-/// Shutting a server down: it is gone once the command is sent.
+/// Shutting a server down: sent, then confirmed down (it shows as off).
 #[cfg_attr(not(feature = "gui"), allow(dead_code))]
 pub fn server_shutdown(windows: bool) -> Vec<PlanStep> {
     vec![
-        connect(),
-        PlanStep::new("Shutdown sent").detail(format!("SENTIENT and its database stopped cleanly first, then {}", if windows { "shutdown /s" } else { "systemctl poweroff" })),
-        PlanStep::new(STEP_WENT_DOWN).detail("The connection drops").weight(0.5),
+        PlanStep::new(STEP_SHUTDOWN_SENT).detail(format!("SENTIENT and its database stopped cleanly first, then {}", if windows { "shutdown /s" } else { "systemctl poweroff" })),
+        PlanStep::new(STEP_WENT_DOWN).detail("Until the connection really drops").weight(0.5),
     ]
 }
 
