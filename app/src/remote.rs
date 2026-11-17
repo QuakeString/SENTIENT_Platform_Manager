@@ -2366,6 +2366,27 @@ mod win {
 mod tests {
     use super::*;
 
+    /// The built-in terminal's ssh: a terminal requested, and the kept
+    /// password only in a variable for the askpass helper, never on the
+    /// command line.
+    #[test]
+    fn the_terminal_ssh_never_carries_the_password_in_argv() {
+        let secret = "Plant-Pw-3141";
+        let inst = Instance { id: "term-pw".into(), name: "t".into(), color: PALETTE[0].into(), os: Os::Linux, host: "198.51.100.4".into(), port: 22, user: "ops".into(), auth: Auth::Password, key_file: None, key_has_passphrase: false, host_key: None, detected: None };
+        SESSION.lock().unwrap().get_or_insert_with(HashMap::new).insert(inst.id.clone(), secret.into());
+        if std::env::var_os("SPM_TEST_ASKPASS").is_none() {
+            std::env::set_var("SPM_TEST_ASKPASS", "/usr/bin/true");
+        }
+        let (argv, env) = terminal_command(&inst, "exec /bin/sh");
+        SESSION.lock().unwrap().as_mut().map(|m| m.remove(&inst.id));
+        assert_eq!(&argv[..2], ["ssh", "-tt"]);
+        assert!(argv.iter().all(|a| !a.contains(secret)), "{argv:?}");
+        assert_eq!(argv.last().map(String::as_str), Some("exec /bin/sh"));
+        assert!(argv.iter().any(|a| a == "PreferredAuthentications=password,keyboard-interactive"), "{argv:?}");
+        assert!(env.iter().any(|(k, v)| k == "SPM_ASKPASS_VALUE" && v == secret));
+        assert!(env.iter().any(|(k, v)| k == "SSH_ASKPASS_REQUIRE" && v == "force"));
+    }
+
     #[test]
     fn windows_jobs_for_a_user_wsl_distro_never_run_as_system() {
         // Finding and adding always look into the account's distros.

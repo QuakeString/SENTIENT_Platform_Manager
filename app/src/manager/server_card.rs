@@ -101,15 +101,13 @@ impl Drop for PowerFlag {
 // ---------------------------------------------------------------------------
 
 /// The built-in terminal is there: the header's button is enabled.
-// VERIFY: the terminal branch (spm/0.9.1-terminal) sets this to true and
-// fills [`open_terminal`].
-pub const TERMINAL_READY: bool = false;
+pub const TERMINAL_READY: bool = true;
 
 /// Open a terminal on `inst` (None: a local shell on this computer), the
-/// mockup's "Terminal: <name>" dialog. The Server card's "Open terminal"
-/// button calls only this.
+/// mockup's "Terminal: <name>" dialog (crate::terminal). The Server card's
+/// "Open terminal" button calls only this.
 pub fn open_terminal(inst: Option<&crate::remote::Instance>, window: &mut Window, cx: &mut App) {
-    let _ = (inst, window, cx);
+    crate::terminal::open(inst, window, cx);
 }
 
 // ---------------------------------------------------------------------------
