@@ -475,6 +475,27 @@ impl Installer {
                     )
                 });
             }
+            // The install stopped for the restart that turns WSL 2 on.
+            if this.step == INSTALL && std::env::var_os("SPM_DEBUG_RESTART").is_some() {
+                this.engine = Engine::Docker;
+                this.install.update(cx, |job, cx| {
+                    use sentient_installer_core::progress::{PlanStep, Progress};
+                    job.set_plan(vec![
+                        PlanStep::new("Installing the Platform Manager").weight(0.5),
+                        PlanStep::new("Turning on WSL 2").detail("Windows restarts once, and Setup continues after you sign in").weight(2.),
+                        PlanStep::new("Setting up Docker in WSL 2").detail("SENTIENT's own Ubuntu distribution with Docker Engine").weight(4.),
+                        PlanStep::new("Installing SENTIENT and its database").detail("The containers, the database and its schema").weight(6.),
+                    ]);
+                    job.start(
+                        |sink| {
+                            sink(Progress::Step { name: "Installing the Platform Manager".into() });
+                            sink(Progress::Step { name: "Turning on WSL 2".into() });
+                            Err(plan::RESTART_REQUIRED.into())
+                        },
+                        cx,
+                    )
+                });
+            }
         }
         this
     }
@@ -1276,6 +1297,9 @@ impl Installer {
         match self.step {
             FINISH => window.remove_window(),
             SUMMARY => self.start_install(cx),
+            // Stopped for the restart that turns WSL 2 on: restart (the
+            // plan is saved; Setup continues after sign-in).
+            INSTALL if self.restart_required(cx) => plan::restart_now(),
             INSTALL => {
                 // Only reachable when the install failed: try again.
                 if matches!(self.install.read(cx).state(), JobState::Failed(_)) {
@@ -1307,6 +1331,11 @@ impl Installer {
             Engine::Docker => sentient_installer_core::distro::existing_volume(&DeployConfig::default())
                 .map(|v| format!("The Docker volume {v} holds the database of an earlier install.")),
         }
+    }
+
+    /// The install stopped for the restart that turns WSL 2 on.
+    fn restart_required(&self, cx: &App) -> bool {
+        matches!(self.install.read(cx).state(), JobState::Failed(m) if m.as_ref() == plan::RESTART_REQUIRED)
     }
 
     fn go(&mut self, step: usize, cx: &mut Context<Self>) {
@@ -1379,7 +1408,7 @@ impl Installer {
                 field.update(cx, |s, cx| s.set_value(value, window, cx));
             }
         }
-        if self.step == INSTALL {
+        if self.step == INSTALL && std::env::var_os("SPM_DEBUG_RESTART").is_none() {
             self.install.update(cx, |job, cx| {
                 job.set_plan(plan::screen_steps());
                 job.start(
@@ -1518,6 +1547,7 @@ impl Installer {
     fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let failed = matches!(self.install.read(cx).state(), JobState::Failed(_));
+        let restart = self.restart_required(cx);
         let again = match self.install.read(cx).state() {
             JobState::Failed(m) => crate::ui::retry_label(m, "Retry"),
             _ => "Retry",
@@ -1526,6 +1556,7 @@ impl Installer {
         let blocked = if self.step < SUMMARY { self.validate(cx).err() } else { None };
         let next_label = match self.step {
             SUMMARY => "Install",
+            INSTALL if restart => "Restart now",
             INSTALL if failed => again,
             INSTALL => "Installing…",
             FINISH => "Close",
@@ -1653,7 +1684,9 @@ impl Installer {
                     .relative()
                     .child(
                         v_flex()
-                            .id("page")
+                            // One id per step: a step opens at its top, not
+                            // where the previous one was scrolled to.
+                            .id(SharedString::from(format!("page-{}", self.step)))
                             .relative()
                             .flex_1()
                             .min_h_0()

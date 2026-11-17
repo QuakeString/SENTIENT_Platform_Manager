@@ -59,12 +59,15 @@ pub struct JobView {
     actions: Vec<AnyElement>,
     cancel: Cancel,
     hide_line: Option<fn(&str) -> bool>,
+    /// The job stopped on purpose and goes on later (Windows restarts):
+    /// what its stopped step says instead of a failure.
+    paused: Option<SharedString>,
 }
 
 impl JobView {
     /// `title` names the action ("Backing up DEV-01").
     pub fn new(id: &'static str, title: impl Into<String>, job: &Entity<Job>) -> Self {
-        Self { id, title: title.into(), job: job.clone(), pill: None, result: None, extra: Vec::new(), actions: Vec::new(), cancel: Cancel::Cannot(NO_CANCEL), hide_line: None }
+        Self { id, title: title.into(), job: job.clone(), pill: None, result: None, extra: Vec::new(), actions: Vec::new(), cancel: Cancel::Cannot(NO_CANCEL), hide_line: None, paused: None }
     }
 
     /// A pill of the page's own ("Rolled back") instead of Running/Done/Failed.
@@ -89,6 +92,13 @@ impl JobView {
     /// primary one, at the right end.
     pub fn actions(mut self, actions: impl IntoIterator<Item = AnyElement>) -> Self {
         self.actions.extend(actions);
+        self
+    }
+
+    /// The job stopped on purpose and continues later: its stopped step is
+    /// not shown as failed (no red mark, no red bar) and says `next`.
+    pub fn paused(mut self, next: impl Into<SharedString>) -> Self {
+        self.paused = Some(next.into());
         self
     }
 
@@ -118,7 +128,12 @@ impl JobView {
         let pct = job.overall();
         let elapsed = job.elapsed().map(clock).unwrap_or_default();
         let at = job.current().or_else(|| rows.iter().position(|r| r.state == RowState::Failed));
+        let paused = self.paused.clone().filter(|_| matches!(state, JobState::Failed(_)));
         let nums = match &state {
+            JobState::Failed(_) if paused.is_some() => match at {
+                Some(i) if n > 0 => format!("Continues at step {} of {n} after the restart · {elapsed}", i + 1),
+                _ => format!("Continues after the restart · {elapsed}"),
+            },
             JobState::Done(_) if n > 0 => format!("All {n} steps · {elapsed}"),
             JobState::Done(_) => format!("Finished · {elapsed}"),
             JobState::Failed(_) => match at {
@@ -133,11 +148,16 @@ impl JobView {
         };
         let bar_color = match &state {
             JobState::Done(_) => theme.success_foreground,
-            JobState::Failed(_) => theme.danger,
+            JobState::Failed(_) if paused.is_none() => theme.danger,
             _ => theme.primary,
         };
         let step_pct = job.percent();
         let steps = v_flex().gap_0().children(rows.iter().enumerate().map(|(i, r)| {
+            // Paused: the stopped step waits, it did not fail.
+            if let (Some(next), RowState::Failed) = (&paused, r.state) {
+                let time = r.time().map(clock).unwrap_or_default();
+                return step_row(theme, self.id, i, RowState::Pending, r.step.name.clone(), next.to_string(), time);
+            }
             let sub = match r.state {
                 RowState::Running => {
                     let s = r.sub.clone().map(|s| s.to_string()).unwrap_or_else(|| r.step.detail.clone());

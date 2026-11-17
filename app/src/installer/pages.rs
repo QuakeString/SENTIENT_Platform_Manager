@@ -1295,11 +1295,12 @@ impl Installer {
         let mut view = crate::manager::jobview::JobView::new("install", if self.manager_only { "Installing the Platform Manager" } else { "Installing SENTIENT" }, &self.install)
             .cancel(crate::manager::jobview::Cancel::Cannot("Setup cannot stop half-way: a failed step says what to fix, and Setup can then run again."));
         if restart {
-            view = view.pill("Restart", Tone::Warn).result(ui::notice_with(
+            // Not a failure: the step waits for the restart, and Restart
+            // now is the footer's primary button.
+            view = view.pill("Restart", Tone::Warn).paused("Continues after Windows restarts and you sign in").result(ui::notice(
                 &theme,
                 Tone::Neutral,
                 "Restart required\nWindows must restart to finish turning on WSL 2. Setup continues by itself after you sign in again; your choices are kept.",
-                Some(crate::ui::button("restart-now").primary().label("Restart now").on_click(|_, _, _| super::plan::restart_now()).into_any_element()),
             ));
         } else if let JobState::Failed(m) = &state {
             if undiagnosed {
