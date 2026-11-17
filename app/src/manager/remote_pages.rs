@@ -792,6 +792,11 @@ impl RemotePages {
                 self.fetch(cx, move || remote::status(&i2), |p| &mut p.status);
                 let native = inst.detected.as_ref().is_some_and(|d| d.install != "Docker");
                 self.pick = None;
+                // Renders: a version picked from "Other version".
+                #[cfg(debug_assertions)]
+                if let Ok(v) = std::env::var("SPM_DEBUG_REMOTE_PICK") {
+                    self.pick = Some(v);
+                }
                 self.fetch(
                     cx,
                     move || {
@@ -809,9 +814,12 @@ impl RemotePages {
                     move || {
                         #[cfg(debug_assertions)]
                         if std::env::var_os("SPM_DEBUG_REMOTE_OFFER").is_some() {
-                            return Ok(Some(canned_offer()));
+                            // Nothing newer for a server that runs it already.
+                            let running = remote::status(&inst).map(|s| s.comparable_version()).unwrap_or_default();
+                            let offer = canned_offer();
+                            return Ok((sentient_installer_core::releases::movement(&offer.version, &running) == sentient_installer_core::releases::Move::Newer).then_some(offer));
                         }
-                        let installed = remote::status(&inst)?.sentient_version;
+                        let installed = remote::status(&inst)?.comparable_version();
                         let channel = crate::updates::Prefs::load().channel;
                         crate::updates::check(channel, Some(installed), native).sentient
                     },
@@ -1414,6 +1422,10 @@ impl RemotePages {
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
         let installed = self.status.got().map(|s| s.sentient_version.clone()).unwrap_or_else(|| "Reading…".into());
+        // What updates compare with: the version the container runs (Docker
+        // on "latest"), and whether its tag can be pinned to a release here.
+        let running = self.status.got().map(|s| s.comparable_version()).unwrap_or_default();
+        let can_pin = self.status.got().is_some_and(|s| s.floating_tag() && !s.external_compose && s.running_version.is_some());
         let channel = self.updates.read(cx).prefs.channel;
         let checking = matches!(self.offer, Read::Loading);
         let channels = ui::seg_track(&theme).children(sentient_installer_core::releases::Channel::ALL.into_iter().map(|c| {
@@ -1450,8 +1462,9 @@ impl RemotePages {
                 )
                 .child(crate::ui::button("r-notes").outline().label("What's new").on_click(move |_, _, cx| crate::manager::update::open_notes("SENTIENT", &inst_v, &o2, cx)));
         }
-        let versions: Vec<crate::online::Version> = match &self.versions {
-            Read::Got(v) => v.iter().filter(|v| v.version != installed).cloned().collect(),
+        // The running version stays listed only to pin its tag.
+        let versions: Vec<(crate::online::Version, bool)> = match &self.versions {
+            Read::Got(v) => v.iter().filter(|v| can_pin || v.version != running).map(|v| (v.clone(), v.version == running)).collect(),
             _ => Vec::new(),
         };
         let this = cx.entity().downgrade();
@@ -1462,9 +1475,10 @@ impl RemotePages {
                 .disabled(busy || versions.is_empty())
                 .dropdown_menu(move |menu, _, _| {
                     let mut menu = menu;
-                    for v in &versions {
+                    for (v, is_running) in &versions {
                         let (t, ver) = (this.clone(), v.version.clone());
-                        menu = menu.item(PopupMenuItem::new(v.label()).on_click(move |_, _, cx| {
+                        let label = if *is_running { format!("{} (running)", v.label()) } else { v.label() };
+                        menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
                             t.update(cx, |p, cx| {
                                 p.pick = Some(ver.clone());
                                 cx.notify();
@@ -1480,6 +1494,7 @@ impl RemotePages {
             _ => None,
         };
         let pick = self.pick.clone();
+        let pin_only = pick.as_deref() == Some(running.as_str());
         ui::panel(&theme)
             .child(
                 h_flex()
@@ -1516,10 +1531,16 @@ impl RemotePages {
                         .py_2()
                         .rounded(theme.radius)
                         .bg(theme.secondary)
-                        .child(div().flex_1().min_w(px(220.)).text_sm().child(format!("Install SENTIENT {v} on this server instead of {installed}?")))
-                        .child(crate::ui::probed(crate::ui::button("r-pick-go").primary().label(format!("Install {v}")).disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
+                        .child(div().flex_1().min_w(px(220.)).text_sm().child(if pin_only {
+                            format!("Keep this server on SENTIENT {v}, the version it runs? Only the image tag changes: no update and no database copy.")
+                        } else if can_pin {
+                            format!("Install SENTIENT {v} on this server instead of {installed}? The compose file then names {v}.")
+                        } else {
+                            format!("Install SENTIENT {v} on this server instead of {installed}?")
+                        }))
+                        .child(crate::ui::probed(crate::ui::button("r-pick-go").primary().label(if pin_only { format!("Pin to {v}") } else { format!("Install {v}") }).disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
                             this.pick = None;
-                            this.run_job("Updating SENTIENT", vec!["update".into(), "--version".into(), v2.clone()], cx);
+                            this.run_job(if pin_only { "Pinning SENTIENT's image tag" } else { "Updating SENTIENT" }, vec!["update".into(), "--version".into(), v2.clone()], cx);
                         }))))
                         .child(crate::ui::probed(crate::ui::button("r-pick-no").ghost().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
                             this.pick = None;

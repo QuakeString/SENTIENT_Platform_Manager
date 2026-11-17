@@ -1177,6 +1177,27 @@ pub struct RemoteStatus {
     /// everything else. Jobs for it must run as that Windows account.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wsl_distro: Option<String>,
+    /// Docker: the version the SENTIENT container runs (None: it does not
+    /// say, native, or an older agent). `sentient_version` is the text shown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_version: Option<String>,
+    /// Docker: the image tag the stack runs under ("latest", "4.4.0.3").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_tag: Option<String>,
+}
+
+impl RemoteStatus {
+    /// The version updates compare with: what runs, else what is shown (an
+    /// older agent sends only that).
+    pub fn comparable_version(&self) -> String {
+        self.running_version.clone().unwrap_or_else(|| self.sentient_version.clone())
+    }
+
+    /// Docker on a tag that is not a release number (latest, dev): the
+    /// update picker can pin it to a release.
+    pub fn floating_tag(&self) -> bool {
+        self.image_tag.as_deref().is_some_and(|t| !sentient_installer_core::releases::is_numbered(t))
+    }
 }
 
 /// One service or container on the server (Status).

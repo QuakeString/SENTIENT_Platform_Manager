@@ -567,7 +567,19 @@ impl UpdateState {
         cx.notify();
         let (channel, installed, native) = (self.prefs.channel, self.installed.clone(), self.native);
         let task = cx.spawn(async move |this, cx| {
-            let found = cx.background_executor().spawn(async move { check(channel, installed, native) }).await;
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    // Docker: what the container runs, not its tag ("latest").
+                    let installed = installed.map(|v| {
+                        crate::installation::InstallationRecord::load()
+                            .filter(|r| r.engine == crate::installation::Engine::Docker)
+                            .map(|r| crate::installation::comparable_version(&r))
+                            .unwrap_or(v)
+                    });
+                    check(channel, installed, native)
+                })
+                .await;
             this.update(cx, |s, cx| {
                 s.checking = false;
                 if found.sentient.is_ok() || found.manager.is_ok() || found.gateway.is_ok() {

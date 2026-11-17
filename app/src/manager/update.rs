@@ -42,6 +42,10 @@ pub struct UpdatePage {
     versions: Option<Result<Vec<Version>, String>>,
     /// The version picked in the list; None is the newest.
     chosen: Option<String>,
+    /// Docker: the version the container runs (crate::installation::
+    /// running_version), read in the background; None until read or when
+    /// it does not say.
+    running: Option<String>,
     job: Entity<Job>,
     /// Installing a new Platform Manager.
     manager_job: Entity<Job>,
@@ -113,12 +117,14 @@ impl UpdatePage {
             updates,
             versions: None,
             chosen: None,
+            running: None,
             job,
             manager_job,
             changes_job,
             changes_later: false,
             run_title: None,
-            show_other: false,
+            // Renders: the "Other version or package" panel open.
+            show_other: cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_UPDATE_OTHER").is_some(),
             _observe,
             _observe_updates,
             _observe_manager,
@@ -130,11 +136,36 @@ impl UpdatePage {
         page
     }
 
+    /// Read which version the Docker container runs (the tag may be
+    /// "latest").
+    fn refresh_running(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone().filter(|r| r.engine == Engine::Docker) else { return };
+        let task = cx.spawn(async move |this, cx| {
+            let running = cx.background_executor().spawn(async move { crate::installation::running_version(&record) }).await;
+            this.update(cx, |page, cx| {
+                page.running = running;
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
     fn refresh_versions(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         let native = record.platform().needs_package();
         let task = cx.spawn(async move |this, cx| {
-            let found = cx.background_executor().spawn(async move { crate::online::versions(native) }).await;
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    // Renders: a canned list, SPM_DEBUG_VERSIONS=4.4.0.3,4.4.0.2.
+                    #[cfg(debug_assertions)]
+                    if let Ok(list) = std::env::var("SPM_DEBUG_VERSIONS") {
+                        return Ok(list.split(',').map(|v| Version { version: v.into(), date: "2026-11-17".into(), summary: String::new() }).collect());
+                    }
+                    crate::online::versions(native)
+                })
+                .await;
             this.update(cx, |page, cx| {
                 page.versions = Some(found);
                 cx.notify();
@@ -168,8 +199,22 @@ impl UpdatePage {
         self.record.as_ref().map(crate::jobplan::Shape::of).unwrap_or_default()
     }
 
+    /// The version updates compare with: what the container runs (Docker),
+    /// else the recorded one.
     fn installed(&self) -> String {
-        self.record.as_ref().map(|r| r.sentient_version.clone()).unwrap_or_default()
+        self.running.clone().or_else(|| self.record.as_ref().map(|r| r.sentient_version.clone())).unwrap_or_default()
+    }
+
+    /// The version as shown: "4.4.0.3 (image tag latest)".
+    fn shown(&self) -> Option<String> {
+        self.record.as_ref().map(|r| crate::headless::shown_from(r, self.running.as_deref()))
+    }
+
+    /// Docker: what moving to `version` does (crate::updating::docker_step).
+    fn docker_step(&self, version: &str) -> Option<crate::updating::DockerStep> {
+        let r = self.record.as_ref().filter(|r| r.engine == Engine::Docker)?;
+        let tag = sentient_installer_core::distro::docker_ops::image_tag(&r.stack.image);
+        Some(crate::updating::docker_step(version, self.running.as_deref(), tag, r.stack.external.is_some()))
     }
 
     /// Install `version` (a release number, also its tag): pull its image or
@@ -180,7 +225,7 @@ impl UpdatePage {
     }
 
     fn confirm_older(&mut self, version: String, window: &mut Window, cx: &mut Context<Self>) {
-        let installed = self.record.as_ref().map(|r| r.sentient_version.clone()).unwrap_or_default();
+        let installed = self.installed();
         let this = cx.entity().downgrade();
         let text = format!(
             "SENTIENT {version} is older than {installed}, the version installed here. It is installed like an update: \
@@ -205,14 +250,22 @@ impl UpdatePage {
         });
     }
 
-    /// Docker: update to `version` by moving the image to that tag.
+    /// Docker: update to `version` (its image pulled), and the compose file
+    /// then names its tag; the version it runs already only changes the tag
+    /// (crate::updating::docker_step).
     fn run_docker_to(&mut self, version: String, cx: &mut Context<Self>) {
-        let Some(mut record) = self.record.clone() else { return };
-        record.stack.image = retag(&record.stack.image, &version);
+        let Some(record) = self.record.clone() else { return };
+        let target = retag(&record.stack.image, &version);
         let accept = self.accept_breaking;
-        self.plan_run(format!("Updating SENTIENT {} to {version}", self.installed()), crate::jobplan::update(self.shape(), None, Some(&version)), cx);
+        let how = self.docker_step(&version).unwrap_or(crate::updating::DockerStep::Update);
+        let title = if how == crate::updating::DockerStep::QuickPin {
+            format!("Pinning SENTIENT {version} to its image tag")
+        } else {
+            format!("Updating SENTIENT {} to {version}", self.installed())
+        };
+        self.plan_run(title, crate::jobplan::docker_to(self.shape(), &version, how), cx);
         self.job.update(cx, |job, cx| {
-            job.start(move |sink| crate::updating::run(record, None, accept, sink).map(|_| ()), cx)
+            job.start(move |sink| crate::updating::run_to(record, None, Some(&target), accept, sink).map(|_| ()), cx)
         });
     }
 
@@ -242,6 +295,7 @@ impl UpdatePage {
     }
 
     fn refresh_rollback(&mut self, cx: &mut Context<Self>) {
+        self.refresh_running(cx);
         let Some(record) = self.record.clone() else { return };
         self.rollback = None;
         let task = cx.spawn(async move |this, cx| {
@@ -349,8 +403,11 @@ impl UpdatePage {
         let Some(Ok(list)) = &self.versions else { return None };
         let chosen = self.chosen_version()?;
         let movement = releases::movement(&chosen.version, installed);
+        let how = self.docker_step(&chosen.version);
         let items: Vec<(Version, bool)> = list.iter().map(|v| (v.clone(), v.version == chosen.version)).collect();
         let installed_owned = installed.to_string();
+        // Docker: the entry the container runs (the tag may say "latest").
+        let same_mark = if docker { " (running)" } else { " (installed)" };
         let menu = crate::ui::button("version-pick")
             .outline()
             .label(format!("{} ▾", chosen.version))
@@ -361,7 +418,7 @@ impl UpdatePage {
                     let mut menu = menu.max_h(px(320.)).scrollable(true);
                     for (v, checked) in &items {
                         let mark = match releases::movement(&v.version, &installed_owned) {
-                            Move::Same => " (installed)",
+                            Move::Same => same_mark,
                             _ => "",
                         };
                         let this = this.clone();
@@ -379,12 +436,22 @@ impl UpdatePage {
                 }
             });
         let version = chosen.version.clone();
+        let tag = self.record.as_ref().map(|r| sentient_installer_core::distro::docker_ops::image_tag(&r.stack.image).to_string()).unwrap_or_default();
+        let floating = docker && !releases::is_numbered(&tag);
+        let external = self.record.as_ref().is_some_and(|r| r.stack.external.is_some());
         let action = match movement {
             Move::Newer => crate::ui::button("install-version")
                 .primary()
                 .label(format!("Update to {version}"))
                 .disabled(busy)
                 .on_click(cx.listener(move |this, _, _, cx| this.install_version(version.clone(), cx))),
+            // Running it under another tag (latest): only the tag changes.
+            Move::Same if how == Some(crate::updating::DockerStep::QuickPin) => crate::ui::button("install-version")
+                .primary()
+                .label(format!("Pin to {version}"))
+                .disabled(busy)
+                .on_click(cx.listener(move |this, _, _, cx| this.install_version(version.clone(), cx))),
+            Move::Same if docker => crate::ui::button("install-version").outline().label(format!("{version} is running")).disabled(true),
             Move::Same => crate::ui::button("install-version").outline().label(format!("{version} is installed")).disabled(true),
             Move::Older => crate::ui::button("install-version")
                 .outline()
@@ -392,9 +459,17 @@ impl UpdatePage {
                 .disabled(busy)
                 .on_click(cx.listener(move |this, _, window, cx| this.confirm_older(version.clone(), window, cx))),
         };
+        let released = if chosen.date.is_empty() { String::new() } else { format!(", released {}", chosen.date) };
         let about = match movement {
+            Move::Same if how == Some(crate::updating::DockerStep::QuickPin) => {
+                format!("runs now under the image tag {tag}: only the tag changes, SENTIENT restarts once, no update and no database copy")
+            }
+            Move::Same if floating && external => format!("runs now under the image tag {tag} of your compose file: take the compose file over first (Repair and uninstall) to pin it"),
+            Move::Same => String::new(),
             Move::Older => "older than the installed version: possible only while both use the same database, checked before anything changes".to_string(),
-            _ if docker => format!("pulls quakestring/sentient:{}{}", chosen.version, if chosen.date.is_empty() { String::new() } else { format!(", released {}", chosen.date) }),
+            _ if docker && floating && external => format!("pulls quakestring/sentient:{}{released}; it runs as :{tag}, the tag your compose file names", chosen.version),
+            _ if docker && floating => format!("pulls quakestring/sentient:{}{released}, and the compose file names it instead of :{tag}", chosen.version),
+            _ if docker => format!("pulls quakestring/sentient:{}{released}", chosen.version),
             _ => format!("downloaded from the SENTIENT releases site and checked before use{}", if chosen.date.is_empty() { String::new() } else { format!("; released {}", chosen.date) }),
         };
         Some(
@@ -431,7 +506,7 @@ impl UpdatePage {
         let u = self.updates.read(cx);
         let (offer, installed, name) = match product {
             Product::Manager => (u.manager().cloned(), crate::updates::manager_version().to_string(), "Platform Manager"),
-            Product::Sentient => (u.sentient().cloned(), self.record.as_ref().map(|r| r.sentient_version.clone()).unwrap_or_default(), "SENTIENT"),
+            Product::Sentient => (u.sentient().cloned(), self.installed(), "SENTIENT"),
         };
         let Some(o) = offer else { return };
         open_notes(name, &installed, &o, cx);
@@ -568,7 +643,7 @@ impl UpdatePage {
         let last = u.last_checked();
         let found = u.found.clone();
         let this = crate::updates::manager_version();
-        let installed = self.record.as_ref().map(|r| r.sentient_version.clone());
+        let installed = self.shown();
         let mjob = self.manager_job.read(cx);
         let installing = mjob.is_running();
         let mfailed = match mjob.state() {
@@ -793,8 +868,8 @@ impl Render for UpdatePage {
         page.when(show_other, |page| page.child(
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Other version or package"))
-                .child(ui::fact(&theme, "Installed version", record.sentient_version.clone()))
-                .when_some(self.picker(&theme, &record.sentient_version, record.engine == Engine::Docker, busy, cx), |panel, picker| panel.child(picker))
+                .child(ui::fact(&theme, if record.engine == Engine::Docker { "Running version" } else { "Installed version" }, self.shown().unwrap_or_default()))
+                .when_some(self.picker(&theme, &self.installed(), record.engine == Engine::Docker, busy, cx), |panel, picker| panel.child(picker))
                 .when(!self.has_list(), |panel| panel.child({
                     let u = self.updates.read(cx);
                     let offer = u.sentient().cloned();

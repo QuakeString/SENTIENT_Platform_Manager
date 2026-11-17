@@ -180,6 +180,9 @@ pub struct Manager {
     /// The sub-flow open over a page, if any (see [`SubFlow`]).
     sub: Option<SubFlow>,
     record: Option<InstallationRecord>,
+    /// Docker: the version this computer's container runs (the record may
+    /// hold its image tag, "latest"), for the top bar.
+    running_version: Option<String>,
     status: Option<Entity<status::StatusPage>>,
     logs: Option<Entity<logs::LogsPage>>,
     update: Option<Entity<update::UpdatePage>>,
@@ -373,6 +376,7 @@ impl Manager {
             page,
             sub: None,
             record,
+            running_version: None,
             status: None,
             logs: None,
             update: None,
@@ -416,6 +420,7 @@ impl Manager {
             _tasks: Vec::new(),
         };
         manager.start_monitor(cx);
+        manager.refresh_running(cx);
         // Performance probes (tests/layout/perf.sh): go to pages in turn,
         // SPM_DEBUG_GO_PAGES=about:6,status:12 (page:seconds after start).
         #[cfg(debug_assertions)]
@@ -976,7 +981,7 @@ impl Manager {
         let muted_fg: Hsla = menu_theme.muted_foreground;
         let (name, address): (String, Option<String>) = match (&remote, &self.record) {
             (Some(r), _) => (r.name.clone(), Some(format!("{} over SSH", r.host))),
-            (None, Some(r)) => ("This computer".into(), Some(format!("SENTIENT {}", r.sentient_version))),
+            (None, Some(r)) => ("This computer".into(), Some(format!("SENTIENT {}", self.running_version.as_deref().unwrap_or(&r.sentient_version)))),
             (None, None) => ("This computer".into(), None),
         };
         let instance = format!("{name} {}", address.clone().unwrap_or_default());
@@ -1746,10 +1751,28 @@ impl Manager {
         Some(col.into_any_element())
     }
 
+    /// Read which version this computer's Docker container runs.
+    fn refresh_running(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone().filter(|r| r.engine == crate::installation::Engine::Docker) else {
+            self.running_version = None;
+            return;
+        };
+        let task = cx.spawn(async move |this, cx| {
+            let v = cx.background_executor().spawn(async move { crate::installation::running_version(&record) }).await;
+            this.update(cx, |m, cx| {
+                m.running_version = v;
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
     /// The record changed (a migration): every screen starts again from it.
     fn reload(&mut self, cx: &mut Context<Self>) {
         let was_installed = self.record.is_some();
         self.record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
+        self.refresh_running(cx);
         if !was_installed {
             // Adopted: every screen was showing "not installed" (Migration
             // stays while it shows the job that just ran; Back reloads it).
@@ -1779,6 +1802,7 @@ impl Manager {
         match instance {
             None => {
                 self.record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
+                self.refresh_running(cx);
                 self.status = None;
                 for page in self.update.clone() {
                     page.update(cx, |p, cx| p.refresh_record(cx));
