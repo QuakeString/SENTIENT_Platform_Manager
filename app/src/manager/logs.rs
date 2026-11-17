@@ -455,7 +455,7 @@ impl Render for LogView {
                         logsource::zone_label()
                     )))
                     .child(div().flex_1())
-                    .child(div().w(px(280.)).child(Input::new(&self.filter)))
+                    .child(div().w(px(280.)).child(ui::probed_input(Input::new(&self.filter))))
                     .child(Checkbox::new("log-follow").label("Follow").checked(self.follow).on_change(cx.listener(|v, on: &bool, _, cx| {
                         v.follow = *on;
                         if *on {

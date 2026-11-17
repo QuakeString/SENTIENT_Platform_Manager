@@ -1153,8 +1153,8 @@ impl MoveFlow {
                     .border_t_1()
                     .border_color(theme.border)
                     .child(Icon::empty().path("icons/folder-fill.svg").size_4().text_color(folder_color()))
-                    .child(div().flex_1().child(Input::new(input).small()))
-                    .child(ui::button("md-make").primary().small().label("Use").on_click(cx.listener(move |me, _, _, cx| {
+                    .child(div().flex_1().child(Input::new(input)))
+                    .child(ui::button("md-make").primary().label("Use").on_click(cx.listener(move |me, _, _, cx| {
                         let name = me.picks.get(&s).and_then(|p| p.new_name.as_ref()).map(|i| i.read(cx).value().trim().to_string()).unwrap_or_default();
                         me.new_folder(s, name, cx);
                     }))),

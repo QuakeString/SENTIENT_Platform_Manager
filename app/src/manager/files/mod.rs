@@ -997,12 +997,12 @@ impl FilesPage {
                     .gap(crate::ui::button_gap())
                     .items_center()
                     .child(file_icon(true).size_4().text_color(folder_color()))
-                    .child(div().flex_1().child(Input::new(input).small()))
-                    .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-make-{side}"))).primary().small().label("Make").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(div().flex_1().child(Input::new(input)))
+                    .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-make-{side}"))).primary().label("Make").on_click(cx.listener(move |this, _, _, cx| {
                         let name = this.panes[side].new_folder.as_ref().map(|i| i.read(cx).value().trim().to_string()).unwrap_or_default();
                         this.make_folder(side, name, cx);
                     }))))
-                    .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-make-no-{side}"))).ghost().small().label("Cancel").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-make-no-{side}"))).ghost().label("Cancel").on_click(cx.listener(move |this, _, _, cx| {
                         this.panes[side].new_folder = None;
                         cx.notify();
                     })))),
@@ -1028,7 +1028,7 @@ impl FilesPage {
                 .min_w_0()
                 .child(file_icon(r.dir).size_4().flex_shrink_0().text_color(if r.dir { folder_color() } else { theme.muted_foreground }))
                 .child(match renaming {
-                    Some(input) => div().flex_1().child(Input::new(&input).small()).into_any_element(),
+                    Some(input) => div().flex_1().child(Input::new(&input)).into_any_element(),
                     None => div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(r.name.clone()).into_any_element(),
                 })
                 .into_any_element();
@@ -1289,7 +1289,7 @@ impl Render for FilesPage {
             .gap(px(ui::GAP))
             .bg(theme.muted)
             .when(narrow, |p| p.overflow_y_scroll())
-            .child(h_flex().min_h(px(32.)).items_center().child(div().flex_1().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Files")).child(h_flex().gap_3().items_center().children(stale).child(refresh)))
+            .child(h_flex().min_h(px(32.)).items_center().child(div().flex_1().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Files")).child(h_flex().gap_3().items_center().children(stale).child(crate::ui::probed(refresh))))
             .child(panes);
         // The short note, bottom centre over the page (fades in).
         let toast = self.toast.as_ref().map(|(text, _)| {

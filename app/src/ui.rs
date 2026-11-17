@@ -612,6 +612,12 @@ pub fn probed(b: impl IntoElement) -> Div {
     div().relative().flex_shrink_0().child(b).child(layout_probe("button"))
 }
 
+/// An input reported to the layout test (`LAYOUT field`): its height and
+/// its centre beside the controls in its row (tests/layout/rows.py).
+pub fn probed_input(input: impl IntoElement) -> Div {
+    div().relative().child(input).child(layout_probe("field"))
+}
+
 /// A page's own notice, directly in the page (never inside a card): an
 /// icon, a headline, the rest of the text, and an optional action.
 pub fn notice(theme: &Theme, tone: Tone, text: impl Into<SharedString>) -> Div {
@@ -897,11 +903,15 @@ pub fn flavor_logos(flavor: sentient_installer_core::stack::Flavor, size: f32) -
 
 /// A segmented choice: one track with the theme's radius and a 1px border,
 /// and segments inside it with equal padding. The chosen segment is filled
-/// with the primary colour. The same height as a standard button.
+/// with the primary colour. The standard control height ([`control_h`]),
+/// border included, so it lines up with the buttons beside it. Reports
+/// `segmented`.
 pub fn seg_track(theme: &Theme) -> Div {
     // The mockup's segmented control: one bordered strip, segments edge to
     // edge, the chosen one tinted with primary text.
-    gpui_kit::component::h_flex()
+    input_box()
+        .relative()
+        .child(layout_probe("segmented"))
         .flex_none()
         .items_center()
         .rounded(theme.radius)
@@ -915,7 +925,7 @@ pub fn seg_track(theme: &Theme) -> Div {
 pub fn seg_item(theme: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, on: bool) -> Stateful<Div> {
     div()
         .id(id)
-        .h(px(30.))
+        .h_full()
         .px(px(11.))
         .flex()
         .items_center()
@@ -1834,12 +1844,47 @@ pub fn row_menu(id: impl Into<SharedString>, tip: &'static str, disabled: bool, 
 // ---------------------------------------------------------------------------
 
 /// Every field 260 px wide (its unit slot inside it), the current value
-/// 170 px, 18 px between the columns; controls 40 px tall.
+/// 170 px, 18 px between the columns; every control (field, chips,
+/// switch) the standard control height ([`control_h`]).
 pub const FIELD_W: f32 = 260.;
 pub const UNIT_W: f32 = 64.;
 pub const CURRENT_W: f32 = 170.;
 pub const COL_GAP: f32 = 18.;
-pub const CONTROL_H: f32 = 40.;
+/// The one control height in SPM: the toolkit's own input and button at
+/// their default size (`Input::new`, `button(..)`: `Size::Medium`, 2 rem,
+/// 28 px on screen), which every form and page header uses (Add server,
+/// Setup, the database password, Statistics' range and Refresh). Taken
+/// from the toolkit, never a number of our own; the settings field,
+/// chips, switch and every segmented control are [`input_box`]es.
+/// tests/layout/rows.py holds every control sharing a row to it, and
+/// tests/layout/inputs.sh keeps size overrides off inputs and buttons.
+pub fn control_h() -> Length {
+    use gpui_kit::component::StyleSized as _;
+    let mut d = div().input_h(gpui_kit::component::Size::Medium);
+    d.style().size.height.expect("the toolkit's input sets a height")
+}
+
+#[cfg(test)]
+mod control_h_tests {
+    use super::control_h;
+    use gpui_kit::{rems, Length};
+
+    /// The standard control height is the toolkit's input and button at
+    /// their default size, 2 rem (28 px on screen; tests/layout/rows.py and
+    /// inputs.py hold every control to that number, so a change here
+    /// changes them too).
+    #[test]
+    fn control_height_is_the_toolkits_default_input_height() {
+        assert_eq!(control_h(), Length::from(rems(2.)));
+    }
+}
+
+/// A box the standard control height ([`control_h`]), for a control drawn
+/// here rather than by the toolkit: the settings field around its Input
+/// and unit slot, the chips, the switch, a segmented choice.
+pub fn input_box() -> Div {
+    h_flex().h(control_h())
+}
 /// Below this window width a row stacks: label, field, current value.
 pub const ROW_STACK_W: f32 = 820.;
 
@@ -1865,7 +1910,8 @@ pub fn unit_word(unit: &str) -> &'static str {
 }
 
 /// A field: the input, 260 px with its 64 px unit slot inside the box (a
-/// line before it, the raised surface, muted 12 px text), 40 px tall; a
+/// line before it, the raised surface, muted 12 px text), the standard control height
+/// with the theme's input radius; a
 /// 1 px red border when `problem` is set, with the message in one 12 px
 /// red line under it. Reports `field-input` (the box) and `field-slot`.
 pub fn field_input(theme: &Theme, state: &Entity<gpui_kit::component::input::InputState>, slot: Option<Slot>, problem: Option<String>, mask: bool, window: &Window, cx: &App) -> Div {
@@ -1888,11 +1934,10 @@ pub fn field_input(theme: &Theme, state: &Entity<gpui_kit::component::input::Inp
         .w(px(FIELD_W))
         .flex_shrink_0()
         .child(
-            h_flex()
+            input_box()
                 .relative()
                 .w_full()
-                .h(px(CONTROL_H))
-                .rounded(px(8.))
+                .rounded(theme.radius)
                 .border_1()
                 .border_color(border)
                 .bg(theme.background)
@@ -1904,13 +1949,13 @@ pub fn field_input(theme: &Theme, state: &Entity<gpui_kit::component::input::Inp
         .when_some(problem, |d, p| d.child(div().text_size(px(12.)).text_color(theme.danger).whitespace_nowrap().overflow_hidden().text_ellipsis().child(p)))
 }
 
-/// A choice of a few values filling the field column, 40 px tall.
+/// A choice of a few values filling the field column, the standard control height.
 pub fn chips(theme: &Theme, id: &str, items: &[&str], selected: Option<usize>, pick: std::rc::Rc<dyn Fn(usize, &mut Window, &mut App)>) -> Div {
-    h_flex()
+    input_box()
+        .relative()
         .w(px(FIELD_W))
         .flex_shrink_0()
-        .h(px(CONTROL_H))
-        .rounded(px(8.))
+        .rounded(theme.radius)
         .border_1()
         .border_color(theme.input)
         .overflow_hidden()
@@ -1927,7 +1972,7 @@ pub fn chips(theme: &Theme, id: &str, items: &[&str], selected: Option<usize>, p
                 .justify_center()
                 .px_1()
                 .when(i > 0, |d| d.border_l_1().border_color(theme.input))
-                .text_size(px(13.))
+                .text_sm()
                 .whitespace_nowrap()
                 .overflow_hidden()
                 .cursor_pointer()
@@ -1936,38 +1981,45 @@ pub fn chips(theme: &Theme, id: &str, items: &[&str], selected: Option<usize>, p
                 .child(label.to_string())
                 .on_click(move |_, window, cx| pick(i, window, cx))
         }))
+        .child(layout_probe("field-chips"))
 }
 
-/// On or off in the field column: the switch and its word, 40 px tall.
+/// On or off in the field column: the switch and its word, the standard control height.
 pub fn toggle(theme: &Theme, id: impl Into<ElementId>, on: bool, note: Option<&'static str>, flip: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Div {
-    h_flex()
+    input_box()
+        .relative()
         .w(px(FIELD_W))
         .flex_shrink_0()
-        .h(px(CONTROL_H))
         .gap(px(10.))
         .items_center()
         .child(gpui_kit::component::switch::Switch::new(id).checked(on).on_click(flip))
         .child(div().text_sm().child(if on { "On" } else { "Off" }))
         .when_some(note, |r, n| r.child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(n)))
+        .child(layout_probe("field-control"))
 }
 
-/// The current value column: a small CURRENT caption and the value in
-/// words, cut with an ellipsis and whole in its tooltip.
+/// The current value column, one line on the field's centre line: a muted
+/// "Current" caption and the value in the body text, cut with an
+/// ellipsis and whole in its tooltip. the standard control height beside the field, its
+/// own height when the row is stacked. Reports `current-cell`.
 pub fn current_cell(theme: &Theme, id: impl Into<SharedString>, text: Option<String>) -> Div {
     let id: SharedString = id.into();
-    v_flex()
+    h_flex()
+        .relative()
         .w(px(CURRENT_W))
         .flex_shrink_0()
         .min_w_0()
-        .pt(px(10.))
-        .gap(px(2.))
+        .when(!stacked(), |d| d.h(control_h()))
+        .gap(px(6.))
+        .items_center()
         .when_some(text, |d, t| {
             let tip: SharedString = t.clone().into();
-            d.child(div().text_size(px(11.)).text_color(theme.muted_foreground).opacity(0.8).child("CURRENT")).child(
+            d.child(div().flex_shrink_0().text_size(px(12.)).text_color(theme.muted_foreground).child("Current")).child(
                 div()
                     .id(SharedString::from(format!("cur-{id}")))
-                    .text_size(px(13.))
-                    .text_color(theme.muted_foreground)
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .text_ellipsis()
@@ -1975,6 +2027,7 @@ pub fn current_cell(theme: &Theme, id: impl Into<SharedString>, text: Option<Str
                     .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx)),
             )
         })
+        .child(layout_probe("current-cell"))
 }
 
 /// The "Restart" pill beside a setting's name.
@@ -2010,19 +2063,24 @@ pub fn setting_row(theme: &Theme, r: SettingRow, cx: &App) -> Div {
     let stacked = stacked();
     let tint = theme.primary.opacity(if crate::theme::is_dark(cx) { 0.18 } else { 0.12 });
     let label = r.label.clone();
+    // The name's line is a control tall beside the field, so the name, its
+    // (i), the field and the current value share one centre line; the
+    // description runs on under it.
     let lab = v_flex()
         .flex_1()
         .min_w_0()
         .gap(px(2.))
-        .when(!stacked, |d| d.pt(px(9.)))
         .child(
             h_flex()
+                .relative()
+                .when(!stacked, |d| d.min_h(control_h()))
                 .gap(px(6.))
                 .items_center()
                 .min_w_0()
                 .child(div().min_w_0().text_sm().font_weight(FontWeight::MEDIUM).when(r.changed, |d| d.text_color(theme.primary)).child(label.clone()))
                 .when_some(r.help, |d, h| d.child(info(SharedString::from(format!("help-{label}")), h.into())))
-                .when(r.restart, |d| d.child(restart_pill(cx))),
+                .when(r.restart, |d| d.child(restart_pill(cx)))
+                .child(layout_probe("setting-label")),
         )
         .when_some(r.desc, |d, t| d.child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(t)));
     let current = (!r.wide).then(|| current_cell(theme, label.clone(), r.current));
@@ -2036,7 +2094,7 @@ pub fn setting_row(theme: &Theme, r: SettingRow, cx: &App) -> Div {
         .when(r.changed, |d| d.bg(linear_gradient(90., linear_color_stop(tint, 0.), linear_color_stop(tint.opacity(0.), 0.6))))
         .child(lab)
         .child(if r.wide && !stacked { h_flex().flex_shrink_0().w(px(FIELD_W + COL_GAP + CURRENT_W)).child(r.control) } else { h_flex().flex_shrink_0().child(r.control) })
-        .children(current.map(|c| if stacked { c.pt_0() } else { c }))
+        .children(current)
 }
 
 impl SettingRow {
@@ -2225,11 +2283,10 @@ pub fn pending_bar(
                     )
                 }),
         )
-        .child(probed(button(SharedString::from(format!("{id}-discard"))).outline().h(px(CONTROL_H)).label("Discard").on_click(on_discard)))
+        .child(probed(button(SharedString::from(format!("{id}-discard"))).outline().label("Discard").on_click(on_discard)))
         .child(probed(
             button(SharedString::from(format!("{id}-apply")))
                 .primary()
-                .h(px(CONTROL_H))
                 .label(if restart { "Apply and restart" } else { "Apply" })
                 .disabled(invalid > 0 || !can_apply)
                 .on_click(on_apply),

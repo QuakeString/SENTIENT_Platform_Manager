@@ -2665,7 +2665,7 @@ impl Render for RemotePages {
         let reload = crate::ui::refresh_button("remote-reload", self.in_flight > 0, window, move |_, cx| {
             me.update(cx, |this, cx| this.reload(cx)).ok();
         });
-        let reload = h_flex().gap_3().items_center().min_h(px(32.)).children(self.stale_note(&theme, cx)).child(reload);
+        let reload = h_flex().gap_3().items_center().min_h(px(32.)).children(self.stale_note(&theme, cx)).child(crate::ui::probed(reload));
         // Platform settings scroll inside their card (its Apply bar stays at
         // the card's bottom), not the page.
         let page = ui::page_with(&theme, title, summary, reload);

@@ -31,7 +31,7 @@ fn label(theme: &Theme, text: &'static str) -> Div {
 /// An input reported to the layout test (`LAYOUT field`): the edges of
 /// fields side by side are not a card's row divider.
 fn probed_input(input: Input) -> Div {
-    div().relative().child(input).child(ui::layout_probe("field"))
+    ui::probed_input(input)
 }
 
 /// A labelled input.
