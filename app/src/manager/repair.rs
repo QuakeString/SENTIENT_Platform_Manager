@@ -51,6 +51,7 @@ impl RepairPage {
             cx.notify();
         });
         let _gateway_poll = cx.spawn(async move |this, cx| loop {
+            super::until_shown(super::Page::Repair, cx).await;
             let (status, rec) = cx.background_executor().spawn(async { (crate::manager::gateway::local_status(), crate::gateway_record::load()) }).await;
             if this.update(cx, |p, cx| { p.gateway = Some(status); p.gateway_record = rec; cx.notify(); }).is_err() {
                 break;

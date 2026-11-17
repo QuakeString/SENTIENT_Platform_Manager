@@ -263,6 +263,37 @@ pub struct Manager {
     _tasks: Vec<Task<()>>,
 }
 
+/// The page shown now and whether it is this computer's (render_root sets
+/// it each frame, before the page renders). A page's poll reads only while
+/// its page shows: none while another page or a server is open.
+thread_local!(static SHOWN: std::cell::Cell<Option<(Page, bool)>> = const { std::cell::Cell::new(None) });
+
+/// Whether `page` shows now for this computer.
+fn shown_here(page: Page) -> bool {
+    SHOWN.with(|s| s.get()) == Some((page, true))
+}
+
+/// The top bar's meter bars, px.
+const METER_W: f32 = 36.;
+
+/// A meter's fraction on whole pixels of its bar: a reading that moves it
+/// less than a pixel gives the same target, so the bar does not glide (and
+/// the window does not draw 400 ms of frames for it).
+fn meter_step(f: f32) -> f32 {
+    (f * METER_W).round() / METER_W
+}
+
+/// How often a hidden page's poll looks whether it shows again: a page
+/// brought back reads within this.
+const HIDDEN_CHECK: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Wait while `page` does not show for this computer (a hidden page's poll).
+async fn until_shown(page: Page, cx: &gpui_kit::AsyncApp) {
+    while !shown_here(page) {
+        cx.background_executor().timer(HIDDEN_CHECK).await;
+    }
+}
+
 /// Switch timing (SPM_DEBUG_SWITCH=1): when the last switch started, for
 /// the frames that follow it.
 thread_local!(static SWITCH_AT: std::cell::Cell<Option<(std::time::Instant, u32)>> = const { std::cell::Cell::new(None) });
@@ -590,12 +621,20 @@ impl Manager {
         // reading then waits for nothing.
         let record = self.record.clone();
         let task = cx.spawn(async move |this, cx| loop {
+            // A server open: the bar shows its readings, not this computer's.
+            let Ok(remote) = this.update(cx, |page, _| page.open_remote.is_some()) else { break };
+            if remote {
+                cx.background_executor().timer(HIDDEN_CHECK).await;
+                continue;
+            }
             let r = record.clone();
             let m = cx.background_executor().spawn(async move { crate::sysmon::from_sample(&crate::stats::local_read(r.as_ref(), std::time::Duration::from_millis(250))) }).await;
             if this
                 .update(cx, |page, cx| {
-                    page.monitor = Some(m);
-                    cx.notify();
+                    if page.monitor != Some(m) {
+                        page.monitor = Some(m);
+                        cx.notify();
+                    }
                 })
                 .is_err()
             {
@@ -996,7 +1035,7 @@ impl Manager {
                 .child(meter_icon(label).size(px(16.)).text_color(muted_fg))
                 .when(wide, |r| {
                     r.child(
-                        div().w(px(36.)).child(ui::segment_bar(fg.opacity(0.14), 5., &[(if high { warn_fill } else { meter_fill }, fraction.clamp(0.0, 1.0))])),
+                        div().w(px(METER_W)).child(ui::segment_bar(fg.opacity(0.14), 5., &[(if high { warn_fill } else { meter_fill }, fraction.clamp(0.0, 1.0))])),
                     )
                 })
                 // A fixed slot for the widest value: the bars and the bell
@@ -1072,11 +1111,13 @@ impl Manager {
                 .when(show_disk, |r| r.child(slot("Disk", &disk_widest)))
         });
         // The bars glide to a new reading.
+        // A change of less than a pixel of the bar (METER_W) does not move
+        // it, so it does not animate the window for 400 ms either.
         let glide = shown.map(|m| {
             (
-                ui::tween("m-cpu", m.cpu / 100.0, 400, window),
-                ui::tween("m-mem", if m.mem_total > 0 { m.mem_used as f32 / m.mem_total as f32 } else { 0.0 }, 400, window),
-                ui::tween("m-disk", if m.disk_total > 0 { 1.0 - m.disk_free as f32 / m.disk_total as f32 } else { 0.0 }, 400, window),
+                ui::tween("m-cpu", meter_step(m.cpu / 100.0), 400, window),
+                ui::tween("m-mem", meter_step(if m.mem_total > 0 { m.mem_used as f32 / m.mem_total as f32 } else { 0.0 }), 400, window),
+                ui::tween("m-disk", meter_step(if m.disk_total > 0 { 1.0 - m.disk_free as f32 / m.disk_total as f32 } else { 0.0 }), 400, window),
             )
         });
         let monitor = shown.zip(glide).map(|(m, (g_cpu, g_mem, g_disk))| {
@@ -2233,6 +2274,7 @@ impl Manager {
                 self.menu_page().id()
             );
         }
+        SHOWN.with(|s| s.set(Some((self.page, self.open_remote.is_none()))));
         let content_t0 = std::time::Instant::now();
         let content = self.content(window, cx);
         // SPM_DEBUG_TIMING: building a page's view the first frame it shows.
@@ -2359,3 +2401,20 @@ fn cond_key(inst: &Option<String>, title: &str) -> String {
     format!("{}|{title}", inst.as_deref().unwrap_or(""))
 }
 
+
+#[cfg(test)]
+mod perf_tests {
+    use super::{meter_step, METER_W};
+
+    /// The top bar's meters glide only for a change of a pixel or more
+    /// (perf audit: an idle window drew 400 ms of frames every 4 s for
+    /// readings that moved a bar by a fraction of a pixel).
+    #[test]
+    fn a_meter_moves_by_whole_pixels() {
+        assert_eq!(meter_step(0.031), meter_step(0.034));
+        assert_eq!(meter_step(0.5), meter_step(0.5 + 0.4 / METER_W));
+        assert_ne!(meter_step(0.5), meter_step(0.5 + 1.0 / METER_W));
+        assert_eq!(meter_step(1.0), 1.0);
+        assert_eq!(meter_step(0.0), 0.0);
+    }
+}
