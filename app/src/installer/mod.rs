@@ -1380,7 +1380,7 @@ impl Installer {
             .bg(shell::menu_bg(&theme, false, 0.))
             // No border: the edge and the selection are one shape, under the rows.
             .child(shell::menu_probe(pad, None))
-            .child(shell::selection(active, theme.muted, theme.sidebar_border, !ui::reduce_motion()))
+            .child(shell::selection(active, theme.muted, shell::menu_line(&theme), !ui::reduce_motion()))
             .child(brand)
             .child(
                 v_flex()

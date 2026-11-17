@@ -154,6 +154,15 @@ pub(crate) fn menu_bg(theme: &gpui_kit::component::Theme, overlay: bool, overlay
     }
 }
 
+/// The menu's lines (its edge, the selected row's outline and curves, the
+/// footer's and the separator's): the border token over the solid menu
+/// surface, one opaque colour. The token has alpha, so drawn as it is it
+/// came out lighter over the page-coloured selection than over the menu,
+/// and different again over the see-through menu (his 0.9.0 dark-mode note).
+pub(crate) fn menu_line(theme: &gpui_kit::component::Theme) -> Hsla {
+    theme.sidebar.opacity(1.).blend(theme.sidebar_border)
+}
+
 /// The translucent menu on: chosen and possible.
 pub fn see_through() -> bool {
     see_through_supported() && Appearance::get().see_through
@@ -165,8 +174,6 @@ pub fn see_through() -> bool {
 
 /// One full slide of the selection between rows.
 const SLIDE: Duration = Duration::from_millis(220);
-/// The concave curves above and below the selected row.
-const FILLET: f32 = 12.;
 /// The selected row's left end: a half circle (the pill he chose in
 /// rc12-24); hovered rows take the same shape.
 const SEL_RADIUS: f32 = ROW_H / 2.;
@@ -335,65 +342,93 @@ pub(crate) fn selection(active: &'static str, page: Hsla, line: Hsla, motion: bo
             if right <= 0. {
                 return;
             }
-            // Device pixels: the edge on whole pixels, the line a whole
-            // number of them wide; everything then in logical units again.
+            // Everything is placed in device pixels (whole ones where an
+            // edge must meet another), then given to GPUI in logical units:
+            // GPUI snaps quad edges to the nearest device pixel and a
+            // shadow's to the outer one, so each value is nudged a quarter
+            // pixel to land where it is meant to.
             let sc = window.scale_factor();
-            let edge_dev = (right * sc).round();
-            let w_dev = sc.round().max(1.);
-            let edge = edge_dev / sc;
-            let lw = w_dev / sc;
-            let xc = (edge_dev - w_dev / 2.) / sc;
-            let p = |x: f32, y: f32| point(px(x), px(y));
+            let lg = |d: f32| px(d / sc);
+            // For edges GPUI floors (left, top) or ceils (right, bottom).
+            let lo = |d: f32| px((d + 0.25) / sc);
+            let hi = |d: f32| px((d - 0.25) / sc);
+            let e = (right * sc).round();
+            let w = sc.round().max(1.);
+            let (y0, y1) = ((top_y * sc).round(), (bottom_y * sc).round());
+            let dev = |x0: f32, t0: f32, x1: f32, t1: f32| Bounds::from_corners(point(lg(x0), lg(t0)), point(lg(x1), lg(t1)));
             let Some(top) = y else {
                 // No row selected (About): the plain edge.
-                window.paint_quad(gpui::fill(Bounds::from_corners(p(edge - lw, top_y), p(edge, bottom_y)), line));
+                window.paint_quad(gpui::fill(dev(e - w, y0, e, y1), line));
                 return;
             };
-            let (l, t, b) = (left, top, top + ROW_H);
+            // The row's outline: its top line on [t, t + w], its bottom line
+            // on [b - w, b], its left end a half circle; the outline's centre
+            // line runs at SEL_RADIUS (in device pixels `rd`) round the end.
+            let hd = (ROW_H * sc).round();
+            let t = (top * sc - w / 2.).round();
+            let b = t + hd + w;
+            let l0 = (left * sc - w / 2.).round();
+            let rd = hd / 2.;
             // The layout test checks the opening (tests/layout/check.py).
             if cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
-                eprintln!("LAYOUT menu-sel {:.2} {:.2} {:.2} {:.2}", l, edge, t, b);
+                eprintln!("LAYOUT menu-sel {:.2} {:.2} {:.2} {:.2}", left, right, top, top + ROW_H);
             }
-            let f = FILLET;
-            let rad = SEL_RADIUS;
-            // Drawn with rounded quads only: GPUI gives quads exact
-            // antialiasing at every scale, where paths get at most 4x MSAA
-            // on Linux and read as stair-steps at fractional scales (his
-            // rc12-24 note). The line is centred on xc throughout.
-            let h = lw / 2.;
-            let bnd = |x0: f32, y0: f32, x1: f32, y1: f32| Bounds::from_corners(p(x0, y0), p(x1, y1));
-            let none = gpui::transparent_black();
-            // The edge above and below the opening.
-            window.paint_quad(gpui::fill(bnd(edge - lw, top_y, edge, t - f), line));
-            window.paint_quad(gpui::fill(bnd(edge - lw, b + f, edge, bottom_y), line));
-            // The row: page-coloured, its left end rounded, its outline on
-            // the top, left and bottom (centred on t, l and b).
+            // The concave curves join the row to the edge with the row's
+            // own radius (his 0.9.0 note: they looked deeper than the
+            // pill). Centre-line circle centres: above the row's top line
+            // and below its bottom line, `rd` left of the edge line.
+            let cx = e - w / 2. - rd;
+            let (cy_top, cy_bot) = (t + w / 2. - rd, b - w / 2. + rd);
+            // The edge above and below the opening (ending where its
+            // curve leaves it).
+            window.paint_quad(gpui::fill(dev(e - w, y0, e, cy_top.ceil()), line));
+            window.paint_quad(gpui::fill(dev(e - w, cy_bot.floor(), e, y1), line));
+            // The row: page-coloured from its left end out to the edge, its
+            // outline on the top, left and bottom. GPUI antialiases a
+            // quad's rounded corners exactly at every scale, where paths
+            // get at most 4x MSAA on Linux (his rc12-24 note).
+            let end = (b - t) / 2.;
             window.paint_quad(gpui::quad(
-                bnd(l - h, t - h, xc - f + 0.01, b + h),
-                Corners { top_left: px(rad + h), bottom_left: px(rad + h), top_right: px(0.), bottom_right: px(0.) },
+                dev(l0, t, e, b),
+                Corners { top_left: lg(end), bottom_left: lg(end), top_right: px(0.), bottom_right: px(0.) },
                 page,
-                Edges { top: px(lw), left: px(lw), bottom: px(lw), right: px(0.) },
+                Edges { top: lg(w), left: lg(w), bottom: lg(w), right: px(0.) },
                 line,
                 BorderStyle::Solid,
             ));
-            // Between the row and the edge: page only (the line opens).
-            window.paint_quad(gpui::fill(bnd(xc - f, t + h, edge, b - h), page));
-            // The concave curves: a ring around each curve's centre,
-            // clipped to its corner square. Page colour outside the curve
-            // (to the edge), then the line on the curve itself.
-            for (cy, y0, y1) in [(t - f, t - f, t + h), (b + f, b - h, b + f)] {
-                let sq = bnd(xc - f, y0, edge, y1);
-                window.with_content_mask(Some(ContentMask { bounds: sq }), |window| {
-                    let ring = |r_in: f32, r_out: f32| {
-                        gpui::quad(bnd(xc - f - r_out, cy - r_out, xc - f + r_out, cy + r_out), px(r_out), none, px(r_out - r_in), page, BorderStyle::Solid)
-                    };
-                    let wide = f * 0.5 + lw;
-                    window.paint_quad(ring(f, f + wide));
-                    let mut l_ring = ring(f - h, f + h);
-                    l_ring.border_color = line;
-                    window.paint_quad(l_ring);
-                });
-            }
+            // The concave curves, each as two inset shadows over its corner
+            // square: an inset shadow paints the complement of a rounded
+            // "hole" inside its element, its curved edge antialiased by the
+            // same distance field as a quad's corner, with no content mask
+            // (GPUI's masks are hard-edged). The hole is a circle about the
+            // curve's centre: first the line colour outside r - w/2, then the
+            // page colour outside r + w/2, leaving the line between. Inside
+            // the curve nothing is painted, so the menu shows through as it
+            // is (translucent when see-through). Only the hole's corner that
+            // faces the element matters; its other edges lie far outside.
+            // `corner` is that corner's device position and `up` whether
+            // the hole lies above it (the top curve) or below (the bottom).
+            let mut curve = |el: Bounds<Pixels>, corner: (f32, f32), up: bool, r: f32, color: Hsla| {
+                // The hole: the element moved by `offset` and grown by r on
+                // every side (spread -r), all its corners of radius r.
+                let (ex1, ey0, ey1) = (f32::from(el.origin.x + el.size.width), f32::from(el.origin.y), f32::from(el.origin.y + el.size.height));
+                let hx = f32::from(hi(corner.0)) - r / sc - ex1;
+                let hy = if up { f32::from(hi(corner.1)) - r / sc - ey1 } else { f32::from(lo(corner.1)) + r / sc - ey0 };
+                let shadow = BoxShadow {
+                    color,
+                    offset: point(px(hx), px(hy)),
+                    blur_radius: px(0.),
+                    spread_radius: px(-r / sc),
+                    inset: true,
+                };
+                window.paint_inset_shadows(el, Corners::default(), &[shadow]);
+            };
+            let top_sq = Bounds::from_corners(point(lo(cx.floor()), lo(cy_top.floor())), point(hi(e), hi(t + w)));
+            let bot_sq = Bounds::from_corners(point(lo(cx.floor()), lo(b - w)), point(hi(e), hi(cy_bot.ceil())));
+            curve(top_sq, (e - w, t), true, rd - w / 2., line);
+            curve(bot_sq, (e - w, b), false, rd - w / 2., line);
+            curve(top_sq, (e, t + w), true, rd + w / 2., page);
+            curve(bot_sq, (e, b - w), false, rd + w / 2., page);
         },
     )
     .absolute()
@@ -657,7 +692,7 @@ impl Manager {
                 .items_center()
                 .gap(px(4.))
                 .border_t_1()
-                .border_color(theme.sidebar_border)
+                .border_color(menu_line(&theme))
                 // Folded: the preferences button on ICON_X; unfolded: the
                 // product logo there.
                 .when(rail, |r| r.flex_col().items_start().py(px(8.)).pl(px(ICON_X - PREFS / 2.)))
@@ -724,7 +759,7 @@ impl Manager {
             // with the selected row's opening).
             .child(menu_probe(left_pad, overlay.then_some(MENU_FOLDED_W)))
             // Under the rows: the selection, joined to the page.
-            .child(selection(active, theme.muted, theme.sidebar_border, motion))
+            .child(selection(active, theme.muted, menu_line(&theme), motion))
             .child(brand)
             .child(
                 // The rows scroll when the window is short; the selection is
@@ -739,7 +774,7 @@ impl Manager {
                     .pl(px(left_pad))
                     .when(rail, |m| m.pr(px(MENU_PAD)))
                     .children(items)
-                    .child(div().mt(px(12.)).mb(px(12.)).ml(px(2.)).mr(px(10.)).h(px(1.)).flex_shrink_0().bg(theme.sidebar_border))
+                    .child(div().mt(px(12.)).mb(px(12.)).ml(px(2.)).mr(px(10.)).h(px(1.)).flex_shrink_0().bg(menu_line(&theme)))
                     .child(instances),
             )
             .child(footer);
