@@ -1065,7 +1065,15 @@ fn service_failed(ev: &Evidence, t: &str) -> Option<Diagnosis> {
 
 fn unknown(ev: &Evidence) -> Diagnosis {
     let last = last_error_lines(ev);
-    let cause = last.last().cloned().filter(|l| !l.is_empty()).unwrap_or_else(|| ev.error.lines().next().unwrap_or("The step failed.").to_string());
+    // The last error-like line the step printed; when it printed none (only
+    // progress, "… is up to date"), the job's own error says what stopped it,
+    // unless that is only a wrapper's "exited with N".
+    let printed_error = last.iter().any(|l| is_error_line(l));
+    let own = ev.error.lines().map(str::trim).find(|l| !l.is_empty()).filter(|_| ev.exit_code.is_none()).map(str::to_string);
+    let cause = match own {
+        Some(e) if !printed_error => e,
+        own => last.last().cloned().filter(|l| !l.is_empty()).or(own).unwrap_or_else(|| "The step failed.".to_string()),
+    };
     Diagnosis {
         id: "unknown".into(),
         cause: format!("The step stopped: {}", cause.trim_start_matches("!! ").trim_start_matches("E: ").trim_start_matches("error: ")),
@@ -1486,6 +1494,16 @@ mod tests {
         assert_eq!(d.id, "unknown");
         assert_eq!(d.cause, "The step stopped: tar: sentient.tar: Cannot open: Input/output error");
         assert!(d.details.contains("pkexec exited with 3"));
+    }
+
+    #[test]
+    fn unknown_names_the_jobs_error_when_the_step_printed_none() {
+        let d = diagnose(&Evidence::from_text(
+            "System has not been booted with systemd as init system (PID 1). Can't operate.",
+            &[">> Connect to the server".into(), "The Platform Manager on the server is up to date.".into()],
+        ));
+        assert_eq!(d.id, "unknown");
+        assert_eq!(d.cause, "The step stopped: System has not been booted with systemd as init system (PID 1). Can't operate.");
     }
 
     #[test]
