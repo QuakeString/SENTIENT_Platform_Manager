@@ -15,6 +15,31 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Fixed
+- Windows "In the system": other computers reach SENTIENT. Setup opens its
+  ports in Windows Firewall (rule group SENTIENT: web and MQTT over TCP,
+  CoAP over UDP). Repair, a SENTIENT update and the Platform Manager's
+  list of changes add the rules to an earlier install when one is missing.
+- Windows Docker: "Start SENTIENT automatically with Windows" and its start
+  delay now decide when the WSL distro starts: the task "SENTIENT Docker"
+  starts at boot after that delay, or, when off, only when SENTIENT is
+  started from the Platform Manager. Startup in Platform settings reads and
+  changes the same task.
+- Windows Docker: PostgreSQL's recommended memory is sized for the WSL 2
+  VM (half the computer's memory, or .wslconfig's memory=), not the whole
+  computer; with ClickHouse beside a Windows PostgreSQL, PostgreSQL is
+  sized for what the ClickHouse VM leaves.
+### Changed
+- A new Docker install waits up to 10 minutes (was 6) for SENTIENT's first
+  answer, and its log says every 15 seconds how long it has waited and
+  what the container is doing.
+- The Summary on Windows Docker shows CoAP as reachable from this computer
+  only, with an (i) saying why (WSL 2 does not forward UDP).
+- System check: "Check again" only on rows a new check can change, not on
+  "Will be installed" rows.
+- "Remove the earlier install?" has its buttons at the bottom right, as on
+  the other Setup pages.
+
 ### Changed
 - Pages switch instantly. The fade and rise on a page change are gone; dialogs and menus keep their open animation.
 - Every popup opens with the same short animation: dialogs, the notifications and job panels rise 8 px as they fade in (180 ms); menus (the instance switcher, the theme menu, the licence menu, every dropdown and the Files context menu) and tooltips fade in moving 4 px toward what opened them (140 ms). Reduce motion turns them off. Dropdown and context menus, and plain tooltips, opened with none before.
