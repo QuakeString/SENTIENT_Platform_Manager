@@ -1,0 +1,14 @@
+{"system":"linux","host":"ws-lab-02.example.local","machine":{"virtual":false,"hypervisor":null,"model":"Example Systems WS-500"},"os":"Debian 12","kernel":"6.1",
+"cpu":{"model":"Intel Xeon W-2245","cores":8,"threads":16,"temp_c":48.0},
+"mem_total":68719476736,"swap_total":8589934592,"swap_used":104857600,
+"gpus":[{"name":"NVIDIA RTX A2000 12GB","mem":12878610432}],
+"disks":[
+ {"name":"/","device":"nvme0n1","model":"Example NVMe 1TB","kind":"SSD","size":982000000000,"free":702000000000,"sentient":false,"smart_ok":true,"wear":6},
+ {"name":"/srv/sentient","device":"nvme1n1","model":"Example NVMe 2TB","kind":"SSD","size":1968000000000,"free":1210000000000,"sentient":true,"smart_ok":true,"wear":12},
+ {"name":"/mnt/archive","device":"sda","model":"Example HDD 4TB","kind":"HDD","size":3936000000000,"free":131000000000,"sentient":false,"smart_ok":true,"wear":null},
+ {"name":"sdb","device":"sdb","model":"Example USB 1TB","kind":"USB","size":1000204886016,"free":null,"sentient":false,"smart_ok":null,"wear":null}],
+"boot":1468800,"clean_restart":true,
+"clock":{"synced":true,"offset":0.004,"zone":"Europe/Berlin"},
+"nets":[{"name":"enp5s0","ip":"192.0.2.24","speed":1000},{"name":"enp6s0","ip":"198.51.100.24","speed":10000}],
+"updates":0,"restart_needed":false,
+"docker":{"version":"27.3.1","on_boot":true}}

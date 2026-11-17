@@ -236,6 +236,58 @@ pub fn changes(pending: &[crate::changes::Change]) -> Vec<PlanStep> {
     crate::changes::planned_steps(pending).into_iter().map(PlanStep::new).collect()
 }
 
+/// Restarting a server (crate::manager::server_card): the window drives
+/// these steps itself; the server is down for most of them.
+pub const STEP_RESTART_SENT: &str = "Restart sent";
+pub const STEP_WENT_DOWN: &str = "Server went down";
+pub const STEP_COMING_BACK: &str = "Waiting for it to come back";
+pub const STEP_RESTARTED: &str = "Server restarted";
+pub const STEP_RUNNING: &str = "SENTIENT and the database running";
+pub const STEP_ANSWERS: &str = "SENTIENT answers";
+
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+pub fn server_restart(windows: bool) -> Vec<PlanStep> {
+    vec![
+        connect(),
+        PlanStep::new(STEP_RESTART_SENT).detail(format!("SENTIENT and its database stopped cleanly first, then {}", if windows { "shutdown /r" } else { "systemctl reboot" })).weight(1.),
+        PlanStep::new(STEP_WENT_DOWN).detail("The connection drops").weight(0.5),
+        PlanStep::new(STEP_COMING_BACK).detail("Reconnecting; gives up after 10 min").weight(3.),
+        PlanStep::new(STEP_RESTARTED).detail("Its start time is new").weight(0.5),
+        PlanStep::new(STEP_RUNNING).weight(2.),
+        PlanStep::new(STEP_ANSWERS).detail("On its web address").weight(1.),
+    ]
+}
+
+/// Shutting a server down: it is gone once the command is sent.
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+pub fn server_shutdown(windows: bool) -> Vec<PlanStep> {
+    vec![
+        connect(),
+        PlanStep::new("Shutdown sent").detail(format!("SENTIENT and its database stopped cleanly first, then {}", if windows { "shutdown /s" } else { "systemctl poweroff" })),
+        PlanStep::new(STEP_WENT_DOWN).detail("The connection drops").weight(0.5),
+    ]
+}
+
+/// Restarting Docker (crate::server_ops).
+pub fn docker_restart(sentient_on_docker: bool) -> Vec<PlanStep> {
+    use crate::server_ops as so;
+    let mut v = vec![PlanStep::new(so::STEP_DOCKER_RESTART).detail("Its containers stop and start with it"), PlanStep::new(so::STEP_DOCKER_WAIT).weight(0.5)];
+    if sentient_on_docker {
+        v.push(PlanStep::new(so::STEP_DOCKER_SENTIENT).detail("Its containers started").weight(2.));
+    }
+    v
+}
+
+/// Installing the system's updates (crate::server_ops).
+pub fn system_updates() -> Vec<PlanStep> {
+    use crate::server_ops as so;
+    vec![
+        PlanStep::new(so::STEP_UPD_LOOK).detail("The package lists read again"),
+        PlanStep::new(so::STEP_UPD_INSTALL).weight(6.),
+        PlanStep::new(so::STEP_UPD_CHECK).weight(0.3),
+    ]
+}
+
 /// A `--job` run's steps (the agent on a server, a root job), sent before
 /// it starts; None for a job too short to have steps.
 pub fn for_job(record: &InstallationRecord, args: &[String]) -> Option<Vec<PlanStep>> {
@@ -284,6 +336,8 @@ pub fn guess(args: &[String], docker: bool, windows: bool) -> Vec<PlanStep> {
         "migrate" => migration(),
         "take-over-compose" => takeover(),
         "move-data" => args.get(1).and_then(|a| crate::movedata::parse_moves(a).ok()).map(|m| move_data(&m, None, windows && !docker)).unwrap_or_default(),
+        "docker-restart" => docker_restart(docker),
+        "system-updates" => system_updates(),
         _ => Vec::new(),
     });
     v

@@ -1524,6 +1524,12 @@ fn spm_job(inst: &Instance, job: &str) -> Result<String, String> {
     })
 }
 
+/// Run `--job <job>` with the server's Platform Manager as administrator
+/// and return what it printed (the Server card, crate::manager::server_card).
+pub fn agent_job(inst: &Instance, job: &str) -> Result<String, String> {
+    spm_job(inst, job)
+}
+
 /// What taking the server's SENTIENT over would do (crate::manager::takeover),
 /// with a compose file picked on the server.
 pub fn takeover_plan(inst: &Instance, compose: Option<&str>) -> Result<sentient_installer_core::distro::adopt::TakeOverPlan, String> {

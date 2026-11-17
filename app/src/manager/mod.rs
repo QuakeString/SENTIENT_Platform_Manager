@@ -22,6 +22,7 @@ pub(crate) mod jobview;
 mod licence;
 mod licence_card;
 pub(crate) mod settings;
+pub(crate) mod server_card;
 pub(crate) mod session;
 pub(crate) mod setup_guide;
 pub(crate) mod shell;
@@ -932,6 +933,9 @@ impl Manager {
         let installed = remote.is_some() || self.record.is_some();
         let (state_dot, state_why): (Hsla, &'static str) = if !installed {
             (rgb(0x94a3b8).into(), "SENTIENT isn't installed on this computer")
+        } else if remote.as_ref().is_some_and(|r| server_card::restarting(&r.id)) {
+            // Restarted from the Server card: not answering is expected.
+            (rgb(0xf59e0b).into(), "The server is restarting: reconnecting")
         } else if remote.is_some() && (self.remote_monitor.is_none() || self.remote_monitor_stale) {
             (rgb(0x94a3b8).into(), "The server does not answer, or is being read")
         } else if serving == Some(false) {
