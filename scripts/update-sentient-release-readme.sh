@@ -33,7 +33,7 @@ def row(what, rel, about):
     if rel:
         rows.append(f"| {what} | [{rel['name'] or rel['tag_name']}]({rel['html_url']}) | {about} |")
 row("SENTIENT", latest, "The platform for Windows and Linux; installed and updated by the Platform Manager. Docker: `quakestring/sentient`.")
-row("SENTIENT Platform Manager", newest("spm-v"), "Installs, updates, backs up and manages SENTIENT (Windows installer, Linux binary and Arch package).")
+row("SENTIENT Platform Manager", newest("spm-v"), "Installs, updates, backs up and manages SENTIENT (Windows installer; Linux .deb, .rpm, Arch, AppImage and Flatpak packages, and a plain binary).")
 row("SENTIENT Gateway", newest("gateway-"), "Connects field devices and PLCs to SENTIENT (Windows installer, Linux packages).")
 row("SENTIENT mobile app", newest("SENTIENT-mobile-app-"), "Android app for SENTIENT dashboards and alarms.")
 table = ("<!-- downloads:start -->\n## Downloads\n\n| Product | Latest | What it is |\n|---|---|---|\n"
