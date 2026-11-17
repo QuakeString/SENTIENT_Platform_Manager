@@ -1008,13 +1008,13 @@ fn clickhouse_limits(ev: &Evidence, t: &str) -> Option<Diagnosis> {
 
 /// WSL turned on in this run: Windows finishes it only after a restart.
 fn wsl_restart(_: &Evidence, t: &str) -> Option<Diagnosis> {
-    if !has(t, &["A restart is required to finish enabling it", "restart is required to finish", "The requested operation requires a reboot", "ERROR_SUCCESS_REBOOT_REQUIRED"]) {
+    if !has(t, &["must restart to finish turning on WSL", "A restart is required to finish enabling it", "restart is required to finish", "The requested operation requires a reboot", "ERROR_SUCCESS_REBOOT_REQUIRED"]) {
         return None;
     }
     diag(
         "wsl-restart",
         "Windows needs a restart to finish turning on WSL.",
-        "ClickHouse runs in Docker inside WSL2 on Windows; WSL was turned on just now and becomes active after a restart.",
+        "On Windows, Docker (and the ClickHouse of PostgreSQL + ClickHouse) runs inside WSL 2; WSL was turned on just now and becomes active after a restart.",
         vec![steps("Restart Windows. Setup carries on by itself after you sign in again (the install continues where it stopped); if it does not, open SENTIENT Setup and Retry.")],
     )
 }
@@ -1026,7 +1026,7 @@ fn wsl_missing(_: &Evidence, t: &str) -> Option<Diagnosis> {
     diag(
         "wsl-missing",
         "WSL (the Windows Subsystem for Linux) is not installed.",
-        "ClickHouse runs in Docker inside WSL2 on Windows.",
+        "On Windows, Docker (and the ClickHouse of PostgreSQL + ClickHouse) runs inside WSL 2.",
         vec![cmd("Install it (as administrator), then restart Windows", "wsl --install --no-distribution"), steps("After the restart, Retry.")],
     )
 }
@@ -1440,6 +1440,9 @@ mod tests {
     #[test]
     fn wsl_needing_a_restart_is_named() {
         let ev = Evidence::from_text("WSL isn't active yet. A restart is required to finish enabling it.", &[]);
+        assert_eq!(diagnose(&ev).id, "wsl-restart");
+        // Setup's own words, also when the support details say WSL is not installed yet.
+        let ev = Evidence::from_text("Windows must restart to finish turning on WSL 2.\nWSL is not installed", &[]);
         assert_eq!(diagnose(&ev).id, "wsl-restart");
     }
 

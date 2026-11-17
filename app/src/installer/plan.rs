@@ -58,6 +58,10 @@ pub struct InstallPlan {
     /// or kept aside (sentient_installer_core::old_pg).
     #[serde(default)]
     pub old_pg: sentient_installer_core::old_pg::OldPgChoice,
+    /// Windows restarted once already to turn WSL 2 on: a WSL that still
+    /// does not run is an error now, not another restart.
+    #[serde(default)]
+    pub wsl_restarted: bool,
 }
 
 /// The image a new Docker install runs: `image` at the tag of `version`
@@ -161,7 +165,7 @@ impl InstallPlan {
 
 /// The error `run` returns when Windows must restart to finish enabling
 /// WSL2. The plan is saved first and setup continues after the next logon.
-pub const RESTART_REQUIRED: &str = "Windows must restart to finish enabling WSL2.";
+pub const RESTART_REQUIRED: &str = "Windows must restart to finish turning on WSL 2.";
 
 /// Passwords of a saved plan, kept apart from it: they go to the secret
 /// store (crate::secrets), the rest to a plain file.
@@ -238,18 +242,37 @@ pub fn restart_now() {
         .spawn();
 }
 
+/// WSL 2 turned on, or the run stops for the one restart that finishes
+/// it (the plan saved; Setup continues after the next sign-in). After that
+/// restart a WSL that still does not run is an error. Windows only.
+#[cfg(windows)]
+fn turn_on_wsl(plan: &InstallPlan, sink: &ProgressFn) -> Result<(), String> {
+    use sentient_installer_core::wsl;
+    if wsl::is_ready() {
+        return Ok(());
+    }
+    let outcome = wsl::install(sink.clone());
+    if outcome.ready {
+        return Ok(());
+    }
+    if plan.wsl_restarted {
+        let status = wsl::facts().status;
+        return Err(format!(
+            "WSL 2 still does not run after the restart. {}",
+            wsl::vm_error(&status).unwrap_or_else(|| status.trim().lines().last().unwrap_or("wsl --status gave no answer").to_string())
+        ));
+    }
+    let mut saved = plan.clone();
+    saved.wsl_restarted = true;
+    save_pending(&saved)?;
+    Err(RESTART_REQUIRED.into())
+}
+
 /// ClickHouse in Docker inside WSL2, owned by the hidden account
 /// (sentient_installer_core::clickhouse_wsl). Windows only.
 #[cfg(windows)]
 fn install_clickhouse_wsl(plan: &InstallPlan, manager: &std::path::Path, sink: &ProgressFn) -> Result<(), String> {
-    use sentient_installer_core::wsl;
-    if !wsl::is_ready() {
-        let outcome = wsl::install(sink.clone());
-        if outcome.reboot_required {
-            save_pending(plan)?;
-            return Err(RESTART_REQUIRED.into());
-        }
-    }
+    turn_on_wsl(plan, sink)?;
     // A reinstall over kept data (the PostgreSQL cluster is there) takes
     // ClickHouse's kept history back too; a fresh install starts clean.
     let reuse = plan.existing == Some(true);
@@ -368,9 +391,39 @@ pub fn run_manager_only(shortcuts: Shortcuts, sink: ProgressFn) -> Result<(), St
 const STEP_CLICKHOUSE: &str = "Setting up ClickHouse";
 const STEP_SENTIENT: &str = "Installing SENTIENT and its database";
 
+const STEP_WSL: &str = "Turning on WSL 2";
+const STEP_DOCKER_WSL: &str = "Setting up Docker in WSL 2";
+
+/// What the install's steps depend on besides the plan.
+#[derive(Clone, Copy)]
+pub struct Host {
+    pub windows: bool,
+    /// WSL 2 runs already (Windows).
+    pub wsl_ready: bool,
+    /// Setup runs from the installed Platform Manager.
+    pub manager_in_place: bool,
+}
+
+impl Host {
+    pub fn here(plan: &InstallPlan) -> Self {
+        let windows = cfg!(windows);
+        let needs_wsl = windows && (plan.engine == Engine::Docker || plan.stack.flavor == Flavor::Clickhouse);
+        Host {
+            windows,
+            wsl_ready: !needs_wsl || sentient_installer_core::wsl::is_ready(),
+            manager_in_place: self_install::manager_in_place(),
+        }
+    }
+}
+
 /// The install's steps, declared before it starts (the job view shows them
 /// all; crate::jobplan for the other jobs).
 pub fn steps(plan: &InstallPlan) -> Vec<sentient_installer_core::progress::PlanStep> {
+    steps_on(plan, Host::here(plan))
+}
+
+/// [`steps`] on `host`.
+pub fn steps_on(plan: &InstallPlan, host: Host) -> Vec<sentient_installer_core::progress::PlanStep> {
     use sentient_installer_core::progress::PlanStep;
     let mut v = Vec::new();
     if plan.bundle.is_none() && plan.engine == Engine::Native {
@@ -380,11 +433,29 @@ pub fn steps(plan: &InstallPlan) -> Vec<sentient_installer_core::progress::PlanS
     }
     // Setup's own step: from the installed Platform Manager there is
     // nothing to put in place.
-    if !self_install::manager_in_place() {
+    if !host.manager_in_place {
         v.push(PlanStep::new("Installing the Platform Manager").weight(0.5));
     }
-    if cfg!(windows) && plan.stack.flavor == Flavor::Clickhouse {
+    let docker_wsl = host.windows && plan.engine == Engine::Docker;
+    let hybrid = host.windows && plan.engine == Engine::Native && plan.stack.flavor == Flavor::Clickhouse;
+    if (docker_wsl || hybrid) && !host.wsl_ready {
+        v.push(
+            PlanStep::new(STEP_WSL)
+                .detail("Windows restarts once, and Setup continues after you sign in")
+                .when(&["Turning on the Windows feature", "Updating the WSL kernel", "Downloading the WSL package", "Installing the WSL package"])
+                .weight(2.),
+        );
+    }
+    if hybrid {
         v.push(PlanStep::new(STEP_CLICKHOUSE).detail("Its own WSL distribution and account").weight(4.));
+    }
+    if docker_wsl {
+        v.push(
+            PlanStep::new(STEP_DOCKER_WSL)
+                .detail("SENTIENT's own Ubuntu distribution with Docker Engine")
+                .when(&["Resetting an unresponsive SENTIENT distro", "Taking back the SENTIENT distro", "Downloading Ubuntu", "Creating the SENTIENT WSL distro", "Enabling systemd", "Installing Docker Engine", "Starting Docker"])
+                .weight(4.),
+        );
     }
     v.push(PlanStep::new(STEP_SENTIENT).detail(match plan.engine {
         Engine::Docker => "The containers, the database and its schema",
@@ -432,9 +503,24 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
     crate::uninstall::note_before_install(plan.engine, plan.stack.flavor);
     // ClickHouse first: SENTIENT's schema installer creates its tables there.
     #[cfg(windows)]
-    if plan.stack.flavor == Flavor::Clickhouse {
+    if plan.engine == Engine::Native && plan.stack.flavor == Flavor::Clickhouse {
+        if !sentient_installer_core::wsl::is_ready() {
+            step(&sink, STEP_WSL);
+            turn_on_wsl(&plan, &sink)?;
+        }
         step(&sink, STEP_CLICKHOUSE);
         install_clickhouse_wsl(&plan, &manager, &sink)?;
+    }
+    // Docker in WSL 2: WSL turned on (one restart), then SENTIENT's own
+    // distro with Docker Engine (distro::setup).
+    #[cfg(windows)]
+    if plan.engine == Engine::Docker {
+        if !sentient_installer_core::wsl::is_ready() {
+            step(&sink, STEP_WSL);
+            turn_on_wsl(&plan, &sink)?;
+        }
+        step(&sink, STEP_DOCKER_WSL);
+        distro::setup(sink.clone(), &plan.install_dir)?;
     }
     let admin_hash = hash_password(&plan.admin_password)?;
     step(&sink, STEP_SENTIENT);
@@ -474,8 +560,17 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
         }
         Engine::Docker => {
             let stack = plan.configured_stack();
-            distro::setup(sink.clone(), &plan.install_dir)?;
+            // Windows set Docker up above, before this step.
+            if !cfg!(windows) {
+                distro::setup(sink.clone(), &plan.install_dir)?;
+            }
             distro::deploy_with(sink.clone(), &stack, plan.existing)?;
+            // Windows: the distro, and with it Docker, starts when this
+            // account signs in and stays up (WSL ends an idle distro).
+            #[cfg(windows)]
+            if let Err(e) = distro::register_keepalive() {
+                sink(Progress::Log { line: format!("note: SENTIENT will not start by itself at sign-in: {e}") });
+            }
             step(&sink, "Setting the administrator sign-in");
             distro::set_admin_account(&stack, &plan.admin_email, &admin_hash)?;
         }
@@ -517,7 +612,79 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::pinned_image;
+    use super::*;
+
+    fn plan(engine: Engine, flavor: Flavor) -> InstallPlan {
+        InstallPlan {
+            engine,
+            sentient_version: "4.4.0.1".into(),
+            install_dir: PathBuf::from(r"C:\Program Files\SENTIENT"),
+            data_dir: PathBuf::from(r"C:\PostgreSQL\18"),
+            stack: DeployConfig { flavor, ..DeployConfig::default() },
+            pg_superuser_password: String::new(),
+            admin_email: "ada@example.test".into(),
+            admin_password: String::new(),
+            settings: Vec::new(),
+            shortcuts: Shortcuts { autostart: true, desktop_sentient: true, desktop_manager: true, start_menu: true, kiosk: false, open_at_signin: false, auto_signin: String::new(), start_delay: 0 },
+            auto_signin_password: String::new(),
+            bundle: None,
+            download: None,
+            existing: None,
+            delete_existing: false,
+            old_pg: Default::default(),
+            wsl_restarted: false,
+        }
+    }
+
+    fn names(plan: &InstallPlan, host: Host) -> Vec<String> {
+        steps_on(plan, host).into_iter().map(|s| s.name).collect()
+    }
+
+    const WINDOWS: Host = Host { windows: true, wsl_ready: true, manager_in_place: true };
+
+    #[test]
+    fn windows_docker_without_wsl_turns_it_on_first() {
+        let p = plan(Engine::Docker, Flavor::Timescaledb);
+        let v = names(&p, Host { wsl_ready: false, ..WINDOWS });
+        assert_eq!(v[..3], [STEP_WSL, STEP_DOCKER_WSL, STEP_SENTIENT]);
+        assert!(!v.contains(&STEP_CLICKHOUSE.to_string()));
+        let wsl = steps_on(&p, Host { wsl_ready: false, ..WINDOWS }).remove(0);
+        assert!(wsl.detail.contains("restarts once"));
+        assert!(wsl.matches("Turning on the Windows feature VirtualMachinePlatform"));
+    }
+
+    #[test]
+    fn windows_docker_with_wsl_sets_up_docker_then_sentient() {
+        let v = names(&plan(Engine::Docker, Flavor::Clickhouse), WINDOWS);
+        assert_eq!(v, [STEP_DOCKER_WSL, STEP_SENTIENT, "Setting the administrator sign-in", "Creating shortcuts", "Saving the installation record"]);
+        let docker = steps_on(&plan(Engine::Docker, Flavor::Clickhouse), WINDOWS).remove(0);
+        assert!(docker.matches("Installing Docker Engine (a few minutes)"));
+        assert!(docker.matches("Downloading Ubuntu base image (~350 MB)"));
+    }
+
+    #[test]
+    fn the_windows_hybrid_keeps_its_clickhouse_step_and_turns_wsl_on_when_missing() {
+        let p = plan(Engine::Native, Flavor::Clickhouse);
+        assert_eq!(names(&p, WINDOWS)[..2], [STEP_CLICKHOUSE, STEP_SENTIENT]);
+        assert_eq!(names(&p, Host { wsl_ready: false, ..WINDOWS })[..2], [STEP_WSL, STEP_CLICKHOUSE]);
+        // Native without ClickHouse never needs WSL.
+        assert_eq!(names(&plan(Engine::Native, Flavor::Stock), Host { wsl_ready: false, ..WINDOWS })[0], STEP_SENTIENT);
+    }
+
+    #[test]
+    fn linux_docker_has_no_wsl_steps() {
+        let linux = Host { windows: false, wsl_ready: false, manager_in_place: false };
+        let v = names(&plan(Engine::Docker, Flavor::Clickhouse), linux);
+        assert_eq!(v[..2], ["Installing the Platform Manager", STEP_SENTIENT]);
+    }
+
+    #[test]
+    fn a_saved_plan_from_before_this_field_reads_as_not_restarted() {
+        let mut v = serde_json::to_value(plan(Engine::Docker, Flavor::Stock)).unwrap();
+        v.as_object_mut().unwrap().remove("wsl_restarted");
+        let p: InstallPlan = serde_json::from_value(v).unwrap();
+        assert!(!p.wsl_restarted);
+    }
 
     #[test]
     fn new_docker_installs_use_the_release_tag() {
