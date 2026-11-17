@@ -129,9 +129,13 @@ pub fn start(options: fn(&mut App) -> WindowOptions, open_window: bool, request:
     cx.set_quit_mode(QuitMode::Explicit);
     let prefs = Prefs::load();
     let (tx, mut rx) = unbounded::<Command>();
+    crate::timing::mark("bg-start");
     let tray = if prefs.show_tray {
         crate::background::listen(tx.clone());
-        crate::tray::spawn(tx.clone(), crate::tray::Model::read(None))
+        crate::timing::mark("bg-listening");
+        let t = crate::tray::spawn(tx.clone(), crate::tray::Model::read(None));
+        crate::timing::mark("bg-tray-up");
+        t
     } else {
         None
     };
@@ -331,7 +335,9 @@ fn show(cx: &mut App) {
             return;
         }
     }
+    crate::timing::mark("show-window");
     let options = (cx.global::<Bg>().options)(cx);
+    crate::timing::mark("window-options");
     let Ok((handle, manager)) = crate::open_manager_window(options, cx) else { return };
     let b = cx.global_mut::<Bg>();
     b.window = Some(handle);

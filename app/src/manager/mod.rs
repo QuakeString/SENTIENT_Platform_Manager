@@ -285,6 +285,7 @@ pub fn saved_events() -> Vec<strip::Event> {
 
 impl Manager {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+        crate::timing::mark("manager-new");
         // OpenGL (no Vulkan driver): the window cannot be translucent, so
         // the menu is solid and About says why.
         shell::detect_gl(_window);
@@ -380,6 +381,27 @@ impl Manager {
             _tasks: Vec::new(),
         };
         manager.start_monitor(cx);
+        // Performance probes (tests/layout/perf.sh): go to pages in turn,
+        // SPM_DEBUG_GO_PAGES=about:6,status:12 (page:seconds after start).
+        #[cfg(debug_assertions)]
+        if let Ok(spec) = std::env::var("SPM_DEBUG_GO_PAGES") {
+            let steps: Vec<(Page, f64)> = spec.split(',').filter_map(|s| s.split_once(':')).filter_map(|(p, t)| Some((page_of(p)?, t.parse().ok()?))).collect();
+            let t0 = std::time::Instant::now();
+            let task = cx.spawn(async move |this, cx| {
+                for (p, at) in steps {
+                    let wait = std::time::Duration::from_secs_f64(at).saturating_sub(t0.elapsed());
+                    cx.background_executor().timer(wait).await;
+                    crate::timing::mark(&format!("go page={}", p.id()));
+                    if this.update(cx, |m, cx| {
+                        m.page = p;
+                        cx.notify();
+                    }).is_err() {
+                        break;
+                    }
+                }
+            });
+            manager._tasks.push(task);
+        }
         // The instance it was left on, if it is still in the list (it shows
         // connecting; start never waits for it). Not when a page was asked
         // for on the command line.
@@ -558,6 +580,7 @@ impl Manager {
             });
             manager._debug_job = Some(job);
         }
+        crate::timing::mark("manager-new-done");
         manager
     }
 
@@ -2097,11 +2120,39 @@ impl Manager {
 
 impl Render for Manager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t0 = std::time::Instant::now();
         self.take_list_change(cx);
         // Windows 10: the app's caption and rounded corners (crate::win_frame).
         let root = self.render_root(window, cx).into_any_element();
-        crate::win_frame::frame(crate::mode::AppMode::Manager.window_title(), root, window, cx)
+        let el = crate::win_frame::frame(crate::mode::AppMode::Manager.window_title(), root, window, cx);
+        if crate::timing::on() {
+            render_timing(self.page.id(), t0, window);
+        }
+        el
     }
+}
+
+/// SPM_DEBUG_TIMING: the first render and the first frame shown, and each
+/// 10 s how many times the window rendered and how long its render took
+/// (a re-render storm shows as many renders on an idle window).
+fn render_timing(page: &str, t0: std::time::Instant, window: &mut Window) {
+    thread_local!(static N: std::cell::Cell<(u64, f64, Option<std::time::Instant>)> = const { std::cell::Cell::new((0, 0., None)) });
+    let ms = t0.elapsed().as_secs_f64() * 1000.;
+    N.with(|n| {
+        let (count, total, since) = n.get();
+        if count == 0 && since.is_none() {
+            crate::timing::mark(&format!("first-render page={page} render_ms={ms:.1}"));
+            window.on_next_frame(|_, _| crate::timing::mark("first-frame"));
+        }
+        let since = since.unwrap_or_else(std::time::Instant::now);
+        let (count, total) = (count + 1, total + ms);
+        if since.elapsed().as_secs_f64() >= 10. {
+            crate::timing::mark(&format!("renders page={page} n={count} total_ms={total:.1} per_s={:.2}", count as f64 / since.elapsed().as_secs_f64()));
+            n.set((0, 0., Some(std::time::Instant::now())));
+        } else {
+            n.set((count, total, Some(since)));
+        }
+    });
 }
 
 impl Manager {
@@ -2182,7 +2233,16 @@ impl Manager {
                 self.menu_page().id()
             );
         }
+        let content_t0 = std::time::Instant::now();
         let content = self.content(window, cx);
+        // SPM_DEBUG_TIMING: building a page's view the first frame it shows.
+        if crate::timing::on() {
+            thread_local!(static LAST: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) });
+            let key = format!("{}@{}", self.page.id(), self.open_remote.as_deref().unwrap_or("local"));
+            if LAST.with(|l| l.replace(key.clone())) != key {
+                crate::timing::took(&format!("page-open {key}"), content_t0);
+            }
+        }
         // Switch timing: each frame after a switch until the page shows
         // its data (render done, and the next frame's start ≈ presented).
         if let Some((t0, n)) = SWITCH_AT.with(|s| s.get()) {
