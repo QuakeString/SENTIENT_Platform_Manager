@@ -1622,8 +1622,27 @@ pub fn pg_other_databases(cfg: &NativeConfig) -> Result<Vec<String>, String> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = cfg;
-        Ok(Vec::new())
+        // The bundled psql as the superuser; the password in the
+        // environment only (never on a command line).
+        let psql = cfg.pg_dir.join("bin").join(if cfg!(windows) { "psql.exe" } else { "psql" });
+        if !psql.exists() {
+            return Err(format!("psql is not where PostgreSQL was installed ({})", psql.display()));
+        }
+        let mut c = std::process::Command::new(&psql);
+        c.args(["-h", "127.0.0.1", "-p", &cfg.pg_port.to_string(), "-U", "postgres", "-d", "postgres", "-XAtqc", "SELECT datname FROM pg_database"])
+            .env("PGPASSWORD", &cfg.pg_superuser_password)
+            .stdin(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0800_0000);
+        }
+        let out = c.output().map_err(|e| format!("psql: {e}"))?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("psql failed").trim().to_string());
+        }
+        let all: Vec<String> = String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+        Ok(crate::stack_order::other_databases(&all, &cfg.db_name))
     }
 }
 
@@ -1636,8 +1655,17 @@ pub fn control_stack(sink: ProgressFn, cfg: &NativeConfig, action: &str, stop_sh
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = stop_shared_pg;
-        let steps = crate::stack_order::plan(action, cfg.flavor == Flavor::Clickhouse, None)?;
+        // A PostgreSQL other databases use stays up (as on Linux), unless
+        // the stop asks for it too.
+        let keep = if crate::stack_order::stops_postgres(action) && !stop_shared_pg {
+            crate::stack_order::keep_postgres(&pg_other_databases(cfg), false)
+        } else {
+            None
+        };
+        let steps = crate::stack_order::plan(action, cfg.flavor == Flavor::Clickhouse, keep.clone())?;
+        if let Some(why) = &keep {
+            sink(Progress::Log { line: why.clone() });
+        }
         for s in &windows_steps(&steps) {
             run_windows_step(&sink, cfg, s)?;
         }
