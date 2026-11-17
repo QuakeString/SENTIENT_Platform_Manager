@@ -550,6 +550,12 @@ impl Job {
             Progress::Log { line } => {
                 let line = crate::ui::strip_ansi(&line);
                 activity(&format!("  {line}"));
+                // An engine step an older agent printed as a line
+                // (">> Dumping database"): it still moves the plan on.
+                if let Some(name) = line.strip_prefix(">> ").filter(|_| self.planned) {
+                    let name = name.to_string();
+                    self.enter(&name);
+                }
                 self.push_line(line.into());
             }
             Progress::Percent { value } => self.percent = Some((value * 100.0).clamp(0.0, 100.0)),
@@ -736,7 +742,9 @@ mod plan_tests {
         j.apply(Progress::Plan { steps: vec![PlanStep::new("A"), PlanStep::new("B")] });
         let names: Vec<&str> = j.rows().iter().map(|r| r.step.name.as_str()).collect();
         assert_eq!(names, ["Connect to the server", "A", "B"]);
-        j.apply(Progress::Step { name: "A".into() });
+        // An older agent's engine step, printed as a line.
+        j.apply(Progress::Log { line: ">> A".into() });
+        assert_eq!(j.rows()[1].state, RowState::Running);
         j.finish(Ok(()));
         assert_eq!(states(&j), [RowState::Done, RowState::Done, RowState::Skipped]);
         assert_eq!(j.overall(), 100.);
