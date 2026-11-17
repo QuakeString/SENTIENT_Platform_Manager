@@ -90,7 +90,7 @@ pub fn combine(names: &[String], verbose: &[(String, bool, Option<u8>)], running
 #[cfg(windows)]
 pub fn wsl_distros() -> Result<Vec<WslDistro>, String> {
     use crate::sys;
-    let (ok, out, err) = sys::output("wsl.exe", &["-l", "-q"]).ok_or("wsl.exe could not be run (WSL is not installed)")?;
+    let (ok, out, err) = sys::output_wsl("wsl.exe", &["-l", "-q"], std::time::Duration::from_secs(30)).ok_or("wsl.exe could not be run (WSL is not installed)")?;
     if !ok {
         // No distro at all is a failure too ("… has no installed
         // distributions"), in Windows' language: say what it said.
@@ -100,11 +100,11 @@ pub fn wsl_distros() -> Result<Vec<WslDistro>, String> {
     }
     let names = parse_list_quiet(&sys::decode(&out));
     // Nothing running is an error exit too: no names, then.
-    let running = sys::output("wsl.exe", &["-l", "--running", "-q"])
+    let running = sys::output_wsl("wsl.exe", &["-l", "--running", "-q"], std::time::Duration::from_secs(30))
         .filter(|(ok, _, _)| *ok)
         .map(|(_, out, _)| parse_list_quiet(&sys::decode(&out)))
         .unwrap_or_default();
-    let verbose = sys::output("wsl.exe", &["-l", "-v"])
+    let verbose = sys::output_wsl("wsl.exe", &["-l", "-v"], std::time::Duration::from_secs(30))
         .filter(|(ok, _, _)| *ok)
         .map(|(_, out, _)| parse_list_verbose(&sys::decode(&out)))
         .unwrap_or_default();
@@ -200,10 +200,10 @@ pub fn parse_desktop_ps(text: &str) -> Vec<DesktopContainer> {
 #[cfg(windows)]
 pub fn docker_desktop() -> Desktop {
     use crate::sys;
-    match sys::output("docker", &["version", "--format", "{{.Server.Version}}"]) {
+    match sys::output_wsl("docker", &["version", "--format", "{{.Server.Version}}"], std::time::Duration::from_secs(30)) {
         None => Desktop::NoCli,
         Some((false, _, _)) => Desktop::NotRunning,
-        Some((true, _, _)) => match sys::output("docker", &["ps", "-a", "--no-trunc", "--format", DESKTOP_PS_FORMAT]) {
+        Some((true, _, _)) => match sys::output_wsl("docker", &["ps", "-a", "--no-trunc", "--format", DESKTOP_PS_FORMAT], std::time::Duration::from_secs(30)) {
             Some((true, out, _)) => Desktop::Running(parse_desktop_ps(&sys::decode(&out))),
             _ => Desktop::NotRunning,
         },

@@ -1223,6 +1223,7 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
         vanished_files: record.stack.vanished_files(),
         external_compose: record.engine == crate::installation::Engine::Docker && record.stack.external.is_some(),
         licence,
+        wsl_distro: if record.engine == crate::installation::Engine::Docker { record.stack.wsl_distro.clone() } else { None },
     }
 }
 

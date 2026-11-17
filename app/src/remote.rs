@@ -1120,6 +1120,11 @@ pub struct RemoteStatus {
     /// (crate::licence::read_tile); None: not read (an older agent too).
     #[serde(default)]
     pub licence: Option<crate::licence::TileLicence>,
+    /// Windows: the operator's own WSL distro the Docker stack runs in
+    /// (e.g. Ubuntu); None for the Platform Manager's own distro and for
+    /// everything else. Jobs for it must run as that Windows account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wsl_distro: Option<String>,
 }
 
 /// One service or container on the server (Status).
@@ -1409,12 +1414,67 @@ pub fn running_job(inst: &Instance) -> Option<String> {
     w.strip_prefix("spm-job-").and_then(|w| w.strip_suffix(".service")).or_else(|| w.strip_prefix("user-job-")).map(str::to_string)
 }
 
+/// Windows servers whose SENTIENT runs in Docker in the operator's own WSL
+/// distro (instance id -> distro), from their last status. WSL distros
+/// belong to one Windows account, so jobs for these must not run as SYSTEM.
+static USER_DISTRO: std::sync::Mutex<Option<HashMap<String, String>>> = std::sync::Mutex::new(None);
+
+fn remember_user_distro(inst: &Instance, distro: Option<&str>) {
+    let mut m = USER_DISTRO.lock().unwrap_or_else(|e| e.into_inner());
+    let m = m.get_or_insert_with(HashMap::new);
+    match distro {
+        Some(d) => {
+            m.insert(inst.id.clone(), d.to_string());
+        }
+        None => {
+            m.remove(&inst.id);
+        }
+    }
+}
+
+fn user_distro(inst: &Instance) -> Option<String> {
+    USER_DISTRO.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(&inst.id).cloned())
+}
+
+/// How a job runs on a Windows server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WinRun {
+    /// A scheduled task as SYSTEM: survives a dropped connection.
+    System,
+    /// A scheduled task as the connecting account (signed in: its desktop
+    /// session; otherwise without one, S4U): sees that account's WSL
+    /// distros and survives a dropped connection.
+    UserTask,
+    /// In the connection's own session, as the connecting account: always
+    /// sees its WSL distros, but stops if the connection drops. Short jobs.
+    InSession,
+}
+
+/// Jobs that look into or act on the operator's WSL distros. Short ones
+/// (finding and adding, start/stop) run in the session; long ones (update,
+/// backup, take-over, uninstall) as a task of the connecting account.
+pub fn win_run_for(args: &[&str], user_distro: bool) -> WinRun {
+    let job = args.first().copied().unwrap_or("");
+    let looks = matches!(job, "add-if-one" | "add-existing" | "find-existing" | "takeover-plan" | "takeover-check-password");
+    if looks {
+        return WinRun::InSession;
+    }
+    if !user_distro {
+        return WinRun::System;
+    }
+    match job {
+        "control" | "service" | "logs" | "repair" => WinRun::InSession,
+        _ => WinRun::UserTask,
+    }
+}
+
 /// Start `--job <args>` on the server, detached from this connection.
 /// Returns the job's id; its progress goes to a file [`follow`] reads.
 pub fn start_job(inst: &Instance, args: &[&str]) -> Result<String, String> {
     let id = format!("{}", chrono::Utc::now().format("%Y%m%d%H%M%S"));
     if is_windows(inst) {
-        return win::start_job(inst, &id, args).map(|_| id);
+        let how = win_run_for(args, user_distro(inst).is_some());
+        return win::start_job(inst, &id, args, how).map(|_| id);
     }
     // One job at a time on a server.
     let busy = run(inst, &running_script(), None).unwrap_or_default();
@@ -2070,6 +2130,7 @@ mod win {
         let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's Platform Manager gave no status.")?;
         let mut st: RemoteStatus = serde_json::from_str(line).map_err(|e| format!("unexpected status from the server: {e}"))?;
         st.running_job = running_job(inst);
+        super::remember_user_distro(inst, st.wsl_distro.as_deref());
         Ok(st)
     }
 
@@ -2078,15 +2139,71 @@ mod win {
         out.trim().strip_prefix("spm-job-").map(str::to_string)
     }
 
-    pub fn start_job(inst: &Instance, id: &str, args: &[&str]) -> Result<(), String> {
+    /// Jobs run in the connection's session ([`super::WinRun::InSession`]):
+    /// None while running, then how the call itself ended (the job's own
+    /// result is in its log).
+    static IN_SESSION: Mutex<Option<HashMap<String, Option<Result<(), String>>>>> = Mutex::new(None);
+
+    fn in_session_state(id: &str) -> Option<Option<Result<(), String>>> {
+        IN_SESSION.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(id).cloned())
+    }
+
+    fn set_in_session(id: &str, state: Option<Result<(), String>>) {
+        IN_SESSION.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(id.to_string(), state);
+    }
+
+    pub fn start_job(inst: &Instance, id: &str, args: &[&str], how: super::WinRun) -> Result<(), String> {
         let quoted: Vec<String> = args.iter().map(|a| format!("\"{}\"", a.replace(['"', '\''], ""))).collect();
         let exe = exe(inst)?;
+        if how == super::WinRun::InSession {
+            // As the connecting account, in this connection's session: the
+            // only place its WSL distros are certain to be visible. The
+            // progress file is the same; `.user` marks it, `.done` ends it.
+            let busy = ps(
+                inst,
+                &format!(
+                    "New-Item -ItemType Directory -Force '{JOBS}' | Out-Null; \
+                     if (Get-ScheduledTask -TaskName 'spm-job-*' -ErrorAction SilentlyContinue | Where-Object State -eq 'Running') {{ 'BUSY'; exit }}; \
+                     Remove-Item -Force -ErrorAction SilentlyContinue '{JOBS}\\{id}.done'; Set-Content -Encoding ascii '{JOBS}\\{id}.user' ''; 'READY'"
+                ),
+            )?;
+            if busy.contains("BUSY") {
+                return Err("Another job is still running on this server. Wait until it ends.".into());
+            }
+            if !busy.contains("READY") {
+                return Err(format!("The job did not start on the server: {}", busy.trim()));
+            }
+            let script = format!(
+                "& '{}' --job --json {} > '{JOBS}\\{id}.log' 2> '{JOBS}\\{id}.err'; Set-Content -Encoding ascii '{JOBS}\\{id}.done' \"$LASTEXITCODE\"",
+                exe.replace('\'', "''"),
+                quoted.join(" ")
+            );
+            set_in_session(id, None);
+            let (inst, id) = (inst.clone(), id.to_string());
+            std::thread::spawn(move || {
+                let r = ps(&inst, &script).map(|_| ());
+                set_in_session(&id, Some(r));
+            });
+            return Ok(());
+        }
         let cmdline = format!("/c \"\"{exe}\" --job --json {} > \"{JOBS}\\{id}.log\" 2> \"{JOBS}\\{id}.err\"\"", quoted.join(" "));
+        // SYSTEM, or the connecting account: with its desktop session when
+        // it is signed in there, else S4U (no password stored).
+        let principal = match how {
+            super::WinRun::UserTask => {
+                "$u = [Security.Principal.WindowsIdentity]::GetCurrent().Name; \
+                 $signed = Get-CimInstance Win32_Process -Filter \"Name='explorer.exe'\" -ErrorAction SilentlyContinue | \
+                   Where-Object { $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner; \"$($o.Domain)\\$($o.User)\" -eq $u }; \
+                 $lt = if ($signed) { 'Interactive' } else { 'S4U' }; \
+                 $p = New-ScheduledTaskPrincipal -UserId $u -LogonType $lt -RunLevel Highest;"
+            }
+            _ => "$p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest;",
+        };
         let script = format!(
             "New-Item -ItemType Directory -Force '{JOBS}' | Out-Null; \
              if (Get-ScheduledTask -TaskName 'spm-job-*' -ErrorAction SilentlyContinue | Where-Object State -eq 'Running') {{ 'BUSY'; exit }}; \
              $a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '{}'; \
-             $p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; \
+             {principal} \
              Register-ScheduledTask -TaskName 'spm-job-{id}' -Action $a -Principal $p -Force | Out-Null; \
              Start-ScheduledTask -TaskName 'spm-job-{id}'; 'STARTED'",
             cmdline.replace('\'', "''")
@@ -2113,7 +2230,8 @@ mod win {
                 &format!(
                     "$f='{JOBS}\\{id}.log'; if (Test-Path $f) {{ Get-Content -Encoding UTF8 $f | Select-Object -Skip {skip} }}; \
                      $t = Get-ScheduledTask -TaskName 'spm-job-{id}' -ErrorAction SilentlyContinue; \
-                     if ($t -and $t.State -eq 'Running') {{ '@@RUNNING' }} else {{ '@@END' }}"
+                     $u = (Test-Path '{JOBS}\\{id}.user') -and -not (Test-Path '{JOBS}\\{id}.done'); \
+                     if (($t -and $t.State -eq 'Running') -or $u) {{ '@@RUNNING' }} else {{ '@@END' }}"
                 ),
             )
         };
@@ -2136,6 +2254,17 @@ mod win {
                             }
                         }
                     }
+                    // A job run in the session whose call ended without its
+                    // end marker (the connection dropped): it stopped there.
+                    if !ended {
+                        if let Some(Some(Err(e))) = in_session_state(id) {
+                            failure.get_or_insert(format!(
+                                "The job ran in the connection's session and stopped when the connection to {} ended: {e}",
+                                inst.name
+                            ));
+                            ended = true;
+                        }
+                    }
                     if ended {
                         // What it wrote between the read and the end.
                         if let Ok(rest) = read(seen) {
@@ -2147,7 +2276,13 @@ mod win {
                                 }
                             }
                         }
-                        let _ = ps(inst, &format!("Unregister-ScheduledTask -TaskName 'spm-job-{id}' -Confirm:$false -ErrorAction SilentlyContinue"));
+                        let _ = ps(
+                            inst,
+                            &format!(
+                                "Unregister-ScheduledTask -TaskName 'spm-job-{id}' -Confirm:$false -ErrorAction SilentlyContinue; \
+                                 Remove-Item -Force -ErrorAction SilentlyContinue '{JOBS}\\{id}.user', '{JOBS}\\{id}.done'"
+                            ),
+                        );
                         return match failure {
                             Some(e) => Err(e),
                             None => Ok(()),
@@ -2168,6 +2303,26 @@ mod win {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_jobs_for_a_user_wsl_distro_never_run_as_system() {
+        // Finding and adding always look into the account's distros.
+        for job in ["add-if-one", "add-existing", "find-existing", "takeover-plan"] {
+            assert_eq!(win_run_for(&[job], false), WinRun::InSession, "{job}");
+            assert_eq!(win_run_for(&[job], true), WinRun::InSession, "{job}");
+        }
+        // Without a user distro, jobs stay SYSTEM tasks (survive a drop).
+        for job in ["update", "scheduled-backup", "control", "uninstall"] {
+            assert_eq!(win_run_for(&[job], false), WinRun::System, "{job}");
+        }
+        // With one: short jobs in the session, long ones as the account's task.
+        assert_eq!(win_run_for(&["control", "restart"], true), WinRun::InSession);
+        assert_eq!(win_run_for(&["logs"], true), WinRun::InSession);
+        for job in ["update", "scheduled-backup", "take-over-compose", "uninstall", "replace"] {
+            assert_eq!(win_run_for(&[job], true), WinRun::UserTask, "{job}");
+        }
+        assert_eq!(win_run_for(&[], false), WinRun::System);
+    }
 
     #[test]
     fn stderr_noise_and_clixml_are_cleaned() {

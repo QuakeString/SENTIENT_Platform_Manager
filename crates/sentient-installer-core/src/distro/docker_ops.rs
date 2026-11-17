@@ -37,7 +37,7 @@ fn log(sink: &ProgressFn, line: impl Into<String>) {
 fn capture(bash: &str) -> Result<String, String> {
     let (prog, args) = shell_args(bash);
     let argrefs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    match sys::output(&prog, &argrefs) {
+    match super::shell_output(&prog, &argrefs, super::PROBE_LIMIT) {
         Some((true, out, _)) => Ok(sys::decode(&out)),
         Some((false, out, err)) => {
             let e = sys::decode(&err);

@@ -34,6 +34,15 @@ Finds SENTIENT in Docker in your own WSL distro on Windows, and manages it there
   says where it looked: the Windows services or systemd service, each WSL
   distro (a stopped one is named, not started), Docker Desktop, Docker on
   Linux.
+- Adding such an instance on a Windows server showed only the progress
+  bar: the job ran as SYSTEM, which cannot see a WSL distro (distros
+  belong to one Windows account), and wsl.exe waited for ever. Jobs for an
+  operator's WSL distro now run as the account the Platform Manager
+  connects with: finding, adding, start/stop and logs in the connection's
+  session, longer jobs (update, backup, uninstall) as a scheduled task of
+  that account, so they still survive a dropped connection. Every WSL
+  call now has a time limit, and a WSL that does not answer is reported
+  with the account it ran as.
 
 ## [0.9.0] - 2026-11-17
 

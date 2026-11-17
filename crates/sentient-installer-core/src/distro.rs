@@ -677,7 +677,7 @@ fn reset_docker_access() {
 fn run(sink: &ProgressFn, bash: &str) -> Result<(), String> {
     let (prog, args) = shell_args(bash);
     let argrefs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    match sys::output(&prog, &argrefs) {
+    match shell_output(&prog, &argrefs, RUN_LIMIT) {
         Some((ok, out, err)) => {
             exec::emit(sink, &out);
             exec::emit(sink, &err);
@@ -708,7 +708,24 @@ fn run_stream(sink: &ProgressFn, bash: &str) -> Result<(), String> {
 fn run_output(bash: &str) -> Option<(bool, String)> {
     let (prog, args) = shell_args(bash);
     let argrefs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    sys::output(&prog, &argrefs).map(|(ok, out, _)| (ok, sys::decode(&out)))
+    shell_output(&prog, &argrefs, PROBE_LIMIT).map(|(ok, out, _)| (ok, sys::decode(&out)))
+}
+
+/// How long one command through the Docker shell may take before it is
+/// stopped and reported (Windows: a WSL that does not answer must not
+/// leave a job waiting for ever). Long steps stream (`run_stream`).
+const RUN_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
+/// The same for quick reads and checks.
+pub(crate) const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// A command through the Docker shell, stopped after `limit` on Windows.
+pub(crate) fn shell_output(prog: &str, args: &[&str], limit: std::time::Duration) -> Option<(bool, Vec<u8>, Vec<u8>)> {
+    if cfg!(windows) {
+        sys::output_wsl(prog, args, limit)
+    } else {
+        let _ = limit;
+        sys::output(prog, args)
+    }
 }
 
 /// Write `content` to `path` on the Docker host.
@@ -787,7 +804,7 @@ pub fn is_running(http_port: u16) -> bool {
         // non-zero when the connection is refused.
         let url = format!("http://localhost:{http_port}");
         let distro = docker_distro();
-        let inside = sys::output("wsl.exe", &["-d", &distro, "-u", "root", "--", "curl", "-s", "-o", "/dev/null", "--max-time", "4", &url])
+        let inside = sys::output_wsl("wsl.exe", &["-d", &distro, "-u", "root", "--", "curl", "-s", "-o", "/dev/null", "--max-time", "4", &url], std::time::Duration::from_secs(20))
             .map(|(ok, _, _)| ok)
             .unwrap_or(false);
         // The operator's distro may have no curl: WSL forwards the port to
