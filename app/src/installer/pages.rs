@@ -24,9 +24,10 @@ use crate::ui::{self, Tone};
 
 const LICENCE: &str = include_str!("../../assets/licence.txt");
 
-/// A field's label: the body size, muted.
+/// A field's label: the body size, muted. As tall as an (i), so fields
+/// side by side line up whether their label has one or not.
 fn label(theme: &Theme, text: &'static str) -> Div {
-    h_flex().gap_1().items_center().text_sm().font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(text)
+    h_flex().h(px(22.)).gap_1().items_center().text_sm().font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(text)
 }
 
 /// An input reported to the layout test (`LAYOUT field`): the edges of
@@ -468,9 +469,11 @@ impl Installer {
                     Err(why) => track.child(ui::seg_item_off(theme, id.clone(), label, ui::info(format!("{id}-why").into(), why.text(&detail).into()))),
                 }
             });
+            // The name's first line on the control's line (ui::on_control_line),
+            // "and TimescaleDB" under it.
             h_flex()
                 .gap_3()
-                .items_center()
+                .items_start()
                 .py(px(10.))
                 .when(i > 0, |r| r.border_t_1())
                 .border_color(theme.border)
@@ -480,8 +483,8 @@ impl Installer {
                         .flex_shrink_0()
                         .text_sm()
                         .text_color(theme.muted_foreground)
-                        .child(h_flex().gap_1().items_center().child(name).when_some(help, |r, help| r.child(ui::info(format!("part-{key}-help").into(), help.into()))))
-                        .when_some(sub, |c, sub| c.child(div().text_size(px(12.)).child(sub))),
+                        .child(ui::on_control_line(h_flex().gap_1().items_center().child(name).when_some(help, |r, help| r.child(ui::info(format!("part-{key}-help").into(), help.into())))))
+                        .when_some(sub, |c, sub| c.child(div().mt(px(-6.)).text_size(px(12.)).child(sub))),
                 )
                 .child(seg)
         });
