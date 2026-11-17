@@ -381,7 +381,12 @@ def main():
     # the foot's right edge (SPM's rule: actions on the right).
     frame_lines = last_frame_lines(log)
     btns = [tuple(float(v) for v in l.split()[2:]) for l in frame_lines if l.startswith("LAYOUT button ")]
+    # A dialog open covers the page: its rows are not checked here (the
+    # dialog's own buttons would read as the covered card's).
+    covered = any(l.startswith("LAYOUT modal ") for l in frame_lines)
     for l in frame_lines:
+        if covered:
+            break
         if l.startswith("LAYOUT card-actions ") or l.startswith("LAYOUT header-actions "):
             fl, fr, ft, fb = (float(v) for v in l.split()[2:])
             inside = [b for b in btns if b[0] >= fl - 1 and b[1] <= fr + 1 and b[2] >= ft - 1 and b[3] <= fb + 1]
