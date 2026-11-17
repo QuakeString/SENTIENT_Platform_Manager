@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Icon, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, Icon, h_flex, v_flex,
     button::ButtonVariants as _,
     input::{Input, InputEvent, InputState},
 };
@@ -541,9 +541,9 @@ impl Render for FolderChooser {
                     .border_b_1()
                     .border_color(theme.border)
                     .child(Icon::empty().path("icons/folder-fill.svg").size_4().text_color(folder_color()))
-                    .child(div().flex_1().child(Input::new(input).small()))
-                    .child(crate::ui::probed(crate::ui::button("fc-make").primary().small().label("Make").loading(busy == Some("mkdir")).on_click(cx.listener(|this, _, _, cx| this.make_folder(cx)))))
-                    .child(crate::ui::probed(crate::ui::button("fc-make-no").ghost().small().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                    .child(div().flex_1().child(Input::new(input)))
+                    .child(crate::ui::probed(crate::ui::button("fc-make").primary().label("Make").loading(busy == Some("mkdir")).on_click(cx.listener(|this, _, _, cx| this.make_folder(cx)))))
+                    .child(crate::ui::probed(crate::ui::button("fc-make-no").ghost().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
                         this.new_name = None;
                         cx.notify();
                     })))),

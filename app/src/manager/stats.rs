@@ -984,7 +984,7 @@ impl Render for StatsPage {
             .child(div().flex_1())
             // The stale note wraps on its own: the range and Refresh never move.
             .children(stale.map(|n| div().max_w_full().child(n)))
-            .child(h_flex().gap_2().items_center().child(seg).child(refresh));
+            .child(h_flex().gap_2().items_center().child(seg).child(ui::probed(refresh)));
 
         let latest = self.live.last().cloned().or_else(|| self.points().last().cloned());
         let mut col = v_flex().gap(px(crate::ui::GAP)).child(header);

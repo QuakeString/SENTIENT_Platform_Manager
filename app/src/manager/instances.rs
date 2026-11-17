@@ -978,7 +978,7 @@ impl InstancesPage {
                 "Address",
                 "",
                 None,
-                h_flex().gap_2().items_center().child(div().flex_1().min_w_0().child(Input::new(&f.host))).child(div().text_sm().child("Port")).child(div().w(px(84.)).child(Input::new(&f.port))).into_any_element(),
+                h_flex().gap_2().items_center().child(div().flex_1().min_w_0().child(ui::probed_input(Input::new(&f.host)))).child(div().text_sm().child("Port")).child(div().w(px(84.)).child(ui::probed_input(Input::new(&f.port)))).into_any_element(),
             ))
             .child(row("User", "help-user", Some("An account on the server that may use sudo, or root. The Platform Manager runs its work on the server as an administrator."), Input::new(&f.user).into_any_element()))
             .child(row(

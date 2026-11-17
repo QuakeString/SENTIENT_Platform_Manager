@@ -9,7 +9,10 @@
 #   tests/layout/run.sh <app binary> <out dir> [XDG_CONFIG_HOME with instances]
 #
 # fields.py checks the settings card's fields line up and its Apply bar sits
-# at the card's bottom (PENDING sets the states shown with the bar).
+# at the card's bottom (PENDING sets the states shown with the bar); rows.py
+# that every input, segmented choice and control side by side in a row is
+# the one standard height on one centre line; inputs.py the same in the
+# source.
 # MOVE_STEPS (default: every step of "Move data to another disk") and
 # MOVE_WIDTHS add that wizard's renders; empty MOVE_STEPS leaves them out.
 #
@@ -64,7 +67,7 @@ one() { # where page width scale theme [dialog env]
   local only=(); [ "$where" = setup ] && only=(buttons)
   # A sub-flow's render: it is open, and the menu keeps its parent page.
   local expect=(); case "$dlg" in SPM_DEBUG_MOVE_STEP=*) expect=(EXPECT_SUB=movedata EXPECT_MENU="$page");; esac
-  { env "${expect[@]}" python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" "${only[@]}" && { [ "$where" = setup ] || python3 "$HERE/icons.py" "$OUT/$name.log"; } && python3 "$HERE/fields.py" "$OUT/$name.log" "$dlg"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
+  { env "${expect[@]}" python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" "${only[@]}" && { [ "$where" = setup ] || python3 "$HERE/icons.py" "$OUT/$name.log"; } && python3 "$HERE/fields.py" "$OUT/$name.log" "$dlg" && python3 "$HERE/rows.py" "$OUT/$name.log"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
 }
 export -f one; export OUT HERE BIN PROFILE LOADING_PROFILE INSTANCE WAIT SPM_INSTALLATION_RECORD HOVER_INFO 2>/dev/null
 list=()
@@ -132,8 +135,10 @@ python3 "$HERE/labels.py" "$OUT" | tee "$OUT/labels.txt"; labels=${PIPESTATUS[0]
 python3 "$HERE/tint.py" "$OUT" | tee "$OUT/tint.txt"; tint=${PIPESTATUS[0]}
 # Every tooltip the shared one, with theme colours (tooltips.sh).
 "$HERE/tooltips.sh" | tee "$OUT/tooltips.txt"; tips=${PIPESTATUS[0]}
+# One control height in the source: inputs, buttons, segmented (inputs.py).
+python3 "$HERE/inputs.py" | tee "$OUT/inputs.txt"; inputs=${PIPESTATUS[0]}
 # The menu selection drawn with quads only (corners.sh).
 "$HERE/corners.sh" | tee "$OUT/corners.txt"; corners=${PIPESTATUS[0]}
 # Every long job in the shared job view, its steps declared (jobview.sh).
 "$HERE/jobview.sh" | tee "$OUT/jobview.txt"; jobs=${PIPESTATUS[0]}
-[ "$fails" -eq 0 ] && [ "$labels" -eq 0 ] && [ "$tint" -eq 0 ] && [ "$tips" -eq 0 ] && [ "$corners" -eq 0 ] && [ "$jobs" -eq 0 ]
+[ "$fails" -eq 0 ] && [ "$labels" -eq 0 ] && [ "$tint" -eq 0 ] && [ "$tips" -eq 0 ] && [ "$corners" -eq 0 ] && [ "$jobs" -eq 0 ] && [ "$inputs" -eq 0 ]

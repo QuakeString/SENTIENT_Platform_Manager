@@ -246,7 +246,6 @@ impl Render for AboutPage {
                 let name = crate::manager::shell::LANGUAGES.iter().find(|(c, _)| *c == current).map(|(_, n)| *n).unwrap_or("English");
                 { use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem}; crate::ui::button("about-language")
                     .outline()
-                    .h(px(32.))
                     .label(name)
                     .icon(IconName::ChevronDown)
                     .dropdown_menu(move |menu, _, _| {

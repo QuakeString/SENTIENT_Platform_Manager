@@ -44,7 +44,7 @@ one() { # step width scale theme variant
   DISPLAY=$d import -window root "$OUT/$name.png" 2>/dev/null
   kill $ap 2>/dev/null; sleep 1; kill -9 $ap 2>/dev/null; kill $xp 2>/dev/null
   rm -rf "$x"
-  { python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" && python3 "$HERE/icons.py" "$OUT/$name.log" && passwords "$OUT/$name.log"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
+  { python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" && python3 "$HERE/icons.py" "$OUT/$name.log" && passwords "$OUT/$name.log" && python3 "$HERE/rows.py" "$OUT/$name.log"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
 }
 passwords() { # log: every database password field reported, none empty
   if ! grep -q '^LAYOUT password ' "$1"; then echo "no LAYOUT password lines in $1"; return 1; fi
