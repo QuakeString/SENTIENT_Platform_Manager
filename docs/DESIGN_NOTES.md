@@ -46,3 +46,17 @@ Within any group:
 - State is shown in state colours (green, amber, red, grey). It is never
   shown in the instance's accent colour (the switcher's dots, the card pills).
 - The loading shimmer is at least as visible in dark as in light (*gated*).
+
+## Remote pages
+
+- A page on a server keeps what it read last and draws it at once when it
+  opens again (the Licence card keeps its last reading per instance for the
+  run, never on disk), refreshing behind it; values change in place. Only a
+  first open shows the loading skeleton.
+- Every ssh call costs a handshake (several round trips): one call per
+  request (a licence request goes inline, `--request-b64`), independent
+  reads at once.
+- Follow-up after 0.9.0: one ssh connection per server (OpenSSH
+  ControlMaster/ControlPersist on Linux and macOS). Windows' OpenSSH client
+  has no ControlMaster, so Windows needs another answer (a long-lived agent
+  session over one ssh channel, or the agent listening on a forwarded port).

@@ -28,6 +28,12 @@ fn icon(name: &str) -> Icon {
     Icon::empty().path(SharedString::from(format!("icons/licence/{name}.svg")))
 }
 
+/// The last licence reading of each instance in this run (never written to
+/// disk): the page draws it at once when it opens again and reads it fresh
+/// behind it; only a first open shows the loading skeleton.
+static LAST: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (Reading, Option<String>)>>> =
+    std::sync::LazyLock::new(Default::default);
+
 #[derive(Clone)]
 enum View {
     /// Finding out whether SENTIENT runs there.
@@ -93,10 +99,15 @@ impl LicencePage {
         if let Some(s) = crate::licence::email_for(&target.key()) {
             email.update(cx, |i, cx| i.set_value(s, window, cx));
         }
+        let cached = LAST.lock().ok().and_then(|m| m.get(&target.key()).cloned());
+        let (view, updated_at) = match cached {
+            Some((r, at)) => (View::Ready(Box::new(r)), at),
+            None => (View::Checking, None),
+        };
         let mut page = Self {
             target,
             name,
-            view: View::Checking,
+            view,
             open: None,
             menu: false,
             email,
@@ -108,7 +119,7 @@ impl LicencePage {
             reading: false,
             note: None,
             stale: None,
-            updated_at: None,
+            updated_at,
             job: cx.new(|_| crate::jobs::Job::new()),
             width: Rc::new(Cell::new(0.)),
             pending: None,
@@ -163,7 +174,7 @@ impl LicencePage {
                 }
                 match got {
                     // No answer while a state shows: it stays, said softly.
-                    Err(e) if e != crate::remote::AGENT_OLD && matches!(p.view, View::NotInstalled | View::Stopped | View::SignIn) => p.stale = Some(e),
+                    Err(e) if e != crate::remote::AGENT_OLD && matches!(p.view, View::NotInstalled | View::Stopped | View::SignIn | View::Ready(_)) => p.stale = Some(e),
                     Ok((false, _)) => p.view = View::NotInstalled,
                     Ok((true, false)) => p.view = View::Stopped,
                     Ok((true, true)) => match crate::licence::session(&p.target.key()) {
@@ -187,7 +198,10 @@ impl LicencePage {
     /// Sign in from what is kept; the form (email filled in, the reason
     /// shown) only when that fails.
     fn silent(&mut self, cx: &mut Context<Self>) {
-        self.view = View::Loading;
+        // The card shown from the last reading stays while signing in again.
+        if !matches!(self.view, View::Ready(_)) {
+            self.view = View::Loading;
+        }
         self.reading = true;
         let target = self.target.clone();
         let task = cx.spawn(async move |this, cx| {
@@ -226,6 +240,9 @@ impl LicencePage {
                     Ok(r) => {
                         p.stale = None;
                         p.updated_at = Some(chrono::Local::now().format("%H:%M").to_string());
+                        if let Ok(mut m) = LAST.lock() {
+                            m.insert(key.clone(), (r.clone(), p.updated_at.clone()));
+                        }
                         p.view = View::Ready(Box::new(r));
                     }
                     Err(e) if e == crate::licence::SESSION_ENDED => {
