@@ -58,10 +58,12 @@ pub fn parse_list_verbose(text: &str) -> Vec<(String, bool, Option<u8>)> {
         .collect()
 }
 
-/// Distros discovery does not look in (see the module notes).
+/// Distros discovery does not look in: Docker Desktop's own. The Platform
+/// Manager's own distro ("sentient") is looked in: an install made by an
+/// earlier release (or whose record is gone) lives there.
 pub fn is_skipped(name: &str) -> bool {
     let n = name.trim();
-    super::is_own_distro(n) || n.eq_ignore_ascii_case("docker-desktop") || n.eq_ignore_ascii_case("docker-desktop-data")
+    n.eq_ignore_ascii_case("docker-desktop") || n.eq_ignore_ascii_case("docker-desktop-data")
 }
 
 /// The distros to report on, from the three `wsl -l` answers: the default
@@ -255,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn combine_puts_the_default_first_and_skips_own_and_docker_desktop() {
+    fn combine_puts_the_default_first_and_skips_docker_desktop() {
         let names: Vec<String> = ["Debian", "sentient", "Ubuntu", "docker-desktop", "docker-desktop-data"].iter().map(|s| s.to_string()).collect();
         let verbose = vec![("Ubuntu".to_string(), true, Some(2)), ("Debian".to_string(), false, Some(2))];
         let running = vec!["ubuntu".to_string(), "docker-desktop".to_string()];
@@ -265,6 +267,8 @@ mod tests {
             vec![
                 WslDistro { name: "Ubuntu".into(), running: true, default: true, version: Some(2) },
                 WslDistro { name: "Debian".into(), running: false, default: false, version: Some(2) },
+                // The Platform Manager's own: an earlier release's install.
+                WslDistro { name: "sentient".into(), running: false, default: false, version: None },
             ]
         );
     }

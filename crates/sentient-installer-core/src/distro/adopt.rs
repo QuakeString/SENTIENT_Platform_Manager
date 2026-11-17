@@ -256,10 +256,14 @@ pub fn find() -> Vec<FoundStack> {
 /// everything done to it afterwards runs there. Runs commands in the
 /// distro: call for a running one (super::hosts).
 pub fn find_in_distro(distro: &str) -> Vec<FoundStack> {
+    // The Platform Manager's own distro ("sentient", also what the early
+    // releases imported Ubuntu as, with /opt/sentient/docker-compose.yml)
+    // is recorded as None: its own, which it may stop, repair and remove.
+    let own = super::is_own_distro(distro);
     super::with_docker_distro(Some(distro), find)
         .into_iter()
         .map(|mut f| {
-            f.cfg.wsl_distro = Some(distro.trim().to_string());
+            f.cfg.wsl_distro = if own { None } else { Some(distro.trim().to_string()) };
             f
         })
         .collect()

@@ -230,11 +230,13 @@ fn windows_docker_search(looked: &mut Vec<String>) -> Vec<distro::adopt::FoundSt
     }
     match hosts::wsl_distros() {
         Err(e) => looked.push(format!("WSL distros: none listed ({e})")),
-        Ok(list) if list.is_empty() => looked.push("WSL distros: none besides the Platform Manager's own".into()),
+        Ok(list) if list.is_empty() => looked.push("WSL distros: none".into()),
         Ok(list) => {
             for d in list {
-                if !d.running {
-                    // Looking would start it, and its Docker with it.
+                let own = distro::is_own_distro(&d.name);
+                if !d.running && !own {
+                    // Looking would start it, and its Docker with it (the
+                    // Platform Manager's own distro it may start).
                     looked.push(format!("WSL distro {}: stopped, not looked in (start it, then look again)", d.name));
                     continue;
                 }

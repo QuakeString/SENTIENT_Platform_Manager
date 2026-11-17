@@ -51,6 +51,11 @@ Finds SENTIENT in Docker in your own WSL distro on Windows, and manages it there
   (checksum)" when two copies ran at once (the check after connecting and
   a job's own); one copy runs at a time now, and a copy already in place
   counts as up to date.
+- Windows: a Docker install made by an earlier Platform Manager (in its
+  own WSL distro "sentient", stack in /opt/sentient) was not found when
+  its installation record was gone: the Platform Manager's own distro was
+  left out of the search. It is looked in now (started if stopped), and
+  what it finds there is managed as the Platform Manager's own.
 
 ## [0.9.0] - 2026-11-17
 
