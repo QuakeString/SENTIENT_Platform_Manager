@@ -16,6 +16,7 @@ refreshes that repository's Downloads table.
 ## [Unreleased]
 
 ### Fixed
+- Windows: the install no longer hangs when the PostgreSQL admin password is missing or not accepted. psql never waits on a password prompt now, so the install stops with a clear error instead.
 - Windows: installing SENTIENT from the Platform Manager that Setup opened
   could stop at "initdb: program postgres is needed by initdb but was not
   found" (with "The current directory is invalid"). The Platform Manager

@@ -250,13 +250,17 @@ fn psql(cfg: &NativeConfig, db: &str, sql: &str) -> Result<String, String> {
     let exe = cfg.pg_bin().join("psql.exe");
     let port = cfg.pg_port.to_string();
     let mut c = sys::command(&exe.to_string_lossy());
+    // -w: never prompt for a password. Without it psql waits on a prompt
+    // forever when the password is empty or not accepted (`--job install`
+    // from a terminal); with it psql fails and the error says why.
     c.env("PGPASSWORD", &cfg.pg_superuser_password)
-        .args(["-h", "127.0.0.1", "-p", &port, "-U", "postgres", "-d", db, "-tAc", sql]);
+        .env("PGCONNECT_TIMEOUT", "10")
+        .args(["-w", "-h", "127.0.0.1", "-p", &port, "-U", "postgres", "-d", db, "-tAc", sql]);
     let o = c.output().map_err(|e| format!("run psql: {e}"))?;
     let out = sys::decode(&o.stdout);
     if !o.status.success() {
         let err = sys::decode(&o.stderr).trim().to_string();
-        if err.contains("password authentication failed") {
+        if err.contains("password authentication failed") || err.contains("no password supplied") {
             return Err(format!(
                 "psql: {err}. This computer's PostgreSQL was kept from an earlier install: enter that install's PostgreSQL admin password."
             ));
