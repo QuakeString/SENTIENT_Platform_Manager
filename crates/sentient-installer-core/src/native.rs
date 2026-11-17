@@ -1950,12 +1950,52 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The Windows Firewall rules' group: SENTIENT's ports, open to other
+/// computers (a service gets no "allow access" prompt, so without them
+/// Windows Firewall drops every connection from the network).
+pub const FIREWALL_GROUP: &str = "SENTIENT";
+
+/// PowerShell that replaces the group's rules with one inbound rule per
+/// port: `tcp` (web, MQTT) and `udp` (CoAP).
+pub fn firewall_script(tcp: &[u16], udp: &[u16]) -> String {
+    let mut s = format!("Remove-NetFirewallRule -Group '{FIREWALL_GROUP}' -ErrorAction SilentlyContinue; ");
+    for (proto, ports) in [("TCP", tcp), ("UDP", udp)] {
+        for p in ports.iter().filter(|p| **p > 0) {
+            s.push_str(&format!(
+                "New-NetFirewallRule -Group '{FIREWALL_GROUP}' -DisplayName 'SENTIENT {proto} {p}' -Direction Inbound -Action Allow -Protocol {proto} -LocalPort {p} | Out-Null; "
+            ));
+        }
+    }
+    s
+}
+
+/// Open SENTIENT's ports in Windows Firewall (web and MQTT over TCP,
+/// CoAP over UDP).
+#[cfg(windows)]
+pub fn open_firewall(cfg: &NativeConfig) -> Result<(), String> {
+    let script = firewall_script(&[cfg.http_port, cfg.mqtt_port], &[cfg.coap_port]);
+    match sys::output_limited("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", &script], std::time::Duration::from_secs(60)) {
+        Some((true, _, _)) => Ok(()),
+        Some((false, out, err)) => Err(format!("{} {}", sys::decode(&err).trim(), sys::decode(&out).trim())),
+        None => Err("could not run powershell.exe".into()),
+    }
+}
+
+/// Remove [`open_firewall`]'s rules.
+#[cfg(windows)]
+pub fn close_firewall() {
+    let script = format!("Remove-NetFirewallRule -Group '{FIREWALL_GROUP}' -ErrorAction SilentlyContinue");
+    let _ = sys::output_limited("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", &script], std::time::Duration::from_secs(60));
+}
+
 /// Stop and remove the SENTIENT service and its program folders; the
 /// database is left to the caller.
 #[cfg(not(target_os = "linux"))]
 fn remove_platform(sink: &ProgressFn, cfg: &NativeConfig) {
     step(sink, "Stopping and removing the SENTIENT service");
     remove_uninstall_entry();
+    #[cfg(windows)]
+    close_firewall();
     let _ = sc(&["stop", APP_SERVICE]);
     std::thread::sleep(std::time::Duration::from_secs(2));
     let winsw = cfg.install_dir.join("services").join(format!("{APP_SERVICE}.exe"));
@@ -2450,5 +2490,20 @@ mod start_delay_tests {
         assert_eq!(task_delay_secs(&xml("PT1H")), Some(3600));
         assert_eq!(task_delay_secs("<Triggers/>"), None);
         assert_eq!(task_delay_secs(&xml("P1D")), None);
+    }
+}
+
+#[cfg(test)]
+mod firewall_tests {
+    use super::*;
+
+    #[test]
+    fn the_firewall_script_replaces_the_group_with_one_rule_per_port() {
+        let s = firewall_script(&[8080, 1883, 0], &[5683]);
+        assert!(s.starts_with("Remove-NetFirewallRule -Group 'SENTIENT'"));
+        assert!(s.contains("-DisplayName 'SENTIENT TCP 8080' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8080"));
+        assert!(s.contains("-Protocol TCP -LocalPort 1883"));
+        assert!(s.contains("-Protocol UDP -LocalPort 5683"));
+        assert!(!s.contains("LocalPort 0"));
     }
 }

@@ -544,6 +544,11 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
                 native::prepare_existing(&sink, &cfg, keep, plan.delete_existing)?;
             }
             native::deploy(sink.clone(), &cfg)?;
+            // Other computers reach SENTIENT through Windows Firewall.
+            #[cfg(windows)]
+            if let Err(e) = native::open_firewall(&cfg) {
+                sink(Progress::Log { line: format!("note: SENTIENT's ports were not opened in Windows Firewall: {e}") });
+            }
             step(&sink, "Setting the administrator sign-in");
             native::set_admin_account(&cfg, &plan.admin_email, &admin_hash)?;
             // An operator screen needs SENTIENT running after every boot.
