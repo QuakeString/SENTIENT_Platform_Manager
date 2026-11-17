@@ -368,7 +368,11 @@ pub fn steps(plan: &InstallPlan) -> Vec<sentient_installer_core::progress::PlanS
             v.push(PlanStep::new(format!("Downloading SENTIENT {version}")).detail("Checked against its SHA-256 and signature").when(&["Downloading SENTIENT"]).weight(3.));
         }
     }
-    v.push(PlanStep::new("Installing the Platform Manager").weight(0.5));
+    // Setup's own step: from the installed Platform Manager there is
+    // nothing to put in place.
+    if !self_install::manager_in_place() {
+        v.push(PlanStep::new("Installing the Platform Manager").weight(0.5));
+    }
     if cfg!(windows) && plan.stack.flavor == Flavor::Clickhouse {
         v.push(PlanStep::new(STEP_CLICKHOUSE).detail("Its own WSL distribution and account").weight(4.));
     }
@@ -408,8 +412,12 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
             plan.bundle = Some(dir);
         }
     }
-    step(&sink, "Installing the Platform Manager");
-    let manager = self_install::install_manager()?;
+    let manager = if self_install::manager_in_place() {
+        self_install::manager_exe()
+    } else {
+        step(&sink, "Installing the Platform Manager");
+        self_install::install_manager()?
+    };
     // What is already here, before anything is installed (uninstall removes only what Setup put here).
     crate::uninstall::note_before_install(plan.engine, plan.stack.flavor);
     // ClickHouse first: SENTIENT's schema installer creates its tables there.

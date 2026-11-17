@@ -665,3 +665,33 @@ pub fn manager_command(exe: &std::path::Path) -> std::process::Command {
     }
     c
 }
+
+/// This program is the installed Platform Manager (it runs from its install
+/// folder): an install started from it has nothing to put in place. Setup
+/// (the downloaded installer, run from anywhere else) does.
+pub fn manager_in_place() -> bool {
+    let canon = |p: std::path::PathBuf| std::fs::canonicalize(&p).unwrap_or(p);
+    match std::env::current_exe() {
+        Ok(me) => same_program(&canon(me), &canon(manager_exe())),
+        Err(_) => false,
+    }
+}
+
+/// Two program paths name the same file (case-insensitively on Windows).
+pub fn same_program(a: &std::path::Path, b: &std::path::Path) -> bool {
+    if cfg!(windows) {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    } else {
+        a == b
+    }
+}
+
+#[cfg(test)]
+mod manager_in_place_tests {
+    #[test]
+    fn the_same_path_is_the_same_program() {
+        use std::path::Path;
+        assert!(super::same_program(Path::new("/opt/sentient-platform-manager/sentient-platform-manager"), Path::new("/opt/sentient-platform-manager/sentient-platform-manager")));
+        assert!(!super::same_program(Path::new("/home/op/Downloads/SENTIENT-Setup-manager-0.9.1-linux-x86_64"), Path::new("/opt/sentient-platform-manager/sentient-platform-manager")));
+    }
+}

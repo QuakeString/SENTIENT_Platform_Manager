@@ -30,6 +30,9 @@ refreshes that repository's Downloads table.
   little between press and release (rows can be dragged, and a drag
   swallowed the click). The second press now opens the folder. Alt+Up goes
   to the parent folder too (Backspace already did).
+- Installing SENTIENT from the Platform Manager listed "Installing the
+  Platform Manager" among its steps, although it was already installed:
+  that step is now Setup's only.
 
 ## [0.9.1] - 2026-11-17
 
