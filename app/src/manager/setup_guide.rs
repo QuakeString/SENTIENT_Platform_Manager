@@ -96,7 +96,7 @@ pub fn pane(c: &Ctx, cx: &App) -> AnyElement {
                     .text_color(if done { theme.primary } else { theme.muted_foreground })
                     .hover(|d| d.bg(theme.list_hover))
                     .child(Icon::new(if done { IconName::Check } else { IconName::Copy }).size(px(15.)))
-                    .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Copy").build(w, cx))
+                    .tooltip(crate::ui::tooltip("Copy"))
                     .on_click(move |_, _, cx| copy(l2.clone(), cx)),
             )
     };
@@ -311,7 +311,7 @@ pub fn pane(c: &Ctx, cx: &App) -> AnyElement {
                         .text_color(theme.muted_foreground)
                         .hover(|d| d.bg(theme.list_hover))
                         .child(Icon::new(IconName::Close).size(px(16.)))
-                        .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Close the guide").build(w, cx))
+                        .tooltip(crate::ui::tooltip("Close the guide"))
                         .on_click(move |_, _, cx| close(cx)),
                 ),
         )

@@ -521,7 +521,7 @@ impl Manager {
                 .when(on, |r| r.child(selected_probe(id)))
                 .child(div().relative().flex_shrink_0().child(icon.size(px(ICON)).text_color(if on { theme.primary } else { theme.muted_foreground })).child(ui::layout_probe("menu-icon")))
                 .when(!rail, |r| r.child(div().relative().whitespace_nowrap().opacity(names).child(title.clone()).child(ui::layout_probe(if on { "menu-label-on" } else { "menu-label" }))))
-                .when(rail, move |r| r.tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(title.clone()).build(w, cx)))
+                .when(rail, move |r| r.tooltip(crate::ui::tooltip(title.clone())))
         };
         let items = Page::ALL.into_iter().map(|page| {
             row(page.id(), page.icon(), page.title().into(), page == current)
@@ -590,7 +590,7 @@ impl Manager {
                             this.logo_hover = false;
                             cx.notify();
                         }))
-                        .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Unfold menu").build(w, cx))
+                        .tooltip(crate::ui::tooltip("Unfold menu"))
                 })
                 // The swap cross-fades (150 ms, the app's ease-out): the logo
                 // fades and shrinks a little as the unfold button fades in,
@@ -649,7 +649,7 @@ impl Manager {
                             .text_color(theme.muted_foreground)
                             .hover(|d| d.bg(theme.list_hover))
                             .child(menu_icon("panel-left-close").size(px(ICON)))
-                            .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Fold menu").build(w, cx))
+                            .tooltip(crate::ui::tooltip("Fold menu"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if forced {
                                     this.menu_overlay = false;
@@ -686,7 +686,7 @@ impl Manager {
                 .cursor_pointer()
                 .when(!on, |d| d.hover(|d| d.bg(theme.list_hover)))
                 .child(menu_icon("sliders-horizontal").size(px(ICON)))
-                .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("About and preferences").build(w, cx))
+                .tooltip(crate::ui::tooltip("About and preferences"))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.page = Page::About;
                     this.menu_overlay = false;

@@ -964,7 +964,7 @@ impl LicencePage {
         };
         let close = cx.entity().downgrade();
         deferred(
-            div().absolute().top(px(40.)).right_0().child(
+            div().absolute().top(px(40.)).right_0().child(crate::ui::menu_appear(
                 v_flex()
                     .id("licence-manage-menu")
                     .occlude()
@@ -1000,7 +1000,9 @@ impl LicencePage {
                             })
                             .ok();
                     }),
-            ),
+                "licence-manage-menu-open",
+                true,
+            )),
         )
         .with_priority(1)
         .into_any_element()

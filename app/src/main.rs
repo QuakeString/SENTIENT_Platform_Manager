@@ -102,6 +102,8 @@ mod theme;
 mod timing;
 #[cfg(feature = "gui")]
 mod ui;
+#[cfg(all(test, feature = "gui"))]
+mod popup_gate;
 mod uninstall;
 mod updates;
 mod updating;
@@ -297,6 +299,12 @@ fn gui_main(args: Vec<String>) {
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx| {
         timing::mark("app-run");
         gpui_kit::init(cx);
+        // SPM's reduce-motion reading (KDE, GNOME, SPM_REDUCE_MOTION) for
+        // the toolkit too: its menus, tooltips and every GPUI animation
+        // then draw in place, as ours do.
+        if ui::reduce_motion() {
+            cx.set_reduce_motion(true);
+        }
         timing::mark("kit-init");
         // The servers' connections end with the Platform Manager (crate::remote::conn).
         cx.on_app_quit(|_| async { remote::conn::close_all() }).detach();

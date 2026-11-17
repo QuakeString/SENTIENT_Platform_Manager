@@ -226,7 +226,7 @@ fn file_row(theme: &gpui_kit::component::Theme, path: &str, found: bool) -> Div 
                 .text_size(px(12.5))
                 .when(!found, |d| d.text_color(theme.muted_foreground))
                 .child(ui::middle_ellipsis(path, if found { 64 } else { 44 }))
-                .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(full.clone()).build(w, cx)),
+                .tooltip(crate::ui::tooltip(full.clone())),
         )
 }
 

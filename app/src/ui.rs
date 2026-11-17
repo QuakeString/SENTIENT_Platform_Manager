@@ -501,7 +501,8 @@ impl Render for InfoTip {
         let longest = self.0.lines().map(|l| l.chars().count()).max().unwrap_or(0) as f32;
         let w = (longest * 6.9 + 22.).clamp(60., 320.);
         let shadow = BoxShadow { color: black().opacity(if dark { 0.45 } else { 0.25 }), offset: point(px(0.), px(4.)), blur_radius: px(12.), spread_radius: px(0.), inset: false };
-        div().pt(px(8.)).pl(px(4.)).child(
+        // Opening: the menu motion (it hangs below the pointer).
+        let tip = div().pt(px(8.)).pl(px(4.)).child(
             gpui_kit::component::v_flex()
                 .w(px(w))
                 .gap(px(6.))
@@ -529,7 +530,8 @@ impl Render for InfoTip {
                         }
                     }))
                 })),
-        )
+        );
+        menu_appear(tip, "info-tip-open", true)
     }
 }
 
@@ -964,13 +966,56 @@ pub fn reduce_motion() -> bool {
     })
 }
 
-/// Fade (and rise a little) when shown; `key` restarts it when it changes.
-pub fn appear<E: IntoElement + Styled + 'static>(el: E, key: impl Into<ElementId>, ms: u64) -> AnyElement {
+// Popups open with one motion per kind; pages switch instantly (the
+// owner's rule, 2026-11-17). Dialogs and panels (the modal, the bell, the
+// job panel): 180 ms, rising 8 px. Menus and tooltips: 140 ms, 4 px toward
+// their anchor; the toolkit's popup menu (vendor/gpui-component, menu/
+// popup_menu.rs) and its tooltip layer move the same way. Reduce motion
+// draws them in place (here, and through GPUI's flag, set in main).
+// src/popup_gate.rs fails a popup that opens without these.
+pub const APPEAR_MS: u64 = 180;
+pub const APPEAR_RISE: f32 = 8.;
+pub const MENU_APPEAR_MS: u64 = 140;
+pub const MENU_APPEAR_RISE: f32 = 4.;
+
+/// A dialog or panel opening: it fades in, rising 8 px into place. It
+/// plays when the popup is drawn after a frame without it, and again when
+/// `key` changes.
+pub fn appear<E: IntoElement + Styled + 'static>(el: E, key: impl Into<ElementId>) -> AnyElement {
+    motion_in(el, key.into(), APPEAR_MS, APPEAR_RISE)
+}
+
+/// A menu or tooltip opening: a quick fade, moving 4 px toward its anchor.
+/// `below`: it hangs below its anchor (it rises); else above (it drops).
+pub fn menu_appear<E: IntoElement + Styled + 'static>(el: E, key: impl Into<ElementId>, below: bool) -> AnyElement {
+    motion_in(el, key.into(), MENU_APPEAR_MS, if below { MENU_APPEAR_RISE } else { -MENU_APPEAR_RISE })
+}
+
+fn motion_in<E: IntoElement + Styled + 'static>(el: E, key: ElementId, ms: u64, rise: f32) -> AnyElement {
     if reduce_motion() {
         return el.into_any_element();
     }
-    el.with_animation(key, Animation::new(std::time::Duration::from_millis(ms)).with_easing(ease_out_quint()), |el, d| el.opacity(d))
+    el.with_animation(key, Animation::new(std::time::Duration::from_millis(ms)).with_easing(ease_out), move |el, t| el.opacity(t).top(px(rise * (1. - t))))
         .into_any_element()
+}
+
+/// A plain tooltip for a div's `.tooltip(...)`: the toolkit's tooltip,
+/// opening with the menu motion (a button's own `.tooltip("...")` opens
+/// through the toolkit's tooltip layer, which moves the same way).
+pub fn tooltip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let text = text.into();
+    move |window, cx| {
+        let inner = gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx);
+        cx.new(|_| AppearTip(inner)).into()
+    }
+}
+
+struct AppearTip(AnyView);
+
+impl Render for AppearTip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        menu_appear(div().child(self.0.clone()), "tip-open", true)
+    }
 }
 
 /// One choice of several, with a real radio mark, a title and a line about
@@ -1272,18 +1317,8 @@ pub fn popover_menu(theme: &Theme, id: &'static str, width: f32, rows: Vec<MenuR
                 .on_mouse_down_out(move |_, window, cx| on_close(window, cx)),
         )
         .map(|d| if up { d.child(pointer_up(theme.popover, theme.border, pointer_x)) } else { d.child(pointer_down(theme.popover, theme.border, pointer_x)) })
-        // Opening: a quick fade, moving 4 px from its anchor (140 ms).
-        .map(|d| {
-            if reduce_motion() {
-                d.into_any_element()
-            } else {
-                d.with_animation(SharedString::from(format!("{id}-open")), Animation::new(std::time::Duration::from_millis(140)).with_easing(ease_out), move |el, t| {
-                    let off = 4. * (1. - t);
-                    el.opacity(t).top(px(if up { off } else { -off }))
-                })
-                .into_any_element()
-            }
-        })
+        // Opening: the menu motion (140 ms, 4 px toward its anchor).
+        .map(|d| menu_appear(d, SharedString::from(format!("{id}-open")), up))
 }
 
 /// Every button: the toolkit's, with the mockup's medium-weight label.
@@ -1477,7 +1512,7 @@ pub fn open_sentient_button(id: &'static str, serving: bool, on_click: impl Fn(&
         div()
             .id(SharedString::from(format!("{id}-why")))
             .child(button(id).outline().label("Open SENTIENT").disabled(true))
-            .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("SENTIENT is stopped. Start it first.").build(w, cx))
+            .tooltip(crate::ui::tooltip("SENTIENT is stopped. Start it first."))
             .into_any_element()
     }
 }
@@ -1972,7 +2007,7 @@ pub fn current_cell(theme: &Theme, id: impl Into<SharedString>, text: Option<Str
                     .overflow_hidden()
                     .text_ellipsis()
                     .child(t)
-                    .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx)),
+                    .tooltip(crate::ui::tooltip(tip.clone())),
             )
         })
 }
@@ -2221,7 +2256,7 @@ pub fn pending_bar(
                             .overflow_hidden()
                             .text_ellipsis()
                             .child(line)
-                            .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx)),
+                            .tooltip(crate::ui::tooltip(tip.clone())),
                     )
                 }),
         )

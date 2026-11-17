@@ -12,11 +12,20 @@ use gpui::{
     Styled, WeakEntity, Window, anchored, deferred, div, prelude::FluentBuilder, px, rems,
 };
 use gpui::{ClickEvent, Half, MouseDownEvent, OwnedMenuItem, Point, Subscription};
+use gpui::AnimationExt as _;
 use gpui_base::TestSupportExt as _;
 
 use std::rc::Rc;
 
 const CONTEXT: &str = "PopupMenu";
+
+// SENTIENT: every popup menu (dropdown_menu, context_menu, submenus) opens
+// with the Platform Manager's menu motion: a 140 ms fade, rising 4 px into
+// place. Keep these equal to app/src/ui.rs MENU_APPEAR_MS and
+// MENU_APPEAR_RISE (app/src/popup_gate.rs checks it). GPUI's animation
+// element draws the end state at once under App::reduce_motion.
+const SENTIENT_OPEN_MS: u64 = 140;
+const SENTIENT_OPEN_RISE: f32 = 4.;
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
@@ -1516,6 +1525,8 @@ impl Render for PopupMenu {
             radius: cx.theme().radius.min(px(8.)),
         };
 
+        // SENTIENT: read out here, the animation runs after `cx` is gone.
+        let ring = crate::styled::popover_ring(cx);
         v_flex()
             .id("popup-menu")
             .test_support()
@@ -1559,6 +1570,19 @@ impl Render for PopupMenu {
             .when(self.scrollable, |this| {
                 this.vertical_scrollbar(&self.scroll_handle)
             })
+            // SENTIENT: the open motion (see SENTIENT_OPEN_MS). The shadow
+            // ramps by the cube of the fade, as in popover::dropdown_popup,
+            // so it never shows through the half-faded panel as a slab.
+            .with_animation(
+                "sentient-menu-open",
+                gpui::Animation::new(std::time::Duration::from_millis(SENTIENT_OPEN_MS))
+                    .with_easing(crate::animation::ease_out_cubic),
+                move |menu, t| {
+                    menu.top(px(SENTIENT_OPEN_RISE * (1. - t)))
+                        .opacity(t)
+                        .shadow(crate::styled::popover_shadow(ring, t * t * t))
+                },
+            )
     }
 }
 
