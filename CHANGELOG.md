@@ -15,6 +15,17 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Added
+- About and preferences (the (i) at the bottom of the menu) has an About
+  block: the INVENIA SYSTEMS logo, the website and support address as
+  links, this build (version, commit, build date, release or debug) and
+  the copyright. Copy version info puts the build lines on the clipboard
+  for a support request; Third-party licences lists the open-source
+  components the Platform Manager is built with and their licences (a row
+  opens the component's source). The list is made by
+  `scripts/third-party-licences.py` from `cargo metadata`, and a test fails
+  when Cargo.lock changes without it.
+
 ### Fixed
 - Windows: installing SENTIENT from the Platform Manager that Setup opened
   could stop at "initdb: program postgres is needed by initdb but was not

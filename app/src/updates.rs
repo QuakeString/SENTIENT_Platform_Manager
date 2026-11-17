@@ -33,6 +33,30 @@ pub fn build_commit() -> &'static str {
     env!("SPM_BUILD_COMMIT")
 }
 
+/// The day this build was made, UTC, YYYY-MM-DD, or "unknown" (build.rs).
+pub fn build_date() -> &'static str {
+    env!("SPM_BUILD_DATE")
+}
+
+/// "release" or "debug": how this program was compiled.
+pub fn build_profile() -> &'static str {
+    if cfg!(debug_assertions) { "debug" } else { "release" }
+}
+
+/// The version lines About copies for a support request: version, build,
+/// and the system it runs on.
+pub fn version_info() -> String {
+    format!(
+        "SENTIENT Platform Manager {}\nCommit: {}\nBuilt: {} ({})\nSystem: {} {}",
+        manager_version(),
+        build_commit(),
+        build_date(),
+        build_profile(),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+}
+
 pub fn manager_version() -> &'static str {
     // Development aid: act as another version (screens that compare them).
     #[cfg(debug_assertions)]
