@@ -348,7 +348,7 @@ jobs:
       - name: Install packaging tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y dpkg-dev binutils file
+          sudo apt-get install -y dpkg-dev binutils file desktop-file-utils
           # The libraries the binary links: dpkg-shlibdeps maps each to its
           # package and fails on one that is not installed here.
           sudo apt-get install -y libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libvulkan1 libasound2 libxcb1 libx11-xcb1
