@@ -259,14 +259,14 @@ pub fn find_in_distro(distro: &str) -> Vec<FoundStack> {
     // The Platform Manager's own distro ("sentient", also what the early
     // releases imported Ubuntu as, with /opt/sentient/docker-compose.yml)
     // is recorded as None: its own, which it may stop, repair and remove.
-    let own = super::is_own_distro(distro);
-    super::with_docker_distro(Some(distro), find)
-        .into_iter()
-        .map(|mut f| {
-            f.cfg.wsl_distro = if own { None } else { Some(distro.trim().to_string()) };
-            f
-        })
-        .collect()
+    super::with_docker_distro(Some(distro), find).into_iter().map(|f| tag_distro(f, distro)).collect()
+}
+
+/// A stack found in `distro`, recorded with it: None for the Platform
+/// Manager's own distro, else the distro's name.
+fn tag_distro(mut f: FoundStack, distro: &str) -> FoundStack {
+    f.cfg.wsl_distro = if super::is_own_distro(distro) { None } else { Some(distro.trim().to_string()) };
+    f
 }
 
 fn describe(app: &Value, all: &[Value]) -> FoundStack {
@@ -1251,6 +1251,95 @@ mod tests {
             assert!(is_running(c.http()));
             c.down();
         }
+    }
+
+    /// `docker inspect` of the stack the early Windows releases (M0,
+    /// 1d86cd2) set up: Ubuntu imported as WSL distro "sentient", compose
+    /// file /opt/sentient/docker-compose.yml, containers sentient and
+    /// sentient-postgres, DATABASE_URL host = the compose service postgres,
+    /// PostgreSQL not published.
+    fn early_windows_stack() -> (Value, Value) {
+        let labels = |service: &str| {
+            serde_json::json!({
+                "com.docker.compose.project": "sentient",
+                "com.docker.compose.service": service,
+                "com.docker.compose.project.config_files": "/opt/sentient/docker-compose.yml",
+                "com.docker.compose.project.working_dir": "/opt/sentient"
+            })
+        };
+        let app = serde_json::json!({
+            "Id": "0a1b2c3d4e5f",
+            "Name": "/sentient",
+            "Image": "sha256:feedface",
+            "State": { "Running": true },
+            "Config": {
+                "Image": "quakestring/sentient:latest",
+                "Labels": labels("sentient"),
+                "Env": [
+                    "DATABASE_URL=postgresql://sentient:sentient@postgres:5432/sentient",
+                    "TS_TYPE=sql",
+                    "LICENSE_SERVER_URL=https://license.invenia.in",
+                    "VC_REPOS_PATH=/var/lib/sentient/vc-repos"
+                ]
+            },
+            "HostConfig": { "PortBindings": {
+                "8080/tcp": [{ "HostIp": "", "HostPort": "8080" }],
+                "1883/tcp": [{ "HostIp": "", "HostPort": "1883" }],
+                "5683/udp": [{ "HostIp": "", "HostPort": "5683" }]
+            } },
+            "Mounts": [{ "Type": "volume", "Name": "sentient_sentient_data", "Destination": "/var/lib/sentient" }]
+        });
+        let pg = serde_json::json!({
+            "Id": "9f8e7d6c5b4a",
+            "Name": "/sentient-postgres",
+            "State": { "Running": true },
+            "Config": {
+                "Image": "timescale/timescaledb:2.26.1-pg18",
+                "Labels": labels("postgres"),
+                "Env": ["POSTGRES_DB=sentient", "POSTGRES_USER=sentient", "POSTGRES_PASSWORD=sentient", "PGDATA=/var/lib/postgresql/data"],
+                "Cmd": ["postgres", "-c", "shared_preload_libraries=timescaledb", "-c", "max_connections=100", "-c", "shared_buffers=128MB"]
+            },
+            "HostConfig": { "PortBindings": {} },
+            "Mounts": [{ "Type": "volume", "Name": "sentient_postgres_data", "Destination": "/var/lib/postgresql" }]
+        });
+        (app, pg)
+    }
+
+    #[test]
+    fn an_early_windows_stack_can_be_added() {
+        let (app, pg) = early_windows_stack();
+        let all = vec![app.clone(), pg];
+        let f = describe(&app, &all);
+        assert_eq!(f.problem, None, "{:?}", f.notes);
+        assert_eq!((f.cfg.db_user.as_str(), f.cfg.db_password.as_str(), f.cfg.db_name.as_str()), ("sentient", "sentient", "sentient"));
+        assert_eq!(f.cfg.stack_name, "sentient");
+        assert_eq!(f.cfg.http_port, 8080);
+        assert_eq!(f.cfg.app_container(), "sentient");
+        assert_eq!(f.cfg.names().pg, "sentient-postgres");
+        // Not published: noted (backups need it), not a reason to refuse.
+        assert_eq!(f.cfg.pg_port, 0);
+        assert!(f.running);
+    }
+
+    #[test]
+    fn an_early_stack_in_the_platform_managers_own_distro_is_its_own() {
+        let (app, pg) = early_windows_stack();
+        let f = describe(&app, &[app.clone(), pg]);
+        // Imported as "sentient" (any case): managed as the Platform
+        // Manager's own distro, which it may stop and repair.
+        assert_eq!(tag_distro(f.clone(), "sentient").cfg.wsl_distro, None);
+        assert_eq!(tag_distro(f, "Sentient ").cfg.wsl_distro, None);
+    }
+
+    #[test]
+    fn an_early_stack_in_a_distro_named_ubuntu_keeps_that_name() {
+        let (app, pg) = early_windows_stack();
+        let f = describe(&app, &[app.clone(), pg]);
+        let f = tag_distro(f, "Ubuntu");
+        assert_eq!(f.cfg.wsl_distro.as_deref(), Some("Ubuntu"));
+        assert_eq!(f.problem, None);
+        // Jobs for it then run there, never in "sentient".
+        assert_eq!(super::super::with_docker_distro(f.cfg.wsl_distro.as_deref(), super::super::docker_distro), "Ubuntu");
     }
 
     #[test]
