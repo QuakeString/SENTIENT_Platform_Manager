@@ -1189,6 +1189,10 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     run_stream(&sink, "[ -x /usr/bin/docker ] || (curl -fsSL https://get.docker.com | sh)")?;
 
     sink(Progress::Step { name: "Starting Docker".into() });
+    // The inbox WSL 2 kernel (5.10) has no nf_tables NAT: Docker's
+    // iptables (nf_tables by default) cannot add its rules there and
+    // dockerd stops. The legacy iptables works on every WSL kernel.
+    run(&sink, IPTABLES_LEGACY_IF_NEEDED)?;
     // A WSL without systemd (Windows 10 builds that cannot run the WSL
     // package keep the inbox WSL): Docker's own init script.
     run(&sink, DOCKER_START)?;
@@ -1203,6 +1207,11 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     }
     Err("Docker was installed but isn't responding yet. Try the step again.".into())
 }
+
+/// Switch the distro to the legacy iptables when the kernel cannot do
+/// what Docker asks of nf_tables (a NAT rule with addrtype), probed with
+/// that very rule and removed again.
+pub const IPTABLES_LEGACY_IF_NEEDED: &str = "if command -v iptables-legacy >/dev/null && ! { iptables-nft -t nat -A PREROUTING -m addrtype --dst-type LOCAL -j RETURN 2>/dev/null && iptables-nft -t nat -D PREROUTING -m addrtype --dst-type LOCAL -j RETURN; }; then update-alternatives --set iptables /usr/sbin/iptables-legacy && update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy && echo 'This WSL kernel has no nf_tables NAT: Docker uses the legacy iptables'; fi";
 
 /// Start Docker in the distro: systemd when WSL booted it, else Docker's
 /// init script (the inbox WSL of older Windows 10 has no systemd).
