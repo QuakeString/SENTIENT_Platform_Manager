@@ -413,6 +413,23 @@ def main():
         top, body = tops[-1], bodies[-1]
         if abs(top[2] - (body[2] + 12)) > 2.5:
             bad.append(f"folder chooser: the path bar is at y {top[2]:.0f}, not at the dialog body's top {body[2] + 12:.0f} (did the whole body scroll?)")
+    # The SENTIENT logo tile (ui::product_logo): its border shows on all
+    # four sides (the artwork's own frame lost its right and bottom).
+    for l in last_frame_lines(log):
+        if not l.startswith("LAYOUT logo-tile "):
+            continue
+        tl, tr_, tt, tb = (float(v) for v in l.split()[2:6])
+        x0, x1, y0, y1 = int(round(tl * scale)), int(round(tr_ * scale)) - 1, int(round(tt * scale)), int(round(tb * scale)) - 1
+        if x1 - x0 < 8 or y1 - y0 < 8 or x1 >= im.width or y1 >= im.height:
+            continue
+        mx, my = (x0 + x1) // 2, (y0 + y1) // 2
+        inside = im.getpixel((mx, y0 + 3))
+        lum = lambda p: 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]
+        sides = {"top": [im.getpixel((mx, y)) for y in (y0, y0 + 1)], "bottom": [im.getpixel((mx, y)) for y in (y1, y1 - 1)],
+                 "left": [im.getpixel((x, my)) for x in (x0, x0 + 1)], "right": [im.getpixel((x, my)) for x in (x1, x1 - 1)]}
+        for side, px_ in sides.items():
+            if max(abs(lum(p) - lum(inside)) for p in px_) < 12:
+                bad.append(f"logo tile at {tl:.0f},{tt:.0f}: no border on its {side} side")
     # Commit actions in a card foot (ui::card_actions): the buttons end at
     # the foot's right edge (SPM's rule: actions on the right).
     frame_lines = last_frame_lines(log)

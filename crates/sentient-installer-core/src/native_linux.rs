@@ -1041,6 +1041,12 @@ pub fn control(sink: ProgressFn, _cfg: &NativeConfig, action: &str) -> Result<()
     Ok(())
 }
 
+/// The distribution's postgresql.service: running, stopped, absent or
+/// unknown (crate::native::pg_stopped).
+pub fn pg_unit_state() -> String {
+    unit_state(PG_UNIT)
+}
+
 /// The databases in the PostgreSQL cluster that are not SENTIENT's (the
 /// distribution's postgresql.service is shared). Empty when PostgreSQL is
 /// not running: there is nothing to stop then. Asks for the administrator
