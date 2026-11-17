@@ -103,6 +103,8 @@ python3 "$HERE/labels.py" "$OUT" | tee "$OUT/labels.txt"; labels=${PIPESTATUS[0]
 python3 "$HERE/tint.py" "$OUT" | tee "$OUT/tint.txt"; tint=${PIPESTATUS[0]}
 # Every tooltip the shared one, with theme colours (tooltips.sh).
 "$HERE/tooltips.sh" | tee "$OUT/tooltips.txt"; tips=${PIPESTATUS[0]}
+# The menu selection drawn with quads only (corners.sh).
+"$HERE/corners.sh" | tee "$OUT/corners.txt"; corners=${PIPESTATUS[0]}
 # Every long job in the shared job view, its steps declared (jobview.sh).
 "$HERE/jobview.sh" | tee "$OUT/jobview.txt"; jobs=${PIPESTATUS[0]}
-[ "$fails" -eq 0 ] && [ "$labels" -eq 0 ] && [ "$tint" -eq 0 ] && [ "$tips" -eq 0 ] && [ "$jobs" -eq 0 ]
+[ "$fails" -eq 0 ] && [ "$labels" -eq 0 ] && [ "$tint" -eq 0 ] && [ "$tips" -eq 0 ] && [ "$corners" -eq 0 ] && [ "$jobs" -eq 0 ]

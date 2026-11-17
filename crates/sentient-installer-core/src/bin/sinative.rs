@@ -129,6 +129,11 @@ fn sink() -> sentient_installer_core::progress::ProgressFn {
         Progress::Percent { value } => println!("    {:.0}%", value * 100.0),
         Progress::Done { message } => println!("\n[done] {message}"),
         Progress::Error { message } => eprintln!("\n[error] {message}"),
+        Progress::Plan { steps } => {
+            for (i, st) in steps.iter().enumerate() {
+                println!("    {}. {}", i + 1, st.name);
+            }
+        }
     })
 }
 

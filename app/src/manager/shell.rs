@@ -166,9 +166,10 @@ pub fn see_through() -> bool {
 /// One full slide of the selection between rows.
 const SLIDE: Duration = Duration::from_millis(220);
 /// The concave curves above and below the selected row.
-const FILLET: f32 = 14.;
-/// The selected row's own corner radius (its left end).
-const SEL_RADIUS: f32 = 10.;
+const FILLET: f32 = 12.;
+/// The selected row's left end: a half circle (the pill he chose in
+/// rc12-24); hovered rows take the same shape.
+const SEL_RADIUS: f32 = ROW_H / 2.;
 /// A row's height (the selection's too), and the gap between rows: a
 /// 44 px pitch. Folded, unfolded and over the page alike.
 pub const ROW_H: f32 = 40.;
@@ -345,12 +346,7 @@ pub(crate) fn selection(active: &'static str, page: Hsla, line: Hsla, motion: bo
             let p = |x: f32, y: f32| point(px(x), px(y));
             let Some(top) = y else {
                 // No row selected (About): the plain edge.
-                let mut stroke = PathBuilder::stroke(px(lw));
-                stroke.move_to(p(xc, top_y));
-                stroke.line_to(p(xc, bottom_y));
-                if let Ok(path) = stroke.build() {
-                    window.paint_path(path, line);
-                }
+                window.paint_quad(gpui::fill(Bounds::from_corners(p(edge - lw, top_y), p(edge, bottom_y)), line));
                 return;
             };
             let (l, t, b) = (left, top, top + ROW_H);
@@ -360,38 +356,43 @@ pub(crate) fn selection(active: &'static str, page: Hsla, line: Hsla, motion: bo
             }
             let f = FILLET;
             let rad = SEL_RADIUS;
-            // The page-coloured opening: out to the menu's edge (over the
-            // line there), the curves tangent to it.
-            let mut fill = PathBuilder::fill();
-            fill.move_to(p(edge, t - f));
-            fill.line_to(p(xc, t - f));
-            fill.arc_to(p(f, f), px(0.), false, true, p(xc - f, t));
-            fill.line_to(p(l + rad, t));
-            fill.arc_to(p(rad, rad), px(0.), false, false, p(l, t + rad));
-            fill.line_to(p(l, b - rad));
-            fill.arc_to(p(rad, rad), px(0.), false, false, p(l + rad, b));
-            fill.line_to(p(xc - f, b));
-            fill.arc_to(p(f, f), px(0.), false, true, p(xc, b + f));
-            fill.line_to(p(edge, b + f));
-            fill.close();
-            if let Ok(path) = fill.build() {
-                window.paint_path(path, page);
-            }
-            // The edge and the opening's outline: one line, top to bottom.
+            // Drawn with rounded quads only: GPUI gives quads exact
+            // antialiasing at every scale, where paths get at most 4x MSAA
+            // on Linux and read as stair-steps at fractional scales (his
+            // rc12-24 note). The line is centred on xc throughout.
             let h = lw / 2.;
-            let mut stroke = PathBuilder::stroke(px(lw));
-            stroke.move_to(p(xc, top_y));
-            stroke.line_to(p(xc, t - f));
-            stroke.arc_to(p(f - h, f - h), px(0.), false, true, p(xc - f + h, t + h));
-            stroke.line_to(p(l + rad, t + h));
-            stroke.arc_to(p(rad - h, rad - h), px(0.), false, false, p(l + h, t + rad));
-            stroke.line_to(p(l + h, b - rad));
-            stroke.arc_to(p(rad - h, rad - h), px(0.), false, false, p(l + rad, b - h));
-            stroke.line_to(p(xc - f + h, b - h));
-            stroke.arc_to(p(f - h, f - h), px(0.), false, true, p(xc, b + f));
-            stroke.line_to(p(xc, bottom_y));
-            if let Ok(path) = stroke.build() {
-                window.paint_path(path, line);
+            let bnd = |x0: f32, y0: f32, x1: f32, y1: f32| Bounds::from_corners(p(x0, y0), p(x1, y1));
+            let none = gpui::transparent_black();
+            // The edge above and below the opening.
+            window.paint_quad(gpui::fill(bnd(edge - lw, top_y, edge, t - f), line));
+            window.paint_quad(gpui::fill(bnd(edge - lw, b + f, edge, bottom_y), line));
+            // The row: page-coloured, its left end rounded, its outline on
+            // the top, left and bottom (centred on t, l and b).
+            window.paint_quad(gpui::quad(
+                bnd(l - h, t - h, xc - f + 0.01, b + h),
+                Corners { top_left: px(rad + h), bottom_left: px(rad + h), top_right: px(0.), bottom_right: px(0.) },
+                page,
+                Edges { top: px(lw), left: px(lw), bottom: px(lw), right: px(0.) },
+                line,
+                BorderStyle::Solid,
+            ));
+            // Between the row and the edge: page only (the line opens).
+            window.paint_quad(gpui::fill(bnd(xc - f, t + h, edge, b - h), page));
+            // The concave curves: a ring around each curve's centre,
+            // clipped to its corner square. Page colour outside the curve
+            // (to the edge), then the line on the curve itself.
+            for (cy, y0, y1) in [(t - f, t - f, t + h), (b + f, b - h, b + f)] {
+                let sq = bnd(xc - f, y0, edge, y1);
+                window.with_content_mask(Some(ContentMask { bounds: sq }), |window| {
+                    let ring = |r_in: f32, r_out: f32| {
+                        gpui::quad(bnd(xc - f - r_out, cy - r_out, xc - f + r_out, cy + r_out), px(r_out), none, px(r_out - r_in), page, BorderStyle::Solid)
+                    };
+                    let wide = f * 0.5 + lw;
+                    window.paint_quad(ring(f, f + wide));
+                    let mut l_ring = ring(f - h, f + h);
+                    l_ring.border_color = line;
+                    window.paint_quad(l_ring);
+                });
             }
         },
     )
@@ -473,7 +474,8 @@ impl Manager {
                 .gap(px(12.))
                 .pl(px(row_pl(left_pad)))
                 .when(!rail, |r| r.pr(px(12.)).mr(px(10.)))
-                .rounded(px(8.))
+                // The pill, like the selection's left end.
+                .rounded(px(SEL_RADIUS))
                 .cursor_pointer()
                 .text_size(name_size)
                 .text_color(if on { sel_label } else { theme.foreground })
