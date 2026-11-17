@@ -798,7 +798,7 @@ impl Manager {
                 .justify_center()
                 .rounded(px(5.))
                 .hover(|d| d.bg(theme.danger.opacity(0.12)))
-                .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Clear").build(w, cx))
+                .tooltip(crate::ui::tooltip("Clear"))
                 .child(Icon::new(IconName::Close).size(px(16.)).text_color(theme.muted_foreground))
                 .on_click(move |_, _, cx| {
                     cx.stop_propagation();
@@ -897,7 +897,7 @@ impl Manager {
         // in it (a scrolling child has no height of its own to grow by).
         let full = 52. + n_rows as f32 * 82. > max_h;
         deferred(
-            div().absolute().top(px(theme::BAR_CTRL_H + 10.)).right(px(-6.)).child(
+            div().absolute().top(px(theme::BAR_CTRL_H + 10.)).right(px(-6.)).child(ui::appear(
                 div()
                     .relative()
                     .w(px(w))
@@ -949,7 +949,8 @@ impl Manager {
                             }),
                     )
                     .child(ui::pointer_up(theme.popover, theme.border, px(w - 26.))),
-            ),
+                "bell-panel-open",
+            )),
         )
         .with_priority(1)
         .into_any_element()
@@ -1163,7 +1164,7 @@ impl Manager {
                     g_disk,
                     m.disk_low(),
                 )))
-                .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Statistics").build(w, cx))
+                .tooltip(crate::ui::tooltip("Statistics"))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.page = Page::Statistics;
                     cx.notify();
@@ -1247,7 +1248,7 @@ impl Manager {
                                     .border_2()
                                     .border_color(menu_theme.background)
                                     .bg(state_dot)
-                                    .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(state_why).build(w, cx))
+                                    .tooltip(crate::ui::tooltip(state_why))
                                     // Turning amber or red: one soft pulse (300 ms).
                                     .when(pulse && !ui::reduce_motion(), |d| {
                                         d.child(
@@ -1830,7 +1831,7 @@ impl Manager {
             .when(open, |b| b.bg(tint.opacity(theme::bar_ctrl_hover(dark))))
             .when(!open, |b| b.hover(move |b| b.bg(tint.opacity(theme::bar_ctrl_hover(dark)))))
             .child(icon_of(choice).size(px(19.)))
-            .when(!open, |b| b.tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Theme").build(window, cx)))
+            .when(!open, |b| b.tooltip(crate::ui::tooltip("Theme")))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.theme_open = !this.theme_open;
                 cx.notify();

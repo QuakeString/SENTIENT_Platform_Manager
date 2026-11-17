@@ -1648,7 +1648,7 @@ pub(crate) fn table_row(theme: &gpui_kit::component::Theme, narrow: bool, i: usi
                 .flex_shrink_0()
                 .font_features(crate::ui::tabular())
                 .child(short_made(&e.made))
-                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(made_tip.clone()).build(window, cx)),
+                .tooltip(crate::ui::tooltip(made_tip.clone())),
         )
         .child(div().w(px(COL_SIZE)).flex_shrink_0().font_features(crate::ui::tabular()).child(crate::dbstatus::bytes_label(e.bytes))))
         .child(
@@ -1657,7 +1657,7 @@ pub(crate) fn table_row(theme: &gpui_kit::component::Theme, narrow: bool, i: usi
                 .w(px(if narrow { COL_CHECK_NARROW } else { COL_CHECK }))
                 .flex_shrink_0()
                 .child(small_pill(theme, tone, text))
-                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)),
+                .tooltip(crate::ui::tooltip(tip.clone())),
         )
         // Restore… and the menu: one button group at the row's end (the
         // header's two columns' width).

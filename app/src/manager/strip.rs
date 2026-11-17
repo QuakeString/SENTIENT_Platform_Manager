@@ -430,7 +430,7 @@ impl Render for Strip {
                 )
                 .when(open, |c| {
                     c.child(deferred(
-                        div().absolute().top(px(28. + 10.)).right(px(-120.)).child(
+                        div().absolute().top(px(28. + 10.)).right(px(-120.)).child(crate::ui::appear(
                             v_flex()
                                 .id("strip-panel")
                                 .relative()
@@ -448,7 +448,8 @@ impl Render for Strip {
                                     s.panel_open = false;
                                     cx.notify();
                                 })),
-                        ),
+                            "strip-panel-open",
+                        )),
                     ))
                 })
                 .into_any_element();

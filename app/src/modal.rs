@@ -185,6 +185,7 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
             w.dispatch_event(PlatformInput::MouseMove(event), cx);
         });
     }
+    let opened = cx.try_global::<ModalOpened>().map(|o| o.count).unwrap_or(0);
     let footer = cx.try_global::<ModalFooter>().and_then(|f| f.0.clone());
     let theme = cx.theme().clone();
     let vw = f32::from(window.viewport_size().width);
@@ -280,17 +281,9 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
                     .flex()
                     .flex_col()
                     .justify_center()
-                    // The dialog rises 8 px as it fades in (180 ms).
-                    .child({
-                        let panel = panel.on_click(|_, _, cx| cx.stop_propagation()).relative();
-                        if crate::ui::reduce_motion() {
-                            panel.into_any_element()
-                        } else {
-                            panel
-                                .with_animation("modal-appear", Animation::new(std::time::Duration::from_millis(180)).with_easing(crate::ui::ease_out), |el, t| el.opacity(t).top(px(8. * (1. - t))))
-                                .into_any_element()
-                        }
-                    }),
+                    // The dialog motion (180 ms, rising 8 px), played again
+                    // for a dialog that replaces the open one.
+                    .child(crate::ui::appear(panel.on_click(|_, _, cx| cx.stop_propagation()).relative(), ElementId::NamedInteger("modal-appear".into(), opened))),
             )
             .into_any_element(),
     )

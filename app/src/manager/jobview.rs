@@ -183,7 +183,7 @@ impl JobView {
                     div()
                         .id(SharedString::from(format!("{}-cancel-why", self.id)))
                         .child(ui::button(SharedString::from(format!("{}-cancel", self.id))).outline().label("Cancel").disabled(true))
-                        .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(why).build(w, cx))
+                        .tooltip(crate::ui::tooltip(why))
                         .into_any_element(),
                 ),
                 Cancel::Hide(on) => foot.push(ui::button(SharedString::from(format!("{}-hide", self.id))).outline().label("Hide").on_click(move |_, w, cx| on(w, cx)).into_any_element()),

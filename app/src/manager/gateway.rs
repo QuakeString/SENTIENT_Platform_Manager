@@ -502,7 +502,7 @@ impl Render for GatewayPage {
                                         let button = crate::ui::button("gw-update").primary().label(format!("Update to {}", o.version)).disabled(busy || blocked).on_click(cx.listener(move |p, _, _, cx| p.update_to(o2.clone(), cx)));
                                         // A disabled button carries its reason as a tooltip.
                                         if blocked {
-                                            div().id("gw-update-why").child(button).tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(why.clone()).build(w, cx)).into_any_element()
+                                            div().id("gw-update-why").child(button).tooltip(crate::ui::tooltip(why.clone())).into_any_element()
                                         } else {
                                             button.into_any_element()
                                         }

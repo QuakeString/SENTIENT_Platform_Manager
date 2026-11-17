@@ -985,7 +985,7 @@ impl MoveFlow {
                 .font_family(theme.mono_font_family.clone())
                 .text_size(px(13.))
                 .child(text)
-                .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx))
+                .tooltip(crate::ui::tooltip(tip.clone()))
         };
         let fits_help = format!(
             "Whether the disk can hold {} ({}): enough free space for it, and a local disk that is not FAT or read-only. The line under the answer says why.",
