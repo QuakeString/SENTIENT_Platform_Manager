@@ -131,6 +131,8 @@ Add an existing SENTIENT on a Windows server however it was installed, a built-i
 - Adding SENTIENT in Docker inside a WSL distro, and the Windows services
   with ClickHouse in WSL layout, were tested in unit tests and on the
   reporter's own server, not on a test machine with WSL.
+- Restart server and Shut down server were tested in unit tests and in
+  the dialogs and job view, not by restarting a real server.
 
 ## [0.9.0] - 2026-11-17
 
