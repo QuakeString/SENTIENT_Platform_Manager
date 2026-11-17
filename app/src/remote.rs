@@ -26,7 +26,9 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use sentient_installer_core::progress::{Progress, ProgressFn};
 
+pub mod conn;
 pub mod reuse;
+pub mod serve;
 
 /// What the agent jobs mean (`--job …`, crate::headless), as one number:
 /// raised whenever a job is added, removed or answers differently, so a
@@ -155,6 +157,10 @@ static SESSION: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
 /// Keep an instance's passphrase or password.
 pub fn set_secret(id: &str, value: &str) {
+    // A new sudo password: the connection is made again with it.
+    if let Some(inst) = id.strip_suffix("-sudo") {
+        conn::close(inst);
+    }
     #[cfg(windows)]
     {
         let _ = crate::secrets::save_named(&format!("instance-{id}"), value);
@@ -194,6 +200,8 @@ pub fn secret(id: &str) -> Option<String> {
 }
 
 pub fn forget_secret(id: &str) {
+    // The server is removed: its connection goes.
+    conn::close(id);
     forget_one(&sudo_key(id));
     forget_one(id);
     // The instance's SENTIENT sign-in (Licence) goes with it.
@@ -287,6 +295,16 @@ fn askpass_env(c: &mut Command, inst: &Instance, once: Option<&str>) {
 
 /// Run a command on the server and return what it printed.
 pub fn run(inst: &Instance, remote: &str, once: Option<&str>) -> Result<String, String> {
+    // Over the server's open connection (crate::remote::conn), as the
+    // account, the way its own ssh call ran it.
+    // (Not before the first connection found what the server is.)
+    if once.is_none() && inst.detected.is_some() && !is_windows(inst) {
+        match conn::call(inst, serve::Work::Sh { cmd: remote.to_string(), root: false }, None) {
+            Ok((_, r)) => return run_answer(r.code == Some(0), r.out, &r.err),
+            Err(conn::Fail::Err(e)) => return Err(e),
+            Err(conn::Fail::PerCall) => {}
+        }
+    }
     let out = ssh(inst, remote, once).output().map_err(|e| format!("start ssh: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if out.status.success() {
@@ -296,6 +314,16 @@ pub fn run(inst: &Instance, remote: &str, once: Option<&str>) -> Result<String, 
     if once.is_none() && err.to_lowercase().contains("permission denied") && (inst.key_has_passphrase || inst.auth == Auth::Password) && secret(&inst.id).is_none() {
         return Err(FORGOTTEN.into());
     }
+    Err(explain(&err).unwrap_or_else(|| if err.is_empty() { stdout.trim().to_string() } else { err }))
+}
+
+/// A command's answer as [`run`] gives it: its output, or its error output
+/// in plain words (or its output, when it wrote no error).
+fn run_answer(ok: bool, stdout: String, stderr: &str) -> Result<String, String> {
+    if ok {
+        return Ok(stdout);
+    }
+    let err = clean_stderr(stderr);
     Err(explain(&err).unwrap_or_else(|| if err.is_empty() { stdout.trim().to_string() } else { err }))
 }
 
@@ -651,6 +679,7 @@ fn deploy_user(inst: &Instance, staging: &str, sink: &ProgressFn) -> Result<(), 
     sink(Progress::Log { line: format!("{} has no administrator rights on the server: the agent goes in its home folder, and jobs that need root will say so.", inst.user) });
     run(inst, &format!("mkdir -p \"{USER_JOBS}\" && install -m 0755 {staging} \"{USER_SPM}\""), None)
         .map_err(|e| failed("The agent could not be put in the account's home folder. The agent there is unchanged.", &e))?;
+    conn::close(&inst.id);
     Ok(())
 }
 
@@ -788,6 +817,8 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
                 clean(inst);
                 return Err(failed(&format!("The agent could not be put in place at {target} (as administrator). The agent there is unchanged."), &e));
             }
+            // The connection's agent is the old one: the next request starts the new one.
+            conn::close(&inst.id);
             if target == reuse::LINUX_OWN {
                 sink(Progress::Log { line: format!("This version's agent is set up beside the Platform Manager installed on the server, at {target}; the installed one is not changed.") });
             }
@@ -882,6 +913,19 @@ fn sftp_batch(inst: &Instance, command: &str) -> Result<(), String> {
 /// from the system place, else as the account from its home. A per-user
 /// agent refused for want of root says so plainly.
 fn agent_run(inst: &Instance, args: &str) -> Result<String, String> {
+    // Over the open connection: the agent there is the one this would run.
+    if let Some(argv) = conn::split_args(args).filter(|a| a.first().map(String::as_str) == Some("--job")) {
+        match conn::call(inst, serve::Work::Job(argv[1..].to_vec()), None) {
+            Ok((peer, r)) => {
+                if r.code == Some(0) {
+                    return Ok(r.out);
+                }
+                return Err(agent_failure(inst, !peer.root && inst.user != "root", || sudo_password(inst).is_some(), r.err.trim()));
+            }
+            Err(conn::Fail::Err(e)) => return Err(e),
+            Err(conn::Fail::PerCall) => {}
+        }
+    }
     let pw = sudo_password(inst);
     let mut c = ssh(inst, &agent_cmd(inst, args, pw.is_some()), None);
     if pw.is_some() {
@@ -900,14 +944,20 @@ fn agent_run(inst: &Instance, args: &str) -> Result<String, String> {
     if out.status.success() {
         return Ok(String::from_utf8_lossy(&out.stdout).to_string());
     }
+    Err(agent_failure(inst, user, || pw.is_some(), &err))
+}
+
+/// A failed job in plain words: a per-user agent refused for want of root
+/// says so; otherwise sudo's refusal, or the job's own error.
+fn agent_failure(inst: &Instance, user: bool, password: impl FnOnce() -> bool, err: &str) -> String {
     if user {
         let lower = err.to_lowercase();
         if lower.contains("permission denied") || lower.contains("operation not permitted") || lower.contains("must be root") || lower.contains("as root") {
-            return Err(failed(&format!("This takes root on the server, and {} has no sudo there. Sign in as an account with sudo, or as root, to do it.", inst.user), &err));
+            return failed(&format!("This takes root on the server, and {} has no sudo there. Sign in as an account with sudo, or as root, to do it.", inst.user), err);
         }
-        return Err(explain(&err).unwrap_or(err));
+        return explain(err).unwrap_or(err.to_string());
     }
-    Err(sudo_error(inst, pw.is_some(), &err))
+    sudo_error(inst, password(), err)
 }
 
 fn sudo_error(inst: &Instance, password: bool, err: &str) -> String {
@@ -922,6 +972,13 @@ fn sudo_error(inst: &Instance, password: bool, err: &str) -> String {
 }
 
 fn sudo_run(inst: &Instance, cmd: &str, _login: Option<&str>) -> Result<String, String> {
+    // Over the open connection, when its agent runs as root.
+    match conn::call(inst, serve::Work::Sh { cmd: cmd.to_string(), root: true }, None) {
+        Ok((_, r)) if r.code == Some(0) => return Ok(r.out),
+        Ok((_, r)) => return Err(sudo_error(inst, sudo_password(inst).is_some(), r.err.trim())),
+        Err(conn::Fail::Err(e)) => return Err(e),
+        Err(conn::Fail::PerCall) => {}
+    }
     let pw = sudo_password(inst);
     let password = pw.as_deref();
     let full = format!("{}sh -c '{}'", sudo(inst, password.is_some()), cmd.replace('\'', "'\\''"));
@@ -1211,7 +1268,13 @@ pub fn put_text(inst: &Instance, path: &str, text: &str) -> Result<(), String> {
         let b = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
         return win::ps(inst, &format!("[IO.File]::WriteAllText('{}', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{b}')))", path.replace('\'', "''"))).map(|_| ());
     }
-    let mut c = ssh(inst, &format!("umask 077 && cat > '{}'", path.replace('\'', "")), None);
+    let cmd = format!("umask 077 && cat > '{}'", path.replace('\'', ""));
+    match conn::call(inst, serve::Work::Sh { cmd: cmd.clone(), root: false }, Some(text.to_string())) {
+        Ok((_, r)) => return run_answer(r.code == Some(0), r.out, &r.err).map(|_| ()),
+        Err(conn::Fail::Err(e)) => return Err(e),
+        Err(conn::Fail::PerCall) => {}
+    }
+    let mut c = ssh(inst, &cmd, None);
     c.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
     let mut child = c.spawn().map_err(|e| format!("start ssh: {e}"))?;
     if let Some(mut s) = child.stdin.take() {
@@ -1499,10 +1562,7 @@ pub fn is_windows(inst: &Instance) -> bool {
 /// and return what it printed.
 fn spm_job(inst: &Instance, job: &str) -> Result<String, String> {
     let r = if is_windows(inst) {
-        // Piped, so PowerShell waits for it and reads its output even when
-        // it is the windowed build (an installed Platform Manager); its
-        // errors folded into the output.
-        win::exe(inst).and_then(|exe| win::ps(inst, &format!("& '{}' --job {job} 2>&1 | ForEach-Object {{ \"$_\" }}", exe.replace('\'', "''"))))
+        win::job(inst, job)
     } else {
         agent_run(inst, &format!("--job {job}"))
     };
@@ -1915,7 +1975,28 @@ mod win {
         use base64::Engine as _;
         let utf16: Vec<u8> = format!("$ProgressPreference='SilentlyContinue'; {script}").encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
         let enc = base64::engine::general_purpose::STANDARD.encode(utf16);
+        // Over the open connection (its agent starts PowerShell there).
+        match conn::call(inst, serve::Work::Ps(enc.clone()), None) {
+            Ok((_, r)) => return run_answer(r.code == Some(0), r.out, &r.err),
+            Err(conn::Fail::Err(e)) => return Err(e),
+            Err(conn::Fail::PerCall) => {}
+        }
         run(inst, &format!("powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {enc}"), None)
+    }
+
+    /// `--job <job>` with the agent: over the open connection (its agent is
+    /// this Platform Manager's own, at EXE), else through PowerShell, piped
+    /// so it waits for a windowed build too, with its errors in the output.
+    pub fn job(inst: &Instance, job: &str) -> Result<String, String> {
+        if let Some(argv) = conn::split_args(job) {
+            match conn::call(inst, serve::Work::Job(argv), None) {
+                Ok((_, r)) if r.code == Some(0) => return Ok(format!("{}{}", r.out, r.err)),
+                Ok((_, r)) => return Err(if r.err.trim().is_empty() { r.out } else { r.err }),
+                Err(conn::Fail::Err(e)) => return Err(e),
+                Err(conn::Fail::PerCall) => {}
+            }
+        }
+        exe(inst).and_then(|exe| ps(inst, &format!("& '{}' --job {job} 2>&1 | ForEach-Object {{ \"$_\" }}", exe.replace('\'', "''"))))
     }
 
     pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
@@ -1951,6 +2032,8 @@ mod win {
             return Err(super::failed("The agent put in place does not match (checksum). Try again.", put.trim()));
         }
         set_exe(&inst.id, &Agent::Own);
+        // The connection's agent is the old one (or none): made again.
+        conn::close(&inst.id);
         if reuse::found(&inst.id).is_some() {
             sink(Progress::Log { line: format!("This version's agent is set up beside the Platform Manager installed on the server, at {EXE}; the installed one is not changed.") });
         }
@@ -1979,11 +2062,8 @@ mod win {
     }
 
     pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {
-        let exe = match resolve(inst)? {
-            Agent::Own => EXE.to_string(),
-            Agent::Installed(path) => path,
-        };
-        let out = ps(inst, &format!("& '{}' --job status-json 2>&1 | ForEach-Object {{ \"$_\" }}", exe.replace('\'', "''")))?;
+        resolve(inst)?;
+        let out = job(inst, "status-json").or_else(|e| if not_elevated(&e) { Ok(e) } else { Err(e) })?;
         if not_elevated(&out) {
             return Err(not_admin(inst));
         }

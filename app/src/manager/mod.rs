@@ -324,6 +324,9 @@ impl Manager {
                 }
             })
             .detach();
+        // One connection per added server, open from now until the
+        // Platform Manager quits (crate::remote::conn); made behind the window.
+        std::thread::spawn(|| crate::remote::conn::open_all(&crate::remote::load()));
         // The progress line under the top bar follows the strip.
         let strip = strip::install(cx);
         let subscriptions = vec![

@@ -53,10 +53,38 @@ Within any group:
   opens again (the Licence card keeps its last reading per instance for the
   run, never on disk), refreshing behind it; values change in place. Only a
   first open shows the loading skeleton.
-- Every ssh call costs a handshake (several round trips): one call per
-  request (a licence request goes inline, `--request-b64`), independent
-  reads at once.
-- Follow-up after 0.9.0: one ssh connection per server (OpenSSH
-  ControlMaster/ControlPersist on Linux and macOS). Windows' OpenSSH client
-  has no ControlMaster, so Windows needs another answer (a long-lived agent
-  session over one ssh channel, or the agent listening on a forwarded port).
+- One open connection per server (crate::remote::conn), the same on Linux
+  and Windows (Windows' OpenSSH has no ControlMaster, so none is used): one
+  long-lived `ssh` per added server, from the Platform Manager's start until
+  it quits or the server is removed or edited, running the agent's
+  `--job serve` (crate::remote::serve). It is started the way a job is
+  (`agent_cmd`: sudo, the password on standard input, never on a command
+  line; Windows: this Platform Manager's own agent, a console program, in
+  the administrator's session).
+  - Framing: one JSON object per line each way. The agent says hello first
+    (`{"spm_serve":1,"root":…}`); a request is
+    `{"id":n,"work":{"job":[…]}|{"sh":{"cmd":…,"root":…}}|{"ps":…},"stdin":…}`,
+    the answer `{"id":n,"code":…,"out":…,"err":…}` (or `refused`: the caller
+    makes its own ssh call). Each request runs on its own thread there, as
+    its own process (the job code is unchanged), so independent reads go at
+    once over the one connection and are answered in any order.
+  - Shell commands run as the signed-in account (`runuser` from the root
+    agent, with its home), or as root for what used sudo before.
+  - Keep-alives every 5 s (dropped within 15 s). A supervisor thread
+    reconnects at once when it drops, then after 1, 2, 4 … 15 s while the
+    server does not answer; a request made while it is down starts the next
+    attempt at once and waits for it, so a page says the connection is lost
+    only when reconnecting failed (as before). A request on a connection that
+    drops fails; it is not sent again (it may have run).
+  - An agent without serve mode (an older one answers with its usage text),
+    none set up, or sudo refusing: one ssh call per request, as before (the
+    licence request inline, `--request-b64`); asked again after 10 minutes,
+    a new sudo password, or Set up. `SPM_NO_SERVE=1` forces that path.
+  - After Set up / Update agent replaced the agent, its connection is
+    closed (it finishes the requests on it); the next request starts the new
+    one.
+  - Still separate ssh calls: following a job's progress on Linux (a
+    stream, `tail -F`), the Files page's sftp session (its own long-lived
+    connection already), file copies and backup uploads/downloads (sftp,
+    server to server), the first connection (detect), and deploy's sudo
+    check and copy.
