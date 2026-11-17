@@ -851,7 +851,10 @@ pub fn open(name: &str, target: Target, window: &mut Window, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // Not `super::*`: that brings gpui's own `test` attribute macro in,
+    // which shadows the standard one ("recursion limit reached while
+    // expanding #[test]").
+    use super::{end_question, indexed, ANSI};
 
     #[test]
     fn closing_running_sessions_asks_with_their_count() {
