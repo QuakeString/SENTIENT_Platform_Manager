@@ -972,6 +972,10 @@ impl Manager {
         // Switching instance: the tint cross-fades to the new colour.
         let ic = ui::tween_color("bar-ic", ic, 250, window);
         let bg: Hsla = menu_theme.background.blend(ic.opacity(theme::bar_tint(dark)));
+        // Windows: the bar is the window's caption (crate::win_caption): its
+        // empty part drags the window, its controls block that, and the
+        // minimise, maximise and close buttons end it.
+        let caption = crate::win_caption::enabled();
         let fg: Hsla = menu_theme.foreground;
         let muted_fg: Hsla = menu_theme.muted_foreground;
         let (name, address): (String, Option<String>) = match (&remote, &self.record) {
@@ -1062,7 +1066,9 @@ impl Manager {
         // room, job or not: the monitors are laid out the same either way.
         // The bar's padding, the switcher (dot, name, address, chevron,
         // REMOTE), the theme button and the bell, and the gaps between.
-        let mut room = width - 36. - (text_w(&instance) + 14. + 10. + 16. + 10. + 24. + 14.) - if remote.is_some() { 64. } else { 0. } - (theme::BAR_CTRL_H + 14.) - (theme::BAR_CTRL_H + 14.) - if self.strip.read(cx).active() { strip::CHIP_MIN } else { 0. };
+        let mut room = width - 36. - (text_w(&instance) + 14. + 10. + 16. + 10. + 24. + 14.) - if remote.is_some() { 64. } else { 0. } - (theme::BAR_CTRL_H + 14.) - (theme::BAR_CTRL_H + 14.) - if self.strip.read(cx).active() { strip::CHIP_MIN } else { 0. }
+            // Windows: the caption buttons at the end, flush right (no right padding then).
+            - if caption { crate::win_caption::width() + 14. - 16. } else { 0. };
 
         let mut fits = |need: f32| {
             let ok = room >= need;
@@ -1204,10 +1210,11 @@ impl Manager {
             .h(px(shell::BAR_H))
             .flex_shrink_0()
             .pl(px(20.))
-            .pr(px(16.))
+            .pr(px(if caption { 0. } else { 16. }))
             .gap(px(14.))
             .items_center()
             .bg(bg)
+            .child(crate::win_caption::drag_layer())
             .border_b_1()
             .border_color(menu_theme.border)
             .text_color(fg)
@@ -1367,16 +1374,17 @@ impl Manager {
                     })))
                     .with_priority(1)
                 });
-                div().relative().min_w_0().flex_shrink(1.).child(chip).children(popover)
+                div().id("switcher-slot").relative().min_w_0().flex_shrink(1.).when(caption, |d| d.occlude()).child(chip).children(popover)
             })
-            // A running job: its chip in the middle of the bar.
-            .child(h_flex().flex_1().min_w_0().overflow_hidden().justify_center().child(self.strip.clone()))
-            .children(monitor)
+            // A running job: its chip in the middle of the bar (the slot
+            // around it drags the window).
+            .child(h_flex().flex_1().min_w_0().overflow_hidden().justify_center().child(if caption { div().id("strip-slot").min_w_0().occlude().child(self.strip.clone()).into_any_element() } else { self.strip.clone().into_any_element() }))
+            .children(monitor.map(|m| m.when(caption, |d| d.occlude())))
             .children(monitor_loading)
-            .child(self.theme_button(ic, cx))
+            .child(div().id("theme-slot").when(caption, |d| d.occlude()).child(self.theme_button(ic, cx)))
             .child(
                 // The bell with an amber count, as in the mockup.
-                div().relative().child(bell).children(bell_panel).when(count > 0, |b| {
+                div().id("bell-slot").relative().when(caption, |d| d.occlude()).child(bell).children(bell_panel).when(count > 0, |b| {
                     b.child(
                         div()
                             .absolute()
@@ -1398,6 +1406,8 @@ impl Manager {
                     )
                 }),
             )
+            // Windows: minimise, maximise, close, in the bar's text colour.
+            .children(crate::win_caption::controls(fg, bg, window))
     }
 
     /// Switch to an instance (None: this computer). Remote instances are
@@ -2177,9 +2187,9 @@ impl Render for Manager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t0 = std::time::Instant::now();
         self.take_list_change(cx);
-        // Windows 10: the app's caption and rounded corners (crate::win_frame).
+        // Windows 10: rounded corners and the border (crate::win_frame).
         let root = self.render_root(window, cx).into_any_element();
-        let el = crate::win_frame::frame(crate::mode::AppMode::Manager.window_title(), root, window, cx);
+        let el = crate::win_frame::frame(root, window, cx);
         if crate::timing::on() {
             render_timing(self.page.id(), t0, window);
         }

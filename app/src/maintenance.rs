@@ -780,9 +780,9 @@ fn capitalise(s: &str) -> String {
 
 impl Render for Maintenance {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Windows 10: the app's caption and rounded corners (crate::win_frame).
+        // Windows 10: rounded corners and the border (crate::win_frame).
         let root = self.render_root(window, cx).into_any_element();
-        crate::win_frame::frame(crate::mode::AppMode::Maintenance.window_title(), root, window, cx)
+        crate::win_frame::frame(root, window, cx)
     }
 }
 
@@ -791,7 +791,11 @@ impl Maintenance {
         // The shared dialogs over the whole window (crate::modal).
         let layer = crate::modal::layer(window, cx, 0., 0.);
         let body = self.body(cx);
-        div().size_full().relative().child(body).children(layer)
+        let theme = cx.theme().clone();
+        // Windows: the caption over the page's top edge (crate::win_caption),
+        // under the dialogs.
+        let caption = crate::win_caption::overlay(theme.foreground, theme.muted, window);
+        div().size_full().relative().child(body).children(caption).children(layer)
     }
 }
 

@@ -16,6 +16,15 @@ refreshes that repository's Downloads table.
 ## [Unreleased]
 
 ### Fixed
+- Windows: the window's minimise, maximise and close buttons were
+  invisible on Windows 11 (only the red close button showed on hover), under
+  an empty white caption strip above the top bar. There is no caption strip
+  any more: the buttons sit at the right end of the top bar (Setup and the
+  maintenance window: at the window's top right), drawn by the Platform
+  Manager in the bar's text colour, crisp at every display scale, dimmed
+  while the window is inactive, with Windows 11's hover (grey, red for
+  close). The empty bar moves the window, a double click maximises it, and
+  hovering maximise still opens the snap layouts.
 - Windows: installing SENTIENT from the Platform Manager that Setup opened
   could stop at "initdb: program postgres is needed by initdb but was not
   found" (with "The current directory is invalid"). The Platform Manager
