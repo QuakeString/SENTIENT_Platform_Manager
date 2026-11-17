@@ -1592,6 +1592,22 @@ pub fn check_takeover_password(inst: &Instance, ch: bool, password: &str) -> Res
 /// agent removes it once read, and so does this, in case it never ran.
 pub fn licence_api(inst: &Instance, req: &crate::licence::Request) -> Result<crate::licence::Reply, String> {
     let text = serde_json::to_string(req).map_err(|e| e.to_string())?;
+    // One ssh call: the request inline (an agent of this version). A key
+    // file being imported is large: that one still goes as a file, and so
+    // does every request to an older agent (it does not know the flag).
+    if text.len() <= 6000 {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+        match spm_job(inst, &format!("licence-api --request-b64 {b64}")) {
+            Ok(out) => {
+                if let Some(line) = out.lines().rev().find(|l| l.trim_start().starts_with('{')) {
+                    return serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"));
+                }
+            }
+            Err(e) if e != AGENT_OLD && !e.contains("usage:") => return Err(e),
+            Err(_) => {}
+        }
+    }
     let file = format!("{}/.spm-licence-{}", home(inst)?.trim_end_matches('/'), chrono::Utc::now().timestamp_millis());
     put_text(inst, &file, &text)?;
     let out = spm_job(inst, &format!("licence-api --request-file '{}'", file.replace('\'', "")));
