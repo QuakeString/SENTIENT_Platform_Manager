@@ -6,9 +6,10 @@ name: build-installers
 # on a version tag (debug by default — fast, for iteration; trigger a manual
 # release build for a shippable installer). A release-candidate tag (v*-rc*)
 # builds release and publishes a pre-release. On a version tag the installers
-# and the Arch package are attached to a GitHub Release (see the release job).
+# and the Linux packages (Arch, .deb, .rpm, AppImage, Flatpak) are attached
+# to a GitHub Release (see the release job).
 # Also runs on a PR from a release-candidate branch (head spm/rc*), and on
-# any PR that edits this file or packaging/arch, so a change to the installer
+# any PR that edits this file or packaging/, so a change to the installer
 # build is proven before it merges; the Windows setup is then a release build
 # (a testable installer, the rc version from an spm/rcNN-... branch). The
 # gate job below decides for a PR: every PR triggers the workflow, and the
@@ -60,7 +61,7 @@ jobs:
             build=false
             case "$HEAD_REF" in spm/rc*) build=true ;; esac
             if [ "$build" = false ] && gh pr diff "$PR" --repo "$GITHUB_REPOSITORY" --name-only \
-                 | grep -qE '^(\.github/workflows/build-installers\.yml|packaging/arch/)'; then
+                 | grep -qE '^(\.github/workflows/build-installers\.yml|packaging/(arch|linux|flatpak)/)'; then
               build=true
             fi
             echo "PR from $HEAD_REF: build=$build"
@@ -220,6 +221,10 @@ jobs:
     needs: [gate, agents]
     if: needs.gate.outputs.build == 'true'
     runs-on: ubuntu-22.04
+    # The version the program reports, for the packages made from it.
+    outputs:
+      version: ${{ steps.build.outputs.version }}
+      profile: ${{ steps.build.outputs.profile }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -237,6 +242,7 @@ jobs:
           sudo apt-get install -y gcc g++ clang libfontconfig-dev libwayland-dev \
             libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libasound2-dev libvulkan1
       - name: Build
+        id: build
         working-directory: app
         run: |
           # The server agents this build carries (build.rs).
@@ -249,10 +255,11 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then export SPM_VERSION="${GITHUB_REF_NAME#v}"; fi
           if [ -n "${{ needs.gate.outputs.version }}" ]; then export SPM_VERSION="${{ needs.gate.outputs.version }}"; fi
           if [ "${{ github.event.inputs.profile }}" = "release" ] || [[ "$GITHUB_REF" == refs/tags/v*-rc* ]] || [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
-            cargo build --release; echo "PROFILE=release" >> "$GITHUB_ENV"
+            cargo build --release; echo "PROFILE=release" >> "$GITHUB_ENV"; echo "profile=release" >> "$GITHUB_OUTPUT"
           else
-            cargo build; echo "PROFILE=debug" >> "$GITHUB_ENV"
+            cargo build; echo "PROFILE=debug" >> "$GITHUB_ENV"; echo "profile=debug" >> "$GITHUB_OUTPUT"
           fi
+          echo "version=${SPM_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}" >> "$GITHUB_OUTPUT"
       - name: Test
         working-directory: app
         run: cargo test
@@ -316,13 +323,206 @@ jobs:
           if-no-files-found: error
           path: dist/*.pkg.tar.zst
 
-  # On a v* tag, attach the installers and the Arch package to a GitHub Release
+  # The same binary as gpui-linux (not built again) as a .deb, an .rpm and
+  # an AppImage (packaging/linux/build-packages.sh). Built on 22.04, the
+  # oldest Ubuntu supported, so dpkg-shlibdeps asks for the oldest library
+  # versions that work. The packages are as optimized as that binary: a
+  # plain tag push builds debug, a release run (profile=release, rc tags,
+  # nightly) release.
+  linux-packages:
+    name: Linux packages (deb, rpm, AppImage)
+    needs: [gate, gpui-linux]
+    if: needs.gate.outputs.build == 'true'
+    runs-on: ubuntu-22.04
+    env:
+      NFPM_VERSION: 2.41.3
+      NFPM_SHA256: 22aa6d3bc2ec239d62d3d190bcb036a47f2b24e0c3c6edfccebb6a55fbb2078e
+      APPIMAGETOOL_VERSION: "1.9.0"
+      APPIMAGETOOL_SHA256: 46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gpui-setup-linux
+          path: input
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev binutils file
+          mkdir -p "$RUNNER_TEMP/tools"
+          curl -fsSL -o "$RUNNER_TEMP/nfpm.tar.gz" "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          echo "$NFPM_SHA256  $RUNNER_TEMP/nfpm.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/nfpm.tar.gz" -C "$RUNNER_TEMP/tools" nfpm
+          curl -fsSL -o "$RUNNER_TEMP/tools/appimagetool" "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+          echo "$APPIMAGETOOL_SHA256  $RUNNER_TEMP/tools/appimagetool" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/tools/"*
+          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - name: Build
+        env:
+          VERSION: ${{ needs.gpui-linux.outputs.version }}
+        run: |
+          test -n "$VERSION" || { echo "gpui-linux reported no version"; exit 1; }
+          bins=(input/SENTIENT-Setup-manager-*-linux-x86_64)
+          if [ ${#bins[@]} -ne 1 ] || [ ! -s "${bins[0]}" ]; then echo "expected one Linux binary in input/, found: ${bins[*]}"; exit 1; fi
+          echo "Packaging ${bins[0]} as $VERSION (${{ needs.gpui-linux.outputs.profile }} build)"
+          packaging/linux/build-packages.sh "${bins[0]}" "$VERSION" dist deb rpm appimage
+          for p in 'dist/*.deb' 'dist/*.rpm' 'dist/*.AppImage'; do
+            compgen -G "$p" >/dev/null || { echo "missing $p"; exit 1; }
+          done
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb
+      - name: Check the AppImage
+        env:
+          VERSION: ${{ needs.gpui-linux.outputs.version }}
+        run: |
+          # The libraries the binary needs (the AppImage carries none).
+          sudo apt-get install -y libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libvulkan1 libasound2 libxcb1
+          app=$(ls dist/*.AppImage)
+          info=$("$app" --appimage-extract-and-run --job agent-info)
+          echo "$info"
+          echo "$info" | python3 -c 'import json,sys,os; d=json.load(sys.stdin); assert d["version"]==os.environ["VERSION"], d; assert d["window"], d'
+          "$app" --appimage-extract-and-run --job agents | tee "$RUNNER_TEMP/agents.txt"
+          awk -F'\t' 'NF!=3 || $2<1 {bad=1} END {exit bad || NR!=3}' "$RUNNER_TEMP/agents.txt" || { echo "the AppImage does not carry every server agent"; exit 1; }
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          if-no-files-found: error
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+
+  # Install each package on a clean system of the kind it is for and start
+  # the program headless: the dependencies resolve, the files are where the
+  # Platform Manager expects them (/opt/sentient-platform-manager), and it
+  # reports this version and carries every server agent.
+  linux-packages-check:
+    name: install check (${{ matrix.image }})
+    needs: [gpui-linux, linux-packages]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "ubuntu:22.04", kind: deb }
+          - { image: "ubuntu:24.04", kind: deb }
+          - { image: "debian:12", kind: deb }
+          - { image: "fedora:41", kind: rpm }
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: pkgs
+      - name: Install
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -eu
+          case "${{ matrix.kind }}" in
+            deb)
+              apt-get update
+              # Depends only: the package must work without its Recommends.
+              apt-get install -y --no-install-recommends ./pkgs/*.deb
+              dpkg -s sentient-platform-manager ;;
+            rpm)
+              dnf install -y --setopt=install_weak_deps=False ./pkgs/*.rpm
+              rpm -qi sentient-platform-manager ;;
+          esac
+      - name: Start it headless
+        env:
+          VERSION: ${{ needs.gpui-linux.outputs.version }}
+        run: |
+          set -eu
+          exe=/opt/sentient-platform-manager/sentient-platform-manager
+          for f in "$exe" /usr/bin/sentient-platform-manager \
+                   /usr/share/applications/sentient-platform-manager.desktop \
+                   /usr/share/icons/hicolor/256x256/apps/sentient-platform-manager.png \
+                   /usr/share/icons/hicolor/scalable/apps/sentient-platform-manager.svg \
+                   /usr/share/licenses/sentient-platform-manager/LICENSE; do
+            test -e "$f" || { echo "missing $f"; exit 1; }
+          done
+          test -x "$exe"
+          if command -v ldd >/dev/null; then
+            if ldd "$exe" | grep 'not found'; then echo "unresolved libraries"; exit 1; fi
+          fi
+          info=$(sentient-platform-manager --job agent-info)
+          echo "$info"
+          case "$info" in *"\"version\":\"$VERSION\""*'"window":true'*) ;; *) echo "expected version $VERSION with its window"; exit 1 ;; esac
+          sentient-platform-manager --job agents | tee agents.txt
+          awk -F'\t' 'NF!=3 || $2<1 {bad=1} END {exit bad || NR!=3}' agents.txt || { echo "the package does not carry every server agent"; exit 1; }
+
+  # The same binary as a Flatpak bundle (packaging/flatpak), built and
+  # installed in Flathub's builder image, then started inside its sandbox.
+  # The bundle's permissions are the manifest's finish-args.
+  flatpak:
+    name: Flatpak bundle
+    needs: [gate, gpui-linux]
+    if: needs.gate.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-24.08
+      options: --privileged
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gpui-setup-linux
+          path: input
+      - name: Build
+        env:
+          VERSION: ${{ needs.gpui-linux.outputs.version }}
+          FLATPAK_WORK: ${{ runner.temp }}/flatpak
+        run: |
+          set -eu
+          test -n "$VERSION" || { echo "gpui-linux reported no version"; exit 1; }
+          bins=$(ls input/SENTIENT-Setup-manager-*-linux-x86_64)
+          if [ "$(echo "$bins" | wc -l)" -ne 1 ] || [ ! -s "$bins" ]; then echo "expected one Linux binary in input/, found: $bins"; exit 1; fi
+          packaging/flatpak/build.sh "$bins" "$VERSION" dist
+      - name: Install and start it headless
+        env:
+          VERSION: ${{ needs.gpui-linux.outputs.version }}
+        run: |
+          set -eu
+          id=in.invenia.SentientPlatformManager
+          flatpak install -y --noninteractive --bundle dist/*.flatpak
+          flatpak info --show-permissions "$id"
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/xdg"; mkdir -p -m 0700 "$XDG_RUNTIME_DIR"
+          run() {
+            if command -v dbus-run-session >/dev/null; then
+              dbus-run-session -- flatpak run --command="$1" "$id" "${@:2}"
+            else
+              flatpak run --command="$1" "$id" "${@:2}"
+            fi
+          }
+          info=$(run sentient-platform-manager --job agent-info)
+          echo "$info"
+          case "$info" in *"\"version\":\"$VERSION\""*'"window":true'*) ;; *) echo "expected version $VERSION with its window"; exit 1 ;; esac
+          run sentient-platform-manager --job agents | tee agents.txt
+          awk -F'\t' 'NF!=3 || $2<1 {bad=1} END {exit bad || NR!=3}' agents.txt || { echo "the Flatpak does not carry every server agent"; exit 1; }
+          # ssh comes with the bundle (its askpass helper is this program).
+          run ssh -V
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-package
+          if-no-files-found: error
+          path: dist/*.flatpak
+
+  # On a v* tag, attach the installers and the Linux packages to a GitHub Release
   # for that tag so they stay downloadable (Actions artifacts expire after 90
   # days).
   release:
     name: publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [agents, gpui-windows, gpui-linux, arch-package]
+    needs: [agents, gpui-windows, gpui-linux, arch-package, linux-packages, linux-packages-check, flatpak]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -391,7 +591,7 @@ jobs:
   nightly:
     name: publish nightly
     if: github.event_name == 'schedule' && needs.gate.outputs.build == 'true'
-    needs: [gate, gpui-windows, gpui-linux, arch-package]
+    needs: [gate, gpui-windows, gpui-linux, arch-package, linux-packages, linux-packages-check, flatpak]
     runs-on: ubuntu-latest
     permissions:
       contents: write

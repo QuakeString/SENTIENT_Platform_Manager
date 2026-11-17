@@ -1,0 +1,75 @@
+# Copyright © 2016-2026 The SENTIENT Authors
+#
+# The Platform Manager as a Flatpak, from the GUI binary the gpui-linux CI
+# job built (packaging/flatpak/build.sh stages it as input/). Built with:
+#   packaging/flatpak/build.sh <binary> <version> <out-dir>
+#
+# The sandbox is only the window's: everything the Platform Manager manages
+# is on the computer itself, so it runs those programs there through the
+# Flatpak portal (`flatpak-spawn --host`, sentient_installer_core::host),
+# and its root helper is the static server agent it carries. ssh, sftp and
+# ssh-keygen run inside the sandbox (OpenSSH below): their password prompt
+# is this program (SSH_ASKPASS), which the host could not start.
+id: in.invenia.SentientPlatformManager
+runtime: org.freedesktop.Platform
+runtime-version: "24.08"
+sdk: org.freedesktop.Sdk
+command: sentient-platform-manager
+finish-args:
+  # The window: Wayland, X11 where there is no Wayland, the GPU (GPUI draws
+  # with Vulkan).
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # Release checks and downloads, SENTIENT's web page, remote servers.
+  - --share=network
+  # Backups, restores and keys the user picks, ~/.ssh (known_hosts, keys).
+  - --filesystem=home
+  # The user's ssh-agent for the servers it manages.
+  - --socket=ssh-auth
+  # flatpak-spawn --host: docker, systemctl, pkexec, journalctl, the
+  # package managers, secret-tool and the rest run on the computer itself.
+  - --talk-name=org.freedesktop.Flatpak
+  # The tray icon (StatusNotifierItem) and its notifications.
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --own-name=org.kde.StatusNotifierItem-*
+  - --talk-name=org.freedesktop.Notifications
+modules:
+  - name: openssh
+    config-opts:
+      - --sysconfdir=/app/etc/ssh
+      - --without-pam
+      - --with-privsep-path=/app/var/empty
+    make-args: [ssh, scp, sftp, ssh-keygen, ssh-keyscan, ssh-add]
+    no-make-install: true
+    post-install:
+      - install -Dm755 -t /app/bin ssh scp sftp ssh-keygen ssh-keyscan ssh-add
+    cleanup:
+      - /share/man
+    sources:
+      - type: archive
+        url: https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-9.9p2.tar.gz
+        sha256: 91aadb603e08cc285eddf965e1199d02585fa94d994d6cae5b41e1721e215673
+
+  - name: sentient-platform-manager
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 sentient-platform-manager /app/bin/sentient-platform-manager
+      - install -Dm644 in.invenia.SentientPlatformManager.desktop /app/share/applications/in.invenia.SentientPlatformManager.desktop
+      - install -Dm644 in.invenia.SentientPlatformManager.metainfo.xml /app/share/metainfo/in.invenia.SentientPlatformManager.metainfo.xml
+      - for n in 16 22 24 32 48 64 128 256 512; do install -Dm644 icons/$n.png /app/share/icons/hicolor/${n}x${n}/apps/in.invenia.SentientPlatformManager.png; done
+      - install -Dm644 icons/spm-app-icon.svg /app/share/icons/hicolor/scalable/apps/in.invenia.SentientPlatformManager.svg
+      - install -Dm644 licence.txt /app/share/licenses/in.invenia.SentientPlatformManager/LICENSE
+    sources:
+      - type: file
+        path: input/sentient-platform-manager
+      - type: file
+        path: in.invenia.SentientPlatformManager.desktop
+      - type: file
+        path: input/in.invenia.SentientPlatformManager.metainfo.xml
+      - type: dir
+        path: ../../app/assets/app-icon
+        dest: icons
+      - type: file
+        path: ../../app/assets/licence.txt
