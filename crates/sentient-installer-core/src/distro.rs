@@ -1172,7 +1172,7 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
 
     // Verify the distro actually runs a command before configuring it —
     // catches a broken import or a WSL that still needs a Windows restart.
-    if let Err(e) = distro_probe() {
+    if let Err(e) = distro_probe_patient(&sink) {
         return Err(format!(
             "The SENTIENT WSL distro isn't responding ({e}). If you just installed WSL2, restart Windows and try again; otherwise use “Clean up leftovers” and retry."
         ));
@@ -1193,12 +1193,15 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     // package keep the inbox WSL): Docker's own init script.
     run(&sink, DOCKER_START)?;
 
-    if is_ready() {
-        sink(Progress::Done { message: "Docker Engine is installed and running.".into() });
-        Ok(())
-    } else {
-        Err("Docker was installed but isn't responding yet. Try the step again.".into())
+    // dockerd takes a few seconds to answer after it was started.
+    for _ in 0..30 {
+        if is_ready() {
+            sink(Progress::Done { message: "Docker Engine is installed and running.".into() });
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
+    Err("Docker was installed but isn't responding yet. Try the step again.".into())
 }
 
 /// Start Docker in the distro: systemd when WSL booted it, else Docker's
@@ -1474,13 +1477,36 @@ pub fn update(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
 fn distro_probe() -> Result<(), String> {
     match sys::output("wsl.exe", &["-d", DISTRO, "-u", "root", "--", "bash", "-lc", "echo ok"]) {
         Some((true, out, _)) if sys::decode(&out).contains("ok") => Ok(()),
-        Some((_, _, err)) => {
-            let e = sys::decode(&err);
+        // The inbox wsl.exe prints its errors on standard output.
+        Some((_, out, err)) => {
+            let e = format!("{} {}", sys::decode(&err).trim(), sys::decode(&out).trim());
             let e = e.trim();
             Err(if e.is_empty() { "no response".into() } else { e.to_string() })
         }
         None => Err("could not run wsl.exe".into()),
     }
+}
+
+/// [`distro_probe`] for a distro just imported: its first start (WSL's
+/// virtual machine starting too, on an older Windows 10 the first time
+/// after the kernel was installed) can fail once, so it is asked again
+/// for up to a minute.
+#[cfg(windows)]
+fn distro_probe_patient(sink: &ProgressFn) -> Result<(), String> {
+    let mut last = String::new();
+    for attempt in 0..12 {
+        match distro_probe() {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if attempt == 0 {
+                    sink(Progress::Log { line: format!("The new distro did not answer yet ({e}); asking again") });
+                }
+                last = e;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+    Err(last)
 }
 
 #[cfg(windows)]

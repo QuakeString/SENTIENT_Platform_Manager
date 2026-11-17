@@ -511,6 +511,12 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
         }
         step(&sink, STEP_DOCKER_WSL);
         distro::setup(sink.clone(), &plan.install_dir)?;
+        // The distro, and with it Docker, starts at every boot and stays up:
+        // WSL ends a distro shortly after its last wsl.exe ends, also while
+        // Docker runs there, so this comes before the stack.
+        if let Err(e) = distro::register_keepalive() {
+            sink(Progress::Log { line: format!("note: SENTIENT will not start by itself with Windows: {e}") });
+        }
     }
     let admin_hash = hash_password(&plan.admin_password)?;
     step(&sink, STEP_SENTIENT);
@@ -555,12 +561,6 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
                 distro::setup(sink.clone(), &plan.install_dir)?;
             }
             distro::deploy_with(sink.clone(), &stack, plan.existing)?;
-            // Windows: the distro, and with it Docker, starts when this
-            // account signs in and stays up (WSL ends an idle distro).
-            #[cfg(windows)]
-            if let Err(e) = distro::register_keepalive() {
-                sink(Progress::Log { line: format!("note: SENTIENT will not start by itself at sign-in: {e}") });
-            }
             step(&sink, "Setting the administrator sign-in");
             distro::set_admin_account(&stack, &plan.admin_email, &admin_hash)?;
         }
