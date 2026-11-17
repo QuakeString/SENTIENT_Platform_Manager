@@ -29,6 +29,7 @@ use sentient_installer_core::progress::{Progress, ProgressFn};
 pub mod conn;
 pub mod reuse;
 pub mod serve;
+pub mod winshell;
 
 /// What the agent jobs mean (`--job …`, crate::headless), as one number:
 /// raised whenever a job is added, removed or answers differently, so a
@@ -202,6 +203,7 @@ pub fn secret(id: &str) -> Option<String> {
 pub fn forget_secret(id: &str) {
     // The server is removed: its connection goes.
     conn::close(id);
+    winshell::forget(id);
     forget_one(&sudo_key(id));
     forget_one(id);
     // The instance's SENTIENT sign-in (Licence) goes with it.
@@ -457,8 +459,9 @@ pub fn detect(inst: &Instance, once: Option<&str>) -> Result<Detected, String> {
             return Ok(Detected { os: Os::Linux, os_name: if pretty.is_empty() { "Linux".into() } else { pretty.into() }, distro: id.into(), arch, install: install.into() });
         }
     }
-    // Windows (OpenSSH Server runs cmd).
-    let out = run(inst, "powershell -NoProfile -Command \"(Get-CimInstance Win32_OperatingSystem).Caption; $env:PROCESSOR_ARCHITECTURE; if (Get-Service SentientServer -ErrorAction SilentlyContinue) {'services'} else {'none'}\"", once)?;
+    // Windows: OpenSSH Server runs cmd or PowerShell (its DefaultShell);
+    // an encoded command reads the same in both (crate::remote::winshell).
+    let out = run(inst, &winshell::encoded("(Get-CimInstance Win32_OperatingSystem).Caption; $env:PROCESSOR_ARCHITECTURE; if (Get-Service SentientServer -ErrorAction SilentlyContinue) {'services'} else {'none'}"), once)?;
     let mut l = out.lines().map(str::trim);
     let name = l.next().unwrap_or("Windows").to_string();
     let arch = match l.next().unwrap_or("") {
@@ -2049,16 +2052,14 @@ mod win {
     /// Run a PowerShell script on the server (encoded, so no quoting
     /// passes through cmd).
     pub fn ps(inst: &Instance, script: &str) -> Result<String, String> {
-        use base64::Engine as _;
-        let utf16: Vec<u8> = format!("$ProgressPreference='SilentlyContinue'; {script}").encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
-        let enc = base64::engine::general_purpose::STANDARD.encode(utf16);
         // Over the open connection (its agent starts PowerShell there).
-        match conn::call(inst, serve::Work::Ps(enc.clone()), None) {
+        match conn::call(inst, serve::Work::Ps(winshell::encode(script)), None) {
             Ok((_, r)) => return run_answer(r.code == Some(0), r.out, &r.err),
             Err(conn::Fail::Err(e)) => return Err(e),
             Err(conn::Fail::PerCall) => {}
         }
-        run(inst, &format!("powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {enc}"), None)
+        // The same line in cmd and in PowerShell (the server's DefaultShell).
+        run(inst, &winshell::encoded(script), None)
     }
 
     /// `--job <job>` with the agent: over the open connection (its agent is

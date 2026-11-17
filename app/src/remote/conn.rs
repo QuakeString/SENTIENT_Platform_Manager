@@ -474,7 +474,12 @@ fn wait_up(slot: &Arc<Slot>) -> Result<Arc<Link>, Fail> {
 /// own agent there, a console program).
 fn ssh_pipe(inst: &Instance) -> std::io::Result<Pipe> {
     let (remote, pw) = if super::is_windows(inst) {
-        (format!("\"{}\" --job serve", super::win::EXE), None)
+        // Written for the server's default shell (cmd or PowerShell): the
+        // agent's input and output must be its own, so not wrapped in
+        // another PowerShell (crate::remote::winshell).
+        // VERIFY: under a PowerShell DefaultShell (powershell -c "& 'exe' …")
+        // the agent's line-based stdin/stdout reach it promptly.
+        (super::winshell::program(super::winshell::of(inst), super::win::EXE, "--job serve"), None)
     } else {
         let pw = super::sudo_password(inst);
         (super::agent_cmd(inst, "--job serve", pw.is_some()), pw)
