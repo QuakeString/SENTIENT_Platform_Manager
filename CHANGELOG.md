@@ -34,6 +34,15 @@ refreshes that repository's Downloads table.
   another release.
 - New Docker installs use the tag of the release being installed, never
   `latest`.
+- Docker roll back on the Platform Manager's own compose file names the
+  release it went back to: after rolling back from 4.4.0.3, the compose file
+  says 4.4.0.2 again (the release the previous image carries; an image that
+  does not say its release keeps the tag), and :4.4.0.3 still names the
+  4.4.0.3 image.
+- "Update SENTIENT" on a Docker install pinned to a release updates to the
+  newest release and pins it ("Update to 4.4.0.3", or "Up to date"), instead
+  of pulling the tag it is pinned to again. `latest` and a compose file of
+  your own still pull their tag.
 - Windows: installing SENTIENT from the Platform Manager that Setup opened
   could stop at "initdb: program postgres is needed by initdb but was not
   found" (with "The current directory is invalid"). The Platform Manager
