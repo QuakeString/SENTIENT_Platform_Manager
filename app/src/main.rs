@@ -7,6 +7,7 @@
 // without the "gui" feature) is a console program, so a job run over SSH
 // is waited for and its output read (PowerShell neither waits for nor
 // captures a GUI program: "gave no answer", his rc12-22 Windows server).
+#![recursion_limit = "256"]
 #![cfg_attr(all(not(debug_assertions), feature = "gui"), windows_subsystem = "windows")]
 
 mod adopt;
