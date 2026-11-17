@@ -101,6 +101,13 @@ if [ -n "${INSTANCE:-}" ]; then
   # prompt (SPM_DEBUG_SETTINGS_PENDING).
   for g in ${PENDING-SPM_DEBUG_SETTINGS_PENDING=valid SPM_DEBUG_SETTINGS_PENDING=short SPM_DEBUG_SETTINGS_PENDING=long SPM_DEBUG_SETTINGS_PENDING=leave}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote settings $w $s $t $g"); done; done; done; done
 fi
+# A heartbeat for the watchdog (spm-watchdog): the count of finished
+# renders and when it last moved, in $HEARTBEAT (default under ~/.spm-heartbeats).
+HB=${HEARTBEAT:-$HOME/.spm-heartbeats/layout-$(basename "$OUT")-$$}
+mkdir -p "$(dirname "$HB")"
+( while kill -0 $$ 2>/dev/null; do echo "$(ls "$OUT"/*.result 2>/dev/null | wc -l) $(date +%s) $$ ${#list[@]}" > "$HB"; sleep 30; done; rm -f "$HB" ) &
+# Stopped or killed: take every render (Xvfb and the app) down with it.
+trap 'pkill -TERM -P $$ 2>/dev/null; for x in $(pgrep -u "$(id -u)" -f "^Xvfb :[0-9]+ " ); do [ "$(awk "/^PPid:/{print \$2}" /proc/$x/status 2>/dev/null)" = 1 ] && kill $x 2>/dev/null; done' INT TERM
 printf '%s\n' "${list[@]}" | xargs -P "$JOBS" -L 1 bash -c 'one "$@"' _ | tee "$OUT/summary.txt"
 fails=$(grep -c '^FAIL' "$OUT/summary.txt"); total=$(grep -c -E '^(ok|FAIL)' "$OUT/summary.txt")
 echo "layout test: $((total - fails))/$total passed"
