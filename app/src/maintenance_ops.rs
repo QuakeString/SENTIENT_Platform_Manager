@@ -81,6 +81,11 @@ pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result
     if record.engine == Engine::Native {
         self_install::undelay_autostart();
     }
+    // Other computers reach SENTIENT: its Windows Firewall rules, added
+    // when one is missing (installs from before them, or removed by hand).
+    if let Err(e) = crate::changes::open_firewall(&record, &sink) {
+        sink(Progress::Log { line: format!("note: SENTIENT's ports were not opened in Windows Firewall: {e}") });
+    }
     if let Some(mut saved) = InstallationRecord::load() {
         saved.changes_done = crate::changes::all_ids();
         let _ = save_record(&saved);

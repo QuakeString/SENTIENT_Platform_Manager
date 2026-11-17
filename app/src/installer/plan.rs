@@ -521,10 +521,14 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
         }
         step(&sink, STEP_DOCKER_WSL);
         distro::setup(sink.clone(), &plan.install_dir)?;
-        // The distro, and with it Docker, starts at every boot and stays up:
-        // WSL ends a distro shortly after its last wsl.exe ends, also while
-        // Docker runs there, so this comes before the stack.
-        if let Err(e) = distro::register_keepalive(&distro::forwarded_ports(&plan.stack)) {
+        // The distro, and with it Docker, stays up: WSL ends a distro
+        // shortly after its last wsl.exe ends, also while Docker runs
+        // there, so this comes before the stack. It starts with Windows,
+        // after the start delay, when the operator chose so (an operator
+        // screen needs it too, as for the native services); otherwise the
+        // Platform Manager's Start runs it (distro::wake_keepalive).
+        let start = (plan.shortcuts.autostart || plan.shortcuts.open_at_signin).then_some(plan.shortcuts.start_delay);
+        if let Err(e) = distro::register_keepalive(&distro::forwarded_ports(&plan.stack), start) {
             sink(Progress::Log { line: format!("note: SENTIENT will not start by itself with Windows: {e}") });
         }
     }

@@ -90,9 +90,68 @@ pub fn total_ram_mb() -> u64 {
     sys.total_memory() / 1024 / 1024
 }
 
+/// Where the databases' memory comes from: what PostgreSQL is sized for,
+/// and the WSL 2 VM's memory where a database runs in one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sizing {
+    /// The computer's memory.
+    pub host_mb: u64,
+    /// The memory PostgreSQL's recommendation is based on.
+    pub pg_mb: u64,
+    /// The WSL 2 VM's memory, where a database runs in WSL 2 (Windows:
+    /// Docker, or ClickHouse beside PostgreSQL "in the system").
+    pub vm_mb: Option<u64>,
+    /// The VM's memory is .wslconfig's `memory=` (not WSL 2's default half).
+    pub vm_from_wslconfig: bool,
+}
+
+/// How the recommendation is sized. Windows Docker: SENTIENT and its
+/// databases run in the WSL 2 VM, which gets `vm_mb` (half the computer's
+/// memory unless .wslconfig says otherwise), so PostgreSQL is sized for
+/// that. Windows "in the system" with ClickHouse: ClickHouse runs in its
+/// own WSL 2 VM (`vm_mb`, its account's .wslconfig sets no memory), so
+/// PostgreSQL is sized for what that leaves. Otherwise the computer's.
+pub fn sizing(windows: bool, docker: bool, clickhouse: bool, host_mb: u64, vm_mb: u64, vm_from_wslconfig: bool) -> Sizing {
+    let (pg_mb, vm) = match (windows, docker, clickhouse) {
+        (true, true, _) => (vm_mb, Some(vm_mb)),
+        (true, false, true) => (host_mb.saturating_sub(vm_mb), Some(vm_mb)),
+        _ => (host_mb, None),
+    };
+    Sizing { host_mb, pg_mb, vm_mb: vm, vm_from_wslconfig: vm.is_some() && vm_from_wslconfig }
+}
+
+/// The WSL 2 VM's memory for SENTIENT on this computer: Docker runs in this
+/// account's VM (its .wslconfig counts); ClickHouse "in the system" in its
+/// hidden account's, whose .wslconfig sets no memory. (memory MB, from
+/// .wslconfig).
+pub fn wsl_vm_mb(host_mb: u64, docker: bool) -> (u64, bool) {
+    use sentient_installer_core::wsl;
+    let config = if docker && cfg!(windows) { wsl::account_wslconfig() } else { None };
+    let from_config = config.as_deref().and_then(wsl::wslconfig_memory_mb).is_some();
+    (wsl::vm_memory_mb(host_mb, config.as_deref()), from_config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_docker_is_sized_for_the_wsl_vm() {
+        // 16 GB, the VM gets the default half.
+        let d = sizing(true, true, false, 16384, 8192, false);
+        assert_eq!((d.pg_mb, d.vm_mb), (8192, Some(8192)));
+        assert_eq!(recommended(&[], d.pg_mb)["pg:shared_buffers"], "2048MB");
+        // .wslconfig's memory=12GB.
+        let d = sizing(true, true, true, 16384, 12288, true);
+        assert_eq!(d.pg_mb, 12288);
+        assert!(d.vm_from_wslconfig);
+        // Native with ClickHouse in WSL 2: PostgreSQL gets what the VM leaves.
+        let h = sizing(true, false, true, 16384, 8192, false);
+        assert_eq!((h.pg_mb, h.vm_mb), (8192, Some(8192)));
+        // Native PostgreSQL only, and Linux: the computer's memory.
+        assert_eq!(sizing(true, false, false, 16384, 8192, true), Sizing { host_mb: 16384, pg_mb: 16384, vm_mb: None, vm_from_wslconfig: false });
+        assert_eq!(sizing(false, true, true, 16384, 8192, false).pg_mb, 16384);
+    }
 
     #[test]
     fn catalog_parses_and_names_are_unique() {

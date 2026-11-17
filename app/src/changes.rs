@@ -47,6 +47,14 @@ pub fn all() -> Vec<Change> {
             applies: native_windows,
             run: start_without_delay,
         },
+        Change {
+            id: "windows-firewall",
+            text: "Other computers can reach SENTIENT: its ports are opened in Windows Firewall.",
+            step: "Opening SENTIENT's ports in Windows Firewall",
+            restarts: false,
+            applies: native_windows,
+            run: open_firewall,
+        },
     ]
 }
 
@@ -178,6 +186,27 @@ pub fn clickhouse_clean_stop(record: &InstallationRecord, sink: &ProgressFn) -> 
 
 #[cfg(not(windows))]
 pub fn clickhouse_clean_stop(_: &InstallationRecord, _: &ProgressFn) -> Result<(), String> {
+    Ok(())
+}
+
+/// Windows "in the system": SENTIENT's ports open in Windows Firewall, in
+/// the group SENTIENT (native::ensure_firewall), added when a rule is
+/// missing: installs from before 0.9.2-rc3 have none. Also part of Repair
+/// and of an update. Elsewhere nothing.
+pub fn open_firewall(record: &InstallationRecord, sink: &ProgressFn) -> Result<(), String> {
+    #[cfg(windows)]
+    if record.engine == Engine::Native {
+        let added = sentient_installer_core::native::ensure_firewall(&record.native_config())?;
+        sink(Progress::Log {
+            line: if added {
+                "SENTIENT's ports were opened in Windows Firewall (rule group SENTIENT).".into()
+            } else {
+                "SENTIENT's Windows Firewall rules are in place.".into()
+            },
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = (record, sink);
     Ok(())
 }
 

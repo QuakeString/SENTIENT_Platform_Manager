@@ -213,6 +213,10 @@ pub fn run_to(
                 let _ = std::fs::remove_dir_all(&dir);
             }
             let report = result?;
+            // An install from before the Windows Firewall rules gets them.
+            if let Err(e) = crate::changes::open_firewall(&record, &sink) {
+                sink(Progress::Log { line: format!("note: SENTIENT's ports were not opened in Windows Firewall: {e}") });
+            }
             let message = format!(
                 " The database from before the update is kept as {} and the previous program files in {}, until the next update.",
                 report.snapshot,

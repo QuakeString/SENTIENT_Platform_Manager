@@ -442,6 +442,56 @@ pub fn remove(sink: &ProgressFn) -> Result<(), String> {
     }
 }
 
+/// The `memory=` of a `.wslconfig`'s `[wsl2]` section, in MB: "8GB",
+/// "4096MB", "6G"; a bare number is bytes, as WSL reads it. None when it
+/// is not set (or cannot be read).
+pub fn wslconfig_memory_mb(text: &str) -> Option<u64> {
+    let mut in_wsl2 = false;
+    let mut found = None;
+    for line in text.lines() {
+        let line = line.split(['#', ';']).next().unwrap_or("").trim();
+        if line.starts_with('[') {
+            in_wsl2 = line.trim_matches(['[', ']']).trim().eq_ignore_ascii_case("wsl2");
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else { continue };
+        if !in_wsl2 || !key.trim().eq_ignore_ascii_case("memory") {
+            continue;
+        }
+        let v = value.trim().trim_matches('"').to_ascii_uppercase();
+        let digits: String = v.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        let n: f64 = digits.parse().ok()?;
+        let unit = v[digits.len()..].trim().trim_end_matches('B');
+        let mb = match unit {
+            "T" => n * 1024.0 * 1024.0,
+            "G" => n * 1024.0,
+            "M" => n,
+            "K" => n / 1024.0,
+            "" => n / 1024.0 / 1024.0,
+            _ => return None,
+        };
+        found = Some(mb as u64);
+    }
+    found.filter(|mb| *mb > 0)
+}
+
+/// The memory a WSL 2 VM gets on a computer with `host_mb`: `.wslconfig`'s
+/// `memory=` when it is set (never more than the computer has), else half
+/// the computer's memory, WSL 2's default.
+pub fn vm_memory_mb(host_mb: u64, wslconfig: Option<&str>) -> u64 {
+    match wslconfig.and_then(wslconfig_memory_mb) {
+        Some(mb) => mb.min(host_mb),
+        None => host_mb / 2,
+    }
+}
+
+/// This account's `.wslconfig` (`%USERPROFILE%\.wslconfig`), the one its
+/// WSL 2 VM reads; None when there is none.
+pub fn account_wslconfig() -> Option<String> {
+    let home = std::env::var_os("USERPROFILE")?;
+    std::fs::read_to_string(std::path::Path::new(&home).join(".wslconfig")).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -519,5 +569,33 @@ mod tests {
         assert_eq!(package_url_for_tag("2.6.1", true), "https://github.com/microsoft/WSL/releases/download/2.6.1/wsl.2.6.1.0.arm64.msi");
         assert_eq!(tag_from_release_url("https://github.com/microsoft/WSL/releases"), None);
         assert_eq!(tag_from_release_url("https://github.com/microsoft/WSL/releases/tag/evil;rm"), None);
+    }
+}
+
+#[cfg(test)]
+mod vm_memory_tests {
+    use super::{vm_memory_mb, wslconfig_memory_mb};
+
+    #[test]
+    fn wslconfig_memory_is_read_from_the_wsl2_section() {
+        assert_eq!(wslconfig_memory_mb("[wsl2]\r\nmemory=8GB\r\n"), Some(8192));
+        assert_eq!(wslconfig_memory_mb("[wsl2]\nmemory = 4096MB"), Some(4096));
+        assert_eq!(wslconfig_memory_mb("[WSL2]\nMemory=6g # six"), Some(6144));
+        assert_eq!(wslconfig_memory_mb("[wsl2]\nmemory=1.5GB"), Some(1536));
+        assert_eq!(wslconfig_memory_mb("[wsl2]\nmemory=2147483648"), Some(2048));
+        // Another section's, a commented one, none, nonsense.
+        assert_eq!(wslconfig_memory_mb("[experimental]\nmemory=8GB"), None);
+        assert_eq!(wslconfig_memory_mb("[wsl2]\n# memory=8GB\nguiApplications=false"), None);
+        assert_eq!(wslconfig_memory_mb(""), None);
+        assert_eq!(wslconfig_memory_mb("[wsl2]\nmemory=lots"), None);
+    }
+
+    #[test]
+    fn the_vm_gets_half_unless_wslconfig_says_otherwise() {
+        assert_eq!(vm_memory_mb(16384, None), 8192);
+        assert_eq!(vm_memory_mb(16384, Some("[wsl2]\nguiApplications=false\n")), 8192);
+        assert_eq!(vm_memory_mb(16384, Some("[wsl2]\nmemory=12GB")), 12288);
+        // Never more than the computer has.
+        assert_eq!(vm_memory_mb(8192, Some("[wsl2]\nmemory=64GB")), 8192);
     }
 }

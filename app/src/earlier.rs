@@ -76,6 +76,20 @@ impl Found {
         Found { items, record, candidate, has_database, no_backup, pg_dir }
     }
 
+    /// Screens (SPM_DEBUG_EARLIER): what rc2's clean-VM run found, the
+    /// database not readable.
+    #[cfg(debug_assertions)]
+    pub fn debug() -> Found {
+        Found {
+            items: vec!["PostgreSQL service (sentient-postgresql): stopped".into(), r"PostgreSQL data in C:\SENTIENT\data (1.1 GB)".into()],
+            record: None,
+            candidate: None,
+            has_database: true,
+            no_backup: Some("Not possible: no SENTIENT database could be found to copy.".into()),
+            pg_dir: PathBuf::new(),
+        }
+    }
+
     /// Something is there.
     pub fn any(&self) -> bool {
         !self.items.is_empty()
@@ -226,7 +240,12 @@ impl EarlierPage {
             cx.notify();
         });
         let backup_first = found.no_backup.is_none();
-        Self { found, screen: Screen::Choices, backup_first, understood: false, planned: Vec::new(), show_log: false, job, _observe }
+        // Screens: SPM_DEBUG_EARLIER=confirm opens on the confirm screen.
+        #[cfg(debug_assertions)]
+        let screen = if std::env::var("SPM_DEBUG_EARLIER").as_deref() == Ok("confirm") { Screen::ConfirmRemove } else { Screen::Choices };
+        #[cfg(not(debug_assertions))]
+        let screen = Screen::Choices;
+        Self { found, screen, backup_first, understood: false, planned: Vec::new(), show_log: false, job, _observe }
     }
 
     fn start(&mut self, run: Run, cx: &mut Context<Self>) {
@@ -370,15 +389,37 @@ impl EarlierPage {
                     cx.notify();
                 }))
                 .into_any_element(),
-            h_flex()
-                .gap(crate::ui::button_gap())
-                .child(crate::ui::probed(crate::ui::button("remove-fresh").danger().label("Remove and install fresh").disabled(!self.understood).on_click(cx.listener(|this, _, _, cx| this.start(Run::Remove, cx)))))
-                .child(crate::ui::probed(crate::ui::button("back").outline().label("Back").on_click(cx.listener(|this, _, _, cx| {
-                    this.screen = Screen::Choices;
-                    cx.notify();
-                }))))
-                .into_any_element(),
         ]
+    }
+
+    /// The confirm screen's commit buttons, in a bar under the page as on
+    /// every Setup page (Installer::footer): Back, then the removal at the
+    /// right end, its purpose (docs/DESIGN_NOTES.md, "Where buttons go").
+    fn confirm_footer(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
+        let h = px(crate::theme::BAR_CTRL_H);
+        h_flex()
+            .flex_shrink_0()
+            .px(px(ui::PAGE_PAD))
+            .py(px(14.))
+            .gap(crate::ui::button_gap())
+            .items_center()
+            .bg(theme.background)
+            .border_t_1()
+            .border_color(theme.border)
+            .child(div().flex_1())
+            .child(crate::ui::probed(crate::ui::button("back").outline().h(h).px_4().label("Back").on_click(cx.listener(|this, _, _, cx| {
+                this.screen = Screen::Choices;
+                cx.notify();
+            }))))
+            .child(crate::ui::probed(
+                crate::ui::button("remove-fresh")
+                    .danger()
+                    .h(h)
+                    .px_5()
+                    .label("Remove and install fresh")
+                    .disabled(!self.understood)
+                    .on_click(cx.listener(|this, _, _, cx| this.start(Run::Remove, cx))),
+            ))
     }
 
     fn running(&self, theme: &gpui_kit::component::Theme, run: Run, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -444,14 +485,12 @@ impl Render for EarlierPage {
             Screen::ConfirmRemove => self.confirm(&theme, cx),
             Screen::Running(run) => self.running(&theme, run, cx),
         };
+        let footer = matches!(self.screen, Screen::ConfirmRemove).then(|| self.confirm_footer(&theme, cx));
         v_flex()
-            .id("earlier")
             .size_full()
-            .overflow_y_scroll()
-            .p_8()
-            .gap_4()
             .bg(theme.muted)
             .text_color(theme.foreground)
-            .children(children)
+            .child(v_flex().id("earlier").flex_1().min_h_0().overflow_y_scroll().p_8().gap_4().children(children))
+            .children(footer)
     }
 }

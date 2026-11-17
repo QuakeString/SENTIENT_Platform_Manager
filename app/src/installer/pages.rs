@@ -127,6 +127,63 @@ fn check_tone(status: Status, state: Option<SharedString>) -> (Tone, SharedStrin
     (tone, state.unwrap_or_else(|| text.into()))
 }
 
+fn gb(mb: u64) -> u64 {
+    (mb + 512) / 1024
+}
+
+/// The Recommended panel's first line, and the (i) that says where a WSL 2
+/// VM's memory comes from.
+fn sized_for(s: crate::catalog::Sizing, docker: bool) -> (String, Option<String>) {
+    let Some(vm) = s.vm_mb else { return (format!("Sized for this computer: {} GB of memory.", gb(s.host_mb)), None) };
+    let source = if s.vm_from_wslconfig {
+        "the memory= line of .wslconfig in your user folder sets it".to_string()
+    } else {
+        "WSL 2 gives its VM half of the computer's memory unless .wslconfig sets memory=".to_string()
+    };
+    if docker {
+        (
+            format!("Sized for the WSL 2 VM: {} GB of this computer's {} GB.", gb(vm), gb(s.host_mb)),
+            Some(format!("Memory of the WSL 2 VM\n\nSENTIENT and its databases run in Docker inside the WSL 2 VM, which gets {} GB: {source}.", gb(vm))),
+        )
+    } else {
+        (
+            format!("Sized for this computer: {} GB, less {} GB for ClickHouse in WSL 2.", gb(s.host_mb), gb(vm)),
+            Some(format!("Memory of the WSL 2 VM\n\nClickHouse runs in its own WSL 2 VM, which can take {} GB: {source}. PostgreSQL is sized for the rest.", gb(vm))),
+        )
+    }
+}
+
+/// Windows Docker: SENTIENT's CoAP (UDP) is reachable from this computer
+/// only. The keep-alive forwards TCP ports from every address of Windows
+/// to SENTIENT's WSL distro (distro::forwarded_ports); netsh's port proxy
+/// cannot forward UDP, and WSL 2 forwards a UDP port to Windows' own
+/// localhost only.
+fn coap_local_only(windows: bool, engine: Engine) -> bool {
+    windows && engine == Engine::Docker
+}
+
+const COAP_LOCAL_HELP: &str = "CoAP: this computer only\n\nUDP is not forwarded from WSL 2, so devices on other computers cannot reach SENTIENT's CoAP ports. \
+Devices on this computer can. Devices on the network can use MQTT or HTTP, or install SENTIENT “In the system”.";
+
+/// The Summary's Ports row: [web, MQTT, MQTTS, CoAP, CoAPS]. CoAP says so
+/// when it is this computer's only (coap_local_only).
+fn ports_summary(p: [String; 5], coap_local_only: bool) -> String {
+    let [web, mqtt, mqtts, coap, coaps] = p;
+    let coap_where = if coap_local_only { " (this computer only)" } else { "" };
+    format!("Web {web} · MQTT {mqtt} / {mqtts} · CoAP {coap} / {coaps}{coap_where}")
+}
+
+/// Whether a System check row that is not ready gets "Check again": not
+/// on a "Will be installed" row with nothing to do on it (Setup installs
+/// that part, and reading the computer again cannot change it), but on
+/// every row a re-check can change (an action such as "Start Docker", a
+/// blocker, a busy port, the download servers).
+fn offers_check_again(id: &str, status: Status, pill: &str, fixes: &[Fix]) -> bool {
+    let will_be_installed = status == Status::Setup && pill == "Will be installed";
+    let has_action = fixes.iter().any(|f| matches!(f, Fix::Action { .. }));
+    !will_be_installed || has_action || id == "downloads"
+}
+
 /// Grid rows: every cell the same width, the same gap apart, so the column
 /// edges line up from row to row and from card to card (an empty cell
 /// keeps its column).
@@ -492,8 +549,9 @@ impl Installer {
     }
 
     /// One System check row: the pill, the name, the cause, and, when it
-    /// is not ready, what can be done: its actions as buttons, always
-    /// "Check again", and "Show command" for the exact commands.
+    /// is not ready, what can be done: its actions as buttons, "Check
+    /// again" where a re-check can change the row (offers_check_again),
+    /// and "Show command" for the exact commands.
     fn check_row(&self, i: usize, row: super::CheckRow, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let (tone, text) = check_tone(row.status, row.state.clone());
@@ -525,7 +583,7 @@ impl Installer {
             }
         }
         let shown = self.commands_shown.contains(&row.id);
-        if !ready {
+        if !ready && offers_check_again(&row.id, row.status, text.as_ref(), &row.fixes) {
             buttons.push(
                 ui::button(SharedString::from(format!("check-again-{}", row.id)))
                     .ghost()
@@ -534,6 +592,8 @@ impl Installer {
                     .on_click(cx.listener(|this, _, _, cx| this.run_checks(cx)))
                     .into_any_element(),
             );
+        }
+        if !ready {
             if !commands.is_empty() {
                 let id = row.id.clone();
                 buttons.push(
@@ -573,7 +633,7 @@ impl Installer {
                     .gap_2()
                     .child(div().text_color(theme.muted_foreground).child(row.detail))
                     .children(notes.into_iter().map(|n| div().text_color(theme.muted_foreground).child(n)))
-                    .when(!ready, |c| c.child(ui::button_row(buttons)))
+                    .when(!ready && !buttons.is_empty(), |c| c.child(ui::button_row(buttons)))
                     .when_some(here.filter(|_| fixing), |c, label| c.child(div().child(format!("{label}: {fix_step}"))))
                     .when(shown && !ready, |c| {
                         c.children(commands.into_iter().enumerate().map(|(n, (label, command))| {
@@ -996,7 +1056,8 @@ impl Installer {
                 this.customize = false;
                 cx.notify();
             })))
-            .child(crate::ui::seg_item(&theme, "customize", "Customize", self.customize).on_click(cx.listener(|this, _, _, cx| {
+            .child(crate::ui::seg_item(&theme, "customize", "Customize", self.customize).on_click(cx.listener(|this, _, window, cx| {
+                this.refill_recommended(window, cx);
                 this.customize = true;
                 cx.notify();
             })));
@@ -1006,14 +1067,27 @@ impl Installer {
 
     fn recommended_panel(&self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
-        let get = |key: &str| self.recommended.get(key).cloned().unwrap_or_else(|| "SENTIENT default".into());
+        let recommended = self.recommendation();
+        let get = |key: &str| recommended.get(key).cloned().unwrap_or_else(|| "SENTIENT default".into());
+        let sizing = self.sizing();
+        let docker = self.engine == Engine::Docker;
+        let clickhouse = self.flavor == Some(Flavor::Clickhouse);
+        let (sized_for, why) = sized_for(sizing, docker);
         ui::panel(&theme)
-            .child(div().text_sm().text_color(theme.muted_foreground).child(format!(
-                "Sized for this computer: {} GB of memory.",
-                (self.ram_mb + 512) / 1024
-            )))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .child(sized_for)
+                    .children(why.map(|w| ui::info("sized-for-why".into(), w.into()))),
+            )
             .child(ui::fact(&theme, "PostgreSQL shared_buffers", get("pg:shared_buffers")))
             .child(ui::fact(&theme, "PostgreSQL effective_cache_size", get("pg:effective_cache_size")))
+            .when_some(sizing.vm_mb.filter(|_| clickhouse), |p, vm| {
+                p.child(ui::fact(&theme, "ClickHouse memory", format!("Up to {} GB, the WSL 2 VM's{}", gb(vm), if docker { ", shared with PostgreSQL" } else { "" })))
+            })
             .child(ui::fact(&theme, "Audit log kept", format!("{} days", get("AUDIT_LOG_TTL_DAYS"))))
             .child(ui::fact(&theme, "Notifications kept", format!("{} days", get("NOTIFICATIONS_TTL_DAYS"))))
             .child(ui::fact(&theme, "Everything else", "SENTIENT's tested defaults"))
@@ -1225,13 +1299,9 @@ impl Installer {
             rows.extend(vec![
                 (
                     "Ports",
-                    format!(
-                        "Web {} · MQTT {} / {} · CoAP {} / {}",
-                        v(&f.http_port),
-                        v(&f.mqtt_port),
-                        v(&f.mqtts_port),
-                        v(&f.coap_port),
-                        v(&f.coaps_port)
+                    ports_summary(
+                        [v(&f.http_port), v(&f.mqtt_port), v(&f.mqtts_port), v(&f.coap_port), v(&f.coaps_port)],
+                        coap_local_only(self.windows, self.engine),
                     ),
                     5,
                 ),
@@ -1260,8 +1330,11 @@ impl Installer {
                 rows.push(("Operator screen", screen, 8));
             }
         }
+        let coap_local = !self.manager_only && coap_local_only(self.windows, self.engine);
         column().child(ui::panel(&theme).gap_0().py(px(8.)).children(rows.into_iter().enumerate().map(|(i, (label, value, step))| {
             let empty = value.trim().is_empty();
+            // Windows Docker: why CoAP is this computer's only (an (i), not a wall of text).
+            let why = (coap_local && label == "Ports").then(|| ui::info("summary-coap-why".into(), COAP_LOCAL_HELP.into()));
             h_flex()
                 .gap_4()
                 .py(px(6.))
@@ -1273,7 +1346,7 @@ impl Installer {
                 .child(if empty {
                     div().flex_1().min_w_0().text_color(theme.muted_foreground).child("Not entered")
                 } else {
-                    div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child(value)
+                    h_flex().flex_1().min_w_0().gap_1().items_center().child(div().min_w_0().font_weight(FontWeight::MEDIUM).child(value)).children(why)
                 })
                 .child(
                     crate::ui::button(SharedString::from(format!("change-{step}-{label}")))
@@ -1384,5 +1457,55 @@ impl Installer {
                         },
                     ))),
             )
+    }
+}
+
+#[cfg(test)]
+mod check_again_tests {
+    use super::{Fix, FixAction, Status, offers_check_again};
+
+    #[test]
+    fn the_recommendation_says_what_it_is_sized_for() {
+        use crate::catalog::sizing;
+        let (line, why) = super::sized_for(sizing(true, true, false, 16384, 8192, false), true);
+        assert_eq!(line, "Sized for the WSL 2 VM: 8 GB of this computer's 16 GB.");
+        assert!(why.unwrap().contains("half of the computer's memory"));
+        let (_, why) = super::sized_for(sizing(true, true, false, 16384, 12288, true), true);
+        assert!(why.unwrap().contains("memory= line of .wslconfig"));
+        let (line, _) = super::sized_for(sizing(true, false, true, 16384, 8192, false), false);
+        assert_eq!(line, "Sized for this computer: 16 GB, less 8 GB for ClickHouse in WSL 2.");
+        assert_eq!(super::sized_for(sizing(false, false, false, 16384, 8192, false), false), ("Sized for this computer: 16 GB of memory.".into(), None));
+    }
+
+    #[test]
+    fn windows_docker_lists_coap_as_this_computers_only() {
+        use super::{Engine, coap_local_only, ports_summary};
+        let p = || ["8080", "1883", "8883", "5683", "5684"].map(String::from);
+        assert!(coap_local_only(true, Engine::Docker));
+        assert!(!coap_local_only(true, Engine::Native) && !coap_local_only(false, Engine::Docker));
+        assert_eq!(ports_summary(p(), true), "Web 8080 · MQTT 1883 / 8883 · CoAP 5683 / 5684 (this computer only)");
+        assert_eq!(ports_summary(p(), false), "Web 8080 · MQTT 1883 / 8883 · CoAP 5683 / 5684");
+        assert!(super::COAP_LOCAL_HELP.contains("UDP is not forwarded from WSL 2"));
+    }
+
+    #[test]
+    fn will_be_installed_rows_have_no_check_again() {
+        assert!(!offers_check_again("wsl", Status::Setup, "Will be installed", &[]));
+        assert!(!offers_check_again("postgres", Status::Setup, "Will be installed", &[]));
+        // A command to copy is not something a re-check reads.
+        let copy = [Fix::Command { label: "Copy".into(), command: "x".into() }];
+        assert!(!offers_check_again("docker-cli", Status::Setup, "Will be installed", &copy));
+    }
+
+    #[test]
+    fn rows_a_recheck_can_change_keep_it() {
+        let start = [Fix::Action { label: "Start Docker".into(), action: FixAction::StartDocker }];
+        assert!(offers_check_again("docker-daemon", Status::Setup, "Will be started", &start));
+        assert!(offers_check_again("docker-daemon", Status::Setup, "Will be installed", &start));
+        assert!(offers_check_again("docker-daemon", Status::Setup, "Will be set up", &[]));
+        assert!(offers_check_again("virtualization", Status::Fail, "Blocker", &[]));
+        assert!(offers_check_again("ports", Status::Warn, "Attention", &[]));
+        assert!(offers_check_again("x", Status::Unknown, "Unknown", &[]));
+        assert!(offers_check_again("downloads", Status::Setup, "Will be installed", &[]));
     }
 }

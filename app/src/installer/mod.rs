@@ -133,6 +133,13 @@ pub struct Installer {
     customize: bool,
     groups: Vec<Group>,
     ram_mb: u64,
+    /// Windows: the WSL 2 VM's memory for Docker (this account's
+    /// .wslconfig) and for ClickHouse beside PostgreSQL (its own account's):
+    /// (MB, from .wslconfig's memory=).
+    vm_docker: (u64, bool),
+    vm_clickhouse: (u64, bool),
+    /// What the Customize inputs were last filled with (the recommendation
+    /// then); the recommendation itself follows the choices (recommendation).
     recommended: HashMap<String, String>,
     /// One input per catalog setting, created with the wizard.
     settings: HashMap<String, Entity<InputState>>,
@@ -333,6 +340,8 @@ impl Installer {
             customize: false,
             groups,
             ram_mb,
+            vm_docker: catalog::wsl_vm_mb(ram_mb, true),
+            vm_clickhouse: catalog::wsl_vm_mb(ram_mb, false),
             recommended,
             settings,
             autostart: true,
@@ -451,6 +460,10 @@ impl Installer {
             }
             this.loc_per_store = std::env::var_os("SPM_DEBUG_LOC_PG").is_some();
             this.debug_content(window, cx);
+            // Screens: the earlier-install screen (choices, or confirm).
+            if std::env::var_os("SPM_DEBUG_EARLIER").is_some() {
+                this.earlier = Some(cx.new(|cx| crate::earlier::EarlierPage::new(crate::earlier::Found::debug(), cx)));
+            }
             // Screens: a System check row with its commands shown.
             if let Ok(row) = std::env::var("SPM_DEBUG_SYSCHECK_COMMANDS") {
                 this.commands_shown.insert(row);
@@ -1046,8 +1059,38 @@ impl Installer {
         }
     }
 
+    /// What the recommendation is sized for (catalog::sizing): on Windows
+    /// the WSL 2 VM's memory where a database runs in WSL 2.
+    pub(super) fn sizing(&self) -> catalog::Sizing {
+        let docker = self.engine == Engine::Docker;
+        let (vm, from_config) = if docker { self.vm_docker } else { self.vm_clickhouse };
+        catalog::sizing(self.windows, docker, self.flavor == Some(Flavor::Clickhouse), self.ram_mb, vm, from_config)
+    }
+
+    /// The recommended configuration for the choices made.
+    pub(super) fn recommendation(&self) -> HashMap<String, String> {
+        catalog::recommended(&self.groups, self.sizing().pg_mb)
+    }
+
+    /// Customize opened: the inputs still holding the recommendation they
+    /// were filled with take the one for the choices made now (a value the
+    /// operator typed stays).
+    fn refill_recommended(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let now = self.recommendation();
+        for (key, value) in &now {
+            let Some(field) = self.settings.get(key) else { continue };
+            let before = self.recommended.get(key).cloned().unwrap_or_default();
+            if field.read(cx).value().as_ref() == before.as_str() && *value != before {
+                let value = value.clone();
+                field.update(cx, |state, cx| state.set_value(value, window, cx));
+            }
+        }
+        self.recommended = now;
+    }
+
     /// The settings that will be written: every catalog setting with a value.
     fn chosen_settings(&self, cx: &App) -> Vec<(String, String)> {
+        let recommended = self.recommendation();
         self.groups
             .iter()
             .flat_map(|g| g.settings.iter())
@@ -1055,7 +1098,7 @@ impl Installer {
                 let value = if self.customize {
                     self.value(&self.settings[&s.env], cx)
                 } else {
-                    self.recommended.get(&s.env).cloned().unwrap_or_default()
+                    recommended.get(&s.env).cloned().unwrap_or_default()
                 };
                 (!value.is_empty()).then(|| (s.env.clone(), value))
             })

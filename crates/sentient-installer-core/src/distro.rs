@@ -919,18 +919,53 @@ pub fn deploy_with(sink: ProgressFn, cfg: &DeployConfig, keep_existing: Option<b
     sink(Progress::Step { name: "Starting SENTIENT".into() });
     run_stream(&sink, &cfg.compose_cmd("up -d"))?;
 
-    sink(Progress::Step { name: "Waiting for SENTIENT to become ready".into() });
     let url = format!("http://localhost:{}", cfg.http_port);
-    for i in 0..72 {
+    sink(Progress::Step { name: format!("Waiting for SENTIENT to become ready (its first answer on {url}, up to {} minutes)", FIRST_ANSWER_SECS / 60) });
+    let started = std::time::Instant::now();
+    let mut said = 0;
+    loop {
         bail_if_cancelled!();
         if is_running(cfg.http_port) {
             sink(Progress::Done { message: format!("SENTIENT is running at {url}") });
             return Ok(());
         }
-        sink(Progress::Log { line: format!("waiting for SENTIENT to start… ({}s)", i * 5) });
+        let elapsed = started.elapsed().as_secs();
+        if elapsed >= FIRST_ANSWER_SECS {
+            break;
+        }
+        sink(Progress::Percent { value: elapsed as f32 / FIRST_ANSWER_SECS as f32 });
+        // Every 15 s: how long, and what the container is doing.
+        if elapsed >= said {
+            said = elapsed + 15;
+            let state = run_output(&format!("docker inspect -f '{{{{.State.Status}}}} {{{{.RestartCount}}}}' {} 2>/dev/null", cfg.names().app))
+                .filter(|(ok, _)| *ok)
+                .map(|(_, out)| out.trim().to_string());
+            sink(Progress::Log { line: first_answer_line(elapsed, &url, state.as_deref()) });
+        }
         std::thread::sleep(std::time::Duration::from_secs(5));
     }
-    Err("SENTIENT didn't answer in time. It may still be initializing the database.".into())
+    Err(format!(
+        "SENTIENT did not answer on {url} within {} minutes. It may still be initializing the database: its log (Logs, container {}) says what it is doing.",
+        FIRST_ANSWER_SECS / 60,
+        cfg.names().app
+    ))
+}
+
+/// How long a new install waits for SENTIENT's first answer: the first
+/// start loads its system resources into a new database, which takes
+/// minutes on a small VM (WSL 2 on a 4-core Windows 10 took over 6).
+pub const FIRST_ANSWER_SECS: u64 = 600;
+
+/// The wait's line in the log: elapsed time of the most, what it waits for,
+/// and the container's state (`docker inspect`: "running 0").
+pub fn first_answer_line(elapsed_secs: u64, url: &str, container: Option<&str>) -> String {
+    let at = |s: u64| format!("{}:{:02}", s / 60, s % 60);
+    let state = match container.and_then(|c| c.split_once(' ')) {
+        Some((status, restarts)) if restarts != "0" => format!("; container {status}, restarted {restarts} times"),
+        Some((status, _)) => format!("; container {status}"),
+        None => String::new(),
+    };
+    format!("Waiting for SENTIENT's first answer on {url}: {} of up to {}{state}", at(elapsed_secs), at(FIRST_ANSWER_SECS))
 }
 
 /// Tear down a partial/cancelled deploy: containers, network, volumes, and
@@ -1262,14 +1297,78 @@ fn this_account() -> String {
         .unwrap_or_else(sys::account_name)
 }
 
-/// Windows: start SENTIENT's distro at every boot, as this account without
-/// its password (S4U: no window, nobody needs to sign in), and now; its
-/// TCP `ports` reachable from other computers.
+/// The PowerShell that registers the keep-alive task running `cmd` as
+/// `user` (S4U: no window, nobody needs to sign in). `start`: Some(delay)
+/// starts it when Windows starts, `delay` seconds after (0: at once); None
+/// gives it no trigger at all, so it runs only when the Platform Manager
+/// starts SENTIENT ([`wake_keepalive`]). `start_now` runs it at once.
+pub fn keepalive_task_script(cmd: &str, user: &str, start: Option<u32>, start_now: bool) -> String {
+    let q = |s: &str| s.replace('\'', "''");
+    let trigger = match start {
+        Some(0) => "$r.Trigger = New-ScheduledTaskTrigger -AtStartup; ".to_string(),
+        Some(d) => format!("$t = New-ScheduledTaskTrigger -AtStartup; $t.Delay = 'PT{d}S'; $r.Trigger = $t; "),
+        None => String::new(),
+    };
+    let now = if start_now { format!("Start-ScheduledTask -TaskName '{KEEPALIVE_TASK}'") } else { String::new() };
+    format!(
+        "$ErrorActionPreference='Stop'; $r = @{{ TaskName = '{KEEPALIVE_TASK}'; Action = (New-ScheduledTaskAction -Execute '{cmd}'); Principal = (New-ScheduledTaskPrincipal -UserId '{user}' -LogonType S4U -RunLevel Highest); Settings = (New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries); Force = $true }}; {trigger}Register-ScheduledTask @r | Out-Null; {now}",
+        cmd = q(cmd),
+        user = q(user),
+    )
+}
+
+/// The PowerShell that changes only when the keep-alive task starts
+/// (`start` as in [`keepalive_task_script`]): its action, account and
+/// settings are kept, and a running task keeps running (SENTIENT is not
+/// stopped by changing how it starts).
+pub fn keepalive_start_script(start: Option<u32>) -> String {
+    let trigger = match start {
+        Some(0) => "$r.Trigger = New-ScheduledTaskTrigger -AtStartup; ".to_string(),
+        Some(d) => format!("$t = New-ScheduledTaskTrigger -AtStartup; $t.Delay = 'PT{d}S'; $r.Trigger = $t; "),
+        None => String::new(),
+    };
+    format!(
+        "$ErrorActionPreference='Stop'; $o = Get-ScheduledTask -TaskName '{KEEPALIVE_TASK}'; $was = $o.State -eq 'Running'; $r = @{{ TaskName = '{KEEPALIVE_TASK}'; Action = $o.Actions; Principal = $o.Principal; Settings = $o.Settings; Force = $true }}; {trigger}Register-ScheduledTask @r | Out-Null; if ($was -and (Get-ScheduledTask -TaskName '{KEEPALIVE_TASK}').State -ne 'Running') {{ Start-ScheduledTask -TaskName '{KEEPALIVE_TASK}' }}"
+    )
+}
+
+/// How the keep-alive task starts, from its XML (`schtasks /query /xml`):
+/// (with Windows, delay seconds). No boot trigger, or a disabled one: not
+/// with Windows.
+pub fn keepalive_start_from_xml(xml: &str) -> (bool, u32) {
+    let Some(at) = xml.find("<BootTrigger") else { return (false, crate::native::DEFAULT_START_DELAY_SECS) };
+    let body = &xml[at..];
+    let body = &body[..body.find("</BootTrigger>").unwrap_or(body.len())];
+    if body.contains("<Enabled>false</Enabled>") {
+        return (false, crate::native::DEFAULT_START_DELAY_SECS);
+    }
+    (true, crate::native::task_delay_secs(body).unwrap_or(0))
+}
+
 #[cfg(windows)]
-pub fn register_keepalive(ports: &[u16]) -> Result<(), String> {
-    let dir = std::path::PathBuf::from(std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into())).join("SENTIENT");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let cmd = dir.join("docker-keepalive.cmd");
+fn keepalive_cmd_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into())).join("SENTIENT").join("docker-keepalive.cmd")
+}
+
+#[cfg(windows)]
+fn powershell(script: &str, what: &str) -> Result<(), String> {
+    match sys::output_limited("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", script], std::time::Duration::from_secs(60)) {
+        Some((true, _, _)) => Ok(()),
+        Some((false, out, err)) => Err(format!("{what}: {} {}", sys::decode(&err).trim(), sys::decode(&out).trim())),
+        None => Err("could not run powershell.exe".into()),
+    }
+}
+
+/// Windows: keep SENTIENT's distro up, now and (with `start`: Some(delay))
+/// from every boot, `delay` seconds after Windows starts; its TCP `ports`
+/// reachable from other computers. Without `start` the task only runs
+/// when SENTIENT is started (now, and from the Platform Manager).
+#[cfg(windows)]
+pub fn register_keepalive(ports: &[u16], start: Option<u32>) -> Result<(), String> {
+    let cmd = keepalive_cmd_path();
+    if let Some(dir) = cmd.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    }
     std::fs::write(&cmd, keepalive_command(DISTRO, ports)).map_err(|e| format!("write {}: {e}", cmd.display()))?;
     for p in ports {
         let name = firewall_rule(*p);
@@ -1279,17 +1378,60 @@ pub fn register_keepalive(ports: &[u16]) -> Result<(), String> {
     }
     // S4U through the task scheduler's PowerShell module: `schtasks /np`
     // asks for the password anyway (and waits for ever without a console).
-    let script = format!(
-        "$ErrorActionPreference='Stop'; $a = New-ScheduledTaskAction -Execute '{cmd}'; $t = New-ScheduledTaskTrigger -AtStartup; $p = New-ScheduledTaskPrincipal -UserId '{user}' -LogonType S4U -RunLevel Highest; $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; Register-ScheduledTask -TaskName '{KEEPALIVE_TASK}' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null; Start-ScheduledTask -TaskName '{KEEPALIVE_TASK}'",
-        cmd = cmd.display().to_string().replace('\'', "''"),
-        user = this_account().replace('\'', "''"),
-    );
-    match sys::output_limited("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", &script], std::time::Duration::from_secs(60)) {
-        Some((true, _, _)) => Ok(()),
-        Some((false, out, err)) => Err(format!("could not register the task {KEEPALIVE_TASK}: {} {}", sys::decode(&err).trim(), sys::decode(&out).trim())),
-        None => Err("could not run powershell.exe".into()),
+    powershell(&keepalive_task_script(&cmd.display().to_string(), &this_account(), start, true), &format!("could not register the task {KEEPALIVE_TASK}"))
+}
+
+/// Windows: whether SENTIENT's distro starts with Windows, and after how
+/// many seconds (the keep-alive task's boot trigger). None: no task (a
+/// stack in the operator's own distro, or none installed).
+#[cfg(windows)]
+pub fn keepalive_start() -> Option<(bool, u32)> {
+    match sys::output("schtasks.exe", &["/query", "/tn", KEEPALIVE_TASK, "/xml"]) {
+        Some((true, out, _)) => Some(keepalive_start_from_xml(&sys::decode(&out))),
+        _ => None,
     }
 }
+
+/// Windows: start SENTIENT's distro with Windows after `delay_secs`, or
+/// only when SENTIENT is started (`automatic` false: the task stays, without
+/// its boot trigger). A running SENTIENT keeps running.
+#[cfg(windows)]
+pub fn set_keepalive_start(automatic: bool, delay_secs: u32) -> Result<(), String> {
+    if keepalive_start().is_none() {
+        return Err(format!("The task {KEEPALIVE_TASK} that starts SENTIENT is missing. Repair puts it back."));
+    }
+    powershell(&keepalive_start_script(automatic.then_some(delay_secs)), &format!("could not change the task {KEEPALIVE_TASK}"))
+}
+
+/// Windows: before SENTIENT is started in its own distro, the keep-alive
+/// task runs (it boots the distro, forwards the ports and holds the distro
+/// up): when it does not start with Windows nothing else has run it since
+/// the boot. Waits for Docker to answer. Without the task: nothing.
+#[cfg(windows)]
+pub fn wake_keepalive(sink: &ProgressFn, cfg: &DeployConfig) {
+    if cfg.wsl_distro.is_some() || cfg.external.is_some() {
+        return;
+    }
+    let running = match sys::output("schtasks.exe", &["/query", "/tn", KEEPALIVE_TASK, "/fo", "csv", "/nh"]) {
+        Some((true, out, _)) => sys::decode(&out).contains("Running"),
+        _ => return,
+    };
+    if running {
+        return;
+    }
+    sink(Progress::Log { line: format!("Starting SENTIENT's WSL distro (task {KEEPALIVE_TASK})") });
+    let _ = sys::output("schtasks.exe", &["/run", "/tn", KEEPALIVE_TASK]);
+    for _ in 0..60 {
+        if is_ready() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    sink(Progress::Log { line: "Docker in SENTIENT's distro did not answer within 2 minutes; starting anyway".into() });
+}
+
+#[cfg(not(windows))]
+pub fn wake_keepalive(_sink: &ProgressFn, _cfg: &DeployConfig) {}
 
 /// Remove [`register_keepalive`]'s task, end what it runs, and remove its
 /// forwarding and firewall rules for `ports`.
@@ -1456,6 +1598,9 @@ pub fn control(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Result<(),
         _ => return Err(format!("unknown action: {action}")),
     };
     sink(Progress::Step { name: label.into() });
+    if action != "stop" {
+        wake_keepalive(&sink, cfg);
+    }
     run_stream(&sink, &cfg.control_cmd(sub))?;
     sink(Progress::Done { message: format!("{label}: done.") });
     Ok(())
@@ -1468,6 +1613,9 @@ pub fn control(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Result<(),
 pub fn control_stack(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Result<(), String> {
     use crate::stack_order::{docker_commands, wait_until, SENTIENT_READY_SECS};
     let subs = docker_commands(action, cfg.external.is_some())?;
+    if action != "stop" {
+        wake_keepalive(&sink, cfg);
+    }
     for sub in &subs {
         sink(Progress::Step { name: if *sub == "stop" { "Stopping SENTIENT and its databases".into() } else { "Starting the databases, then SENTIENT".into() } });
         run_stream(&sink, &cfg.control_cmd(sub))?;
@@ -1807,6 +1955,44 @@ mod keepalive_tests {
         // The holder comes last: the cmd never ends while the distro runs.
         assert!(cmd.trim_end().ends_with(&format!("{DOCKER_START}; exec sleep infinity\"")));
         assert!(cmd.lines().all(|l| !l.contains('\n')));
+    }
+
+    #[test]
+    fn the_first_answer_wait_says_how_long_and_what_for() {
+        assert_eq!(FIRST_ANSWER_SECS, 600);
+        let url = "http://localhost:8080";
+        assert_eq!(first_answer_line(85, url, Some("running 0")), "Waiting for SENTIENT's first answer on http://localhost:8080: 1:25 of up to 10:00; container running");
+        assert_eq!(first_answer_line(0, url, None), "Waiting for SENTIENT's first answer on http://localhost:8080: 0:00 of up to 10:00");
+        assert!(first_answer_line(300, url, Some("restarting 3")).ends_with("5:00 of up to 10:00; container restarting, restarted 3 times"));
+    }
+
+    #[test]
+    fn the_start_toggle_and_delay_go_into_the_boot_trigger() {
+        let on = keepalive_task_script(r"C:\ProgramData\SENTIENT\docker-keepalive.cmd", r"PC\o'neil", Some(25), true);
+        assert!(on.contains("$t = New-ScheduledTaskTrigger -AtStartup; $t.Delay = 'PT25S'; $r.Trigger = $t; Register-ScheduledTask @r"));
+        assert!(on.contains("-UserId 'PC\\o''neil' -LogonType S4U"));
+        assert!(on.ends_with(&format!("Start-ScheduledTask -TaskName '{KEEPALIVE_TASK}'")));
+        let at_once = keepalive_task_script("x.cmd", "u", Some(0), true);
+        assert!(at_once.contains("$r.Trigger = New-ScheduledTaskTrigger -AtStartup; Register") && !at_once.contains("Delay"));
+        // Off: the task stays (the Platform Manager's Start runs it), without a trigger.
+        let off = keepalive_task_script("x.cmd", "u", None, false);
+        assert!(!off.contains("Trigger") && off.contains("Register-ScheduledTask @r") && !off.contains("Start-ScheduledTask"));
+        // A change keeps the task's own action and account and a running SENTIENT.
+        let change = keepalive_start_script(Some(90));
+        assert!(change.contains("Action = $o.Actions; Principal = $o.Principal") && change.contains("$t.Delay = 'PT90S'"));
+        assert!(change.contains("if ($was -and"));
+        assert!(!keepalive_start_script(None).contains("Trigger"));
+    }
+
+    #[test]
+    fn the_start_setting_is_read_back_from_the_task() {
+        let task = |triggers: &str| format!("<Task><Triggers>{triggers}</Triggers><Actions><Exec><Command>x</Command></Exec></Actions></Task>");
+        assert_eq!(keepalive_start_from_xml(&task("<BootTrigger><Enabled>true</Enabled><Delay>PT1M30S</Delay></BootTrigger>")), (true, 90));
+        assert_eq!(keepalive_start_from_xml(&task("<BootTrigger><Enabled>true</Enabled></BootTrigger>")), (true, 0));
+        assert!(!keepalive_start_from_xml(&task("<BootTrigger><Enabled>false</Enabled><Delay>PT10S</Delay></BootTrigger>")).0);
+        assert!(!keepalive_start_from_xml(&task("")).0);
+        // Another trigger's delay is not the boot trigger's.
+        assert!(!keepalive_start_from_xml(&task("<LogonTrigger><Delay>PT5S</Delay></LogonTrigger>")).0);
     }
 }
 

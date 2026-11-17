@@ -254,15 +254,34 @@ mod imp {
         let _ = quiet("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).spawn();
     }
 
+    /// SENTIENT in Docker in the Platform Manager's own WSL distro: it
+    /// starts with Windows through the distro's keep-alive task
+    /// (distro::KEEPALIVE_TASK), not through services.
+    fn in_own_distro() -> bool {
+        crate::installation::InstallationRecord::load().is_some_and(|r| {
+            r.engine == crate::installation::Engine::Docker && r.stack.wsl_distro.is_none() && r.stack.external.is_none()
+        })
+    }
+
     /// Start with Windows after `delay` seconds, or by hand
-    /// (native::set_start).
+    /// (native::set_start; in Docker distro::set_keepalive_start).
     pub fn set_autostart(automatic: bool, delay: u32) -> Result<(), String> {
+        if in_own_distro() {
+            return sentient_installer_core::distro::set_keepalive_start(automatic, delay);
+        }
         sentient_installer_core::native::set_start(automatic, delay)
     }
 
     /// Whether SENTIENT starts with Windows, and after how many seconds.
+    /// None: nothing to choose here (a stack in the operator's own WSL
+    /// distro or Docker, which start it themselves).
     pub fn autostart() -> Option<(bool, u32)> {
-        Some(sentient_installer_core::native::start_setting())
+        match crate::installation::InstallationRecord::load() {
+            Some(r) if r.engine == crate::installation::Engine::Docker => {
+                if r.stack.wsl_distro.is_none() && r.stack.external.is_none() { sentient_installer_core::distro::keepalive_start() } else { None }
+            }
+            _ => Some(sentient_installer_core::native::start_setting()),
+        }
     }
 
     /// An install from an earlier Platform Manager starts with Windows'
@@ -270,6 +289,9 @@ mod imp {
     /// Manual ones stay manual.
     pub fn undelay_autostart() {
         use sentient_installer_core::native::APP_SERVICE;
+        if in_own_distro() {
+            return;
+        }
         let delayed = quiet("sc.exe")
             .args(["qc", APP_SERVICE])
             .output()

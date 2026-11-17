@@ -1969,16 +1969,53 @@ pub fn firewall_script(tcp: &[u16], udp: &[u16]) -> String {
     s
 }
 
+/// PowerShell that writes the group's rules ([`firewall_script`]) only
+/// when one is missing, off, or for another port, and prints "present" or
+/// "added": what Repair and an update run on an install from before the
+/// rules (idempotent: a second run finds them present).
+pub fn ensure_firewall_script(tcp: &[u16], udp: &[u16]) -> String {
+    let want: Vec<String> = [("TCP", tcp), ("UDP", udp)]
+        .iter()
+        .flat_map(|(proto, ports)| ports.iter().filter(|p| **p > 0).map(move |p| format!("'SENTIENT {proto} {p}'")))
+        .collect();
+    format!(
+        "$want = @({}); $have = @(Get-NetFirewallRule -Group '{FIREWALL_GROUP}' -ErrorAction SilentlyContinue | Where-Object {{ $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' -and $_.Direction -eq 'Inbound' }} | ForEach-Object {{ $_.DisplayName }}); \
+         if (@($want | Where-Object {{ $have -notcontains $_ }}).Count -eq 0 -and $have.Count -eq $want.Count) {{ 'present' }} else {{ {}'added' }}",
+        want.join(", "),
+        firewall_script(tcp, udp)
+    )
+}
+
+/// The ports [`open_firewall`] opens: (TCP: web and MQTT, UDP: CoAP).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn firewall_ports(cfg: &NativeConfig) -> ([u16; 2], [u16; 1]) {
+    ([cfg.http_port, cfg.mqtt_port], [cfg.coap_port])
+}
+
+#[cfg(windows)]
+fn firewall_ps(script: &str) -> Result<String, String> {
+    match sys::output_limited("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", script], std::time::Duration::from_secs(60)) {
+        Some((true, out, _)) => Ok(sys::decode(&out)),
+        Some((false, out, err)) => Err(format!("{} {}", sys::decode(&err).trim(), sys::decode(&out).trim())),
+        None => Err("could not run powershell.exe".into()),
+    }
+}
+
 /// Open SENTIENT's ports in Windows Firewall (web and MQTT over TCP,
 /// CoAP over UDP).
 #[cfg(windows)]
 pub fn open_firewall(cfg: &NativeConfig) -> Result<(), String> {
-    let script = firewall_script(&[cfg.http_port, cfg.mqtt_port], &[cfg.coap_port]);
-    match sys::output_limited("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", &script], std::time::Duration::from_secs(60)) {
-        Some((true, _, _)) => Ok(()),
-        Some((false, out, err)) => Err(format!("{} {}", sys::decode(&err).trim(), sys::decode(&out).trim())),
-        None => Err("could not run powershell.exe".into()),
-    }
+    let (tcp, udp) = firewall_ports(cfg);
+    firewall_ps(&firewall_script(&tcp, &udp)).map(|_| ())
+}
+
+/// [`open_firewall`] when a rule is missing (an install from before 0.9.2,
+/// or rules removed by hand); true when it added them.
+#[cfg(windows)]
+pub fn ensure_firewall(cfg: &NativeConfig) -> Result<bool, String> {
+    let (tcp, udp) = firewall_ports(cfg);
+    let out = firewall_ps(&ensure_firewall_script(&tcp, &udp))?;
+    Ok(out.trim().ends_with("added"))
 }
 
 /// Remove [`open_firewall`]'s rules.
@@ -2505,5 +2542,17 @@ mod firewall_tests {
         assert!(s.contains("-Protocol TCP -LocalPort 1883"));
         assert!(s.contains("-Protocol UDP -LocalPort 5683"));
         assert!(!s.contains("LocalPort 0"));
+    }
+
+    #[test]
+    fn repair_and_update_add_the_rules_only_when_one_is_missing() {
+        let s = ensure_firewall_script(&[8080, 1883], &[5683]);
+        assert!(s.starts_with("$want = @('SENTIENT TCP 8080', 'SENTIENT TCP 1883', 'SENTIENT UDP 5683');"));
+        assert!(s.contains("Get-NetFirewallRule -Group 'SENTIENT'"));
+        // Present: nothing is written; else the whole group, then "added".
+        let (check, write) = s.split_once("{ 'present' } else { ").unwrap();
+        assert!(!check.contains("New-NetFirewallRule") && !check.contains("Remove-NetFirewallRule"));
+        assert!(write.starts_with("Remove-NetFirewallRule -Group 'SENTIENT'") && write.ends_with("'added' }"));
+        assert!(write.contains("-Protocol UDP -LocalPort 5683"));
     }
 }
