@@ -66,7 +66,7 @@ def frame(log):
     def inside(r, a):
         return a[0] - 0.5 <= r[0] and r[1] <= a[1] + 0.5 and a[2] - 0.5 <= r[2] and r[3] <= a[3] + 0.5
 
-    for k in CONTROLS:
+    for k in CONTROLS + ("setting-label", "current-cell"):
         if k in out:
             out[k] = {r for r in out[k] if not any(a[0] - 0.5 <= r[0] and r[1] <= a[1] + 0.5 and not inside(r, a) for a in areas) or (k == "button" and any(inside(r, b) for b in bars))}
     return {k: sorted(v) for k, v in out.items()}
