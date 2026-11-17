@@ -431,6 +431,8 @@ impl Render for LogView {
                 h_flex()
                     .gap(crate::ui::button_gap())
                     .flex_wrap()
+                    // A wrapped line of controls ends at the right too.
+                    .justify_end()
                     .items_center()
                     .relative()
                     .child(ui::layout_probe("header-actions"))
