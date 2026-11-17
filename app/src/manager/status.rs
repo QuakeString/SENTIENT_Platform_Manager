@@ -620,7 +620,7 @@ impl Render for StatusPage {
         });
 
         let busy = self.job.read(cx).is_running();
-        let running = self.snapshot.as_ref().filter(|s| !s.services.is_empty()).map(|s| Running { serving: s.serving, any_up: s.serving || s.services.iter().any(|v| v.running) });
+        let running = self.snapshot.as_ref().and_then(|s| running_of(s.serving, &s.services.iter().map(|v| v.running).collect::<Vec<_>>(), record.engine == crate::installation::Engine::Docker));
         let this = cx.entity().downgrade();
         let (t1, t2, t3) = (this.clone(), this.clone(), this.clone());
         // Native Linux runs on the distribution's shared PostgreSQL: the
@@ -982,6 +982,18 @@ pub(crate) fn control_buttons(
 /// red. `stop_label` is "Stop…" where Stop asks first. Put them in a
 /// [`ui::card_foot`] (the divider above) with the card's other buttons
 /// after them.
+/// What the Status buttons go by, from a reading: `services` each up or
+/// not. No services read: unknown (no buttons), except for Docker, where
+/// an empty list is a stack that is not up (Windows: SENTIENT's WSL distro
+/// is not running when it does not start with Windows), so Start is offered
+/// (its job starts the distro first, distro::wake_keepalive).
+fn running_of(serving: bool, services: &[bool], docker: bool) -> Option<Running> {
+    if services.is_empty() && !docker {
+        return None;
+    }
+    Some(Running { serving, any_up: serving || services.iter().any(|up| *up) })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn service_buttons(
     theme: &gpui_kit::component::Theme,
@@ -1460,6 +1472,15 @@ pub(crate) fn db_details(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_docker_stack_with_nothing_up_offers_start() {
+        let r = super::running_of(false, &[], true).expect("Docker: Start offered");
+        assert!(!r.serving && !r.any_up);
+        assert!(super::running_of(false, &[], false).is_none());
+        let r = super::running_of(false, &[true, false], false).unwrap();
+        assert!(r.any_up && !r.serving);
+    }
     use super::{Tone, overall_state};
 
     const APP: &str = "sentient.service";
