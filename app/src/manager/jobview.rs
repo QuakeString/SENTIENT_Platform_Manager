@@ -43,6 +43,9 @@ pub enum Cancel {
     Can(Rc<dyn Fn(&mut Window, &mut App)>),
     /// It cannot stop safely: Cancel disabled, the reason in its tooltip.
     Cannot(&'static str),
+    /// Nothing to stop from here (a server restarting): "Hide" leaves the
+    /// view, the job goes on in the progress chip.
+    Hide(Rc<dyn Fn(&mut Window, &mut App)>),
 }
 
 /// The view, built for one render.
@@ -183,6 +186,7 @@ impl JobView {
                         .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(why).build(w, cx))
                         .into_any_element(),
                 ),
+                Cancel::Hide(on) => foot.push(ui::button(SharedString::from(format!("{}-hide", self.id))).outline().label("Hide").on_click(move |_, w, cx| on(w, cx)).into_any_element()),
             }
         } else {
             foot.extend(self.actions);

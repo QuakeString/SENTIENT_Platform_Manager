@@ -183,6 +183,9 @@ pub struct StatsPage {
     /// shared job view in place of the page until "Back to Statistics".
     server_job: Entity<crate::jobs::Job>,
     server_shown: bool,
+    /// The job view was left with Hide while the job runs: read the card
+    /// again when it ends.
+    server_hidden: bool,
     server_job_label: String,
     /// Debug builds: the dialog SPM_DEBUG_SERVER_DIALOG asks for was opened.
     debug_opened: bool,
@@ -229,6 +232,7 @@ impl StatsPage {
             server: None,
             server_job: cx.new(|_| crate::jobs::Job::new()),
             server_shown: false,
+            server_hidden: false,
             server_job_label: String::new(),
             debug_opened: false,
             _server_poll: None,
@@ -241,7 +245,8 @@ impl StatsPage {
         p.poll_server(cx);
         let w = cx.observe(&p.server_job, |p, job, cx| {
             // A job that ended changes what the card shows: read it again.
-            if !job.read(cx).is_running() && p.server_shown {
+            if !job.read(cx).is_running() && (p.server_shown || p.server_hidden) {
+                p.server_hidden = false;
                 p.read_server(cx);
             }
             cx.notify();
@@ -289,6 +294,10 @@ impl StatsPage {
             got => {
                 if got.is_ok() {
                     self.set_stale("server", None);
+                    // A server shut down from here is on again.
+                    if let Source::Remote(i) = &self.src {
+                        crate::manager::server_card::answered(&i.id);
+                    }
                 }
                 self.server = Some(got);
             }
@@ -347,6 +356,7 @@ impl StatsPage {
             me.update(cx, |p, cx| p.server_action(action, cx)).ok();
         });
         self.server_shown = true;
+        self.server_hidden = false;
         self.server_job_label = action.title(&self.server_name());
         crate::manager::server_card::start(&self.server_job, action, self.remote_inst(), windows, retry, cx);
         cx.notify();
@@ -375,9 +385,11 @@ impl StatsPage {
         let details_info = self.server.as_ref().and_then(|s| s.as_ref().ok()).cloned();
         let n3 = name.clone();
         let me2 = cx.entity().downgrade();
+        let term_inst = self.remote_inst();
         sc::Actions {
             remote: matches!(self.src, Source::Remote(_)),
             busy: self.server_job.read(cx).is_running(),
+            on_terminal: Rc::new(move |w, cx| sc::open_terminal(term_inst.as_ref(), w, cx)),
             on_restart: Rc::new(move |w, cx| sc::confirm_restart(&n1, w, cx, r1.clone())),
             on_shutdown: Rc::new(move |w, cx| sc::confirm_shutdown(&n2, w, cx, r2.clone())),
             on_docker: Rc::new(move |_, cx| r3(cx)),
@@ -995,8 +1007,34 @@ impl Render for StatsPage {
                 _ => None,
             };
             let label = self.server_job_label.clone();
-            col = col.child(crate::manager::jobview::JobView::new("srv-job", label, &self.server_job).actions(std::iter::once(back).chain(retry)).render(cx));
+            // Nothing to stop half-way (the server restarts by itself once
+            // sent): Hide leaves the view, the job goes on in the progress
+            // chip, and a failure then opens its details.
+            let me = cx.entity().downgrade();
+            let hide = crate::manager::jobview::Cancel::Hide(Rc::new(move |_, cx| {
+                me.update(cx, |p, cx| {
+                    p.server_shown = false;
+                    p.server_hidden = true;
+                    p.server_job.update(cx, |j, _| j.set_on_page(false));
+                    cx.notify();
+                })
+                .ok();
+            }));
+            col = col.child(crate::manager::jobview::JobView::new("srv-job", label, &self.server_job).actions(std::iter::once(back).chain(retry)).cancel(hide).render(cx));
             return page(col);
+        }
+        // Shut down from here: off, said calmly (not as an error), until
+        // it answers again.
+        if let Source::Remote(i) = &self.src {
+            if crate::manager::server_card::power_state(&i.id) == Some(crate::manager::server_card::Power::Off) {
+                col = col.child(ui::notice_with(
+                    &theme,
+                    ui::Tone::Neutral,
+                    format!("{} is off.\nIt was shut down from here. Platform Manager cannot switch it on again: someone has to, or use the cloud provider's console.", i.name),
+                    Some(crate::ui::button("stats-off-check").outline().label("Check again").on_click(cx.listener(|p, _, _, cx| p.read_again(cx))).into_any_element()),
+                ));
+                return page(col);
+            }
         }
         // Nothing could be read: one notice in the page and nothing else (no
         // empty boxes, no endless "Reading…").

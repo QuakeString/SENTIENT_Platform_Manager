@@ -161,6 +161,33 @@ impl Disk {
     pub fn worn(&self) -> bool {
         self.wear.is_some_and(|w| w >= 80)
     }
+
+    /// All details' health pill: a SMART warning first, then wear from
+    /// 80 %, then healthy; nothing when SMART was not read.
+    pub fn health(&self) -> Health {
+        if self.smart_ok == Some(false) {
+            Health::Warning
+        } else if self.worn() {
+            Health::Worn(self.wear.unwrap_or(0))
+        } else if self.smart_ok == Some(true) {
+            Health::Healthy
+        } else {
+            Health::NotKnown
+        }
+    }
+}
+
+/// A disk's health, as its pill says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Health {
+    /// Green "Healthy".
+    Healthy,
+    /// Amber "82 % worn".
+    Worn(u8),
+    /// Red "Health warning".
+    Warning,
+    /// No pill.
+    NotKnown,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -238,6 +265,20 @@ impl ServerInfo {
             v.push("Heavy swap use: memory is short".into());
         }
         v
+    }
+
+    /// The card's Attention lines: [`attention`](Self::attention) without
+    /// the nearly full disks, which the card shows in their own amber rows
+    /// (the data disk's bar and free space turn amber; any other in a
+    /// "Nearly full" row), so each is said once.
+    pub fn card_attention(&self) -> Vec<String> {
+        self.attention().into_iter().filter(|a| !a.ends_with("nearly full")).collect()
+    }
+
+    /// The nearly full disks besides the data disk (the card's "Nearly
+    /// full" rows).
+    pub fn nearly_full_others(&self) -> Vec<&Disk> {
+        self.disks.iter().filter(|d| !d.sentient && d.nearly_full()).collect()
     }
 }
 
@@ -1330,5 +1371,78 @@ tmpfs          /run               1000000000   1000000000
         ok.clock.offset = Some(0.02);
         ok.swap_used = 0;
         assert!(ok.attention().is_empty(), "{:?}", ok.attention());
+    }
+
+    fn disk(name: &str, size_gb: u64, free_gb: Option<u64>) -> Disk {
+        Disk { name: name.into(), size: size_gb << 30, free: free_gb.map(|f| f << 30), ..Default::default() }
+    }
+
+    #[test]
+    fn the_card_says_each_problem_once() {
+        let mut i = ServerInfo { disks: vec![disk("/", 100, Some(60)), disk("/mnt/data", 500, Some(20)), disk("/mnt/backup", 200, Some(4))], ..Default::default() };
+        i.disks[1].sentient = true;
+        i.disks[1].wear = Some(82);
+        // Everything that needs a look, the nearly full disks among it.
+        let all = i.attention();
+        assert!(all.contains(&"Data disk 82 % worn".to_string()), "{all:?}");
+        assert!(all.contains(&"Data disk nearly full".to_string()), "{all:?}");
+        assert!(all.contains(&"/mnt/backup nearly full".to_string()), "{all:?}");
+        // The card: the nearly full disks have their own rows instead.
+        assert_eq!(i.card_attention(), ["Data disk 82 % worn"]);
+        assert_eq!(i.nearly_full_others().iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["/mnt/backup"]);
+        // Clock and swap.
+        i.clock = Clock { synced: Some(true), offset: Some(3.2), zone: None };
+        i.swap_total = 2 << 30;
+        i.swap_used = 1500 << 20;
+        let c = i.card_attention();
+        assert!(c.contains(&"Clock 3.2 s off".to_string()), "{c:?}");
+        assert!(c.contains(&"Heavy swap use: memory is short".to_string()), "{c:?}");
+        i.clock.synced = Some(false);
+        assert!(i.card_attention().contains(&"Clock not synchronised".to_string()));
+        // Nothing to say: no Attention row at all.
+        let calm = ServerInfo { disks: vec![disk("/", 100, Some(60))], clock: Clock { synced: Some(true), offset: Some(0.4), zone: None }, swap_total: 2 << 30, swap_used: 100 << 20, ..Default::default() };
+        assert!(calm.card_attention().is_empty(), "{:?}", calm.card_attention());
+        // Half the swap but under 512 MB is not heavy.
+        let small = ServerInfo { swap_total: 512 << 20, swap_used: 400 << 20, ..Default::default() };
+        assert!(!small.heavy_swap());
+    }
+
+    #[test]
+    fn disk_health_pill() {
+        let mut d = disk("/", 100, Some(50));
+        assert_eq!(d.health(), Health::NotKnown);
+        d.smart_ok = Some(true);
+        assert_eq!(d.health(), Health::Healthy);
+        d.wear = Some(79);
+        assert_eq!(d.health(), Health::Healthy);
+        d.wear = Some(80);
+        assert_eq!(d.health(), Health::Worn(80));
+        d.smart_ok = Some(false);
+        assert_eq!(d.health(), Health::Warning);
+        // Nearly full: under a tenth, or under 5 GB.
+        assert!(disk("/a", 100, Some(9)).nearly_full());
+        assert!(disk("/b", 30, Some(4)).nearly_full());
+        assert!(!disk("/c", 100, Some(11)).nearly_full());
+        assert!(!disk("sdz", 100, None).nearly_full());
+    }
+
+    #[test]
+    fn only_real_disks_are_listed() {
+        let blk = parse_lsblk(concat!(
+            "NAME=\"vda\" TYPE=\"disk\" SIZE=\"107374182400\" ROTA=\"0\" TRAN=\"\" MOUNTPOINT=\"\" FSTYPE=\"\" PKNAME=\"\" MODEL=\"\"\n",
+            "NAME=\"vda1\" TYPE=\"part\" SIZE=\"107374182400\" ROTA=\"0\" TRAN=\"\" MOUNTPOINT=\"/\" FSTYPE=\"ext4\" PKNAME=\"vda\" MODEL=\"\"\n",
+            "NAME=\"loop3\" TYPE=\"loop\" SIZE=\"67108864\" ROTA=\"0\" TRAN=\"\" MOUNTPOINT=\"/snap/lxd/1\" FSTYPE=\"squashfs\" PKNAME=\"\" MODEL=\"\"\n",
+            "NAME=\"sr0\" TYPE=\"rom\" SIZE=\"1048576\" ROTA=\"1\" TRAN=\"sata\" MOUNTPOINT=\"\" FSTYPE=\"\" PKNAME=\"\" MODEL=\"\"\n",
+        ));
+        let df = parse_df(concat!(
+            "Filesystem 1B-blocks Avail\n",
+            "/dev/vda1 / 107374182400 53687091200\n",
+            "tmpfs /dev/shm 1073741824 1073741824\n",
+            "tmpfs /run/user/1000 104857600 104857600\n",
+            "overlay /var/lib/docker/overlay2/abc/merged 107374182400 53687091200\n",
+            "/dev/loop3 /snap/lxd/1 67108864 0\n",
+        ));
+        let disks = build_disks(&blk, &df, None, &HashMap::new());
+        assert_eq!(disks.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["/"]);
     }
 }
