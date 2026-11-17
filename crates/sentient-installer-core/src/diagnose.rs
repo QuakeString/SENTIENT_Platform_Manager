@@ -539,6 +539,7 @@ pub const RULES: &[Rule] = &[
     Rule { id: "docker-down", matches: docker_down },
     Rule { id: "clickhouse-memory", matches: clickhouse_memory },
     Rule { id: "clickhouse-limits", matches: clickhouse_limits },
+    Rule { id: "wsl-restart", matches: wsl_restart },
     Rule { id: "wsl-missing", matches: wsl_missing },
     Rule { id: "wsl-stopped", matches: wsl_stopped },
     Rule { id: "service-failed", matches: service_failed },
@@ -985,6 +986,19 @@ fn clickhouse_limits(ev: &Evidence, t: &str) -> Option<Diagnosis> {
     )
 }
 
+/// WSL turned on in this run: Windows finishes it only after a restart.
+fn wsl_restart(_: &Evidence, t: &str) -> Option<Diagnosis> {
+    if !has(t, &["A restart is required to finish enabling it", "restart is required to finish", "The requested operation requires a reboot", "ERROR_SUCCESS_REBOOT_REQUIRED"]) {
+        return None;
+    }
+    diag(
+        "wsl-restart",
+        "Windows needs a restart to finish turning on WSL.",
+        "ClickHouse runs in Docker inside WSL2 on Windows; WSL was turned on just now and becomes active after a restart.",
+        vec![steps("Restart Windows. Setup carries on by itself after you sign in again (the install continues where it stopped); if it does not, open SENTIENT Setup and Retry.")],
+    )
+}
+
 fn wsl_missing(_: &Evidence, t: &str) -> Option<Diagnosis> {
     if !has(t, &["Windows Subsystem for Linux is not installed", "WSL is not installed", "Windows Subsystem for Linux has no installed distributions", "wsl.exe' is not recognized", "0x8007019e", "WSL_E_WSL_OPTIONAL_COMPONENT_REQUIRED"]) {
         return None;
@@ -1393,6 +1407,12 @@ mod tests {
         ev.units.push(UnitLog { unit: "clickhouse-server.service".into(), journal: fixture("clickhouse-oom.txt") });
         assert_eq!(diagnose(&ev).id, "clickhouse-memory");
         assert_eq!(of("x exited with 1", "clickhouse-open-files.txt").id, "clickhouse-limits");
+    }
+
+    #[test]
+    fn wsl_needing_a_restart_is_named() {
+        let ev = Evidence::from_text("WSL isn't active yet. A restart is required to finish enabling it.", &[]);
+        assert_eq!(diagnose(&ev).id, "wsl-restart");
     }
 
     #[test]
