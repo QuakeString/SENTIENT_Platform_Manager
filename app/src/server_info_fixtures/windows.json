@@ -1,0 +1,12 @@
+{"system":"windows","host":"PLANT-HMI-01","machine":{"virtual":false,"hypervisor":null,"model":"Example Computers EX-7000"},"os":"Windows 10 Pro 22H2","kernel":"build 19045",
+"cpu":{"model":"Intel Core i5-10500","cores":6,"threads":12,"temp_c":null},
+"mem_total":17179869184,"swap_total":2550136832,"swap_used":201326592,
+"gpus":[{"name":"Intel UHD Graphics 630","mem":1073741824}],
+"disks":[
+ {"name":"C:","device":"Disk 0","model":"Example SSD 256","kind":"SSD","size":255388667904,"free":121332826112,"sentient":false,"smart_ok":true,"wear":3},
+ {"name":"D:","device":"Disk 1","model":"Example HDD 1TB","kind":"HDD","size":1000202039296,"free":702455672832,"sentient":true,"smart_ok":true,"wear":null}],
+"boot":518400,"clean_restart":false,
+"clock":{"synced":true,"offset":0.0123,"zone":"India Standard Time"},
+"nets":[{"name":"Ethernet","ip":"192.0.2.40","speed":1000}],
+"updates":3,"restart_needed":true,
+"docker":null}

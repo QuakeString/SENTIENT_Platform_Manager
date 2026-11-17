@@ -89,6 +89,8 @@ mod settings;
 #[cfg(feature = "gui")]
 mod standalone;
 mod support;
+mod server_info;
+mod server_ops;
 mod stats;
 mod sysmon;
 #[cfg(feature = "gui")]

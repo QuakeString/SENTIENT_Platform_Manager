@@ -1,0 +1,9 @@
+{"host":"PLANT-HMI-01","maker":"Example Computers","model":"EX-7000","os":"Microsoft Windows 10 Pro","display_version":"22H2","build":"19045",
+"cpu":"Intel(R) Core(TM) i5-10500 CPU @ 3.10GHz","cores":6,"threads":12,"temp_dk":null,"mem":17179869184,"swap_total":2550136832,"swap_used":201326592,"boot":1790000000,
+"gpus":[{"name":"Intel(R) UHD Graphics 630","ram":1073741824},{"name":"Microsoft Remote Display Adapter","ram":0}],
+"drives":[{"id":"C:","size":255388667904,"free":121332826112,"disk":"0"},{"id":"D:","size":1000202039296,"free":702455672832,"disk":"1"}],
+"disks":[{"number":"0","name":"Example SSD 256","media":"SSD","bus":"NVMe","health":"Healthy","size":256060514304,"wear":3,"mounted":true},
+ {"number":"1","name":"Example HDD 1TB","media":"HDD","bus":"SATA","health":"Healthy","size":1000204886016,"wear":null,"mounted":true},
+ {"number":"2","name":"Example USB","media":"Unspecified","bus":"USB","health":"Healthy","size":500107862016,"wear":null,"mounted":false}],
+"w32tm":"Leap Indicator: 0(no warning)\nStratum: 3 (secondary reference - syncd by (S)NTP)\nPhase Offset: 0.0123000s\nSource: time.example.local\n","zone":"India Standard Time",
+"nets":[{"name":"Ethernet","ip":"192.0.2.40","bps":1000000000}],"reboot":true,"unclean":false,"docker":"","docker_start":""}

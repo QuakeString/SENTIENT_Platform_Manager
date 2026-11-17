@@ -19,7 +19,7 @@ bad=0
 # The pages that run long jobs.
 PAGES="manager/backup.rs manager/restore.rs manager/update.rs manager/movedata.rs manager/repair.rs
 manager/migration.rs manager/remote_pages.rs manager/instances.rs installer/pages.rs installer/mod.rs
-maintenance.rs earlier.rs"
+maintenance.rs earlier.rs manager/server_card.rs"
 for f in $PAGES; do
   [ -f "$f" ] || { echo "missing job page: $f"; bad=1; continue; }
   # 1. Progress drawn outside the shared view.
@@ -38,7 +38,7 @@ for f in $PAGES; do
   done < <(grep -nE '\b(job|j)\.start\($|\b(job|j)\.start\(move|=> job\.start\(' "$f" | cut -d: -f1)
 done
 # 3. Every long --job sends its plan first.
-for j in backup-now scheduled-backup backup update rollback repair uninstall migrate resume-migration move-data apply-changes take-over-compose; do
+for j in backup-now scheduled-backup backup update rollback repair uninstall migrate resume-migration move-data apply-changes take-over-compose docker-restart system-updates; do
   grep -qE "\"$j\"( \||\s*=>| =>)" jobplan.rs || { echo "--job $j declares no steps (crate::jobplan::for_job)"; bad=1; }
 done
 grep -q 'Progress::Plan { steps: crate::jobplan::restore' headless.rs || { echo "--job restore-run declares no steps"; bad=1; }
