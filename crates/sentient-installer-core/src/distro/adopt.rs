@@ -35,6 +35,9 @@ pub struct FoundStack {
     /// container names, volumes and mount points as its own stack), and why
     /// not otherwise.
     pub take_over: Result<(), String>,
+    /// SENTIENT's container id, to tell the same container seen twice
+    /// (Docker Desktop's engine through more than one WSL distro).
+    pub container_id: String,
 }
 
 /// Variables the engine derives itself; everything else in SENTIENT's
@@ -121,7 +124,7 @@ fn url_host_port(url: &str) -> Option<(String, u16)> {
 }
 
 /// `registry:5000/quakestring/sentient:4.3` → `sentient`.
-fn image_repo_name(image: &str) -> &str {
+pub(super) fn image_repo_name(image: &str) -> &str {
     let last = image.rsplit('/').next().unwrap_or(image);
     last.split(['@', ':']).next().unwrap_or(last)
 }
@@ -245,6 +248,20 @@ pub fn find() -> Vec<FoundStack> {
                 && (image_repo_name(image) == "sentient" || label(c, "com.docker.compose.service") == Some("sentient"))
         })
         .map(|app| describe(app, &all))
+        .collect()
+}
+
+/// Windows: every SENTIENT stack in the WSL distro `distro` (the
+/// operator's own, e.g. Ubuntu), each configuration naming that distro so
+/// everything done to it afterwards runs there. Runs commands in the
+/// distro: call for a running one (super::hosts).
+pub fn find_in_distro(distro: &str) -> Vec<FoundStack> {
+    super::with_docker_distro(Some(distro), find)
+        .into_iter()
+        .map(|mut f| {
+            f.cfg.wsl_distro = Some(distro.trim().to_string());
+            f
+        })
         .collect()
 }
 
@@ -427,6 +444,7 @@ fn describe(app: &Value, all: &[Value]) -> FoundStack {
             (tag != "latest").then(|| tag.to_string())
         }),
         running: app["State"]["Running"].as_bool().unwrap_or(false),
+        container_id: app["Id"].as_str().unwrap_or_default().to_string(),
         cfg,
         notes,
         problem,

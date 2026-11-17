@@ -8,6 +8,13 @@
 //! - Docker: the stack as Docker describes it (distro::adopt). It keeps
 //!   running from its own compose files until the operator lets the
 //!   Platform Manager take them over (`take_over_compose`).
+//! - Docker on Windows: in each running WSL distro of this account other
+//!   than the Platform Manager's own (Ubuntu, …), and Docker Desktop
+//!   (distro::hosts). A stack found in a distro records it
+//!   (`DeployConfig::wsl_distro`) and every Docker command for it runs
+//!   there; the distro itself is never stopped, removed or set up. A stack
+//!   only Docker Desktop's Windows side shows is listed, but needs Docker
+//!   Desktop's WSL integration turned on for a distro first.
 //! - Native Linux: `sentient.service` and its environment file
 //!   (native_linux::read_installed). The file is root-only, so without root
 //!   only the unit is shown and the adopt itself runs as root
@@ -84,11 +91,45 @@ impl Candidate {
 
     /// A key to find the same installation again.
     fn key(&self) -> String {
-        format!("{:?}:{}:{}", self.record.engine, self.record.stack.stack_name, self.record.install_dir.display())
+        format!(
+            "{:?}:{}:{}:{}",
+            self.record.engine,
+            self.record.stack.stack_name,
+            self.record.install_dir.display(),
+            self.record.stack.wsl_distro.as_deref().unwrap_or("")
+        )
     }
 }
 
+/// What looking for SENTIENT found, and every place it looked, so a
+/// search that finds nothing says what was checked.
+#[derive(Debug, Clone, Default)]
+pub struct Search {
+    pub found: Vec<Candidate>,
+    /// One line per place: "WSL distro Ubuntu: Docker, no SENTIENT", …
+    pub looked: Vec<String>,
+}
+
+impl Search {
+    /// The places looked in, as one sentence.
+    pub fn looked_text(&self) -> String {
+        looked_text(&self.looked)
+    }
+}
+
+/// "Looked in: a; b; c." (empty when nothing was listed).
+pub fn looked_text(looked: &[String]) -> String {
+    if looked.is_empty() { String::new() } else { format!("Looked in: {}.", looked.join("; ")) }
+}
+
+/// "no SENTIENT", "1 SENTIENT", "2 SENTIENT".
+fn count_text(n: usize) -> String {
+    if n == 0 { "no SENTIENT".into() } else { format!("{n} SENTIENT") }
+}
+
 fn record_for_docker(cfg: &DeployConfig, version: Option<String>) -> InstallationRecord {
+    // In the operator's own WSL distro: nothing there is Setup's.
+    let added = cfg.wsl_distro.is_some().then_some(crate::uninstall::Installed { postgres: false, clickhouse: false, wsl: false });
     let mut stack = cfg.clone();
     stack.db_password.clear();
     stack.ch_password.clear();
@@ -105,44 +146,150 @@ fn record_for_docker(cfg: &DeployConfig, version: Option<String>) -> Installatio
         kiosk: None,
         changes_done: Vec::new(),
         shortcuts: Vec::new(),
-        installed: None,
+        installed: added,
     }
 }
 
 fn docker_candidates() -> Vec<(Candidate, distro::adopt::FoundStack)> {
-    if cfg!(windows) {
-        // SENTIENT runs natively on Windows; a Docker Desktop stack is not
-        // something the Platform Manager manages there.
-        return Vec::new();
+    docker_search(&mut Vec::new())
+}
+
+/// A found stack as a candidate.
+fn docker_candidate(found: &distro::adopt::FoundStack) -> Candidate {
+    let in_distro = found.cfg.wsl_distro.as_ref().map(|d| format!(" in WSL distro {d}")).unwrap_or_default();
+    // Windows: a stack outside any WSL distro is one only Docker Desktop's
+    // Windows side shows (desktop_only).
+    let desktop = cfg!(windows) && found.cfg.wsl_distro.is_none();
+    let location = match &found.cfg.external {
+        _ if desktop => "Docker Desktop on Windows".to_string(),
+        Some(ext) => format!("compose project {} ({}){in_distro}", ext.project, ext.files.join(", ")),
+        None if found.problem.is_some() => format!("Docker{in_distro}"),
+        None => format!("the Platform Manager's compose file ({}){in_distro}", found.cfg.stack_dir()),
+    };
+    let mut notes = found.notes.clone();
+    if let Some(d) = &found.cfg.wsl_distro {
+        notes.push(format!(
+            "Docker runs in your WSL distro {d}: the Platform Manager runs its Docker commands there and never stops, removes or sets up that distro. Keep {d} running for SENTIENT to run."
+        ));
     }
-    distro::adopt::find()
-        .into_iter()
-        .map(|found| {
-            let location = match &found.cfg.external {
-                Some(ext) => format!("compose project {} ({})", ext.project, ext.files.join(", ")),
-                None if found.problem.is_some() => "Docker".to_string(),
-                None => format!("the Platform Manager's compose file ({})", found.cfg.stack_dir()),
-            };
-            let mut notes = found.notes.clone();
-            if found.cfg.external.is_some() {
-                notes.push(match &found.take_over {
-                    Ok(()) => "It runs from a compose file the Platform Manager did not write. Changing settings or the database type needs the Platform Manager to take it over first (Repair and uninstall).".into(),
-                    Err(why) => format!("It runs from a compose file the Platform Manager did not write. Settings and the database type cannot be changed by the Platform Manager: {why}"),
-                });
+    if found.cfg.external.is_some() {
+        notes.push(match &found.take_over {
+            Ok(()) => "It runs from a compose file the Platform Manager did not write. Changing settings or the database type needs the Platform Manager to take it over first (Repair and uninstall).".into(),
+            Err(why) => format!("It runs from a compose file the Platform Manager did not write. Settings and the database type cannot be changed by the Platform Manager: {why}"),
+        });
+    }
+    Candidate {
+        record: record_for_docker(&found.cfg, found.version.clone()),
+        kind: match &found.cfg.wsl_distro {
+            Some(d) => format!("Docker in WSL distro {d} (container {})", found.cfg.app_container()),
+            None if desktop => format!("Docker Desktop (container {})", found.cfg.app_container()),
+            None => format!("Docker (container {})", found.cfg.app_container()),
+        },
+        location,
+        running: found.running,
+        notes,
+        problem: found.problem.clone(),
+        needs_admin: false,
+        sets_admin_password: false,
+    }
+}
+
+/// Every SENTIENT Docker stack here, with a line per place looked in
+/// added to `looked`.
+fn docker_search(looked: &mut Vec<String>) -> Vec<(Candidate, distro::adopt::FoundStack)> {
+    #[cfg(windows)]
+    let found = windows_docker_search(looked);
+    #[cfg(not(windows))]
+    let found = {
+        let found = distro::adopt::find();
+        looked.push(if found.is_empty() {
+            match distro::hosts::docker_here() {
+                distro::hosts::DockerState::Missing => "Docker on this computer: not installed".to_string(),
+                distro::hosts::DockerState::NotRunning => "Docker on this computer: not running, or this account may not use it".to_string(),
+                distro::hosts::DockerState::Running => "Docker on this computer: no SENTIENT".to_string(),
             }
-            let c = Candidate {
-                record: record_for_docker(&found.cfg, found.version.clone()),
-                kind: format!("Docker (container {})", found.cfg.app_container()),
-                location,
-                running: found.running,
-                notes,
-                problem: found.problem.clone(),
-                needs_admin: false,
-                sets_admin_password: false,
-            };
-            (c, found)
-        })
-        .collect()
+        } else {
+            format!("Docker on this computer: {}", count_text(found.len()))
+        });
+        found
+    };
+    found.into_iter().map(|f| (docker_candidate(&f), f)).collect()
+}
+
+/// Windows: the running WSL distros of this account (the Platform
+/// Manager's own and Docker Desktop's left out, distro::hosts), then
+/// Docker Desktop. A container seen twice (Docker Desktop's engine through
+/// its WSL integration) is listed once, from the first distro (the default
+/// one first).
+#[cfg(windows)]
+fn windows_docker_search(looked: &mut Vec<String>) -> Vec<distro::adopt::FoundStack> {
+    use distro::hosts::{self, Desktop, DockerState};
+    let mut out: Vec<distro::adopt::FoundStack> = Vec::new();
+    fn seen(out: &[distro::adopt::FoundStack], id: &str) -> bool {
+        out.iter().any(|f| distro::hosts::same_container(&f.container_id, id))
+    }
+    match hosts::wsl_distros() {
+        Err(e) => looked.push(format!("WSL distros: none listed ({e})")),
+        Ok(list) if list.is_empty() => looked.push("WSL distros: none besides the Platform Manager's own".into()),
+        Ok(list) => {
+            for d in list {
+                if !d.running {
+                    // Looking would start it, and its Docker with it.
+                    looked.push(format!("WSL distro {}: stopped, not looked in (start it, then look again)", d.name));
+                    continue;
+                }
+                match hosts::docker_in(&d.name) {
+                    DockerState::Missing => looked.push(format!("WSL distro {}: no Docker", d.name)),
+                    DockerState::NotRunning => looked.push(format!("WSL distro {}: Docker is not running", d.name)),
+                    DockerState::Running => {
+                        let new: Vec<_> = distro::adopt::find_in_distro(&d.name).into_iter().filter(|f| !seen(&out, &f.container_id)).collect();
+                        looked.push(format!("WSL distro {}: Docker, {}", d.name, count_text(new.len())));
+                        out.extend(new);
+                    }
+                }
+            }
+        }
+    }
+    match hosts::docker_desktop() {
+        Desktop::NoCli => looked.push("Docker Desktop: not installed".into()),
+        Desktop::NotRunning => looked.push("Docker Desktop: not running".into()),
+        Desktop::Running(containers) => {
+            let only_here: Vec<_> = containers.into_iter().filter(|c| !seen(&out, &c.id)).collect();
+            looked.push(format!("Docker Desktop: {}", if only_here.is_empty() { "no other SENTIENT".to_string() } else { count_text(only_here.len()) }));
+            for c in only_here {
+                out.push(desktop_only(&c));
+            }
+        }
+    }
+    out
+}
+
+/// A SENTIENT container only Docker Desktop's Windows side shows: listed,
+/// not manageable until a WSL distro reaches Docker Desktop's engine.
+#[cfg(windows)]
+fn desktop_only(c: &distro::hosts::DesktopContainer) -> distro::adopt::FoundStack {
+    let mut cfg = DeployConfig {
+        stack_name: c.name.chars().map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' }).collect(),
+        image: c.image.clone(),
+        ..DeployConfig::default()
+    };
+    // The container's own name, as Docker Desktop shows it.
+    let mut names = cfg.names();
+    names.app = c.name.clone();
+    cfg.names = Some(names);
+    let why = format!(
+        "SENTIENT (container {}) runs in Docker Desktop, which the Platform Manager reaches through a WSL distro. Turn on Docker Desktop's WSL integration for one (Docker Desktop, Settings, Resources, WSL integration), start that distro, then look again.",
+        c.name
+    );
+    distro::adopt::FoundStack {
+        cfg,
+        version: None,
+        running: c.running,
+        notes: Vec::new(),
+        problem: Some(why.clone()),
+        take_over: Err(why),
+        container_id: c.id.clone(),
+    }
 }
 
 fn native_record(cfg: &sentient_installer_core::native::NativeConfig) -> InstallationRecord {
@@ -279,13 +426,27 @@ fn windows_candidate() -> Option<(Candidate, Option<sentient_installer_core::nat
 /// Every SENTIENT on this machine. Blocking (asks Docker): call from a job
 /// or a background task.
 pub fn find() -> Vec<Candidate> {
+    search().found
+}
+
+/// [`find`], with every place looked in.
+pub fn search() -> Search {
     let mut found: Vec<Candidate> = Vec::new();
+    let mut looked: Vec<String> = Vec::new();
     #[cfg(target_os = "linux")]
-    found.extend(native_candidate().map(|(c, _)| c));
+    {
+        let native = native_candidate().map(|(c, _)| c);
+        looked.push(format!("systemd service sentient: {}", if native.is_some() { "found" } else { "not installed" }));
+        found.extend(native);
+    }
     #[cfg(windows)]
-    found.extend(windows_candidate().map(|(c, _)| c));
-    found.extend(docker_candidates().into_iter().map(|(c, _)| c));
-    found
+    {
+        let native = windows_candidate().map(|(c, _)| c);
+        looked.push(format!("Windows services (SentientServer): {}", if native.is_some() { "found" } else { "not installed" }));
+        found.extend(native);
+    }
+    found.extend(docker_search(&mut looked).into_iter().map(|(c, _)| c));
+    Search { found, looked }
 }
 
 /// Adopt the installation `wanted` describes: find it again, check the
@@ -307,12 +468,15 @@ pub fn adopt(wanted: &Candidate, pg_admin: Option<String>, sink: ProgressFn) -> 
             return Err(p.clone());
         }
         sink(Progress::Step { name: "Checking the Platform Manager can reach its databases".into() });
-        distro::adopt::verify(&found)?;
+        // In the distro it was found in, before any record names it.
+        distro::with_docker_distro(found.cfg.wsl_distro.as_deref(), || distro::adopt::verify(&found))?;
         candidate
     };
     sink(Progress::Step { name: "Saving the installation record".into() });
     let json = serde_json::to_string_pretty(&candidate.record).map_err(|e| e.to_string())?;
     crate::self_install::write_record(&crate::installation::record_path(), &json)?;
+    // Everything after this in this process runs where the record says.
+    distro::use_docker_distro(candidate.record.stack.wsl_distro.as_deref());
     if let Ok(manager) = crate::self_install::install_manager() {
         crate::self_install::restore_menu_entry(&manager);
     }
@@ -386,6 +550,12 @@ pub fn take_over_compose(record: InstallationRecord, compose: Option<&str>, pass
     if record.engine != Engine::Docker || record.stack.external.is_none() {
         return Err("This installation already runs from the Platform Manager's compose file.".into());
     }
+    let distro_name = record.stack.wsl_distro.clone();
+    distro::with_docker_distro(distro_name.as_deref(), move || take_over_compose_here(record, compose, password, ch_password, sink))
+}
+
+/// [`take_over_compose`], its Docker commands where the stack runs.
+fn take_over_compose_here(record: InstallationRecord, compose: Option<&str>, password: Option<&str>, ch_password: Option<&str>, sink: ProgressFn) -> Result<InstallationRecord, String> {
     let mut full = record.stack.clone();
     if let Some(p) = password.filter(|p| !p.is_empty()) {
         distro::adopt::check_db_password(&full, p).map_err(|e| format!("{e} Nothing was changed."))?;
@@ -420,14 +590,16 @@ pub fn take_over_plan(record: &InstallationRecord, compose: Option<&str>) -> Res
     }
     // The record keeps no passwords: the plan finds the database's (or
     // says it needs it given).
-    let plan = distro::adopt::take_over_plan(&record.stack, compose).0;
+    let plan = distro::with_docker_distro(record.stack.wsl_distro.as_deref(), || distro::adopt::take_over_plan(&record.stack, compose).0);
     Ok(plan)
 }
 
 /// Whether PostgreSQL (or ClickHouse, `ch`) takes `password` (the takeover
 /// dialog's Check).
 pub fn check_takeover_password(record: &InstallationRecord, ch: bool, password: &str) -> Result<(), String> {
-    if ch { distro::docker_ops::check_ch_password(&record.stack, password) } else { distro::adopt::check_db_password(&record.stack, password) }
+    distro::with_docker_distro(record.stack.wsl_distro.as_deref(), || {
+        if ch { distro::docker_ops::check_ch_password(&record.stack, password) } else { distro::adopt::check_db_password(&record.stack, password) }
+    })
 }
 
 /// One candidate as a line, for the root job's output (crate::rootjob).

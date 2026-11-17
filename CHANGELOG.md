@@ -15,6 +15,26 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.9.1] - Unreleased
+
+Finds SENTIENT in Docker in your own WSL distro on Windows, and manages it there.
+
+### Fixed
+- Windows: a SENTIENT running in Docker inside a WSL distro set up by hand
+  (Ubuntu, …) was not found, on this computer or on a server through its
+  agent. Add existing instance now looks in every running WSL distro of the
+  account and in Docker Desktop, and offers what it finds ("Docker in WSL
+  distro Ubuntu"), through the same add and take-over steps as on Linux.
+- An instance added from such a distro keeps the distro's name in its
+  installation record: status, logs, start and stop, updates and the rest
+  run their Docker commands there. The Platform Manager never sets up,
+  stops, removes or unregisters that distro; uninstall removes only
+  SENTIENT's containers and volumes. Older records load unchanged.
+- When nothing is found, Status (and Add existing SENTIENT on a server)
+  says where it looked: the Windows services or systemd service, each WSL
+  distro (a stopped one is named, not started), Docker Desktop, Docker on
+  Linux.
+
 ## [0.9.0] - 2026-11-17
 
 Manage SENTIENT on other computers, with errors that name their cause and fix.

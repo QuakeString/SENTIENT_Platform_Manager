@@ -31,6 +31,8 @@ pub struct StatusPage {
     /// SENTIENT found running here when nothing is managed yet; None while
     /// looking.
     found: Option<Vec<Candidate>>,
+    /// Where that search looked (crate::adopt::Search), for "none found".
+    looked: Vec<String>,
     adopt_job: Entity<Job>,
     /// SENTIENT's or one service's start, stop or restart.
     job: Entity<Job>,
@@ -207,6 +209,7 @@ impl StatusPage {
             record,
             snapshot: None,
             found: None,
+            looked: Vec::new(),
             adopt_job,
             job,
             svc_busy: None,
@@ -413,9 +416,10 @@ impl StatusPage {
     fn look_for_existing(&mut self, cx: &mut Context<Self>) {
         self.found = None;
         let task = cx.spawn(async move |this, cx| {
-            let found = cx.background_executor().spawn(async move { crate::adopt::find() }).await;
+            let search = cx.background_executor().spawn(async move { crate::adopt::search() }).await;
             this.update(cx, |page, cx| {
-                page.found = Some(found);
+                page.found = Some(search.found);
+                page.looked = search.looked;
                 cx.notify();
             })
             .ok();
@@ -518,6 +522,23 @@ impl StatusPage {
     }
 }
 
+/// The places a search for SENTIENT looked in, and what to do about the
+/// ones it could not look in.
+fn looked_help(looked: &[String]) -> String {
+    let mut text = String::from("Looked in:");
+    for l in looked {
+        text.push('\n');
+        text.push_str(l);
+    }
+    if looked.iter().any(|l| l.contains("stopped, not looked in")) {
+        text.push_str("\n\nA stopped WSL distro is not started just to look in it. Start it and keep it running (SENTIENT in it needs that too), then open Status again.");
+    }
+    if looked.iter().any(|l| l.starts_with("WSL distro")) {
+        text.push_str("\n\nWSL distros belong to a Windows account: these are the ones of the account the Platform Manager runs as.");
+    }
+    text
+}
+
 impl Render for StatusPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
@@ -526,8 +547,18 @@ impl Render for StatusPage {
             // "Add existing instance" only when one was found, with its Add
             // button; nothing while looking or when there is none.
             let existing = self.found.as_ref().is_some_and(|f| !f.is_empty()).then(|| self.existing(&theme, cx));
+            // None found: one line, and where it looked behind the (i).
+            let none_found = self.found.as_ref().is_some_and(|f| f.is_empty()).then(|| {
+                ui::panel(&theme).child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().text_sm().text_color(theme.muted_foreground).child("No SENTIENT started some other way was found on this computer."))
+                        .child(ui::info("looked-help".into(), looked_help(&self.looked).into())),
+                )
+            });
             let gw = self.gateway_card(&theme, cx);
-            return page.child(ui::not_installed(&theme)).children(existing).child(gw);
+            return page.child(ui::not_installed(&theme)).children(existing).children(none_found).child(gw);
         };
 
         let busy_action = self.stack_action.filter(|_| self.job.read(cx).is_running());
