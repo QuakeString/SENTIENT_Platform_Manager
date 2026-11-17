@@ -1484,17 +1484,6 @@ mod tests {
         let m = done_message(&effective(&default_choice(&r), &r), &r, &checks, &[]);
         assert!(m.starts_with("Removed: SENTIENT server") && m.ends_with("1 thing is left: see the list."), "{m}");
     }
-}
-
-/// This computer's name: what the dialog asks to be typed before data is deleted.
-pub fn computer_name() -> String {
-    std::env::var("COMPUTERNAME")
-        .ok()
-        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
-        .or_else(|| std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()))
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "this computer".into())
 
     #[test]
     fn a_stopped_postgres_is_unknown_never_none() {
@@ -1531,4 +1520,15 @@ pub fn computer_name() -> String {
         c.set(Key::KeepPgData, false);
         assert_eq!(pg_action(&effective(&c, &r)), Some(DbRemoval::Remove { keep_data: false }));
     }
+}
+
+/// This computer's name: what the dialog asks to be typed before data is deleted.
+pub fn computer_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .or_else(|| std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "this computer".into())
 }
