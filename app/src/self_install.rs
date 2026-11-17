@@ -53,6 +53,12 @@ fn default_start_delay() -> u32 {
 
 pub use imp::*;
 
+/// The company website: the About page's link and, on Windows, the Apps &
+/// features entry's. Here, not in the GUI's about module, because the
+/// agent build (no GUI) writes the registry entry too.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const COMPANY_WEBSITE: &str = "https://inveniasystems.com";
+
 #[cfg(windows)]
 mod imp {
     use super::{APP_PATH_KEY, PRODUCT, START_MENU_NAME, Shortcuts};
@@ -190,7 +196,7 @@ mod imp {
             ("DisplayName", "REG_SZ", PRODUCT.to_string()),
             ("DisplayVersion", "REG_SZ", crate::updates::manager_version().to_string()),
             ("Publisher", "REG_SZ", "INVENIA SYSTEMS".to_string()),
-            ("URLInfoAbout", "REG_SZ", crate::manager::about_website().to_string()),
+            ("URLInfoAbout", "REG_SZ", crate::self_install::COMPANY_WEBSITE.to_string()),
             ("DisplayIcon", "REG_SZ", exe.clone()),
             ("InstallLocation", "REG_SZ", manager_dir().display().to_string()),
             ("UninstallString", "REG_SZ", format!("\"{exe}\" --uninstall")),

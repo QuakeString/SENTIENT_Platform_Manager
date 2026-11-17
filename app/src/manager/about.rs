@@ -24,7 +24,7 @@ use crate::updates::UpdateState;
 pub mod company {
     pub const NAME: &str = "INVENIA SYSTEMS";
     /// Not confirmed yet: the website repository is inveniasystems.com.
-    pub const WEBSITE: &str = "https://inveniasystems.com";
+    pub const WEBSITE: &str = crate::self_install::COMPANY_WEBSITE;
     pub const SUPPORT_EMAIL: &str = "support@invenia.in";
     /// Not confirmed yet.
     pub const DOCS: &str = "https://docs.invenia.in";
