@@ -72,6 +72,23 @@ fn toggle_full_screen(cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// Opt-in close rules for the open dialog (the terminal): a click on the
+/// dim layer does nothing, and a guard runs before Escape or the close
+/// button closes it (return false to keep it open, e.g. to ask first).
+/// Set after [`open`], which clears it, so every other dialog keeps the
+/// usual rules.
+#[derive(Default, Clone)]
+pub struct ModalGuard {
+    pub keep_on_backdrop: bool,
+    pub before_close: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App) -> bool>>,
+}
+
+impl Global for ModalGuard {}
+
+pub fn set_guard(guard: ModalGuard, cx: &mut App) {
+    cx.set_global(guard);
+}
+
 /// How tall a list dialog is at most (about ten rows of a folder list).
 pub const LIST_DIALOG_H: f32 = 680.;
 
@@ -98,6 +115,7 @@ pub fn open(modal: Modal, cx: &mut App) {
     cx.set_global(ModalFooter(None));
     cx.set_global(ModalList(false));
     cx.set_global(ModalFull::default());
+    cx.set_global(ModalGuard::default());
     cx.set_global(ModalSlot(Some(modal)));
     cx.refresh_windows();
 }
@@ -118,6 +136,7 @@ pub fn set_title(title: impl Into<SharedString>, cx: &mut App) {
 pub fn close(cx: &mut App) {
     if cx.try_global::<ModalSlot>().is_some_and(|s| s.0.is_some()) {
         cx.set_global(ModalFooter(None));
+        cx.set_global(ModalGuard::default());
         cx.set_global(ModalSlot(None));
         cx.refresh_windows();
     }
@@ -125,6 +144,10 @@ pub fn close(cx: &mut App) {
 
 /// Close it as the user did (Escape, ✕, the dim layer): calls on_close.
 pub fn dismiss(window: &mut Window, cx: &mut App) {
+    let guard = cx.try_global::<ModalGuard>().and_then(|g| g.before_close.clone());
+    if guard.is_some_and(|f| !f(window, cx)) {
+        return;
+    }
     let closing = cx.try_global::<ModalSlot>().and_then(|s| s.0.clone());
     close(cx);
     if let Some(f) = closing.and_then(|m| m.on_close) {
@@ -216,7 +239,11 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
             .inset_0()
             .occlude()
             .bg(black().opacity(if crate::theme::is_dark(cx) { 0.55 } else { 0.40 }))
-            .on_click(|_, window, cx| dismiss(window, cx))
+            .on_click(|_, window, cx| {
+                if !cx.try_global::<ModalGuard>().is_some_and(|g| g.keep_on_backdrop) {
+                    dismiss(window, cx);
+                }
+            })
             .child(
                 div()
                     .absolute()

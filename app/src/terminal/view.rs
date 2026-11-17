@@ -561,17 +561,39 @@ pub struct Target {
     pub shell: Option<String>,
 }
 
+/// What the dialog asks before it ends running sessions.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Ask {
+    /// The dialog's close button (or Escape outside the screen).
+    All,
+    /// One tab's close button.
+    Tab(usize),
+}
+
+/// The question before closing ends sessions that still run (None: none
+/// runs, close at once).
+pub fn end_question(running: usize, one_tab: bool) -> Option<String> {
+    match (running, one_tab) {
+        (0, _) => None,
+        (_, true) => Some("End this terminal session?".into()),
+        (1, false) => Some("End 1 running terminal session?".into()),
+        (n, false) => Some(format!("End {n} running terminal sessions?")),
+    }
+}
+
 /// The dialog's body: the sessions, the tabs when there are several.
 pub struct Deck {
     target: Target,
     tabs: Vec<Entity<TermView>>,
     active: usize,
+    /// Asking before ending running sessions.
+    ask: Option<Ask>,
     _watch: Vec<Subscription>,
 }
 
 impl Deck {
     pub fn new(target: Target, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut d = Deck { target, tabs: Vec::new(), active: 0, _watch: Vec::new() };
+        let mut d = Deck { target, tabs: Vec::new(), active: 0, ask: None, _watch: Vec::new() };
         d.add(window, cx);
         d
     }
@@ -612,6 +634,51 @@ impl Deck {
         self.select(self.active, window, cx);
     }
 
+    /// How many sessions still run.
+    fn running(&self, cx: &App) -> usize {
+        self.tabs.iter().filter(|v| v.read(cx).alive()).count()
+    }
+
+    /// The dialog is asked to close: true closes it now (nothing runs),
+    /// false asks first.
+    pub fn ask_close_all(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.running(cx) == 0 {
+            return true;
+        }
+        self.ask = Some(Ask::All);
+        cx.notify();
+        false
+    }
+
+    /// A tab's close button: asks first while its session runs.
+    fn ask_close_tab(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.get(i).is_some_and(|v| v.read(cx).alive()) {
+            self.ask = Some(Ask::Tab(i));
+            cx.notify();
+        } else {
+            self.close_tab(i, window, cx);
+        }
+    }
+
+    /// The answer: end the sessions asked about, or keep them.
+    fn answer(&mut self, end: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let ask = self.ask.take();
+        cx.notify();
+        match (end, ask) {
+            (true, Some(Ask::All)) => {
+                self.end_all(cx);
+                crate::modal::close(cx);
+            }
+            (true, Some(Ask::Tab(i))) => self.close_tab(i, window, cx),
+            _ => {
+                if let Some(v) = self.active_view() {
+                    let focus = v.read(cx).focus_handle();
+                    window.focus(&focus, cx);
+                }
+            }
+        }
+    }
+
     /// End every session (the dialog closed).
     pub fn end_all(&self, cx: &App) {
         for v in &self.tabs {
@@ -634,7 +701,44 @@ impl Render for Deck {
             .map(|(i, v)| format!("{} {}", v.read(cx).shell_name().unwrap_or_else(|| "Terminal".into()), i + 1))
             .collect();
         let active = self.active;
+        let question = self.ask.and_then(|a| match a {
+            Ask::All => end_question(self.running(cx), false).map(|q| (q, "End sessions")),
+            Ask::Tab(_) => end_question(1, true).map(|q| (q, "End session")),
+        });
+        // Over the screen while asking: the question, Cancel, the action.
+        let overlay = question.map(|(q, action)| {
+            div()
+                .id("term-ask")
+                .absolute()
+                .inset_0()
+                .occlude()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(8.))
+                .bg(black().opacity(0.45))
+                .child(
+                    v_flex()
+                        .w(px(400.))
+                        .gap_4()
+                        .p(px(20.))
+                        .rounded(px(crate::ui::PANEL_RADIUS))
+                        .bg(theme.background)
+                        .border_1()
+                        .border_color(theme.border)
+                        .shadow_lg()
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child(q))
+                        .child(
+                            h_flex()
+                                .gap(crate::ui::button_gap())
+                                .justify_end()
+                                .child(crate::ui::probed(crate::ui::button("term-ask-cancel").outline().label("Cancel").on_click(cx.listener(|d, _, w, cx| d.answer(false, w, cx)))))
+                                .child(crate::ui::probed(crate::modal::danger_button(&theme, "term-ask-end", action.into(), cx.listener(|d, _, w, cx| d.answer(true, w, cx))))),
+                        ),
+                )
+        });
         v_flex()
+            .relative()
             .size_full()
             .min_h_0()
             .gap(px(8.))
@@ -662,12 +766,13 @@ impl Render for Deck {
                                 .tooltip("Close this terminal")
                                 .on_click(cx.listener(move |d, _, w, cx| {
                                     cx.stop_propagation();
-                                    d.close_tab(i, w, cx);
+                                    d.ask_close_tab(i, w, cx);
                                 })),
                         )
                 })))
             })
             .children(self.active_view().cloned())
+            .children(overlay)
     }
 }
 
@@ -718,6 +823,7 @@ pub fn open(name: &str, target: Target, window: &mut Window, cx: &mut App) {
     let deck = cx.new(|cx| Deck::new(target, window, cx));
     let footer = cx.new(|cx| StatusBar::new(deck.clone(), cx));
     let weak = deck.downgrade();
+    let deck_weak = deck.downgrade();
     let on_close: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(move |_, cx| {
         if let Some(d) = weak.upgrade() {
             d.read(cx).end_all(cx);
@@ -731,11 +837,30 @@ pub fn open(name: &str, target: Target, window: &mut Window, cx: &mut App) {
     crate::modal::set_footer(footer.into(), cx);
     crate::modal::set_list_body(cx);
     crate::modal::offer_full_screen(cx);
+    // A click beside the dialog does nothing; closing asks first while a
+    // session runs.
+    let weak = deck_weak;
+    crate::modal::set_guard(
+        crate::modal::ModalGuard {
+            keep_on_backdrop: true,
+            before_close: Some(Rc::new(move |_, cx| weak.upgrade().is_none_or(|d| d.update(cx, |d, cx| d.ask_close_all(cx))))),
+        },
+        cx,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closing_running_sessions_asks_with_their_count() {
+        assert_eq!(end_question(0, false), None);
+        assert_eq!(end_question(0, true), None);
+        assert_eq!(end_question(1, false).as_deref(), Some("End 1 running terminal session?"));
+        assert_eq!(end_question(2, false).as_deref(), Some("End 2 running terminal sessions?"));
+        assert_eq!(end_question(1, true).as_deref(), Some("End this terminal session?"));
+    }
 
     #[test]
     fn the_256_colours_are_xterms() {
