@@ -56,6 +56,30 @@ Finds SENTIENT in Docker in your own WSL distro on Windows, and manages it there
   its installation record was gone: the Platform Manager's own distro was
   left out of the search. It is looked in now (started if stopped), and
   what it finds there is managed as the Platform Manager's own.
+- A server's SENTIENT installed as Windows services by an early Platform
+  Manager, with ClickHouse in WSL2 under its hidden account, could not be
+  added from another computer: adding needs the PostgreSQL admin
+  (postgres) password, which only a window on that server could ask for.
+  The window that adds it now asks for the password itself (Enter adds;
+  Set a new one lets the server give postgres a new password). It goes to
+  the server once, on standard input, is checked there and kept only in
+  that server's secret store; a wrong one shows the server's message and
+  can be typed again. `--job add-existing --native
+  --pg-admin-password-stdin` (and `add-if-one`) read it from standard
+  input; add-if-one prints `@@NEEDS-PG-ADMIN <kind> | <location>` when it
+  needs it.
+- Windows services from releases before 0.7.0 read back with their own
+  port variables (HTTP_PORT, MQTT_PORT, COAP_PORT); PostgreSQL's folder
+  comes from its service's pg_ctl.exe, so a data folder on another disk no
+  longer reads as "has no bin\psql.exe".
+- The ClickHouse of such an install is checked over HTTP (`SELECT 1` on
+  127.0.0.1 with SENTIENT's ClickHouse user), never with wsl as the
+  connecting account, which cannot see the hidden account's distro.
+  Whether it answers, and whether its task "SENTIENT ClickHouse" is
+  there, is a note, never a reason not to add it.
+- An installation record that no longer matches what runs on the computer
+  (an early release's) no longer blocks adding: it is kept beside the new
+  one as installation.json.replaced-<time>.
 
 ## [0.9.0] - 2026-11-17
 

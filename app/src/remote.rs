@@ -1521,6 +1521,7 @@ pub fn start_job(inst: &Instance, args: &[&str]) -> Result<String, String> {
 /// Follow a job's progress until it ends, reconnecting when the connection
 /// drops (the job keeps running there). Blocking.
 pub fn follow(inst: &Instance, id: &str, sink: &ProgressFn) -> Result<(), String> {
+    let sink = &watch_needs_pg_admin(inst, sink);
     if is_windows(inst) {
         return win::follow(inst, id, sink);
     }
@@ -1557,6 +1558,119 @@ pub fn follow(inst: &Instance, id: &str, sink: &ProgressFn) -> Result<(), String
         drops += 1;
         sink(Progress::Log { line: format!("The connection to {} was lost; the job keeps running there. Reconnecting…", inst.name) });
         std::thread::sleep(std::time::Duration::from_secs((2 * drops as u64).min(30)));
+    }
+}
+
+/// add-if-one found one native SENTIENT that needs the PostgreSQL admin
+/// password (its `@@NEEDS-PG-ADMIN` line), per instance id, until the
+/// window that followed the job takes it ([`take_needs_pg_admin`]).
+static NEEDS_PG: Mutex<Option<HashMap<String, crate::adopt::NeedsPgAdmin>>> = Mutex::new(None);
+
+/// `sink`, with add-if-one's marker line taken out and remembered for
+/// this instance (the log shows a plain line instead).
+fn watch_needs_pg_admin(inst: &Instance, sink: &ProgressFn) -> ProgressFn {
+    let (id, inner) = (inst.id.clone(), sink.clone());
+    NEEDS_PG.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&id);
+    std::sync::Arc::new(move |p| {
+        let ask = match &p {
+            Progress::Log { line } => crate::adopt::parse_needs_pg_admin(line),
+            _ => None,
+        };
+        match ask {
+            Some(ask) => {
+                NEEDS_PG.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(id.clone(), ask);
+                inner(Progress::Log { line: "Adding it needs the PostgreSQL admin (postgres) password.".into() });
+            }
+            None => inner(p),
+        }
+    })
+}
+
+/// The PostgreSQL admin password the last followed job on `id` asked for
+/// (once).
+pub fn take_needs_pg_admin(id: &str) -> Option<crate::adopt::NeedsPgAdmin> {
+    NEEDS_PG.lock().unwrap_or_else(|e| e.into_inner()).as_mut().and_then(|m| m.remove(id))
+}
+
+/// Add the native SENTIENT on the server: `add-existing --native`, with
+/// the PostgreSQL admin password as one line on the job's standard input
+/// (`--pg-admin-password-stdin`), never on a command line, in a file or in
+/// a log; None lets the server set a new one. It runs as the connecting
+/// account in the connection's session (WinRun::InSession on Windows), as
+/// root on Linux, and waits for the end (a few seconds of checks). Ok: what
+/// the server said it did; Err: its message (a wrong password says so).
+pub fn add_existing_native(inst: &Instance, pg_admin: Option<&str>) -> Result<String, String> {
+    let mut argv: Vec<String> = ["--json", "add-existing", "--native"].iter().map(|a| a.to_string()).collect();
+    if pg_admin.is_some() {
+        argv.push("--pg-admin-password-stdin".into());
+    }
+    let input = pg_admin.map(|p| format!("{p}\n"));
+    let (ok, out, err) = match conn::call(inst, serve::Work::Job(argv.clone()), input.clone()) {
+        Ok((_, r)) => (r.code == Some(0), r.out, r.err),
+        Err(conn::Fail::Err(e)) => return Err(e),
+        Err(conn::Fail::PerCall) => job_with_input(inst, &argv, input.as_deref())?,
+    };
+    job_answer(ok, &out, &err)
+}
+
+/// `--job <argv>` with `input` on its standard input, over its own ssh
+/// call (an agent without serve mode).
+fn job_with_input(inst: &Instance, argv: &[String], input: Option<&str>) -> Result<(bool, String, String), String> {
+    use std::io::Write as _;
+    let (mut c, sudo_pw) = if is_windows(inst) {
+        use base64::Engine as _;
+        let exe = win::exe(inst)?;
+        let args: Vec<String> = argv.iter().map(|a| format!("'{}'", a.replace('\'', "''"))).collect();
+        // PowerShell reads the line and pipes it to the agent: it never
+        // appears on a command line.
+        let script = format!(
+            "$ProgressPreference='SilentlyContinue'; [Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false; $OutputEncoding = New-Object System.Text.UTF8Encoding $false; \
+             $l = [Console]::In.ReadLine(); $l | & '{}' --job {} 2>&1 | ForEach-Object {{ \"$_\" }}; exit $LASTEXITCODE",
+            exe.replace('\'', "''"),
+            args.join(" ")
+        );
+        let utf16: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let enc = base64::engine::general_purpose::STANDARD.encode(utf16);
+        (ssh(inst, &format!("powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {enc}"), None), None)
+    } else {
+        let pw = sudo_password(inst);
+        let quoted: Vec<String> = argv.iter().map(|a| a.replace('\'', "")).collect();
+        (ssh(inst, &agent_cmd(inst, &format!("--job {}", quoted.join(" ")), pw.is_some()), None), pw)
+    };
+    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = c.spawn().map_err(|e| format!("start ssh: {e}"))?;
+    if let Some(mut s) = child.stdin.take() {
+        // sudo reads its password line first; the job reads the next one.
+        if let Some(pw) = &sudo_pw {
+            let _ = writeln!(s, "{pw}");
+        }
+        let _ = s.write_all(input.unwrap_or("\n").as_bytes());
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    Ok((out.status.success(), String::from_utf8_lossy(&out.stdout).to_string(), String::from_utf8_lossy(&out.stderr).to_string()))
+}
+
+/// A `--json` job's answer: its Error line (or a failed exit) as Err, its
+/// Done line (or its last log line) as Ok.
+fn job_answer(ok: bool, out: &str, err: &str) -> Result<String, String> {
+    let mut done = None;
+    let mut last = None;
+    for line in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        match serde_json::from_str::<Progress>(line) {
+            Ok(Progress::Error { message }) => return Err(message),
+            Ok(Progress::Done { message }) => done = Some(message),
+            Ok(Progress::Log { line }) => last = Some(line),
+            Ok(_) => {}
+            Err(_) => last = Some(line.to_string()),
+        }
+    }
+    match (ok, done) {
+        (true, Some(m)) => Ok(m),
+        (true, None) => Ok(last.unwrap_or_else(|| "Added.".into())),
+        (false, _) => {
+            let e = clean_stderr(err);
+            Err(if !e.is_empty() { explain(&e).unwrap_or(e) } else { last.unwrap_or_else(|| "The server did not say why.".into()) })
+        }
     }
 }
 
@@ -2327,6 +2441,42 @@ mod win {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_json_jobs_answer_is_its_done_or_error_line() {
+        let done = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&Progress::Step { name: "Checking".into() }).unwrap(),
+            serde_json::to_string(&Progress::Done { message: "Added: SENTIENT 4.3.0".into() }).unwrap()
+        );
+        assert_eq!(job_answer(true, &done, ""), Ok("Added: SENTIENT 4.3.0".into()));
+        let wrong = serde_json::to_string(&Progress::Error { message: "The PostgreSQL admin (postgres) password you gave does not work.".into() }).unwrap();
+        assert_eq!(job_answer(false, &wrong, ""), Err("The PostgreSQL admin (postgres) password you gave does not work.".into()));
+        assert_eq!(job_answer(false, "", "boom"), Err("boom".into()));
+        assert!(job_answer(false, "", "").is_err());
+    }
+
+    #[test]
+    fn the_pg_admin_marker_is_taken_out_of_the_log_and_kept_once() {
+        let inst = Instance { id: "srv-pg-marker".into(), name: "plant-b".into(), color: PALETTE[0].into(), os: Os::Windows, host: "203.0.113.20".into(), port: 22, user: "ops".into(), auth: Auth::Key, key_file: None, key_has_passphrase: false, host_key: None, detected: None };
+        let seen: std::sync::Arc<Mutex<Vec<String>>> = Default::default();
+        let s2 = seen.clone();
+        let sink: ProgressFn = std::sync::Arc::new(move |p| {
+            if let Progress::Log { line } = p {
+                s2.lock().unwrap().push(line);
+            }
+        });
+        let watched = watch_needs_pg_admin(&inst, &sink);
+        watched(Progress::Log { line: "Looking".into() });
+        watched(Progress::Log { line: "@@NEEDS-PG-ADMIN Windows services (SentientServer) | C:\\SENTIENT".into() });
+        let lines = seen.lock().unwrap().clone();
+        assert_eq!(lines[0], "Looking");
+        assert!(!lines[1].contains("@@"));
+        let ask = take_needs_pg_admin("srv-pg-marker").unwrap();
+        assert_eq!(ask.kind, "Windows services (SentientServer)");
+        assert_eq!(ask.location, "C:\\SENTIENT");
+        assert_eq!(take_needs_pg_admin("srv-pg-marker"), None);
+    }
 
     #[test]
     fn windows_jobs_for_a_user_wsl_distro_never_run_as_system() {

@@ -89,6 +89,13 @@ impl Candidate {
         f
     }
 
+    /// A native installation that can be added as soon as the PostgreSQL
+    /// admin (postgres) password is known (or a new one is set): nothing
+    /// else stands in the way.
+    pub fn only_needs_pg_admin(&self) -> bool {
+        self.record.engine == Engine::Native && self.problem.is_none() && !self.needs_admin && self.sets_admin_password
+    }
+
     /// A key to find the same installation again.
     fn key(&self) -> String {
         format!(
@@ -120,6 +127,35 @@ impl Search {
 /// "Looked in: a; b; c." (empty when nothing was listed).
 pub fn looked_text(looked: &[String]) -> String {
     if looked.is_empty() { String::new() } else { format!("Looked in: {}.", looked.join("; ")) }
+}
+
+/// add-if-one's line when the one SENTIENT found needs the PostgreSQL
+/// admin password: `@@NEEDS-PG-ADMIN <kind> | <location>`. A window on
+/// another computer asks for the password and runs
+/// `add-existing --native --pg-admin-password-stdin` (crate::remote).
+pub const NEEDS_PG_ADMIN: &str = "@@NEEDS-PG-ADMIN";
+
+/// What a window shows when it asks for the PostgreSQL admin password.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NeedsPgAdmin {
+    pub kind: String,
+    pub location: String,
+}
+
+/// The marker line for `c` (one line; a "|" in the kind becomes "/").
+pub fn needs_pg_admin_line(c: &Candidate) -> String {
+    let clean = |t: &str| t.replace(['\r', '\n'], " ").replace('|', "/").trim().to_string();
+    format!("{NEEDS_PG_ADMIN} {} | {}", clean(&c.kind), c.location.replace(['\r', '\n'], " ").trim())
+}
+
+/// The marker line read back; None for any other line.
+pub fn parse_needs_pg_admin(line: &str) -> Option<NeedsPgAdmin> {
+    let rest = line.trim().strip_prefix(NEEDS_PG_ADMIN)?;
+    if !(rest.is_empty() || rest.starts_with(' ')) {
+        return None;
+    }
+    let (kind, location) = rest.split_once(" | ").unwrap_or((rest, ""));
+    Some(NeedsPgAdmin { kind: kind.trim().to_string(), location: location.trim().to_string() })
 }
 
 /// "no SENTIENT", "1 SENTIENT", "2 SENTIENT".
@@ -454,8 +490,19 @@ pub fn search() -> Search {
 /// Adopt the installation `wanted` describes: find it again, check the
 /// Platform Manager can reach its databases, and write the record.
 pub fn adopt(wanted: &Candidate, pg_admin: Option<String>, sink: ProgressFn) -> Result<InstallationRecord, String> {
-    if crate::installation::InstallationRecord::load().is_some() {
-        return Err("The Platform Manager already manages a SENTIENT instance on this computer.".into());
+    if let Some(old) = crate::installation::InstallationRecord::load() {
+        // A record that no longer describes what runs here (an early
+        // release's, one whose services are gone) does not stand in the way:
+        // it is kept beside the new one.
+        if old.platform().snapshot().installed {
+            return Err("The Platform Manager already manages a SENTIENT instance on this computer.".into());
+        }
+        let path = crate::installation::record_path();
+        let aside = path.with_extension(format!("json.replaced-{}", chrono::Utc::now().format("%Y%m%d%H%M%S")));
+        match std::fs::rename(&path, &aside) {
+            Ok(()) => sink(Progress::Log { line: format!("An earlier installation record that no longer matches this computer was kept as {}.", aside.display()) }),
+            Err(e) => return Err(format!("An earlier installation record ({}) could not be set aside: {e}", path.display())),
+        }
     }
     let candidate = if wanted.record.engine == Engine::Native {
         adopt_native(pg_admin, &sink)?
@@ -616,4 +663,46 @@ pub fn adopt_as_needed(c: &Candidate, pg_admin: Option<String>, sink: ProgressFn
         return crate::rootjob::run(&args, &sink).map(|_| ());
     }
     adopt(c, pg_admin, sink).map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn native(kind: &str, location: &str) -> Candidate {
+        let mut record = native_record(&crate::installation::InstallationRecord::placeholder_native(std::path::Path::new("C:/Program Files/SENTIENT")));
+        record.engine = Engine::Native;
+        Candidate { record, kind: kind.into(), location: location.into(), running: true, notes: Vec::new(), problem: None, needs_admin: false, sets_admin_password: true }
+    }
+
+    #[test]
+    fn the_pg_admin_marker_reads_back() {
+        let c = native("Windows services (SentientServer)", "C:\\Program Files\\SENTIENT");
+        let line = needs_pg_admin_line(&c);
+        assert!(line.starts_with("@@NEEDS-PG-ADMIN "));
+        assert_eq!(
+            parse_needs_pg_admin(&line),
+            Some(NeedsPgAdmin { kind: "Windows services (SentientServer)".into(), location: "C:\\Program Files\\SENTIENT".into() })
+        );
+        // A "|" in the kind cannot split it in the wrong place.
+        let line = needs_pg_admin_line(&native("a | b", "D:\\x"));
+        assert_eq!(parse_needs_pg_admin(&line).unwrap().location, "D:\\x");
+        assert_eq!(parse_needs_pg_admin("@@NEEDS-PG-ADMIN"), Some(NeedsPgAdmin::default()));
+        assert_eq!(parse_needs_pg_admin("@@NEEDS-PG-ADMINX y"), None);
+        assert_eq!(parse_needs_pg_admin("SENTIENT was found"), None);
+    }
+
+    #[test]
+    fn only_a_native_candidate_without_a_problem_waits_for_the_password() {
+        let mut c = native("Windows services (SentientServer)", "C:\\SENTIENT");
+        assert!(c.only_needs_pg_admin());
+        c.problem = Some("no psql".into());
+        assert!(!c.only_needs_pg_admin());
+        let mut c = native("x", "y");
+        c.sets_admin_password = false;
+        assert!(!c.only_needs_pg_admin());
+        let mut c = native("x", "y");
+        c.record.engine = Engine::Docker;
+        assert!(!c.only_needs_pg_admin());
+    }
 }
