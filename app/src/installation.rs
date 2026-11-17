@@ -314,7 +314,7 @@ impl Platform {
     /// databases stays running unless `stop_shared_pg`.
     pub fn control_stack(&self, sink: ProgressFn, action: &str, stop_shared_pg: bool) -> Result<(), String> {
         match self {
-            Platform::Native(cfg) => native::control_stack(sink, cfg, action, stop_shared_pg),
+            Platform::Native(cfg) => native::control_stack(sink, &with_db_password(cfg), action, stop_shared_pg),
             Platform::Docker(cfg) => distro::control_stack(sink, cfg, action),
         }
     }
@@ -335,7 +335,7 @@ impl Platform {
             };
         }
         match self {
-            Platform::Native(cfg) => native::pg_other_databases(cfg),
+            Platform::Native(cfg) => native::pg_other_databases(&with_db_password(cfg)),
             Platform::Docker(_) => Ok(Vec::new()),
         }
     }
@@ -388,4 +388,19 @@ pub(crate) mod tests {
             assert_eq!(back.opens_as_kiosk(), chosen);
         }
     }
+}
+
+/// Windows keeps the database password in the secret store, not in the
+/// record: listing PostgreSQL's databases (as SENTIENT's own user) needs it.
+/// Elsewhere the configuration is used as it is.
+fn with_db_password(cfg: &NativeConfig) -> NativeConfig {
+    #[allow(unused_mut)]
+    let mut c = cfg.clone();
+    #[cfg(windows)]
+    if c.db_password.is_empty() {
+        if let Some(p) = crate::secrets::get(crate::secrets::Secret::Database) {
+            c.db_password = p;
+        }
+    }
+    c
 }

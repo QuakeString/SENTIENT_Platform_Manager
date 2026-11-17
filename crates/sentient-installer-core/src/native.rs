@@ -1622,24 +1622,43 @@ pub fn pg_other_databases(cfg: &NativeConfig) -> Result<Vec<String>, String> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        // The bundled psql as the superuser; the password in the
-        // environment only (never on a command line).
+        // The bundled psql as SENTIENT's own database user (any user may
+        // list pg_database, and its password is always in the config; the
+        // superuser's often is not), its password in the environment only.
+        // -w: never prompt (a prompt with no console waits for ever), and a
+        // time limit on top.
         let psql = cfg.pg_dir.join("bin").join(if cfg!(windows) { "psql.exe" } else { "psql" });
         if !psql.exists() {
             return Err(format!("psql is not where PostgreSQL was installed ({})", psql.display()));
         }
         let mut c = std::process::Command::new(&psql);
-        c.args(["-h", "127.0.0.1", "-p", &cfg.pg_port.to_string(), "-U", "postgres", "-d", "postgres", "-XAtqc", "SELECT datname FROM pg_database"])
-            .env("PGPASSWORD", &cfg.pg_superuser_password)
-            .stdin(std::process::Stdio::null());
+        c.args(["-w", "-h", "127.0.0.1", "-p", &cfg.pg_port.to_string(), "-U", &cfg.db_user, "-d", &cfg.db_name, "-XAtqc", "SELECT datname FROM pg_database"])
+            .env("PGPASSWORD", &cfg.db_password)
+            .env("PGCONNECT_TIMEOUT", "10")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
             c.creation_flags(0x0800_0000);
         }
-        let out = c.output().map_err(|e| format!("psql: {e}"))?;
+        let mut child = c.spawn().map_err(|e| format!("psql: {e}"))?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(100)),
+                _ => {
+                    let _ = child.kill();
+                    return Err("PostgreSQL did not answer within 15 seconds when asked which databases it holds".into());
+                }
+            }
+        }
+        let out = child.wait_with_output().map_err(|e| format!("psql: {e}"))?;
         if !out.status.success() {
-            return Err(String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("psql failed").trim().to_string());
+            let why = String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("").trim().to_string();
+            return Err(if why.is_empty() { "psql failed".into() } else { why });
         }
         let all: Vec<String> = String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
         Ok(crate::stack_order::other_databases(&all, &cfg.db_name))
