@@ -867,7 +867,9 @@ pub fn box_row() -> Div {
 pub fn reduce_motion() -> bool {
     static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *R.get_or_init(|| {
-        if std::env::var("SPM_REDUCE_MOTION").is_ok_and(|v| v == "1") {
+        // SPM_REDUCED_MOTION too: the layout tests set that one (and the
+        // placeholders' reduced_motion reads it), so both switch it off.
+        if std::env::var("SPM_REDUCE_MOTION").is_ok_and(|v| v == "1") || std::env::var_os("SPM_REDUCED_MOTION").is_some() {
             return true;
         }
         #[cfg(target_os = "linux")]

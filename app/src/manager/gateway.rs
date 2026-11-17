@@ -68,6 +68,8 @@ impl GatewayPage {
             subs.push(cx.subscribe(i, |_, _, _: &InputEvent, cx| cx.notify()));
         }
         let poll = cx.spawn(async move |this, cx| loop {
+            // Hidden (another page, or a server open): no reading.
+            super::until_shown(super::Page::Gateway, cx).await;
             let (status, record) = cx.background_executor().spawn(async { (local_status(), crate::gateway_record::load()) }).await;
             if this.update(cx, |p, cx| {
                 let first = p.status.is_none();

@@ -263,6 +263,37 @@ pub struct Manager {
     _tasks: Vec<Task<()>>,
 }
 
+/// The page shown now and whether it is this computer's (render_root sets
+/// it each frame, before the page renders). A page's poll reads only while
+/// its page shows: none while another page or a server is open.
+thread_local!(static SHOWN: std::cell::Cell<Option<(Page, bool)>> = const { std::cell::Cell::new(None) });
+
+/// Whether `page` shows now for this computer.
+fn shown_here(page: Page) -> bool {
+    SHOWN.with(|s| s.get()) == Some((page, true))
+}
+
+/// The top bar's meter bars, px.
+const METER_W: f32 = 36.;
+
+/// A meter's fraction on whole pixels of its bar: a reading that moves it
+/// less than a pixel gives the same target, so the bar does not glide (and
+/// the window does not draw 400 ms of frames for it).
+fn meter_step(f: f32) -> f32 {
+    (f * METER_W).round() / METER_W
+}
+
+/// How often a hidden page's poll looks whether it shows again: a page
+/// brought back reads within this.
+const HIDDEN_CHECK: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Wait while `page` does not show for this computer (a hidden page's poll).
+async fn until_shown(page: Page, cx: &gpui_kit::AsyncApp) {
+    while !shown_here(page) {
+        cx.background_executor().timer(HIDDEN_CHECK).await;
+    }
+}
+
 /// Switch timing (SPM_DEBUG_SWITCH=1): when the last switch started, for
 /// the frames that follow it.
 thread_local!(static SWITCH_AT: std::cell::Cell<Option<(std::time::Instant, u32)>> = const { std::cell::Cell::new(None) });
@@ -285,6 +316,7 @@ pub fn saved_events() -> Vec<strip::Event> {
 
 impl Manager {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+        crate::timing::mark("manager-new");
         // OpenGL (no Vulkan driver): the window cannot be translucent, so
         // the menu is solid and About says why.
         shell::detect_gl(_window);
@@ -383,6 +415,27 @@ impl Manager {
             _tasks: Vec::new(),
         };
         manager.start_monitor(cx);
+        // Performance probes (tests/layout/perf.sh): go to pages in turn,
+        // SPM_DEBUG_GO_PAGES=about:6,status:12 (page:seconds after start).
+        #[cfg(debug_assertions)]
+        if let Ok(spec) = std::env::var("SPM_DEBUG_GO_PAGES") {
+            let steps: Vec<(Page, f64)> = spec.split(',').filter_map(|s| s.split_once(':')).filter_map(|(p, t)| Some((page_of(p)?, t.parse().ok()?))).collect();
+            let t0 = std::time::Instant::now();
+            let task = cx.spawn(async move |this, cx| {
+                for (p, at) in steps {
+                    let wait = std::time::Duration::from_secs_f64(at).saturating_sub(t0.elapsed());
+                    cx.background_executor().timer(wait).await;
+                    crate::timing::mark(&format!("go page={}", p.id()));
+                    if this.update(cx, |m, cx| {
+                        m.page = p;
+                        cx.notify();
+                    }).is_err() {
+                        break;
+                    }
+                }
+            });
+            manager._tasks.push(task);
+        }
         // The instance it was left on, if it is still in the list (it shows
         // connecting; start never waits for it). Not when a page was asked
         // for on the command line.
@@ -561,6 +614,7 @@ impl Manager {
             });
             manager._debug_job = Some(job);
         }
+        crate::timing::mark("manager-new-done");
         manager
     }
 
@@ -570,12 +624,20 @@ impl Manager {
         // reading then waits for nothing.
         let record = self.record.clone();
         let task = cx.spawn(async move |this, cx| loop {
+            // A server open: the bar shows its readings, not this computer's.
+            let Ok(remote) = this.update(cx, |page, _| page.open_remote.is_some()) else { break };
+            if remote {
+                cx.background_executor().timer(HIDDEN_CHECK).await;
+                continue;
+            }
             let r = record.clone();
             let m = cx.background_executor().spawn(async move { crate::sysmon::from_sample(&crate::stats::local_read(r.as_ref(), std::time::Duration::from_millis(250))) }).await;
             if this
                 .update(cx, |page, cx| {
-                    page.monitor = Some(m);
-                    cx.notify();
+                    if page.monitor != Some(m) {
+                        page.monitor = Some(m);
+                        cx.notify();
+                    }
                 })
                 .is_err()
             {
@@ -976,7 +1038,7 @@ impl Manager {
                 .child(meter_icon(label).size(px(16.)).text_color(muted_fg))
                 .when(wide, |r| {
                     r.child(
-                        div().w(px(36.)).child(ui::segment_bar(fg.opacity(0.14), 5., &[(if high { warn_fill } else { meter_fill }, fraction.clamp(0.0, 1.0))])),
+                        div().w(px(METER_W)).child(ui::segment_bar(fg.opacity(0.14), 5., &[(if high { warn_fill } else { meter_fill }, fraction.clamp(0.0, 1.0))])),
                     )
                 })
                 // A fixed slot for the widest value: the bars and the bell
@@ -1052,11 +1114,13 @@ impl Manager {
                 .when(show_disk, |r| r.child(slot("Disk", &disk_widest)))
         });
         // The bars glide to a new reading.
+        // A change of less than a pixel of the bar (METER_W) does not move
+        // it, so it does not animate the window for 400 ms either.
         let glide = shown.map(|m| {
             (
-                ui::tween("m-cpu", m.cpu / 100.0, 400, window),
-                ui::tween("m-mem", if m.mem_total > 0 { m.mem_used as f32 / m.mem_total as f32 } else { 0.0 }, 400, window),
-                ui::tween("m-disk", if m.disk_total > 0 { 1.0 - m.disk_free as f32 / m.disk_total as f32 } else { 0.0 }, 400, window),
+                ui::tween("m-cpu", meter_step(m.cpu / 100.0), 400, window),
+                ui::tween("m-mem", meter_step(if m.mem_total > 0 { m.mem_used as f32 / m.mem_total as f32 } else { 0.0 }), 400, window),
+                ui::tween("m-disk", meter_step(if m.disk_total > 0 { 1.0 - m.disk_free as f32 / m.disk_total as f32 } else { 0.0 }), 400, window),
             )
         });
         let monitor = shown.zip(glide).map(|(m, (g_cpu, g_mem, g_disk))| {
@@ -2100,11 +2164,39 @@ impl Manager {
 
 impl Render for Manager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t0 = std::time::Instant::now();
         self.take_list_change(cx);
         // Windows 10: the app's caption and rounded corners (crate::win_frame).
         let root = self.render_root(window, cx).into_any_element();
-        crate::win_frame::frame(crate::mode::AppMode::Manager.window_title(), root, window, cx)
+        let el = crate::win_frame::frame(crate::mode::AppMode::Manager.window_title(), root, window, cx);
+        if crate::timing::on() {
+            render_timing(self.page.id(), t0, window);
+        }
+        el
     }
+}
+
+/// SPM_DEBUG_TIMING: the first render and the first frame shown, and each
+/// 10 s how many times the window rendered and how long its render took
+/// (a re-render storm shows as many renders on an idle window).
+fn render_timing(page: &str, t0: std::time::Instant, window: &mut Window) {
+    thread_local!(static N: std::cell::Cell<(u64, f64, Option<std::time::Instant>)> = const { std::cell::Cell::new((0, 0., None)) });
+    let ms = t0.elapsed().as_secs_f64() * 1000.;
+    N.with(|n| {
+        let (count, total, since) = n.get();
+        if count == 0 && since.is_none() {
+            crate::timing::mark(&format!("first-render page={page} render_ms={ms:.1}"));
+            window.on_next_frame(|_, _| crate::timing::mark("first-frame"));
+        }
+        let since = since.unwrap_or_else(std::time::Instant::now);
+        let (count, total) = (count + 1, total + ms);
+        if since.elapsed().as_secs_f64() >= 10. {
+            crate::timing::mark(&format!("renders page={page} n={count} total_ms={total:.1} per_s={:.2}", count as f64 / since.elapsed().as_secs_f64()));
+            n.set((0, 0., Some(std::time::Instant::now())));
+        } else {
+            n.set((count, total, Some(since)));
+        }
+    });
 }
 
 impl Manager {
@@ -2185,7 +2277,17 @@ impl Manager {
                 self.menu_page().id()
             );
         }
+        SHOWN.with(|s| s.set(Some((self.page, self.open_remote.is_none()))));
+        let content_t0 = std::time::Instant::now();
         let content = self.content(window, cx);
+        // SPM_DEBUG_TIMING: building a page's view the first frame it shows.
+        if crate::timing::on() {
+            thread_local!(static LAST: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) });
+            let key = format!("{}@{}", self.page.id(), self.open_remote.as_deref().unwrap_or("local"));
+            if LAST.with(|l| l.replace(key.clone())) != key {
+                crate::timing::took(&format!("page-open {key}"), content_t0);
+            }
+        }
         // Switch timing: each frame after a switch until the page shows
         // its data (render done, and the next frame's start ≈ presented).
         if let Some((t0, n)) = SWITCH_AT.with(|s| s.get()) {
@@ -2302,3 +2404,20 @@ fn cond_key(inst: &Option<String>, title: &str) -> String {
     format!("{}|{title}", inst.as_deref().unwrap_or(""))
 }
 
+
+#[cfg(test)]
+mod perf_tests {
+    use super::{meter_step, METER_W};
+
+    /// The top bar's meters glide only for a change of a pixel or more
+    /// (perf audit: an idle window drew 400 ms of frames every 4 s for
+    /// readings that moved a bar by a fraction of a pixel).
+    #[test]
+    fn a_meter_moves_by_whole_pixels() {
+        assert_eq!(meter_step(0.031), meter_step(0.034));
+        assert_eq!(meter_step(0.5), meter_step(0.5 + 0.4 / METER_W));
+        assert_ne!(meter_step(0.5), meter_step(0.5 + 1.0 / METER_W));
+        assert_eq!(meter_step(1.0), 1.0);
+        assert_eq!(meter_step(0.0), 0.0);
+    }
+}

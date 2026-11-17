@@ -93,6 +93,7 @@ mod stats;
 mod sysmon;
 #[cfg(feature = "gui")]
 mod theme;
+mod timing;
 #[cfg(feature = "gui")]
 mod ui;
 mod uninstall;
@@ -108,6 +109,7 @@ use gpui_kit::*;
 use mode::AppMode;
 
 fn main() {
+    timing::start();
     // Agent mode runs as the hidden ClickHouse account: no window, no
     // elevation (that account is not an administrator).
     let args: Vec<String> = std::env::args().collect();
@@ -198,6 +200,7 @@ fn window_options_manager(cx: &mut gpui_kit::App) -> WindowOptions {
 #[cfg(feature = "gui")]
 pub(crate) fn open_manager_window(options: WindowOptions, cx: &mut gpui_kit::App) -> anyhow::Result<(gpui_kit::AnyWindowHandle, gpui_kit::Entity<manager::Manager>)> {
     let opened = win_frame::open_window(options, cx, |window, cx| {
+        crate::timing::mark("window-opened");
         #[cfg(windows)]
         win_icon::use_manager_icon(window);
         cx.new(|cx| manager::Manager::new(window, cx))
@@ -263,11 +266,15 @@ fn gui_main(args: Vec<String>) {
         std::process::exit(updates::finish_self_update());
     }
     ui::prefer_native_frame();
+    timing::mark("gui-main");
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx| {
+        timing::mark("app-run");
         gpui_kit::init(cx);
+        timing::mark("kit-init");
         // The servers' connections end with the Platform Manager (crate::remote::conn).
         cx.on_app_quit(|_| async { remote::conn::close_all() }).detach();
         theme::init(ThemeMode::Light, cx);
+        timing::mark("theme-init");
         // Development aid: open in a given theme (screenshots of both).
         let forced = cfg!(debug_assertions).then(|| std::env::var("SPM_THEME").ok()).flatten();
         match forced.as_deref() {
@@ -280,6 +287,7 @@ fn gui_main(args: Vec<String>) {
             }
         }
 
+        timing::mark("theme-applied");
         if mode == AppMode::Manager {
             bg_app::start(window_options_manager, !background_start, request.clone(), cx);
             return;

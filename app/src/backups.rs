@@ -388,7 +388,21 @@ pub fn make_writable(dir: &Path, uid: Option<u32>) -> Result<(), String> {
 
 /// Free space on the disk that holds `p`.
 pub fn free_space(p: &Path) -> Option<u64> {
-    let disks = sysinfo::Disks::new_with_refreshed_list();
+    free_space_on(&disks(), p)
+}
+
+thread_local!(static DISK_LISTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
+
+/// The mounted disks, listed afresh: every mount point, each asked for its
+/// sizes (tens of milliseconds with many mounts; a slow network mount
+/// holds it), so a listing lists them once for all its folders.
+fn disks() -> sysinfo::Disks {
+    DISK_LISTS.with(|n| n.set(n.get() + 1));
+    sysinfo::Disks::new_with_refreshed_list()
+}
+
+/// The free space of the disk `p` is on, from a list of the disks.
+fn free_space_on(disks: &sysinfo::Disks, p: &Path) -> Option<u64> {
     disks.list().iter().filter(|d| p.starts_with(d.mount_point())).max_by_key(|d| d.mount_point().as_os_str().len()).map(|d| d.available_space())
 }
 
@@ -413,14 +427,15 @@ pub struct DirList {
 
 pub fn dir_list(path: &Path) -> Result<DirList, String> {
     let rd = std::fs::read_dir(path).map_err(|e| format!("{} cannot be opened: {e}", path.display()))?;
-    let free = free_space(path).unwrap_or(0);
+    let disks = disks();
+    let free = free_space_on(&disks, path).unwrap_or(0);
     let mut dirs: Vec<(String, u64)> = rd
         .flatten()
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .map(|e| e.file_name().to_string_lossy().to_string())
         .filter(|n| !n.starts_with('.'))
         .map(|n| {
-            let f = free_space(&path.join(&n)).unwrap_or(free);
+            let f = free_space_on(&disks, &path.join(&n)).unwrap_or(free);
             (n, f)
         })
         .collect();
@@ -431,7 +446,6 @@ pub fn dir_list(path: &Path) -> Result<DirList, String> {
         shortcuts.push(("Home".into(), h));
     }
     shortcuts.push(("Current backup folder".into(), prefs.folder.clone()));
-    let disks = sysinfo::Disks::new_with_refreshed_list();
     for d in disks.list() {
         let m = d.mount_point().to_path_buf();
         let s = m.to_string_lossy().to_string();
@@ -692,6 +706,30 @@ pub fn estimate(prefs: &BackupPrefs, pg_bytes: u64, ch_bytes: u64, history_bytes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder's listing (the folder chooser, here and over SSH) lists the
+    /// disks once, not once per folder in it: with 81 mounts a listing took
+    /// one enumeration per folder (perf audit, docs/analysis/SPM_PERFORMANCE_AUDIT.md).
+    #[test]
+    fn a_folder_listing_lists_the_disks_once() {
+        let dir = std::env::temp_dir().join(format!("spm-dirlist-{}", std::process::id()));
+        for i in 0..40 {
+            std::fs::create_dir_all(dir.join(format!("f{i:02}"))).unwrap();
+        }
+        let t = std::time::Instant::now();
+        let one = disks();
+        let one_ms = t.elapsed().as_secs_f64() * 1000.;
+        drop(one);
+        DISK_LISTS.with(|n| n.set(0));
+        let t = std::time::Instant::now();
+        let l = dir_list(&dir).unwrap();
+        let ms = t.elapsed().as_secs_f64() * 1000.;
+        let lists = DISK_LISTS.with(|n| n.get());
+        eprintln!("dir_list of 40 folders: {ms:.1} ms, {lists} disk list(s), one list {one_ms:.1} ms");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(l.dirs.len(), 40);
+        assert_eq!(lists, 1, "the disks are listed once per folder listing");
+    }
 
     #[test]
     fn times_parse_and_old_settings_load() {

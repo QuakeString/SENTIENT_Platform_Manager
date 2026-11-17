@@ -140,6 +140,8 @@ impl StatusPage {
             let rec = record.clone();
             cx.spawn(async move |this, cx| {
                 loop {
+                    // Hidden (another page, or a server open): no reading.
+                    super::until_shown(super::Page::Status, cx).await;
                     let platform = platform.clone();
                     let rec = rec.clone();
                     let (snapshot, version) = cx
@@ -194,6 +196,7 @@ impl StatusPage {
             cx.notify();
         });
         let gateway_poll = cx.spawn(async move |this, cx| loop {
+            super::until_shown(super::Page::Status, cx).await;
             let status = cx.background_executor().spawn(async { crate::manager::gateway::local_status() }).await;
             if this.update(cx, |p, cx| { p.gateway = Some(status); cx.notify(); }).is_err() {
                 break;
