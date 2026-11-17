@@ -666,7 +666,8 @@ pub fn card(theme: &gpui_kit::component::Theme, info: Option<&Result<ServerInfo,
         spans(theme, running_for(up), "", None, upd.map(|u| div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).text_color(theme.muted_foreground).child(u).into_any_element()).into_iter().collect()).into_any_element(),
         &mut rows,
     );
-    for (k, a) in info.attention().into_iter().enumerate() {
+    // A nearly full disk has its own row (amber) above: not said twice.
+    for (k, a) in info.attention().into_iter().filter(|a| !a.ends_with("nearly full")).enumerate() {
         push(if k == 0 { "Attention".into() } else { "".into() }, Some(warn), line(theme, a, "", Some(warn)).into_any_element(), &mut rows);
     }
     let details = a.on_details.clone();
