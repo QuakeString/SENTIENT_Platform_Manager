@@ -265,6 +265,8 @@ fn gui_main(args: Vec<String>) {
     ui::prefer_native_frame();
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx| {
         gpui_kit::init(cx);
+        // The servers' connections end with the Platform Manager (crate::remote::conn).
+        cx.on_app_quit(|_| async { remote::conn::close_all() }).detach();
         theme::init(ThemeMode::Light, cx);
         // Development aid: open in a given theme (screenshots of both).
         let forced = cfg!(debug_assertions).then(|| std::env::var("SPM_THEME").ok()).flatten();
