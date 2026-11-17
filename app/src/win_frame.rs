@@ -31,6 +31,11 @@ pub fn open_window<V: Render>(
     cx: &mut App,
     build: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
 ) -> Result<(AnyWindowHandle, Entity<V>)> {
+    // Without a GPU, no motion (crate::ui::note_renderer).
+    let build = move |window: &mut Window, cx: &mut App| {
+        crate::ui::note_renderer(window, cx);
+        build(window, cx)
+    };
     #[cfg(windows)]
     {
         // GPUI's own title bar mode: the app's top bar is the caption.

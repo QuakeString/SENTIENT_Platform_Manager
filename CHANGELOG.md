@@ -32,6 +32,20 @@ refreshes that repository's Downloads table.
 - Windows Docker: with "Start SENTIENT automatically with Windows" off,
   Start on the Status page is offered after a boot (it was greyed while
   the WSL distro was not running) and starts the distro first.
+- Windows Docker: every Start and Restart (the Status page, the tray,
+  `control start`) points the forwarded web and MQTT ports at the WSL
+  distro's address of now once the distro is up, also when the task
+  "SENTIENT Docker" already runs, and is done only when SENTIENT answers
+  on this computer's network address, the way other computers reach it.
+  The task itself reads the distro's eth0 address and asks again while
+  the distro starts, instead of leaving the ports unforwarded.
+- Windows Docker: "SENTIENT answers again" and "SENTIENT is running" mean
+  SENTIENT answers on its web port through the forward. They came as soon
+  as its container was up, minutes before other computers could open it.
+- On a computer without a GPU (a virtual machine), the Platform Manager
+  draws without animations: the moving job bar and spinner made it
+  redraw its whole window every frame, kept the processor near 100 % for
+  as long as a job ran and slowed SENTIENT's own start beside it.
 - Windows Docker: PostgreSQL's recommended memory is sized for the WSL 2
   VM (half the computer's memory, or .wslconfig's memory=), not the whole
   computer; with ClickHouse beside a Windows PostgreSQL, PostgreSQL is

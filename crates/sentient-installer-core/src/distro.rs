@@ -28,6 +28,7 @@ pub mod docker_ops;
 pub mod hosts;
 pub mod move_data;
 pub mod gateway_docker;
+pub mod port_forward;
 #[cfg(not(windows))]
 pub mod gateway_native;
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -1318,13 +1319,19 @@ pub fn forwarded_ports(cfg: &DeployConfig) -> Vec<u16> {
     v
 }
 
-/// What the keep-alive task runs: the distro started (its address read),
+/// What the keep-alive task runs: the distro started (its eth0 address
+/// read, asked again for up to half a minute while the distro starts),
 /// `ports` forwarded from every address of this computer to that address
 /// (it changes at every boot), then Docker started and a process that
-/// never ends, so WSL does not stop the idle distro.
+/// never ends, so WSL does not stop the idle distro. A start from the
+/// Platform Manager writes the forward again once the distro is up
+/// ([`port_forward::refresh`]). The wait is `ping`: `timeout` refuses to
+/// run without a console, which a task has not.
 pub fn keepalive_command(distro: &str, ports: &[u16]) -> String {
-    let mut s = String::from("@echo off\r\nrem SENTIENT Docker keep-alive, written by the SENTIENT Platform Manager.\r\nset SENTIENT_IP=\r\n");
-    s.push_str(&format!("for /f \"tokens=1\" %%i in ('wsl.exe -d {distro} -u root -- hostname -I') do set SENTIENT_IP=%%i\r\n"));
+    let mut s = String::from("@echo off\r\nrem SENTIENT Docker keep-alive, written by the SENTIENT Platform Manager.\r\nset SENTIENT_IP=\r\nset SENTIENT_TRY=0\r\n:address\r\n");
+    s.push_str(&format!("for /f \"tokens=4\" %%i in ('wsl.exe -d {distro} -u root -- ip -4 -o addr show eth0') do for /f \"delims=/\" %%j in (\"%%i\") do set SENTIENT_IP=%%j\r\n"));
+    s.push_str(&format!("if not defined SENTIENT_IP for /f \"tokens=1\" %%i in ('wsl.exe -d {distro} -u root -- hostname -I') do set SENTIENT_IP=%%i\r\n"));
+    s.push_str("if not defined SENTIENT_IP if %SENTIENT_TRY% lss 10 (set /a SENTIENT_TRY+=1 >nul & ping -n 4 127.0.0.1 >nul & goto address)\r\n");
     for p in ports {
         s.push_str(&format!("netsh interface portproxy delete v4tov4 listenport={p} listenaddress=0.0.0.0 >nul 2>&1\r\n"));
         s.push_str(&format!("if defined SENTIENT_IP netsh interface portproxy add v4tov4 listenport={p} listenaddress=0.0.0.0 connectport={p} connectaddress=%SENTIENT_IP% >nul\r\n"));
@@ -1460,27 +1467,45 @@ pub fn set_keepalive_start(automatic: bool, delay_secs: u32) -> Result<(), Strin
 /// task runs (it boots the distro, forwards the ports and holds the distro
 /// up): when it does not start with Windows nothing else has run it since
 /// the boot. Waits for Docker to answer. Without the task: nothing.
+///
+/// Then, also when the task already ran, the forwarded ports are pointed at
+/// the distro's address of now ([`port_forward::wake_steps`]): the
+/// distro's address changes with every start of WSL, and a forward to an
+/// earlier one leaves SENTIENT unreachable from other computers while it
+/// runs.
 #[cfg(windows)]
 pub fn wake_keepalive(sink: &ProgressFn, cfg: &DeployConfig) {
+    use port_forward::{Task, WakeStep};
     if cfg.wsl_distro.is_some() || cfg.external.is_some() {
         return;
     }
-    let running = match sys::output("schtasks.exe", &["/query", "/tn", KEEPALIVE_TASK, "/fo", "csv", "/nh"]) {
-        Some((true, out, _)) => sys::decode(&out).contains("Running"),
-        _ => return,
+    let task = match sys::output("schtasks.exe", &["/query", "/tn", KEEPALIVE_TASK, "/fo", "csv", "/nh"]) {
+        Some((ok, out, _)) => port_forward::task_from_query(ok, &sys::decode(&out)),
+        None => Task::Missing,
     };
-    if running {
-        return;
-    }
-    sink(Progress::Log { line: format!("Starting SENTIENT's WSL distro (task {KEEPALIVE_TASK})") });
-    let _ = sys::output("schtasks.exe", &["/run", "/tn", KEEPALIVE_TASK]);
-    for _ in 0..60 {
-        if is_ready() {
-            return;
+    for step in port_forward::wake_steps(task) {
+        match step {
+            WakeStep::RunTask => {
+                sink(Progress::Log { line: format!("Starting SENTIENT's WSL distro (task {KEEPALIVE_TASK})") });
+                let _ = sys::output("schtasks.exe", &["/run", "/tn", KEEPALIVE_TASK]);
+            }
+            WakeStep::WaitDocker => {
+                if !(0..60).any(|i| {
+                    if i > 0 {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                    is_ready()
+                }) {
+                    sink(Progress::Log { line: "Docker in SENTIENT's distro did not answer within 2 minutes; starting anyway".into() });
+                }
+            }
+            WakeStep::ForwardPorts => {
+                if let Err(e) = port_forward::refresh(sink, cfg) {
+                    sink(Progress::Log { line: format!("The ports could not be forwarded to SENTIENT's distro: {e}. Other computers may not reach SENTIENT; Repair writes the forward again.") });
+                }
+            }
         }
-        std::thread::sleep(std::time::Duration::from_secs(2));
     }
-    sink(Progress::Log { line: "Docker in SENTIENT's distro did not answer within 2 minutes; starting anyway".into() });
 }
 
 #[cfg(not(windows))]
@@ -1573,7 +1598,7 @@ pub struct ContainerStatus {
 #[derive(serde::Serialize)]
 pub struct StackStatus {
     pub installed: bool, // Docker reachable AND a compose file written
-    pub running: bool,   // the app container is up
+    pub running: bool,   // SENTIENT answers where other computers reach it (distro::answers)
     pub containers: Vec<ContainerStatus>,
 }
 
@@ -1606,8 +1631,11 @@ pub fn status(cfg: &DeployConfig) -> StackStatus {
             }
         }
     }
-    let container_up = containers.iter().any(|c| c.name == n.app && c.state == "running");
-    let running = installed && (container_up || is_running(cfg.http_port));
+    // Running is answering, where other computers reach it (Windows:
+    // through the port forward): a container that is up may still be
+    // starting, or not reachable. A stopped app container is not asked.
+    let app_down = containers.iter().any(|c| c.name == n.app) && !containers.iter().any(|c| c.name == n.app && c.state == "running");
+    let running = installed && !app_down && answers(cfg);
     StackStatus { installed, running, containers }
 }
 
@@ -1659,28 +1687,78 @@ pub fn control(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Result<(),
     Ok(())
 }
 
+/// One step of [`control_stack`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StackStep {
+    /// Bring the distro up and forward the ports to it ([`wake_keepalive`]).
+    Wake,
+    /// A compose command over the whole project.
+    Compose(&'static str),
+    /// Wait until SENTIENT answers where other computers reach it
+    /// ([`answers`]).
+    WaitAnswer,
+}
+
+/// [`control_stack`]'s steps for `action`, in order: a start brings the
+/// distro up and points the forwarded ports at it first, and is reported
+/// done only once SENTIENT answers.
+pub fn stack_steps(action: &str, external: bool) -> Result<Vec<StackStep>, String> {
+    let subs = crate::stack_order::docker_commands(action, external)?;
+    let starts = action != "stop";
+    let mut v = Vec::new();
+    if starts {
+        v.push(StackStep::Wake);
+    }
+    v.extend(subs.into_iter().map(StackStep::Compose));
+    if starts {
+        v.push(StackStep::WaitAnswer);
+    }
+    Ok(v)
+}
+
+/// Whether SENTIENT answers on its web port the way other computers reach
+/// it. Windows, SENTIENT's own distro: on this computer's network address,
+/// through the port forward (Windows' own localhost can be served by WSL's
+/// relay and answer while the forward points at an earlier address of the
+/// distro). Elsewhere [`is_running`].
+pub fn answers(cfg: &DeployConfig) -> bool {
+    if cfg!(windows) && cfg.wsl_distro.is_none() && cfg.external.is_none() {
+        port_forward::answers_from_outside(cfg.http_port)
+    } else {
+        is_running(cfg.http_port)
+    }
+}
+
 /// Start, stop or restart the whole stack: compose over all of the
 /// project's services, which it orders by their dependencies
 /// (crate::stack_order::docker_commands); a start waits for SENTIENT to
-/// answer.
+/// answer ([`stack_steps`]).
 pub fn control_stack(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Result<(), String> {
-    use crate::stack_order::{docker_commands, wait_until, SENTIENT_READY_SECS};
-    let subs = docker_commands(action, cfg.external.is_some())?;
-    if action != "stop" {
-        wake_keepalive(&sink, cfg);
-    }
-    for sub in &subs {
-        sink(Progress::Step { name: if *sub == "stop" { "Stopping SENTIENT and its databases".into() } else { "Starting the databases, then SENTIENT".into() } });
-        run_stream(&sink, &cfg.control_cmd(sub))?;
-    }
-    if action != "stop" {
-        sink(Progress::Step { name: "Waiting for SENTIENT to answer".into() });
-        if !wait_until(SENTIENT_READY_SECS, || crate::native::http_answers(cfg.http_port)) {
-            return Err(format!(
-                "SENTIENT was started but does not answer on port {} after {} minutes. Its log says why.",
-                cfg.http_port,
-                SENTIENT_READY_SECS / 60
-            ));
+    use crate::stack_order::{wait_until, SENTIENT_READY_SECS};
+    for step in stack_steps(action, cfg.external.is_some())? {
+        match step {
+            StackStep::Wake => wake_keepalive(&sink, cfg),
+            StackStep::Compose(sub) => {
+                sink(Progress::Step { name: if sub == "stop" { "Stopping SENTIENT and its databases".into() } else { "Starting the databases, then SENTIENT".into() } });
+                run_stream(&sink, &cfg.control_cmd(sub))?;
+            }
+            StackStep::WaitAnswer => {
+                sink(Progress::Step { name: "Waiting for SENTIENT to answer".into() });
+                if !wait_until(SENTIENT_READY_SECS, || answers(cfg)) {
+                    // Inside the distro it answers: only the way in is missing.
+                    if cfg!(windows) && is_running(cfg.http_port) {
+                        return Err(format!(
+                            "SENTIENT runs, but other computers cannot reach it on port {}: the forward from Windows to SENTIENT's WSL distro does not answer. Start it again, or run Repair.",
+                            cfg.http_port
+                        ));
+                    }
+                    return Err(format!(
+                        "SENTIENT was started but does not answer on port {} after {} minutes. Its log says why.",
+                        cfg.http_port,
+                        SENTIENT_READY_SECS / 60
+                    ));
+                }
+            }
         }
     }
     sink(Progress::Done { message: crate::stack_order::done_message(action, &[]) });
@@ -2003,11 +2081,41 @@ mod keepalive_tests {
         assert_eq!(ports, vec![cfg.http_port, cfg.mqtt_port, cfg.mqtts_port]);
         let cmd = keepalive_command("sentient", &ports);
         assert!(cmd.starts_with("@echo off\r\n"));
-        assert!(cmd.contains("('wsl.exe -d sentient -u root -- hostname -I') do set SENTIENT_IP=%%i"));
+        // eth0's address, hostname -I when ip gives none, asked again
+        // while the distro starts (ping waits: timeout needs a console).
+        assert!(cmd.contains("('wsl.exe -d sentient -u root -- ip -4 -o addr show eth0') do for /f \"delims=/\" %%j in (\"%%i\") do set SENTIENT_IP=%%j"));
+        assert!(cmd.contains("if not defined SENTIENT_IP for /f \"tokens=1\" %%i in ('wsl.exe -d sentient -u root -- hostname -I') do set SENTIENT_IP=%%i"));
+        assert!(cmd.contains("if not defined SENTIENT_IP if %SENTIENT_TRY% lss 10 (set /a SENTIENT_TRY+=1 >nul & ping -n 4 127.0.0.1 >nul & goto address)"));
+        assert!(!cmd.contains("timeout "));
         assert!(cmd.contains(&format!("listenport={} listenaddress=0.0.0.0 connectport={} connectaddress=%SENTIENT_IP%", cfg.http_port, cfg.http_port)));
         // The holder comes last: the cmd never ends while the distro runs.
         assert!(cmd.trim_end().ends_with(&format!("{DOCKER_START}; exec sleep infinity\"")));
         assert!(cmd.lines().all(|l| !l.contains('\n')));
+        // In order: the address read (with its retry), then every forward,
+        // then Docker and the holder.
+        let at = |needle: &str| cmd.find(needle).unwrap_or_else(|| panic!("{needle} missing"));
+        let read = at(":address");
+        let retry = at("goto address");
+        let first_forward = at("netsh interface portproxy delete");
+        let last_forward = cmd.rfind("connectaddress=%SENTIENT_IP%").unwrap();
+        let holder = at("exec sleep infinity");
+        assert!(read < retry && retry < first_forward && first_forward < last_forward && last_forward < holder);
+        for p in &ports {
+            let del = at(&format!("delete v4tov4 listenport={p} "));
+            let add = at(&format!("add v4tov4 listenport={p} "));
+            assert!(del < add, "port {p}: removed before it is added");
+        }
+    }
+
+    #[test]
+    fn a_start_wakes_and_forwards_before_compose_and_reports_only_once_answered() {
+        use StackStep::*;
+        assert_eq!(stack_steps("start", false).unwrap(), vec![Wake, Compose("up -d"), WaitAnswer]);
+        assert_eq!(stack_steps("start", true).unwrap(), vec![Wake, Compose("start"), WaitAnswer]);
+        assert_eq!(stack_steps("restart", false).unwrap(), vec![Wake, Compose("stop"), Compose("up -d"), WaitAnswer]);
+        // A stop neither wakes the distro nor waits for an answer.
+        assert_eq!(stack_steps("stop", false).unwrap(), vec![Compose("stop")]);
+        assert!(stack_steps("pause", false).is_err());
     }
 
     #[test]

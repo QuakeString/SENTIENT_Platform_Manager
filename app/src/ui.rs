@@ -970,11 +970,28 @@ pub fn box_row() -> Div {
     gpui_kit::component::h_flex().flex_wrap().gap_3().items_stretch()
 }
 
+/// Set once a window draws without a GPU ([`note_renderer`]).
+static SOFTWARE_RENDERER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A window that draws on a software renderer (a virtual machine without a
+/// GPU: Microsoft Basic Render Driver, llvmpipe) draws without motion: GPUI
+/// draws the whole window again for every frame of an animation, and a
+/// job's moving bar and spinner then kept the processor busy for as long as
+/// the job ran, slowing SENTIENT's own start in the same machine (the
+/// 2026-11-18 rc3 VM pass: 99 % while Start ran, its window open).
+pub fn note_renderer(window: &gpui_kit::Window, cx: &mut gpui_kit::App) {
+    if window.gpu_specs().is_some_and(|g| g.is_software_emulated) {
+        SOFTWARE_RENDERER.store(true, std::sync::atomic::Ordering::Relaxed);
+        cx.set_reduce_motion(true);
+    }
+}
+
 /// Whether the desktop asks for less motion (KDE's animation speed at 0,
-/// GNOME's animations off, or SPM_REDUCE_MOTION=1). Read once.
+/// GNOME's animations off, or SPM_REDUCE_MOTION=1; read once), or a window
+/// draws on a software renderer ([`note_renderer`]).
 pub fn reduce_motion() -> bool {
     static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *R.get_or_init(|| {
+    SOFTWARE_RENDERER.load(std::sync::atomic::Ordering::Relaxed) || *R.get_or_init(|| {
         // SPM_REDUCED_MOTION too: the layout tests set that one (and the
         // placeholders' reduced_motion reads it), so both switch it off.
         if std::env::var("SPM_REDUCE_MOTION").is_ok_and(|v| v == "1") || std::env::var_os("SPM_REDUCED_MOTION").is_some() {

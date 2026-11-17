@@ -501,11 +501,16 @@ pub fn is_running(http_port: u16) -> bool {
 /// bare TCP connect is not enough: Docker's port proxy accepts connections
 /// while nothing is serving behind it.
 pub fn http_answers(http_port: u16) -> bool {
+    http_answers_on("127.0.0.1", http_port)
+}
+
+/// [`http_answers`] on `host` (an IPv4 address of this computer).
+pub fn http_answers_on(host: &str, http_port: u16) -> bool {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_millis(800))
         .timeout(std::time::Duration::from_secs(3))
         .build();
-    match agent.get(&format!("http://127.0.0.1:{http_port}/")).call() {
+    match agent.get(&format!("http://{host}:{http_port}/")).call() {
         Ok(_) | Err(ureq::Error::Status(_, _)) => true,
         Err(ureq::Error::Transport(_)) => false,
     }
