@@ -400,8 +400,25 @@ fn run_job(args: &[String]) -> i32 {
                     return 1;
                 }
             },
-            [_] => "SENTIENT was found on this server. Adding it needs your choice: open Status to see it.".to_string(),
-            many => format!("{} SENTIENT instances were found on this server. Open Status to choose one.", many.len()),
+            // Say why it was not added: the window on another computer has
+            // no list to choose from, so this line is all the operator sees.
+            [c] => {
+                let what = if c.kind.is_empty() { String::new() } else { format!(" ({}, {})", c.kind, c.location) };
+                match &c.problem {
+                    Some(p) => {
+                        sink(Progress::Error { message: format!("SENTIENT was found on this server{what} but cannot be added: {p}") });
+                        return 1;
+                    }
+                    None => format!(
+                        "SENTIENT was found on this server{what}. Adding it needs the PostgreSQL administrator password: add it from the Platform Manager on that server, or with --job add-existing --pg-admin-password there."
+                    ),
+                }
+            }
+            many => format!(
+                "{} SENTIENT instances were found on this server: {}. Add the one you want with the Platform Manager on that server.",
+                many.len(),
+                many.iter().map(|c| format!("{} ({})", c.kind, c.location)).collect::<Vec<_>>().join("; ")
+            ),
         };
         sink(Progress::Done { message });
         return 0;

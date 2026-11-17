@@ -43,6 +43,14 @@ Finds SENTIENT in Docker in your own WSL distro on Windows, and manages it there
   that account, so they still survive a dropped connection. Every WSL
   call now has a time limit, and a WSL that does not answer is reported
   with the account it ran as.
+- Adding the SENTIENT found on a server said only "Adding it needs your
+  choice: open Status", with nothing to choose from in the window on the
+  other computer. It now says what was found and why it cannot be added,
+  or what it needs.
+- Copying the Platform Manager to a server could report "does not match
+  (checksum)" when two copies ran at once (the check after connecting and
+  a job's own); one copy runs at a time now, and a copy already in place
+  counts as up to date.
 
 ## [0.9.0] - 2026-11-17
 

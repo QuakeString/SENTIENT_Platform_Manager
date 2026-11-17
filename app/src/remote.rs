@@ -730,7 +730,18 @@ fn debug_plan(compose: Option<&str>) -> sentient_installer_core::distro::adopt::
     }
 }
 
+/// One agent copy per server at a time: the background check after a
+/// connect and a job's own deploy raced, the second hashing an upload the
+/// first had just moved into place ("does not match (checksum)").
+static DEPLOYING: std::sync::Mutex<Option<HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>> = std::sync::Mutex::new(None);
+
 pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
+    let lock = DEPLOYING.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).entry(inst.id.clone()).or_default().clone();
+    let _one_at_a_time = lock.lock().unwrap_or_else(|e| e.into_inner());
+    deploy_locked(inst, sink)
+}
+
+fn deploy_locked(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
     #[cfg(debug_assertions)]
     match std::env::var("SPM_DEBUG_REMOTE_TAKEOVER").as_deref() {
         Ok("old") => {
@@ -2077,8 +2088,15 @@ mod win {
             let _ = ps(inst, &format!("Remove-Item -Force -ErrorAction SilentlyContinue '{upload}'"));
             super::sftp_copy(inst, &file, &sftp_path).map_err(|e| super::failed("The agent could not be copied to the server. Nothing on the server was changed.", &e))?;
         }
-        let got = ps(inst, &format!("(Get-FileHash -Algorithm SHA256 '{upload}').Hash"))?;
+        let got = ps(inst, &format!("if (Test-Path '{upload}') {{ (Get-FileHash -Algorithm SHA256 '{upload}').Hash }}"))?;
         if !got.trim().eq_ignore_ascii_case(&want) {
+            // Another copy (another window) may have put this build in
+            // place meanwhile: then it is up to date, not a failure.
+            let now = ps(inst, &format!("if (Test-Path '{EXE}') {{ (Get-FileHash -Algorithm SHA256 '{EXE}').Hash }}")).unwrap_or_default();
+            if now.trim().eq_ignore_ascii_case(&want) {
+                sink(Progress::Log { line: "The Platform Manager on the server is up to date.".into() });
+                return Ok(());
+            }
             let _ = ps(inst, &format!("Remove-Item -Force -ErrorAction SilentlyContinue '{upload}'"));
             return Err("The copy on the server does not match (checksum); nothing was replaced. Try again.".into());
         }
