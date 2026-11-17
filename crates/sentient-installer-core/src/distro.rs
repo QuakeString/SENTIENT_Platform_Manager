@@ -1006,6 +1006,7 @@ pub fn remove_keeping_data(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), S
     if cfg.wsl_distro.is_none() {
         // The data is on the distro's disk: stop it and leave it registered.
         sink(Progress::Step { name: "Stopping the SENTIENT WSL distro (its data is kept)".into() });
+        remove_keepalive();
         let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
         sink(Progress::Done { message: "SENTIENT was removed; its data volumes were kept.".into() });
         return Ok(());
@@ -1036,6 +1037,7 @@ pub fn uninstall(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     if cfg.wsl_distro.is_none() {
         if distro_present() {
             sink(Progress::Step { name: "Removing the SENTIENT WSL distro and all its data".into() });
+            remove_keepalive();
             let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
             let _ = sys::output("wsl.exe", &["--unregister", DISTRO]);
         } else {
@@ -1195,6 +1197,42 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     } else {
         Err("Docker was installed but isn't responding yet. Try the step again.".into())
     }
+}
+
+/// The scheduled task that keeps SENTIENT's distro (and its Docker) up.
+pub const KEEPALIVE_TASK: &str = "SENTIENT Docker";
+
+/// What the keep-alive task runs: Docker started in the distro, then a
+/// process that never ends, so WSL does not stop the idle distro.
+pub fn keepalive_command(distro: &str) -> String {
+    format!("@echo off\r\nwsl.exe -d {distro} -u root -- sh -c \"systemctl start docker; exec sleep infinity\"\r\n")
+}
+
+/// Windows: start SENTIENT's distro at every boot, as this account without
+/// its password (S4U: no window, nobody needs to sign in), and now.
+#[cfg(windows)]
+pub fn register_keepalive() -> Result<(), String> {
+    let dir = std::path::PathBuf::from(std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into())).join("SENTIENT");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let cmd = dir.join("docker-keepalive.cmd");
+    std::fs::write(&cmd, keepalive_command(DISTRO)).map_err(|e| format!("write {}: {e}", cmd.display()))?;
+    let user = sys::account_name();
+    let tr = cmd.display().to_string();
+    let args = ["/create", "/tn", KEEPALIVE_TASK, "/tr", &tr, "/sc", "onstart", "/ru", &user, "/np", "/rl", "highest", "/f"];
+    match sys::output("schtasks.exe", &args) {
+        Some((true, _, _)) => {}
+        Some((false, out, err)) => return Err(format!("could not register the task {KEEPALIVE_TASK}: {} {}", sys::decode(&err).trim(), sys::decode(&out).trim())),
+        None => return Err("could not run schtasks.exe".into()),
+    }
+    let _ = sys::output("schtasks.exe", &["/run", "/tn", KEEPALIVE_TASK]);
+    Ok(())
+}
+
+/// Remove [`register_keepalive`]'s task and end what it runs.
+#[cfg(windows)]
+pub fn remove_keepalive() {
+    let _ = sys::output("schtasks.exe", &["/end", "/tn", KEEPALIVE_TASK]);
+    let _ = sys::output("schtasks.exe", &["/delete", "/tn", KEEPALIVE_TASK, "/f"]);
 }
 
 /// Linux: the distribution's Docker, via the package manager the preflight

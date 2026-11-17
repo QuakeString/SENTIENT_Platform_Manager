@@ -15,6 +15,16 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Added
+- Windows Setup offers Docker again: SENTIENT can run "On this computer"
+  (Windows services, the default) or "In Docker" inside WSL 2, in the
+  Platform Manager's own Ubuntu distribution with Docker Engine, started
+  at every boot. Without WSL 2, Setup turns it on first (also on Windows
+  10 builds whose wsl.exe cannot, through DISM and Microsoft's WSL
+  package), Windows restarts once and Setup continues after sign-in. A
+  computer that cannot run WSL 2 (virtualization off) shows the Docker
+  choice greyed, with the reason. The card texts are still proposals.
+
 ### Fixed
 - Windows: installing SENTIENT from the Platform Manager that Setup opened
   could stop at "initdb: program postgres is needed by initdb but was not

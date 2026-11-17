@@ -108,8 +108,11 @@ struct Fields {
 
 pub struct Installer {
     step: usize,
-    /// How SENTIENT runs: always native on Windows; Docker or native on Linux.
+    /// How SENTIENT runs: natively (Windows' default) or in Docker (Linux's
+    /// default; Docker in WSL 2 on Windows).
     engine: Engine,
+    /// Windows: whether Docker in WSL 2 can be chosen (None while read).
+    docker_choice: Option<sentient_installer_core::wsl::DockerChoice>,
     accepted: bool,
     /// Install the Platform Manager alone, without SENTIENT.
     manager_only: bool,
@@ -309,6 +312,7 @@ impl Installer {
         let mut this = Self {
             step: 0,
             engine: if cfg!(windows) { Engine::Native } else { Engine::Docker },
+            docker_choice: None,
             accepted: false,
             manager_only: false,
             adding_sentient: std::env::args().any(|a| a == "--add-sentient"),
@@ -375,6 +379,7 @@ impl Installer {
         });
         this._subscriptions.extend(enter);
         this.run_checks(cx);
+        this.read_docker_choice(cx);
         // The error panel's page fixes: another port, or the password
         // prompt again (both run the install again).
         let me = cx.entity().downgrade();
@@ -541,7 +546,9 @@ impl Installer {
             let rows = cx
                 .background_executor()
                 .spawn(async move {
-                    let mode = if cfg!(windows) {
+                    let mode = if cfg!(windows) && engine == Engine::Docker {
+                        "windows-docker"
+                    } else if cfg!(windows) {
                         "windows-native"
                     } else if engine == Engine::Docker {
                         "linux-docker"
@@ -716,6 +723,9 @@ impl Installer {
                 }
                 Some(_) => Ok(()),
             },
+            2 if self.engine == Engine::Docker && cfg!(windows) => {
+                if self.value(&f.install_dir, cx).is_empty() { Err("The folder is required.".into()) } else { Ok(()) }
+            }
             2 if self.engine == Engine::Docker => self.locations(cx).map(|_| ()),
             2 if self.bundle.is_none() && !self.can_download() => Err(
                 "A native install needs SENTIENT's program files: connect to the internet (they are downloaded), or unzip the SENTIENT package and run SENTIENT-Setup from that folder, or choose Docker, which pulls the image.".into(),
@@ -806,7 +816,53 @@ impl Installer {
         }
     }
 
+    /// Windows: read whether Docker in WSL 2 can run here (the engine
+    /// cards). Screens: `SPM_DEBUG_WINDOWS_ENGINES` = ready, wsl or novirt
+    /// shows the Windows cards on any system.
+    fn read_docker_choice(&mut self, cx: &mut Context<Self>) {
+        use sentient_installer_core::wsl;
+        #[cfg(debug_assertions)]
+        if let Ok(v) = std::env::var("SPM_DEBUG_WINDOWS_ENGINES") {
+            let facts = match v.as_str() {
+                "ready" => wsl::Facts { ready: true, ..Default::default() },
+                "novirt" => wsl::Facts { virt_firmware: Some(false), hypervisor: Some(false), ..Default::default() },
+                _ => wsl::Facts::default(),
+            };
+            self.docker_choice = Some(wsl::docker_choice(&facts));
+            // Windows' default, or Docker with SPM_DEBUG_ENGINE_DOCKER.
+            self.engine = if std::env::var_os("SPM_DEBUG_ENGINE_DOCKER").is_some() && !matches!(self.docker_choice, Some(wsl::DockerChoice::Unavailable { .. })) {
+                Engine::Docker
+            } else {
+                Engine::Native
+            };
+            return;
+        }
+        if !cfg!(windows) {
+            return;
+        }
+        let task = cx.spawn(async move |this, cx| {
+            let choice = cx.background_executor().spawn(async move { wsl::docker_choice(&wsl::facts()) }).await;
+            this.update(cx, |page, cx| {
+                if matches!(choice, wsl::DockerChoice::Unavailable { .. }) && page.engine == Engine::Docker {
+                    page.set_engine(Engine::Native, cx);
+                }
+                page.docker_choice = Some(choice);
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
+    /// The engine cards show (Linux always; Windows too, and on screens).
+    pub(super) fn windows_engines(&self) -> bool {
+        cfg!(windows) || (cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_WINDOWS_ENGINES").is_some())
+    }
+
     fn set_engine(&mut self, engine: Engine, cx: &mut Context<Self>) {
+        if engine == Engine::Docker && matches!(self.docker_choice, Some(sentient_installer_core::wsl::DockerChoice::Unavailable { .. })) {
+            return;
+        }
         if self.engine != engine {
             self.engine = engine;
             if self.flavor.is_some_and(|f| !self.flavors().contains(&f)) {
@@ -996,7 +1052,8 @@ impl Installer {
             }
         }
         stack.tuning.instance_id = format!("sentient-{}", native::generate_secret().get(..8).unwrap_or("01"));
-        if self.engine == Engine::Docker {
+        // Windows: the volumes live on the distro's disk, in the program folder.
+        if self.engine == Engine::Docker && !cfg!(windows) {
             stack.locations = self.locations(cx)?;
             if !stack.flavor.uses_clickhouse() {
                 stack.locations.ch = None;
@@ -1015,6 +1072,7 @@ impl Installer {
             existing: self.existing.as_ref().map(|_| self.keep_existing),
             delete_existing: self.existing.is_some() && !self.keep_existing && self.delete_existing,
             old_pg: self.old_pg_choice,
+            wsl_restarted: false,
             admin_email: self.value(&f.admin_email, cx),
             admin_password: self.value(&f.admin_password, cx),
             settings: self.chosen_settings(cx),
