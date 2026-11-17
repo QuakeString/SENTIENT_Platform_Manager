@@ -524,7 +524,7 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
         // The distro, and with it Docker, starts at every boot and stays up:
         // WSL ends a distro shortly after its last wsl.exe ends, also while
         // Docker runs there, so this comes before the stack.
-        if let Err(e) = distro::register_keepalive() {
+        if let Err(e) = distro::register_keepalive(&distro::forwarded_ports(&plan.stack)) {
             sink(Progress::Log { line: format!("note: SENTIENT will not start by itself with Windows: {e}") });
         }
     }

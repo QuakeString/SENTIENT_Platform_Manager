@@ -1006,7 +1006,7 @@ pub fn remove_keeping_data(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), S
     if cfg.wsl_distro.is_none() {
         // The data is on the distro's disk: stop it and leave it registered.
         sink(Progress::Step { name: "Stopping the SENTIENT WSL distro (its data is kept)".into() });
-        remove_keepalive();
+        remove_keepalive(&forwarded_ports(cfg));
         let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
         sink(Progress::Done { message: "SENTIENT was removed; its data volumes were kept.".into() });
         return Ok(());
@@ -1037,7 +1037,7 @@ pub fn uninstall(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     if cfg.wsl_distro.is_none() {
         if distro_present() {
             sink(Progress::Step { name: "Removing the SENTIENT WSL distro and all its data".into() });
-            remove_keepalive();
+            remove_keepalive(&forwarded_ports(cfg));
             let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
             let _ = sys::output("wsl.exe", &["--unregister", DISTRO]);
         } else {
@@ -1189,6 +1189,10 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     run_stream(&sink, "[ -x /usr/bin/docker ] || (curl -fsSL https://get.docker.com | sh)")?;
 
     sink(Progress::Step { name: "Starting Docker".into() });
+    // The inbox WSL 2 kernel (5.10) has no nf_tables NAT: Docker's
+    // iptables (nf_tables by default) cannot add its rules there and
+    // dockerd stops. The legacy iptables works on every WSL kernel.
+    run(&sink, IPTABLES_LEGACY_IF_NEEDED)?;
     // A WSL without systemd (Windows 10 builds that cannot run the WSL
     // package keep the inbox WSL): Docker's own init script.
     run(&sink, DOCKER_START)?;
@@ -1204,6 +1208,11 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     Err("Docker was installed but isn't responding yet. Try the step again.".into())
 }
 
+/// Switch the distro to the legacy iptables when the kernel cannot do
+/// what Docker asks of nf_tables (a NAT rule with addrtype), probed with
+/// that very rule and removed again.
+pub const IPTABLES_LEGACY_IF_NEEDED: &str = "if command -v iptables-legacy >/dev/null && ! { iptables-nft -t nat -A PREROUTING -m addrtype --dst-type LOCAL -j RETURN 2>/dev/null && iptables-nft -t nat -D PREROUTING -m addrtype --dst-type LOCAL -j RETURN; }; then update-alternatives --set iptables /usr/sbin/iptables-legacy && update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy && echo 'This WSL kernel has no nf_tables NAT: Docker uses the legacy iptables'; fi";
+
 /// Start Docker in the distro: systemd when WSL booted it, else Docker's
 /// init script (the inbox WSL of older Windows 10 has no systemd).
 pub const DOCKER_START: &str = "if [ -d /run/systemd/system ]; then systemctl enable --now docker; else service docker start; fi";
@@ -1211,37 +1220,88 @@ pub const DOCKER_START: &str = "if [ -d /run/systemd/system ]; then systemctl en
 /// The scheduled task that keeps SENTIENT's distro (and its Docker) up.
 pub const KEEPALIVE_TASK: &str = "SENTIENT Docker";
 
-/// What the keep-alive task runs: Docker started in the distro, then a
-/// process that never ends, so WSL does not stop the idle distro.
-pub fn keepalive_command(distro: &str) -> String {
-    format!("@echo off\r\nwsl.exe -d {distro} -u root -- sh -c \"{DOCKER_START}; exec sleep infinity\"\r\n")
+/// The TCP ports the keep-alive forwards from every address of this
+/// computer to the distro (WSL 2 forwards a published port to Windows'
+/// own localhost only). UDP (CoAP) cannot be forwarded this way.
+pub fn forwarded_ports(cfg: &DeployConfig) -> Vec<u16> {
+    let mut v = vec![cfg.http_port, cfg.mqtt_port, cfg.mqtts_port];
+    v.retain(|p| *p > 0);
+    v.dedup();
+    v
+}
+
+/// What the keep-alive task runs: the distro started (its address read),
+/// `ports` forwarded from every address of this computer to that address
+/// (it changes at every boot), then Docker started and a process that
+/// never ends, so WSL does not stop the idle distro.
+pub fn keepalive_command(distro: &str, ports: &[u16]) -> String {
+    let mut s = String::from("@echo off\r\nrem SENTIENT Docker keep-alive, written by the SENTIENT Platform Manager.\r\nset SENTIENT_IP=\r\n");
+    s.push_str(&format!("for /f \"tokens=1\" %%i in ('wsl.exe -d {distro} -u root -- hostname -I') do set SENTIENT_IP=%%i\r\n"));
+    for p in ports {
+        s.push_str(&format!("netsh interface portproxy delete v4tov4 listenport={p} listenaddress=0.0.0.0 >nul 2>&1\r\n"));
+        s.push_str(&format!("if defined SENTIENT_IP netsh interface portproxy add v4tov4 listenport={p} listenaddress=0.0.0.0 connectport={p} connectaddress=%SENTIENT_IP% >nul\r\n"));
+    }
+    s.push_str(&format!("wsl.exe -d {distro} -u root -- sh -c \"{DOCKER_START}; exec sleep infinity\"\r\n"));
+    s
+}
+
+/// The firewall rule that lets other computers reach a forwarded port
+/// (no spaces: one netsh argument).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn firewall_rule(port: u16) -> String {
+    format!("name=SENTIENT-Docker-TCP-{port}")
+}
+
+/// This account as Windows names it (`computer\user`): over SSH
+/// USERDOMAIN says WORKGROUP, which schtasks cannot map.
+#[cfg(windows)]
+fn this_account() -> String {
+    sys::output("whoami.exe", &[])
+        .map(|(_, out, _)| sys::decode(&out).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(sys::account_name)
 }
 
 /// Windows: start SENTIENT's distro at every boot, as this account without
-/// its password (S4U: no window, nobody needs to sign in), and now.
+/// its password (S4U: no window, nobody needs to sign in), and now; its
+/// TCP `ports` reachable from other computers.
 #[cfg(windows)]
-pub fn register_keepalive() -> Result<(), String> {
+pub fn register_keepalive(ports: &[u16]) -> Result<(), String> {
     let dir = std::path::PathBuf::from(std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into())).join("SENTIENT");
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let cmd = dir.join("docker-keepalive.cmd");
-    std::fs::write(&cmd, keepalive_command(DISTRO)).map_err(|e| format!("write {}: {e}", cmd.display()))?;
-    let user = sys::account_name();
-    let tr = cmd.display().to_string();
-    let args = ["/create", "/tn", KEEPALIVE_TASK, "/tr", &tr, "/sc", "onstart", "/ru", &user, "/np", "/rl", "highest", "/f"];
-    match sys::output("schtasks.exe", &args) {
-        Some((true, _, _)) => {}
-        Some((false, out, err)) => return Err(format!("could not register the task {KEEPALIVE_TASK}: {} {}", sys::decode(&err).trim(), sys::decode(&out).trim())),
-        None => return Err("could not run schtasks.exe".into()),
+    std::fs::write(&cmd, keepalive_command(DISTRO, ports)).map_err(|e| format!("write {}: {e}", cmd.display()))?;
+    for p in ports {
+        let name = firewall_rule(*p);
+        let port = format!("localport={p}");
+        let _ = sys::output("netsh.exe", &["advfirewall", "firewall", "delete", "rule", &name]);
+        let _ = sys::output("netsh.exe", &["advfirewall", "firewall", "add", "rule", &name, "dir=in", "action=allow", "protocol=TCP", &port]);
     }
-    let _ = sys::output("schtasks.exe", &["/run", "/tn", KEEPALIVE_TASK]);
-    Ok(())
+    // S4U through the task scheduler's PowerShell module: `schtasks /np`
+    // asks for the password anyway (and waits for ever without a console).
+    let script = format!(
+        "$ErrorActionPreference='Stop'; $a = New-ScheduledTaskAction -Execute '{cmd}'; $t = New-ScheduledTaskTrigger -AtStartup; $p = New-ScheduledTaskPrincipal -UserId '{user}' -LogonType S4U -RunLevel Highest; $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; Register-ScheduledTask -TaskName '{KEEPALIVE_TASK}' -Action $a -Trigger $t -Principal $p -Settings $s -Force | Out-Null; Start-ScheduledTask -TaskName '{KEEPALIVE_TASK}'",
+        cmd = cmd.display().to_string().replace('\'', "''"),
+        user = this_account().replace('\'', "''"),
+    );
+    match sys::output_limited("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", &script], std::time::Duration::from_secs(60)) {
+        Some((true, _, _)) => Ok(()),
+        Some((false, out, err)) => Err(format!("could not register the task {KEEPALIVE_TASK}: {} {}", sys::decode(&err).trim(), sys::decode(&out).trim())),
+        None => Err("could not run powershell.exe".into()),
+    }
 }
 
-/// Remove [`register_keepalive`]'s task and end what it runs.
+/// Remove [`register_keepalive`]'s task, end what it runs, and remove its
+/// forwarding and firewall rules for `ports`.
 #[cfg(windows)]
-pub fn remove_keepalive() {
+pub fn remove_keepalive(ports: &[u16]) {
     let _ = sys::output("schtasks.exe", &["/end", "/tn", KEEPALIVE_TASK]);
     let _ = sys::output("schtasks.exe", &["/delete", "/tn", KEEPALIVE_TASK, "/f"]);
+    for p in ports {
+        let port = format!("listenport={p}");
+        let _ = sys::output("netsh.exe", &["interface", "portproxy", "delete", "v4tov4", &port, "listenaddress=0.0.0.0"]);
+        let _ = sys::output("netsh.exe", &["advfirewall", "firewall", "delete", "rule", &firewall_rule(*p)]);
+    }
 }
 
 /// Linux: the distribution's Docker, via the package manager the preflight
@@ -1360,13 +1420,7 @@ pub fn status(cfg: &DeployConfig) -> StackStatus {
 pub fn set_admin_account(cfg: &DeployConfig, email: &str, password_hash: &str) -> Result<(), String> {
     let n = cfg.names();
     let sql = crate::native::admin_account_sql(email, password_hash);
-    let cmd = format!(
-        "docker exec {} psql -U {} -d {} -v ON_ERROR_STOP=1 -qAt -c {}",
-        n.pg,
-        cfg.db_user,
-        cfg.db_name,
-        shell_quote(&sql)
-    );
+    let cmd = admin_account_cmd(&n.pg, &cfg.db_user, &cfg.db_name, &sql);
     match run_output(&cmd) {
         Some((true, _)) => Ok(()),
         _ => Err("could not set the administrator sign-in in the database container".into()),
@@ -1374,6 +1428,17 @@ pub fn set_admin_account(cfg: &DeployConfig, email: &str, password_hash: &str) -
 }
 
 /// Single-quote for bash, which runs every Docker command here.
+/// The command that runs `sql` in the database container. The SQL goes
+/// in as base64 on standard input: on Windows `wsl.exe -- bash -lc …`
+/// runs through the distro's shell first, which expanded the `$` of the
+/// argon2 hash ("$argon2id$v=19$…") and left SENTIENT a hash it could not
+/// read (every sign-in answered 500).
+fn admin_account_cmd(container: &str, user: &str, db: &str, sql: &str) -> String {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(sql);
+    format!("echo {b64} | base64 -d | docker exec -i {container} psql -U {user} -d {db} -v ON_ERROR_STOP=1 -qAt -f -")
+}
+
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -1714,6 +1779,36 @@ pub(crate) fn download(url: &str, dest: &Path, sink: &ProgressFn) -> Result<(), 
 // Keep the unused-import lints honest on every platform.
 #[allow(dead_code)]
 fn _uses(_: &EnvVar) {}
+
+#[cfg(test)]
+mod keepalive_tests {
+    use super::*;
+
+    #[test]
+    fn the_admin_sql_crosses_any_shell_without_a_dollar_or_quote() {
+        let sql = crate::native::admin_account_sql("ada@example.test", "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA");
+        let cmd = admin_account_cmd("sentient-postgres", "sentient", "sentient", &sql);
+        assert!(!cmd.contains('$') && !cmd.contains('\'') && !cmd.contains('"'));
+        let b64 = cmd.split_whitespace().nth(1).unwrap();
+        use base64::Engine as _;
+        assert_eq!(String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b64).unwrap()).unwrap(), sql);
+        assert!(cmd.ends_with("docker exec -i sentient-postgres psql -U sentient -d sentient -v ON_ERROR_STOP=1 -qAt -f -"));
+    }
+
+    #[test]
+    fn the_keepalive_forwards_the_tcp_ports_to_the_distro_and_holds_it() {
+        let cfg = DeployConfig::default();
+        let ports = forwarded_ports(&cfg);
+        assert_eq!(ports, vec![cfg.http_port, cfg.mqtt_port, cfg.mqtts_port]);
+        let cmd = keepalive_command("sentient", &ports);
+        assert!(cmd.starts_with("@echo off\r\n"));
+        assert!(cmd.contains("('wsl.exe -d sentient -u root -- hostname -I') do set SENTIENT_IP=%%i"));
+        assert!(cmd.contains(&format!("listenport={} listenaddress=0.0.0.0 connectport={} connectaddress=%SENTIENT_IP%", cfg.http_port, cfg.http_port)));
+        // The holder comes last: the cmd never ends while the distro runs.
+        assert!(cmd.trim_end().ends_with(&format!("{DOCKER_START}; exec sleep infinity\"")));
+        assert!(cmd.lines().all(|l| !l.contains('\n')));
+    }
+}
 
 #[cfg(test)]
 mod tests {
