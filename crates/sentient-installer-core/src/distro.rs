@@ -1189,7 +1189,9 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     run_stream(&sink, "[ -x /usr/bin/docker ] || (curl -fsSL https://get.docker.com | sh)")?;
 
     sink(Progress::Step { name: "Starting Docker".into() });
-    run(&sink, "systemctl enable --now docker")?;
+    // A WSL without systemd (Windows 10 builds that cannot run the WSL
+    // package keep the inbox WSL): Docker's own init script.
+    run(&sink, DOCKER_START)?;
 
     if is_ready() {
         sink(Progress::Done { message: "Docker Engine is installed and running.".into() });
@@ -1199,13 +1201,17 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     }
 }
 
+/// Start Docker in the distro: systemd when WSL booted it, else Docker's
+/// init script (the inbox WSL of older Windows 10 has no systemd).
+pub const DOCKER_START: &str = "if [ -d /run/systemd/system ]; then systemctl enable --now docker; else service docker start; fi";
+
 /// The scheduled task that keeps SENTIENT's distro (and its Docker) up.
 pub const KEEPALIVE_TASK: &str = "SENTIENT Docker";
 
 /// What the keep-alive task runs: Docker started in the distro, then a
 /// process that never ends, so WSL does not stop the idle distro.
 pub fn keepalive_command(distro: &str) -> String {
-    format!("@echo off\r\nwsl.exe -d {distro} -u root -- sh -c \"systemctl start docker; exec sleep infinity\"\r\n")
+    format!("@echo off\r\nwsl.exe -d {distro} -u root -- sh -c \"{DOCKER_START}; exec sleep infinity\"\r\n")
 }
 
 /// Windows: start SENTIENT's distro at every boot, as this account without

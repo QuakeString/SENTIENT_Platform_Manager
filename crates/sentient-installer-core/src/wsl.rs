@@ -171,10 +171,46 @@ fn ensure_kernel(sink: &ProgressFn) {
     if kernel_present() {
         return;
     }
-    sink(Progress::Step { name: "Downloading the WSL package from Microsoft".into() });
-    if let Err(e) = install_package(sink) {
-        sink(Progress::Log { line: format!("The WSL package was not installed: {e}") });
+    // The WSL package needs a Windows that runs it; an older Windows 10
+    // keeps its inbox WSL and gets Microsoft's kernel for it instead.
+    let packaged = os_build().is_none_or(|(build, ubr)| packaged_supported(build, ubr));
+    if packaged {
+        sink(Progress::Step { name: "Downloading the WSL package from Microsoft".into() });
+        if let Err(e) = install_package(sink) {
+            sink(Progress::Log { line: format!("The WSL package was not installed: {e}") });
+        }
+        if kernel_present() {
+            return;
+        }
+    } else if let Some((build, ubr)) = os_build() {
+        sink(Progress::Log { line: format!("Windows 10.0.{build}.{ubr} cannot run the WSL package: its inbox WSL gets Microsoft's WSL 2 kernel") });
     }
+    sink(Progress::Step { name: "Downloading the WSL 2 kernel from Microsoft".into() });
+    if let Err(e) = install_signed_msi(sink, if cfg!(target_arch = "aarch64") { KERNEL_MSI_ARM64 } else { KERNEL_MSI_X64 }, "sentient-wsl-kernel.msi") {
+        sink(Progress::Log { line: format!("The WSL 2 kernel was not installed: {e}") });
+    }
+}
+
+/// Microsoft's WSL 2 kernel for the inbox WSL (Windows 10 before the WSL
+/// package runs there).
+pub const KERNEL_MSI_X64: &str = "https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi";
+pub const KERNEL_MSI_ARM64: &str = "https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_arm64.msi";
+
+/// Whether Windows `build`.`ubr` runs the WSL package: Windows 11, or
+/// Windows 10 21H2/22H2 with the November 2022 update (KB5020030, .2311)
+/// or later. Older builds answer it with WSL_E_OS_NOT_SUPPORTED.
+pub fn packaged_supported(build: u32, ubr: u32) -> bool {
+    build >= 22000 || ((build == 19044 || build == 19045) && ubr >= 2311)
+}
+
+/// This Windows' build and update revision.
+#[cfg(windows)]
+fn os_build() -> Option<(u32, u32)> {
+    let script = "[Environment]::OSVersion.Version.Build; (Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion').UBR";
+    let (_, out, _) = sys::output("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", script])?;
+    let text = sys::decode(&out);
+    let mut n = text.lines().filter_map(|l| l.trim().parse::<u32>().ok());
+    Some((n.next()?, n.next()?))
 }
 
 /// `wsl --status` no longer says the kernel is missing, or `wsl --version`
@@ -245,9 +281,15 @@ fn latest_package_url() -> Result<String, String> {
 #[cfg(windows)]
 fn install_package(sink: &ProgressFn) -> Result<(), String> {
     let url = latest_package_url()?;
-    let msi = std::env::temp_dir().join("sentient-wsl.msi");
+    install_signed_msi(sink, &url, "sentient-wsl.msi")
+}
+
+/// Download an MSI, check that Microsoft signed it, install it quietly.
+#[cfg(windows)]
+fn install_signed_msi(sink: &ProgressFn, url: &str, file: &str) -> Result<(), String> {
+    let msi = std::env::temp_dir().join(file);
     sink(Progress::Log { line: format!("Downloading {url}") });
-    crate::distro::download(&url, &msi, sink)?;
+    crate::distro::download(url, &msi, sink)?;
     // Microsoft's signature, or nothing is installed.
     let check = format!(
         "$s = Get-AuthenticodeSignature -LiteralPath '{}'; if ($s.Status -eq 'Valid' -and $s.SignerCertificate.Subject -match 'O=Microsoft Corporation') {{ 'signed' }} else {{ $s.Status }}",
@@ -258,9 +300,9 @@ fn install_package(sink: &ProgressFn) -> Result<(), String> {
         .unwrap_or_default();
     if signed != "signed" {
         let _ = std::fs::remove_file(&msi);
-        return Err(format!("the downloaded package is not signed by Microsoft ({signed})"));
+        return Err(format!("the download is not signed by Microsoft ({signed})"));
     }
-    sink(Progress::Step { name: "Installing the WSL package".into() });
+    sink(Progress::Step { name: format!("Installing {}", if file.contains("kernel") { "the WSL 2 kernel" } else { "the WSL package" }) });
     let path = msi.display().to_string();
     let result = sys::output_tracked("msiexec.exe", &["/i", &path, "/quiet", "/norestart"]);
     let _ = std::fs::remove_file(&msi);
@@ -459,6 +501,15 @@ mod tests {
         assert_eq!(package_url(json, false).as_deref(), Some("https://example.test/x64.msi"));
         assert_eq!(package_url(json, true).as_deref(), Some("https://example.test/arm64.msi"));
         assert_eq!(package_url("{}", false), None);
+    }
+
+    #[test]
+    fn the_wsl_package_needs_windows_11_or_an_updated_windows_10() {
+        assert!(!packaged_supported(19044, 1288)); // LTSC 2021 as released
+        assert!(packaged_supported(19044, 2311));
+        assert!(packaged_supported(19045, 5737));
+        assert!(!packaged_supported(19041, 9999));
+        assert!(packaged_supported(22631, 1));
     }
 
     #[test]
