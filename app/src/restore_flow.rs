@@ -125,7 +125,7 @@ pub fn platform_info(record: &InstallationRecord) -> PlatformInfo {
 /// The certificate's name and expiry, read with openssl where there is one.
 fn tls_of(cert: &Path) -> TlsInfo {
     let name = cert.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let out = std::process::Command::new("openssl").args(["x509", "-noout", "-subject", "-issuer", "-enddate", "-in"]).arg(cert).output();
+    let out = sentient_installer_core::host::host_command("openssl").args(["x509", "-noout", "-subject", "-issuer", "-enddate", "-in"]).arg(cert).output();
     let Some(out) = out.ok().filter(|o| o.status.success()) else { return TlsInfo { name, issuer: None, expires: None } };
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     let field = |prefix: &str| text.lines().find_map(|l| l.strip_prefix(prefix)).map(|s| s.trim().to_string());
@@ -513,9 +513,9 @@ fn measure(place: &Place) -> Option<(String, String, u64)> {
                         break;
                     }
                 }
-                std::process::Command::new("df").arg("-PB1").arg(&p).output().ok()?
+                sentient_installer_core::host::host_command("df").arg("-PB1").arg(&p).output().ok()?
             }
-            Place::Container(c, p) => std::process::Command::new("docker").args(["exec", c, "df", "-PB1", p]).output().ok()?,
+            Place::Container(c, p) => sentient_installer_core::host::host_command("docker").args(["exec", c, "df", "-PB1", p]).output().ok()?,
         };
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         parse_df_row(&text)
@@ -535,7 +535,7 @@ fn parse_df_row(text: &str) -> Option<(String, String, u64)> {
 /// The host's mount point of a device (a Docker volume's disk), from `df`.
 #[cfg(not(windows))]
 fn host_mounts() -> HashMap<String, String> {
-    let out = std::process::Command::new("df").arg("-PB1").output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    let out = sentient_installer_core::host::host_command("df").arg("-PB1").output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
     let mut m: HashMap<String, String> = HashMap::new();
     for line in out.lines().skip(1) {
         let cols: Vec<&str> = line.split_whitespace().collect();

@@ -40,7 +40,12 @@ pub fn run(args: &[String], sink: &ProgressFn) -> Result<Vec<String>, String> {
 /// fails with ElevationError::Cancelled's message.
 pub fn run_with_input(args: &[String], input: Option<&str>, sink: &ProgressFn) -> Result<Vec<String>, String> {
     use sentient_installer_core::elevation::{self, Stream};
-    let exe = std::env::current_exe().map_err(|e| format!("find this program: {e}"))?;
+    // Inside a Flatpak the host runs the job: the static agent this
+    // program carries (crate::remote::host_self).
+    let exe = match crate::remote::host_self() {
+        Some(agent) => agent,
+        None => std::env::current_exe().map_err(|e| format!("find this program: {e}"))?,
+    };
     let mut argv = vec![exe.display().to_string(), "--job".to_string(), "--json".to_string()];
     argv.extend(args.iter().cloned());
     let mut lines = Vec::new();

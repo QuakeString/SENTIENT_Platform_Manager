@@ -1208,7 +1208,7 @@ pub(crate) fn shown_version(record: &InstallationRecord) -> String {
     if numbered || record.engine != crate::installation::Engine::Docker {
         return recorded;
     }
-    let label = std::process::Command::new("docker")
+    let label = sentient_installer_core::host::host_command("docker")
         .args(["inspect", "-f", "{{index .Config.Labels \"org.opencontainers.image.version\"}}", &record.stack.names().app])
         .output()
         .ok()

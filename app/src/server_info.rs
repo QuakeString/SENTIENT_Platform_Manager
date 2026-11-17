@@ -753,10 +753,10 @@ pub fn basic_windows_adapter(name: &str) -> bool {
 #[cfg(not(windows))]
 mod linux {
     use super::*;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     fn out(cmd: &str, args: &[&str]) -> Option<String> {
-        let o = Command::new(cmd).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+        let o = sentient_installer_core::host::host_command(cmd).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
         Some(String::from_utf8_lossy(&o.stdout).to_string())
     }
 
@@ -849,7 +849,7 @@ mod linux {
                     None
                 };
                 let r = Path::new("/var/run/reboot-required").exists()
-                    || (have("needs-restarting") && Command::new("needs-restarting").arg("-r").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.code() == Some(1)))
+                    || (have("needs-restarting") && sentient_installer_core::host::host_command("needs-restarting").arg("-r").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.code() == Some(1)))
                     || (Path::new("/usr/lib/modules").exists() && !Path::new(&format!("/usr/lib/modules/{}", read("/proc/sys/kernel/osrelease").trim())).exists());
                 cache.updates = Some((chrono::Utc::now().timestamp(), n, r));
                 (n, r)

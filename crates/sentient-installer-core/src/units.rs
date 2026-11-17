@@ -147,7 +147,7 @@ pub fn parse_dpkg_s(text: &str) -> Option<String> {
 
 #[cfg(unix)]
 fn out(program: &str, args: &[&str]) -> Option<String> {
-    let o = std::process::Command::new(program).args(args).env("LC_ALL", "C").output().ok()?;
+    let o = crate::sys::host_command_env(program, &[("LC_ALL", "C")]).args(args).output().ok()?;
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 

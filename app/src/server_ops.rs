@@ -110,21 +110,16 @@ fn run_status(cmd: &str, args: &[&str]) -> Result<(), String> {
     }
 }
 
+/// No console window on Windows; the host's program inside a Flatpak.
 fn quiet(cmd: &str) -> Command {
-    #[allow(unused_mut)]
-    let mut c = Command::new(cmd);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000);
-    }
-    c
+    sentient_installer_core::host::host_command(cmd)
 }
 
 /// Run `cmd`, every output line into the log; Err with its last lines.
 fn stream(cmd: &str, args: &[&str], env: &[(&str, &str)], sink: &ProgressFn) -> Result<(), String> {
-    let mut c = quiet(cmd);
-    c.args(args).envs(env.iter().copied()).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[allow(unused_mut)]
+    let mut c = sentient_installer_core::host::host_command_env(cmd, env);
+    c.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = c.spawn().map_err(|e| format!("{cmd}: {e}"))?;
     let err = child.stderr.take();
     let err_lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));

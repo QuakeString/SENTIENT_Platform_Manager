@@ -5,7 +5,6 @@
 //! container's log with Docker's timestamps, a systemd journal, a log file),
 //! and how one line reads as columns: local time, level, message.
 
-use std::process::Command;
 
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -88,7 +87,7 @@ pub fn available(record: &InstallationRecord) -> Vec<Source> {
 }
 
 fn run(cmd: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new(cmd).args(args).output().ok()?;
+    let out = sentient_installer_core::host::host_command(cmd).args(args).output().ok()?;
     if !out.status.success() && out.stdout.is_empty() {
         return None;
     }

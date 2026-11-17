@@ -44,7 +44,7 @@ fn staged(sink: &ProgressFn, record: &InstallationRecord, package: &Path) -> Res
     // Windows' own bsdtar: a Git-for-Windows tar earlier on PATH reads
     // "C:\…" as a remote host.
     let tar_exe = if cfg!(windows) { r"C:\Windows\System32\tar.exe" } else { "tar" };
-    let ok = std::process::Command::new(tar_exe)
+    let ok = sentient_installer_core::host::host_command(tar_exe)
         .arg("-xf")
         .arg(&tar)
         .arg("-C")

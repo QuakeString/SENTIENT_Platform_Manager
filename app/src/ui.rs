@@ -874,7 +874,7 @@ pub fn reduce_motion() -> bool {
         }
         #[cfg(target_os = "linux")]
         {
-            let out = |cmd: &str, args: &[&str]| std::process::Command::new(cmd).args(args).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+            let out = |cmd: &str, args: &[&str]| sentient_installer_core::host::host_command(cmd).args(args).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
             if out("kreadconfig6", &["--file", "kdeglobals", "--group", "KDE", "--key", "AnimationDurationFactor"]).is_some_and(|v| v == "0") {
                 return true;
             }
@@ -1497,7 +1497,7 @@ pub(crate) fn reduced_motion() -> bool {
     static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *R.get_or_init(|| {
         std::env::var_os("SPM_REDUCED_MOTION").is_some()
-            || std::process::Command::new("gsettings")
+            || sentient_installer_core::host::host_command("gsettings")
                 .args(["get", "org.gnome.desktop.interface", "enable-animations"])
                 .output()
                 .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "false")

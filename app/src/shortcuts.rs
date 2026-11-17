@@ -164,7 +164,7 @@ fn homes() -> Vec<PathBuf> {
 /// The account (name, home) of a uid, from the passwd database.
 #[cfg(unix)]
 fn account_of(uid: &str) -> Option<(String, PathBuf)> {
-    let out = std::process::Command::new("getent").args(["passwd", uid]).output().ok()?;
+    let out = sentient_installer_core::host::host_command("getent").args(["passwd", uid]).output().ok()?;
     let line = String::from_utf8_lossy(&out.stdout).lines().next()?.to_string();
     let f: Vec<&str> = line.split(':').collect();
     (f.len() >= 6 && !f[5].is_empty()).then(|| (f[0].to_string(), PathBuf::from(f[5])))
@@ -262,18 +262,18 @@ pub fn menu_refresh_commands(homes: &[PathBuf], have: impl Fn(&str) -> bool) -> 
 /// rebuilt as the account that asked, which is whose menu shows.
 #[cfg(unix)]
 fn refresh_menus(homes: &[PathBuf]) {
-    let have = |b: &str| std::process::Command::new("sh").args(["-c", &format!("command -v {b}")]).output().is_ok_and(|o| o.status.success());
+    let have = |b: &str| sentient_installer_core::host::host_command("sh").args(["-c", &format!("command -v {b}")]).output().is_ok_and(|o| o.status.success());
     let asker = ["PKEXEC_UID", "SUDO_UID"].iter().find_map(|v| std::env::var(v).ok()).and_then(|uid| account_of(&uid));
     for cmd in menu_refresh_commands(homes, have) {
         let per_user = cmd[0].starts_with("kbuildsycoca") || cmd[0] == "xdg-desktop-menu";
         let mut c = match (&asker, per_user) {
             (Some((name, home)), true) if crate::rootjob::is_root() => {
-                let mut c = std::process::Command::new("runuser");
+                let mut c = sentient_installer_core::host::host_command("runuser");
                 c.args(["-u", name, "--", "env", &format!("HOME={}", home.display())]).args(&cmd);
                 c
             }
             _ => {
-                let mut c = std::process::Command::new(&cmd[0]);
+                let mut c = sentient_installer_core::host::host_command(&cmd[0]);
                 c.args(&cmd[1..]);
                 c
             }

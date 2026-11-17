@@ -130,7 +130,7 @@ fn kde_service() -> bool {
 /// KDE's FileChooser, asked directly: (handle, app id, parent window, title,
 /// options).
 fn kde_service_command(method: &str, title: &str, directory: bool, start: Option<&Path>, name: Option<&str>) -> Command {
-    let mut c = Command::new("busctl");
+    let mut c = sentient_installer_core::host::host_command("busctl");
     c.args(["--user", "--timeout=86400", "call", "org.freedesktop.impl.portal.desktop.kde", "/org/freedesktop/portal/desktop", "org.freedesktop.impl.portal.FileChooser", method, "osssa{sv}"]);
     c.arg(format!("/org/freedesktop/portal/desktop/request/spm/r{}", std::process::id())).arg("").arg("").arg(title);
     // a{sv}: the number of entries, then key, type and value of each.
@@ -193,7 +193,7 @@ fn has(program: &str) -> bool {
 fn portal_present() -> bool {
     static PRESENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *PRESENT.get_or_init(|| {
-        Command::new("busctl")
+        sentient_installer_core::host::host_command("busctl")
             .args(["--user", "--no-pager", "status", "org.freedesktop.portal.Desktop"])
             .output()
             .map(|o| o.status.success())
@@ -206,7 +206,7 @@ fn native_open(ask: &Ask) -> Option<(Command, Tool)> {
     let tool = tool()?;
     let cmd = match tool {
         Tool::Kdialog => {
-            let mut c = Command::new("kdialog");
+            let mut c = sentient_installer_core::host::host_command("kdialog");
             c.arg("--title").arg(ask.title);
             if ask.directory {
                 c.arg("--getexistingdirectory").arg(if start.is_empty() { home() } else { start });
@@ -217,7 +217,7 @@ fn native_open(ask: &Ask) -> Option<(Command, Tool)> {
         }
         Tool::KdeService => kde_service_command("OpenFile", ask.title, ask.directory, ask.start, None),
         Tool::Zenity => {
-            let mut c = Command::new("zenity");
+            let mut c = sentient_installer_core::host::host_command("zenity");
             c.args(["--file-selection", "--title", ask.title]);
             if ask.directory {
                 c.arg("--directory");
@@ -236,13 +236,13 @@ fn native_save(title: &str, directory: &Path, name: Option<&str>) -> Option<(Com
     let tool = tool()?;
     let cmd = match tool {
         Tool::Kdialog => {
-            let mut c = Command::new("kdialog");
+            let mut c = sentient_installer_core::host::host_command("kdialog");
             c.arg("--title").arg(title).arg("--getsavefilename").arg(&start);
             c
         }
         Tool::KdeService => kde_service_command("SaveFile", title, false, Some(directory), name),
         Tool::Zenity => {
-            let mut c = Command::new("zenity");
+            let mut c = sentient_installer_core::host::host_command("zenity");
             c.args(["--file-selection", "--save", "--confirm-overwrite", "--title", title]).arg(format!("--filename={}", start.display()));
             c
         }

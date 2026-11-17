@@ -382,7 +382,7 @@ mod imp {
 
     pub fn enable(sink: &ProgressFn, user: &str, _password: &str) -> Result<(), String> {
         let dm = dm()?;
-        match std::process::Command::new("id").args(["-u", user]).output() {
+        match crate::sys::host_command("id").args(["-u", user]).output() {
             Ok(o) if o.status.success() => {
                 if String::from_utf8_lossy(&o.stdout).trim() == "0" {
                     return Err("Use an ordinary account for the operator screen, not root.".into());

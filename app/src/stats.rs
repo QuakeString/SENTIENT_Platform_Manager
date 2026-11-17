@@ -361,7 +361,7 @@ fn service_cpu_ns(record: Option<&InstallationRecord>) -> Vec<(String, u64)> {
     unit_names(r)
         .into_iter()
         .filter_map(|u| {
-            let out = std::process::Command::new("systemctl").args(["show", "-p", "CPUUsageNSec", "--value", &u]).output().ok()?;
+            let out = sentient_installer_core::host::host_command("systemctl").args(["show", "-p", "CPUUsageNSec", "--value", &u]).output().ok()?;
             let ns = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
             Some((u, ns))
         })
@@ -380,7 +380,7 @@ fn services(r: &InstallationRecord, cpu_before: Vec<(String, u64)>, secs: f64, c
         Engine::Native => cpu_before
             .into_iter()
             .map(|(unit, before)| {
-                let show = std::process::Command::new("systemctl")
+                let show = sentient_installer_core::host::host_command("systemctl")
                     .args(["show", "-p", "CPUUsageNSec", "-p", "MemoryCurrent", "-p", "NRestarts", &unit])
                     .output()
                     .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
@@ -404,10 +404,10 @@ fn docker_services(names: &[String]) -> Vec<Service> {
     }
     let mut args = vec!["stats", "--no-stream", "--format", "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"];
     args.extend(names.iter().map(String::as_str));
-    let stats = std::process::Command::new("docker").args(&args).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let stats = sentient_installer_core::host::host_command("docker").args(&args).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
     let mut inspect = vec!["inspect", "--format", "{{.Name}}\t{{.RestartCount}}"];
     inspect.extend(names.iter().map(String::as_str));
-    let restarts = std::process::Command::new("docker").args(&inspect).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let restarts = sentient_installer_core::host::host_command("docker").args(&inspect).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
     parse_docker_stats(&stats, &restarts)
 }
 
@@ -588,7 +588,7 @@ pub fn install_sampler(exe: &Path) -> Result<String, String> {
         std::fs::write(dir.join(format!("{UNIT}.service")), service).map_err(|e| e.to_string())?;
         std::fs::write(dir.join(format!("{UNIT}.timer")), timer).map_err(|e| e.to_string())?;
         let ctl = |args: &[&str]| {
-            let mut c = std::process::Command::new("systemctl");
+            let mut c = sentient_installer_core::host::host_command("systemctl");
             if !root {
                 c.arg("--user");
             }

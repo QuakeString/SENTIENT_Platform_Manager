@@ -167,7 +167,7 @@ pub fn set_secret(id: &str, value: &str) {
     }
     #[cfg(not(windows))]
     {
-        let stored = Command::new("secret-tool")
+        let stored = sentient_installer_core::host::host_command("secret-tool")
             .args(["store", "--label", "SENTIENT Platform Manager instance", "service", "sentient-platform-manager", "instance", id])
             .stdin(Stdio::piped())
             .spawn()
@@ -194,7 +194,7 @@ pub fn secret(id: &str) -> Option<String> {
     return crate::secrets::get_named(&format!("instance-{id}"));
     #[cfg(not(windows))]
     {
-        let out = Command::new("secret-tool").args(["lookup", "service", "sentient-platform-manager", "instance", id]).output().ok()?;
+        let out = sentient_installer_core::host::host_command("secret-tool").args(["lookup", "service", "sentient-platform-manager", "instance", id]).output().ok()?;
         out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string()).filter(|s| !s.is_empty())
     }
 }
@@ -219,7 +219,7 @@ fn forget_one(id: &str) {
     crate::secrets::forget_named(&format!("instance-{id}"));
     #[cfg(not(windows))]
     {
-        let _ = Command::new("secret-tool").args(["clear", "service", "sentient-platform-manager", "instance", id]).status();
+        let _ = sentient_installer_core::host::host_command("secret-tool").args(["clear", "service", "sentient-platform-manager", "instance", id]).status();
     }
 }
 
@@ -1939,6 +1939,27 @@ pub fn carried_agents() -> Vec<(System, Result<Option<PathBuf>, String>)> {
         .into_iter()
         .map(|s| (s, embedded_agent(s).map(|b| write_out(agent_name(s), b)).transpose()))
         .collect()
+}
+
+/// This program as the computer itself can run it, when it runs as a
+/// Flatpak: the host cannot start a file inside the sandbox (/app), and the
+/// GUI build is linked against the Flatpak runtime's libraries. The static
+/// server agent it carries is the same job code and runs anywhere, so the
+/// root helper (`pkexec <agent> --root-session`) and root jobs
+/// (`<agent> --job ...`) use it, written out under prefs_dir, a folder the
+/// host sees at the same path. None outside a Flatpak.
+pub fn host_self() -> Option<PathBuf> {
+    if !sentient_installer_core::host::in_flatpak() {
+        return None;
+    }
+    let system = if cfg!(target_arch = "aarch64") { System::Linux(Arch::Aarch64) } else { System::Linux(Arch::X86_64) };
+    let file = write_out(agent_name(system), embedded_agent(system)?).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).ok()?;
+    }
+    Some(file)
 }
 
 /// Write a carried agent out (crate::updates::prefs_dir/remote-builds), once
