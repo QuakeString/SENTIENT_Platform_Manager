@@ -263,6 +263,61 @@ pub fn page_with(theme: &Theme, title: &'static str, summary: &'static str, acti
     )
 }
 
+/// The title's line on a sub-page with a back button (back_title): the
+/// 22 px title's line box.
+pub const BACK_TITLE_LINE: f32 = 30.;
+
+/// A sub-page's header (Move data to another disk, Restore): an icon back
+/// button on the page's content edge, centred on the title's line, then
+/// the 22 px title, and `sub` (the instance, the backup) under the title
+/// text, never under the button.
+pub fn back_title(
+    theme: &Theme,
+    id: &'static str,
+    title: impl Into<SharedString>,
+    sub: impl Into<SharedString>,
+    disabled: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    let sub: SharedString = sub.into();
+    let back = button(id)
+        .outline()
+        .icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::ChevronLeft))
+        .tooltip("Back")
+        .when(disabled, |b| gpui_kit::component::Disableable::disabled(b, true))
+        .on_click(on_click);
+    // The button's gap to the title: the app's one gap between a button
+    // and the text beside it (button_gap).
+    h_flex()
+        .gap(button_gap())
+        .items_start()
+        .child(
+            h_flex()
+                .flex_shrink_0()
+                .h(px(BACK_TITLE_LINE))
+                .items_center()
+                .child(div().relative().child(back).child(layout_probe("back-button"))),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .child(
+                    div()
+                        .relative()
+                        .text_size(px(22.))
+                        .line_height(px(BACK_TITLE_LINE))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(title.into())
+                        .child(layout_probe("page-title-line")),
+                )
+                .when(!sub.is_empty(), |c| {
+                    c.child(div().relative().text_sm().text_color(theme.muted_foreground).child(sub).child(layout_probe("page-subtitle")))
+                }),
+        )
+}
+
 /// A refresh that failed while the page keeps what it read before: a muted
 /// "Couldn't refresh · last updated HH:MM" beside the title's Refresh, the
 /// reason in its (i). One line, cut rather than wrapped.
@@ -1417,7 +1472,7 @@ pub fn layout_probe(name: &'static str) -> impl IntoElement {
                     let (t, b) = (f32::from(bounds.origin.y), f32::from(bounds.origin.y + bounds.size.height));
                     // Buttons to a hundredth: the gap check holds them to
                     // half a pixel at x1.
-                    if name == "button" || name == "menu-item-icon" || name == "svc-button" {
+                    if matches!(name, "button" | "menu-item-icon" | "svc-button" | "back-button" | "page-title-line" | "page-subtitle") {
                         eprintln!("LAYOUT {name} {l:.2} {r:.2} {t:.2} {b:.2}");
                     } else {
                         eprintln!("LAYOUT {name} {l:.0} {r:.0} {t:.0} {b:.0}");

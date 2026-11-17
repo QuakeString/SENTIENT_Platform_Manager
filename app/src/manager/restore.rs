@@ -1849,13 +1849,7 @@ impl Render for RestoreFlow {
             .p(px(ui::PAGE_PAD))
             .gap(px(ui::GAP))
             .bg(theme.muted)
-            .child(
-                h_flex()
-                    .gap_3()
-                    .items_start()
-                    .child(ui::button("rs-title-back").outline().icon(IconName::ChevronLeft).on_click(cx.listener(|f, _, _, cx| f.back(cx))).mt(px(2.)))
-                    .child(v_flex().flex_1().min_w_0().gap_0p5().child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Restore")).child(div().text_sm().text_color(theme.muted_foreground).child(self.sub()))),
-            )
+            .child(ui::back_title(&theme, "rs-title-back", "Restore", self.sub(), false, cx.listener(|f, _, _, cx| f.back(cx))))
             .child(stepper(&theme, self.step.index()))
             .child(body)
             .child(footer(Some(back), cancel, Some(next)))

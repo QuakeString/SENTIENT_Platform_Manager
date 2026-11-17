@@ -868,25 +868,8 @@ fn debug_run(moves: &[Move], sink: &sentient_installer_core::progress::ProgressF
 
 impl MoveFlow {
     fn title_row(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
-        h_flex()
-            .gap_3()
-            .items_start()
-            .child(
-                ui::button("md-back-title")
-                    .outline()
-                    .icon(Icon::new(Lucide::ChevronLeft))
-                    .tooltip("Back")
-                    .disabled(self.stage == Stage::Run && self.running(cx))
-                    .on_click(cx.listener(|me, _, _, cx| me.back(cx))),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap_0p5()
-                    .child(div().text_size(px(22.)).line_height(px(30.)).child("Move data to another disk"))
-                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(self.on.clone())),
-            )
+        let busy = self.stage == Stage::Run && self.running(cx);
+        ui::back_title(theme, "md-back-title", "Move data to another disk", self.on.clone(), busy, cx.listener(|me, _, _, cx| me.back(cx)))
     }
 
     fn stepper(&self, theme: &gpui_kit::component::Theme) -> Div {

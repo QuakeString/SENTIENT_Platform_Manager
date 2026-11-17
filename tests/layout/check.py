@@ -299,6 +299,29 @@ def button_gaps(log):
     return off
 
 
+def back_title_findings(log):
+    """ui::back_title: `back-button` centred on `page-title-line` (within
+    1 px; the title's first line when it wraps), `page-subtitle` starting
+    at the title's left edge, and 12 px from the button to the title."""
+    backs, titles, subs = (frame_probes(log, n) for n in ("back-button", "page-title-line", "page-subtitle"))
+    if not backs and not titles:
+        return []
+    if not backs or not titles:
+        return [f"back title: {len(backs)} back-button and {len(titles)} page-title-line probes (want both)"]
+    out = []
+    b, t = backs[0], titles[0]
+    line = min(t[3] - t[2], 30.0)
+    mid_b, mid_t = (b[2] + b[3]) / 2, t[2] + line / 2
+    if abs(mid_b - mid_t) > 1.0:
+        out.append(f"back title: the back button's centre y {mid_b:.2f} is {mid_b - mid_t:+.2f} px off the title line's {mid_t:.2f}")
+    if abs(t[0] - b[1] - 12.0) > 0.5:
+        out.append(f"back title: {t[0] - b[1]:.2f} px between the back button and the title, not 12")
+    for s in subs:
+        if abs(s[0] - t[0]) > 0.5:
+            out.append(f"back title: the subtitle starts at x {s[0]:.2f}, not at the title's {t[0]:.2f}")
+    return out
+
+
 def main():
     png, log, scale = sys.argv[1], sys.argv[2], float(sys.argv[3])
     # Setup's window: only the buttons' gaps (its own layout is not the
@@ -377,6 +400,10 @@ def main():
     # One gap between the buttons of a group (dialogs included).
     for (l, r, t, b), g in button_gaps(log):
         bad.append(f"button gap: {g:.2f} px after the button at x {l:.0f}-{r:.0f}, y {t:.0f}-{b:.0f}, not {BUTTON_GAP:.0f}")
+    # A sub-page's back button and title (ui::back_title): the button
+    # centred on the title's line (within 1 px), the line under the title
+    # starting where the title does (not under the button).
+    bad.extend(back_title_findings(log))
     # A list dialog (the folder chooser): only its list scrolls, so its
     # path bar stays at the top of the dialog's body after scrolling.
     fl = last_frame_lines(log)
