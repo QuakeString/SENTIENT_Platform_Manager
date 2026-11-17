@@ -1665,6 +1665,23 @@ pub fn pg_other_databases(cfg: &NativeConfig) -> Result<Vec<String>, String> {
     }
 }
 
+/// PostgreSQL is there but not running (stopped, failed, or its state could
+/// not be read): what else it holds cannot be listed now. A stack stop
+/// rightly sees nothing to keep then ([`pg_other_databases`] lists none);
+/// removing PostgreSQL must not (crate users: the uninstall facts). Linux
+/// only: on Windows PostgreSQL is SENTIENT's own service.
+pub fn pg_stopped() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let s = crate::native_linux::pg_unit_state();
+        s != "running" && s != "absent"
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 /// Start, stop or restart the whole stack in order (crate::stack_order).
 /// `stop_shared_pg`: stop a shared PostgreSQL anyway (Linux).
 pub fn control_stack(sink: ProgressFn, cfg: &NativeConfig, action: &str, stop_shared_pg: bool) -> Result<(), String> {

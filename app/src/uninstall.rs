@@ -281,8 +281,11 @@ pub fn rows(f: &Facts) -> Vec<Row> {
 
     // PostgreSQL.
     let pg_title = if f.timescale { "PostgreSQL and TimescaleDB" } else { "PostgreSQL" };
+    // Stopped: unknown, so off unless switched on (below), never locked.
+    let unknown = pg_unknown(f);
     let shared = match &f.pg_others {
         None => Some("Checking what else PostgreSQL holds…".to_string()),
+        Some(Err(_)) if unknown => None,
         Some(Ok(list)) if !list.is_empty() => Some(format!("It also holds {}: another program uses it, so it stays.", and_list(list))),
         Some(Err(e)) => Some(format!("What else it holds could not be checked, so it stays ({e}).")),
         _ => None,
@@ -302,6 +305,9 @@ pub fn rows(f: &Facts) -> Vec<Row> {
         pg.bytes = None;
     } else if let Some(why) = shared.clone() {
         pg.why = Some(why);
+    } else if unknown {
+        pg.default_on = false;
+        pg.extra = Some("PostgreSQL is stopped, so what else it holds could not be checked: it stays unless you switch it on. Switch it on only if no other program keeps databases in it, or start PostgreSQL and open this again to have it checked.".into());
     } else if f.pg_origin == Origin::Unknown {
         pg.help = Some("This install is from before the Platform Manager recorded what Setup installed. Setup installs PostgreSQL unless one was already there; another program using it would be listed here.".into());
     }
@@ -673,13 +679,35 @@ fn unit_file_exists(unit: &str) -> bool {
     ["/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"].iter().any(|d| Path::new(d).join(unit).exists())
 }
 
+/// What [`pg_others`] says when PostgreSQL is stopped: unknown, never
+/// "none" (a stopped cluster lists nothing, yet may hold other programs'
+/// databases). The dialog keeps PostgreSQL unless the operator switches it
+/// on ([`rows`]). An older Platform Manager reading it sees an error and
+/// keeps PostgreSQL fixed: safe either way.
+pub const PG_STOPPED: &str = "PostgreSQL is stopped, so the databases it holds could not be listed";
+
 /// The other databases in PostgreSQL (Linux native, where it is shared).
 pub fn pg_others(record: &InstallationRecord) -> Result<Vec<String>, String> {
     if cfg!(target_os = "linux") && record.engine == Engine::Native {
-        record.platform().pg_other_databases()
+        pg_others_when(sentient_installer_core::native::pg_stopped(), || record.platform().pg_other_databases())
     } else {
         Ok(Vec::new())
     }
+}
+
+/// [`pg_others`] given whether PostgreSQL is stopped: unknown then
+/// ([`PG_STOPPED`]), else its listing.
+fn pg_others_when(stopped: bool, list: impl FnOnce() -> Result<Vec<String>, String>) -> Result<Vec<String>, String> {
+    if stopped {
+        Err(PG_STOPPED.into())
+    } else {
+        list()
+    }
+}
+
+/// What else PostgreSQL holds is unknown because it is stopped.
+pub fn pg_unknown(f: &Facts) -> bool {
+    matches!(&f.pg_others, Some(Err(e)) if e == PG_STOPPED)
 }
 
 /// Bytes under `dir` (what this account can read).
@@ -1337,6 +1365,9 @@ mod tests {
         assert_eq!(r.iter().find(|r| r.key == Key::Postgres).unwrap().why.as_deref(), Some("It also holds erp: another program uses it, so it stays."));
         f.pg_others = None;
         assert!(rows(&f).iter().find(|r| r.key == Key::Postgres).unwrap().why.as_deref().unwrap().starts_with("Checking"));
+        // A listing that failed: fixed, kept.
+        f.pg_others = Some(Err("psql: connection refused".into()));
+        assert!(rows(&f).iter().find(|r| r.key == Key::Postgres).unwrap().why.as_deref().unwrap().contains("could not be checked"));
         // Setup's own: removed for real, data kept by default.
         let r = rows(&fixture("lx-pg").unwrap());
         assert_eq!(pg_action(&effective(&default_choice(&r), &r)), Some(DbRemoval::Remove { keep_data: true }));
@@ -1464,4 +1495,40 @@ pub fn computer_name() -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "this computer".into())
+
+    #[test]
+    fn a_stopped_postgres_is_unknown_never_none() {
+        // Stopped: unknown, and the cluster is not even asked.
+        assert_eq!(pg_others_when(true, || panic!("a stopped PostgreSQL is not asked")), Err(PG_STOPPED.to_string()));
+        assert_eq!(pg_others_when(false, || Ok(vec!["erp".into()])), Ok(vec!["erp".to_string()]));
+        // It survives the server's JSON (a remote Uninstall dialog).
+        let mut f = fixture("lx-pg").unwrap();
+        f.pg_others = Some(pg_others_when(true, || Ok(Vec::new())));
+        let back: Facts = serde_json::from_str(&serde_json::to_string(&f).unwrap()).unwrap();
+        assert!(pg_unknown(&back));
+    }
+
+    #[test]
+    fn an_unknown_postgres_stays_unless_switched_on() {
+        let mut f = fixture("lx-pg").unwrap();
+        f.pg_others = Some(Err(PG_STOPPED.into()));
+        let r = rows(&f);
+        assert_eq!(keys(&r), [Key::Sentient, Key::Postgres, Key::KeepPgData, Key::KeepFiles, Key::Gateway, Key::Shortcuts, Key::Manager]);
+        let pg = r.iter().find(|r| r.key == Key::Postgres).unwrap();
+        // Says why, and can still be picked.
+        assert!(pg.why.is_none());
+        assert!(pg.extra.as_deref().unwrap().contains("PostgreSQL is stopped"));
+        let mut c = default_choice(&r);
+        assert!(!c.has(Key::Postgres));
+        assert_eq!(pg_action(&effective(&c, &r)), None);
+        let (_, kept, _) = gone_and_kept(&c, &r);
+        assert!(kept.contains(&"PostgreSQL".to_string()));
+        // The operator's explicit choice.
+        c.set(Key::Postgres, true);
+        assert_eq!(rule(Key::Postgres, &c, &r), None);
+        // Its data kept by default, as for any PostgreSQL Setup installed.
+        assert_eq!(pg_action(&effective(&c, &r)), Some(DbRemoval::Remove { keep_data: true }));
+        c.set(Key::KeepPgData, false);
+        assert_eq!(pg_action(&effective(&c, &r)), Some(DbRemoval::Remove { keep_data: false }));
+    }
 }
