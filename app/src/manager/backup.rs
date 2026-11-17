@@ -86,6 +86,10 @@ pub struct BackupPage {
     saved: Option<(&'static str, Result<(), String>)>,
     /// Free space where the backup folder is (read with the list).
     folder_free: Option<u64>,
+    /// The stack's passwords are being read (Docker): Read the database
+    /// waits for them (`inspect_waits`).
+    secrets_pending: bool,
+    inspect_waits: bool,
     _tasks: Vec<Task<()>>,
     _observe: Vec<Subscription>,
     /// The Restore flow, in place of the page while it is open.
@@ -94,6 +98,20 @@ pub struct BackupPage {
     pending: Option<crate::manager::restore::Source>,
     /// The restore history (R1).
     history: Option<Result<Vec<crate::restore_flow::Entry>, String>>,
+}
+
+/// The database and ClickHouse passwords: a Docker stack's from its compose
+/// file or containers (`docker`, read already), else the secret store's.
+/// Blocking (a shell and docker): never on the UI thread.
+fn stored_passwords(docker: Option<sentient_installer_core::distro::docker_ops::StackSecrets>) -> (String, String) {
+    let db = docker.as_ref().map(|s| s.db_password.clone()).or_else(|| crate::secrets::get(crate::secrets::Secret::Database)).unwrap_or_default();
+    let ch = docker
+        .as_ref()
+        .map(|s| s.ch_password.clone())
+        .filter(|p| !p.is_empty())
+        .or_else(|| crate::secrets::get(crate::secrets::Secret::Clickhouse))
+        .unwrap_or_default();
+    (db, ch)
 }
 
 /// Forward the backup engine's progress into a job's sink.
@@ -119,23 +137,12 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, String> {
 
 impl BackupPage {
     pub fn new(record: Option<InstallationRecord>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Docker keeps the stack's passwords in its compose file.
-        let docker = record
-            .as_ref()
-            .filter(|r| r.engine == crate::installation::Engine::Docker)
-            .and_then(|r| sentient_installer_core::distro::docker_ops::read_secrets(&r.stack).ok());
-        let saved = docker
-            .as_ref()
-            .map(|s| s.db_password.clone())
-            .or_else(|| crate::secrets::get(crate::secrets::Secret::Database))
-            .unwrap_or_default();
+        // Docker keeps the stack's passwords in its compose file (or its
+        // containers): read behind the page, never while it opens (a shell
+        // and up to two docker calls, 0.3–0.6 s on the UI thread before).
+        let docker_stack = record.as_ref().filter(|r| r.engine == crate::installation::Engine::Docker).map(|r| r.stack.clone());
+        let (saved, saved_ch) = if docker_stack.is_some() { (String::new(), String::new()) } else { stored_passwords(None) };
         let password = cx.new(|cx| InputState::new(window, cx).masked(true).default_value(saved));
-        let saved_ch = docker
-            .as_ref()
-            .map(|s| s.ch_password.clone())
-            .filter(|p| !p.is_empty())
-            .or_else(|| crate::secrets::get(crate::secrets::Secret::Clickhouse))
-            .unwrap_or_default();
         let ch_password = cx.new(|cx| InputState::new(window, cx).masked(true).default_value(saved_ch));
         let telemetry_days = cx.new(|cx| InputState::new(window, cx).default_value("30"));
         let passphrase = cx.new(|cx| {
@@ -221,6 +228,8 @@ impl BackupPage {
             // Screens: "Saved" shown on a section (SPM_DEBUG_SAVED=folder).
             saved: std::env::var("SPM_DEBUG_SAVED").ok().filter(|_| cfg!(debug_assertions)).map(|s| (&*s.leak(), Ok(()))),
             folder_free: crate::backups::free_space(&prefs_folder),
+            secrets_pending: docker_stack.is_some(),
+            inspect_waits: false,
             _tasks: Vec::new(),
             _observe,
             flow: None,
@@ -273,6 +282,9 @@ impl BackupPage {
         page._observe.extend(subs);
         page.read_sizes(cx);
         page.read_history(cx);
+        if let Some(stack) = docker_stack {
+            page.read_secrets(stack, window, cx);
+        }
         #[cfg(debug_assertions)]
         if let Ok(frame) = std::env::var("SPM_DEBUG_RESTORE") {
             page.pending = Some(crate::manager::restore::canned::source(&frame));
@@ -311,6 +323,11 @@ impl BackupPage {
     }
 
     fn inspect(&mut self, cx: &mut Context<Self>) {
+        // The passwords are still being read: once they are.
+        if self.secrets_pending {
+            self.inspect_waits = true;
+            return;
+        }
         let Some(conn) = self.conn(None, cx) else { return };
         self.inspect_error = None;
         let task = cx.spawn(async move |this, cx| {
@@ -574,6 +591,28 @@ impl BackupPage {
     }
 
     /// The database's sizes and free disk, for the estimate (background).
+    /// A Docker stack's passwords, read behind the page; they fill the
+    /// fields left empty, then a Read the database asked for meanwhile runs.
+    fn read_secrets(&mut self, stack: sentient_installer_core::distro::DeployConfig, window: &mut Window, cx: &mut Context<Self>) {
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let (db, ch) = cx.background_executor().spawn(async move { stored_passwords(sentient_installer_core::distro::docker_ops::read_secrets(&stack).ok()) }).await;
+            this.update_in(cx, |p, window, cx| {
+                for (input, value) in [(p.password.clone(), db), (p.ch_password.clone(), ch)] {
+                    if !value.is_empty() && input.read(cx).value().is_empty() {
+                        input.update(cx, |s, cx| s.set_value(value, window, cx));
+                    }
+                }
+                p.secrets_pending = false;
+                if std::mem::take(&mut p.inspect_waits) {
+                    p.inspect(cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
     fn read_sizes(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         if crate::dbstatus::needs_admin(&record) {
