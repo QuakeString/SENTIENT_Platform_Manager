@@ -1666,8 +1666,9 @@ pub fn pg_other_databases(cfg: &NativeConfig) -> Result<Vec<String>, String> {
 /// PostgreSQL is there but not running (stopped, failed, or its state could
 /// not be read): what else it holds cannot be listed now. A stack stop
 /// rightly sees nothing to keep then ([`pg_other_databases`] lists none);
-/// removing PostgreSQL must not (crate users: the uninstall facts). Linux
-/// only: on Windows PostgreSQL is SENTIENT's own service.
+/// removing PostgreSQL must not (crate users: the uninstall facts). Linux:
+/// the PostgreSQL unit; Windows: the sentient-postgresql service, which
+/// can hold other databases too (a shared PostgreSQL).
 pub fn pg_stopped() -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -1676,8 +1677,15 @@ pub fn pg_stopped() -> bool {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        false
+        pg_state_says_stopped(&service_state(PG_SERVICE))
     }
+}
+
+/// A Windows service state (service_state) that means the databases it
+/// holds cannot be listed now.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn pg_state_says_stopped(state: &str) -> bool {
+    state != "running" && state != "absent"
 }
 
 /// Start, stop or restart the whole stack in order (crate::stack_order).
@@ -2377,6 +2385,15 @@ fn _assert_offline_helper_used(s: &ArtifactSource) -> bool {
 
 #[cfg(test)]
 mod start_delay_tests {
+    #[test]
+    fn a_stopped_or_unknown_windows_postgres_service_counts_as_stopped() {
+        assert!(!super::pg_state_says_stopped("running"));
+        assert!(!super::pg_state_says_stopped("absent"));
+        for s in ["stopped", "stop_pending", "start_pending", "paused", "unknown"] {
+            assert!(super::pg_state_says_stopped(s), "{s}");
+        }
+    }
+
     use super::*;
 
     #[test]
