@@ -888,6 +888,33 @@ fn run_job(args: &[String]) -> i32 {
             }
             let record = record;
             let mut target: Option<String> = None;
+            // Docker pinned to a release, no version given: the newest
+            // release, pinned (crate::updating::plain_update).
+            let pinned = record.engine == crate::installation::Engine::Docker
+                && record.stack.external.is_none()
+                && sentient_installer_core::releases::is_numbered(sentient_installer_core::distro::docker_ops::image_tag(&record.stack.image));
+            let version = match version {
+                None if pinned => {
+                    let newest = match crate::online::versions(false) {
+                        Ok(list) => list.first().map(|v| v.version.clone()),
+                        Err(e) => {
+                            eprintln!("✗ The releases could not be read ({e}). Choose one with --version.");
+                            return 1;
+                        }
+                    };
+                    let tag = sentient_installer_core::distro::docker_ops::image_tag(&record.stack.image);
+                    let running = crate::installation::running_version(&record);
+                    match crate::updating::plain_update(tag, false, running.as_deref(), newest.as_deref()) {
+                        crate::updating::PlainUpdate::To(v) => Some(v),
+                        crate::updating::PlainUpdate::UpToDate => {
+                            eprintln!("✗ SENTIENT {} is the newest release: nothing to update.", running.as_deref().unwrap_or(tag));
+                            return 1;
+                        }
+                        crate::updating::PlainUpdate::Pull => None,
+                    }
+                }
+                v => v,
+            };
             let mut package = args
                 .iter()
                 .skip(1)

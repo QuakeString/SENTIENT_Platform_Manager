@@ -93,6 +93,40 @@ pub fn docker_step(target: &str, running: Option<&str>, tag: &str, external: boo
     }
 }
 
+/// The tag a Docker roll back writes into the compose file: the release
+/// number the previous image carries (`back`: its SENTIENT_BUILD_VERSION,
+/// else its numbered label), when the compose file is the Platform
+/// Manager's and names another tag. None: the tag stays (the operator's
+/// compose file, or an image that does not say its release).
+pub fn rollback_tag(back: Option<&str>, tag: &str, external: bool) -> Option<String> {
+    back.filter(|v| !external && sentient_installer_core::releases::is_numbered(v) && *v != tag).map(String::from)
+}
+
+/// What "Update SENTIENT" (no version chosen) does on a Docker install.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlainUpdate {
+    /// Pull what the compose tag names (latest, dev, the operator's file).
+    Pull,
+    /// Pinned to a release: update to the newest one, and pin it.
+    To(String),
+    /// Pinned, and the newest release is what runs.
+    UpToDate,
+}
+
+/// `tag` is the compose file's tag, `running` what runs, `newest` the newest
+/// published release (None: not known, e.g. offline).
+pub fn plain_update(tag: &str, external: bool, running: Option<&str>, newest: Option<&str>) -> PlainUpdate {
+    use sentient_installer_core::releases::{Move, is_numbered, movement};
+    if external || !is_numbered(tag) {
+        return PlainUpdate::Pull;
+    }
+    match newest {
+        None => PlainUpdate::Pull,
+        Some(n) if movement(n, running.unwrap_or(tag)) == Move::Newer => PlainUpdate::To(n.to_string()),
+        Some(_) => PlainUpdate::UpToDate,
+    }
+}
+
 /// Update `record` from `package` (native) or the registry (Docker). Returns
 /// the record with its new version, already saved.
 pub fn run(
@@ -212,10 +246,36 @@ pub fn rollback_point(record: &InstallationRecord) -> Result<Option<RollbackPoin
 
 /// Go back to the version the last update replaced. Returns the record with
 /// that version, already saved.
+///
+/// Docker: the compose file then names the release the previous image holds
+/// ([`rollback_tag`]), and the tag it named before keeps naming the image
+/// that was rolled back from.
 pub fn rollback(record: InstallationRecord, sink: ProgressFn) -> Result<InstallationRecord, String> {
+    let mut pinned_image: Option<String> = None;
+    let mut running: Option<String> = None;
     let (point, set_aside) = match record.engine {
         Engine::Docker => {
-            let r = distro::docker_ops::rollback(sink.clone(), &distro::docker_ops::with_secrets(&record.stack)?)?;
+            let cfg = distro::docker_ops::with_secrets(&record.stack)?;
+            let current = distro::docker_ops::running_image_id(&cfg);
+            let r = distro::docker_ops::rollback(sink.clone(), &cfg)?;
+            running = distro::docker_ops::running_version(&cfg).or_else(|| r.point.version.clone());
+            let tag = distro::docker_ops::image_tag(&cfg.image);
+            if let Some(v) = rollback_tag(running.as_deref(), tag, cfg.external.is_some()) {
+                let image = crate::maintenance_ops::retag(&cfg.image, &v);
+                step(&sink, &format!("Setting the image tag to {v}"));
+                match distro::docker_ops::pin_tag(&sink, &cfg, &image) {
+                    Ok(p) => {
+                        // The roll back put the previous image under the
+                        // newer release's tag: that tag names its own
+                        // image again.
+                        if let Some(id) = &current {
+                            distro::docker_ops::retag_image(id, &cfg.image);
+                        }
+                        pinned_image = Some(p.image);
+                    }
+                    Err(e) => sink(Progress::Log { line: format!("The image tag could not be set to {v} ({e}); it runs as {}.", cfg.image) }),
+                }
+            }
             (r.point, r.set_aside)
         }
         Engine::Native => {
@@ -224,8 +284,11 @@ pub fn rollback(record: InstallationRecord, sink: ProgressFn) -> Result<Installa
         }
     };
     let mut updated = record;
-    if let Some(v) = &point.version {
+    if let Some(v) = running.as_ref().filter(|v| sentient_installer_core::releases::is_numbered(v)).or(point.version.as_ref()) {
         updated.sentient_version = v.clone();
+    }
+    if let Some(image) = pinned_image {
+        updated.stack.image = image;
     }
     let json = serde_json::to_string_pretty(&updated).map_err(|e| e.to_string())?;
     crate::self_install::write_record(&crate::installation::record_path(), &json)?;
@@ -260,5 +323,30 @@ mod tests {
         assert_eq!(docker_step("4.4.0.2", Some("4.4.0.2"), "latest", true), DockerStep::AlreadyRunning);
         // Going back is an update too.
         assert_eq!(docker_step("4.4.0.1", Some("4.4.0.2"), "dev", false), DockerStep::UpdateAndPin);
+    }
+
+    #[test]
+    fn roll_back_names_the_previous_release() {
+        // Pinned to 4.4.0.3, back to an image that says 4.4.0.2.
+        assert_eq!(rollback_tag(Some("4.4.0.2"), "4.4.0.3", false).as_deref(), Some("4.4.0.2"));
+        // An image that does not say its release (labelled "latest"): the tag stays.
+        assert_eq!(rollback_tag(Some("latest"), "4.4.0.3", false), None);
+        assert_eq!(rollback_tag(None, "4.4.0.3", false), None);
+        // The operator's compose file is not rewritten.
+        assert_eq!(rollback_tag(Some("4.4.0.2"), "latest", true), None);
+        // Already named.
+        assert_eq!(rollback_tag(Some("4.4.0.2"), "4.4.0.2", false), None);
+    }
+
+    #[test]
+    fn a_pinned_install_updates_to_the_newest_release() {
+        assert_eq!(plain_update("4.4.0.2", false, Some("4.4.0.2"), Some("4.4.0.3")), PlainUpdate::To("4.4.0.3".into()));
+        assert_eq!(plain_update("4.4.0.3", false, Some("4.4.0.3"), Some("4.4.0.3")), PlainUpdate::UpToDate);
+        // The container says nothing: the tag stands for it.
+        assert_eq!(plain_update("4.4.0.2", false, None, Some("4.4.0.3")), PlainUpdate::To("4.4.0.3".into()));
+        // Releases not known, latest, or the operator's file: pull the tag.
+        assert_eq!(plain_update("4.4.0.2", false, Some("4.4.0.2"), None), PlainUpdate::Pull);
+        assert_eq!(plain_update("latest", false, Some("4.4.0.2"), Some("4.4.0.3")), PlainUpdate::Pull);
+        assert_eq!(plain_update("4.4.0.2", true, Some("4.4.0.2"), Some("4.4.0.3")), PlainUpdate::Pull);
     }
 }

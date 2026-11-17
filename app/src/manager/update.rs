@@ -359,7 +359,23 @@ impl UpdatePage {
         .detach();
     }
 
+    /// Docker: what "Update SENTIENT" does (crate::updating::plain_update):
+    /// a pinned install goes to the newest release listed, or the offer.
+    fn plain_update(&self, cx: &App) -> Option<crate::updating::PlainUpdate> {
+        let r = self.record.as_ref().filter(|r| r.engine == Engine::Docker)?;
+        let newest = match &self.versions {
+            Some(Ok(list)) if !list.is_empty() => Some(list[0].version.clone()),
+            _ => self.updates.read(cx).sentient().map(|o| o.version.clone()),
+        };
+        let tag = sentient_installer_core::distro::docker_ops::image_tag(&r.stack.image);
+        Some(crate::updating::plain_update(tag, r.stack.external.is_some(), self.running.as_deref(), newest.as_deref()))
+    }
+
     fn run(&mut self, cx: &mut Context<Self>) {
+        if let Some(crate::updating::PlainUpdate::To(v)) = self.plain_update(cx) {
+            self.run_docker_to(v, cx);
+            return;
+        }
         let Some(record) = self.record.clone() else { return };
         let package = self.package.clone();
         let accept = self.accept_breaking;
@@ -857,7 +873,15 @@ impl Render for UpdatePage {
         let native = record.platform().needs_package();
         let job = self.job.read(cx);
         let busy = job.is_running();
-        let can_run = !busy && (!native || self.package.is_some());
+        let plain = self.plain_update(cx);
+        let up_to_date = plain == Some(crate::updating::PlainUpdate::UpToDate);
+        let can_run = !busy && !up_to_date && (!native || self.package.is_some());
+        let update_label = match (&plain, busy) {
+            (_, true) => "Updating".to_string(),
+            (Some(crate::updating::PlainUpdate::To(v)), _) => format!("Update to {v}"),
+            (Some(crate::updating::PlainUpdate::UpToDate), _) => "Up to date".to_string(),
+            _ => "Update SENTIENT".to_string(),
+        };
         let outcome = match job.state() {
             JobState::Done(m) => Some((Tone::Good, m.clone())),
             JobState::Failed(m) => Some((Tone::Bad, m.clone())),
@@ -961,7 +985,7 @@ impl Render for UpdatePage {
                     h_flex().child(
                         crate::ui::button("update")
                             .primary()
-                            .label(if busy { "Updating" } else { "Update SENTIENT" })
+                            .label(update_label)
                             .disabled(!can_run)
                             .on_click(cx.listener(|this, _, _, cx| this.run(cx))),
                     ),

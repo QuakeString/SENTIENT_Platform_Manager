@@ -797,23 +797,25 @@ pub fn running_version(cfg: &DeployConfig) -> Option<String> {
     running_version_from(env.as_deref(), label.as_deref())
 }
 
+/// The id of the image the stack's SENTIENT container runs.
+pub fn running_image_id(cfg: &DeployConfig) -> Option<String> {
+    capture(&format!("docker inspect -f '{{{{.Image}}}}' {}", cfg.names().app)).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
 /// Point the stack at `image` (a numbered tag) without changing which
-/// SENTIENT runs: the image the container runs now gets that tag when it is
-/// not on this machine yet, the compose file is written with it and Compose
-/// recreates the container. No database copy and no schema change: only
-/// for `image` holding the version that runs already. `cfg` carries the
-/// stack's passwords; returns it with the new image.
+/// SENTIENT runs: the image the container runs now gets that tag, the
+/// compose file is written with it and Compose recreates the container. No
+/// database copy and no schema change: only for `image` naming the version
+/// that runs (the version it ran already, just updated to, or rolled back
+/// to). `cfg` carries the stack's passwords; returns it with the new image.
 pub fn pin_tag(sink: &ProgressFn, cfg: &DeployConfig, image: &str) -> Result<DeployConfig, String> {
     if cfg.external.is_some() {
         return Err(super::EXTERNAL_COMPOSE.into());
     }
-    if image_id(image).is_none() {
-        let running = capture(&format!("docker inspect -f '{{{{.Image}}}}' {}", cfg.names().app))
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .or_else(|| image_id(&cfg.image))
-            .ok_or_else(|| format!("Could not tell which image SENTIENT runs, so {image} was not set. Nothing has been changed."))?;
+    let running = running_image_id(cfg)
+        .or_else(|| image_id(&cfg.image))
+        .ok_or_else(|| format!("Could not tell which image SENTIENT runs, so {image} was not set. Nothing has been changed."))?;
+    if image_id(image).as_deref() != Some(running.as_str()) {
         step(sink, &format!("Tagging the image SENTIENT runs as {image}"));
         run(sink, &format!("docker tag {} {}", shell_quote(&running), shell_quote(image)))?;
     }
