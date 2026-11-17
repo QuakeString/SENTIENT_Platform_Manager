@@ -83,6 +83,9 @@ const EXTRA: &[(&str, &[u8])] = &[
     ("logos/debian.svg", include_bytes!("../assets/logos/debian.svg")),
     ("logos/fedora.svg", include_bytes!("../assets/logos/fedora.svg")),
     ("logos/gateway.svg", include_bytes!("../assets/logos/gateway.svg")),
+    // The company block in About (crate::manager::about::company): the
+    // website's logo.svg (brand teal), which reads on light and dark alike.
+    ("logos/invenia-systems.svg", include_bytes!("../assets/logos/invenia-systems.svg")),
     ("logos/linux.svg", include_bytes!("../assets/logos/linux.svg")),
     ("logos/opensuse.svg", include_bytes!("../assets/logos/opensuse.svg")),
     ("logos/postgresql.svg", include_bytes!("../assets/logos/postgresql.svg")),

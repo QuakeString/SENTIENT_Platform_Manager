@@ -590,6 +590,9 @@ impl Manager {
             if let Ok(spec) = std::env::var("SPM_DEBUG_UNINSTALL") {
                 uninstall_dialog::open_fixture(&spec, cx);
             }
+            if std::env::var_os("SPM_DEBUG_LICENCES_DIALOG").is_some() {
+                about::open_licences(cx);
+            }
             if std::env::var_os("SPM_DEBUG_LOG_DIALOG").is_some() {
                 let view = cx.new(|cx| logs::LogView::file(crate::jobs::activity_log(), _window, cx));
                 crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., icon: None, on_close: None }, cx);

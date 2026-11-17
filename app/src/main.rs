@@ -93,6 +93,8 @@ mod standalone;
 mod support;
 #[cfg(feature = "gui")]
 mod terminal;
+#[cfg(feature = "gui")]
+mod third_party;
 mod server_info;
 mod server_ops;
 mod stats;

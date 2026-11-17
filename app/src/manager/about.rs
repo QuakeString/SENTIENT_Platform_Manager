@@ -3,7 +3,8 @@
 //! About and preferences of the Platform Manager itself (not of SENTIENT:
 //! that is Platform settings). Opens from the (i) at the bottom of the
 //! menu. One column: the program and its version with its update state,
-//! then preferences and support, and where it lives as a quiet footer.
+//! then preferences and support, the company with the build and the
+//! third-party licences, and where it lives as a quiet footer.
 
 use gpui_kit::component::{
     ActiveTheme, Icon, IconName, Disableable as _, Sizable as _, h_flex, v_flex, button::ButtonVariants as _,
@@ -15,6 +16,24 @@ use sentient_installer_core::releases::Channel;
 use crate::ui::{self, Tone};
 use crate::updates::UpdateState;
 
+/// The company, every field in one place. Sources: the name as the
+/// installers and packages give it (build.rs, packaging/), the support
+/// address as the Linux packages give it (packaging/linux,
+/// packaging/arch), the copyright as assets/licence.txt has it, the logo
+/// from the company website's repository (public/logo.svg).
+pub mod company {
+    pub const NAME: &str = "INVENIA SYSTEMS";
+    /// Not confirmed yet: the website repository is inveniasystems.com.
+    pub const WEBSITE: &str = "https://invenia.in";
+    pub const SUPPORT_EMAIL: &str = "support@invenia.in";
+    /// Not confirmed yet.
+    pub const DOCS: &str = "https://docs.invenia.in";
+    pub const COPYRIGHT: &str = "Copyright © 2026 INVENIA SYSTEMS and the SENTIENT Authors. All rights reserved.";
+    /// Its artwork is 70.0 × 14.12 (viewBox).
+    pub const LOGO: &str = "logos/invenia-systems.svg";
+    pub const LOGO_ASPECT: f32 = 70.000_59 / 14.122_055;
+}
+
 /// "What's new" for the Platform Manager, on the Update screen.
 pub struct ShowWhatsNew;
 
@@ -25,6 +44,8 @@ pub struct AboutPage {
     making: bool,
     /// Saving the background preferences failed (start at sign-in).
     bg_error: Option<String>,
+    /// Copy version info was clicked a moment ago: its label says Copied.
+    copied: bool,
     _observe: Subscription,
     _tasks: Vec<Task<()>>,
 }
@@ -78,7 +99,110 @@ impl AboutPage {
 impl AboutPage {
     pub fn new(updates: Entity<UpdateState>, cx: &mut Context<Self>) -> Self {
         let _observe = cx.observe(&updates, |_, _, cx| cx.notify());
-        Self { updates, support: None, making: false, bg_error: None, _observe, _tasks: Vec::new() }
+        Self { updates, support: None, making: false, bg_error: None, copied: false, _observe, _tasks: Vec::new() }
+    }
+
+    fn copy_version_info(&mut self, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(crate::updates::version_info()));
+        self.copied = true;
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+            this.update(cx, |page, cx| {
+                page.copied = false;
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+        cx.notify();
+    }
+
+    /// The company block: the logo, the website and support address, this
+    /// build, and the copyright with Copy version info and Third-party
+    /// licences at the bottom right.
+    fn company_panel(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
+        let link = |id: &'static str, label: &str, url: String| -> AnyElement {
+            // On the label's line, as the Build value.
+            div()
+                .when(!ui::stacked(), |d| d.pt(px(9.)))
+                .child(crate::ui::probed(
+                    crate::ui::button(id)
+                        .link()
+                        .label(SharedString::from(label.to_string()))
+                        .icon(IconName::ExternalLink)
+                        .on_click(move |_, _, cx| ui::open_url(&url, cx)),
+                ))
+                .into_any_element()
+        };
+        // On the label's line (setting_row pads the label 9 px when side by side).
+        let value = |t: String| div().when(!ui::stacked(), |d| d.pt(px(9.))).text_sm().child(t).into_any_element();
+        let host = company::WEBSITE.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/');
+        let build = format!(
+            "{} · commit {} · built {} · {}",
+            crate::updates::manager_version(),
+            crate::updates::build_commit(),
+            crate::updates::build_date(),
+            crate::updates::build_profile()
+        );
+        let rows = vec![
+            ui::SettingRow::wide("Website", None, link("about-website", host, company::WEBSITE.to_string())),
+            ui::SettingRow::wide("Support", None, link("about-email", company::SUPPORT_EMAIL, format!("mailto:{}", company::SUPPORT_EMAIL))),
+            ui::SettingRow::wide(
+                "Build",
+                Some("The version, the commit it was built from, the day it was built and whether it is a release or a debug build. Copy version info puts this on the clipboard for a support request.".into()),
+                value(build),
+            ),
+        ];
+        let logo_h = 28.;
+        ui::panel(theme)
+            .gap_0()
+            .px_0()
+            .py_0()
+            .child(
+                h_flex()
+                    .px(px(18.))
+                    .pt(px(16.))
+                    .pb(px(6.))
+                    .child(
+                        div()
+                            .id("about-company-logo")
+                            .cursor_pointer()
+                            .child(img(company::LOGO).h(px(logo_h)).w(px(logo_h * company::LOGO_ASPECT)).flex_shrink_0())
+                            .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new(company::NAME).build(w, cx))
+                            .on_click(|_, _, cx| ui::open_url(company::WEBSITE, cx)),
+                    ),
+            )
+            .children(rows.into_iter().enumerate().map(|(i, mut r)| {
+                r.first = i == 0;
+                ui::setting_row(theme, r, cx)
+            }))
+            .child(
+                h_flex()
+                    .px(px(18.))
+                    .py(px(12.))
+                    .gap_3()
+                    .flex_wrap()
+                    .items_center()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .child(div().flex_1().min_w(px(200.)).text_size(px(12.)).text_color(theme.muted_foreground).child(company::COPYRIGHT))
+                    // ml_auto: on a line of their own (a narrow window) the
+                    // buttons stay at the right.
+                    .child(ui::button_row(vec![
+                        crate::ui::button("about-copy-version")
+                            .outline()
+                            .icon(if self.copied { IconName::Check } else { IconName::Copy })
+                            .label(if self.copied { "Copied" } else { "Copy version info" })
+                            .on_click(cx.listener(|this, _, _, cx| this.copy_version_info(cx)))
+                            .into_any_element(),
+                        crate::ui::button("about-licences")
+                            .outline()
+                            .label("Third-party licences")
+                            .on_click(|_, _, cx| open_licences(cx))
+                            .into_any_element(),
+                    ])
+                    .ml_auto()),
+            )
     }
 
     fn make_support_file(&mut self, cx: &mut Context<Self>) {
@@ -182,7 +306,7 @@ impl Render for AboutPage {
                         .flex_1()
                         .min_w(px(200.))
                         .child(div().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child("SENTIENT Platform Manager"))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Version {version} (build {}){checked_line}", crate::updates::build_commit()))),
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Version {version}{checked_line}"))),
                 )
                 .child(
                     h_flex()
@@ -265,6 +389,8 @@ impl Render for AboutPage {
             .child(pref_row(&theme, "Update channel", Some("Release candidates arrive earlier and are less tested."), channels))
             .child(pref_row(&theme, "Check for updates", None, checks))
             .children(self.background_rows(&theme, cx));
+        crate::ui::set_stacked(f32::from(_window.viewport_size().width) < crate::ui::ROW_STACK_W);
+        let company = self.company_panel(&theme, cx);
         let log_path = crate::jobs::activity_log();
         let support = v_flex()
             .gap_3()
@@ -284,7 +410,7 @@ impl Render for AboutPage {
                         tile(&theme, "about-support", IconName::ArrowDown, "Create a support file", if self.making { "Collecting…" } else { "Logs, versions and settings in one file. Passwords are left out." })
                             .on_click(cx.listener(|this, _, _, cx| this.make_support_file(cx))),
                     )
-                    .child(tile(&theme, "about-docs", IconName::BookOpen, "Documentation", "Guides and help on docs.invenia.in.").on_click(|_, _, cx| ui::open_url("https://docs.invenia.in", cx))),
+                    .child(tile(&theme, "about-docs", IconName::BookOpen, "Documentation", format!("Guides and help on {}.", company::DOCS.trim_start_matches("https://"))).on_click(|_, _, cx| ui::open_url(company::DOCS, cx))),
             )
             .children(self.support.as_ref().map(|r| match r {
                 Ok(p) => ui::outcome(&theme, Tone::Good, format!("Support file saved: {}", p.display())).into_any_element(),
@@ -326,7 +452,115 @@ impl Render for AboutPage {
                     .child(v_flex().gap_2().child(caption("Appearance")).child(appearance))
                     .child(v_flex().gap_2().child(caption("Preferences")).child(prefs))
                     .child(v_flex().gap_2().child(caption("Support")).child(support))
+                    .child(v_flex().gap_2().child(caption("About")).child(company))
                     .child(footer),
             )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Third-party licences
+// ---------------------------------------------------------------------------
+
+/// The open-source components and their licences (crate::third_party), in
+/// the shared dialog: only the list scrolls; a row opens its source.
+pub fn open_licences(cx: &mut App) {
+    let view = cx.new(|_| Licences { scroll: UniformListScrollHandle::new() });
+    let footer = cx.new(|_| LicencesFooter);
+    crate::modal::open(crate::modal::Modal { title: "Third-party licences".into(), body: view.into(), width: 820., icon: None, on_close: None }, cx);
+    crate::modal::set_footer(footer.into(), cx);
+    crate::modal::set_list_body(cx);
+}
+
+struct Licences {
+    scroll: UniformListScrollHandle,
+}
+
+const LIC_ROW_H: f32 = 32.;
+const LIC_VERSION_W: f32 = 90.;
+/// The narrowest the name and licence columns get (a narrow window).
+const LIC_MIN_W: f32 = 120.;
+const LIC_LICENCE_W: f32 = 280.;
+
+impl Render for Licences {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let items: Vec<&'static crate::third_party::Component> = crate::third_party::components().collect();
+        let count = items.len();
+        let colors = (theme.foreground, theme.muted_foreground, theme.border, theme.accent);
+        let list = uniform_list("licences-list", count, move |range, _, _| {
+            let (fg, muted, line, hover) = colors;
+            range
+                .map(|i| {
+                    let c = items[i];
+                    let url = c.repository.clone();
+                    h_flex()
+                        .id(("lic-row", i))
+                        .w_full()
+                        .h(px(LIC_ROW_H))
+                        .px(px(12.))
+                        .gap(px(12.))
+                        .items_center()
+                        .text_size(px(13.))
+                        .border_t_1()
+                        .border_color(if i == 0 { gpui_kit::transparent_black() } else { line })
+                        .when(!url.is_empty(), |d| d.cursor_pointer().hover(move |d| d.bg(hover)).on_click(move |_, _, cx| ui::open_url(&url, cx)))
+                        .child(div().flex_1().min_w(px(LIC_MIN_W)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(fg).child(c.name.clone()))
+                        .child(div().w(px(LIC_VERSION_W)).flex_shrink_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(muted).child(c.version.clone()))
+                        .child(div().w(px(LIC_LICENCE_W)).min_w(px(LIC_MIN_W)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(muted).child(c.license.clone()))
+                })
+                .collect()
+        })
+        .track_scroll(&self.scroll)
+        .w_full()
+        .flex_1()
+        .min_h_0();
+        let head = |t: &'static str| div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(t.to_uppercase());
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .gap_3()
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .text_sm()
+                    .child(format!("The Platform Manager is built with {count} open-source components."))
+                    .child(crate::ui::info(
+                        "licences-help".into(),
+                        "Each is used under the licence shown (where there is a choice, any one of them). A row opens the component's source, where its licence text is.\n\nThe list is made from the program's dependencies when it is built.".into(),
+                    )),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .rounded(theme.radius)
+                    .border_1()
+                    .border_color(theme.border)
+                    .overflow_hidden()
+                    .child(
+                        h_flex()
+                            .h(px(LIC_ROW_H))
+                            .px(px(12.))
+                            .gap(px(12.))
+                            .items_center()
+                            .bg(theme.muted)
+                            .border_b_1()
+                            .border_color(theme.border)
+                            .child(div().flex_1().min_w(px(LIC_MIN_W)).child(head("Component")))
+                            .child(div().w(px(LIC_VERSION_W)).flex_shrink_0().child(head("Version")))
+                            .child(div().w(px(LIC_LICENCE_W)).min_w(px(LIC_MIN_W)).child(head("Licence"))),
+                    )
+                    .child(list),
+            )
+    }
+}
+
+struct LicencesFooter;
+
+impl Render for LicencesFooter {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        h_flex().justify_end().child(ui::probed(ui::button("licences-close").outline().label("Close").on_click(|_, _, cx| crate::modal::close(cx))))
     }
 }

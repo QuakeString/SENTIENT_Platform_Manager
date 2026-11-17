@@ -18,6 +18,16 @@ refreshes that repository's Downloads table.
 ### Changed
 - Pages switch instantly. The fade and rise on a page change are gone; dialogs and menus keep their open animation.
 - Every popup opens with the same short animation: dialogs, the notifications and job panels rise 8 px as they fade in (180 ms); menus (the instance switcher, the theme menu, the licence menu, every dropdown and the Files context menu) and tooltips fade in moving 4 px toward what opened them (140 ms). Reduce motion turns them off. Dropdown and context menus, and plain tooltips, opened with none before.
+### Added
+- About and preferences (the (i) at the bottom of the menu) has an About
+  block: the INVENIA SYSTEMS logo, the website and support address as
+  links, this build (version, commit, build date, release or debug) and
+  the copyright. Copy version info puts the build lines on the clipboard
+  for a support request; Third-party licences lists the open-source
+  components the Platform Manager is built with and their licences (a row
+  opens the component's source). The list is made by
+  `scripts/third-party-licences.py` from `cargo metadata`, and a test fails
+  when Cargo.lock changes without it.
 
 ### Fixed
 - Windows: the install no longer hangs when the PostgreSQL admin password is missing or not accepted. psql never waits on a password prompt now, so the install stops with a clear error instead.
