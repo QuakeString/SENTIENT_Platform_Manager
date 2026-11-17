@@ -19,6 +19,8 @@ mod tray;
 #[cfg(all(windows, feature = "gui"))]
 mod win_icon;
 #[cfg(feature = "gui")]
+mod win_caption;
+#[cfg(feature = "gui")]
 mod win_frame;
 mod agent;
 #[cfg(feature = "gui")]

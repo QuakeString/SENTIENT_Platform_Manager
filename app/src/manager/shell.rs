@@ -572,6 +572,8 @@ impl Manager {
                 .child(ui::layout_probe("menu-icon"))
                 .when(rail, |d| {
                     d.cursor_pointer()
+                        // In front of the window's drag area (crate::win_caption).
+                        .when(crate::win_caption::enabled(), |d| d.occlude())
                         .on_hover(cx.listener(|this, h: &bool, _, cx| {
                             this.logo_hover = *h;
                             cx.notify();
@@ -624,6 +626,8 @@ impl Manager {
                 .items_center()
                 .gap(px(10.))
                 .child(ui::layout_probe("menu-brand"))
+                // Windows: the brand row drags the window too (crate::win_caption).
+                .child(crate::win_caption::drag_layer())
                 // The logo's centre on ICON_X, folded or not.
                 .pl(px(ICON_X - LOGO / 2.))
                 .when(!rail, |r| r.pr(px(10.)))
@@ -634,6 +638,7 @@ impl Manager {
                     .child(
                         div()
                             .id("fold")
+                            .when(crate::win_caption::enabled(), |d| d.occlude())
                             .size(px(32.))
                             .flex_shrink_0()
                             .flex()

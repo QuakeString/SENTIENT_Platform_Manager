@@ -1369,6 +1369,8 @@ impl Installer {
             .pl(px(shell::ICON_X - shell::LOGO / 2.))
             .pr(px(10.))
             .child(ui::layout_probe("menu-brand"))
+            // Windows: the brand row drags the window (crate::win_caption).
+            .child(crate::win_caption::drag_layer())
             .child(div().relative().size(px(shell::LOGO)).flex_shrink_0().flex().items_center().justify_center().child(ui::product_logo(ui::Product::Sentient, shell::LOGO)).child(ui::layout_probe("menu-icon")))
             .child(shell::brand_name(&theme, "SETUP"));
         v_flex()
@@ -1478,16 +1480,19 @@ impl Installer {
 
 impl Render for Installer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Windows 10: the app's caption and rounded corners (crate::win_frame).
+        // Windows 10: rounded corners and the border (crate::win_frame).
         let root = self.render_root(window, cx).into_any_element();
-        crate::win_frame::frame(crate::mode::AppMode::Install.window_title(), root, window, cx)
+        crate::win_frame::frame(root, window, cx)
     }
 }
 
 impl Installer {
     fn render_root(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(earlier) = &self.earlier {
-            return div().size_full().bg(cx.theme().background).child(earlier.clone()).into_any_element();
+            let theme = cx.theme().clone();
+            // Windows: the caption over its top edge (crate::win_caption).
+            let caption = crate::win_caption::overlay(theme.foreground, theme.muted, window);
+            return div().size_full().relative().bg(theme.background).child(earlier.clone()).children(caption).into_any_element();
         }
         // Setup installs on this computer, which the Flatpak build cannot.
         if sentient_installer_core::host::in_flatpak() {
@@ -1530,6 +1535,7 @@ impl Installer {
                     .flex_1()
                     .min_w_0()
                     .h_full()
+                    .relative()
                     .child(
                         v_flex()
                             .id("page")
@@ -1548,12 +1554,16 @@ impl Installer {
                                     .gap_0p5()
                                     .min_h(px(32.))
                                     .justify_center()
+                                    // Clear of the caption buttons (Windows).
+                                    .pr(px((crate::win_caption::width() - ui::PAGE_PAD).max(0.)))
                                     .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child(self.title(self.step)))
                                     .when_some(subtitle, |c, s| c.child(div().text_sm().text_color(theme.muted_foreground).child(s))),
                             )
                             .child(page),
                     )
-                    .child(footer),
+                    .child(footer)
+                    // Windows: the caption over the page's top edge.
+                    .children(crate::win_caption::overlay(theme.foreground, theme.muted, window)),
             )
             .children(layer)
             .into_any_element()
