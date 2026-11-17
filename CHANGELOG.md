@@ -15,11 +15,31 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
-## [0.9.1] - Unreleased
+## [0.9.1] - 2026-11-17
 
-Finds SENTIENT in Docker in your own WSL distro on Windows, and manages it there.
+Add an existing SENTIENT on a Windows server however it was installed, a built-in terminal, restart and shut down servers, a Server card on Statistics, and Linux packages for Debian, Ubuntu, Fedora, AppImage and Flatpak.
 
 ### Added
+- A built-in terminal: Statistics, Server card, terminal button. bash (or
+  the account's shell) on a Linux server, PowerShell on a Windows server,
+  a local shell for this computer, signed in over the connection the
+  Platform Manager already keeps, with no extra password. Several terminals
+  open as tabs; closing one that still runs asks first. Each session gets
+  the Platform Manager's segmented prompt (system and user, then the
+  folder) unless the account already uses a prompt theme (Powerlevel10k,
+  Oh My Posh, Starship); nothing is written on the server. nano, htop and
+  other full-screen programs work.
+- Restart server and Shut down server for another computer (the Server
+  card's buttons). Both ask first; shutting down needs the server's name
+  typed. A restart is a job with its steps shown: it waits until the server
+  really goes down, comes back (up to 10 minutes), has a new start time,
+  and SENTIENT runs and answers again. Meanwhile the top bar says it is
+  reconnecting instead of raising the connection-lost alarm.
+- Statistics: a Server card in place of the Database card: machine and
+  system, processor and memory, the disk holding SENTIENT's data, how long
+  it has run and updates waiting, with amber lines only when something
+  needs a look. All details opens every disk (health, wear, free space,
+  unmounted ones), graphics, clock, network, updates and Docker.
 - Linux packages beside the Arch one: Debian/Ubuntu (`.deb`, Debian 12+ and
   Ubuntu 22.04+), Fedora/RHEL/openSUSE (`.rpm`), an AppImage and a Flatpak
   bundle. Installed from a `.deb` or `.rpm`, the Platform Manager leaves its
@@ -30,6 +50,17 @@ Finds SENTIENT in Docker in your own WSL distro on Windows, and manages it there
   (Status, Setup and the rest) say so instead of looking empty.
 
 ### Fixed
+- Windows servers whose SSH default shell is PowerShell now get the open
+  connection (it was started the way cmd expects, so every request made
+  its own connection there).
+- Uninstall: a stopped PostgreSQL is "could not be checked", never "holds
+  no other databases": PostgreSQL then stays unless you switch it on.
+- The menu's selected row joins the page with curves at the pill's radius,
+  one line colour in light and dark, drawn sharp at every scale.
+- The SENTIENT logo tile's border is drawn on whole pixels at every scale.
+- Windows without WSL: "WSL is not installed" instead of a line of
+  wsl.exe's help.
+- Server details name a graphics card's memory once.
 - Windows: a SENTIENT running in Docker inside a WSL distro set up by hand
   (Ubuntu, …) was not found, on this computer or on a server through its
   agent. Add existing instance now looks in every running WSL distro of the
@@ -90,6 +121,16 @@ Finds SENTIENT in Docker in your own WSL distro on Windows, and manages it there
 - An installation record that no longer matches what runs on the computer
   (an early release's) no longer blocks adding: it is kept beside the new
   one as installation.json.replaced-<time>.
+
+### Known issues
+- The `.rpm` needs glibc 2.35 or newer: Fedora 39+, openSUSE Tumbleweed,
+  RHEL 10; not RHEL 9.
+- The Flatpak manages SENTIENT on other computers only (see Added).
+- A SENTIENT added from Windows services shows its version as unknown
+  until it is updated by the Platform Manager.
+- Adding SENTIENT in Docker inside a WSL distro, and the Windows services
+  with ClickHouse in WSL layout, were tested in unit tests and on the
+  reporter's own server, not on a test machine with WSL.
 
 ## [0.9.0] - 2026-11-17
 
