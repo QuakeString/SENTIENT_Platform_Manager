@@ -36,7 +36,20 @@ refreshes that repository's Downloads table.
   10 builds whose wsl.exe cannot, through DISM and Microsoft's WSL
   package), Windows restarts once and Setup continues after sign-in. A
   computer that cannot run WSL 2 (virtualization off) shows the Docker
-  choice greyed, with the reason. The card texts are still proposals.
+  choice greyed, with the reason.
+- Setup's System check asks where SENTIENT runs, on Windows and Linux
+  alike: "In the system" (Windows services, or systemd on Linux; the
+  default and recommended on both, so Linux no longer starts on Docker)
+  or "Docker" (inside WSL 2 on Windows). "Customise where each part runs"
+  shows the place of the SENTIENT server, PostgreSQL (TimescaleDB goes
+  with it) and ClickHouse; running them in different places comes in
+  0.9.3, so those choices are greyed with an (i) for now. On Windows,
+  "In the system" keeps ClickHouse in Docker inside WSL 2, as before.
+  Each database card on the Database step says where it will run, and a
+  database that can't be chosen is greyed with the reason in its (i)
+  instead of hidden (TimescaleDB with systemd on Linux; ClickHouse on a
+  Windows that cannot run WSL 2). Location, Database settings and the
+  Summary's "Runs as" line follow the choice.
 
 ### Fixed
 - Windows: the install no longer hangs when the PostgreSQL admin password is missing or not accepted. psql never waits on a password prompt now, so the install stops with a clear error instead.

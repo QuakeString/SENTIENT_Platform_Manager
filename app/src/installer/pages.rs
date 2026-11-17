@@ -494,7 +494,9 @@ impl Installer {
     fn check_row(&self, i: usize, row: super::CheckRow, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let (tone, text) = check_tone(row.status, row.state.clone());
-        let ready = row.status == Status::Pass;
+        // The WSL 2 row is Setup's own reading of WSL (with_wsl_row), not
+        // a check to run again: no buttons on it.
+        let ready = row.status == Status::Pass || row.id == "wsl";
         let fix = self.check_fix.read(cx);
         // jobview: short (a check's one-click fix, on its row).
         let (fixing, fix_step) = (fix.is_running(), fix.step_with_time());

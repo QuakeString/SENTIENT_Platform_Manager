@@ -671,6 +671,42 @@ mod tests {
         assert_eq!(names(&plan(Engine::Native, Flavor::Stock), Host { wsl_ready: false, ..WINDOWS })[0], STEP_SENTIENT);
     }
 
+    /// The wizard's choice (a card on System check, a database) as the
+    /// plan it builds (Installer::plan → placement::plan_engine), and the
+    /// steps that plan runs on this branch's backend.
+    fn chosen(host: crate::installer::placement::Host, card: Engine, flavor: Flavor) -> Result<InstallPlan, crate::installer::placement::Why> {
+        use crate::installer::placement::{Placement, plan_engine};
+        plan_engine(host, Placement::preset(card, host.windows), flavor).map(|engine| plan(engine, flavor))
+    }
+
+    #[test]
+    fn the_choice_on_system_check_makes_the_plan_the_backend_runs() {
+        use crate::installer::placement::{Host as On, Why, Wsl, default_engine};
+        let win = On { windows: true, wsl: Wsl::Ready };
+        let win_off = On { windows: true, wsl: Wsl::TurnOn };
+        let win_none = On { windows: true, wsl: Wsl::Unavailable };
+        let linux = On { windows: false, wsl: Wsl::Unavailable };
+        // Windows' default: native services, no WSL at all.
+        let p = chosen(win, default_engine(), Flavor::Timescaledb).unwrap();
+        assert_eq!(p.engine, Engine::Native);
+        assert_eq!(names(&p, Host { wsl_ready: false, ..WINDOWS })[0], STEP_SENTIENT);
+        // Windows Docker: Docker in WSL 2 (turned on first when it is off).
+        let p = chosen(win_off, Engine::Docker, Flavor::Stock).unwrap();
+        assert_eq!(p.engine, Engine::Docker);
+        assert_eq!(names(&p, Host { wsl_ready: false, ..WINDOWS })[..2], [STEP_WSL, STEP_DOCKER_WSL]);
+        // The hybrid: native, ClickHouse in its own WSL distribution.
+        let p = chosen(win, Engine::Native, Flavor::Clickhouse).unwrap();
+        assert_eq!(p.engine, Engine::Native);
+        assert_eq!(names(&p, WINDOWS)[..2], [STEP_CLICKHOUSE, STEP_SENTIENT]);
+        // Without WSL 2: neither Docker nor ClickHouse.
+        assert_eq!(chosen(win_none, Engine::Docker, Flavor::Stock).err(), Some(Why::NeedsWsl));
+        assert_eq!(chosen(win_none, Engine::Native, Flavor::Clickhouse).err(), Some(Why::NeedsWsl));
+        // Linux: in the system is the default; TimescaleDB there is refused.
+        assert_eq!(chosen(linux, default_engine(), Flavor::Clickhouse).unwrap().engine, Engine::Native);
+        assert_eq!(chosen(linux, Engine::Native, Flavor::Timescaledb).err(), Some(Why::NoDistroTimescale));
+        assert_eq!(chosen(linux, Engine::Docker, Flavor::Timescaledb).unwrap().engine, Engine::Docker);
+    }
+
     #[test]
     fn linux_docker_has_no_wsl_steps() {
         let linux = Host { windows: false, wsl_ready: false, manager_in_place: false };

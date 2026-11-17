@@ -1801,7 +1801,7 @@ fn debug_checks() -> Vec<checks::Check> {
 
 #[cfg(test)]
 mod wsl_row_tests {
-    use super::*;
+    use super::{CheckRow, Engine, Status, with_wsl_row, wsl_row};
     use sentient_installer_core::wsl::DockerChoice;
 
     fn unavailable() -> DockerChoice {
