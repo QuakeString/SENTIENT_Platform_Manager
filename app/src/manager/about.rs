@@ -122,16 +122,20 @@ impl AboutPage {
     /// licences at the bottom right.
     fn company_panel(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
         let link = |id: &'static str, label: &str, url: String| -> AnyElement {
-            crate::ui::probed(
-                crate::ui::button(id)
-                    .link()
-                    .label(SharedString::from(label.to_string()))
-                    .icon(IconName::ExternalLink)
-                    .on_click(move |_, _, cx| ui::open_url(&url, cx)),
-            )
-            .into_any_element()
+            // On the label's line, as the Build value.
+            div()
+                .when(!ui::stacked(), |d| d.pt(px(9.)))
+                .child(crate::ui::probed(
+                    crate::ui::button(id)
+                        .link()
+                        .label(SharedString::from(label.to_string()))
+                        .icon(IconName::ExternalLink)
+                        .on_click(move |_, _, cx| ui::open_url(&url, cx)),
+                ))
+                .into_any_element()
         };
-        let value = |t: String| div().pt(px(9.)).text_sm().child(t).into_any_element();
+        // On the label's line (setting_row pads the label 9 px when side by side).
+        let value = |t: String| div().when(!ui::stacked(), |d| d.pt(px(9.))).text_sm().child(t).into_any_element();
         let host = company::WEBSITE.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/');
         let build = format!(
             "{} · commit {} · built {} · {}",
@@ -182,6 +186,8 @@ impl AboutPage {
                     .border_t_1()
                     .border_color(theme.border)
                     .child(div().flex_1().min_w(px(200.)).text_size(px(12.)).text_color(theme.muted_foreground).child(company::COPYRIGHT))
+                    // ml_auto: on a line of their own (a narrow window) the
+                    // buttons stay at the right.
                     .child(ui::button_row(vec![
                         crate::ui::button("about-copy-version")
                             .outline()
@@ -194,7 +200,8 @@ impl AboutPage {
                             .label("Third-party licences")
                             .on_click(|_, _, cx| open_licences(cx))
                             .into_any_element(),
-                    ])),
+                    ])
+                    .ml_auto()),
             )
     }
 
@@ -471,7 +478,9 @@ struct Licences {
 }
 
 const LIC_ROW_H: f32 = 32.;
-const LIC_VERSION_W: f32 = 110.;
+const LIC_VERSION_W: f32 = 90.;
+/// The narrowest the name and licence columns get (a narrow window).
+const LIC_MIN_W: f32 = 120.;
 const LIC_LICENCE_W: f32 = 280.;
 
 impl Render for Licences {
@@ -488,6 +497,7 @@ impl Render for Licences {
                     let url = c.repository.clone();
                     h_flex()
                         .id(("lic-row", i))
+                        .w_full()
                         .h(px(LIC_ROW_H))
                         .px(px(12.))
                         .gap(px(12.))
@@ -496,13 +506,14 @@ impl Render for Licences {
                         .border_t_1()
                         .border_color(if i == 0 { gpui_kit::transparent_black() } else { line })
                         .when(!url.is_empty(), |d| d.cursor_pointer().hover(move |d| d.bg(hover)).on_click(move |_, _, cx| ui::open_url(&url, cx)))
-                        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(fg).child(c.name.clone()))
+                        .child(div().flex_1().min_w(px(LIC_MIN_W)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(fg).child(c.name.clone()))
                         .child(div().w(px(LIC_VERSION_W)).flex_shrink_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(muted).child(c.version.clone()))
-                        .child(div().w(px(LIC_LICENCE_W)).flex_shrink_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(muted).child(c.license.clone()))
+                        .child(div().w(px(LIC_LICENCE_W)).min_w(px(LIC_MIN_W)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(muted).child(c.license.clone()))
                 })
                 .collect()
         })
         .track_scroll(&self.scroll)
+        .w_full()
         .flex_1()
         .min_h_0();
         let head = |t: &'static str| div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(t.to_uppercase());
@@ -538,9 +549,9 @@ impl Render for Licences {
                             .bg(theme.muted)
                             .border_b_1()
                             .border_color(theme.border)
-                            .child(div().flex_1().min_w_0().child(head("Component")))
+                            .child(div().flex_1().min_w(px(LIC_MIN_W)).child(head("Component")))
                             .child(div().w(px(LIC_VERSION_W)).flex_shrink_0().child(head("Version")))
-                            .child(div().w(px(LIC_LICENCE_W)).flex_shrink_0().child(head("Licence"))),
+                            .child(div().w(px(LIC_LICENCE_W)).min_w(px(LIC_MIN_W)).child(head("Licence"))),
                     )
                     .child(list),
             )
