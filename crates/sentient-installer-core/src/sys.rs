@@ -70,8 +70,43 @@ pub fn host_command_env(program: impl AsRef<OsStr>, env: &[(&str, &str)]) -> Com
     {
         use std::os::windows::process::CommandExt;
         c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        // A folder that surely exists to run in: never the one this
+        // process was started from, which the elevated session may not see
+        // (a mapped network drive, a removed USB stick, a deleted folder).
+        // cmd then fails with "The current directory is invalid", and
+        // initdb's `postgres -V` (run through cmd) returned nothing, so
+        // initdb said postgres.exe "was not found".
+        c.current_dir(safe_dir(program.as_ref()));
     }
     c
+}
+
+/// A folder to run `program` in that exists: the program's own folder when
+/// it is given with its path, else the temporary folder, else Windows'.
+pub fn safe_dir(program: &OsStr) -> std::path::PathBuf {
+    let p = std::path::Path::new(program);
+    if p.is_absolute() {
+        if let Some(dir) = p.parent().filter(|d| d.is_dir()) {
+            return dir.to_path_buf();
+        }
+    }
+    let tmp = std::env::temp_dir();
+    if tmp.is_dir() {
+        return tmp;
+    }
+    std::env::var_os("SystemRoot").map(std::path::PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"))
+}
+
+/// Make this process's own working folder one that exists (started from a
+/// folder that is gone or that this session cannot reach): every program it
+/// starts, and every relative path, would otherwise fail. Call it first.
+pub fn ensure_valid_cwd() {
+    let fine = std::env::current_dir().map(|d| d.is_dir()).unwrap_or(false);
+    if fine {
+        return;
+    }
+    let to = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())).filter(|d| d.is_dir()).unwrap_or_else(std::env::temp_dir);
+    let _ = std::env::set_current_dir(to);
 }
 
 /// `KEY='value'` lines for the host shell, in a file only this account can
@@ -373,5 +408,24 @@ mod host_tests {
         assert_eq!(String::from_utf8_lossy(&out.stdout), "a b'c");
         assert!(!file.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod safe_dir_tests {
+    use super::*;
+
+    #[test]
+    fn a_program_with_its_path_runs_in_its_own_folder() {
+        let tmp = std::env::temp_dir();
+        let prog = tmp.join("spm-safe-dir-test.exe");
+        assert_eq!(safe_dir(prog.as_os_str()), tmp);
+    }
+
+    #[test]
+    fn a_bare_program_or_a_missing_folder_runs_in_the_temporary_folder() {
+        assert_eq!(safe_dir(OsStr::new("sc.exe")), std::env::temp_dir());
+        let gone = std::env::temp_dir().join("spm-no-such-folder-9f3c").join("initdb.exe");
+        assert_eq!(safe_dir(gone.as_os_str()), std::env::temp_dir());
     }
 }

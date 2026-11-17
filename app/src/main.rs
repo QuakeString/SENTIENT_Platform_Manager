@@ -114,6 +114,19 @@ use mode::AppMode;
 
 fn main() {
     timing::start();
+    // Started from a folder that is gone or that this session cannot reach
+    // (a mapped drive the elevated session does not have): work from one
+    // that exists, or every program started later fails.
+    sentient_installer_core::host::ensure_valid_cwd();
+    // The window (not a `--job`, whose relative paths are the caller's):
+    // on Windows always its own folder, whatever started it (Setup, a
+    // shortcut, an update), so its administrator steps can reach it.
+    #[cfg(windows)]
+    if !std::env::args().any(|a| a == "--job") {
+        if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) {
+            let _ = std::env::set_current_dir(dir);
+        }
+    }
     // Agent mode runs as the hidden ClickHouse account: no window, no
     // elevation (that account is not an administrator).
     let args: Vec<String> = std::env::args().collect();

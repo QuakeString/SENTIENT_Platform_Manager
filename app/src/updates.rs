@@ -498,7 +498,7 @@ pub fn finish_self_update() -> i32 {
                     let _ = crate::self_install::write_record(&crate::installation::record_path(), &json);
                 }
             }
-            let mut cmd = std::process::Command::new(&path);
+            let mut cmd = crate::self_install::manager_command(std::path::Path::new(&path));
             cmd.arg("--manager");
             if let Some(from) = from {
                 cmd.args(["--updated-from", &from]);

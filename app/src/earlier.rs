@@ -421,7 +421,7 @@ impl EarlierPage {
                 crate::ui::button("open").primary().label("Open the Platform Manager").on_click(|_, window, _| {
                     let exe = crate::self_install::manager_exe();
                     let exe = if exe.exists() { exe } else { std::env::current_exe().unwrap_or(exe) };
-                    if std::process::Command::new(&exe).arg("--manager").spawn().is_ok() {
+                    if crate::self_install::manager_command(&exe).arg("--manager").spawn().is_ok() {
                         window.remove_window();
                     }
                 }).into_any_element(),

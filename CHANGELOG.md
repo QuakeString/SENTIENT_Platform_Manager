@@ -15,6 +15,18 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Fixed
+- Windows: installing SENTIENT from the Platform Manager that Setup opened
+  could stop at "initdb: program postgres is needed by initdb but was not
+  found" (with "The current directory is invalid"). The Platform Manager
+  ran in Setup's folder, which its administrator steps could not reach.
+  The window now always runs in its own folder, every program it starts
+  runs in a folder that exists, and this error is named with what to do.
+- Windows: "PostgreSQL already present" now checks that its programs run
+  (postgres -V) and puts them back from the archive when they do not; the
+  data folder is never touched.
+- The support details say "WSL is not installed" instead of wsl.exe's help.
+
 ## [0.9.1] - 2026-11-17
 
 Add an existing SENTIENT on a Windows server however it was installed, a built-in terminal, restart and shut down servers, a Server card on Statistics, and Linux packages for Debian, Ubuntu, Fedora, AppImage and Flatpak.

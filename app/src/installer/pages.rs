@@ -1190,7 +1190,7 @@ impl Installer {
                 .child(div().text_sm().child("To install SENTIENT later, open it and choose Download and install SENTIENT (or Install from local files)."))
                 .child(h_flex().child(crate::ui::button("open-manager").primary().label("Open Platform Manager").on_click(
                     |_, _, _| {
-                        let _ = std::process::Command::new(crate::self_install::manager_exe()).arg("--manager").spawn();
+                        let _ = crate::self_install::manager_command(&crate::self_install::manager_exe()).arg("--manager").spawn();
                     },
                 )));
         }
@@ -1240,7 +1240,7 @@ impl Installer {
                     ))
                     .child(crate::ui::probed(crate::ui::button("open-manager").outline().label("Open Platform Manager").on_click(
                         |_, _, _| {
-                            let _ = std::process::Command::new(crate::self_install::manager_exe())
+                            let _ = crate::self_install::manager_command(&crate::self_install::manager_exe())
                                 .arg("--manager")
                                 .spawn();
                         },

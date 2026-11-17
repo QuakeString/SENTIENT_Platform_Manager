@@ -53,7 +53,7 @@ pub mod privileged {
 mod sys;
 /// Running the computer's own programs, also from inside a Flatpak.
 pub mod host {
-    pub use crate::sys::{flatpak_init, host_argv, host_command, host_command_env, in_flatpak};
+    pub use crate::sys::{ensure_valid_cwd, flatpak_init, host_argv, host_command, host_command_env, in_flatpak, safe_dir};
 }
 /// systemd units and port owners, as the System check reads them.
 pub mod units;

@@ -449,7 +449,14 @@ pub fn collect(error: &str, lines: &[String], cache_dir: Option<&Path>) -> Evide
             ev.windows.push(format!("wsl --status: {}", s.lines().take(6).collect::<Vec<_>>().join(" | ")));
         }
         if let Some((_, s)) = run("wsl.exe -l -v") {
-            ev.windows.push(format!("wsl -l -v: {}", s.replace('\0', "").lines().take(6).collect::<Vec<_>>().join(" | ")));
+            let s = s.replace('\0', "");
+            // Windows without the WSL feature: the old wsl.exe prints its help.
+            let lower = s.to_ascii_lowercase();
+            if lower.contains("usage: wsl.exe") || lower.contains("copyright (c) microsoft") {
+                ev.windows.push("wsl -l -v: WSL is not installed".to_string());
+            } else {
+                ev.windows.push(format!("wsl -l -v: {}", s.lines().take(6).collect::<Vec<_>>().join(" | ")));
+            }
         }
         if let Some((_, s)) = run("Get-Service -Name 'SENTIENT*','postgresql*','sentient*' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name + ' ' + $_.Status }") {
             ev.windows.extend(s.lines().map(|l| format!("service: {l}")));
@@ -528,6 +535,7 @@ pub const RULES: &[Rule] = &[
     Rule { id: "ssh-network", matches: ssh_network },
     Rule { id: "auth-cancelled", matches: auth_cancelled },
     Rule { id: "not-admin", matches: not_admin },
+    Rule { id: "cwd-invalid", matches: cwd_invalid },
     Rule { id: "win-replace-file", matches: win_replace_file },
     Rule { id: "pg-old-major", matches: pg_old_major },
     Rule { id: "port-in-use", matches: port_in_use },
@@ -727,6 +735,18 @@ fn not_admin(_: &Evidence, t: &str) -> Option<Diagnosis> {
         "The account the Platform Manager uses on this server is not an administrator.",
         "Its work there (services, databases, files) needs administrator rights, so the server refused it.",
         vec![steps("On the server, add that account to the Administrators group (Windows) or give it sudo rights (Linux); or edit the instance to sign in with an administrator account. Then Refresh.")],
+    )
+}
+
+fn cwd_invalid(_: &Evidence, t: &str) -> Option<Diagnosis> {
+    if !has(t, &["The current directory is invalid"]) {
+        return None;
+    }
+    diag(
+        "cwd-invalid",
+        "The Platform Manager was started from a folder its administrator steps cannot reach.",
+        "A program run during the step had no working folder: the folder the Platform Manager was started from is gone or is on a drive the administrator session does not have (a mapped network drive, a removed USB stick, a deleted or zip-extracted folder). Here initdb could not run postgres.exe -V, so it said postgres was not found although it is there.",
+        vec![steps("Close the Platform Manager, start it again from the Start menu or the desktop shortcut (or copy the installer to a folder on this computer, such as Downloads, and run it from there), then run the step again.")],
     )
 }
 
@@ -1435,6 +1455,19 @@ mod tests {
         assert_eq!(diagnose(&ev).id, "not-admin");
         let ev = Evidence::from_text("job failed", &["Run this from an elevated prompt (Run as administrator).".to_string()]);
         assert_eq!(diagnose(&ev).id, "not-admin");
+    }
+
+    #[test]
+    fn an_unreachable_start_folder_is_named_not_a_missing_postgres() {
+        // His report (SPM 0.9.1, native Windows install started from Setup).
+        let lines: Vec<String> = [
+            "PostgreSQL already present",
+            "The current directory is invalid.",
+            "initdb: error: program \"postgres\" is needed by initdb but was not found in the same directory as \"C:/PostgreSQL/18/bin/initdb.exe\"",
+        ].iter().map(|s| s.to_string()).collect();
+        let ev = Evidence::from_text("initdb failed: The current directory is invalid. no data was returned by command \"\"C:/PostgreSQL/18/bin/postgres.exe\" -V\"", &lines);
+        let d = diagnose(&ev);
+        assert_eq!(d.id, "cwd-invalid");
     }
 
     #[test]

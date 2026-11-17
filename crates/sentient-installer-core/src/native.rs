@@ -560,6 +560,18 @@ fn ensure_vc_runtime(sink: &ProgressFn, source: &ArtifactSource, dl: &Path, forc
     Ok(())
 }
 
+/// PostgreSQL's programs are there and run: initdb starts postgres -V,
+/// so a postgres.exe that does not answer fails the cluster set-up.
+fn pg_binaries_work(bin: &Path) -> bool {
+    if !(bin.join("postgres.exe").exists() && bin.join("initdb.exe").exists()) {
+        return false;
+    }
+    matches!(
+        sys::output_limited(&bin.join("postgres.exe").to_string_lossy(), &["-V"], std::time::Duration::from_secs(30)),
+        Some((true, out, _)) if sys::decode(&out).contains("PostgreSQL")
+    )
+}
+
 /// Run initdb once. The error text is initdb's own output.
 fn run_initdb(sink: &ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     // A data folder without PG_VERSION is a failed earlier attempt;
@@ -627,7 +639,33 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     bail_if_cancelled()?;
 
     // ---- PostgreSQL ----
-    if !cfg.pg_bin().join("psql.exe").exists() {
+    // Present means it runs: psql, postgres and initdb are there and
+    // `postgres -V` answers. Missing or broken binaries (an interrupted
+    // copy, an antivirus quarantine) are put back from the archive below;
+    // the data folder is never touched.
+    let pg_present = cfg.pg_bin().join("psql.exe").exists();
+    let pg_works = pg_present && pg_binaries_work(&cfg.pg_bin());
+    if pg_present && !pg_works {
+        log(&sink, "PostgreSQL is there but its programs do not run (postgres -V gave no answer): putting them back from the archive");
+        let zip = obtain(&sink, &cfg.source, PG_ZIP, PG_URL, &dl)?;
+        let tmp = dl.join("pg-extract");
+        let _ = std::fs::remove_dir_all(&tmp);
+        extract_zip(&zip, &tmp)?;
+        let inner = tmp.join("pgsql");
+        for part in ["bin", "lib", "share"] {
+            if inner.join(part).exists() {
+                copy_tree(&inner.join(part), &cfg.pg_dir.join(part))?;
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        if !pg_binaries_work(&cfg.pg_bin()) {
+            return Err(format!(
+                "PostgreSQL's programs in {} do not run (postgres -V gave no answer), also after putting them back. An antivirus may be blocking them.",
+                cfg.pg_bin().display()
+            ));
+        }
+    }
+    if !pg_present {
         step(&sink, &format!("Installing PostgreSQL {PG_VERSION}"));
         let zip = obtain(&sink, &cfg.source, PG_ZIP, PG_URL, &dl)?;
         bail_if_cancelled()?;
@@ -646,7 +684,7 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         std::fs::rename(&inner, &cfg.pg_dir)
             .map_err(|e| format!("move PostgreSQL into {}: {e}", cfg.pg_dir.display()))?;
         let _ = std::fs::remove_dir_all(&tmp);
-    } else {
+    } else if pg_works {
         log(&sink, "PostgreSQL already present");
     }
     bail_if_cancelled()?;

@@ -654,3 +654,14 @@ mod package_tests {
         assert_eq!(PackageOwner::Dpkg("spm".into()).tool(), "apt");
     }
 }
+
+/// `Command` for the Platform Manager at `exe`, run in its own folder: never
+/// in the folder this process runs in (Setup's, which the started manager
+/// and its administrator steps may not be able to reach).
+pub fn manager_command(exe: &std::path::Path) -> std::process::Command {
+    let mut c = std::process::Command::new(exe);
+    if let Some(dir) = exe.parent().filter(|d| d.is_dir()) {
+        c.current_dir(dir);
+    }
+    c
+}
