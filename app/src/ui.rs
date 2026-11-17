@@ -1977,7 +1977,7 @@ pub fn chips(theme: &Theme, id: &str, items: &[&str], selected: Option<usize>, p
                 .overflow_hidden()
                 .cursor_pointer()
                 .when(on, |d| d.bg(theme.list_active).text_color(theme.primary).font_weight(FontWeight::MEDIUM))
-                .when(!on, |d| d.text_color(theme.muted_foreground).hover(|d| d.bg(theme.secondary)))
+                .when(!on, |d| d.text_color(theme.muted_foreground).hover(|d| d.bg(theme.list_hover)))
                 .child(label.to_string())
                 .on_click(move |_, window, cx| pick(i, window, cx))
         }))
