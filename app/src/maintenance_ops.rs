@@ -68,7 +68,16 @@ pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result
         // A compose file someone else wrote is not rewritten: start what is there.
         Engine::Docker if record.stack.external.is_some() => distro::control(sink.clone(), &record.stack, "start")?,
         Engine::Docker => match distro::docker_ops::with_secrets(&record.stack) {
-            Ok(cfg) => distro::docker_ops::reconfigure(&sink, &cfg)?,
+            Ok(cfg) => {
+                // Windows: Docker's networks out of WSL 2's range, which an
+                // install from before 0.9.2-rc3 does not have (the stack
+                // comes up again on a new network just below).
+                #[cfg(windows)]
+                if let Err(e) = distro::pin_address_pools(&sink, &cfg) {
+                    sink(Progress::Log { line: format!("note: {e}") });
+                }
+                distro::docker_ops::reconfigure(&sink, &cfg)?
+            }
             Err(_) => distro::control(sink.clone(), &record.stack, "start")?,
         },
         // deploy is idempotent: it keeps the database, writes the service

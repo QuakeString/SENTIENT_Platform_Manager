@@ -55,6 +55,14 @@ pub fn all() -> Vec<Change> {
             applies: native_windows,
             run: open_firewall,
         },
+        Change {
+            id: "docker-address-pools",
+            text: "SENTIENT stays reachable after Windows restarts: Docker's networks move out of WSL 2's address range.",
+            step: "Moving Docker's networks out of WSL 2's range",
+            restarts: true,
+            applies: docker_own_distro_windows,
+            run: pin_address_pools,
+        },
     ]
 }
 
@@ -204,6 +212,29 @@ pub fn open_firewall(record: &InstallationRecord, sink: &ProgressFn) -> Result<(
                 "SENTIENT's Windows Firewall rules are in place.".into()
             },
         });
+    }
+    #[cfg(not(windows))]
+    let _ = (record, sink);
+    Ok(())
+}
+
+#[cfg(windows)]
+fn docker_own_distro_windows(record: &InstallationRecord) -> bool {
+    record.engine == Engine::Docker && record.stack.wsl_distro.is_none() && record.stack.external.is_none()
+}
+
+#[cfg(not(windows))]
+fn docker_own_distro_windows(_: &InstallationRecord) -> bool {
+    false
+}
+
+/// Windows Docker: distro::pin_address_pools (also part of Repair); the
+/// stack comes up again with SENTIENT's start after the changes.
+fn pin_address_pools(record: &InstallationRecord, sink: &ProgressFn) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let cfg = sentient_installer_core::distro::docker_ops::with_secrets(&record.stack)?;
+        sentient_installer_core::distro::pin_address_pools(sink, &cfg)?;
     }
     #[cfg(not(windows))]
     let _ = (record, sink);

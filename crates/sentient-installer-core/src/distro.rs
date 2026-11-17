@@ -1228,9 +1228,13 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     // iptables (nf_tables by default) cannot add its rules there and
     // dockerd stops. The legacy iptables works on every WSL kernel.
     run(&sink, IPTABLES_LEGACY_IF_NEEDED)?;
+    // Docker's networks out of WSL 2's range (ADDRESS_POOLS); the
+    // installer may have started Docker already, so it starts again.
+    run(&sink, &address_pools_cmd())?;
     // A WSL without systemd (Windows 10 builds that cannot run the WSL
     // package keep the inbox WSL): Docker's own init script.
     run(&sink, DOCKER_START)?;
+    run(&sink, DOCKER_RESTART)?;
 
     // dockerd takes a few seconds to answer after it was started.
     for _ in 0..30 {
@@ -1241,6 +1245,55 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
     Err("Docker was installed but isn't responding yet. Try the step again.".into())
+}
+
+/// Restart Docker in the distro (systemd, or its init script).
+pub const DOCKER_RESTART: &str = "if [ -d /run/systemd/system ]; then systemctl restart docker; else service docker restart; fi";
+
+/// Docker's own address ranges in SENTIENT's distro. WSL 2 gives the
+/// distro a new 172.16.0.0/12 subnet at every boot; Docker's default
+/// networks come from that range too, so after a reboot the stack's
+/// network could overlap the distro's own (seen on spm-win10-test: WSL
+/// 172.19.128.0/20 against a compose network 172.19.0.0/16). The
+/// container's answers to Windows then stayed on its bridge, and SENTIENT
+/// answered inside the distro but not from Windows or the network.
+pub const ADDRESS_POOLS: &str = r#"{"bip": "10.213.0.1/24", "default-address-pools": [{"base": "10.214.0.0/16", "size": 24}]}"#;
+
+/// Writes ADDRESS_POOLS to /etc/docker/daemon.json unless it already sets
+/// address pools; prints "changed" when it wrote it. Passed as base64: no
+/// quotes to cross wsl.exe.
+pub fn address_pools_cmd() -> String {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(format!("{ADDRESS_POOLS}\n"));
+    format!("mkdir -p /etc/docker; if ! grep -qs default-address-pools /etc/docker/daemon.json; then echo {b64} | base64 -d > /etc/docker/daemon.json && echo changed; fi")
+}
+
+/// An existing install in SENTIENT's own distro (Windows): Docker's
+/// networks moved out of WSL 2's range (ADDRESS_POOLS) when they are not
+/// yet. The stack's containers and network are taken down (its volumes
+/// stay), Docker restarts, and the caller brings the stack up again on a
+/// new network. True when it changed something.
+#[cfg(windows)]
+pub fn pin_address_pools(sink: &ProgressFn, cfg: &DeployConfig) -> Result<bool, String> {
+    if cfg.wsl_distro.is_some() || cfg.external.is_some() {
+        return Ok(false);
+    }
+    let changed = run_output(&address_pools_cmd()).is_some_and(|(ok, out)| ok && out.contains("changed"));
+    if !changed {
+        return Ok(false);
+    }
+    sink(Progress::Log { line: "Docker's networks move out of WSL 2's address range (10.214.0.0/16)".into() });
+    if cfg.stack_defined() {
+        run_stream(sink, &cfg.compose_cmd("down --remove-orphans"))?;
+    }
+    run(sink, DOCKER_RESTART)?;
+    for _ in 0..30 {
+        if is_ready() {
+            return Ok(true);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    Err("Docker did not answer after its restart.".into())
 }
 
 /// Switch the distro to the legacy iptables when the kernel cannot do
@@ -1955,6 +2008,21 @@ mod keepalive_tests {
         // The holder comes last: the cmd never ends while the distro runs.
         assert!(cmd.trim_end().ends_with(&format!("{DOCKER_START}; exec sleep infinity\"")));
         assert!(cmd.lines().all(|l| !l.contains('\n')));
+    }
+
+    #[test]
+    fn dockers_networks_stay_out_of_wsl2s_range() {
+        let v: serde_json::Value = serde_json::from_str(ADDRESS_POOLS).unwrap();
+        assert_eq!(v["default-address-pools"][0]["base"], "10.214.0.0/16");
+        assert!(v["bip"].as_str().unwrap().starts_with("10."));
+        let cmd = address_pools_cmd();
+        // No quote reaches wsl.exe; an existing pool setting is kept.
+        assert!(!cmd.contains('"') && !cmd.contains('\''));
+        assert!(cmd.contains("grep -qs default-address-pools /etc/docker/daemon.json"));
+        use base64::Engine as _;
+        let b64 = cmd.split("echo ").nth(1).unwrap().split(' ').next().unwrap();
+        let json = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b64).unwrap()).unwrap();
+        assert_eq!(json.trim_end(), ADDRESS_POOLS);
     }
 
     #[test]

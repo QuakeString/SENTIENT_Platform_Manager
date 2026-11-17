@@ -25,6 +25,13 @@ refreshes that repository's Downloads table.
   starts at boot after that delay, or, when off, only when SENTIENT is
   started from the Platform Manager. Startup in Platform settings reads and
   changes the same task.
+- Windows Docker: SENTIENT stays reachable after Windows restarts. WSL 2
+  gives its VM a new subnet at every boot, which could overlap the stack's
+  Docker network; Docker's networks now come from 10.214.0.0/16. Repair and
+  the Platform Manager's list of changes move an earlier install's network.
+- Windows Docker: with "Start SENTIENT automatically with Windows" off,
+  Start on the Status page is offered after a boot (it was greyed while
+  the WSL distro was not running) and starts the distro first.
 - Windows Docker: PostgreSQL's recommended memory is sized for the WSL 2
   VM (half the computer's memory, or .wslconfig's memory=), not the whole
   computer; with ClickHouse beside a Windows PostgreSQL, PostgreSQL is
