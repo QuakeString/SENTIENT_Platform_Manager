@@ -111,7 +111,20 @@ pub fn set_width(width: f32, cx: &mut App) {
     }
 }
 
+/// How many dialogs have been opened, and the last one whose opening the
+/// layer has handled ([`layer`]): a dialog opening under a tooltip closes it.
+#[derive(Default)]
+struct ModalOpened {
+    count: u64,
+    seen: u64,
+}
+
+impl Global for ModalOpened {}
+
 pub fn open(modal: Modal, cx: &mut App) {
+    let count = cx.try_global::<ModalOpened>().map(|o| o.count).unwrap_or(0) + 1;
+    let seen = cx.try_global::<ModalOpened>().map(|o| o.seen).unwrap_or(0);
+    cx.set_global(ModalOpened { count, seen });
     cx.set_global(ModalFooter(None));
     cx.set_global(ModalList(false));
     cx.set_global(ModalFull::default());
@@ -159,6 +172,19 @@ pub fn dismiss(window: &mut Window, cx: &mut App) {
 /// area starts (menu width, top bar height).
 pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -> Option<AnyElement> {
     let modal = cx.try_global::<ModalSlot>().and_then(|s| s.0.clone())?;
+    // A tooltip shown when the dialog opened (the button that opened it,
+    // under a pointer that has not moved) stays until the pointer moves.
+    // Once the dialog is drawn over it, the same position is played as a
+    // move: the button is covered then, and its tooltip closes.
+    if let Some(o) = cx.try_global::<ModalOpened>().filter(|o| o.seen != o.count).map(|o| o.count) {
+        if let Some(g) = cx.try_global::<ModalOpened>().map(|g| g.count) {
+            cx.set_global(ModalOpened { count: g, seen: o });
+        }
+        window.on_next_frame(|w, cx| {
+            let event = MouseMoveEvent { position: w.mouse_position(), pressed_button: None, modifiers: w.modifiers() };
+            w.dispatch_event(PlatformInput::MouseMove(event), cx);
+        });
+    }
     let footer = cx.try_global::<ModalFooter>().and_then(|f| f.0.clone());
     let theme = cx.theme().clone();
     let vw = f32::from(window.viewport_size().width);

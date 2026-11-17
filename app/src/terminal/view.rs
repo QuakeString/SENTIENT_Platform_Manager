@@ -799,7 +799,7 @@ impl Render for StatusBar {
             .gap(px(8.))
             .items_center()
             .text_size(px(13.))
-            .child(div().size(px(8.)).rounded_full().bg(if alive { theme.success } else { theme.muted_foreground }))
+            .child(div().size(px(crate::ui::STATUS_DOT)).rounded_full().bg(rgb(if alive { crate::ui::STATUS_GREEN } else { crate::ui::STATUS_GREY })))
             .child(div().text_color(theme.foreground).child(if alive { "Connected" } else { "Disconnected" }))
             .children(shell.map(|s| div().text_color(theme.muted_foreground).child(s)))
             .child(div().flex_1())

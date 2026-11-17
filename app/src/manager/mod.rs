@@ -986,7 +986,7 @@ impl Manager {
         // The open instance's state: green when SENTIENT runs, red when it
         // is stopped (the page's last reading, else the checker's), amber
         // while the server is being read or does not answer.
-        let status_green: Hsla = rgb(0x3ddc84).into();
+        let status_green: Hsla = rgb(ui::STATUS_GREEN).into();
         let serving = match &remote {
             Some(r) => self.remote_pages.get(&r.id).and_then(|p| p.read(cx).serving()).or_else(|| crate::bg_app::serving(Some(&r.id), cx)),
             None => crate::bg_app::serving(None, cx),
@@ -1323,7 +1323,7 @@ impl Manager {
                             Some(ui::Tone::Good) => status_green,
                             Some(ui::Tone::Warn) => rgb(0xf59e0b).into(),
                             Some(ui::Tone::Bad) => rgb(0xef4444).into(),
-                            _ => rgb(0x94a3b8).into(),
+                            _ => rgb(ui::STATUS_GREY).into(),
                         };
                         let probe = match tone {
                             Some(ui::Tone::Good) => "switch-dot-good",

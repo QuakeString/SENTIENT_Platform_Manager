@@ -602,6 +602,12 @@ pub fn button_gap() -> Pixels {
 
 /// A button that reports its bounds to the layout test (the gap check):
 /// for a button placed outside button_group/button_row.
+/// The status dot's colours and size, everywhere a dot says whether
+/// something runs (the instance switcher, the terminal's status bar).
+pub const STATUS_DOT: f32 = 10.;
+pub const STATUS_GREEN: u32 = 0x3ddc84;
+pub const STATUS_GREY: u32 = 0x94a3b8;
+
 pub fn probed(b: impl IntoElement) -> Div {
     div().relative().flex_shrink_0().child(b).child(layout_probe("button"))
 }
