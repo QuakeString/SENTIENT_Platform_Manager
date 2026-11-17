@@ -50,6 +50,11 @@ refreshes that repository's Downloads table.
   VM (half the computer's memory, or .wslconfig's memory=), not the whole
   computer; with ClickHouse beside a Windows PostgreSQL, PostgreSQL is
   sized for what the ClickHouse VM leaves.
+- Repair and a reinstall over a kept database: the schema installer's
+  "duplicate key … tb_user_pkey" is no longer a red error line in the job
+  log. An existing database is the expected case; the log says "The
+  database already has its data; kept as it is". Other schema installer
+  errors stay red.
 ### Changed
 - A new Docker install waits up to 10 minutes (was 6) for SENTIENT's first
   answer, and its log says every 15 seconds how long it has waited and

@@ -1180,8 +1180,12 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         ]);
     }
     // Streamed: the schema install takes minutes and is otherwise silent.
-    match sys::output_streamed_env(&sink, &installer.to_string_lossy(), &argrefs, &env) {
+    let shown = crate::schema_output::filter(sink.clone());
+    match sys::output_streamed_env(&shown, &installer.to_string_lossy(), &argrefs, &env) {
         Some((true, _, _)) => {}
+        // An existing database: the installer stops at the first row that is
+        // there, and the filter has already logged that as kept.
+        Some((false, _, err)) if crate::schema_output::is_existing_data(&sys::decode(&err)) => {}
         Some((false, _, err)) => {
             // A re-run against an installed database exits non-zero; that is
             // expected on repair/upgrade paths, so log rather than hard-fail and

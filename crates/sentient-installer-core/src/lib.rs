@@ -35,6 +35,9 @@ pub mod diagnose;
 pub mod native_linux;
 pub mod progress;
 pub mod releases;
+/// The schema installer's output in the job log (an existing database is
+/// not an error).
+pub(crate) mod schema_output;
 /// Uninstall part by part, and the check that nothing is left.
 pub mod removal;
 pub mod signing;
