@@ -325,6 +325,18 @@ mod imp {
         if me == target {
             return Ok(target);
         }
+        // A Flatpak is installed and updated by Flatpak, and its program
+        // cannot run outside its sandbox.
+        if sentient_installer_core::host::in_flatpak() {
+            return Err("This Platform Manager runs as a Flatpak: Flatpak installs and updates it (flatpak update).".into());
+        }
+        // Started from an AppImage, this program lives in the AppImage's
+        // FUSE mount, which root cannot read: copy it out first.
+        let staged = std::env::var_os("APPIMAGE").is_some().then(|| std::env::temp_dir().join(format!("sentient-platform-manager-{}", std::process::id())));
+        if let Some(copy) = &staged {
+            std::fs::copy(&me, copy).map_err(|e| format!("copy this program out of the AppImage: {e}"))?;
+        }
+        let me = staged.clone().unwrap_or(me);
         let icons = std::env::temp_dir().join("sentient-platform-manager-icons");
         let _ = std::fs::create_dir_all(&icons);
         let mut install_icons = String::new();
@@ -343,7 +355,11 @@ mod imp {
             me = q(&me.display().to_string()),
             target = q(&target.display().to_string()),
         );
-        run(&noop(), &script)?;
+        let result = run(&noop(), &script);
+        if let Some(copy) = &staged {
+            let _ = std::fs::remove_file(copy);
+        }
+        result?;
         let _ = std::fs::remove_dir_all(&icons);
         crate::shortcuts::note(
             crate::shortcuts::Owner::Manager,
@@ -435,18 +451,77 @@ mod imp {
 
     pub fn refresh_web_shortcuts(_url: &str) {}
 
-    /// The pacman package that owns the program, when it came from one
-    /// (`pacman -U sentient-platform-manager-*.pkg.tar.zst`). Its files are
-    /// pacman's to remove, or the package database goes stale.
-    /// Installed by a package (pacman): updated by it, not by this program.
-    pub fn installed_by_package_manager() -> bool {
-        pacman_package().is_some()
+    /// What installed the program, when it was not this program itself:
+    /// a package (`pacman -U ….pkg.tar.zst`, `apt install ./….deb`,
+    /// `dnf install ….rpm`) or Flatpak. Its files are that package
+    /// manager's to update and remove, or its database goes stale.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum PackageOwner {
+        Pacman(String),
+        Dpkg(String),
+        Rpm(String),
+        Flatpak(String),
     }
 
-    fn pacman_package() -> Option<String> {
-        let out = std::process::Command::new("pacman").arg("-Qqo").arg(manager_exe()).output().ok()?;
-        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        (out.status.success() && !name.is_empty()).then_some(name)
+    impl PackageOwner {
+        /// The package manager, for messages.
+        pub fn tool(&self) -> &'static str {
+            match self {
+                PackageOwner::Pacman(_) => "pacman",
+                PackageOwner::Dpkg(_) => "apt",
+                PackageOwner::Rpm(_) => "dnf (or zypper)",
+                PackageOwner::Flatpak(_) => "flatpak",
+            }
+        }
+
+        /// The root script that removes the package.
+        pub fn remove_script(&self) -> String {
+            match self {
+                PackageOwner::Pacman(p) => format!("pacman -R --noconfirm {}", q(p)),
+                PackageOwner::Dpkg(p) => format!("apt-get remove -y {p} || dpkg -r {p}", p = q(p)),
+                PackageOwner::Rpm(p) => format!(
+                    "if command -v dnf >/dev/null; then dnf remove -y {p}; elif command -v zypper >/dev/null; then zypper -n rm {p}; else rpm -e {p}; fi",
+                    p = q(p)
+                ),
+                PackageOwner::Flatpak(id) => format!("flatpak uninstall -y --noninteractive {}", q(id)),
+            }
+        }
+    }
+
+    /// The package's name from what the package manager answered for the
+    /// program's file (`pacman -Qqo`, `dpkg-query -S`, `rpm -qf`).
+    pub fn package_of(tool: &str, answer: &str) -> Option<String> {
+        let line = answer.lines().next()?.trim();
+        let name = match tool {
+            // "sentient-platform-manager: /opt/sentient-platform-manager/…"
+            "dpkg" => line.split(':').next()?.trim(),
+            _ => line,
+        };
+        (!name.is_empty() && !name.contains(' ')).then(|| name.to_string())
+    }
+
+    /// The package manager that owns this Platform Manager, if one does.
+    pub fn owner() -> Option<PackageOwner> {
+        if sentient_installer_core::host::in_flatpak() {
+            return Some(PackageOwner::Flatpak(std::env::var("FLATPAK_ID").unwrap_or_default()));
+        }
+        let exe = manager_exe();
+        let ask = |tool: &str, args: &[&str]| -> Option<String> {
+            let out = std::process::Command::new(tool).args(args).arg(&exe).output().ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            package_of(if tool == "dpkg-query" { "dpkg" } else { tool }, &String::from_utf8_lossy(&out.stdout))
+        };
+        ask("pacman", &["-Qqo"])
+            .map(PackageOwner::Pacman)
+            .or_else(|| ask("dpkg-query", &["-S"]).map(PackageOwner::Dpkg))
+            .or_else(|| ask("rpm", &["-qf", "--qf", "%{NAME}\\n"]).map(PackageOwner::Rpm))
+    }
+
+    /// Installed by a package manager: updated by it, not by this program.
+    pub fn installed_by_package_manager() -> bool {
+        owner().is_some()
     }
 
     /// Linux: SENTIENT's menu entry is crate::shortcuts' (Owner::Sentient).
@@ -456,15 +531,20 @@ mod imp {
     /// crate::shortcuts' (by owner, with the menus refreshed after).
     pub fn remove_shortcuts() {
         // A package ships its own command.
-        if pacman_package().is_none() && Path::new(BIN).symlink_metadata().is_ok() {
+        if owner().is_none() && Path::new(BIN).symlink_metadata().is_ok() {
             let _ = run(&noop(), &format!("rm -f {BIN}"));
         }
     }
 
     pub fn remove_manager_later() {
         // A running Linux binary can be deleted; its inode lives on until exit.
-        let script = match pacman_package() {
-            Some(pkg) => format!("pacman -R --noconfirm {}", q(&pkg)),
+        let script = match owner() {
+            // Flatpak removes a user's own install without root.
+            Some(PackageOwner::Flatpak(id)) => {
+                let _ = sentient_installer_core::host::host_command("flatpak").args(["uninstall", "-y", "--noninteractive", &id]).status();
+                return;
+            }
+            Some(owner) => owner.remove_script(),
             None => format!("rm -rf {DIR}"),
         };
         let _ = run(&noop(), &script);
@@ -547,5 +627,30 @@ mod start_menu_tests {
         assert_eq!(old, r"C:\Menu\SENTIENT Platform Manager.lnk");
         assert!(super::START_MENU_NAME.split(|c: char| !c.is_alphanumeric()).any(|w| w == "SPM"));
         assert!(super::APP_PATH_KEY.ends_with(r"\App Paths\spm.exe"));
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod package_tests {
+    use super::{package_of, PackageOwner};
+
+    #[test]
+    fn the_package_is_read_from_each_package_manager() {
+        assert_eq!(package_of("pacman", "sentient-platform-manager\n").as_deref(), Some("sentient-platform-manager"));
+        assert_eq!(
+            package_of("dpkg", "sentient-platform-manager: /opt/sentient-platform-manager/sentient-platform-manager\n").as_deref(),
+            Some("sentient-platform-manager")
+        );
+        assert_eq!(package_of("rpm", "sentient-platform-manager\n").as_deref(), Some("sentient-platform-manager"));
+        assert_eq!(package_of("rpm", "file /opt/x is not owned by any package\n"), None);
+        assert_eq!(package_of("dpkg", ""), None);
+    }
+
+    #[test]
+    fn each_package_is_removed_by_its_own_manager() {
+        assert_eq!(PackageOwner::Pacman("spm".into()).remove_script(), "pacman -R --noconfirm 'spm'");
+        assert!(PackageOwner::Dpkg("spm".into()).remove_script().starts_with("apt-get remove -y 'spm'"));
+        assert!(PackageOwner::Rpm("spm".into()).remove_script().contains("dnf remove -y 'spm'"));
+        assert_eq!(PackageOwner::Dpkg("spm".into()).tool(), "apt");
     }
 }
