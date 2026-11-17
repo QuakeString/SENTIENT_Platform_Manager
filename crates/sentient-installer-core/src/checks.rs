@@ -9,6 +9,9 @@
 
 use serde::Serialize;
 
+use crate::diagnose::{Fix, FixAction};
+use crate::units::{self, PgService};
+
 #[cfg(windows)]
 use crate::sys::{decode, output};
 
@@ -34,10 +37,39 @@ pub struct Check {
     pub label: String,
     pub status: Status,
     pub detail: String,
+    /// The pill's words when the status's own would be wrong ("Already
+    /// installed" rather than "Will be installed").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// What the operator can do about it, as buttons (an action) or a
+    /// command to copy. The System check adds "Check again" to every row
+    /// that is not ready.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fixes: Vec<Fix>,
 }
 
 fn check(id: &str, label: &str, status: Status, detail: impl Into<String>) -> Check {
-    Check { id: id.into(), label: label.into(), status, detail: detail.into() }
+    Check { id: id.into(), label: label.into(), status, detail: detail.into(), state: None, fixes: Vec::new() }
+}
+
+impl Check {
+    fn state(mut self, state: &str) -> Self {
+        self.state = Some(state.into());
+        self
+    }
+
+    fn fixes(mut self, fixes: Vec<Fix>) -> Self {
+        self.fixes = fixes;
+        self
+    }
+}
+
+fn act(label: impl Into<String>, action: FixAction) -> Fix {
+    Fix::Action { label: label.into(), action }
+}
+
+fn cmd(label: &str, command: impl Into<String>) -> Fix {
+    Fix::Command { label: label.into(), command: command.into() }
 }
 
 /// Run every preflight check, in display order.
@@ -77,10 +109,21 @@ pub fn run_for(mode: &str, offline: bool, ports: Option<&[(u16, String)]>) -> Ve
     };
     if let Some(p) = ports {
         if let Some(slot) = v.iter_mut().find(|c| c.id == "ports") {
-            *slot = ports_free_of(p);
+            *slot = attention(ports_free_of(p));
         }
     }
+    share_fixes(&mut v);
     v
+}
+
+/// A busy port on the System check: needs attention, but a port can still
+/// be chosen later, so it does not block.
+fn attention(mut c: Check) -> Check {
+    if c.status == Status::Fail {
+        c.status = Status::Warn;
+        c.label = "Ports".into();
+    }
+    c
 }
 
 /// Docker on a Linux host: the stack runs from SENTIENT's own compose files
@@ -102,6 +145,25 @@ pub fn run_linux_native(offline: bool) -> Vec<Check> {
         v.push(download_hosts_linux());
     }
     v
+}
+
+/// An action offered on the PostgreSQL row is not offered again on the
+/// ports row (the same server holding 5432): one place to act, and the
+/// ports row points there.
+pub fn share_fixes(v: &mut [Check]) {
+    let Some(pg) = v.iter().find(|c| c.id == "existing-pg") else { return };
+    let taken: Vec<FixAction> = pg.fixes.iter().filter_map(|f| if let Fix::Action { action, .. } = f { Some(action.clone()) } else { None }).collect();
+    if taken.is_empty() {
+        return;
+    }
+    if let Some(ports) = v.iter_mut().find(|c| c.id == "ports") {
+        let before = ports.fixes.len();
+        ports.fixes.retain(|f| !matches!(f, Fix::Action { action, .. } if taken.contains(action)));
+        if ports.fixes.len() < before {
+            let port = taken.iter().find_map(|a| if let FixAction::UsePort { port, .. } = a { Some(*port) } else { None }).unwrap_or(5432);
+            ports.detail.push_str(&format!(" For port {port}, see Existing PostgreSQL."));
+        }
+    }
 }
 
 /// The Linux native engine fetches PostgreSQL from the distribution's own
@@ -140,7 +202,7 @@ fn docker_cli() -> Check {
     match sh("docker --version") {
         Some((true, v)) => check("docker-cli", "Docker", Status::Pass, v.lines().next().unwrap_or("present").to_string()),
         _ => check("docker-cli", "Docker", Status::Setup,
-            "Docker is not installed. Install Docker Engine from your distribution or docs.docker.com, then re-check."),
+            "Docker is not installed. Setup installs Docker Engine from your distribution's packages."),
     }
 }
 
@@ -152,9 +214,13 @@ fn docker_daemon() -> Check {
     match sh("docker info --format '{{.ServerVersion}}' 2>&1") {
         Some((true, v)) => check("docker-daemon", "Docker daemon", Status::Pass, format!("Engine {} is running and reachable.", v)),
         Some((false, e)) if e.contains("permission denied") => check("docker-daemon", "Docker daemon", Status::Setup,
-            "Running, but this user isn't in the `docker` group yet. The installer will add you (asks for your password)."),
+            "Running, but this user isn't in the `docker` group yet. The installer will add you (asks for your password).")
+            .state("Will be set up")
+            .fixes(vec![cmd("Add yourself to the docker group now", "sudo usermod -aG docker \"$USER\"")]),
         Some((false, _)) if matches!(sh("command -v docker"), Some((true, _))) => check("docker-daemon", "Docker daemon", Status::Setup,
-            "Docker is installed but not running. The installer will enable and start it."),
+            "Docker is installed but not running. The installer will enable and start it.")
+            .state("Will be started")
+            .fixes(vec![act("Start Docker", FixAction::StartDocker)]),
         Some((false, _)) => check("docker-daemon", "Docker daemon", Status::Setup,
             "Not set up yet. The installer will install Docker from your distribution."),
         None => check("docker-daemon", "Docker daemon", Status::Unknown, "Could not query Docker."),
@@ -165,7 +231,7 @@ fn compose_plugin() -> Check {
     match sh("docker compose version --short") {
         Some((true, v)) => check("compose", "Docker Compose", Status::Pass, format!("Compose {} (plugin).", v)),
         _ => check("compose", "Docker Compose", Status::Setup,
-            "The `docker compose` plugin is missing. Install docker-compose-plugin (Debian/Ubuntu) or docker-compose (Arch), then re-check."),
+            "The `docker compose` plugin is missing. Setup installs it with Docker (docker-compose-plugin on Debian/Ubuntu, docker-compose on Arch)."),
     }
 }
 
@@ -204,10 +270,65 @@ fn package_manager() -> Check {
 }
 
 fn existing_postgres_linux() -> Check {
-    match sh("systemctl list-units --type=service --all --no-legend 'postgresql*' 2>/dev/null | head -3") {
-        Some((true, out)) if !out.is_empty() => check("existing-pg", "Existing PostgreSQL", Status::Setup,
-            format!("A PostgreSQL service already exists ({}). The installer will use a dedicated cluster on the chosen port and leave it alone.", out.split_whitespace().next().unwrap_or("postgresql"))),
-        _ => check("existing-pg", "Existing PostgreSQL", Status::Pass, "No PostgreSQL service is installed yet."),
+    let found = units::classify_postgres(&units::postgres_units());
+    let package = match &found {
+        PgService::Installed(u) => units::package_owning(&u.fragment_path),
+        _ => None,
+    };
+    existing_pg_check(&found, package, pg_data_dir(), next_free_port(5433))
+}
+
+/// Where this distribution's PostgreSQL keeps its data.
+pub fn pg_data_dir() -> &'static str {
+    crate::old_pg::Family::here().map(|f| f.data_dir()).unwrap_or("/var/lib/pgsql/data")
+}
+
+/// The System check's PostgreSQL row. Only an installed (loaded) unit is
+/// an existing PostgreSQL; a unit whose package was removed is nothing,
+/// unless its server still runs (then it holds the port and is said so).
+/// `instead`: the free port "Use another port" gives SENTIENT.
+pub fn existing_pg_check(found: &PgService, package: Option<String>, data_dir: &str, instead: Option<u16>) -> Check {
+    let use_port = |fixes: &mut Vec<Fix>| {
+        if let Some(p) = instead {
+            fixes.push(act(format!("Use another port ({p})"), FixAction::UsePort { port: 5432, instead: p }));
+        }
+    };
+    match found {
+        PgService::None => check("existing-pg", "Existing PostgreSQL", Status::Pass, "No PostgreSQL service is installed."),
+        PgService::Installed(u) => {
+            let pkg = package.as_ref().map(|p| format!(" from the package {p}")).unwrap_or_default();
+            let state = if u.running() && u.main_pid > 0 {
+                format!("running (pid {})", u.main_pid)
+            } else if u.running() {
+                "running".to_string()
+            } else {
+                "stopped".to_string()
+            };
+            let mut fixes = vec![
+                act("Stop and disable it", FixAction::StopService { unit: u.id.clone() }),
+                act("Remove it", FixAction::RemovePostgres { unit: u.id.clone(), package, data_dir: data_dir.into() }),
+            ];
+            use_port(&mut fixes);
+            check("existing-pg", "Existing PostgreSQL", Status::Warn, format!("PostgreSQL is already installed as {}{pkg}, {state}.", u.id))
+                .state("Already installed")
+                .fixes(fixes)
+        }
+        PgService::LeftoverRunning(u) => {
+            let pid = if u.main_pid > 0 { format!(" (pid {})", u.main_pid) } else { String::new() };
+            let mut fixes = vec![
+                act("Stop it", FixAction::StopService { unit: u.id.clone() }),
+                act("Remove it", FixAction::RemovePostgres { unit: u.id.clone(), package: None, data_dir: data_dir.into() }),
+            ];
+            use_port(&mut fixes);
+            check(
+                "existing-pg",
+                "Existing PostgreSQL",
+                Status::Warn,
+                format!("{} is still running{pid} although its package was removed.", u.id),
+            )
+            .state("Still running")
+            .fixes(fixes)
+        }
     }
 }
 
@@ -224,35 +345,74 @@ pub fn run_native(offline: bool) -> Vec<Check> {
 /// are chosen later (Network ports, Database settings), and the install is
 /// refused there while a chosen port is in use.
 fn ports_free() -> Check {
-    let mut c = ports_free_of(&[
+    attention(ports_free_of(&[
         (8080, "HTTP".into()), (1883, "MQTT".into()), (5683, "CoAP".into()), (5432, "PostgreSQL".into()),
-    ]);
-    if c.status == Status::Fail {
-        c.status = Status::Warn;
-        c.label = "Default ports".into();
-    }
-    c
+    ]))
 }
 
 /// Are these TCP ports free to bind? A busy port is a real blocker for the
 /// install, but the operator can pick different ones on the Configure step,
 /// and the Install step re-checks the ones actually chosen.
 pub fn ports_free_of(wanted: &[(u16, String)]) -> Check {
-    let busy = busy_ports(wanted);
+    let busy: Vec<(u16, String, Option<PortOwner>, Option<u16>)> = wanted
+        .iter()
+        .filter(|(p, _)| port_busy(*p))
+        .map(|(p, what)| (*p, what.clone(), port_owner(*p), next_free_port(p.saturating_add(1))))
+        .collect();
+    ports_check(wanted, &busy)
+}
+
+/// The ports row from what was found: each busy port with who holds it
+/// and the next free one.
+pub fn ports_check(wanted: &[(u16, String)], busy: &[(u16, String, Option<PortOwner>, Option<u16>)]) -> Check {
     let all: Vec<String> = wanted.iter().map(|(p, _)| p.to_string()).collect();
     if busy.is_empty() {
-        check("ports", "Required ports", Status::Pass, format!("{} are free.", all.join(", ")))
-    } else {
-        check(
-            "ports",
-            "Required ports",
-            Status::Fail,
-            format!(
-                "already in use: {}. Stop whatever is listening, or choose other ports later in setup (PostgreSQL under Database settings, the rest under Network ports).",
-                busy.join(", ")
-            ),
-        )
+        return check("ports", "Required ports", Status::Pass, format!("{} are free.", all.join(", ")));
     }
+    let several = busy.len() > 1;
+    let mut lines = Vec::new();
+    let mut fixes = Vec::new();
+    for (port, what, owner, instead) in busy {
+        lines.push(match owner {
+            Some(o) => format!("Port {port} ({what}) is used by {}.", o.describe()),
+            None => format!("Port {port} ({what}) is used by another program."),
+        });
+        fixes.extend(owner_fixes(*port, what, owner.as_ref(), *instead, several));
+    }
+    check("ports", "Required ports", Status::Fail, lines.join(" ")).state("In use").fixes(fixes)
+}
+
+/// What can be done about a port `owner` holds: stop the container or the
+/// service (a PostgreSQL can also be removed), or give SENTIENT another
+/// port. `tag`: name the port in each label (several are busy).
+pub fn owner_fixes(port: u16, what: &str, owner: Option<&PortOwner>, instead: Option<u16>, tag: bool) -> Vec<Fix> {
+    let label = |l: &str| if tag { format!("{l} (port {port})") } else { l.to_string() };
+    let mut v = Vec::new();
+    match owner {
+        Some(PortOwner { container: Some(name), .. }) => v.push(act(label("Stop the container"), FixAction::StopContainer { name: name.clone() })),
+        Some(o @ PortOwner { unit: Some(unit), .. }) if !unit.starts_with("user@") => {
+            v.push(act(label(if o.removed { "Stop it" } else { "Stop and disable it" }), FixAction::StopService { unit: unit.clone() }));
+            if unit.starts_with("postgresql") {
+                v.push(act(
+                    label("Remove it"),
+                    FixAction::RemovePostgres { unit: unit.clone(), package: o.package.clone(), data_dir: o.data_dir.clone().unwrap_or_else(|| pg_data_dir().into()) },
+                ));
+            }
+        }
+        Some(PortOwner { pid: Some(pid), .. }) => v.push(cmd(&label("Stop the program"), format!("sudo kill {pid}"))),
+        _ => {}
+    }
+    if let Some(p) = instead {
+        let l = if tag { format!("Use {p} for {what}") } else { format!("Use another port ({p})") };
+        v.push(act(l, FixAction::UsePort { port, instead: p }));
+    }
+    if owner.is_none() || owner.is_some_and(|o| o.pid.is_none() && o.container.is_none() && o.unit.is_none()) {
+        #[cfg(windows)]
+        v.push(cmd(&label("See what uses it"), format!("Get-NetTCPConnection -LocalPort {port} -State Listen | Select-Object OwningProcess")));
+        #[cfg(not(windows))]
+        v.push(cmd(&label("See what uses it"), format!("sudo ss -ltnp 'sport = :{port}'")));
+    }
+    v
 }
 
 /// The ports of `wanted` something already listens on, as "8080 (HTTP)".
@@ -271,11 +431,24 @@ pub fn next_free_port(start: u16) -> Option<u16> {
 }
 
 /// The program listening on a port: its process name and where it runs
-/// from, as far as this computer tells.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// from, as far as this computer tells, and on Linux the systemd service or
+/// Docker container it belongs to.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PortOwner {
     pub process: String,
     pub path: Option<String>,
+    pub pid: Option<u32>,
+    /// The systemd service it runs in ("postgresql.service").
+    pub unit: Option<String>,
+    /// The Docker container that publishes the port.
+    pub container: Option<String>,
+    /// Its package was removed (the unit file or the program is gone) and
+    /// it still runs.
+    pub removed: bool,
+    /// The package its unit came from, when it is installed.
+    pub package: Option<String>,
+    /// A PostgreSQL's data folder, for "Remove it".
+    pub data_dir: Option<String>,
 }
 
 impl PortOwner {
@@ -290,11 +463,31 @@ impl PortOwner {
         })
     }
 
-    /// "postgres.exe in C:\Program Files\PostgreSQL\16\bin"
+    /// "postgres.exe in C:\Program Files\PostgreSQL\16\bin", "the
+    /// Docker container sentient-postgres", "postgres (pid 812), the
+    /// postgresql.service service", or, for a server whose package was
+    /// removed, "postgres (pid 812, postgresql.service), still running
+    /// although its package was removed".
     pub fn describe(&self) -> String {
+        if let Some(c) = &self.container {
+            return format!("the Docker container {c}");
+        }
+        let pid = self.pid.map(|p| format!("pid {p}"));
+        if self.removed {
+            let ids: Vec<String> = pid.into_iter().chain(self.unit.clone()).collect();
+            let ids = if ids.is_empty() { String::new() } else { format!(" ({})", ids.join(", ")) };
+            return format!("{}{ids}, still running although its package was removed", self.process);
+        }
+        let named = match pid {
+            Some(p) => format!("{} ({p})", self.process),
+            None => self.process.clone(),
+        };
+        if let Some(u) = &self.unit {
+            return format!("{named}, the {u} service");
+        }
         match self.path.as_deref().and_then(|p| p.rfind(['\\', '/']).map(|i| &p[..i])) {
-            Some(dir) if !dir.is_empty() => format!("{} in {dir}", self.process),
-            _ => self.process.clone(),
+            Some(dir) if !dir.is_empty() => format!("{} in {dir}", named),
+            _ => named,
         }
     }
 }
@@ -312,12 +505,64 @@ pub fn port_owner(port: u16) -> Option<PortOwner> {
 
 #[cfg(unix)]
 pub fn port_owner(port: u16) -> Option<PortOwner> {
-    // `ss -ltnpH 'sport = :5432'`: users:(("postgres",pid=812,fd=6))
-    let (_, out) = sh(&format!("ss -ltnpH 'sport = :{port}' 2>/dev/null | head -1"))?;
-    let name = out.split("((\"").nth(1)?.split('"').next()?.to_string();
-    let pid = out.split("pid=").nth(1).and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next()).map(str::to_string);
-    let path = pid.and_then(|p| std::fs::read_link(format!("/proc/{p}/exe")).ok()).map(|p| p.display().to_string());
-    Some(PortOwner { process: name, path })
+    // A Docker container: its docker-proxy runs as root, so ss would not
+    // name it to this user anyway.
+    if matches!(sh("command -v docker"), Some((true, _))) {
+        if let Some((true, ps)) = sh("docker ps --format '{{.Names}}|{{.Ports}}' 2>/dev/null") {
+            if let Some(name) = units::container_on(&ps, port) {
+                return Some(PortOwner { process: "docker-proxy".into(), container: Some(name), ..Default::default() });
+            }
+        }
+    }
+    // `ss -ltnpH 'sport = :5432'`: users:(("postgres",pid=812,fd=6)), when
+    // this user may see the process.
+    let ss = sh(&format!("ss -ltnpH 'sport = :{port}' 2>/dev/null | head -1")).map(|(_, o)| o).unwrap_or_default();
+    if let Some((name, pid)) = units::parse_ss(&ss) {
+        let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok().map(|p| p.display().to_string());
+        let unit = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok().and_then(|t| units::unit_of_cgroup(&t));
+        let info = unit.as_ref().and_then(|u| units::show(std::slice::from_ref(u)).into_iter().next());
+        let mut o = owner_of(name, Some(pid), exe, unit, info.as_ref());
+        if o.unit.as_deref().is_some_and(|u| u.starts_with("postgresql")) {
+            o.data_dir = Some(pg_data_dir().into());
+        }
+        return Some(o);
+    }
+    // PostgreSQL of another user (ss shows no process then): its socket
+    // names the port, and systemd the service that runs it.
+    let socket = ["/run/postgresql", "/var/run/postgresql", "/tmp"].iter().any(|d| std::path::Path::new(&format!("{d}/.s.PGSQL.{port}")).exists());
+    if socket {
+        let found = units::classify_postgres(&units::postgres_units());
+        let u = match found {
+            PgService::Installed(u) if u.running() => Some(u),
+            PgService::LeftoverRunning(u) => Some(u),
+            _ => None,
+        };
+        let mut o = match &u {
+            Some(u) => owner_of("postgres".into(), (u.main_pid > 0).then_some(u.main_pid), None, Some(u.id.clone()), Some(u)),
+            None => PortOwner { process: "a PostgreSQL server".into(), ..Default::default() },
+        };
+        o.data_dir = Some(pg_data_dir().into());
+        return Some(o);
+    }
+    None
+}
+
+/// A listening process with what systemd says of its service. Removed: the
+/// unit file is gone (not-found) or the program file was deleted under it.
+pub fn owner_of(process: String, pid: Option<u32>, exe: Option<String>, unit: Option<String>, info: Option<&units::UnitInfo>) -> PortOwner {
+    let deleted = exe.as_deref().is_some_and(|e| e.ends_with(" (deleted)"));
+    let not_found = info.is_some_and(|i| i.load_state == "not-found");
+    let package = info.filter(|i| i.loaded()).and_then(|i| units::package_owning(&i.fragment_path));
+    PortOwner {
+        process,
+        path: exe.map(|e| e.trim_end_matches(" (deleted)").to_string()),
+        pid,
+        unit,
+        container: None,
+        removed: deleted || not_found,
+        package,
+        data_dir: None,
+    }
 }
 
 #[cfg(not(any(windows, unix)))]
@@ -329,7 +574,7 @@ pub fn port_owner(_: u16) -> Option<PortOwner> {
 fn parse_owner(out: &str) -> Option<PortOwner> {
     let line = out.lines().map(str::trim).find(|l| !l.is_empty())?;
     let (process, path) = line.split_once('|').unwrap_or((line, ""));
-    Some(PortOwner { process: process.trim().to_string(), path: (!path.trim().is_empty()).then(|| path.trim().to_string()) })
+    Some(PortOwner { process: process.trim().to_string(), path: (!path.trim().is_empty()).then(|| path.trim().to_string()), ..Default::default() })
 }
 
 #[cfg(test)]
@@ -344,6 +589,113 @@ mod port_owner_tests {
         assert!(!o.is_sentient(&[std::path::PathBuf::from("C:\\PostgreSQL\\18")]));
         assert!(o.is_sentient(&[std::path::PathBuf::from("C:\\Program Files\\PostgreSQL\\16")]));
         assert!(parse_owner("  ").is_none());
+    }
+
+    fn unit(id: &str, load: &str, active: &str, pid: u32) -> units::UnitInfo {
+        units::UnitInfo { id: id.into(), load_state: load.into(), active_state: active.into(), fragment_path: String::new(), main_pid: pid }
+    }
+
+    fn actions(c: &Check) -> Vec<(String, FixAction)> {
+        c.fixes.iter().filter_map(|f| if let Fix::Action { label, action } = f { Some((label.clone(), action.clone())) } else { None }).collect()
+    }
+
+    #[test]
+    fn a_removed_postgres_unit_is_not_an_existing_postgres() {
+        // `pacman -R postgresql`: systemd still lists the unit as not-found.
+        let names = units::parse_unit_names("● postgresql.service not-found inactive dead postgresql.service\n");
+        assert_eq!(names, vec!["postgresql.service"]);
+        let found = units::classify_postgres(&[unit("postgresql.service", "not-found", "inactive", 0)]);
+        let c = existing_pg_check(&found, None, "/var/lib/postgres/data", Some(5433));
+        assert!(c.status == Status::Pass, "{}", c.detail);
+        assert!(!c.detail.contains('●'));
+        assert!(c.fixes.is_empty());
+    }
+
+    #[test]
+    fn an_installed_postgres_is_named_with_its_actions() {
+        let found = units::classify_postgres(&[unit("postgresql.service", "loaded", "active", 812)]);
+        let c = existing_pg_check(&found, Some("postgresql".into()), "/var/lib/postgres/data", Some(5433));
+        assert!(c.status == Status::Warn);
+        assert_eq!(c.state.as_deref(), Some("Already installed"));
+        assert_eq!(c.detail, "PostgreSQL is already installed as postgresql.service from the package postgresql, running (pid 812).");
+        let a = actions(&c);
+        assert_eq!(a.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["Stop and disable it", "Remove it", "Use another port (5433)"]);
+        assert_eq!(a[0].1, FixAction::StopService { unit: "postgresql.service".into() });
+        assert_eq!(
+            a[1].1,
+            FixAction::RemovePostgres { unit: "postgresql.service".into(), package: Some("postgresql".into()), data_dir: "/var/lib/postgres/data".into() }
+        );
+        assert_eq!(a[2].1, FixAction::UsePort { port: 5432, instead: 5433 });
+    }
+
+    #[test]
+    fn a_still_running_server_of_a_removed_package_is_said_so() {
+        let found = units::classify_postgres(&[unit("postgresql.service", "not-found", "active", 812)]);
+        let c = existing_pg_check(&found, None, "/var/lib/postgres/data", Some(5433));
+        assert_eq!(c.state.as_deref(), Some("Still running"));
+        assert_eq!(c.detail, "postgresql.service is still running (pid 812) although its package was removed.");
+        assert_eq!(actions(&c)[0], ("Stop it".into(), FixAction::StopService { unit: "postgresql.service".into() }));
+    }
+
+    #[test]
+    fn port_owners_are_named() {
+        // A systemd service.
+        let info = unit("postgresql.service", "loaded", "active", 812);
+        let o = owner_of("postgres".into(), Some(812), Some("/usr/bin/postgres".into()), Some("postgresql.service".into()), Some(&info));
+        assert_eq!(o.describe(), "postgres (pid 812), the postgresql.service service");
+        assert!(!o.removed);
+        // A Docker container.
+        let o = PortOwner { process: "docker-proxy".into(), container: Some("sentient-postgres".into()), ..Default::default() };
+        assert_eq!(o.describe(), "the Docker container sentient-postgres");
+        // The postmaster of a removed package: its unit not-found, or its program deleted.
+        let gone = unit("postgresql.service", "not-found", "active", 812);
+        let o = owner_of("postgres".into(), Some(812), None, Some("postgresql.service".into()), Some(&gone));
+        assert_eq!(o.describe(), "postgres (pid 812, postgresql.service), still running although its package was removed");
+        let o = owner_of("postgres".into(), Some(812), Some("/usr/bin/postgres (deleted)".into()), None, None);
+        assert!(o.removed);
+        assert_eq!(o.path.as_deref(), Some("/usr/bin/postgres"));
+        assert_eq!(o.describe(), "postgres (pid 812), still running although its package was removed");
+    }
+
+    #[test]
+    fn busy_ports_name_their_owner_and_offer_actions() {
+        let wanted = [(8080, "HTTP".to_string()), (5432, "PostgreSQL".to_string())];
+        let docker = PortOwner { process: "docker-proxy".into(), container: Some("sentient-postgres".into()), ..Default::default() };
+        let c = ports_check(&wanted, &[(5432, "PostgreSQL".into(), Some(docker), Some(5433))]);
+        assert_eq!(c.detail, "Port 5432 (PostgreSQL) is used by the Docker container sentient-postgres.");
+        assert_eq!(c.state.as_deref(), Some("In use"));
+        assert_eq!(
+            actions(&c),
+            vec![
+                ("Stop the container".into(), FixAction::StopContainer { name: "sentient-postgres".into() }),
+                ("Use another port (5433)".into(), FixAction::UsePort { port: 5432, instead: 5433 }),
+            ]
+        );
+        // A removed package's postmaster: stop it, remove it, or another port.
+        let gone = unit("postgresql.service", "not-found", "active", 812);
+        let mut o = owner_of("postgres".into(), Some(812), None, Some("postgresql.service".into()), Some(&gone));
+        o.data_dir = Some("/var/lib/postgres/data".into());
+        let c = ports_check(&wanted, &[(5432, "PostgreSQL".into(), Some(o), Some(5433))]);
+        assert_eq!(c.detail, "Port 5432 (PostgreSQL) is used by postgres (pid 812, postgresql.service), still running although its package was removed.");
+        assert_eq!(actions(&c).iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["Stop it", "Remove it", "Use another port (5433)"]);
+        // Nobody known: another port, and the command that shows who.
+        let c = ports_check(&wanted, &[(8080, "HTTP".into(), None, Some(8081)), (5432, "PostgreSQL".into(), None, None)]);
+        assert_eq!(actions(&c), vec![("Use 8081 for HTTP".into(), FixAction::UsePort { port: 8080, instead: 8081 })]);
+        // The command that shows who holds it: ss here, Get-NetTCPConnection on Windows.
+        let shows = if cfg!(windows) { "-LocalPort 5432" } else { ":5432" };
+        assert!(c.fixes.iter().any(|f| matches!(f, Fix::Command { command, .. } if command.contains(shows))));
+        // Its server is the PostgreSQL row's too: acted on there only.
+        let pg = existing_pg_check(&PgService::LeftoverRunning(gone.clone()), None, "/var/lib/postgres/data", Some(5433));
+        let mut o = owner_of("postgres".into(), Some(812), None, Some("postgresql.service".into()), Some(&gone));
+        o.data_dir = Some("/var/lib/postgres/data".into());
+        let mut v = vec![pg, ports_check(&wanted, &[(5432, "PostgreSQL".into(), Some(o), Some(5433))])];
+        share_fixes(&mut v);
+        assert!(actions(&v[1]).is_empty(), "{:?}", actions(&v[1]));
+        assert!(v[1].detail.ends_with("For port 5432, see Existing PostgreSQL."), "{}", v[1].detail);
+        assert_eq!(actions(&v[0]).len(), 3);
+        // Free: ready, nothing to do.
+        let c = ports_check(&wanted, &[]);
+        assert!(c.status == Status::Pass && c.fixes.is_empty());
     }
 }
 
@@ -528,8 +880,13 @@ fn disk_space() -> Check {
             if gb >= 10.0 {
                 check("disk", "Disk space", Status::Pass, format!("{gb:.0} GB free."))
             } else {
+                #[cfg(windows)]
+                let see = cmd("See what takes the room", "Get-PSDrive C");
+                #[cfg(not(windows))]
+                let see = cmd("See what takes the room", "sudo du -xh --max-depth=1 / 2>/dev/null | sort -h | tail -n 12");
                 check("disk", "Disk space", Status::Fail,
                       format!("{gb:.1} GB free. 10 GB+ recommended for the images and data."))
+                    .fixes(vec![see])
             }
         }
         None => check("disk", "Disk space", Status::Unknown, "Could not read free disk space."),

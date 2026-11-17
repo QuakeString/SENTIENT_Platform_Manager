@@ -1,0 +1,9 @@
+Job for postgresql.service failed because the control process exited with error code.
+See "systemctl status postgresql.service" and "journalctl -xeu postgresql.service" for details.
+Starting PostgreSQL database server...
+postgres: could not find the database system
+Expected to find it in the directory "/var/lib/postgres/data",
+but could not open file "/var/lib/postgres/data/global/pg_control": Permission denied
+postgresql.service: Main process exited, code=exited, status=2/INVALIDARGUMENT
+postgresql.service: Failed with result 'exit-code'.
+Failed to start PostgreSQL database server.

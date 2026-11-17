@@ -19,6 +19,14 @@ from PIL import Image
 PAD, PAGE_PAD, TOL, MIN_PIXELS = 16, 18, 28, 3
 
 
+def last_frame_lines(log):
+    lines = open(log, errors="replace").read().splitlines()
+    marks = [i for i, l in enumerate(lines) if l.startswith("LAYOUT-FRAME ")]
+    if len(marks) < 2:
+        return lines
+    return lines[marks[-2] + 1:marks[-1]]
+
+
 def frame_panels(log):
     lines = open(log, errors="replace").read().splitlines()
     marks = [i for i, l in enumerate(lines) if l.startswith("LAYOUT-FRAME ")]
@@ -84,6 +92,53 @@ def bar_controls(log):
     return [tuple(float(x) for x in l.split()[2:]) for l in lines[start + 1:end] if l.startswith("LAYOUT bar-ctrl ")]
 
 
+def menu_route(log):
+    """The menu's selection in the last complete frame: what the route says
+    (`LAYOUT-NAV page= sub= parent= selected=`, printed right after the
+    frame mark) and the rows drawn selected (`LAYOUT menu-on <id> ...`).
+    Returns (route dict or None, [selected row ids])."""
+    lines = open(log, errors="replace").read().splitlines()
+    marks = [i for i, l in enumerate(lines) if l.startswith("LAYOUT-FRAME ")]
+    if not marks:
+        return None, []
+    start = marks[-2] if len(marks) > 1 else marks[-1]
+    end = marks[-1] if len(marks) > 1 else len(lines)
+    route, rows = None, []
+    for l in lines[start + 1:end]:
+        if l.startswith("LAYOUT-NAV "):
+            route = dict(kv.split("=", 1) for kv in l.split()[1:])
+        elif l.startswith("LAYOUT menu-on "):
+            rows.append(l.split()[2])
+    return route, sorted(set(rows))
+
+
+def route_findings(log):
+    """A sub-flow keeps the menu on the page it was opened from: the row
+    drawn selected is the route's, and with a sub-flow open that is its
+    parent. EXPECT_SUB / EXPECT_MENU (run.sh, for a sub-flow's renders):
+    that sub-flow is open and that page's row is the one selected."""
+    route, rows = menu_route(log)
+    out = []
+    want_sub, want_menu = os.environ.get("EXPECT_SUB"), os.environ.get("EXPECT_MENU")
+    if route is None:
+        if want_sub or want_menu:
+            out.append("menu: no LAYOUT-NAV line in the frame")
+        return out
+    sel = route.get("selected")
+    if route.get("sub", "-") != "-" and sel != route.get("parent"):
+        out.append(f"menu: {sel} selected while the sub-flow {route.get('sub')} of {route.get('parent')} is open")
+    if rows and rows != [sel]:
+        out.append(f"menu: row(s) {', '.join(rows)} drawn selected, the route says {sel}")
+    if want_sub and route.get("sub") != want_sub:
+        out.append(f"menu: sub-flow {route.get('sub')} open, expected {want_sub}")
+    if want_menu:
+        if sel != want_menu:
+            out.append(f"menu: {sel} selected, expected {want_menu}")
+        if rows != [want_menu]:
+            out.append(f"menu: row(s) {', '.join(rows) or 'none'} drawn selected, expected {want_menu}")
+    return out
+
+
 PAGE_GAP = 18.0
 
 
@@ -146,7 +201,9 @@ def broken_dividers(im, panels, scale, top_bar, charts=()):
     inner width is one flat colour other than the card's; inside its first
     and last pixel there may be no gap of 6 px or more of card colour.
     Rows inside a chart (`LAYOUT chart l r t b`: its scale and plot) are
-    not dividers: a grid line starts after the scale's labels."""
+    not dividers: a grid line starts after the scale's labels. Nor are the
+    edges of buttons and of input fields (`LAYOUT field`) side by side: a
+    row of fields is not one line."""
     W, H = im.size
     out = []
     for (l, r, t, b) in panels:
@@ -242,6 +299,29 @@ def button_gaps(log):
     return off
 
 
+def back_title_findings(log):
+    """ui::back_title: `back-button` centred on `page-title-line` (within
+    1 px; the title's first line when it wraps), `page-subtitle` starting
+    at the title's left edge, and 12 px from the button to the title."""
+    backs, titles, subs = (frame_probes(log, n) for n in ("back-button", "page-title-line", "page-subtitle"))
+    if not backs and not titles:
+        return []
+    if not backs or not titles:
+        return [f"back title: {len(backs)} back-button and {len(titles)} page-title-line probes (want both)"]
+    out = []
+    b, t = backs[0], titles[0]
+    line = min(t[3] - t[2], 30.0)
+    mid_b, mid_t = (b[2] + b[3]) / 2, t[2] + line / 2
+    if abs(mid_b - mid_t) > 1.0:
+        out.append(f"back title: the back button's centre y {mid_b:.2f} is {mid_b - mid_t:+.2f} px off the title line's {mid_t:.2f}")
+    if abs(t[0] - b[1] - 12.0) > 0.5:
+        out.append(f"back title: {t[0] - b[1]:.2f} px between the back button and the title, not 12")
+    for s in subs:
+        if abs(s[0] - t[0]) > 0.5:
+            out.append(f"back title: the subtitle starts at x {s[0]:.2f}, not at the title's {t[0]:.2f}")
+    return out
+
+
 def main():
     png, log, scale = sys.argv[1], sys.argv[2], float(sys.argv[3])
     # Setup's window: only the buttons' gaps (its own layout is not the
@@ -260,6 +340,8 @@ def main():
         print(f"{png}: no layout lines (SPM_DEBUG_LAYOUT not on?)")
         return 1
     bad = []
+    # The menu's selected row follows the route (a sub-flow: its parent).
+    bad.extend(route_findings(log))
     # The bar over the page (the shell's 60 px).
     top_bar = 60 * scale
     # A window with a bar under the page (Setup's buttons) reports where the
@@ -279,6 +361,12 @@ def main():
             continue
         ref = im.getpixel((int(R - PAD * scale / 2), y0))
         hits = [(x, y) for y in range(y0, y1, 2) for x in range(x0, x1) if differs(im.getpixel((x, y)), ref)]
+        # A row divider that runs edge to edge (the settings card's rows):
+        # a line across the whole strip, not content reaching into it.
+        per_y = {}
+        for x, y in hits:
+            per_y[y] = per_y.get(y, 0) + 1
+        hits = [(x, y) for x, y in hits if per_y[y] < x1 - x0]
         # A scrolling body's scrollbar track: one or two full-height columns
         # of the same line, not content.
         cols = {x for x, _ in hits}
@@ -292,7 +380,7 @@ def main():
     if not dialog:
         # A row of outlined buttons' top or bottom edges is not a divider
         # either: the rows inside a button's box are left out like a chart's.
-        bad.extend(broken_dividers(im, panels, scale, top_bar, frame_probes(log, "chart") + frame_probes(log, "button")))
+        bad.extend(broken_dividers(im, panels, scale, top_bar, frame_probes(log, "chart") + frame_probes(log, "button") + frame_probes(log, "field")))
     # The menu's selected row opens into the page: no edge line between
     # its curves (the page's colour all across the menu's edge there).
     sel = menu_selection(log)
@@ -312,7 +400,42 @@ def main():
     # One gap between the buttons of a group (dialogs included).
     for (l, r, t, b), g in button_gaps(log):
         bad.append(f"button gap: {g:.2f} px after the button at x {l:.0f}-{r:.0f}, y {t:.0f}-{b:.0f}, not {BUTTON_GAP:.0f}")
-    # Menu icons (an open popup or context menu): at least 18 px.
+    # A sub-page's back button and title (ui::back_title): the button
+    # centred on the title's line (within 1 px), the line under the title
+    # starting where the title does (not under the button).
+    bad.extend(back_title_findings(log))
+    # A list dialog (the folder chooser): only its list scrolls, so its
+    # path bar stays at the top of the dialog's body after scrolling.
+    fl = last_frame_lines(log)
+    tops = [[float(v) for v in l.split()[2:6]] for l in fl if l.startswith("LAYOUT fc-top ")]
+    bodies = [[float(v) for v in l.split()[2:6]] for l in fl if l.startswith("LAYOUT dialog ")]
+    if tops and bodies:
+        top, body = tops[-1], bodies[-1]
+        if abs(top[2] - (body[2] + 12)) > 2.5:
+            bad.append(f"folder chooser: the path bar is at y {top[2]:.0f}, not at the dialog body's top {body[2] + 12:.0f} (did the whole body scroll?)")
+    # Commit actions in a card foot (ui::card_actions): the buttons end at
+    # the foot's right edge (SPM's rule: actions on the right).
+    frame_lines = last_frame_lines(log)
+    btns = [tuple(float(v) for v in l.split()[2:]) for l in frame_lines if l.startswith("LAYOUT button ")]
+    # A dialog open covers the page: its rows are not checked here (the
+    # dialog's own buttons would read as the covered card's).
+    covered = any(l.startswith("LAYOUT modal ") for l in frame_lines)
+    for l in frame_lines:
+        if covered:
+            break
+        if l.startswith("LAYOUT card-actions ") or l.startswith("LAYOUT header-actions "):
+            fl, fr, ft, fb = (float(v) for v in l.split()[2:])
+            inside = [b for b in btns if b[0] >= fl - 1 and b[1] <= fr + 1 and b[2] >= ft - 1 and b[3] <= fb + 1]
+            if inside and max(b[1] for b in inside) < fr - 1.5:
+                bad.append(f"card actions end at x {max(b[1] for b in inside):.0f}, not at the foot's right edge {fr:.0f}")
+    # Service controls (Start, Stop, Restart, Logs on every service card,
+    # status.rs service_buttons): all one height, the app's 28 px buttons
+    # (the toolkit's; 40 px is the top bar's controls).
+    svc = [tuple(float(v) for v in l.split()[2:]) for l in last_frame_lines(log) if l.startswith("LAYOUT svc-button ")]
+    for x0, x1, y0, y1 in svc:
+        if abs((y1 - y0) - 28.0) > 0.6:
+            bad.append(f"service button {y1 - y0:.2f} px tall at x {x0:.0f}, y {y0:.0f}, not 28")
+        # Menu icons (an open popup or context menu): at least 18 px.
     for l in open(log, errors="replace").read().splitlines():
         if l.startswith("LAYOUT menu-item-icon "):
             x0, x1, y0, y1 = (float(v) for v in l.split()[2:])

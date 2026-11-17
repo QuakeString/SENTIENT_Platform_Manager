@@ -261,6 +261,15 @@ pub fn parse_probe(out: &str) -> Probe {
 mod tests {
     use super::*;
 
+    #[test]
+    fn an_eight_agent_is_older_than_nine() {
+        let ours = info("0.9.0", PROTOCOL);
+        for old in ["0.8.0-rc11", "0.8.0-rc12", "0.8.0"] {
+            assert_eq!(relation(&info(old, PROTOCOL), &ours), "older than this one", "{old}");
+            assert_eq!(fit(&info(old, PROTOCOL), &ours), Fit::Compatible);
+        }
+    }
+
     fn info(v: &str, p: u32) -> AgentInfo {
         AgentInfo { version: v.into(), commit: "abc1234".into(), protocol: p, window: true }
     }

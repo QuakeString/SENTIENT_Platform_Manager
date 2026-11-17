@@ -79,11 +79,7 @@ impl Existing {
 }
 
 fn size(bytes: i64) -> String {
-    if bytes >= 1 << 30 {
-        format!("{:.1} GB", bytes as f64 / (1u64 << 30) as f64)
-    } else {
-        format!("{} MB", bytes >> 20)
-    }
+    crate::size::label(bytes.max(0) as u64)
 }
 
 /// What keeping `existing` under `flavor` takes.

@@ -116,6 +116,9 @@ pub struct NativeConfig {
     pub ch_password: String,
     pub ch_http_port: u16,
     pub ch_native_port: u16,
+    /// Linux: what to do with a PostgreSQL data folder from an older major
+    /// (crate::old_pg), chosen before the install.
+    pub old_pg: crate::old_pg::OldPgChoice,
 }
 
 impl NativeConfig {
@@ -1609,6 +1612,213 @@ pub fn control(sink: ProgressFn, cfg: &NativeConfig, action: &str) -> Result<(),
     }
 }
 
+/// The PostgreSQL databases that are not SENTIENT's, where PostgreSQL may be
+/// shared: the distribution's service on Linux. On Windows PostgreSQL is
+/// SENTIENT's own service: none.
+pub fn pg_other_databases(cfg: &NativeConfig) -> Result<Vec<String>, String> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::native_linux::pg_other_databases(cfg)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // The bundled psql as SENTIENT's own database user (any user may
+        // list pg_database, and its password is always in the config; the
+        // superuser's often is not), its password in the environment only.
+        // -w: never prompt (a prompt with no console waits for ever), and a
+        // time limit on top.
+        let psql = cfg.pg_dir.join("bin").join(if cfg!(windows) { "psql.exe" } else { "psql" });
+        if !psql.exists() {
+            return Err(format!("psql is not where PostgreSQL was installed ({})", psql.display()));
+        }
+        let mut c = std::process::Command::new(&psql);
+        c.args(["-w", "-h", "127.0.0.1", "-p", &cfg.pg_port.to_string(), "-U", &cfg.db_user, "-d", &cfg.db_name, "-XAtqc", "SELECT datname FROM pg_database"])
+            .env("PGPASSWORD", &cfg.db_password)
+            .env("PGCONNECT_TIMEOUT", "10")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0800_0000);
+        }
+        let mut child = c.spawn().map_err(|e| format!("psql: {e}"))?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(100)),
+                _ => {
+                    let _ = child.kill();
+                    return Err("PostgreSQL did not answer within 15 seconds when asked which databases it holds".into());
+                }
+            }
+        }
+        let out = child.wait_with_output().map_err(|e| format!("psql: {e}"))?;
+        if !out.status.success() {
+            let why = String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("").trim().to_string();
+            return Err(if why.is_empty() { "psql failed".into() } else { why });
+        }
+        let all: Vec<String> = String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+        Ok(crate::stack_order::other_databases(&all, &cfg.db_name))
+    }
+}
+
+/// Start, stop or restart the whole stack in order (crate::stack_order).
+/// `stop_shared_pg`: stop a shared PostgreSQL anyway (Linux).
+pub fn control_stack(sink: ProgressFn, cfg: &NativeConfig, action: &str, stop_shared_pg: bool) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::native_linux::control_stack(sink, cfg, action, stop_shared_pg)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // A PostgreSQL other databases use stays up (as on Linux), unless
+        // the stop asks for it too.
+        let keep = if crate::stack_order::stops_postgres(action) && !stop_shared_pg {
+            crate::stack_order::keep_postgres(&pg_other_databases(cfg), false)
+        } else {
+            None
+        };
+        let steps = crate::stack_order::plan(action, cfg.flavor == Flavor::Clickhouse, keep.clone())?;
+        if let Some(why) = &keep {
+            sink(Progress::Log { line: why.clone() });
+        }
+        for s in &windows_steps(&steps) {
+            run_windows_step(&sink, cfg, s)?;
+        }
+        sink(Progress::Done { message: crate::stack_order::done_message(action, &steps) });
+        Ok(())
+    }
+}
+
+/// One Windows action of a stack plan.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WinStep {
+    /// `sc stop`, then wait until it reports stopped.
+    StopService(&'static str),
+    StartService(&'static str),
+    /// The keep-alive task stops ClickHouse in WSL2 cleanly.
+    StopClickHouse,
+    /// The keep-alive task starts ClickHouse in WSL2 again.
+    StartClickHouse,
+    WaitPostgres,
+    WaitClickHouse,
+    WaitSentient,
+}
+
+/// A stack plan as Windows runs it: services by name, ClickHouse through
+/// its WSL2 keep-alive task.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn windows_steps(steps: &[crate::stack_order::Step]) -> Vec<WinStep> {
+    use crate::stack_order::{Part, Step};
+    steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::Stop(Part::Sentient) => Some(WinStep::StopService(APP_SERVICE)),
+            Step::Stop(Part::ClickHouse) => Some(WinStep::StopClickHouse),
+            Step::Stop(Part::Postgres) => Some(WinStep::StopService(PG_SERVICE)),
+            Step::Start(Part::Postgres) => Some(WinStep::StartService(PG_SERVICE)),
+            Step::Start(Part::ClickHouse) => Some(WinStep::StartClickHouse),
+            Step::Start(Part::Sentient) => Some(WinStep::StartService(APP_SERVICE)),
+            Step::Ready(Part::Postgres) => Some(WinStep::WaitPostgres),
+            Step::Ready(Part::ClickHouse) => Some(WinStep::WaitClickHouse),
+            Step::Ready(Part::Sentient) => Some(WinStep::WaitSentient),
+            Step::KeepPostgres(_) => None,
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run_windows_step(sink: &ProgressFn, cfg: &NativeConfig, s: &WinStep) -> Result<(), String> {
+    use crate::stack_order::{SENTIENT_READY_SECS, wait_until};
+    let label = |svc: &str| if svc == APP_SERVICE { "SENTIENT" } else { "PostgreSQL" };
+    match *s {
+        WinStep::StopService(svc) => {
+            if !service_exists(svc) {
+                return Ok(());
+            }
+            step(sink, &format!("Stopping {}", label(svc)));
+            let _ = sc(&["stop", svc]);
+            if !wait_until(90, || matches!(service_state(svc).as_str(), "stopped" | "absent")) {
+                return Err(format!("{} did not stop within a minute and a half.", label(svc)));
+            }
+        }
+        WinStep::StartService(svc) => {
+            if !service_exists(svc) {
+                return Ok(());
+            }
+            step(sink, &format!("Starting {}", label(svc)));
+            let _ = sc(&["start", svc]);
+        }
+        WinStep::StopClickHouse => {
+            #[cfg(windows)]
+            {
+                step(sink, "Stopping ClickHouse");
+                if !crate::clickhouse_wsl::stop_clickhouse(cfg.ch_http_port, std::time::Duration::from_secs(150), |_| {}) {
+                    return Err("ClickHouse did not stop cleanly in time.".into());
+                }
+            }
+        }
+        WinStep::StartClickHouse => {
+            #[cfg(windows)]
+            {
+                step(sink, "Starting ClickHouse");
+                let task = crate::clickhouse_wsl::KEEPALIVE_TASK;
+                let _ = sys::output("schtasks.exe", &["/end", "/tn", task]);
+                let _ = sys::output("schtasks.exe", &["/run", "/tn", task]);
+            }
+        }
+        WinStep::WaitPostgres => {
+            if service_exists(PG_SERVICE) {
+                let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cfg.pg_port));
+                let answers = || std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1)).is_ok();
+                if !wait_until(120, answers) {
+                    return Err(format!("PostgreSQL did not answer on port {} within 2 minutes.", cfg.pg_port));
+                }
+            }
+        }
+        WinStep::WaitClickHouse => {
+            if !wait_until(240, || crate::distro::clickhouse_answers(cfg.ch_http_port)) {
+                return Err("ClickHouse did not answer within 4 minutes.".into());
+            }
+        }
+        WinStep::WaitSentient => {
+            step(sink, "Waiting for SENTIENT to answer");
+            if !wait_until(SENTIENT_READY_SECS, || is_running(cfg.http_port)) {
+                return Err(format!(
+                    "SENTIENT was started but does not answer on port {} after {} minutes. Its log says why.",
+                    cfg.http_port,
+                    SENTIENT_READY_SECS / 60
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod stack_tests {
+    use super::*;
+    use crate::stack_order::plan;
+
+    #[test]
+    fn windows_stops_and_starts_the_services_in_order() {
+        use WinStep::*;
+        assert_eq!(windows_steps(&plan("stop", true, None).unwrap()), [StopService(APP_SERVICE), StopClickHouse, StopService(PG_SERVICE)]);
+        assert_eq!(
+            windows_steps(&plan("start", true, None).unwrap()),
+            [StartService(PG_SERVICE), WaitPostgres, StartClickHouse, WaitClickHouse, StartService(APP_SERVICE), WaitSentient]
+        );
+        assert_eq!(
+            windows_steps(&plan("restart", false, None).unwrap()),
+            [StopService(APP_SERVICE), StopService(PG_SERVICE), StartService(PG_SERVICE), WaitPostgres, StartService(APP_SERVICE), WaitSentient]
+        );
+    }
+}
+
 pub fn logs(cfg: &NativeConfig, tail: u32) -> String {
     #[cfg(target_os = "linux")]
     {
@@ -1771,6 +1981,90 @@ pub fn cleanup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     }
 }
 
+/// Uninstall, part by part (crate::removal): SENTIENT's service and program
+/// folders only. Its database stays as it is.
+pub fn remove_sentient_only(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::native_linux::uninstall(sink, cfg)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        remove_platform(&sink, cfg);
+        let _ = remove_tree_retrying(&cfg.state_dir.join("downloads"));
+        Ok(())
+    }
+}
+
+/// The folders under the bundled PostgreSQL that are its program (all but
+/// `data`): removed with it, the data folder only when it is not kept.
+pub fn pg_program_entries(entries: &[String], keep_data: bool) -> Vec<String> {
+    entries.iter().filter(|e| !(keep_data && e.eq_ignore_ascii_case("data"))).cloned().collect()
+}
+
+/// Windows: remove the bundled PostgreSQL. Stop its service and wait, end a
+/// `postgres.exe` of this cluster still running, unregister the service,
+/// delete the program and (unless `keep_data`) the data folder.
+#[cfg(not(target_os = "linux"))]
+pub fn remove_postgres_windows(sink: &ProgressFn, cfg: &NativeConfig, keep_data: bool) -> Result<(), String> {
+    step(sink, "Stopping and removing PostgreSQL");
+    let _ = sc(&["stop", PG_SERVICE]);
+    for _ in 0..60 {
+        if matches!(service_state(PG_SERVICE).as_str(), "stopped" | "absent") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    // A postgres.exe of this cluster that outlived its service.
+    let ps = format!(
+        "Get-Process postgres -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -like '{}*' }} | Stop-Process -Force -ErrorAction SilentlyContinue",
+        cfg.pg_dir.display().to_string().replace('\'', "''")
+    );
+    let _ = sys::output("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", &ps]);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let pg_ctl = cfg.pg_bin().join("pg_ctl.exe");
+    if pg_ctl.exists() {
+        let _ = sys::output_limited(&pg_ctl.to_string_lossy(), &["unregister", "-N", PG_SERVICE], std::time::Duration::from_secs(60));
+    }
+    if service_exists(PG_SERVICE) {
+        let _ = sc(&["delete", PG_SERVICE]);
+    }
+    let names: Vec<String> = std::fs::read_dir(&cfg.pg_dir)
+        .map(|r| r.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default();
+    let left: Vec<String> = pg_program_entries(&names, keep_data)
+        .into_iter()
+        .map(|n| cfg.pg_dir.join(n))
+        .filter(|p| if p.is_dir() { !remove_tree_retrying(p) } else { std::fs::remove_file(p).is_err() })
+        .map(|p| p.display().to_string())
+        .collect();
+    if !keep_data {
+        let _ = std::fs::remove_dir(&cfg.pg_dir);
+    }
+    if !left.is_empty() {
+        return Err(format!("Could not delete {} (still in use). Restart Windows and delete it by hand.", left.join(" and ")));
+    }
+    log(sink, if keep_data { "PostgreSQL's data folder is kept." } else { "PostgreSQL and its data are removed." });
+    Ok(())
+}
+
+/// Windows: the bundled PostgreSQL stays installed but stopped and not
+/// started with Windows (a new install starts it again and reuses it).
+#[cfg(not(target_os = "linux"))]
+pub fn park_postgres_windows(sink: &ProgressFn) {
+    if service_exists(PG_SERVICE) {
+        step(sink, "Stopping PostgreSQL (it stays installed)");
+        let _ = sc(&["stop", PG_SERVICE]);
+        for _ in 0..60 {
+            if service_state(PG_SERVICE) == "stopped" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        let _ = sc(&["config", PG_SERVICE, "start=", "demand"]);
+    }
+}
+
 /// What an earlier SENTIENT install left of its own services and PostgreSQL
 /// cluster (no installation record any more), for Setup's "Remove the
 /// earlier install". Descriptions, empty when there is nothing.
@@ -1826,15 +2120,7 @@ fn cluster_port(data: &Path) -> u16 {
 
 /// "1.2 GB", "310 MB", "12 KB".
 pub fn size_words(bytes: u64) -> String {
-    const GB: u64 = 1 << 30;
-    const MB: u64 = 1 << 20;
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{} MB", bytes / MB)
-    } else {
-        format!("{} KB", bytes / 1024)
-    }
+    crate::size::label(bytes)
 }
 
 /// The PostgreSQL folder the leftover service runs from (`-D <pg>\data`).

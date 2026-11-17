@@ -7,10 +7,9 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    ActiveTheme, h_flex,
-    input::{Input, InputState},
+    ActiveTheme,
+    input::InputState,
 };
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::catalog::{Setting, ValueKind};
@@ -37,17 +36,10 @@ pub fn choices_for(env: &str) -> Option<&'static [(&'static str, &'static str)]>
     }
 }
 
-pub fn field(setting: &Setting, input: &Entity<InputState>, set: SetFn, file: FileButton, cx: &App) -> AnyElement {
-    match field_parts(setting, input, set, file, false, cx) {
-        (f, Some(button)) => h_flex().flex_1().min_w_0().gap_2().items_center().child(f).child(button).into_any_element(),
-        (f, None) => f,
-    }
-}
-
-/// The field and, for a file, its button apart: the All variables table puts
-/// every input at one width and the buttons in a column of their own
-/// (`table`: inputs fill their cell).
-pub fn field_parts(setting: &Setting, input: &Entity<InputState>, set: SetFn, file: FileButton, table: bool, cx: &App) -> (AnyElement, Option<AnyElement>) {
+/// A setting's control in the field column (crate::ui): a choice of a
+/// few values, a switch, or the input with its unit (or the file's button)
+/// in its slot and, when the value cannot be used, its message under it.
+pub fn control(setting: &Setting, input: &Entity<InputState>, set: SetFn, file: FileButton, window: &Window, cx: &App) -> AnyElement {
     let theme = cx.theme().clone();
     let env = setting.env.clone();
     if let Some(choices) = choices_for(&env) {
@@ -56,52 +48,141 @@ pub fn field_parts(setting: &Setting, input: &Entity<InputState>, set: SetFn, fi
         // A log filter ("info,sqlx=warn") counts by its overall level.
         let level = effective.split(',').next().unwrap_or("").trim().to_string();
         let at = choices.iter().position(|(_, v)| !v.is_empty() && (*v == effective || *v == level)).or_else(|| if now.is_empty() { choices.iter().position(|(_, v)| v.is_empty()) } else { None });
-        return (
-            ui::seg_track(&theme)
-                .children(choices.iter().enumerate().map(|(i, (label, value))| {
-                    let set = set.clone();
-                    ui::seg_item(&theme, SharedString::from(format!("{env}-c{i}")), *label, at == Some(i)).on_click(move |_, window, cx| set(value, window, cx))
-                }))
-                .into_any_element(),
-            None,
-        );
+        let labels: Vec<&str> = choices.iter().map(|(l, _)| *l).collect();
+        return ui::chips(&theme, &env, &labels, at, Rc::new(move |i, window, cx| set(choices[i].1, window, cx))).into_any_element();
     }
-    let el = match setting.kind() {
+    match setting.kind() {
         ValueKind::Switch => {
             let now = input.read(cx).value().trim().to_string();
             let builtin = setting.default.clone();
             let effective = if now.is_empty() { builtin.clone() } else { now };
-            // Yes/no is a switch; "default" is said once, quietly.
             let on = effective == "true";
-            let builtin_on = builtin == "true";
-            h_flex()
-                .gap_3()
-                .items_center()
-                .when(!builtin.is_empty(), |r| r.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(if builtin_on { "Default: on" } else { "Default: off" })))
-                .child(gpui_kit::component::switch::Switch::new(SharedString::from(format!("sw-{env}"))).checked(on).on_click(move |v: &bool, window, cx| {
-                    let want = if *v { "true" } else { "false" };
-                    // The built-in value is written as "not set".
-                    set(if builtin == want { "" } else { want }, window, cx);
-                }))
-                .into_any_element()
+            ui::toggle(&theme, SharedString::from(format!("sw-{env}")), on, None, move |v: &bool, window, cx| {
+                let want = if *v { "true" } else { "false" };
+                // The built-in value is written as "not set".
+                set(if builtin == want { "" } else { want }, window, cx);
+            })
+            .into_any_element()
         }
-        ValueKind::Number(unit) => h_flex()
-            .gap_2()
-            .items_center()
-            .when(table, |r| r.flex_1().min_w_0())
-            .child(if table { div().flex_1().min_w_0().child(Input::new(input)) } else { div().w(px(130.)).child(Input::new(input)) })
-            .when_some(unit, |r, u| r.child(div().text_sm().text_color(theme.muted_foreground).child(u)))
-            .into_any_element(),
-        ValueKind::File => {
-            let (label, act) = match file {
-                FileButton::Choose(f) => ("Choose…", f),
-                FileButton::Check(f) => ("Check", f),
+        kind => {
+            let slot = match (kind, file) {
+                (ValueKind::File, FileButton::Choose(f)) => Some(ui::Slot::Button(SharedString::from(format!("file-{env}")), "Choose".into(), f)),
+                (ValueKind::File, FileButton::Check(f)) => Some(ui::Slot::Button(SharedString::from(format!("file-{env}")), "Check".into(), f)),
+                _ => unit_of(setting).map(|u| ui::Slot::Unit(u.into())),
             };
-            let button = crate::ui::button(SharedString::from(format!("file-{env}"))).outline().label(label).on_click(move |_, window, cx| act(window, cx)).into_any_element();
-            let input_el = if table { div().flex_1().min_w_0().child(Input::new(input)) } else { div().flex_1().min_w(px(160.)).max_w(px(420.)).child(Input::new(input)) };
-            return (input_el.into_any_element(), Some(button));
+            ui::field_input(&theme, input, slot, setting.problem(&input.read(cx).value()), false, window, cx).into_any_element()
         }
-        ValueKind::Text => if table { div().flex_1().min_w_0().child(Input::new(input)) } else { div().flex_1().min_w(px(180.)).max_w(px(420.)).child(Input::new(input)) }.into_any_element(),
-    };
-    (el, None)
+    }
+}
+
+/// The word in a number field's unit slot: seconds, days, MB, port,
+/// threads; None for a plain count.
+pub fn unit_of(setting: &Setting) -> Option<&'static str> {
+    match setting.kind() {
+        ValueKind::Number(Some(u)) => Some(ui::unit_word(u)),
+        ValueKind::Number(None) if setting.env.ends_with("_PORT") => Some("port"),
+        ValueKind::Number(None) if setting.env.ends_with("_THREADS") => Some("threads"),
+        _ => None,
+    }
+}
+
+/// A number of seconds in plain words: 86400 is "24 hours", 604800 "7
+/// days"; None when it is not a whole number of minutes.
+fn seconds_words(n: u64) -> Option<String> {
+    let plural = |n: u64, one: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {one}s") };
+    if n == 0 || n % 60 != 0 {
+        return None;
+    }
+    // A day reads as 24 hours; two and more as days.
+    Some(if n % 86_400 == 0 && n / 86_400 >= 2 {
+        plural(n / 86_400, "day")
+    } else if n % 3600 == 0 {
+        plural(n / 3600, "hour")
+    } else {
+        plural(n / 60, "minute")
+    })
+}
+
+/// The words a setting's value is shown with: a choice's own label
+/// (Forever, Built-in, 30 days), On or Off, a duration in plain words
+/// ("Every 24 hours" for an interval), the number with its unit, or the
+/// value as written. An empty value is SENTIENT's own.
+pub fn value_words(setting: &Setting, value: &str) -> String {
+    let v = value.trim();
+    if let Some(choices) = choices_for(&setting.env) {
+        // A log filter ("info,sqlx=warn") is its own words: the level alone
+        // would hide the rest.
+        if let Some((label, _)) = choices.iter().find(|(_, c)| *c == v) {
+            return label.to_string();
+        }
+    }
+    if v.is_empty() {
+        return "SENTIENT's own".to_string();
+    }
+    match setting.kind() {
+        ValueKind::Switch if v == "true" => "On".to_string(),
+        ValueKind::Switch if v == "false" => "Off".to_string(),
+        ValueKind::Number(Some(u)) => {
+            let n = v.parse::<u64>().ok();
+            let words = match (u, n) {
+                ("s", Some(n)) => seconds_words(n),
+                ("min", Some(n)) if n > 0 && n % 60 == 0 => seconds_words(n * 60),
+                _ => None,
+            };
+            match words {
+                Some(w) if setting.env.contains("_INTERVAL") => format!("Every {}", w.strip_prefix("1 ").unwrap_or(&w)),
+                Some(w) => w,
+                None => format!("{v} {}", ui::unit_word(u)),
+            }
+        }
+        _ => v.to_string(),
+    }
+}
+
+/// The current value column's words: the value in effect, the built-in one
+/// when nothing is set.
+pub fn current_words(setting: &Setting, applied: &str) -> String {
+    if applied.trim().is_empty() {
+        // A choice of "Built-in" says so; otherwise the built-in value.
+        if choices_for(&setting.env).is_some_and(|c| c.iter().any(|(_, v)| v.is_empty())) || setting.default.is_empty() {
+            return value_words(setting, "");
+        }
+        return value_words(setting, &setting.default);
+    }
+    value_words(setting, applied)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::value_words;
+
+    /// The value column says what the choice says: Forever, not "0 days";
+    /// Built-in, not "0 s"; numbers with their unit.
+    #[test]
+    fn value_words_match_the_choices() {
+        let all: Vec<crate::catalog::Setting> = crate::catalog::groups().into_iter().flat_map(|g| g.settings).collect();
+        let s = |env: &str| all.iter().find(|s| s.env == env).unwrap().clone();
+        assert_eq!(value_words(&s("NOTIFICATIONS_TTL_DAYS"), "0"), "Forever");
+        assert_eq!(value_words(&s("AUDIT_LOG_TTL_DAYS"), "365"), "1 year");
+        assert_eq!(value_words(&s("SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS"), ""), "Built-in");
+        assert_eq!(value_words(&s("SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS"), "604800"), "7 days");
+        assert_eq!(value_words(&s("SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS"), "86400"), "1 day");
+        // A value no choice has: the number and its unit.
+        assert_eq!(value_words(&s("SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS"), "1000"), "1000 seconds");
+        assert_eq!(value_words(&s("SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS"), "1209600"), "14 days");
+        assert_eq!(value_words(&s("NOTIFICATIONS_TTL_DAYS"), "12"), "12 days");
+        assert_eq!(value_words(&s("RUST_LOG"), "info"), "Normal");
+        assert_eq!(value_words(&s("RUST_LOG"), "info,sqlx=warn"), "info,sqlx=warn");
+        assert_eq!(value_words(&s("LICENSE_HEARTBEAT_INTERVAL_SECS"), "3600"), "Every hour");
+        assert_eq!(value_words(&s("LICENSE_BINDING_CHECK_INTERVAL_SECS"), "86400"), "Every 24 hours");
+        assert_eq!(value_words(&s("LICENSE_BINDING_CHECK_INTERVAL_SECS"), "90"), "90 seconds");
+        // The current column: nothing set is the built-in value in words.
+        use super::current_words;
+        assert_eq!(current_words(&s("NOTIFICATIONS_TTL_DAYS"), ""), "Forever");
+        assert_eq!(current_words(&s("SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS"), ""), "Built-in");
+        assert_eq!(current_words(&s("LICENSE_BINDING_CHECK_INTERVAL_SECS"), ""), "Every 24 hours");
+        assert_eq!(current_words(&s("LICENSE_SERVER_URL"), ""), "https://license.invenia.in");
+        assert_eq!(value_words(&s("AUDIT_LOG_CLEANUP_ENABLED"), "true"), "On");
+        assert_eq!(value_words(&s("LICENSE_SERVER_URL"), ""), "SENTIENT's own");
+    }
 }

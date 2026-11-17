@@ -68,6 +68,8 @@ impl GatewayPage {
             subs.push(cx.subscribe(i, |_, _, _: &InputEvent, cx| cx.notify()));
         }
         let poll = cx.spawn(async move |this, cx| loop {
+            // Hidden (another page, or a server open): no reading.
+            super::until_shown(super::Page::Gateway, cx).await;
             let (status, record) = cx.background_executor().spawn(async { (local_status(), crate::gateway_record::load()) }).await;
             if this.update(cx, |p, cx| {
                 let first = p.status.is_none();
@@ -410,7 +412,7 @@ impl Render for GatewayPage {
             _ => None,
         };
         let body = if status.installed {
-            let (pill, tone) = if status.running { ("Running", Tone::Good) } else { ("Stopped", Tone::Bad) };
+            let (pill, tone) = if status.running { ("Gateway is running", Tone::Good) } else { ("Gateway is stopped", Tone::Bad) };
             ui::panel(&theme)
                 .child(
                     h_flex()
@@ -446,30 +448,40 @@ impl Render for GatewayPage {
                     Some(url) => ui::fact(&theme, "Web page", url),
                     None => ui::fact_help(&theme, "Web page", "Off", "The gateway's own web page is off. In a container it is turned on with ST_GW_UI=on."),
                 })
-                .child(
-                    h_flex()
-                        .gap(crate::ui::button_gap())
-                        .flex_wrap()
-                        .when(controllable, |r| {
-                            r.child(crate::ui::probed(crate::ui::button("gw-start").outline().label("Start").disabled(busy || status.running).on_click(cx.listener(|p, _, _, cx| p.control("start", cx)))))
-                                .child(crate::ui::probed(crate::ui::button("gw-stop").outline().label("Stop").disabled(busy || !status.running).on_click(cx.listener(|p, _, _, cx| p.control("stop", cx)))))
-                                .child(crate::ui::probed(crate::ui::button("gw-restart").outline().label("Restart").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.control("restart", cx)))))
+                .children({
+                    let this = cx.entity().downgrade();
+                    let act = |action: &'static str| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
+                        let this = this.clone();
+                        std::rc::Rc::new(move |_, cx| {
+                            this.update(cx, |p, cx| p.control(action, cx)).ok();
                         })
-                        .child(crate::ui::probed(crate::ui::button("gw-logs").outline().label("Logs").on_click(|_, _, cx| {
-                            crate::logsource::request(crate::logsource::Source::Gateway);
-                            cx.refresh_windows();
-                        })))
-                        .when(outside, |r| {
-                            r.child(crate::ui::probed(
-                                h_flex().gap_1().items_center().child(crate::ui::button("gw-adopt").outline().label("Manage it here").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.adopt(cx)))).child(ui::info(
-                                    "gw-adopt-help".into(),
-                                    "Records this gateway as the one the Platform Manager manages: it lists it, starts and stops it, and offers its removal. Nothing about it changes: the container, its compose file and its volumes stay as they are.".into(),
-                                )),
-                            ))
-                        })
-                        .child(div().flex_1())
-                        .child(crate::ui::probed(crate::ui::button("gw-remove").danger().label("Remove the Gateway…").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.open_remove(cx))))),
-                )
+                    };
+                    let running = Some(crate::manager::status::Running { serving: status.running, any_up: status.running });
+                    let services = if controllable { crate::manager::status::service_buttons(&theme, "gw-", busy, running, "Stop", act("start"), act("restart"), act("stop")) } else { Vec::new() };
+                    ui::card_actions(
+                        &theme,
+                        h_flex()
+                            .gap(crate::ui::button_gap())
+                            .flex_wrap()
+                            // A wrapped line ends at the right too.
+                            .justify_end()
+                            .items_center()
+                            .child(crate::ui::probed(crate::ui::button("gw-remove").danger().label("Remove the Gateway").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.open_remove(cx)))))
+                            .when(outside, |r| {
+                                r.child(crate::ui::probed(
+                                    h_flex().gap_1().items_center().child(crate::ui::button("gw-adopt").outline().label("Manage it here").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.adopt(cx)))).child(ui::info(
+                                        "gw-adopt-help".into(),
+                                        "Records this gateway as the one the Platform Manager manages: it lists it, starts and stops it, and offers its removal. Nothing about it changes: the container, its compose file and its volumes stay as they are.".into(),
+                                    )),
+                                ))
+                            })
+                            .child(crate::ui::probed(crate::manager::status::logs_button("gw-", |_, _, cx| {
+                                crate::logsource::request(crate::logsource::Source::Gateway);
+                                cx.refresh_windows();
+                            })))
+                            .children(services.into_iter().map(crate::ui::probed)),
+                    )
+                })
                 .children(outcome.clone().map(|(tone, m)| ui::outcome(&theme, tone, m)))
                 .child(match (&newer, &newest) {
                     (Some(o), _) => {

@@ -1,0 +1,4 @@
+# Documented wsl.exe output (Microsoft WSL docs), not recorded: no Windows runtime here.
+Windows Subsystem for Linux has no installed distributions.
+The Windows Subsystem for Linux is not installed. You can install by running 'wsl.exe --install'.
+Error code: Wsl/WSL_E_WSL_OPTIONAL_COMPONENT_REQUIRED

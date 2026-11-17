@@ -7,7 +7,6 @@
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex,
     button::ButtonVariants as _,
-    checkbox::Checkbox,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -43,13 +42,16 @@ impl RepairPage {
     pub fn new(record: Option<InstallationRecord>, cx: &mut Context<Self>) -> Self {
         let job = cx.new(|_| Job::new());
         let _observe = cx.observe(&job, |page: &mut Self, job, cx| {
-            if page.running == Some(Action::TakeOver) && matches!(job.read(cx).state(), JobState::Done(_)) {
+            // A takeover changes the record; an uninstall removes it, and
+            // the manager goes on without SENTIENT.
+            if matches!(page.running, Some(Action::TakeOver | Action::Uninstall)) && matches!(job.read(cx).state(), JobState::Done(_)) {
                 page.record = InstallationRecord::load();
                 cx.emit(RecordChanged);
             }
             cx.notify();
         });
         let _gateway_poll = cx.spawn(async move |this, cx| loop {
+            super::until_shown(super::Page::Repair, cx).await;
             let (status, rec) = cx.background_executor().spawn(async { (crate::manager::gateway::local_status(), crate::gateway_record::load()) }).await;
             if this.update(cx, |p, cx| { p.gateway = Some(status); p.gateway_record = rec; cx.notify(); }).is_err() {
                 break;
@@ -68,7 +70,7 @@ impl RepairPage {
         let has_record = self.gateway_record.is_some();
         let button = crate::ui::button("repair-gw-remove")
             .danger()
-            .label("Remove the Gateway…")
+            .label("Remove the Gateway")
             .disabled(busy)
             .on_click(cx.listener(move |this, _, _, cx| {
                 let page = cx.entity().downgrade();
@@ -91,6 +93,7 @@ impl RepairPage {
         self.running = Some(Action::RemoveGateway);
         let as_root = cfg!(target_os = "linux") && !crate::rootjob::is_root() && (g.container.is_none() || has_record);
         self.job.update(cx, |job, cx| {
+            // jobview: short (the gateway's removal, its result in its panel).
             job.start(
                 move |sink| {
                     if as_root {
@@ -112,6 +115,25 @@ impl RepairPage {
                 cx,
             )
         });
+    }
+
+    /// The Uninstall dialog (crate::manager::uninstall_dialog).
+    fn open_uninstall(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        let page = cx.entity().downgrade();
+        self.running = Some(Action::Uninstall);
+        crate::manager::uninstall_dialog::open_local(
+            record,
+            std::rc::Rc::new(move |cx: &mut App| {
+                page.update(cx, |p, cx| {
+                    p.record = InstallationRecord::load();
+                    cx.emit(RecordChanged);
+                    cx.notify();
+                })
+                .ok();
+            }),
+            cx,
+        );
     }
 
     /// The plan for confirmation (crate::manager::takeover), then the takeover.
@@ -136,6 +158,7 @@ impl RepairPage {
     fn take_over(&mut self, compose: Option<String>, creds: crate::manager::takeover::Creds, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         self.running = Some(Action::TakeOver);
+        self.job.update(cx, |job, _| job.set_plan(crate::jobplan::takeover()));
         self.job.update(cx, |job, cx| job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), creds.db.as_deref(), creds.ch.as_deref(), sink).map(|_| ()), cx));
     }
 
@@ -143,7 +166,13 @@ impl RepairPage {
         let Some(record) = self.record.clone() else { return };
         let keep = self.keep_data;
         self.running = Some(action);
+        // Its steps from the first frame (crate::jobplan).
+        let plan = match action {
+            Action::Repair => crate::jobplan::repair(crate::jobplan::Shape::of(&record), record.flavor() == sentient_installer_core::stack::Flavor::Clickhouse),
+            _ => crate::jobplan::uninstall(keep),
+        };
         self.job.update(cx, |job, cx| {
+            job.set_plan(plan);
             if crate::rootjob::needed(&record) {
                 let mut args = vec![match action {
                     Action::Repair => "repair".to_string(),
@@ -152,7 +181,19 @@ impl RepairPage {
                 if action == Action::Uninstall && !keep {
                     args.push("--delete-data".into());
                 }
-                job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx)
+                job.start(
+                    move |sink| {
+                        crate::rootjob::run(&args, &sink)?;
+                        // The root job cleaned by the record's manifest; this
+                        // account's own copies (older installs) and its menu
+                        // cache are cleaned as this account.
+                        if action == Action::Uninstall {
+                            crate::shortcuts::remove(crate::shortcuts::Owner::Sentient, &[], &sink);
+                        }
+                        Ok(())
+                    },
+                    cx,
+                )
             } else {
                 match action {
                     Action::Repair => job.start(move |sink| crate::maintenance_ops::run_repair(record, sink), cx),
@@ -173,14 +214,14 @@ impl RepairPage {
             ),
             Action::Uninstall if keep => (
                 "Uninstall SENTIENT?",
-                "SENTIENT and the Platform Manager are removed. The database is kept and can be used by a new install.",
+                "SENTIENT and its services are removed. The database is kept and can be used by a new install. The Platform Manager stays.",
                 "Uninstall",
             ),
             // Confirmed in their own dialogs.
             Action::TakeOver | Action::RemoveGateway => return,
             Action::Uninstall => (
                 "Uninstall SENTIENT and delete its data?",
-                "SENTIENT, the Platform Manager, the databases and everything kept are removed. This can't be undone.",
+                "SENTIENT, its databases and everything kept are removed. This can't be undone. The Platform Manager stays.",
                 "Delete everything",
             ),
         };
@@ -216,12 +257,24 @@ impl Render for RepairPage {
             "Repair and uninstall",
             "Write the services and their configuration again, or remove SENTIENT from this computer.",
         );
+        if let Some(view) = self.job_view(cx) {
+            return page.child(view);
+        }
         if self.record.is_none() {
             // Without SENTIENT, Repair keeps one thing: removing the
-            // Platform Manager itself.
+            // Platform Manager itself. Just after an uninstall from here,
+            // what it did comes first; the Gateway panel after it.
             let gw = self.gateway_panel(&theme, self.job.read(cx).is_running(), cx);
             let gw_outcome = self.gateway_outcome(&theme, cx);
-            return page.child(ui::not_installed(&theme)).children(gw).children(gw_outcome).child(
+            let done = match self.job.read(cx).state() {
+                JobState::Done(m) if self.running == Some(Action::Uninstall) => Some(m.clone()),
+                _ => None,
+            };
+            let page = match done {
+                Some(m) => page.child(ui::panel(&theme).child(ui::outcome(&theme, Tone::Good, m))),
+                None => page.child(ui::not_installed(&theme)),
+            };
+            return page.children(gw).children(gw_outcome).child(
                 ui::panel(&theme)
                     .child(div().font_weight(FontWeight::MEDIUM).child("Remove the Platform Manager"))
                     .child(
@@ -231,7 +284,7 @@ impl Render for RepairPage {
                             .child(div().text_sm().text_color(theme.muted_foreground).child("Removes this program from this computer."))
                             .child(ui::info("remove-manager-help".into(), "Its settings, saved servers and logs go too. SENTIENT, its database and backups are not touched.".into())),
                     )
-                    .child(ui::button_row(vec![crate::ui::button("remove-manager").outline().label("Remove the Platform Manager…").on_click(|_, window, cx| crate::standalone::remove_manager(window, cx)).into_any_element()])),
+                    .child(ui::button_row(vec![crate::ui::button("remove-manager").outline().label("Remove the Platform Manager").on_click(|_, window, cx| crate::standalone::remove_manager(window, cx)).into_any_element()])),
             );
         }
         let job = self.job.read(cx);
@@ -269,7 +322,7 @@ impl Render for RepairPage {
                         h_flex().child(
                             crate::ui::button("take-over")
                                 .outline()
-                                .label("Take over the compose file…")
+                                .label("Take over the compose file")
                                 .disabled(done)
                                 .on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))),
                         ),
@@ -297,35 +350,57 @@ impl Render for RepairPage {
         .child(
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Uninstall"))
-                .child(div().text_sm().text_color(theme.muted_foreground).child(
-                    "Removes SENTIENT, its services and the Platform Manager. Keeping the database lets a new install use it.",
-                ))
                 .child(
-                    Checkbox::new("keep-data")
-                        .label("Keep the database")
-                        .checked(self.keep_data)
-                        .disabled(done)
-                        .on_change(cx.listener(|this, value: &bool, _, cx| {
-                            this.keep_data = *value;
-                            cx.notify();
-                        })),
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(div().text_sm().text_color(theme.muted_foreground).child("Choose what to remove: SENTIENT, its databases, the shortcuts, the Platform Manager."))
+                        .child(ui::info("uninstall-help".into(), "Each part has its own switch, and each database a Keep its data switch, on by default. A database Setup did not install is never removed. Afterwards the Platform Manager checks that nothing is left and lists what is, with the command to remove it.".into())),
                 )
-                .child(
-                    h_flex().child(
-                        crate::ui::button("uninstall")
-                            .danger()
-                            .label(if self.keep_data { "Uninstall" } else { "Uninstall and delete the data" })
-                            .disabled(done)
-                            .on_click(cx.listener(|this, _, window, cx| this.confirm(Action::Uninstall, window, cx))),
-                    ),
-                ),
+                .child(ui::button_row(vec![crate::ui::button("uninstall").danger().label("Uninstall").disabled(done).on_click(cx.listener(|this, _, _, cx| this.open_uninstall(cx))).into_any_element()])),
         )
         .when(uninstalled, |page| {
             page.child(
                 ui::panel(&theme)
-                    .children(outcome.map(|(tone, text)| ui::outcome(&theme, tone, text)))
+                    .children(outcome.map(|(tone, text)| crate::diagnosis::outcome(&theme, tone, text, self.job.read(cx))))
                     .child(h_flex().child(crate::ui::button("close").primary().label("Close").on_click(|_, window, _| window.remove_window()))),
             )
         })
+    }
+}
+
+impl RepairPage {
+    /// Repair, Uninstall or the takeover, in place of the page
+    /// (crate::manager::jobview) until "Back to Repair and uninstall".
+    fn job_view(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let action = self.running.filter(|a| *a != Action::RemoveGateway)?;
+        let job = self.job.read(cx);
+        if matches!(job.state(), JobState::Idle) {
+            return None;
+        }
+        let title = match action {
+            Action::Repair => "Repairing SENTIENT",
+            Action::Uninstall if self.keep_data => "Uninstalling SENTIENT (the database is kept)",
+            Action::Uninstall => "Uninstalling SENTIENT and deleting its data",
+            _ => "Taking over the compose file",
+        };
+        let ended_uninstall = action == Action::Uninstall && matches!(job.state(), JobState::Done(_));
+        let back = crate::manager::jobview::back_button("repair-run-back", "Repair and uninstall", {
+            let me = cx.entity().downgrade();
+            move |_, cx| {
+                me.update(cx, |p, cx| {
+                    p.running = None;
+                    p.record = InstallationRecord::load();
+                    p.job.update(cx, |j, cx| j.reset(cx));
+                    cx.notify();
+                })
+                .ok();
+            }
+        });
+        let mut acts = vec![back];
+        if ended_uninstall {
+            acts.push(crate::ui::button("close").primary().label("Close").on_click(|_, window, _| window.remove_window()).into_any_element());
+        }
+        Some(crate::manager::jobview::JobView::new("repair-run", title, &self.job).actions(acts).render(cx))
     }
 }

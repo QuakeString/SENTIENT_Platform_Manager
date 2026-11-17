@@ -30,11 +30,14 @@ mod catalog;
 mod changes;
 mod dbstatus;
 #[cfg(feature = "gui")]
+mod diagnosis;
+#[cfg(feature = "gui")]
 mod earlier;
 mod elevate;
 mod gateway_record;
 mod headless;
 mod installation;
+mod jobplan;
 #[cfg(feature = "gui")]
 mod installer;
 /// The server agent runs unattended installs from a plan too (no window).
@@ -78,6 +81,7 @@ mod rootjob;
 mod secrets;
 mod secrets_key;
 mod self_install;
+mod shortcuts;
 #[cfg(feature = "gui")]
 mod sftp;
 mod sentient_admin;
@@ -89,8 +93,10 @@ mod stats;
 mod sysmon;
 #[cfg(feature = "gui")]
 mod theme;
+mod timing;
 #[cfg(feature = "gui")]
 mod ui;
+mod uninstall;
 mod updates;
 mod updating;
 
@@ -103,6 +109,7 @@ use gpui_kit::*;
 use mode::AppMode;
 
 fn main() {
+    timing::start();
     // Agent mode runs as the hidden ClickHouse account: no window, no
     // elevation (that account is not an administrator).
     let args: Vec<String> = std::env::args().collect();
@@ -193,6 +200,7 @@ fn window_options_manager(cx: &mut gpui_kit::App) -> WindowOptions {
 #[cfg(feature = "gui")]
 pub(crate) fn open_manager_window(options: WindowOptions, cx: &mut gpui_kit::App) -> anyhow::Result<(gpui_kit::AnyWindowHandle, gpui_kit::Entity<manager::Manager>)> {
     let opened = win_frame::open_window(options, cx, |window, cx| {
+        crate::timing::mark("window-opened");
         #[cfg(windows)]
         win_icon::use_manager_icon(window);
         cx.new(|cx| manager::Manager::new(window, cx))
@@ -216,20 +224,41 @@ fn gui_main(args: Vec<String>) {
     // a taskbar action) hands its request to the running one, before asking
     // for administrator rights again.
     let request = background::request_of(&args);
+    let background_start = args.iter().any(|a| a == "--background");
+    // Setup and the self-update always run elevated; the Platform Manager
+    // elevates only for a user action: its sign-in tray runs unelevated
+    // and hands over to an elevated copy when the window is opened
+    // (crate::background::start_plan).
+    let mut elevate_now = true;
     if mode == AppMode::Manager && !args.iter().any(|a| a == "--self-update") {
-        if background::Prefs::load().show_tray && background::forward(&request) {
+        let prefs = background::Prefs::load();
+        if background_start && !prefs.background() {
+            // Started at sign-in, but the tray was turned off since.
             return;
         }
+        let running = if prefs.show_tray { background::running() } else { None };
+        let takeover = args.iter().any(|a| a == "--takeover");
+        let plan = background::start_plan(running, elevate::is_admin(), takeover, background_start, cfg!(windows));
+        elevate_now = match plan {
+            background::StartPlan::Exit => return,
+            background::StartPlan::Forward if background::forward(&request) => return,
+            // A stale lock: nothing runs after all.
+            background::StartPlan::Forward => cfg!(windows) && !background_start,
+            background::StartPlan::TakeOver => match background::take_over(&request) {
+                background::TakeOver::Forwarded => return,
+                background::TakeOver::Done => false,
+                background::TakeOver::NoAnswer => {
+                    maintenance_ops::log_line("The running Platform Manager did not hand over; starting anyway");
+                    false
+                }
+            },
+            background::StartPlan::Run { elevate } => elevate,
+        };
         if request == "action exit" {
             return;
         }
     }
-    let background_start = args.iter().any(|a| a == "--background");
-    if mode == AppMode::Manager && background_start && !background::Prefs::load().background() {
-        // Started at sign-in, but the tray was turned off since.
-        return;
-    }
-    if !elevate::ensure_admin() {
+    if elevate_now && !elevate::ensure_admin() {
         return;
     }
     // The downloaded Platform Manager replacing the installed one.
@@ -237,9 +266,15 @@ fn gui_main(args: Vec<String>) {
         std::process::exit(updates::finish_self_update());
     }
     ui::prefer_native_frame();
+    timing::mark("gui-main");
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx| {
+        timing::mark("app-run");
         gpui_kit::init(cx);
+        timing::mark("kit-init");
+        // The servers' connections end with the Platform Manager (crate::remote::conn).
+        cx.on_app_quit(|_| async { remote::conn::close_all() }).detach();
         theme::init(ThemeMode::Light, cx);
+        timing::mark("theme-init");
         // Development aid: open in a given theme (screenshots of both).
         let forced = cfg!(debug_assertions).then(|| std::env::var("SPM_THEME").ok()).flatten();
         match forced.as_deref() {
@@ -252,6 +287,7 @@ fn gui_main(args: Vec<String>) {
             }
         }
 
+        timing::mark("theme-applied");
         if mode == AppMode::Manager {
             bg_app::start(window_options_manager, !background_start, request.clone(), cx);
             return;

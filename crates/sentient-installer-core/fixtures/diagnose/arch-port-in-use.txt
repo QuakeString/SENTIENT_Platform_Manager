@@ -1,0 +1,15 @@
+Starting PostgreSQL database server...
+2026-11-16 15:50:07.277 UTC [967] LOG:  starting PostgreSQL 18.7 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 16.2.1 20260810, 64-bit
+2026-11-16 15:50:07.278 UTC [967] LOG:  could not bind IPv6 address "::1": Address already in use
+2026-11-16 15:50:07.278 UTC [967] HINT:  Is another postmaster already running on port 5432? If not, wait a few seconds and retry.
+2026-11-16 15:50:07.278 UTC [967] LOG:  could not bind IPv4 address "127.0.0.1": Address already in use
+2026-11-16 15:50:07.278 UTC [967] HINT:  Is another postmaster already running on port 5432? If not, wait a few seconds and retry.
+2026-11-16 15:50:07.278 UTC [967] WARNING:  could not create listen socket for "localhost"
+2026-11-16 15:50:07.278 UTC [967] FATAL:  could not create any TCP/IP sockets
+2026-11-16 15:50:07.279 UTC [967] LOG:  database system is shut down
+postgresql.service: Main process exited, code=exited, status=1/FAILURE
+postgresql.service: Failed with result 'exit-code'.
+Failed to start PostgreSQL database server.
+===SS
+LISTEN 0      200    127.0.0.1:5432 0.0.0.0:* users:(("postgres",pid=953,fd=7))
+LISTEN 0      200        [::1]:5432    [::]:* users:(("postgres",pid=953,fd=6))

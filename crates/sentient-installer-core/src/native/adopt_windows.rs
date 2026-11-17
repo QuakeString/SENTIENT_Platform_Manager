@@ -169,6 +169,7 @@ fn read_from(install_dir: &Path) -> Result<FoundWindows, String> {
         ch_password: get("CLICKHOUSE_PASSWORD").unwrap_or_default().to_string(),
         ch_http_port,
         ch_native_port: 9000,
+        old_pg: Default::default(),
     };
     if !install_dir.join("bin").join("sentient-install.exe").exists() {
         notes.push(format!("{} has no bin\\sentient-install.exe, which updates need.", install_dir.display()));

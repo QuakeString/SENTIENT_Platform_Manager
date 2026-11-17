@@ -60,6 +60,7 @@ impl Throttle {
         use std::time::{Duration, Instant};
         let lower = line.to_ascii_lowercase();
         // ">> " marks a milestone echoed by one of our own scripts.
+        // "!! " marks our own scripts' error lines: never dropped.
         let important = line.starts_with(">> ")
             || line.starts_with("!! ")
             || lower.contains("error")

@@ -12,7 +12,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme, Disableable as _, Icon, button::ButtonVariants as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -27,6 +27,12 @@ pub struct GoSettings;
 fn icon(name: &str) -> Icon {
     Icon::empty().path(SharedString::from(format!("icons/licence/{name}.svg")))
 }
+
+/// The last licence reading of each instance in this run (never written to
+/// disk): the page draws it at once when it opens again and reads it fresh
+/// behind it; only a first open shows the loading skeleton.
+static LAST: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (Reading, Option<String>)>>> =
+    std::sync::LazyLock::new(Default::default);
 
 #[derive(Clone)]
 enum View {
@@ -93,10 +99,15 @@ impl LicencePage {
         if let Some(s) = crate::licence::email_for(&target.key()) {
             email.update(cx, |i, cx| i.set_value(s, window, cx));
         }
+        let cached = LAST.lock().ok().and_then(|m| m.get(&target.key()).cloned());
+        let (view, updated_at) = match cached {
+            Some((r, at)) => (View::Ready(Box::new(r)), at),
+            None => (View::Checking, None),
+        };
         let mut page = Self {
             target,
             name,
-            view: View::Checking,
+            view,
             open: None,
             menu: false,
             email,
@@ -108,7 +119,7 @@ impl LicencePage {
             reading: false,
             note: None,
             stale: None,
-            updated_at: None,
+            updated_at,
             job: cx.new(|_| crate::jobs::Job::new()),
             width: Rc::new(Cell::new(0.)),
             pending: None,
@@ -116,13 +127,31 @@ impl LicencePage {
             _tasks: Vec::new(),
             _enter: Vec::new(),
         };
-        for input in [page.email.clone(), page.password.clone()] {
-            page._enter.push(cx.subscribe_in(&input, window, |p: &mut Self, _, e: &InputEvent, window, cx| {
-                if matches!(e, InputEvent::PressEnter { .. }) && matches!(p.view, View::SignIn) && !p.signing_in {
-                    p.sign_in(window, cx);
+        // Enter: email, then password, then Sign in (an empty field first).
+        page._enter = crate::ui::enter_moves_on(
+            &[page.email.clone(), page.password.clone()],
+            window,
+            cx,
+            |p: &Self, _| vec![p.email.clone(), p.password.clone()],
+            |p: &mut Self, window, cx| {
+                if !matches!(p.view, View::SignIn) || p.signing_in {
+                    return None;
                 }
-            }));
-        }
+                if p.email.read(cx).value().trim().is_empty() {
+                    return Some(p.email.clone());
+                }
+                if p.password.read(cx).value().is_empty() {
+                    return Some(p.password.clone());
+                }
+                p.sign_in(window, cx);
+                None
+            },
+        );
+        // Enter in the licence key: Activate….
+        page._enter.extend(crate::ui::enter_moves_on(&[page.key.clone()], window, cx, |p: &Self, _| vec![p.key.clone()], |p: &mut Self, window, cx| {
+            p.activate_key(window, cx);
+            None
+        }));
         #[cfg(debug_assertions)]
         if std::env::var_os("SPM_DEBUG_LICENCE").is_some() && std::env::var_os("SPM_DEBUG_LICENCE_SIGNED_IN").is_some() {
             crate::licence::set_session(&page.target.key(), "admin@sentient.local", "debug");
@@ -145,7 +174,7 @@ impl LicencePage {
                 }
                 match got {
                     // No answer while a state shows: it stays, said softly.
-                    Err(e) if e != crate::remote::AGENT_OLD && matches!(p.view, View::NotInstalled | View::Stopped | View::SignIn) => p.stale = Some(e),
+                    Err(e) if e != crate::remote::AGENT_OLD && matches!(p.view, View::NotInstalled | View::Stopped | View::SignIn | View::Ready(_)) => p.stale = Some(e),
                     Ok((false, _)) => p.view = View::NotInstalled,
                     Ok((true, false)) => p.view = View::Stopped,
                     Ok((true, true)) => match crate::licence::session(&p.target.key()) {
@@ -169,7 +198,10 @@ impl LicencePage {
     /// Sign in from what is kept; the form (email filled in, the reason
     /// shown) only when that fails.
     fn silent(&mut self, cx: &mut Context<Self>) {
-        self.view = View::Loading;
+        // The card shown from the last reading stays while signing in again.
+        if !matches!(self.view, View::Ready(_)) {
+            self.view = View::Loading;
+        }
         self.reading = true;
         let target = self.target.clone();
         let task = cx.spawn(async move |this, cx| {
@@ -208,6 +240,9 @@ impl LicencePage {
                     Ok(r) => {
                         p.stale = None;
                         p.updated_at = Some(chrono::Local::now().format("%H:%M").to_string());
+                        if let Ok(mut m) = LAST.lock() {
+                            m.insert(key.clone(), (r.clone(), p.updated_at.clone()));
+                        }
                         p.view = View::Ready(Box::new(r));
                     }
                     Err(e) if e == crate::licence::SESSION_ENDED => {
@@ -377,6 +412,17 @@ impl LicencePage {
         cx.notify();
     }
 
+    /// Activate… with the key typed (its button, Enter in the field).
+    fn activate_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let key = self.key.read(cx).value().trim().to_string();
+        if key.is_empty() {
+            self.note = Some((Tone::Bad, "Enter the licence key first.".into()));
+            cx.notify();
+            return;
+        }
+        self.open_action(Act::Activate(key), window, cx);
+    }
+
     fn open_action(&mut self, act: Act, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = false;
         let Some(s) = self.token(cx) else { return };
@@ -384,7 +430,18 @@ impl LicencePage {
         let target = self.target.clone();
         let name = self.name.clone();
         let title = act.title();
-        let view = cx.new(|cx| ActionDialog { page, target, name, email: s.email.clone(), act, password: cx.new(|cx| InputState::new(window, cx).masked(true)), busy: false, error: None, _task: None });
+        let view = cx.new(|cx| {
+            let password = cx.new(|cx| InputState::new(window, cx).masked(true));
+            // Enter in the password: the dialog's action.
+            let _enter = crate::ui::enter_moves_on(&[password.clone()], window, cx, |d: &ActionDialog, _| vec![d.password.clone()], |d: &mut ActionDialog, _, cx| {
+                if d.busy {
+                    return None;
+                }
+                d.go(cx);
+                d.error.is_some().then(|| d.password.clone())
+            });
+            ActionDialog { page, target, name, email: s.email.clone(), act, password, busy: false, error: None, _task: None, _enter }
+        });
         crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: 520., icon: None, on_close: None }, cx);
     }
 
@@ -479,6 +536,7 @@ struct ActionDialog {
     busy: bool,
     error: Option<String>,
     _task: Option<Task<()>>,
+    _enter: Vec<Subscription>,
 }
 
 impl ActionDialog {
@@ -570,7 +628,7 @@ impl Render for ActionDialog {
                 .child(if self.busy { "Working…" } else { ok })
                 .into_any_element()
         } else {
-            ui::button("licence-act-ok").primary().label(if self.busy { "Working…" } else { ok }).disabled(self.busy).on_click(click).into_any_element()
+            ui::button("licence-act-ok").primary().label(if self.busy { "Working" } else { ok }).disabled(self.busy).on_click(click).into_any_element()
         };
         body.child(
             h_flex()
@@ -746,7 +804,7 @@ impl LicencePage {
                     .items_center()
                     .child(
                         div().relative().flex_shrink_0().child(
-                            ui::button("licence-sign-in").primary().label(if self.signing_in { "Signing in…" } else { "Sign in" }).disabled(self.signing_in).on_click(cx.listener(|p, _, window, cx| p.sign_in(window, cx))),
+                            ui::button("licence-sign-in").primary().label(if self.signing_in { "Signing in" } else { "Sign in" }).disabled(self.signing_in).on_click(cx.listener(|p, _, window, cx| p.sign_in(window, cx))),
                         ),
                     )
                     .child(div().flex_1())
@@ -864,7 +922,7 @@ impl LicencePage {
                     .min_h(px(28.))
                     .items_center()
                     .child(div().flex_1().text_sm().font_weight(FontWeight::MEDIUM).child("Limits"))
-                    .child(ui::button("licence-all-limits").ghost().text_color(theme.primary).label("All limits…").on_click({
+                    .child(ui::button("licence-all-limits").ghost().text_color(theme.primary).label("Show all limits").on_click({
                         let r = r.clone();
                         cx.listener(move |_, _, _, cx| LimitsDialog::open(r.clone(), cx))
                     })),
@@ -932,8 +990,8 @@ impl LicencePage {
                         });
                         cx.notify();
                     })))
-                    .child(item("licence-m-deactivate", "unlink", "Deactivate…", false).on_click(cx.listener(|p, _, window, cx| p.open_action(Act::Deactivate, window, cx))))
-                    .child(item("licence-m-force", "trash", "Force-delete local licence…", true).on_click(cx.listener(|p, _, window, cx| p.open_action(Act::ForceDelete, window, cx))))
+                    .child(item("licence-m-deactivate", "unlink", "Deactivate", false).on_click(cx.listener(|p, _, window, cx| p.open_action(Act::Deactivate, window, cx))))
+                    .child(item("licence-m-force", "trash", "Force-delete local licence", true).on_click(cx.listener(|p, _, window, cx| p.open_action(Act::ForceDelete, window, cx))))
                     .on_mouse_down_out(move |_, _, cx| {
                         close
                             .update(cx, |p, cx| {
@@ -987,15 +1045,7 @@ impl LicencePage {
                 .w(px(w))
                 .child(h_flex().gap_2().items_center().child(div().flex_1().min_w_0().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child(title)).child(ui::pill(theme, Tone::Neutral, "Not licensed").text_size(px(12.)).py(px(0.))))
                 .child(
-                    h_flex().gap(px(10.)).items_center().child(div().flex_1().min_w_0().child(Input::new(&self.key))).child(ui::probed(ui::button("licence-activate").primary().label("Activate…").on_click(cx.listener(|p, _, window, cx| {
-                        let key = p.key.read(cx).value().trim().to_string();
-                        if key.is_empty() {
-                            p.note = Some((Tone::Bad, "Enter the licence key first.".into()));
-                            cx.notify();
-                            return;
-                        }
-                        p.open_action(Act::Activate(key), window, cx);
-                    })))),
+                    h_flex().gap(px(10.)).items_center().child(div().flex_1().min_w_0().child(Input::new(&self.key))).child(ui::probed(ui::button("licence-activate").primary().label("Activate").on_click(cx.listener(|p, _, window, cx| p.activate_key(window, cx))))),
                 )
                 .child(
                     h_flex()
@@ -1003,7 +1053,7 @@ impl LicencePage {
                         .gap(crate::ui::button_gap())
                         .items_center()
                         .child(div().text_sm().text_color(theme.muted_foreground).child("Or import a licence key from a file:"))
-                        .child(ui::probed(ui::button("licence-import").outline().icon(icon("file")).label("Import key file…").on_click(cx.listener(|p, _, window, cx| p.choose_key_file(window, cx))))),
+                        .child(ui::probed(ui::button("licence-import").outline().icon(icon("file")).label("Import key file").on_click(cx.listener(|p, _, window, cx| p.choose_key_file(window, cx))))),
                 )
                 .child(
                     h_flex()
@@ -1042,7 +1092,7 @@ impl LicencePage {
             Some(d) => format!("SENTIENT is blocked in {d} day{} unless {noun}s are removed or the licence is raised.", if d == 1 { "" } else { "s" }),
             None => format!("Remove {noun}s or raise the licence."),
         };
-        let buy = ui::button("licence-over-buy").outline().icon(icon("cart")).label("Buy a licence…").on_click(|_, _, cx| ui::open_url(crate::licence::BUY_URL, cx)).into_any_element();
+        let buy = ui::button("licence-over-buy").outline().icon(icon("cart")).label("Buy a licence").on_click(|_, _, cx| ui::open_url(crate::licence::BUY_URL, cx)).into_any_element();
         Some(banner(theme, Tone::Bad, Some(&lead), text, Some(buy)))
     }
 }
@@ -1100,7 +1150,7 @@ impl Render for LicencePage {
                 Tone::Warn,
                 Some("SENTIENT is stopped."),
                 "The licence is kept by SENTIENT itself, so it has to run to show or change it.".into(),
-                Some(ui::button("licence-start").outline().icon(Icon::empty().path("icons/power.svg")).label(if busy { "Starting…" } else { "Start SENTIENT" }).disabled(busy).on_click(cx.listener(|p, _, _, cx| p.start_sentient(cx))).into_any_element()),
+                Some(ui::button("licence-start").outline().icon(Icon::empty().path("icons/power.svg")).label(if busy { "Starting" } else { "Start SENTIENT" }).disabled(busy).on_click(cx.listener(|p, _, _, cx| p.start_sentient(cx))).into_any_element()),
             )),
             View::AgentOld => page.child(ui::notice_with(
                 &theme,

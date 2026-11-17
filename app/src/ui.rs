@@ -170,14 +170,28 @@ pub const START_DELAY_HELP: &str = "Seconds SENTIENT waits after Windows starts 
 
 /// "Start delay [ 15 ] seconds (i)": the installer's and Startup's field.
 pub fn start_delay_row(theme: &Theme, state: &Entity<gpui_kit::component::input::InputState>) -> Div {
-    use gpui_kit::component::{Sizable as _, button::ButtonVariants as _, input::Input, IconName};
-    gpui_kit::component::h_flex()
-        .gap_2()
-        .items_center()
-        .child(div().text_sm().child("Start delay"))
-        .child(div().w_20().child(Input::new(state)))
-        .child(div().text_sm().text_color(theme.muted_foreground).child("seconds"))
-        .child(crate::ui::button("start-delay-help").ghost().xsmall().icon(IconName::Info).tooltip(START_DELAY_HELP))
+    start_delay_row_checked(theme, state, None)
+}
+
+/// The start delay with its message when the value cannot be used (a red
+/// border and one line under the row).
+pub fn start_delay_row_checked(theme: &Theme, state: &Entity<gpui_kit::component::input::InputState>, problem: Option<String>) -> Div {
+    use gpui_kit::component::{Sizable as _, button::ButtonVariants as _, IconName};
+    v_flex()
+        .gap_1()
+        .child(
+            gpui_kit::component::h_flex()
+                .gap_2()
+                .items_center()
+                .child(div().text_sm().child("Start delay"))
+                .child(div().w_20().child({
+                    let i = gpui_kit::component::input::Input::new(state);
+                    if problem.is_some() { i.border_color(theme.danger).focus_bordered(false) } else { i }
+                }))
+                .child(div().text_sm().text_color(theme.muted_foreground).child("seconds"))
+                .child(crate::ui::button("start-delay-help").ghost().xsmall().icon(IconName::Info).tooltip(START_DELAY_HELP)),
+        )
+        .when_some(problem, |d, p| d.child(div().text_xs().text_color(theme.danger).child(p)))
 }
 
 /// The corner radius of panels and cards (buttons and inputs keep the
@@ -249,6 +263,61 @@ pub fn page_with(theme: &Theme, title: &'static str, summary: &'static str, acti
     )
 }
 
+/// The title's line on a sub-page with a back button (back_title): the
+/// 22 px title's line box.
+pub const BACK_TITLE_LINE: f32 = 30.;
+
+/// A sub-page's header (Move data to another disk, Restore): an icon back
+/// button on the page's content edge, centred on the title's line, then
+/// the 22 px title, and `sub` (the instance, the backup) under the title
+/// text, never under the button.
+pub fn back_title(
+    theme: &Theme,
+    id: &'static str,
+    title: impl Into<SharedString>,
+    sub: impl Into<SharedString>,
+    disabled: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    let sub: SharedString = sub.into();
+    let back = button(id)
+        .outline()
+        .icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::ChevronLeft))
+        .tooltip("Back")
+        .when(disabled, |b| gpui_kit::component::Disableable::disabled(b, true))
+        .on_click(on_click);
+    // The button's gap to the title: the app's one gap between a button
+    // and the text beside it (button_gap).
+    h_flex()
+        .gap(button_gap())
+        .items_start()
+        .child(
+            h_flex()
+                .flex_shrink_0()
+                .h(px(BACK_TITLE_LINE))
+                .items_center()
+                .child(div().relative().child(back).child(layout_probe("back-button"))),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .child(
+                    div()
+                        .relative()
+                        .text_size(px(22.))
+                        .line_height(px(BACK_TITLE_LINE))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(title.into())
+                        .child(layout_probe("page-title-line")),
+                )
+                .when(!sub.is_empty(), |c| {
+                    c.child(div().relative().text_sm().text_color(theme.muted_foreground).child(sub).child(layout_probe("page-subtitle")))
+                }),
+        )
+}
+
 /// A refresh that failed while the page keeps what it read before: a muted
 /// "Couldn't refresh · last updated HH:MM" beside the title's Refresh, the
 /// reason in its (i). One line, cut rather than wrapped.
@@ -308,7 +377,8 @@ pub fn fact(theme: &Theme, label: &'static str, value: impl Into<SharedString>) 
         .gap_4()
         .text_sm()
         .child(div().w(px(168.)).flex_shrink_0().text_color(theme.muted_foreground).child(label))
-        .child(div().min_w_0().child(value.into()))
+        // The value takes the rest and wraps (never clipped at the card's edge).
+        .child(div().flex_1().min_w_0().child(value.into()))
 }
 
 /// The label column of a card's facts where two cards share a row (Status).
@@ -354,6 +424,23 @@ pub fn card_foot(theme: &Theme, content: impl IntoElement) -> [Div; 2] {
     [div().flex_1(), div().pt_3().border_t_1().border_color(theme.border).child(content)]
 }
 
+/// A card's action buttons in its foot: the divider above, the buttons at
+/// the right end (SPM's rule: actions on the right; secondary first, the
+/// primary rightmost). check.py holds every such row to the right edge
+/// (card-actions probe).
+pub fn card_actions(theme: &Theme, buttons: impl IntoElement) -> [Div; 2] {
+    [
+        div().flex_1(),
+        div()
+            .relative()
+            .pt_3()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(gpui_kit::component::h_flex().w_full().justify_end().child(buttons))
+            .child(layout_probe("card-actions")),
+    ]
+}
+
 /// A fact with its explanation behind an (i), never as a line of text.
 pub fn fact_help(theme: &Theme, label: &'static str, value: impl Into<SharedString>, help: impl Into<SharedString>) -> Div {
     let help: SharedString = help.into();
@@ -378,7 +465,9 @@ pub fn info(id: SharedString, help: SharedString) -> impl IntoElement {
         .rounded(px(5.))
         .cursor_default()
         .hover(|d| d.bg(black().opacity(0.06)))
+        .relative()
         .child(InfoIcon)
+        .child(layout_probe("info-icon"))
         .tooltip(move |_, cx| cx.new(|_| InfoTip(help.clone())).into())
 }
 
@@ -402,9 +491,11 @@ struct InfoTip(SharedString);
 impl Render for InfoTip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dark = cx.theme().mode.is_dark();
-        // Inverted against the window, so it never reads as one more panel:
-        // light on the dark theme, dark on the light one.
-        let (bg, fg, border) = if dark { (rgb(0xeef3f5), rgb(0x16211f), rgb(0xffffff)) } else { (rgb(0x1f2a30), rgb(0xffffff), rgb(0x1f2a30)) };
+        // The toolkit tooltip's tokens (the popover surface, its text, the
+        // border), so every hover help in SPM looks alike in both themes
+        // (the (i) was inverted before: a light box on the dark theme).
+        // tests/layout/tooltips.sh holds this block free of literal colours.
+        let (bg, fg, border) = (cx.theme().tokens.popover, cx.theme().popover_foreground, cx.theme().border);
         // Laid out at its smallest size, so the width is set: the longest
         // line's length, at most 320 px.
         let longest = self.0.lines().map(|l| l.chars().count()).max().unwrap_or(0) as f32;
@@ -463,7 +554,7 @@ pub fn not_installed(theme: &Theme) -> Div {
                 crate::ui::button("install-sentient").primary().label("Download and install SENTIENT").on_click(|_, window, cx| crate::standalone::install_sentient(window, cx)).into_any_element()
             },
             {
-                crate::ui::button("install-sentient-package").outline().label("Install from local files…").on_click(|_, window, cx| crate::standalone::install_sentient_from_package(window, cx)).into_any_element()
+                crate::ui::button("install-sentient-package").outline().label("Install from local files").on_click(|_, window, cx| crate::standalone::install_sentient_from_package(window, cx)).into_any_element()
             },
         ]))
 }
@@ -776,7 +867,9 @@ pub fn box_row() -> Div {
 pub fn reduce_motion() -> bool {
     static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *R.get_or_init(|| {
-        if std::env::var("SPM_REDUCE_MOTION").is_ok_and(|v| v == "1") {
+        // SPM_REDUCED_MOTION too: the layout tests set that one (and the
+        // placeholders' reduced_motion reads it), so both switch it off.
+        if std::env::var("SPM_REDUCE_MOTION").is_ok_and(|v| v == "1") || std::env::var_os("SPM_REDUCED_MOTION").is_some() {
             return true;
         }
         #[cfg(target_os = "linux")]
@@ -967,7 +1060,7 @@ pub fn service_rows(
                 .child(
                     button_group(vec![
                         icon("start", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Play), "Start", !running).into_any_element(),
-                        icon("stop", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Square), "Stop…", running).into_any_element(),
+                        icon("stop", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Square), "Stop", running).into_any_element(),
                         icon("restart", gpui_kit::component::Icon::new(gpui_kit::assets::IconName::RotateCw), "Restart", running).into_any_element(),
                         svc_icon_button(theme, SharedString::from(format!("svc-log-{name}")), gpui_kit::component::Icon::empty().path("icons/file-text.svg"), "Logs", true, false)
                             .on_click(move |_, window, cx| log(&n, window, cx))
@@ -1381,7 +1474,7 @@ pub fn layout_probe(name: &'static str) -> impl IntoElement {
                     let (t, b) = (f32::from(bounds.origin.y), f32::from(bounds.origin.y + bounds.size.height));
                     // Buttons to a hundredth: the gap check holds them to
                     // half a pixel at x1.
-                    if name == "button" {
+                    if matches!(name, "button" | "menu-item-icon" | "svc-button" | "back-button" | "page-title-line" | "page-subtitle") {
                         eprintln!("LAYOUT {name} {l:.2} {r:.2} {t:.2} {b:.2}");
                     } else {
                         eprintln!("LAYOUT {name} {l:.0} {r:.0} {t:.0} {b:.0}");
@@ -1400,7 +1493,7 @@ pub fn layout_probe(name: &'static str) -> impl IntoElement {
 
 /// Motion off: static placeholders (SPM_REDUCED_MOTION, or GNOME/KDE's
 /// "reduce animations" when it can be read).
-fn reduced_motion() -> bool {
+pub(crate) fn reduced_motion() -> bool {
     static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *R.get_or_init(|| {
         std::env::var_os("SPM_REDUCED_MOTION").is_some()
@@ -1424,8 +1517,17 @@ pub fn skeleton_block_r(theme: &Theme, key: impl Into<SharedString>, w: Length, 
     let _key: SharedString = key.into();
     let dark = theme.mode.is_dark();
     let base = if dark { theme.foreground.opacity(0.08) } else { theme.foreground.opacity(0.07) };
-    // A few per cent lighter than the bone, at the band's middle only.
-    let light = if dark { gpui_kit::white().opacity(0.07) } else { gpui_kit::white().opacity(0.6) };
+    // The band, lighter than the bone at its middle. In dark 16 % white
+    // (7 % read as no shimmer at all on the dark cards, his rc12-24 note);
+    // tint.py holds the band's contrast in dark to at least light's.
+    let light = if dark { gpui_kit::white().opacity(0.16) } else { gpui_kit::white().opacity(0.6) };
+    if cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
+        let c = |h: Hsla| {
+            let r = h.to_rgb();
+            format!("{:.0} {:.0} {:.0} {:.3}", r.r * 255., r.g * 255., r.b * 255., r.a)
+        };
+        eprintln!("LAYOUT skeleton-colors {} {} {}", c(theme.background), c(base), c(light));
+    }
     // Its width is the most it takes: it shrinks with its row and never
     // runs past its parent (a narrow window, a narrow card).
     div().relative().overflow_hidden().w(w).max_w_full().min_w_0().h(px(h)).flex_shrink(1.).rounded(px(radius)).bg(base).when(!reduced_motion(), |d| {
@@ -1556,4 +1658,580 @@ mod info_tests {
         assert_eq!(crate::remote::split_failure(m).0, "The action did not finish on the server.");
         assert_eq!(info_lines("Backup finished."), ("Backup finished.".to_string(), None));
     }
+}
+
+/// Enter in a form's fields: each field's Enter moves to the next field
+/// shown, the last one's submits (the form's primary button). `order` lists
+/// the fields shown, in their visual order, when Enter is pressed (fields
+/// that come and go stay right). `submit` returns the first field that is
+/// not valid, to focus (its message is the form's to show), or None when it
+/// went ahead. Shift+Enter and the secondary Enter are left to the field.
+pub fn enter_moves_on<T: 'static>(
+    fields: &[Entity<gpui_kit::component::input::InputState>],
+    window: &mut Window,
+    cx: &mut Context<T>,
+    order: impl Fn(&T, &App) -> Vec<Entity<gpui_kit::component::input::InputState>> + 'static,
+    submit: impl Fn(&mut T, &mut Window, &mut Context<T>) -> Option<Entity<gpui_kit::component::input::InputState>> + 'static,
+) -> Vec<Subscription> {
+    use gpui_kit::component::input::InputEvent;
+    let order = std::rc::Rc::new(order);
+    let submit = std::rc::Rc::new(submit);
+    fields
+        .iter()
+        .map(|f| {
+            let (order, submit) = (order.clone(), submit.clone());
+            cx.subscribe_in(f, window, move |this, me, e: &InputEvent, window, cx| {
+                let InputEvent::PressEnter { secondary: false, shift: false } = e else { return };
+                let list = order(this, cx);
+                let next = match list.iter().position(|x| x == me) {
+                    Some(i) if i + 1 < list.len() => Some(list[i + 1].clone()),
+                    _ => submit(this, window, cx),
+                };
+                if let Some(n) = next {
+                    n.update(cx, |s, cx| s.focus(window, cx));
+                }
+            })
+        })
+        .collect()
+}
+
+/// One entry of a row's [`row_menu`].
+pub enum RowMenuItem {
+    Item { label: SharedString, icon: Option<gpui_kit::component::IconName>, action: std::rc::Rc<dyn Fn(&mut Window, &mut App)> },
+    /// A destructive action (Delete…): its icon and label in the danger
+    /// colour; it still asks first.
+    Danger { label: SharedString, icon: gpui_kit::component::IconName, action: std::rc::Rc<dyn Fn(&mut Window, &mut App)> },
+    Divider,
+}
+
+/// A row's actions behind the three dots: the outlined 28 px button with
+/// the 8 px radius that every list row in SPM uses (Instances, Backup…),
+/// never a bare chevron.
+pub fn row_menu(id: impl Into<SharedString>, tip: &'static str, disabled: bool, items: Vec<RowMenuItem>) -> impl IntoElement {
+    use gpui_kit::component::{Disableable as _, menu::{DropdownMenu as _, PopupMenuItem}};
+    let items = std::rc::Rc::new(items);
+    button(gpui_kit::ElementId::Name(id.into()))
+        .outline()
+        .w(px(28.))
+        .h(px(28.))
+        .rounded(px(8.))
+        .icon(gpui_kit::component::Icon::new(gpui_kit::component::IconName::Ellipsis).size(px(18.)))
+        .tooltip(tip)
+        .disabled(disabled)
+        .dropdown_menu(move |mut menu, _, _| {
+            for it in items.iter() {
+                menu = match it {
+                    RowMenuItem::Divider => menu.separator(),
+                    RowMenuItem::Item { label, icon, action } => {
+                        let a = action.clone();
+                        let mut item = PopupMenuItem::new(label.clone()).on_click(move |_, window, cx| a(window, cx));
+                        if let Some(i) = icon {
+                            item = item.icon(gpui_kit::component::Icon::new(i.clone()));
+                        }
+                        menu.item(item)
+                    }
+                    RowMenuItem::Danger { label, icon, action } => {
+                        let a = action.clone();
+                        let (label, icon) = (label.clone(), icon.clone());
+                        let item = PopupMenuItem::element(move |_, cx| {
+                            let red = cx.theme().danger;
+                            gpui_kit::component::h_flex()
+                                .gap_2()
+                                .items_center()
+                                .text_color(red)
+                                .child(gpui_kit::component::Icon::new(icon.clone()).text_color(red))
+                                .child(label.clone())
+                        })
+                        .on_click(move |_, window, cx| a(window, cx));
+                        menu.item(item)
+                    }
+                };
+            }
+            menu
+        })
+}
+
+// ---------------------------------------------------------------------------
+// Settings forms: rows, the value column, the card and its Apply bar
+// ---------------------------------------------------------------------------
+
+/// Every field 260 px wide (its unit slot inside it), the current value
+/// 170 px, 18 px between the columns; controls 40 px tall.
+pub const FIELD_W: f32 = 260.;
+pub const UNIT_W: f32 = 64.;
+pub const CURRENT_W: f32 = 170.;
+pub const COL_GAP: f32 = 18.;
+pub const CONTROL_H: f32 = 40.;
+/// Below this window width a row stacks: label, field, current value.
+pub const ROW_STACK_W: f32 = 820.;
+
+/// What sits in a field's unit slot: its unit, or a button (a file's
+/// Choose… or Check).
+pub enum Slot {
+    Unit(SharedString),
+    Button(SharedString, SharedString, std::rc::Rc<dyn Fn(&mut Window, &mut App)>),
+}
+
+/// A unit as its slot names it (seconds, not s).
+pub fn unit_word(unit: &str) -> &'static str {
+    match unit {
+        "s" => "seconds",
+        "ms" => "ms",
+        "min" => "minutes",
+        "days" => "days",
+        "MB" => "MB",
+        "port" => "port",
+        "threads" => "threads",
+        _ => "",
+    }
+}
+
+/// A field: the input, 260 px with its 64 px unit slot inside the box (a
+/// line before it, the raised surface, muted 12 px text), 40 px tall; a
+/// 1 px red border when `problem` is set, with the message in one 12 px
+/// red line under it. Reports `field-input` (the box) and `field-slot`.
+pub fn field_input(theme: &Theme, state: &Entity<gpui_kit::component::input::InputState>, slot: Option<Slot>, problem: Option<String>, mask: bool, window: &Window, cx: &App) -> Div {
+    use gpui_kit::component::input::Input;
+    let focused = state.read(cx).focus_handle(cx).is_focused(window);
+    let border = if problem.is_some() { theme.danger } else if focused { theme.primary } else { theme.input };
+    let mut input = Input::new(state).appearance(false);
+    if mask {
+        input = input.mask_toggle();
+    }
+    let slot_el = slot.map(|s| {
+        let base = h_flex().relative().id("field-slot").w(px(UNIT_W)).h_full().flex_shrink_0().justify_center().items_center().border_l_1().border_color(theme.border).bg(theme.accent).text_size(px(12.)).text_color(theme.muted_foreground).child(layout_probe("field-slot"));
+        match s {
+            Slot::Unit(u) => base.child(u).into_any_element(),
+            Slot::Button(id, label, f) => base.id(id).cursor_pointer().text_color(theme.primary).font_weight(FontWeight::MEDIUM).hover(|d| d.bg(theme.secondary)).child(label).on_click(move |_, window, cx| f(window, cx)).into_any_element(),
+        }
+    });
+    v_flex()
+        .gap(px(6.))
+        .w(px(FIELD_W))
+        .flex_shrink_0()
+        .child(
+            h_flex()
+                .relative()
+                .w_full()
+                .h(px(CONTROL_H))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(border)
+                .bg(theme.background)
+                .overflow_hidden()
+                .child(div().flex_1().min_w_0().h_full().flex().items_center().child(input))
+                .children(slot_el)
+                .child(layout_probe("field-input")),
+        )
+        .when_some(problem, |d, p| d.child(div().text_size(px(12.)).text_color(theme.danger).whitespace_nowrap().overflow_hidden().text_ellipsis().child(p)))
+}
+
+/// A choice of a few values filling the field column, 40 px tall.
+pub fn chips(theme: &Theme, id: &str, items: &[&str], selected: Option<usize>, pick: std::rc::Rc<dyn Fn(usize, &mut Window, &mut App)>) -> Div {
+    h_flex()
+        .w(px(FIELD_W))
+        .flex_shrink_0()
+        .h(px(CONTROL_H))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(theme.input)
+        .overflow_hidden()
+        .children(items.iter().enumerate().map(|(i, label)| {
+            let on = selected == Some(i);
+            let pick = pick.clone();
+            div()
+                .id(SharedString::from(format!("{id}-c{i}")))
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .px_1()
+                .when(i > 0, |d| d.border_l_1().border_color(theme.input))
+                .text_size(px(13.))
+                .whitespace_nowrap()
+                .overflow_hidden()
+                .cursor_pointer()
+                .when(on, |d| d.bg(theme.list_active).text_color(theme.primary).font_weight(FontWeight::MEDIUM))
+                .when(!on, |d| d.text_color(theme.muted_foreground).hover(|d| d.bg(theme.secondary)))
+                .child(label.to_string())
+                .on_click(move |_, window, cx| pick(i, window, cx))
+        }))
+}
+
+/// On or off in the field column: the switch and its word, 40 px tall.
+pub fn toggle(theme: &Theme, id: impl Into<ElementId>, on: bool, note: Option<&'static str>, flip: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Div {
+    h_flex()
+        .w(px(FIELD_W))
+        .flex_shrink_0()
+        .h(px(CONTROL_H))
+        .gap(px(10.))
+        .items_center()
+        .child(gpui_kit::component::switch::Switch::new(id).checked(on).on_click(flip))
+        .child(div().text_sm().child(if on { "On" } else { "Off" }))
+        .when_some(note, |r, n| r.child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(n)))
+}
+
+/// The current value column: a small CURRENT caption and the value in
+/// words, cut with an ellipsis and whole in its tooltip.
+pub fn current_cell(theme: &Theme, id: impl Into<SharedString>, text: Option<String>) -> Div {
+    let id: SharedString = id.into();
+    v_flex()
+        .w(px(CURRENT_W))
+        .flex_shrink_0()
+        .min_w_0()
+        .pt(px(10.))
+        .gap(px(2.))
+        .when_some(text, |d, t| {
+            let tip: SharedString = t.clone().into();
+            d.child(div().text_size(px(11.)).text_color(theme.muted_foreground).opacity(0.8).child("CURRENT")).child(
+                div()
+                    .id(SharedString::from(format!("cur-{id}")))
+                    .text_size(px(13.))
+                    .text_color(theme.muted_foreground)
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(t)
+                    .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx)),
+            )
+        })
+}
+
+/// The "Restart" pill beside a setting's name.
+pub fn restart_pill(cx: &App) -> Div {
+    let (bg, fg) = if crate::theme::is_dark(cx) { (hsla(38. / 360., 0.92, 0.50, 0.14), rgb(0xfbbf24).into()) } else { (rgb(0xfef3c7).into(), rgb(0xb45309).into()) };
+    let (bg, fg): (Hsla, Hsla) = (bg, fg);
+    h_flex().flex_shrink_0().h(px(22.)).px(px(8.)).rounded(px(11.)).bg(bg).text_color(fg).text_size(px(11.)).font_weight(FontWeight::MEDIUM).child("Restart")
+}
+
+/// A group heading inside the settings card (12 px, uppercase, muted).
+pub fn group_header(theme: &Theme, title: &str) -> Div {
+    div().px(px(18.)).pt(px(18.)).pb(px(4.)).text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(title.to_uppercase())
+}
+
+/// One setting row of the card: [name, (i), Restart, description] [the
+/// field, 260] [current value, 170], 18 px apart, padding 12 × 18, a line
+/// above (not under a group heading). A changed row has the selection's
+/// tint fading out from the left. `wide`: the control takes the field and
+/// current columns. `stacked`: one column (a window under 820 px).
+pub struct SettingRow {
+    pub label: SharedString,
+    pub help: Option<String>,
+    pub desc: Option<String>,
+    pub restart: bool,
+    pub changed: bool,
+    pub control: AnyElement,
+    pub wide: bool,
+    pub current: Option<String>,
+    pub first: bool,
+}
+
+pub fn setting_row(theme: &Theme, r: SettingRow, cx: &App) -> Div {
+    let stacked = stacked();
+    let tint = theme.primary.opacity(if crate::theme::is_dark(cx) { 0.18 } else { 0.12 });
+    let label = r.label.clone();
+    let lab = v_flex()
+        .flex_1()
+        .min_w_0()
+        .gap(px(2.))
+        .when(!stacked, |d| d.pt(px(9.)))
+        .child(
+            h_flex()
+                .gap(px(6.))
+                .items_center()
+                .min_w_0()
+                .child(div().min_w_0().text_sm().font_weight(FontWeight::MEDIUM).when(r.changed, |d| d.text_color(theme.primary)).child(label.clone()))
+                .when_some(r.help, |d, h| d.child(info(SharedString::from(format!("help-{label}")), h.into())))
+                .when(r.restart, |d| d.child(restart_pill(cx))),
+        )
+        .when_some(r.desc, |d, t| d.child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(t)));
+    let current = (!r.wide).then(|| current_cell(theme, label.clone(), r.current));
+    div()
+        .flex()
+        .when(stacked, |d| d.flex_col().gap(px(8.)))
+        .when(!stacked, |d| d.flex_row().gap(px(COL_GAP)).items_start())
+        .px(px(18.))
+        .py(px(12.))
+        .when(!r.first, |d| d.border_t_1().border_color(theme.border))
+        .when(r.changed, |d| d.bg(linear_gradient(90., linear_color_stop(tint, 0.), linear_color_stop(tint.opacity(0.), 0.6))))
+        .child(lab)
+        .child(if r.wide && !stacked { h_flex().flex_shrink_0().w(px(FIELD_W + COL_GAP + CURRENT_W)).child(r.control) } else { h_flex().flex_shrink_0().child(r.control) })
+        .children(current.map(|c| if stacked { c.pt_0() } else { c }))
+}
+
+impl SettingRow {
+    /// A row with a control across the field and current columns.
+    pub fn wide(label: impl Into<SharedString>, help: Option<String>, control: impl IntoElement) -> Self {
+        SettingRow { label: label.into(), help, desc: None, restart: false, changed: false, control: control.into_any_element(), wide: true, current: None, first: false }
+    }
+}
+
+/// A group of rows under its heading: the first row has no line above it;
+/// `extra` (notices, a form) follows the rows inside the group's padding.
+pub fn group(theme: &Theme, title: &str, rows: Vec<SettingRow>, extra: Vec<AnyElement>, cx: &App) -> Div {
+    v_flex()
+        .child(group_header(theme, title))
+        .children(rows.into_iter().enumerate().map(|(i, mut r)| {
+            r.first = i == 0;
+            setting_row(theme, r, cx)
+        }))
+        .when(!extra.is_empty(), |d| d.child(v_flex().gap_3().px(px(18.)).pb(px(12.)).children(extra)))
+}
+
+static STACKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Setting rows stack (label, field, current value) on a window under
+/// ROW_STACK_W; the settings pages set it as they draw.
+pub fn set_stacked(on: bool) {
+    STACKED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn stacked() -> bool {
+    STACKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The settings card's tabs: on top, each with its count of changes (red
+/// when it holds a field that is not valid); they wrap on a narrow window.
+pub fn card_tabs(theme: &Theme, id: &str, titles: &[&'static str], active: usize, badges: &[(usize, bool)], pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
+    h_flex()
+        .flex_wrap()
+        .gap(px(4.))
+        .px(px(12.))
+        .border_b_1()
+        .border_color(theme.border)
+        .children(titles.iter().enumerate().map(|(i, title)| {
+            let on = i == active;
+            let pick = pick.clone();
+            let (n, bad) = badges.get(i).copied().unwrap_or((0, false));
+            h_flex()
+                .id(SharedString::from(format!("{id}tab-{i}")))
+                .h(px(44.))
+                .px(px(14.))
+                .gap(px(8.))
+                .items_center()
+                .border_b_2()
+                .border_color(if on { theme.primary } else { transparent_black() })
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .whitespace_nowrap()
+                .cursor_pointer()
+                .text_color(if on { theme.primary } else { theme.muted_foreground })
+                .when(!on, |d| d.hover(|d| d.text_color(theme.foreground)))
+                .child(*title)
+                .when(n > 0 || bad, |d| {
+                    d.child(
+                        div()
+                            .min_w(px(18.))
+                            .h(px(18.))
+                            .px(px(5.))
+                            .rounded(px(9.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(11.))
+                            .bg(if bad { theme.danger } else { theme.primary })
+                            .text_color(if bad { theme.background } else { theme.primary_foreground })
+                            .child(n.max(1).to_string()),
+                    )
+                })
+                .on_click(move |_, _, cx| pick(i, cx))
+        }))
+}
+
+/// The settings card: the tabs on top, the open tab's rows scrolling under
+/// them, and the Apply bar pinned to the card's bottom edge while anything
+/// is not applied. Reports `panel` and `settings-card`, and `page-area`
+/// (the scrolling part, which ends where the bar starts).
+pub fn settings_card(theme: &Theme, scroll_id: &'static str, tabs: Div, body: impl IntoElement, bar: Option<AnyElement>) -> Div {
+    v_flex()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .min_w_0()
+        .rounded(px(PANEL_RADIUS))
+        .bg(theme.background)
+        .border_1()
+        .border_color(theme.border)
+        .overflow_hidden()
+        .child(layout_probe("panel"))
+        .child(layout_probe("settings-card"))
+        .child(tabs)
+        .child(div().id(scroll_id).relative().flex_1().min_h_0().overflow_y_scroll().child(layout_probe("page-area")).child(body))
+        .children(bar)
+}
+
+/// What the Apply bar says: how many changes, or how many fields to fix.
+pub fn pending_text(changes: usize, invalid: usize) -> String {
+    if invalid > 0 {
+        format!("Fix {invalid} field{} first", if invalid == 1 { "" } else { "s" })
+    } else {
+        format!("{changes} change{} not applied", if changes == 1 { "" } else { "s" })
+    }
+}
+
+/// The Apply bar's small line: the changed settings' names and the
+/// restart, or what is wrong and how many changes wait.
+pub fn pending_line(changes: usize, names: &[String], restart: bool, first_invalid: Option<(&str, bool)>) -> String {
+    if let Some((label, number)) = first_invalid {
+        let what = if number { "needs a number" } else { "is out of range" };
+        return format!("{label} {what}. {changes} change{} waiting.", if changes == 1 { "" } else { "s" });
+    }
+    let mut line = names.join(", ");
+    if !line.is_empty() {
+        line.push('.');
+    }
+    if restart {
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(if changes == 1 { "SENTIENT restarts once to apply it." } else { "SENTIENT restarts once to apply them." });
+    }
+    line
+}
+
+/// The Apply bar, at the settings card's bottom edge (raised surface, a
+/// line above, 12 × 18 padding, the card's bottom corners): the count in
+/// bold (red: "Fix 1 field first") with its small line, then Discard and
+/// Apply ("Apply and restart" when a change restarts SENTIENT), 40 px
+/// tall, 12 px apart. None when nothing is pending. It slides up as it
+/// appears (not with reduced motion).
+#[allow(clippy::too_many_arguments)]
+pub fn pending_bar(
+    theme: &Theme,
+    id: &'static str,
+    changes: usize,
+    invalid: usize,
+    line: String,
+    restart: bool,
+    can_apply: bool,
+    on_discard: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_apply: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Option<AnyElement> {
+    use gpui_kit::component::Disableable as _;
+    if changes == 0 && invalid == 0 {
+        return None;
+    }
+    let tip: SharedString = line.clone().into();
+    let bar = h_flex()
+        .id(id)
+        .relative()
+        .flex_shrink_0()
+        .w_full()
+        .px(px(18.))
+        .py(px(12.))
+        .gap(button_gap())
+        .items_center()
+        .bg(theme.accent)
+        .border_t_1()
+        .border_color(theme.border)
+        .rounded_b(px(PANEL_RADIUS))
+        .child(layout_probe("pending-bar"))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .child(div().text_sm().font_weight(FontWeight::MEDIUM).when(invalid > 0, |d| d.text_color(theme.danger)).child(pending_text(changes, invalid)))
+                .when(!line.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .id(SharedString::from(format!("{id}-line")))
+                            .text_size(px(12.))
+                            .text_color(theme.muted_foreground)
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(line)
+                            .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx)),
+                    )
+                }),
+        )
+        .child(probed(button(SharedString::from(format!("{id}-discard"))).outline().h(px(CONTROL_H)).label("Discard").on_click(on_discard)))
+        .child(probed(
+            button(SharedString::from(format!("{id}-apply")))
+                .primary()
+                .h(px(CONTROL_H))
+                .label(if restart { "Apply and restart" } else { "Apply" })
+                .disabled(invalid > 0 || !can_apply)
+                .on_click(on_apply),
+        ));
+    Some(if reduce_motion() {
+        bar.into_any_element()
+    } else {
+        bar.with_animation(SharedString::from(format!("{id}-in")), Animation::new(std::time::Duration::from_millis(200)).with_easing(ease_out), |el, t| el.opacity(t).top(px(16. * (1. - t))))
+            .into_any_element()
+    })
+}
+
+/// A page's changes not applied, asked about before leaving it (a menu
+/// click, another instance): how many and how many fields are not valid,
+/// each change as "Name: old to new", and how to apply or discard them.
+/// Registered by the page under its scope (None: this computer; Some(id):
+/// that server).
+#[derive(Clone)]
+pub struct Unsaved {
+    pub pending: std::rc::Rc<dyn Fn(&App) -> (usize, usize)>,
+    pub list: std::rc::Rc<dyn Fn(&App) -> Vec<String>>,
+    pub apply: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+    pub discard: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+}
+
+thread_local! {
+    static UNSAVED: std::cell::RefCell<std::collections::HashMap<Option<String>, Unsaved>> = Default::default();
+}
+
+pub fn set_unsaved(scope: Option<String>, u: Unsaved) {
+    UNSAVED.with(|m| m.borrow_mut().insert(scope, u));
+}
+
+/// The scope's changes not applied: (changes, fields not valid).
+pub fn unsaved(scope: &Option<String>, cx: &App) -> (usize, usize) {
+    UNSAVED.with(|m| m.borrow().get(scope).cloned()).map(|u| (u.pending)(cx)).unwrap_or((0, 0))
+}
+
+/// Leave a page with changes not applied: asks once ("Apply your changes
+/// first?", the changes listed), Stay, Discard or Apply and leave (not
+/// while a field is not valid); Discard and Apply then go on (`go`).
+/// Returns false when nothing is pending: the caller goes on itself.
+pub fn ask_before_leaving(scope: Option<String>, window: &mut Window, cx: &mut App, go: std::rc::Rc<dyn Fn(&mut Window, &mut App)>) -> bool {
+    let Some(u) = UNSAVED.with(|m| m.borrow().get(&scope).cloned()) else { return false };
+    let (changes, invalid) = (u.pending)(cx);
+    if changes == 0 && invalid == 0 {
+        return false;
+    }
+    let list = (u.list)(cx);
+    let text = if invalid > 0 {
+        format!("These settings are changed but not applied, and {invalid} field{} not valid (stay to fix {}):", if invalid == 1 { " is" } else { "s are" }, if invalid == 1 { "it" } else { "them" })
+    } else {
+        "These settings are changed but not applied:".to_string()
+    };
+    let (go2, discard) = (go.clone(), u.discard.clone());
+    crate::modal::alert(window, cx, move |dialog, _, _| {
+        let (go, go2, apply, discard) = (go.clone(), go2.clone(), u.apply.clone(), discard.clone());
+        let d = dialog
+            .title("Apply your changes first?")
+            .description(text.clone())
+            .list(list.clone())
+            .cancel_text("Stay")
+            .secondary("Discard", move |window, cx| {
+                discard(window, cx);
+                go2(window, cx);
+            });
+        if invalid > 0 {
+            d.no_ok()
+        } else {
+            d.ok_text("Apply and leave").on_ok(move |_, window, cx| {
+                apply(window, cx);
+                go(window, cx);
+                true
+            })
+        }
+    });
+    true
+}
+
+/// Screens: the leave prompt with a canned list (SPM_DEBUG_SETTINGS_PENDING=leave).
+pub fn debug_leave_prompt(scope: Option<String>, window: &mut Window, cx: &mut App) {
+    ask_before_leaving(scope, window, cx, std::rc::Rc::new(|_, _| {}));
 }

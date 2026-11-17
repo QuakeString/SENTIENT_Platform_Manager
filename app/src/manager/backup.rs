@@ -24,7 +24,6 @@ use gpui_kit::component::{
     checkbox::Checkbox,
     input::{Input, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
-    progress::Progress as ProgressBar,
     radio::RadioGroup,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -68,7 +67,9 @@ pub struct BackupPage {
     /// "Choose…": the tick list of parts (the earlier, by-hand backup).
     choose: bool,
     made: Option<crate::backups::Made>,
-    planned_backup: Vec<String>,
+    /// The backup's run is shown in place of the page (crate::manager::jobview)
+    /// until "Back to Backup and restore".
+    shown_run: bool,
     list: Vec<crate::backups::Entry>,
     /// The backup being checked, and what the check found.
     checked: Option<(PathBuf, Option<Result<sentient_backup_core::restore::CheckReport, String>>)>,
@@ -85,6 +86,10 @@ pub struct BackupPage {
     saved: Option<(&'static str, Result<(), String>)>,
     /// Free space where the backup folder is (read with the list).
     folder_free: Option<u64>,
+    /// The stack's passwords are being read (Docker): Read the database
+    /// waits for them (`inspect_waits`).
+    secrets_pending: bool,
+    inspect_waits: bool,
     _tasks: Vec<Task<()>>,
     _observe: Vec<Subscription>,
     /// The Restore flow, in place of the page while it is open.
@@ -93,6 +98,20 @@ pub struct BackupPage {
     pending: Option<crate::manager::restore::Source>,
     /// The restore history (R1).
     history: Option<Result<Vec<crate::restore_flow::Entry>, String>>,
+}
+
+/// The database and ClickHouse passwords: a Docker stack's from its compose
+/// file or containers (`docker`, read already), else the secret store's.
+/// Blocking (a shell and docker): never on the UI thread.
+fn stored_passwords(docker: Option<sentient_installer_core::distro::docker_ops::StackSecrets>) -> (String, String) {
+    let db = docker.as_ref().map(|s| s.db_password.clone()).or_else(|| crate::secrets::get(crate::secrets::Secret::Database)).unwrap_or_default();
+    let ch = docker
+        .as_ref()
+        .map(|s| s.ch_password.clone())
+        .filter(|p| !p.is_empty())
+        .or_else(|| crate::secrets::get(crate::secrets::Secret::Clickhouse))
+        .unwrap_or_default();
+    (db, ch)
 }
 
 /// Forward the backup engine's progress into a job's sink.
@@ -118,23 +137,12 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, String> {
 
 impl BackupPage {
     pub fn new(record: Option<InstallationRecord>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Docker keeps the stack's passwords in its compose file.
-        let docker = record
-            .as_ref()
-            .filter(|r| r.engine == crate::installation::Engine::Docker)
-            .and_then(|r| sentient_installer_core::distro::docker_ops::read_secrets(&r.stack).ok());
-        let saved = docker
-            .as_ref()
-            .map(|s| s.db_password.clone())
-            .or_else(|| crate::secrets::get(crate::secrets::Secret::Database))
-            .unwrap_or_default();
+        // Docker keeps the stack's passwords in its compose file (or its
+        // containers): read behind the page, never while it opens (a shell
+        // and up to two docker calls, 0.3–0.6 s on the UI thread before).
+        let docker_stack = record.as_ref().filter(|r| r.engine == crate::installation::Engine::Docker).map(|r| r.stack.clone());
+        let (saved, saved_ch) = if docker_stack.is_some() { (String::new(), String::new()) } else { stored_passwords(None) };
         let password = cx.new(|cx| InputState::new(window, cx).masked(true).default_value(saved));
-        let saved_ch = docker
-            .as_ref()
-            .map(|s| s.ch_password.clone())
-            .filter(|p| !p.is_empty())
-            .or_else(|| crate::secrets::get(crate::secrets::Secret::Clickhouse))
-            .unwrap_or_default();
         let ch_password = cx.new(|cx| InputState::new(window, cx).masked(true).default_value(saved_ch));
         let telemetry_days = cx.new(|cx| InputState::new(window, cx).default_value("30"));
         let passphrase = cx.new(|cx| {
@@ -210,7 +218,7 @@ impl BackupPage {
             prefs,
             choose: false,
             made: None,
-            planned_backup: Vec::new(),
+            shown_run: false,
             checked: None,
             sizes: None,
             schedule_time,
@@ -220,14 +228,63 @@ impl BackupPage {
             // Screens: "Saved" shown on a section (SPM_DEBUG_SAVED=folder).
             saved: std::env::var("SPM_DEBUG_SAVED").ok().filter(|_| cfg!(debug_assertions)).map(|s| (&*s.leak(), Ok(()))),
             folder_free: crate::backups::free_space(&prefs_folder),
+            secrets_pending: docker_stack.is_some(),
+            inspect_waits: false,
             _tasks: Vec::new(),
             _observe,
             flow: None,
             pending: None,
             history: None,
         };
+        // Enter: the passwords end on Read the database; the telemetry days
+        // and passphrase on Back up now.
+        let pw = [page.password.clone(), page.ch_password.clone()];
+        let subs = crate::ui::enter_moves_on(
+            &pw,
+            window,
+            cx,
+            |p: &Self, _| {
+                let ch = p.record.as_ref().is_some_and(|r| r.flavor() == Flavor::Clickhouse);
+                let mut v = vec![p.password.clone()];
+                if ch {
+                    v.push(p.ch_password.clone());
+                }
+                v
+            },
+            |p: &mut Self, _, cx| {
+                if !(p.backup.read(cx).is_running() || p.restore.read(cx).is_running()) {
+                    p.inspect(cx);
+                }
+                None
+            },
+        );
+        page._observe.extend(subs);
+        let subs = crate::ui::enter_moves_on(
+            &[page.telemetry_days.clone(), page.passphrase.clone()],
+            window,
+            cx,
+            |p: &Self, _| {
+                let mut v = Vec::new();
+                if p.telemetry == 1 {
+                    v.push(p.telemetry_days.clone());
+                }
+                v.push(p.passphrase.clone());
+                v
+            },
+            |p: &mut Self, _, cx| {
+                let busy = p.backup.read(cx).is_running() || p.restore.read(cx).is_running();
+                if !busy && p.inspection.is_some() && p.output.is_some() {
+                    p.run_backup(cx);
+                }
+                None
+            },
+        );
+        page._observe.extend(subs);
         page.read_sizes(cx);
         page.read_history(cx);
+        if let Some(stack) = docker_stack {
+            page.read_secrets(stack, window, cx);
+        }
         #[cfg(debug_assertions)]
         if let Ok(frame) = std::env::var("SPM_DEBUG_RESTORE") {
             page.pending = Some(crate::manager::restore::canned::source(&frame));
@@ -266,6 +323,11 @@ impl BackupPage {
     }
 
     fn inspect(&mut self, cx: &mut Context<Self>) {
+        // The passwords are still being read: once they are.
+        if self.secrets_pending {
+            self.inspect_waits = true;
+            return;
+        }
         let Some(conn) = self.conn(None, cx) else { return };
         self.inspect_error = None;
         let task = cx.spawn(async move |this, cx| {
@@ -365,7 +427,11 @@ impl BackupPage {
         let clickhouse = self.ch_conn(None, cx);
         let mut opts = BackupOptions { output, selection, file_stores, zstd_level: 10, passphrase, clickhouse, origin: Default::default(), part_size: None };
         let record = self.record.clone();
+        self.shown_run = true;
+        self.made = None;
         self.backup.update(cx, |job, cx| {
+            job.set_plan(crate::jobplan::backup_file());
+            job.set_label("Backing up");
             job.start(
                 move |sink| {
                     if let Some(r) = &record {
@@ -525,6 +591,28 @@ impl BackupPage {
     }
 
     /// The database's sizes and free disk, for the estimate (background).
+    /// A Docker stack's passwords, read behind the page; they fill the
+    /// fields left empty, then a Read the database asked for meanwhile runs.
+    fn read_secrets(&mut self, stack: sentient_installer_core::distro::DeployConfig, window: &mut Window, cx: &mut Context<Self>) {
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let (db, ch) = cx.background_executor().spawn(async move { stored_passwords(sentient_installer_core::distro::docker_ops::read_secrets(&stack).ok()) }).await;
+            this.update_in(cx, |p, window, cx| {
+                for (input, value) in [(p.password.clone(), db), (p.ch_password.clone(), ch)] {
+                    if !value.is_empty() && input.read(cx).value().is_empty() {
+                        input.update(cx, |s, cx| s.set_value(value, window, cx));
+                    }
+                }
+                p.secrets_pending = false;
+                if std::mem::take(&mut p.inspect_waits) {
+                    p.inspect(cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
     fn read_sizes(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         if crate::dbstatus::needs_admin(&record) {
@@ -549,13 +637,16 @@ impl BackupPage {
         let Some(record) = self.record.clone() else { return };
         let prefs = self.prefs.clone();
         let pass = Some(self.passphrase.read(cx).value().to_string()).filter(|p| !p.is_empty());
-        self.planned_backup = crate::backups::planned_steps(&prefs, false);
         self.made = None;
+        self.shown_run = true;
+        let plan = crate::jobplan::backup(&prefs, false, pass.is_some());
         let made = cx.entity().downgrade();
         let (tx, rx) = std::sync::mpsc::channel::<crate::backups::Made>();
         let me = cx.entity();
         self.backup.update(cx, |job, cx| {
+            job.set_plan(plan);
             job.set_label("Backing up");
+            job.set_on_page(true);
             job.set_details(std::rc::Rc::new(move |cx| BackupDialog::open(me.clone(), false, "Backup".into(), cx)));
             job.start(
                 move |sink| {
@@ -762,39 +853,24 @@ impl BackupPage {
 }
 
 impl BackupPage {
-    /// J3/J4: a backup's run and its result (the strip's Details).
-    fn run_view(&self, theme: &gpui_kit::component::Theme, cx: &App) -> Option<Div> {
+    /// J3/J4: a backup's run and its result, in the shared job view: on the
+    /// page (`on_page` with its actions) and in the strip's Details.
+    fn run_view(&self, theme: &gpui_kit::component::Theme, actions: Vec<AnyElement>, cx: &App) -> Option<Div> {
         let job = self.backup.read(cx);
-        if !matches!(job.state(), JobState::Idle) {
-            let finished = match job.state() {
-                JobState::Done(_) => Some(true),
-                JobState::Failed(_) => Some(false),
-                _ => None,
-            };
-            let marked = ui::mark_steps(&self.planned_backup, job.steps(), finished);
-            let mut run = v_flex().gap_3();
-            match (finished, &self.made) {
-                (None, _) => {
-                    run = run
-                        .child(div().font_weight(FontWeight::MEDIUM).child(format!("Backing up to {}", self.prefs.folder.display())))
-                        .when_some(job.log().last().cloned(), |c, l| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(l)))
-                        .when_some(job.percent(), |c, v| c.child(ProgressBar::new("backup-progress").value(v)))
-                        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("SENTIENT keeps running during a backup."));
-                }
-                (Some(true), Some(m)) => {
-                    let name = m.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                    let whole = m.files.first().map(|(_, h, _)| h.clone()).unwrap_or_default();
-                    let short = if whole.len() > 16 { format!("{}…{}", &whole[..8], &whole[whole.len() - 8..]) } else { whole.clone() };
-                    let folder = self.prefs.folder.display().to_string();
-                    run = run
-                        .child(
-                            h_flex()
-                                .gap(crate::ui::button_gap())
-                                .items_center()
-                                .child(div().flex_1().child(ui::outcome(theme, Tone::Good, format!("Backup finished and checked: {name}, {}.", crate::dbstatus::bytes_label(m.bytes)))))
-                                .child(crate::ui::button("open-folder").outline().label("Open folder").on_click(move |_, _, cx| ui::open_url(&folder, cx))),
-                        )
-                        .child(div().font_weight(FontWeight::MEDIUM).child("Integrity"))
+        if matches!(job.state(), JobState::Idle) {
+            return None;
+        }
+        let mut view = crate::manager::jobview::JobView::new("bk-run", format!("Backing up to {}", self.prefs.folder.display()), &self.backup)
+            .cancel(crate::manager::jobview::Cancel::Cannot("A backup cannot be stopped half-way. SENTIENT keeps running while it is made."));
+        if let (JobState::Done(_), Some(m)) = (job.state(), &self.made) {
+            let name = m.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let whole = m.files.first().map(|(_, h, _)| h.clone()).unwrap_or_default();
+            let short = if whole.len() > 16 { format!("{}…{}", &whole[..8], &whole[whole.len() - 8..]) } else { whole.clone() };
+            view = view
+                .result(ui::outcome(theme, Tone::Good, format!("Backup finished and checked: {name}, {}.", crate::dbstatus::bytes_label(m.bytes))))
+                .extra(
+                    v_flex()
+                        .gap_2()
                         .child(brow(theme, "Each part", None, div().text_sm().child(format!("SHA-256 stored inside the file, {} parts", m.members))))
                         .child(if m.files.len() == 1 {
                             brow(
@@ -804,27 +880,37 @@ impl BackupPage {
                                 h_flex()
                                     .gap(crate::ui::button_gap())
                                     .child(div().text_sm().font_family(theme.mono_font_family.clone()).child(short))
-                                    .child(crate::ui::button("copy-hash").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(whole.clone())))),
+                                    .child(crate::ui::button("copy-hash").outline().small().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(whole.clone())))),
                             )
                         } else {
                             brow(theme, "Files", None, div().text_sm().child(format!("{} parts, each with its SHA-256", m.files.len())))
                         })
                         .child(brow(theme, "Saved beside it", None, div().text_sm().child(m.sidecar.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())))
                         .child(brow(theme, "Read back", None, div().text_sm().child(m.check.summary.clone())))
-                        .when_some(m.copied_to.clone(), |c, p| c.child(brow(theme, "Second copy", None, div().text_sm().child(p.display().to_string()))));
-                }
-                (Some(true), None) => run = run.child(ui::outcome(theme, Tone::Good, "Backup finished and checked.")),
-                (Some(false), _) => {
-                    if let JobState::Failed(e) = job.state() {
-                        run = run.child(ui::outcome(theme, Tone::Bad, e.clone()));
-                    }
-                }
-            }
-            run = run.child(ui::steps(theme, &marked));
-            return Some(run);
+                        .when_some(m.copied_to.clone(), |c, p| c.child(brow(theme, "Second copy", None, div().text_sm().child(p.display().to_string())))),
+                );
         }
-        None
+        view = view.actions(actions);
+        Some(view.render(cx))
+    }
 
+    /// The page's actions under a backup's result: back, then the primary.
+    fn run_actions(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let back = crate::ui::button("bk-run-back").outline().label("Back to Backup and restore").on_click(cx.listener(|p, _, _, cx| {
+            p.shown_run = false;
+            p.backup.update(cx, |j, cx| j.reset(cx));
+            p.refresh_list();
+            cx.notify();
+        }));
+        let next = match self.backup.read(cx).state() {
+            JobState::Done(_) => {
+                let folder = self.prefs.folder.display().to_string();
+                Some(crate::ui::button("open-folder").primary().label("Open folder").on_click(move |_, _, cx| ui::open_url(&folder, cx)).into_any_element())
+            }
+            JobState::Failed(_) => Some(crate::ui::button("bk-run-again").primary().label("Try again").on_click(cx.listener(|p, _, _, cx| p.run_preset_backup(cx))).into_any_element()),
+            _ => None,
+        };
+        std::iter::once(back.into_any_element()).chain(next).collect()
     }
 
     /// J6: a check's result, part by part (in its dialog).
@@ -881,7 +967,7 @@ impl Render for BackupDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let page = self.page.read(cx);
-        let body = if self.check { page.check_view(&theme) } else { page.run_view(&theme, cx) };
+        let body = if self.check { page.check_view(&theme) } else { page.run_view(&theme, Vec::new(), cx) };
         v_flex()
             .gap_3()
             .children(body)
@@ -985,7 +1071,7 @@ impl BackupPage {
             _ => "everything",
         };
         // Wide: the mockup's segments; narrow: the same as a menu.
-        let options = [("everything", "Everything"), ("last90", "Last 90 days"), ("configuration", "Configuration only"), ("choose", "Choose…")];
+        let options = [("everything", "Everything"), ("last90", "Last 90 days"), ("configuration", "Configuration only"), ("choose", "Choose")];
         let on = |key: &str| if key == "choose" { self.choose } else { what == key && !self.choose };
         let what_control = if narrow {
             let this = cx.entity().downgrade();
@@ -1045,7 +1131,7 @@ impl BackupPage {
                         this.save_prefs(false, cx);
                     })))
                 }),
-            Some(crate::ui::button("copy-to").outline().label("Choose…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.choose_folder(true, cx))).into_any_element()),
+            Some(crate::ui::button("copy-to").outline().label("Choose").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.choose_folder(true, cx))).into_any_element()),
             false,
         );
         let split_row = card_row(
@@ -1081,14 +1167,16 @@ impl BackupPage {
         let now_tip = estimate.map(|(t, _)| t).unwrap_or_else(|| "A backup now, with what the card says.".into());
         let mut list = ui::panel(theme).gap_0().child(
             h_flex()
+                .relative()
                 .gap(crate::ui::button_gap())
                 .pb_2()
                 .items_center()
+                .child(ui::layout_probe("header-actions"))
                 .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child("Backups"))
-                .child(crate::ui::probed(crate::ui::button("add-backup").ghost().label("Add a file…").tooltip("Add a backup file from elsewhere to the folder.").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx)))))
-                .child(crate::ui::probed(crate::ui::button("restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from…").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
+                .child(crate::ui::probed(crate::ui::button("add-backup").ghost().label("Add a file").tooltip("Add a backup file from elsewhere to the folder.").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx)))))
+                .child(crate::ui::probed(crate::ui::button("restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from file").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
                 .when(!self.choose, |r| {
-                    r.child(crate::ui::probed(crate::ui::button("backup-now").outline().label(if busy { "Backing up…" } else { "Back up now" }).tooltip(now_tip).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_preset_backup(cx)))))
+                    r.child(crate::ui::probed(crate::ui::button("backup-now").outline().label(if busy { "Backing up" } else { "Back up now" }).tooltip(now_tip).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_preset_backup(cx)))))
                 }),
         );
         if let Some(t) = low {
@@ -1124,6 +1212,10 @@ impl BackupPage {
                             .ok();
                         })
                     }),
+                    reveal: Some({
+                        let dir = e.path.parent().map(|d| d.display().to_string()).unwrap_or_default();
+                        std::rc::Rc::new(move |_, cx| crate::ui::open_url(&dir, cx))
+                    }),
                     verify: std::rc::Rc::new(move |_, cx| {
                         t2.update(cx, |this, cx| this.run_check(p2.clone(), cx)).ok();
                     }),
@@ -1146,6 +1238,34 @@ impl Render for BackupPage {
             "Backup and restore",
             "One file with the database, telemetry and file stores, a checksum for every part, and optional encryption.",
         );
+        // Screens and the layout test: a backup in the middle with a long
+        // log (SPM_DEBUG_JOB_LOG=<lines>[:<step>], crate::manager::jobview).
+        #[cfg(debug_assertions)]
+        {
+            static FILLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !FILLED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let plan = crate::jobplan::backup(&self.prefs, false, true);
+                if crate::manager::jobview::debug_job(&self.backup, plan, cx) {
+                    self.shown_run = true;
+                }
+            }
+        }
+        if self.shown_run && self.record.is_none() {
+            let actions = self.run_actions(cx);
+            if let Some(run) = self.run_view(&theme, actions, cx) {
+                return page.child(run).into_any_element();
+            }
+        }
+        // Screens and the layout test: the folder chooser open
+        // (SPM_DEBUG_FOLDER_CHOOSER=1, with SPM_DEBUG_FOLDER_PICK to list a
+        // long folder and SPM_DEBUG_CHOOSER_SCROLL=bottom to scroll it).
+        #[cfg(debug_assertions)]
+        {
+            static OPENED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if std::env::var_os("SPM_DEBUG_FOLDER_CHOOSER").is_some() && !OPENED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                self.change_folder(window, cx);
+            }
+        }
         let Some(record) = self.record.clone() else {
             return page.child(ui::not_installed(&theme)).into_any_element();
         };
@@ -1158,6 +1278,14 @@ impl Render for BackupPage {
         }
         #[cfg(debug_assertions)]
         self.debug_dialogs(cx);
+        // A backup's run, in place of the page (crate::manager::jobview).
+        if self.shown_run {
+            let actions = self.run_actions(cx);
+            if let Some(run) = self.run_view(&theme, actions, cx) {
+                return page.child(run).into_any_element();
+            }
+            self.shown_run = false;
+        }
         let clickhouse = record.flavor() == Flavor::Clickhouse;
         let busy = self.backup.read(cx).is_running() || self.restore.read(cx).is_running();
 
@@ -1246,7 +1374,7 @@ impl Render for BackupPage {
                             .child(
                                 crate::ui::button("output")
                                     .outline()
-                                    .label("Save as…")
+                                    .label("Save as")
                                     .disabled(busy)
                                     .on_click(cx.listener(|this, _, _, cx| this.choose_output(cx))),
                             )
@@ -1362,11 +1490,7 @@ pub(crate) fn folder_value(theme: &gpui_kit::component::Theme, folder: &std::pat
 
 /// Free space as the mockup writes it: "412 GB", "64.1 GB", "1.8 TB".
 pub(crate) fn free_label(b: u64) -> String {
-    let l = crate::dbstatus::bytes_label(b);
-    match l.split_once(' ') {
-        Some((n, unit)) if n.parse::<f64>().is_ok_and(|v| v >= 100.) => format!("{:.0} {unit}", n.parse::<f64>().unwrap_or(0.)),
-        _ => l,
-    }
+    sentient_installer_core::size::label(b)
 }
 
 /// A choice as a menu button (the card's segments on a narrow window).
@@ -1389,7 +1513,7 @@ pub(crate) fn narrow(window: &Window) -> bool {
 
 /// "Change…" on the folder row.
 pub(crate) fn change_button(id: &'static str, disabled: bool) -> gpui_kit::component::button::Button {
-    crate::ui::button(id).outline().icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Folder)).label("Change…").disabled(disabled)
+    crate::ui::button(id).outline().icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Folder)).label("Change").disabled(disabled)
 }
 
 /// Column widths of the Backups table: Made, Size, Integrity, the chevron.
@@ -1424,9 +1548,11 @@ pub(crate) fn short_made(made: &str) -> String {
     chrono::NaiveDateTime::parse_from_str(made, "%Y-%m-%d %H:%M").map(|t| t.format("%-d %b, %H:%M").to_string()).unwrap_or_else(|_| made.to_string())
 }
 
-/// What a row's chevron offers.
+/// What a row offers: Restore beside it, the rest in its three-dot menu.
 pub(crate) struct RowActions {
     pub restore: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>,
+    /// Show the file in its folder (a backup on this computer only).
+    pub reveal: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>,
     pub verify: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
     pub delete: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
 }
@@ -1446,26 +1572,38 @@ pub(crate) fn table_row(theme: &gpui_kit::component::Theme, narrow: bool, i: usi
         if e.parts > 1 { format!(" · {} parts", e.parts) } else { String::new() },
         if e.old_folder { format!("\nIn {}", e.path.parent().map(|p| p.display().to_string()).unwrap_or_default()) } else { String::new() }
     );
-    let RowActions { restore, verify, delete } = actions;
-    let menu = crate::ui::button(SharedString::from(format!("bk-row-{i}")))
-        .ghost()
-        .small()
-        .icon(IconName::ChevronRight)
-        .disabled(busy)
-        .dropdown_menu(move |menu, _, _| {
-            let (v, d) = (verify.clone(), delete.clone());
-            menu.item(PopupMenuItem::new("Verify").on_click(move |_, window, cx| v(window, cx))).separator().item(PopupMenuItem::new("Delete…").on_click(move |_, window, cx| d(window, cx)))
-        });
+    let RowActions { restore, reveal, verify, delete } = actions;
+    let details = format!("{}\n\n{}\n\n{}\n\n{}", e.name, made_tip, crate::dbstatus::bytes_label(e.bytes), tip);
+    let path = e.path.display().to_string();
+    let mut items = vec![
+        crate::ui::RowMenuItem::Item {
+            label: "Details".into(),
+            icon: Some(IconName::Info),
+            action: std::rc::Rc::new(move |_, cx| crate::ui::show_info("Backup details", details.clone(), cx)),
+        },
+        crate::ui::RowMenuItem::Item { label: "Check integrity".into(), icon: Some(IconName::CircleCheck), action: verify },
+    ];
+    if let Some(r) = reveal {
+        items.push(crate::ui::RowMenuItem::Item { label: "Show in folder".into(), icon: Some(IconName::Folder), action: r });
+    }
+    items.push(crate::ui::RowMenuItem::Item {
+        label: "Copy path".into(),
+        icon: Some(IconName::Copy),
+        action: std::rc::Rc::new(move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(path.clone()))),
+    });
+    items.push(crate::ui::RowMenuItem::Divider);
+    items.push(crate::ui::RowMenuItem::Danger { label: "Delete".into(), icon: IconName::Delete, action: delete });
+    let menu = crate::ui::row_menu(format!("bk-row-{i}"), "More", busy, items);
     // Restore… on every row, visible; off for a damaged backup.
     let damaged = restore.is_none();
-    let mut restore_btn = crate::ui::button(SharedString::from(format!("bk-restore-{i}"))).outline().small().icon(crate::manager::restore::icon("history")).disabled(busy || damaged);
+    let mut restore_btn = crate::ui::button(SharedString::from(format!("bk-restore-{i}"))).outline().icon(crate::manager::restore::icon("history")).disabled(busy || damaged);
     if !narrow {
-        restore_btn = restore_btn.label("Restore…");
+        restore_btn = restore_btn.label("Restore");
     }
     if damaged {
         restore_btn = restore_btn.tooltip("A damaged backup cannot be restored");
     } else if narrow {
-        restore_btn = restore_btn.tooltip("Restore…");
+        restore_btn = restore_btn.tooltip("Restore");
     }
     if let Some(r) = restore {
         restore_btn = restore_btn.on_click(move |_, window, cx| r(window, cx));

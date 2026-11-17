@@ -173,7 +173,12 @@ impl Strip {
                     text = format!("{text}{}{}", crate::remote::DETAILS, lines.join("\n"));
                 }
                 let label = self.label.clone().unwrap_or_else(|| "A job".into());
-                let id = self.push_event(j.instance(), true, format!("{label} failed"), crate::remote::split_failure(&m).0, text);
+                // The bell's line: the diagnosed cause, else the headline.
+                let head = j.diagnosis().filter(|d| d.is_known()).map(|d| d.cause.clone()).unwrap_or_else(|| crate::remote::split_failure(&m).0);
+                if let Some(d) = j.diagnosis() {
+                    text = format!("{}{}{}", head, crate::remote::DETAILS, d.details);
+                }
+                let id = self.push_event(j.instance(), true, format!("{label} failed"), head, text);
                 let (retry, ended) = (j.retry(), j.instance().map(|i| i.0));
                 if let Some(r) = retry {
                     self.retries.insert(id, r);
@@ -544,16 +549,17 @@ impl Render for JobDetails {
         let theme = cx.theme().clone();
         let job = self.job.read(cx);
         let state = match job.state() {
-            JobState::Running => ui::outcome(&theme, Tone::Neutral, job.step_with_time().to_string()),
-            JobState::Done(m) => ui::outcome(&theme, Tone::Good, m.to_string()),
+            JobState::Running => ui::outcome(&theme, Tone::Neutral, job.step_with_time().to_string()).into_any_element(),
+            JobState::Done(m) => ui::outcome(&theme, Tone::Good, m.to_string()).into_any_element(),
             JobState::Failed(m) => {
                 let (head, detail) = crate::remote::split_failure(m);
-                ui::outcome(&theme, Tone::Bad, match detail {
+                // What went wrong and the fix, when it was diagnosed.
+                crate::diagnosis::outcome(&theme, Tone::Bad, match detail {
                     Some(d) if !d.trim().is_empty() => format!("{head}\n{}", d.trim()),
                     _ => head,
-                })
+                }, job)
             }
-            JobState::Idle => div(),
+            JobState::Idle => div().into_any_element(),
         };
         let retry = matches!(job.state(), JobState::Failed(_)).then(|| job.retry()).flatten();
         let again = match job.state() {

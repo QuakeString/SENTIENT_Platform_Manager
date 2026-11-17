@@ -310,6 +310,16 @@ fn plain(s: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn nine_is_newer_than_every_eight_candidate() {
+        for old in ["0.8.0", "0.8.0-rc11", "0.8.0-rc12", "0.8.0-nightly.20261116"] {
+            assert!(is_newer("0.9.0", old, false), "0.9.0 over {old}");
+            assert!(!is_newer(old, "0.9.0", false), "{old} under 0.9.0");
+        }
+        // A 0.9.0 candidate build (spm/rcNN PRs) leads to 0.9.0.
+        assert!(is_newer("0.9.0", "0.9.0-rc12", false));
+    }
+
     fn rel(tag: &str, pre: bool) -> Release {
         Release {
             tag_name: tag.into(),

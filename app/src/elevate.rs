@@ -41,20 +41,24 @@ mod imp {
         if unsafe { IsUserAnAdmin() } != 0 {
             return true;
         }
-        let Ok(exe) = std::env::current_exe() else { return true };
-        let args: Vec<String> = std::env::args()
-            .skip(1)
-            .map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a })
-            .collect();
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let _ = relaunch_elevated(&args);
+        false
+    }
+
+    /// Start this program again as administrator (the UAC prompt) with
+    /// `args`. False when it did not start (the prompt was declined).
+    #[cfg(feature = "gui")]
+    pub fn relaunch_elevated(args: &[String]) -> bool {
+        let Ok(exe) = std::env::current_exe() else { return false };
+        let args: Vec<String> = args.iter().map(|a| if a.contains(' ') || a.is_empty() { format!("\"{a}\"") } else { a.clone() }).collect();
         let file = wide(exe.as_os_str());
         let params = wide(std::ffi::OsStr::new(&args.join(" ")));
         let verb = wide(std::ffi::OsStr::new("runas"));
         // SAFETY: every pointer is a NUL-terminated UTF-16 buffer that lives
-        // until the call returns; SW_SHOWNORMAL = 1.
-        unsafe {
-            ShellExecuteW(0, verb.as_ptr(), file.as_ptr(), params.as_ptr(), std::ptr::null(), 1);
-        }
-        false
+        // until the call returns; SW_SHOWNORMAL = 1. A result above 32 is
+        // success.
+        unsafe { ShellExecuteW(0, verb.as_ptr(), file.as_ptr(), params.as_ptr(), std::ptr::null(), 1) > 32 }
     }
 }
 
@@ -62,7 +66,14 @@ mod imp {
 pub use imp::is_admin;
 // Only the window asks to be elevated; the server agent does not.
 #[cfg(all(windows, feature = "gui"))]
-pub use imp::ensure_admin;
+pub use imp::{ensure_admin, relaunch_elevated};
+
+/// Linux elevates per step (polkit): never a whole relaunch.
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn relaunch_elevated(_args: &[String]) -> bool {
+    false
+}
 
 #[cfg(not(windows))]
 pub fn ensure_admin() -> bool {

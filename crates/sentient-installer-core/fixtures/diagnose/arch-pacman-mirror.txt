@@ -1,0 +1,6 @@
+:: Synchronizing package databases...
+ core downloading...
+error: failed retrieving file 'core.db' from mirror.nonexistent.invalid : Could not resolve host: mirror.nonexistent.invalid
+warning: fatal error from mirror.nonexistent.invalid, skipping for the remainder of this transaction
+error: failed to synchronize all databases (invalid url for server)
+exit=1

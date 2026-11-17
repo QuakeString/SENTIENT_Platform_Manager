@@ -51,6 +51,16 @@ pub struct InstallationRecord {
     /// offers what earlier ones did not set up.
     #[serde(default)]
     pub changes_done: Vec<String>,
+    /// Every file made for shortcuts and for starting at sign-in
+    /// (crate::shortcuts), so uninstall removes exactly those.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shortcuts: Vec<crate::shortcuts::Entry>,
+    /// What Setup itself put on this computer (PostgreSQL, ClickHouse,
+    /// WSL) as opposed to what it found there, recorded at install time:
+    /// uninstall removes only that (crate::uninstall). None in records
+    /// from before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed: Option<crate::uninstall::Installed>,
 }
 
 impl InstallationRecord {
@@ -142,6 +152,8 @@ impl InstallationRecord {
             installed_at: String::new(),
             kiosk: None,
             changes_done: Vec::new(),
+            shortcuts: Vec::new(),
+            installed: None,
         };
         record.native_config()
     }
@@ -174,6 +186,7 @@ impl InstallationRecord {
             ch_password: String::new(),
             ch_http_port: st.ch_http_port,
             ch_native_port: st.ch_native_port,
+            old_pg: Default::default(),
         }
     }
 }
@@ -225,6 +238,18 @@ pub enum Platform {
 
 impl Platform {
     pub fn snapshot(&self) -> Snapshot {
+        // Screens: canned services, "serving;name=running,name=stopped".
+        #[cfg(debug_assertions)]
+        if let Some(v) = std::env::var_os("SPM_DEBUG_SNAPSHOT") {
+            let v = v.to_string_lossy().to_string();
+            let (serving, list) = v.split_once(';').unwrap_or(("false", ""));
+            let services = list
+                .split(',')
+                .filter_map(|e| e.split_once('='))
+                .map(|(n, st)| Service { name: n.into(), running: st == "running", starting: st == "starting", detail: if st == "running" { "Running".into() } else { "Stopped".into() } })
+                .collect();
+            return Snapshot { installed: true, serving: serving == "true", services };
+        }
         match self {
             Platform::Native(cfg) => {
                 let st = native::status(cfg);
@@ -283,6 +308,38 @@ impl Platform {
         }
     }
 
+    /// `start`, `stop` or `restart` the whole stack in order: SENTIENT,
+    /// ClickHouse, PostgreSQL down, the reverse up with a wait for each
+    /// (sentient_installer_core::stack_order). A PostgreSQL that holds other
+    /// databases stays running unless `stop_shared_pg`.
+    pub fn control_stack(&self, sink: ProgressFn, action: &str, stop_shared_pg: bool) -> Result<(), String> {
+        match self {
+            Platform::Native(cfg) => native::control_stack(sink, &with_db_password(cfg), action, stop_shared_pg),
+            Platform::Docker(cfg) => distro::control_stack(sink, cfg, action),
+        }
+    }
+
+    /// The databases that keep a shared PostgreSQL running when the stack
+    /// stops (native Linux; none elsewhere). May ask for the administrator
+    /// password.
+    pub fn pg_other_databases(&self) -> Result<Vec<String>, String> {
+        #[cfg(debug_assertions)]
+        if let Some(v) = std::env::var_os("SPM_DEBUG_PG_OTHERS") {
+            let v = v.to_string_lossy().to_string();
+            if let Some(secs) = std::env::var("SPM_DEBUG_REMOTE_SLOW").ok().and_then(|s| s.parse::<u64>().ok()) {
+                std::thread::sleep(std::time::Duration::from_secs(secs));
+            }
+            return match v.strip_prefix("error:") {
+                Some(e) => Err(e.to_string()),
+                None => Ok(v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect()),
+            };
+        }
+        match self {
+            Platform::Native(cfg) => native::pg_other_databases(&with_db_password(cfg)),
+            Platform::Docker(_) => Ok(Vec::new()),
+        }
+    }
+
     /// Start, stop or restart one of the install's own services, by the
     /// name the snapshot lists (anything else is refused).
     pub fn service_control(&self, sink: ProgressFn, name: &str, action: &str) -> Result<(), String> {
@@ -331,4 +388,19 @@ pub(crate) mod tests {
             assert_eq!(back.opens_as_kiosk(), chosen);
         }
     }
+}
+
+/// Windows keeps the database password in the secret store, not in the
+/// record: listing PostgreSQL's databases (as SENTIENT's own user) needs it.
+/// Elsewhere the configuration is used as it is.
+fn with_db_password(cfg: &NativeConfig) -> NativeConfig {
+    #[allow(unused_mut)]
+    let mut c = cfg.clone();
+    #[cfg(windows)]
+    if c.db_password.is_empty() {
+        if let Some(p) = crate::secrets::get(crate::secrets::Secret::Database) {
+            c.db_password = p;
+        }
+    }
+    c
 }

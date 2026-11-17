@@ -166,9 +166,10 @@ pub fn see_through() -> bool {
 /// One full slide of the selection between rows.
 const SLIDE: Duration = Duration::from_millis(220);
 /// The concave curves above and below the selected row.
-const FILLET: f32 = 14.;
-/// The selected row's own corner radius (its left end).
-const SEL_RADIUS: f32 = 10.;
+const FILLET: f32 = 12.;
+/// The selected row's left end: a half circle (the pill he chose in
+/// rc12-24); hovered rows take the same shape.
+const SEL_RADIUS: f32 = ROW_H / 2.;
 /// A row's height (the selection's too), and the gap between rows: a
 /// 44 px pitch. Folded, unfolded and over the page alike.
 pub const ROW_H: f32 = 40.;
@@ -229,6 +230,25 @@ pub(crate) fn row_probe(id: &'static str) -> impl IntoElement {
     )
     .absolute()
     .inset_0()
+}
+
+/// Layout tests: the row drawn selected, by its page id (`LAYOUT menu-on
+/// <id> l r t b`; check.py holds it to the route's `LAYOUT-NAV selected=`).
+fn selected_probe(id: &'static str) -> impl IntoElement {
+    let on = cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_LAYOUT").is_some();
+    div().absolute().inset_0().when(on, move |d| {
+        d.child(
+            canvas(
+                move |b, _, _| {
+                    let (l, r) = (f32::from(b.origin.x), f32::from(b.origin.x + b.size.width));
+                    let (t, bt) = (f32::from(b.origin.y), f32::from(b.origin.y + b.size.height));
+                    eprintln!("LAYOUT menu-on {id} {l:.0} {r:.0} {t:.0} {bt:.0}");
+                },
+                |_, _, _, _| {},
+            )
+            .size_full(),
+        )
+    })
 }
 
 /// Notes the menu's edges.
@@ -326,12 +346,7 @@ pub(crate) fn selection(active: &'static str, page: Hsla, line: Hsla, motion: bo
             let p = |x: f32, y: f32| point(px(x), px(y));
             let Some(top) = y else {
                 // No row selected (About): the plain edge.
-                let mut stroke = PathBuilder::stroke(px(lw));
-                stroke.move_to(p(xc, top_y));
-                stroke.line_to(p(xc, bottom_y));
-                if let Ok(path) = stroke.build() {
-                    window.paint_path(path, line);
-                }
+                window.paint_quad(gpui::fill(Bounds::from_corners(p(edge - lw, top_y), p(edge, bottom_y)), line));
                 return;
             };
             let (l, t, b) = (left, top, top + ROW_H);
@@ -341,38 +356,43 @@ pub(crate) fn selection(active: &'static str, page: Hsla, line: Hsla, motion: bo
             }
             let f = FILLET;
             let rad = SEL_RADIUS;
-            // The page-coloured opening: out to the menu's edge (over the
-            // line there), the curves tangent to it.
-            let mut fill = PathBuilder::fill();
-            fill.move_to(p(edge, t - f));
-            fill.line_to(p(xc, t - f));
-            fill.arc_to(p(f, f), px(0.), false, true, p(xc - f, t));
-            fill.line_to(p(l + rad, t));
-            fill.arc_to(p(rad, rad), px(0.), false, false, p(l, t + rad));
-            fill.line_to(p(l, b - rad));
-            fill.arc_to(p(rad, rad), px(0.), false, false, p(l + rad, b));
-            fill.line_to(p(xc - f, b));
-            fill.arc_to(p(f, f), px(0.), false, true, p(xc, b + f));
-            fill.line_to(p(edge, b + f));
-            fill.close();
-            if let Ok(path) = fill.build() {
-                window.paint_path(path, page);
-            }
-            // The edge and the opening's outline: one line, top to bottom.
+            // Drawn with rounded quads only: GPUI gives quads exact
+            // antialiasing at every scale, where paths get at most 4x MSAA
+            // on Linux and read as stair-steps at fractional scales (his
+            // rc12-24 note). The line is centred on xc throughout.
             let h = lw / 2.;
-            let mut stroke = PathBuilder::stroke(px(lw));
-            stroke.move_to(p(xc, top_y));
-            stroke.line_to(p(xc, t - f));
-            stroke.arc_to(p(f - h, f - h), px(0.), false, true, p(xc - f + h, t + h));
-            stroke.line_to(p(l + rad, t + h));
-            stroke.arc_to(p(rad - h, rad - h), px(0.), false, false, p(l + h, t + rad));
-            stroke.line_to(p(l + h, b - rad));
-            stroke.arc_to(p(rad - h, rad - h), px(0.), false, false, p(l + rad, b - h));
-            stroke.line_to(p(xc - f + h, b - h));
-            stroke.arc_to(p(f - h, f - h), px(0.), false, true, p(xc, b + f));
-            stroke.line_to(p(xc, bottom_y));
-            if let Ok(path) = stroke.build() {
-                window.paint_path(path, line);
+            let bnd = |x0: f32, y0: f32, x1: f32, y1: f32| Bounds::from_corners(p(x0, y0), p(x1, y1));
+            let none = gpui::transparent_black();
+            // The edge above and below the opening.
+            window.paint_quad(gpui::fill(bnd(edge - lw, top_y, edge, t - f), line));
+            window.paint_quad(gpui::fill(bnd(edge - lw, b + f, edge, bottom_y), line));
+            // The row: page-coloured, its left end rounded, its outline on
+            // the top, left and bottom (centred on t, l and b).
+            window.paint_quad(gpui::quad(
+                bnd(l - h, t - h, xc - f + 0.01, b + h),
+                Corners { top_left: px(rad + h), bottom_left: px(rad + h), top_right: px(0.), bottom_right: px(0.) },
+                page,
+                Edges { top: px(lw), left: px(lw), bottom: px(lw), right: px(0.) },
+                line,
+                BorderStyle::Solid,
+            ));
+            // Between the row and the edge: page only (the line opens).
+            window.paint_quad(gpui::fill(bnd(xc - f, t + h, edge, b - h), page));
+            // The concave curves: a ring around each curve's centre,
+            // clipped to its corner square. Page colour outside the curve
+            // (to the edge), then the line on the curve itself.
+            for (cy, y0, y1) in [(t - f, t - f, t + h), (b + f, b - h, b + f)] {
+                let sq = bnd(xc - f, y0, edge, y1);
+                window.with_content_mask(Some(ContentMask { bounds: sq }), |window| {
+                    let ring = |r_in: f32, r_out: f32| {
+                        gpui::quad(bnd(xc - f - r_out, cy - r_out, xc - f + r_out, cy + r_out), px(r_out), none, px(r_out - r_in), page, BorderStyle::Solid)
+                    };
+                    let wide = f * 0.5 + lw;
+                    window.paint_quad(ring(f, f + wide));
+                    let mut l_ring = ring(f - h, f + h);
+                    l_ring.border_color = line;
+                    window.paint_quad(l_ring);
+                });
             }
         },
     )
@@ -428,7 +448,10 @@ impl Manager {
         let overlay_t = if overlay { ((menu_w - MENU_FOLDED_W) / (MENU_W - MENU_FOLDED_W)).clamp(0., 1.) } else { 0. };
         self.overlay_t.set(overlay_t);
         let motion = !ui::reduce_motion();
-        let active: &'static str = if self.page == Page::Instances { "instances" } else if self.page == Page::About { "about" } else { self.page.id() };
+        // The page whose row is selected: a sub-flow's parent while it
+        // shows (Manager::menu_page).
+        let current = self.menu_page();
+        let active: &'static str = current.id();
         let left_pad = if rail { MENU_PAD } else { MENU_PAD_OPEN };
         // The selected row's name: the primary colour; in dark lifted 40 %
         // toward white. Teal on the dark selection was 5:1 against 9.6:1
@@ -436,6 +459,12 @@ impl Manager {
         // smaller (his rc12-22 note); lifted it is 7.9:1. The icon keeps
         // the primary colour.
         let sel_label = selected_label(&theme);
+        // The names (text_sm, 0.875 rem) on whole device pixels: at ×1.25
+        // they fell between pixels, and the hinting then drew the semibold
+        // selected name 1-2 px taller than the medium ones (rc12-23 gate,
+        // labels.py).
+        let sf = window.scale_factor();
+        let name_size = px((0.875 * f32::from(window.rem_size()) * sf).round() / sf);
         let row = |id: &'static str, icon: Icon, title: SharedString, on: bool| {
             h_flex()
                 .id(id)
@@ -445,38 +474,51 @@ impl Manager {
                 .gap(px(12.))
                 .pl(px(row_pl(left_pad)))
                 .when(!rail, |r| r.pr(px(12.)).mr(px(10.)))
-                .rounded(px(8.))
+                // The pill, like the selection's left end.
+                .rounded(px(SEL_RADIUS))
                 .cursor_pointer()
-                .text_sm()
+                .text_size(name_size)
                 .text_color(if on { sel_label } else { theme.foreground })
                 .font_weight(if on { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
                 .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))
                 .child(row_probe(id))
                 .child(ui::layout_probe("menu-row"))
+                .when(on, |r| r.child(selected_probe(id)))
                 .child(div().relative().flex_shrink_0().child(icon.size(px(ICON)).text_color(if on { theme.primary } else { theme.muted_foreground })).child(ui::layout_probe("menu-icon")))
                 .when(!rail, |r| r.child(div().relative().whitespace_nowrap().opacity(names).child(title.clone()).child(ui::layout_probe(if on { "menu-label-on" } else { "menu-label" }))))
                 .when(rail, move |r| r.tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(title.clone()).build(w, cx)))
         };
         let items = Page::ALL.into_iter().map(|page| {
-            row(page.id(), page.icon(), page.title().into(), page == self.page)
+            row(page.id(), page.icon(), page.title().into(), page == current)
                 // Files is new in this release (the mockup's pill).
                 .when(page == Page::Files && !rail, |r| {
                     r.child(div().flex_1()).child(div().px(px(7.)).rounded_full().bg(theme.muted).text_size(px(11.)).text_color(theme.muted_foreground).child("New"))
                 })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                this.page = page;
-                this.menu_overlay = false;
-                cx.notify();
+                .on_click(cx.listener(move |this, _, window, cx| {
+                // Platform settings with changes not applied asks first
+                // (not on its own row).
+                if page == this.page {
+                    this.menu_overlay = false;
+                    cx.notify();
+                    return;
+                }
+                this.leave_then(window, cx, move |this, cx| {
+                    this.page = page;
+                    this.menu_overlay = false;
+                    cx.notify();
+                });
             }))
         });
-        let instances = row("instances", Page::Instances.icon(), Page::Instances.title().into(), self.page == Page::Instances)
+        let instances = row("instances", Page::Instances.icon(), Page::Instances.title().into(), current == Page::Instances)
             .when(!self.remotes.is_empty() && !rail, |r| {
                 r.child(div().flex_1()).child(div().relative().text_size(px(13.)).text_color(theme.muted_foreground).child((self.remotes.len() + 1).to_string()))
             })
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.page = Page::Instances;
-                this.menu_overlay = false;
-                cx.notify();
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.leave_then(window, cx, |this, cx| {
+                    this.page = Page::Instances;
+                    this.menu_overlay = false;
+                    cx.notify();
+                });
             }));
 
         // The product on top: its logo and name, and the fold button; folded,
@@ -584,7 +626,7 @@ impl Manager {
         // when one is waiting; the preferences button (About and
         // preferences).
         let footer = {
-            let on = self.page == Page::About;
+            let on = current == Page::About;
             let update = self.updates.read(cx).notices().1.is_some();
             let prefs = div()
                 .id("prefs")

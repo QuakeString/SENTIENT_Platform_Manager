@@ -87,6 +87,13 @@ fn cfg_for(root: &str) -> NativeConfig {
         ch_password: "sentient".into(),
         ch_http_port: 8123,
         ch_native_port: 9000,
+        // SINATIVE_OLD_PG=upgrade|keep-aside: what to do with an
+        // older-major PostgreSQL data folder (Setup's choice).
+        old_pg: match std::env::var("SINATIVE_OLD_PG").as_deref() {
+            Ok("upgrade") => sentient_installer_core::old_pg::OldPgChoice::Upgrade,
+            Ok("keep-aside") => sentient_installer_core::old_pg::OldPgChoice::KeepAside,
+            _ => Default::default(),
+        },
     }
 }
 
@@ -107,13 +114,26 @@ fn with_bundle_if_staged(mut cfg: NativeConfig, root: &str) -> NativeConfig {
     cfg
 }
 
+/// Every output line, for the diagnosis of a failure.
+static LINES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 fn sink() -> sentient_installer_core::progress::ProgressFn {
     Arc::new(|p: Progress| match p {
         Progress::Step { name } => println!("\n==> {name}"),
-        Progress::Log { line } => println!("    {line}"),
+        Progress::Log { line } => {
+            println!("    {line}");
+            if let Ok(mut l) = LINES.lock() {
+                l.push(line);
+            }
+        }
         Progress::Percent { value } => println!("    {:.0}%", value * 100.0),
         Progress::Done { message } => println!("\n[done] {message}"),
         Progress::Error { message } => eprintln!("\n[error] {message}"),
+        Progress::Plan { steps } => {
+            for (i, st) in steps.iter().enumerate() {
+                println!("    {}. {}", i + 1, st.name);
+            }
+        }
     })
 }
 
@@ -157,6 +177,14 @@ fn main() {
             Ok(())
         }
         "cleanup" => native::cleanup(sink(), &cfg),
+        // fix <action json>: one of the error panel's one-click fixes,
+        // e.g. '{"do":"upgrade-pg-data","family":"arch"}'.
+        "fix" => args
+            .get(3)
+            .ok_or_else(|| "usage: sinative fix - <action json>".to_string())
+            .and_then(|j| serde_json::from_str::<sentient_installer_core::diagnose::FixAction>(j).map_err(|e| e.to_string()))
+            .and_then(|a| sentient_installer_core::diagnose::apply(&a, &sink()))
+            .map(|m| println!("{m}")),
         other => Err(format!("unknown command: {other}")),
     };
 
@@ -164,6 +192,10 @@ fn main() {
         Ok(()) => println!("\nOK"),
         Err(e) => {
             eprintln!("\nFAILED: {e}");
+            // What went wrong and the fix (the same as Setup's error panel).
+            let lines = LINES.lock().map(|l| l.clone()).unwrap_or_default();
+            let d = sentient_installer_core::diagnose::diagnose_failure(&e, &lines, None);
+            eprintln!("\nDIAGNOSIS {}", serde_json::to_string_pretty(&d).unwrap_or_default());
             std::process::exit(1);
         }
     }

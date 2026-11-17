@@ -29,6 +29,7 @@ pub(crate) mod setting_field;
 pub(crate) mod status;
 pub(crate) mod stats;
 pub(crate) mod strip;
+pub(crate) mod uninstall_dialog;
 pub(crate) mod update;
 
 use gpui_kit::assets::IconName as Lucide;
@@ -143,8 +144,40 @@ impl Page {
     }
 }
 
+/// A sub-flow: a wizard, sheet or detail view that takes the place of the
+/// page it was opened from ("Move data to another disk" from Migration,
+/// Status, Backup and restore or Platform settings). It belongs to that
+/// page: the menu keeps the page selected while the flow shows, the flow
+/// shows whenever the page is open on its instance, and the flow's back
+/// arrow (or Cancel, Done) closes it onto that page again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubKind {
+    MoveData,
+}
+
+impl SubKind {
+    fn id(self) -> &'static str {
+        match self {
+            SubKind::MoveData => "movedata",
+        }
+    }
+}
+
+/// The open sub-flow and the page (and instance) it was opened from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SubFlow {
+    kind: SubKind,
+    parent: Page,
+    instance: Option<String>,
+    /// Which opening of the flow (its entity): the same one asked for again
+    /// shows its own parent instead of moving to this page.
+    token: u64,
+}
+
 pub struct Manager {
     page: Page,
+    /// The sub-flow open over a page, if any (see [`SubFlow`]).
+    sub: Option<SubFlow>,
     record: Option<InstallationRecord>,
     status: Option<Entity<status::StatusPage>>,
     logs: Option<Entity<logs::LogsPage>>,
@@ -223,10 +256,42 @@ pub struct Manager {
     /// (crate::background): `backup`, `control:<verb>`.
     pending: Option<String>,
     /// The "Move data to another disk" flow last seen opened
-    /// (movedata::generation): a new one shows Platform settings.
+    /// (movedata::generation): a new opening is a sub-flow of the page it
+    /// was opened from.
     move_gen: usize,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
+}
+
+/// The page shown now and whether it is this computer's (render_root sets
+/// it each frame, before the page renders). A page's poll reads only while
+/// its page shows: none while another page or a server is open.
+thread_local!(static SHOWN: std::cell::Cell<Option<(Page, bool)>> = const { std::cell::Cell::new(None) });
+
+/// Whether `page` shows now for this computer.
+fn shown_here(page: Page) -> bool {
+    SHOWN.with(|s| s.get()) == Some((page, true))
+}
+
+/// The top bar's meter bars, px.
+const METER_W: f32 = 36.;
+
+/// A meter's fraction on whole pixels of its bar: a reading that moves it
+/// less than a pixel gives the same target, so the bar does not glide (and
+/// the window does not draw 400 ms of frames for it).
+fn meter_step(f: f32) -> f32 {
+    (f * METER_W).round() / METER_W
+}
+
+/// How often a hidden page's poll looks whether it shows again: a page
+/// brought back reads within this.
+const HIDDEN_CHECK: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Wait while `page` does not show for this computer (a hidden page's poll).
+async fn until_shown(page: Page, cx: &gpui_kit::AsyncApp) {
+    while !shown_here(page) {
+        cx.background_executor().timer(HIDDEN_CHECK).await;
+    }
 }
 
 /// Switch timing (SPM_DEBUG_SWITCH=1): when the last switch started, for
@@ -251,6 +316,7 @@ pub fn saved_events() -> Vec<strip::Event> {
 
 impl Manager {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+        crate::timing::mark("manager-new");
         // OpenGL (no Vulkan driver): the window cannot be translucent, so
         // the menu is solid and About says why.
         shell::detect_gl(_window);
@@ -290,6 +356,9 @@ impl Manager {
                 }
             })
             .detach();
+        // One connection per added server, open from now until the
+        // Platform Manager quits (crate::remote::conn); made behind the window.
+        std::thread::spawn(|| crate::remote::conn::open_all(&crate::remote::load()));
         // The progress line under the top bar follows the strip.
         let strip = strip::install(cx);
         let subscriptions = vec![
@@ -301,6 +370,7 @@ impl Manager {
         let found_notice = record.is_some() && crate::updates::take_found_installation();
         let mut manager = Self {
             page,
+            sub: None,
             record,
             status: None,
             logs: None,
@@ -345,6 +415,27 @@ impl Manager {
             _tasks: Vec::new(),
         };
         manager.start_monitor(cx);
+        // Performance probes (tests/layout/perf.sh): go to pages in turn,
+        // SPM_DEBUG_GO_PAGES=about:6,status:12 (page:seconds after start).
+        #[cfg(debug_assertions)]
+        if let Ok(spec) = std::env::var("SPM_DEBUG_GO_PAGES") {
+            let steps: Vec<(Page, f64)> = spec.split(',').filter_map(|s| s.split_once(':')).filter_map(|(p, t)| Some((page_of(p)?, t.parse().ok()?))).collect();
+            let t0 = std::time::Instant::now();
+            let task = cx.spawn(async move |this, cx| {
+                for (p, at) in steps {
+                    let wait = std::time::Duration::from_secs_f64(at).saturating_sub(t0.elapsed());
+                    cx.background_executor().timer(wait).await;
+                    crate::timing::mark(&format!("go page={}", p.id()));
+                    if this.update(cx, |m, cx| {
+                        m.page = p;
+                        cx.notify();
+                    }).is_err() {
+                        break;
+                    }
+                }
+            });
+            manager._tasks.push(task);
+        }
         // The instance it was left on, if it is still in the list (it shows
         // connecting; start never waits for it). Not when a page was asked
         // for on the command line.
@@ -360,9 +451,11 @@ impl Manager {
             manager.open_instance(Some(id), cx);
             manager.page = page;
         }
-        // Screens: "Move data to another disk" at a frame of its mockup.
+        // Screens: "Move data to another disk" at a frame of its mockup, or
+        // (layout tests) at a step of the wizard with the canned server
+        // (SPM_DEBUG_MOVE_STEP=what|disk|folder|plan|run), over `--page`.
         #[cfg(debug_assertions)]
-        if std::env::var("SPM_DEBUG_MOVEDATA_FRAME").is_ok_and(|f| !matches!(f.as_str(), "M1" | "M2" | "M3" | "M13" | "M14")) {
+        if std::env::var("SPM_DEBUG_MOVEDATA_FRAME").is_ok_and(|f| !matches!(f.as_str(), "M1" | "M2" | "M3" | "M13" | "M14")) || std::env::var_os("SPM_DEBUG_MOVE_STEP").is_some() {
             let target = match manager.open_remote.as_ref().and_then(|id| manager.remotes.iter().find(|r| &r.id == id)).cloned() {
                 Some(inst) => crate::movedata::Target::Remote(inst),
                 None => crate::movedata::Target::Local,
@@ -381,6 +474,9 @@ impl Manager {
             }
             manager.bell_open = std::env::var_os("SPM_DEBUG_BELL").is_some();
             manager.switcher_open = std::env::var_os("SPM_DEBUG_SWITCHER").is_some();
+            if manager.switcher_open {
+                manager.instances_page(cx);
+            }
             if std::env::var_os("SPM_DEBUG_ERROR_DIALOG").is_some() {
                 crate::ui::show_error_with(
                     "The server agent could not be updated",
@@ -459,6 +555,20 @@ impl Manager {
                     cx.defer(move |cx| remote_pages::ask_sudo_password(inst, std::rc::Rc::new(|_: &mut App| {}), cx));
                 }
             }
+            // The Stop dialog: "others" lists a shared PostgreSQL's other
+            // databases, "error" a listing that failed, "checking" waits.
+            if let Some(v) = std::env::var_os("SPM_DEBUG_STOP_DIALOG") {
+                let v = v.to_string_lossy().to_string();
+                let probe: status::PgProbe = std::sync::Arc::new(move || match v.as_str() {
+                    "error" => Err("psql: connection to server on socket failed".into()),
+                    "checking" => {
+                        std::thread::sleep(std::time::Duration::from_secs(600));
+                        Ok(Vec::new())
+                    }
+                    _ => Ok(vec!["erp".into(), "wiki".into(), "grafana".into()]),
+                });
+                cx.defer(move |cx| status::confirm_stop(cx, Some(probe), std::rc::Rc::new(|_, _: &mut App| {})));
+            }
             if std::env::var_os("SPM_DEBUG_PARTS_DIALOG").is_some() {
                 let part = |t: &str, m: &str, n: &str, b: u64| crate::dbstatus::DetachedPart { table: t.into(), partition: m.into(), name: n.into(), reason: "broken-on-start".into(), bytes: b };
                 let list = vec![
@@ -468,6 +578,11 @@ impl Manager {
                     part("ts_kv_dictionary", "tuple()", "all_3_3_0", 12_000),
                 ];
                 status::BrokenParts::open(std::sync::Arc::new(move || Ok(list.clone())), std::sync::Arc::new(|_, _| Ok("ok a\nfailed b: Code: 232. Part b is broken".into())), cx);
+            }
+            // The Uninstall dialog for one deployment (crate::uninstall::FIXTURES),
+            // `<name>:done` for its result screen.
+            if let Ok(spec) = std::env::var("SPM_DEBUG_UNINSTALL") {
+                uninstall_dialog::open_fixture(&spec, cx);
             }
             if std::env::var_os("SPM_DEBUG_LOG_DIALOG").is_some() {
                 let view = cx.new(|cx| logs::LogView::file(crate::jobs::activity_log(), _window, cx));
@@ -499,6 +614,7 @@ impl Manager {
             });
             manager._debug_job = Some(job);
         }
+        crate::timing::mark("manager-new-done");
         manager
     }
 
@@ -508,12 +624,20 @@ impl Manager {
         // reading then waits for nothing.
         let record = self.record.clone();
         let task = cx.spawn(async move |this, cx| loop {
+            // A server open: the bar shows its readings, not this computer's.
+            let Ok(remote) = this.update(cx, |page, _| page.open_remote.is_some()) else { break };
+            if remote {
+                cx.background_executor().timer(HIDDEN_CHECK).await;
+                continue;
+            }
             let r = record.clone();
             let m = cx.background_executor().spawn(async move { crate::sysmon::from_sample(&crate::stats::local_read(r.as_ref(), std::time::Duration::from_millis(250))) }).await;
             if this
                 .update(cx, |page, cx| {
-                    page.monitor = Some(m);
-                    cx.notify();
+                    if page.monitor != Some(m) {
+                        page.monitor = Some(m);
+                        cx.notify();
+                    }
                 })
                 .is_err()
             {
@@ -914,7 +1038,7 @@ impl Manager {
                 .child(meter_icon(label).size(px(16.)).text_color(muted_fg))
                 .when(wide, |r| {
                     r.child(
-                        div().w(px(36.)).child(ui::segment_bar(fg.opacity(0.14), 5., &[(if high { warn_fill } else { meter_fill }, fraction.clamp(0.0, 1.0))])),
+                        div().w(px(METER_W)).child(ui::segment_bar(fg.opacity(0.14), 5., &[(if high { warn_fill } else { meter_fill }, fraction.clamp(0.0, 1.0))])),
                     )
                 })
                 // A fixed slot for the widest value: the bars and the bell
@@ -990,11 +1114,13 @@ impl Manager {
                 .when(show_disk, |r| r.child(slot("Disk", &disk_widest)))
         });
         // The bars glide to a new reading.
+        // A change of less than a pixel of the bar (METER_W) does not move
+        // it, so it does not animate the window for 400 ms either.
         let glide = shown.map(|m| {
             (
-                ui::tween("m-cpu", m.cpu / 100.0, 400, window),
-                ui::tween("m-mem", if m.mem_total > 0 { m.mem_used as f32 / m.mem_total as f32 } else { 0.0 }, 400, window),
-                ui::tween("m-disk", if m.disk_total > 0 { 1.0 - m.disk_free as f32 / m.disk_total as f32 } else { 0.0 }, 400, window),
+                ui::tween("m-cpu", meter_step(m.cpu / 100.0), 400, window),
+                ui::tween("m-mem", meter_step(if m.mem_total > 0 { m.mem_used as f32 / m.mem_total as f32 } else { 0.0 }), 400, window),
+                ui::tween("m-disk", meter_step(if m.disk_total > 0 { 1.0 - m.disk_free as f32 / m.disk_total as f32 } else { 0.0 }), 400, window),
             )
         });
         let monitor = shown.zip(glide).map(|(m, (g_cpu, g_mem, g_disk))| {
@@ -1141,15 +1267,21 @@ impl Manager {
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.switcher_open = !this.switcher_open;
+                        // The rows' dots: every server's state.
+                        if this.switcher_open {
+                            this.instances_page(cx);
+                        }
                         cx.notify();
                     }));
                 let popover = open.then(|| {
                     let this = cx.entity().downgrade();
                     let go = |t: WeakEntity<Manager>, id: Option<String>| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
-                        std::rc::Rc::new(move |_, cx| {
+                        std::rc::Rc::new(move |window, cx| {
                             t.update(cx, |m, cx| {
                                 m.switcher_open = false;
-                                m.open_instance(id.clone(), cx);
+                                // Platform settings with changes not applied asks first.
+                                let id = id.clone();
+                                m.leave_then(window, cx, move |m, cx| m.open_instance(id.clone(), cx));
                             })
                             .ok();
                         })
@@ -1165,11 +1297,34 @@ impl Manager {
                     if !self.remotes.is_empty() {
                         rows.push(ui::MenuRow::Divider);
                     }
+                    // Each row's dot is that server's state, as its card on
+                    // Instances shows it (the cached status), else what its
+                    // open pages last read; grey while not known. The
+                    // instance's own colour stays on its card and the bar.
+                    let card_tone = |id: &str, cx: &App| -> Option<ui::Tone> {
+                        if let Some(t) = self.instances.as_ref().and_then(|p| p.read(cx).tone_of(id)) {
+                            return Some(t);
+                        }
+                        let serving = self.remote_pages.get(id).and_then(|p| p.read(cx).serving()).or_else(|| crate::bg_app::serving(Some(id), cx));
+                        serving.map(|on| if on { ui::Tone::Good } else { ui::Tone::Bad })
+                    };
                     for r in &self.remotes {
-                        let c = crate::remote::parse_hex(&r.color).unwrap_or(0x187074);
+                        let tone = card_tone(&r.id, cx);
+                        let dot: Hsla = match tone {
+                            Some(ui::Tone::Good) => status_green,
+                            Some(ui::Tone::Warn) => rgb(0xf59e0b).into(),
+                            Some(ui::Tone::Bad) => rgb(0xef4444).into(),
+                            _ => rgb(0x94a3b8).into(),
+                        };
+                        let probe = match tone {
+                            Some(ui::Tone::Good) => "switch-dot-good",
+                            Some(ui::Tone::Warn) => "switch-dot-warn",
+                            Some(ui::Tone::Bad) => "switch-dot-bad",
+                            _ => "switch-dot-unknown",
+                        };
                         rows.push(ui::MenuRow::Item {
                             id: SharedString::from(format!("switch-{}", r.id)),
-                            icon: Some(div().size(px(10.)).mx(px(3.)).rounded_full().bg(rgb(c)).into_any_element()),
+                            icon: Some(div().relative().size(px(10.)).mx(px(3.)).rounded_full().bg(dot).child(ui::layout_probe(probe)).into_any_element()),
                             label: r.name.clone().into(),
                             secondary: Some(format!("{} over SSH", r.host).into()),
                             on: self.open_remote.as_deref() == Some(r.id.as_str()),
@@ -1181,7 +1336,7 @@ impl Manager {
                     rows.push(ui::MenuRow::Item {
                         id: "switch-manage".into(),
                         icon: Some(Icon::new(Lucide::Settings).size(px(18.)).into_any_element()),
-                        label: "Manage instances…".into(),
+                        label: "Manage instances".into(),
                         secondary: None,
                         on: false,
                         click: std::rc::Rc::new(move |_, cx| {
@@ -1238,6 +1393,35 @@ impl Manager {
 
     /// Switch to an instance (None: this computer). Remote instances are
     /// worked on from their card on Instances for now.
+    /// The Instances page, made the first time it is needed (shown, or the
+    /// switcher's state dots): it reads every server's state as it starts.
+    fn instances_page(&mut self, cx: &mut Context<Self>) -> Entity<instances::InstancesPage> {
+        if let Some(p) = &self.instances {
+            return p.clone();
+        }
+        let record = self.record.clone();
+            let open = self.open_remote.clone();
+            let page = cx.new(|cx| {
+                let mut p = instances::InstancesPage::new(record, cx);
+                // An instance opened before this page was first shown.
+                p.open = open;
+                p
+            });
+            self._subscriptions.push(cx.subscribe(&page, |this, _, e: &instances::OpenInstance, cx| {
+                this.open_instance(e.0.clone(), cx);
+            }));
+            self._subscriptions.push(cx.subscribe(&page, |this, _, _: &instances::ListChanged, cx| {
+                let before = std::mem::replace(&mut this.remotes, crate::remote::load());
+                this.prune_kept(&before);
+                if this.open_remote.as_ref().is_some_and(|id| !this.remotes.iter().any(|r| &r.id == id)) {
+                    this.open_remote = None;
+                }
+                cx.notify();
+            }));
+        self.instances = Some(page.clone());
+        page
+    }
+
     fn open_instance(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         let t0 = std::time::Instant::now();
         let _timing = SwitchTiming(t0, id.clone());
@@ -1321,6 +1505,43 @@ impl Manager {
             self.stats.remove(&k);
             self.licence.remove(&k);
             self.files.remove(&k);
+        }
+    }
+
+    /// Open a sub-flow over the page it was opened from: the page shown now,
+    /// or, opened from another sub-flow, that one's parent. Opened again
+    /// (a move still running elsewhere), it shows its own parent.
+    fn open_sub(&mut self, kind: SubKind, token: u64) {
+        let instance = self.open_remote.clone();
+        if let Some(s) = self.sub.as_ref().filter(|s| s.kind == kind && s.instance == instance && s.token == token) {
+            self.page = s.parent;
+            return;
+        }
+        let parent = self.menu_page();
+        self.sub = Some(SubFlow { kind, parent, instance, token });
+        self.page = parent;
+    }
+
+    /// The sub-flow shown now: open on this page and instance.
+    fn shown_sub(&self) -> Option<&SubFlow> {
+        self.sub.as_ref().filter(|s| s.parent == self.page && s.instance == self.open_remote)
+    }
+
+    /// The menu row to select: a sub-flow's parent page while it shows, or
+    /// the page itself.
+    fn menu_page(&self) -> Page {
+        self.shown_sub().map(|s| s.parent).unwrap_or(self.page)
+    }
+
+    /// A sub-flow that closed itself (its back arrow on the first step,
+    /// Cancel, Done) is forgotten; its parent page shows again.
+    fn drop_closed_sub(&mut self, cx: &App) {
+        let Some(s) = &self.sub else { return };
+        let open = match s.kind {
+            SubKind::MoveData => movedata::shown(s.instance.as_ref(), cx).is_some(),
+        };
+        if !open {
+            self.sub = None;
         }
     }
 
@@ -1484,7 +1705,7 @@ impl Manager {
                 let v = s.version.clone();
                 col = col.child(
                     bar("notice-sentient", crate::ui::Tone::Neutral, format!("SENTIENT {} is available{}.", s.version, dated(&s.date)))
-                        .child(crate::ui::probed(crate::ui::button("notice-sentient-go").primary().label("Update…").on_click(cx.listener(|this, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("notice-sentient-go").primary().label("Update").on_click(cx.listener(|this, _, _, cx| {
                             this.page = Page::Update;
                             cx.notify();
                         }))))
@@ -1501,7 +1722,7 @@ impl Manager {
             let v = o.version.clone();
             col = col.child(
                 bar("notice-gateway", crate::ui::Tone::Neutral, format!("Sentient Gateway {} is available{}.", o.version, dated(&o.date)))
-                    .child(crate::ui::probed(crate::ui::button("notice-gateway-go").primary().label("Update…").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button("notice-gateway-go").primary().label("Update").on_click(cx.listener(|this, _, _, cx| {
                         this.page = Page::Gateway;
                         cx.notify();
                     }))))
@@ -1651,10 +1872,14 @@ impl Manager {
 
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let record = self.record.clone();
-        // "Move data to another disk", in Platform settings' place while open.
-        if self.page == Page::Settings {
-            if let Some(flow) = movedata::shown(self.open_remote.as_ref(), cx) {
-                return flow.into_any_element();
+        // A sub-flow in its parent page's place while open.
+        if let Some(sub) = self.shown_sub().cloned() {
+            match sub.kind {
+                SubKind::MoveData => {
+                    if let Some(flow) = movedata::shown(sub.instance.as_ref(), cx) {
+                        return flow.into_any_element();
+                    }
+                }
             }
         }
         // Statistics: the same view for this computer and a server.
@@ -1779,30 +2004,7 @@ impl Manager {
             }
         }
         match self.page {
-            Page::Instances => {
-                if self.instances.is_none() {
-                    let open = self.open_remote.clone();
-                    let page = cx.new(|cx| {
-                        let mut p = instances::InstancesPage::new(record, cx);
-                        // An instance opened before this page was first shown.
-                        p.open = open;
-                        p
-                    });
-                    self._subscriptions.push(cx.subscribe(&page, |this, _, e: &instances::OpenInstance, cx| {
-                        this.open_instance(e.0.clone(), cx);
-                    }));
-                    self._subscriptions.push(cx.subscribe(&page, |this, _, _: &instances::ListChanged, cx| {
-                        let before = std::mem::replace(&mut this.remotes, crate::remote::load());
-                        this.prune_kept(&before);
-                        if this.open_remote.as_ref().is_some_and(|id| !this.remotes.iter().any(|r| &r.id == id)) {
-                            this.open_remote = None;
-                        }
-                        cx.notify();
-                    }));
-                    self.instances = Some(page);
-                }
-                self.instances.clone().unwrap().into_any_element()
-            }
+            Page::Instances => self.instances_page(cx).into_any_element(),
             Page::Status => {
                 if self.status.is_none() {
                     let updates = self.updates.clone();
@@ -1935,18 +2137,66 @@ impl Manager {
                     "stop" => "stop",
                     _ => "restart",
                 };
-                cx.defer(move |cx| page.update(cx, |c, cx| c.run(verb, cx)));
+                cx.defer(move |cx| page.update(cx, |c, cx| c.run_from_tray(verb, cx)));
             }
+        }
+    }
+}
+
+impl Manager {
+    /// A server forgotten outside the Instances page (after its uninstall):
+    /// the switcher and Instances take the new list at once, and the window
+    /// goes back to this computer when it was the open one.
+    fn take_list_change(&mut self, cx: &mut Context<Self>) {
+        if !crate::remote::LIST_CHANGED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let before = std::mem::replace(&mut self.remotes, crate::remote::load());
+        self.prune_kept(&before);
+        if self.open_remote.as_ref().is_some_and(|id| !self.remotes.iter().any(|r| &r.id == id)) {
+            self.open_instance(None, cx);
+        }
+        if let Some(p) = &self.instances {
+            p.update(cx, |p, cx| p.reload_list(cx));
         }
     }
 }
 
 impl Render for Manager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t0 = std::time::Instant::now();
+        self.take_list_change(cx);
         // Windows 10: the app's caption and rounded corners (crate::win_frame).
         let root = self.render_root(window, cx).into_any_element();
-        crate::win_frame::frame(crate::mode::AppMode::Manager.window_title(), root, window, cx)
+        let el = crate::win_frame::frame(crate::mode::AppMode::Manager.window_title(), root, window, cx);
+        if crate::timing::on() {
+            render_timing(self.page.id(), t0, window);
+        }
+        el
     }
+}
+
+/// SPM_DEBUG_TIMING: the first render and the first frame shown, and each
+/// 10 s how many times the window rendered and how long its render took
+/// (a re-render storm shows as many renders on an idle window).
+fn render_timing(page: &str, t0: std::time::Instant, window: &mut Window) {
+    thread_local!(static N: std::cell::Cell<(u64, f64, Option<std::time::Instant>)> = const { std::cell::Cell::new((0, 0., None)) });
+    let ms = t0.elapsed().as_secs_f64() * 1000.;
+    N.with(|n| {
+        let (count, total, since) = n.get();
+        if count == 0 && since.is_none() {
+            crate::timing::mark(&format!("first-render page={page} render_ms={ms:.1}"));
+            window.on_next_frame(|_, _| crate::timing::mark("first-frame"));
+        }
+        let since = since.unwrap_or_else(std::time::Instant::now);
+        let (count, total) = (count + 1, total + ms);
+        if since.elapsed().as_secs_f64() >= 10. {
+            crate::timing::mark(&format!("renders page={page} n={count} total_ms={total:.1} per_s={:.2}", count as f64 / since.elapsed().as_secs_f64()));
+            n.set((0, 0., Some(std::time::Instant::now())));
+        } else {
+            n.set((count, total, Some(since)));
+        }
+    });
 }
 
 impl Manager {
@@ -1974,15 +2224,16 @@ impl Manager {
                 self.page = p;
             }
         }
-        // "Move data to another disk" was opened (Platform settings shows
-        // it), or asked for another page.
+        // "Move data to another disk" was opened (a sub-flow of the page it
+        // was opened from), or asked for another page.
         let gen = movedata::generation(cx);
         if gen != self.move_gen {
             self.move_gen = gen;
-            if gen != 0 {
-                self.page = Page::Settings;
+            if let Some(token) = movedata::open_flow(self.open_remote.as_ref(), cx) {
+                self.open_sub(SubKind::MoveData, token);
             }
         }
+        self.drop_closed_sub(cx);
         if let Some(p) = movedata::take_go() {
             self.page = match p {
                 "files" => Page::Files,
@@ -2014,8 +2265,29 @@ impl Manager {
         #[cfg(debug_assertions)]
         if std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
             eprintln!("LAYOUT-FRAME {:.0} {:.0}", f32::from(window.viewport_size().width), f32::from(window.viewport_size().height));
+            // The route: the page, the sub-flow shown over it and its parent,
+            // and the menu row that should be selected (check.py compares
+            // it with the row drawn selected, `LAYOUT menu-on`).
+            let sub = self.shown_sub();
+            eprintln!(
+                "LAYOUT-NAV page={} sub={} parent={} selected={}",
+                self.page.id(),
+                sub.map(|s| s.kind.id()).unwrap_or("-"),
+                sub.map(|s| s.parent.id()).unwrap_or("-"),
+                self.menu_page().id()
+            );
         }
+        SHOWN.with(|s| s.set(Some((self.page, self.open_remote.is_none()))));
+        let content_t0 = std::time::Instant::now();
         let content = self.content(window, cx);
+        // SPM_DEBUG_TIMING: building a page's view the first frame it shows.
+        if crate::timing::on() {
+            thread_local!(static LAST: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) });
+            let key = format!("{}@{}", self.page.id(), self.open_remote.as_deref().unwrap_or("local"));
+            if LAST.with(|l| l.replace(key.clone())) != key {
+                crate::timing::took(&format!("page-open {key}"), content_t0);
+            }
+        }
         // Switch timing: each frame after a switch until the page shows
         // its data (render done, and the next frame's start ≈ presented).
         if let Some((t0, n)) = SWITCH_AT.with(|s| s.get()) {
@@ -2132,3 +2404,20 @@ fn cond_key(inst: &Option<String>, title: &str) -> String {
     format!("{}|{title}", inst.as_deref().unwrap_or(""))
 }
 
+
+#[cfg(test)]
+mod perf_tests {
+    use super::{meter_step, METER_W};
+
+    /// The top bar's meters glide only for a change of a pixel or more
+    /// (perf audit: an idle window drew 400 ms of frames every 4 s for
+    /// readings that moved a bar by a fraction of a pixel).
+    #[test]
+    fn a_meter_moves_by_whole_pixels() {
+        assert_eq!(meter_step(0.031), meter_step(0.034));
+        assert_eq!(meter_step(0.5), meter_step(0.5 + 0.4 / METER_W));
+        assert_ne!(meter_step(0.5), meter_step(0.5 + 1.0 / METER_W));
+        assert_eq!(meter_step(1.0), 1.0);
+        assert_eq!(meter_step(0.0), 0.0);
+    }
+}

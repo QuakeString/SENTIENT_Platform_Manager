@@ -307,7 +307,7 @@ impl DeployConfig {
         let base = stack_base_dir();
         if self.stack_name == "sentient" { base } else { format!("{base}/{}", self.stack_name) }
     }
-    fn compose_path(&self) -> String {
+    pub fn compose_path(&self) -> String {
         format!("{}/docker-compose.yml", self.stack_dir())
     }
     pub fn ch_config_path(&self) -> String {
@@ -1203,6 +1203,31 @@ pub fn control(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Result<(),
     sink(Progress::Step { name: label.into() });
     run_stream(&sink, &cfg.control_cmd(sub))?;
     sink(Progress::Done { message: format!("{label}: done.") });
+    Ok(())
+}
+
+/// Start, stop or restart the whole stack: compose over all of the
+/// project's services, which it orders by their dependencies
+/// (crate::stack_order::docker_commands); a start waits for SENTIENT to
+/// answer.
+pub fn control_stack(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Result<(), String> {
+    use crate::stack_order::{docker_commands, wait_until, SENTIENT_READY_SECS};
+    let subs = docker_commands(action, cfg.external.is_some())?;
+    for sub in &subs {
+        sink(Progress::Step { name: if *sub == "stop" { "Stopping SENTIENT and its databases".into() } else { "Starting the databases, then SENTIENT".into() } });
+        run_stream(&sink, &cfg.control_cmd(sub))?;
+    }
+    if action != "stop" {
+        sink(Progress::Step { name: "Waiting for SENTIENT to answer".into() });
+        if !wait_until(SENTIENT_READY_SECS, || crate::native::http_answers(cfg.http_port)) {
+            return Err(format!(
+                "SENTIENT was started but does not answer on port {} after {} minutes. Its log says why.",
+                cfg.http_port,
+                SENTIENT_READY_SECS / 60
+            ));
+        }
+    }
+    sink(Progress::Done { message: crate::stack_order::done_message(action, &[]) });
     Ok(())
 }
 

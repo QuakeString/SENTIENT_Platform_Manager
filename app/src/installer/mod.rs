@@ -4,6 +4,7 @@
 //! "Installer wizard"). Twelve pages: ten collect choices without touching the
 //! machine, Install runs the plan, Finish says what to do next.
 
+mod old_pg;
 mod pages;
 mod plan;
 
@@ -12,7 +13,7 @@ pub(crate) use plan::{InstallPlan, run as run_install, run_manager_only};
 #[cfg(windows)]
 pub use plan::provision_clickhouse_wsl;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use gpui_kit::component::{
@@ -54,9 +55,20 @@ const FINISH: usize = 11;
 /// One line of the system check, kept as plain data for rendering.
 #[derive(Clone)]
 struct CheckRow {
+    id: String,
     label: SharedString,
     detail: SharedString,
     status: Status,
+    /// The pill's words, when the status's own would be wrong.
+    state: Option<SharedString>,
+    /// Its actions and commands (checks::Check::fixes).
+    fixes: Vec<sentient_installer_core::diagnose::Fix>,
+}
+
+impl CheckRow {
+    fn from(c: checks::Check) -> Self {
+        CheckRow { id: c.id, label: c.label.into(), detail: c.detail.into(), status: c.status, state: c.state.map(Into::into), fixes: c.fixes }
+    }
 }
 
 /// Text fields of the wizard, each its own input state.
@@ -156,6 +168,21 @@ pub struct Installer {
     earlier_done: bool,
     /// Who holds a busy port (checks::port_owner), looked up once per port.
     port_owners: HashMap<u16, Option<checks::PortOwner>>,
+    /// A System check row's action (stop a service, remove a PostgreSQL,
+    /// stop a container), run as its own job with one password prompt;
+    /// the check runs again when it ends.
+    pub(crate) check_fix: Entity<Job>,
+    /// The row and the label of the action that runs (or ran).
+    pub(crate) check_fix_at: Option<(String, String)>,
+    /// Run the check again once `check_fix` ends.
+    check_fix_watch: bool,
+    /// The rows whose commands are shown ("Show command").
+    pub(crate) commands_shown: HashSet<String>,
+    /// Native Linux: a PostgreSQL data folder from an older major, and
+    /// what to do with it (crate::installer::old_pg).
+    pub(crate) old_pg: Option<sentient_installer_core::old_pg::OldPgData>,
+    pub(crate) old_pg_choice: sentient_installer_core::old_pg::OldPgChoice,
+    old_pg_probing: bool,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -209,7 +236,7 @@ impl Installer {
             // the databases listen on 127.0.0.1 only (Docker publishes their
             // ports there; natively they listen on localhost).
             pg_password: secret_with(window, cx, &d.db_password),
-            pg_admin_password: secret(window, cx),
+            pg_admin_password: secret_with(window, cx, &d.db_password),
             pg_port: input(window, cx, &d.pg_port.to_string()),
             ch_db: input(window, cx, &d.ch_db),
             ch_user: input(window, cx, &d.ch_user),
@@ -258,6 +285,14 @@ impl Installer {
         });
         let install = cx.new(|_| Job::new());
         let cleanup = cx.new(|_| Job::new());
+        let check_fix = cx.new(|_| Job::new());
+        let check_fix_sub = cx.observe(&check_fix, |this, job, cx| {
+            if this.check_fix_watch && !job.read(cx).is_running() {
+                this.check_fix_watch = false;
+                this.run_checks(cx);
+            }
+            cx.notify();
+        });
         let install_sub = cx.observe(&install, |this, job, cx| {
             if this.step == INSTALL && matches!(job.read(cx).state(), JobState::Done(_)) {
                 this.step = FINISH;
@@ -303,6 +338,13 @@ impl Installer {
             leftovers: Vec::new(),
             cleanup,
             port_owners: HashMap::new(),
+            check_fix,
+            check_fix_at: None,
+            check_fix_watch: false,
+            commands_shown: HashSet::new(),
+            old_pg: None,
+            old_pg_choice: Default::default(),
+            old_pg_probing: false,
             earlier: None,
             earlier_done: resumed.is_some(),
             keep_existing: true,
@@ -311,14 +353,43 @@ impl Installer {
             fields,
             install,
             _tasks: Vec::new(),
-            _subscriptions: vec![search_sub, install_sub],
+            _subscriptions: vec![search_sub, install_sub, check_fix_sub],
         };
+        // Enter: the next field of the step, and on its last one Next (a
+        // step that is not valid keeps its message and focuses the first
+        // empty field).
+        let f = &this.fields;
+        let all = [
+            &f.pg_db, &f.pg_user, &f.pg_port, &f.pg_password, &f.pg_admin_password, &f.ch_db, &f.ch_user, &f.ch_password, &f.ch_http_port, &f.ch_native_port,
+            &f.http_port, &f.mqtt_port, &f.mqtts_port, &f.coap_port, &f.coaps_port, &f.admin_email, &f.admin_password, &f.admin_confirm, &f.autologin_user, &f.autologin_password,
+        ]
+        .map(|e| e.clone());
+        let enter = crate::ui::enter_moves_on(&all, window, cx, |this: &Self, _| this.step_fields(), |this: &mut Self, window, cx| {
+            let step = this.step;
+            this.next(window, cx);
+            if this.step != step || this.problem.is_none() {
+                return None;
+            }
+            let fields = this.step_fields();
+            fields.iter().find(|e| e.read(cx).value().trim().is_empty()).cloned().or_else(|| fields.first().cloned())
+        });
+        this._subscriptions.extend(enter);
         this.run_checks(cx);
+        // The error panel's page fixes: another port, or the password
+        // prompt again (both run the install again).
+        let me = cx.entity().downgrade();
+        this.install.update(cx, |job, _| {
+            job.set_fix_handler(std::rc::Rc::new(move |action, window, cx| {
+                me.update(cx, |page, cx| page.apply_fix(action, window, cx)).unwrap_or(false)
+            }), true)
+        });
         if let Some(plan) = resumed {
             this.accepted = true;
             this.flavor = Some(plan.stack.flavor);
             this.engine = plan.engine;
             this.step = INSTALL;
+            let steps = plan::steps(&plan);
+            this.install.update(cx, |job, _| job.set_plan(steps));
             this.install.update(cx, |job, cx| job.start(move |sink| plan::run(plan, sink), cx));
         }
         if this.bundle.is_none() {
@@ -352,18 +423,87 @@ impl Installer {
             this.flavor = Some(Flavor::Timescaledb);
             this.loc_per_store = std::env::var_os("SPM_DEBUG_LOC_PG").is_some();
             this.debug_content(window, cx);
+            // Screens: a System check row with its commands shown.
+            if let Ok(row) = std::env::var("SPM_DEBUG_SYSCHECK_COMMANDS") {
+                this.commands_shown.insert(row);
+            }
+            // Screens: an older PostgreSQL's data on System check.
+            if std::env::var_os("SPM_DEBUG_OLD_PG").is_some() {
+                this.engine = Engine::Native;
+                this.run_checks(cx);
+            }
+            // The install step failed with a canned cause (crate::diagnosis).
+            if this.step == INSTALL && std::env::var_os("SPM_DEBUG_DIAGNOSIS").is_some() {
+                this.engine = Engine::Native;
+                this.install.update(cx, |job, cx| {
+                    job.set_plan(plan::screen_steps());
+                    job.start(
+                        |sink| {
+                            sink(sentient_installer_core::progress::Progress::Step { name: "Installing the Platform Manager".into() });
+                            sink(sentient_installer_core::progress::Progress::Step { name: "Installing PostgreSQL from your distribution".into() });
+                            Err("pkexec exited with 42".into())
+                        },
+                        cx,
+                    )
+                });
+            }
         }
         this
+    }
+
+    /// A fix the install's error panel leaves to this page: another port
+    /// for the one in use, or ask for the password again. Both run the
+    /// install again. False: not this page's.
+    fn apply_fix(&mut self, action: &sentient_installer_core::diagnose::FixAction, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        use sentient_installer_core::diagnose::FixAction;
+        match action {
+            FixAction::UsePort { port, instead } => {
+                let f = &self.fields;
+                let field = [&f.pg_port, &f.ch_http_port, &f.ch_native_port, &f.http_port, &f.mqtt_port, &f.mqtts_port, &f.coap_port, &f.coaps_port]
+                    .into_iter()
+                    .find(|field| self.value(field, cx) == port.to_string())
+                    .cloned();
+                let Some(field) = field else { return false };
+                field.update(cx, |state, cx| state.set_value(instead.to_string(), window, cx));
+                self.start_install(cx);
+                true
+            }
+            FixAction::AskAgain => {
+                self.start_install(cx);
+                true
+            }
+            _ => false,
+        }
     }
 
     fn value(&self, field: &Entity<InputState>, cx: &App) -> String {
         field.read(cx).value().trim().to_string()
     }
 
+    /// The ports the System check looks at: the ones chosen so far (the
+    /// defaults until changed; "Use another port" changes them).
+    fn check_ports(&self, cx: &App) -> Vec<(u16, String)> {
+        let f = &self.fields;
+        let d = DeployConfig::default();
+        let get = |field: &Entity<InputState>, default: u16| self.value(field, cx).parse::<u16>().ok().filter(|p| *p > 0).unwrap_or(default);
+        vec![
+            (get(&f.http_port, d.http_port), "HTTP".into()),
+            (get(&f.mqtt_port, d.mqtt_port), "MQTT".into()),
+            (get(&f.coap_port, d.coap_port), "CoAP".into()),
+            (get(&f.pg_port, d.pg_port), "PostgreSQL".into()),
+        ]
+    }
+
     fn run_checks(&mut self, cx: &mut Context<Self>) {
         self.checks = None;
+        self.look_for_old_pg(cx);
         let offline = self.bundle.is_some();
         let engine = self.engine;
+        let ports = self.check_ports(cx);
+        #[cfg(debug_assertions)]
+        let canned = std::env::var_os("SPM_DEBUG_SYSCHECK").is_some() || std::env::var_os("SPM_DEBUG_SETUP_LONG").is_some();
+        #[cfg(not(debug_assertions))]
+        let canned = false;
         let pg_dir = std::path::PathBuf::from(self.value(&self.fields.data_dir, cx));
         let task = cx.spawn(async move |this, cx| {
             let look_dir = pg_dir.clone();
@@ -401,21 +541,23 @@ impl Installer {
             let rows = cx
                 .background_executor()
                 .spawn(async move {
-                    let found = if cfg!(windows) {
-                        checks::run_native(offline)
+                    let mode = if cfg!(windows) {
+                        "windows-native"
                     } else if engine == Engine::Docker {
-                        checks::run_linux_docker(offline)
+                        "linux-docker"
                     } else {
-                        checks::run_linux_native(offline)
+                        "linux-native"
                     };
-                    let mut rows = found
-                        .into_iter()
-                        .map(|c| CheckRow { label: c.label.into(), detail: c.detail.into(), status: c.status })
-                        .collect::<Vec<_>>();
+                    let found = if canned { debug_checks() } else { checks::run_for(mode, offline, Some(&ports)) };
+                    let mut rows = found.into_iter().map(CheckRow::from).collect::<Vec<_>>();
                     // Installing over a running SENTIENT would replace its
                     // configuration (and, on Docker, its passwords).
-                    for c in crate::adopt::find() {
+                    // (Screens: the canned rows alone, whatever runs here.)
+                    for c in if canned { Vec::new() } else { crate::adopt::find() } {
                         rows.push(CheckRow {
+                            id: "adopt".into(),
+                            state: None,
+                            fixes: Vec::new(),
                             label: "SENTIENT already installed".into(),
                             detail: format!(
                                 "SENTIENT {} runs on this computer as {}, from {}. Installing again would overwrite it: open the Platform Manager and use “Add existing instance” on its Status screen instead.",
@@ -437,9 +579,71 @@ impl Installer {
         self._tasks.push(task);
     }
 
+    /// A System check row's action. "Use another port" changes the field
+    /// here; the rest run as a job (one password prompt) and the check
+    /// runs again when it ends. Removing a PostgreSQL asks first.
+    pub(crate) fn check_action(&mut self, row: String, label: String, action: sentient_installer_core::diagnose::FixAction, window: &mut Window, cx: &mut Context<Self>) {
+        use sentient_installer_core::diagnose::FixAction;
+        match &action {
+            FixAction::Recheck => self.run_checks(cx),
+            FixAction::UsePort { port, instead } => {
+                let f = &self.fields;
+                let field = [&f.pg_port, &f.http_port, &f.mqtt_port, &f.coap_port, &f.mqtts_port, &f.coaps_port, &f.ch_http_port, &f.ch_native_port]
+                    .into_iter()
+                    .find(|field| self.value(field, cx) == port.to_string())
+                    .cloned()
+                    // The PostgreSQL row's own: SENTIENT's PostgreSQL port.
+                    .or_else(|| (row == "existing-pg").then(|| f.pg_port.clone()));
+                if let Some(field) = field {
+                    field.update(cx, |state, cx| state.set_value(instead.to_string(), window, cx));
+                }
+                self.port_owners.clear();
+                self.run_checks(cx);
+            }
+            FixAction::RemovePostgres { data_dir, package, .. } => {
+                let what = match package {
+                    Some(p) => format!("The service is stopped and the package {p} is removed. "),
+                    None => "The service is stopped and cleaned up. ".into(),
+                };
+                let text = format!("{what}Its data folder {data_dir} is moved to {data_dir}.old-<date>: nothing is deleted.");
+                let this = cx.entity().downgrade();
+                crate::modal::alert(window, cx, move |dialog, _, _| {
+                    let (this, row, label, action) = (this.clone(), row.clone(), label.clone(), action.clone());
+                    dialog.title("Remove this PostgreSQL?").description(text.clone()).confirm().ok_text("Remove it").on_ok(move |_, _, cx| {
+                        let (row, label, action) = (row.clone(), label.clone(), action.clone());
+                        this.update(cx, |page, cx| page.run_check_fix(row, label, action, cx)).ok();
+                        true
+                    })
+                });
+            }
+            _ => self.run_check_fix(row, label, action, cx),
+        }
+        cx.notify();
+    }
+
+    fn run_check_fix(&mut self, row: String, label: String, action: sentient_installer_core::diagnose::FixAction, cx: &mut Context<Self>) {
+        if self.check_fix.read(cx).is_running() {
+            return;
+        }
+        self.check_fix_at = Some((row, label));
+        self.check_fix_watch = true;
+        self.check_fix.update(cx, |job, cx| {
+            // jobview: short (a check's one-click fix, shown on its row).
+            job.start(
+                move |sink| {
+                    sentient_installer_core::diagnose::apply(&action, &sink)
+                        .map(|message| sink(sentient_installer_core::progress::Progress::Done { message }))
+                },
+                cx,
+            )
+        });
+        cx.notify();
+    }
+
     /// Remove what an earlier install left, then look again.
     fn remove_leftovers(&mut self, cx: &mut Context<Self>) {
         let pg_dir = std::path::PathBuf::from(self.value(&self.fields.data_dir, cx));
+        // jobview: short (shown on the check's row).
         self.cleanup.update(cx, |job, cx| job.start(move |sink| crate::leftovers::remove(pg_dir, sink), cx));
         let job = self.cleanup.clone();
         let task = cx.spawn(async move |this, cx| {
@@ -465,6 +669,32 @@ impl Installer {
             .ok()
             .filter(|p| *p > 0)
             .ok_or_else(|| format!("{name} must be a number between 1 and 65535."))
+    }
+
+    /// The text fields of the current step as shown, in their visual order
+    /// (Enter moves through them).
+    fn step_fields(&self) -> Vec<Entity<InputState>> {
+        let f = &self.fields;
+        let v: Vec<&Entity<InputState>> = match self.step {
+            4 => {
+                let mut v = vec![&f.pg_db, &f.pg_user, &f.pg_port, &f.pg_password, &f.pg_admin_password];
+                if self.flavor == Some(Flavor::Clickhouse) {
+                    v.extend([&f.ch_db, &f.ch_user, &f.ch_password, &f.ch_http_port, &f.ch_native_port]);
+                }
+                v
+            }
+            5 => vec![&f.http_port, &f.mqtt_port, &f.mqtts_port, &f.coap_port, &f.coaps_port],
+            6 => vec![&f.admin_email, &f.admin_password, &f.admin_confirm],
+            7 if self.autologin => {
+                if cfg!(windows) {
+                    vec![&f.autologin_user, &f.autologin_password]
+                } else {
+                    vec![&f.autologin_user]
+                }
+            }
+            _ => Vec::new(),
+        };
+        v.into_iter().cloned().collect()
     }
 
     /// Can the wizard leave the current page? `Err` says why not.
@@ -784,6 +1014,7 @@ impl Installer {
             pg_superuser_password: self.value(&f.pg_admin_password, cx),
             existing: self.existing.as_ref().map(|_| self.keep_existing),
             delete_existing: self.existing.is_some() && !self.keep_existing && self.delete_existing,
+            old_pg: self.old_pg_choice,
             admin_email: self.value(&f.admin_email, cx),
             admin_password: self.value(&f.admin_password, cx),
             settings: self.chosen_settings(cx),
@@ -884,6 +1115,7 @@ impl Installer {
             };
             self.problem = None;
             self.step = INSTALL;
+            self.install.update(cx, |job, _| job.set_plan(plan::manager_only_steps()));
             self.install.update(cx, |job, cx| job.start(move |sink| plan::run_manager_only(shortcuts, sink), cx));
             cx.notify();
             return;
@@ -898,6 +1130,9 @@ impl Installer {
         };
         self.problem = None;
         self.step = INSTALL;
+        // Its steps from the first frame (the shared job view).
+        let steps = plan::steps(&plan);
+        self.install.update(cx, |job, _| job.set_plan(steps));
         self.install.update(cx, |job, cx| job.start(move |sink| plan::run(plan, sink), cx));
         cx.notify();
     }
@@ -1031,8 +1266,10 @@ impl Installer {
         }
         if self.step == INSTALL {
             self.install.update(cx, |job, cx| {
+                job.set_plan(plan::screen_steps());
                 job.start(
                     move |sink| {
+                        sink(sentient_installer_core::progress::Progress::Step { name: "Installing the Platform Manager".into() });
                         sink(sentient_installer_core::progress::Progress::Step { name: "Starting PostgreSQL".into() });
                         sink(sentient_installer_core::progress::Progress::Percent { value: 0.42 });
                         for i in 0..if long { 24 } else { 4 } {
@@ -1259,6 +1496,12 @@ impl Installer {
         #[cfg(debug_assertions)]
         if std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
             eprintln!("LAYOUT-FRAME {:.0} {:.0}", width, f32::from(window.viewport_size().height));
+            // The layout test: no database password starts empty (Setup
+            // fills in its default, "sentient").
+            let f = &self.fields;
+            for (name, field) in [("pg-password", &f.pg_password), ("pg-admin-password", &f.pg_admin_password), ("ch-password", &f.ch_password)] {
+                eprintln!("LAYOUT password {name} {}", if field.read(cx).value().is_empty() { "empty" } else { "set" });
+            }
         }
         let nav = self.steps_nav(cx);
         let footer = self.footer(cx);
@@ -1310,6 +1553,37 @@ impl Installer {
             .children(layer)
             .into_any_element()
     }
+}
+
+/// Screens and the layout test (SPM_DEBUG_SYSCHECK=1, or the long
+/// variant): the System check of the native Linux case it was made for, a
+/// PostgreSQL whose package was removed still running on 5432, and a
+/// Docker container on 8080, built by the same code as the real rows.
+#[cfg(debug_assertions)]
+fn debug_checks() -> Vec<checks::Check> {
+    use sentient_installer_core::units::{PgService, UnitInfo};
+    let pg = UnitInfo { id: "postgresql.service".into(), load_state: "not-found".into(), active_state: "active".into(), fragment_path: String::new(), main_pid: 812 };
+    let mut postmaster = checks::owner_of("postgres".into(), Some(812), None, Some(pg.id.clone()), Some(&pg));
+    postmaster.data_dir = Some("/var/lib/postgres/data".into());
+    let docker = checks::PortOwner { process: "docker-proxy".into(), container: Some("grafana".into()), ..Default::default() };
+    let wanted = [(8080, "HTTP".to_string()), (1883, "MQTT".to_string()), (5683, "CoAP".to_string()), (5432, "PostgreSQL".to_string())];
+    let mut ports = checks::ports_check(&wanted, &[(5432, "PostgreSQL".into(), Some(postmaster), Some(5433)), (8080, "HTTP".into(), Some(docker), Some(8081))]);
+    ports.status = Status::Warn;
+    ports.label = "Ports".into();
+    let row = |id: &str, label: &str, status: Status, detail: &str| checks::Check { id: id.into(), label: label.into(), status, detail: detail.into(), state: None, fixes: Vec::new() };
+    let mut docker = row("docker-daemon", "Docker daemon", Status::Setup, "Docker is installed but not running. The installer will enable and start it.");
+    docker.state = Some("Will be started".into());
+    docker.fixes = vec![sentient_installer_core::diagnose::Fix::Action { label: "Start Docker".into(), action: sentient_installer_core::diagnose::FixAction::StartDocker }];
+    let mut v = vec![row("systemd", "systemd", Status::Pass, "systemd 259 (259.5-1-arch)"), row("disk", "Disk space", Status::Pass, "412 GB free."), docker];
+    v.push(checks::existing_pg_check(&PgService::LeftoverRunning(pg), None, "/var/lib/postgres/data", Some(5433)));
+    v.push(ports);
+    checks::share_fixes(&mut v);
+    v
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_checks() -> Vec<checks::Check> {
+    Vec::new()
 }
 
 #[cfg(test)]

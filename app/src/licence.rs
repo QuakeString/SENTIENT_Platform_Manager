@@ -344,7 +344,19 @@ pub fn call(port: u16, req: &Request) -> Result<Reply, String> {
 pub fn agent_job(file: &str) -> i32 {
     let text = std::fs::read_to_string(file);
     let _ = std::fs::remove_file(file);
-    let req: Request = match text.map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string())) {
+    agent_job_text(text.map_err(|e| e.to_string()))
+}
+
+/// [`agent_job`] with the request given inline (`--request-b64`): one ssh
+/// call per request instead of four (no request file to write and remove).
+pub fn agent_job_b64(b64: &str) -> i32 {
+    use base64::Engine as _;
+    let text = base64::engine::general_purpose::STANDARD.decode(b64.trim()).map_err(|e| e.to_string()).and_then(|b| String::from_utf8(b).map_err(|e| e.to_string()));
+    agent_job_text(text)
+}
+
+fn agent_job_text(text: Result<String, String>) -> i32 {
+    let req: Request = match text.and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string())) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("The licence request could not be read: {e}");
@@ -505,10 +517,14 @@ impl Target {
     pub fn read(&self, token: &str) -> Result<Reading, String> {
         #[cfg(debug_assertions)]
         debug::slow("read");
-        let status: Status = self.get(token, "GET", "/api/license/status", None)?;
-        let usage = self.get::<Usage>(token, "GET", "/api/license/usage", None).ok();
-        let state = self.get::<State>(token, "GET", "/api/license/state", None).ok();
-        Ok(Reading { status, usage, state })
+        // The three at once: on a server each is an ssh round trip.
+        let (status, usage, state) = std::thread::scope(|sc| {
+            let u = sc.spawn(|| self.get::<Usage>(token, "GET", "/api/license/usage", None).ok());
+            let st = sc.spawn(|| self.get::<State>(token, "GET", "/api/license/state", None).ok());
+            let status = self.get::<Status>(token, "GET", "/api/license/status", None);
+            (status, u.join().ok().flatten(), st.join().ok().flatten())
+        });
+        Ok(Reading { status: status?, usage, state })
     }
 
     /// Refresh: SENTIENT asks the licence server again. Blocking.

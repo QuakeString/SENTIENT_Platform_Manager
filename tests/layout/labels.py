@@ -11,7 +11,10 @@ menu-label[-on] l r t b` and `LAYOUT menu-row l r t b`). For each label,
 its ink height (cap or ascender top to descender bottom, sub-pixel from the
 anti-aliasing, logical px) is measured in the screenshot. Renders of the
 same width, scale and theme are grouped; a label's height when selected
-must equal its height unselected within 0.5 px. Rows: a 44 px pitch
+must equal its height unselected within 0.5 px; at a scale that puts the
+text between device pixels (x1.25, x1.75: scale * 2 not whole) within one
+device pixel, since the semibold descender then rounds a pixel differently
+from the medium one at the same font size (rc12-24, agreed with the owner). Rows: a 44 px pitch
 (40 px rows, 4 px apart) below the brand row's 16 px clear space.
 Prints findings and exits 1 if there are any.
 """
@@ -56,6 +59,25 @@ def ink_height(im, box, sc):
     # Whole rows inside, plus the edge rows' partial coverage.
     h = (z - a + 1) + (min(1.0, cov[a - 1] / 0.9) if a > 0 else 0) + (min(1.0, cov[z + 1] / 0.9) if z + 1 < len(cov) else 0)
     return h / sc
+
+
+def ellipsis_labels():
+    """Button and menu labels in the source that end in "..." or "\u2026"
+    (SPM's rule: a label says what it does, no trailing dots)."""
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "app", "src")
+    pat = re.compile(r'(\.label\(|PopupMenuItem::new\(|RowMenuItem::|stop_label|Slot::Button\()[^\n]*?"([^"\n]*(?:\u2026|\.\.\.))"')
+    found = []
+    for root, _, files in os.walk(src):
+        for f in files:
+            if not f.endswith(".rs"):
+                continue
+            p = os.path.join(root, f)
+            for n, line in enumerate(open(p, errors="replace"), 1):
+                if line.lstrip().startswith("//"):
+                    continue
+                for m in pat.finditer(line):
+                    found.append(f"{os.path.relpath(p, src)}:{n}: label \"{m.group(2)}\" ends in an ellipsis")
+    return found
 
 
 def main():
@@ -103,9 +125,12 @@ def main():
             if not v["on"] or not v["off"]:
                 continue
             off = sorted(h for h, _ in v["off"])[len(v["off"]) // 2]
+            sc = key[1]
+            tol = TOL if abs(sc * 2 - round(sc * 2)) < 1e-6 else max(TOL, 1 / sc + 0.01)
             for h, name in v["on"]:
-                if abs(h - off) > TOL:
+                if abs(h - off) > tol:
                     findings.append(f"{name}: selected label {i} is {h:.2f} px tall, unselected {off:.2f} px")
+    findings += ellipsis_labels()
     for f in findings:
         print(f)
     compared = sum(1 for rows in groups.values() for v in rows.values() if v["on"] and v["off"])

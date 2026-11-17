@@ -26,7 +26,9 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use sentient_installer_core::progress::{Progress, ProgressFn};
 
+pub mod conn;
 pub mod reuse;
+pub mod serve;
 
 /// What the agent jobs mean (`--job …`, crate::headless), as one number:
 /// raised whenever a job is added, removed or answers differently, so a
@@ -155,6 +157,10 @@ static SESSION: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
 /// Keep an instance's passphrase or password.
 pub fn set_secret(id: &str, value: &str) {
+    // A new sudo password: the connection is made again with it.
+    if let Some(inst) = id.strip_suffix("-sudo") {
+        conn::close(inst);
+    }
     #[cfg(windows)]
     {
         let _ = crate::secrets::save_named(&format!("instance-{id}"), value);
@@ -194,6 +200,8 @@ pub fn secret(id: &str) -> Option<String> {
 }
 
 pub fn forget_secret(id: &str) {
+    // The server is removed: its connection goes.
+    conn::close(id);
     forget_one(&sudo_key(id));
     forget_one(id);
     // The instance's SENTIENT sign-in (Licence) goes with it.
@@ -287,16 +295,82 @@ fn askpass_env(c: &mut Command, inst: &Instance, once: Option<&str>) {
 
 /// Run a command on the server and return what it printed.
 pub fn run(inst: &Instance, remote: &str, once: Option<&str>) -> Result<String, String> {
+    // Over the server's open connection (crate::remote::conn), as the
+    // account, the way its own ssh call ran it.
+    // (Not before the first connection found what the server is.)
+    if once.is_none() && inst.detected.is_some() && !is_windows(inst) {
+        match conn::call(inst, serve::Work::Sh { cmd: remote.to_string(), root: false }, None) {
+            Ok((_, r)) => return run_answer(r.code == Some(0), r.out, &r.err),
+            Err(conn::Fail::Err(e)) => return Err(e),
+            Err(conn::Fail::PerCall) => {}
+        }
+    }
     let out = ssh(inst, remote, once).output().map_err(|e| format!("start ssh: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if out.status.success() {
         return Ok(stdout);
     }
-    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let err = clean_stderr(&String::from_utf8_lossy(&out.stderr));
     if once.is_none() && err.to_lowercase().contains("permission denied") && (inst.key_has_passphrase || inst.auth == Auth::Password) && secret(&inst.id).is_none() {
         return Err(FORGOTTEN.into());
     }
     Err(explain(&err).unwrap_or_else(|| if err.is_empty() { stdout.trim().to_string() } else { err }))
+}
+
+/// A command's answer as [`run`] gives it: its output, or its error output
+/// in plain words (or its output, when it wrote no error).
+fn run_answer(ok: bool, stdout: String, stderr: &str) -> Result<String, String> {
+    if ok {
+        return Ok(stdout);
+    }
+    let err = clean_stderr(stderr);
+    Err(explain(&err).unwrap_or_else(|| if err.is_empty() { stdout.trim().to_string() } else { err }))
+}
+
+/// ssh's and PowerShell's error output with the noise taken out: OpenSSH's
+/// "** WARNING: connection is not using a post-quantum key exchange" lines,
+/// and PowerShell's CLIXML error records (`#< CLIXML <Objs …>`) decoded to
+/// their plain message lines (progress records dropped).
+pub(crate) fn clean_stderr(err: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for line in err.lines() {
+        let t = line.trim();
+        if t.starts_with("** ") && (t.contains("post-quantum") || t.contains("store now, decrypt later") || t.contains("may need to be upgraded") || t.contains("openssh.com/pq")) {
+            continue;
+        }
+        if t == "#< CLIXML" {
+            continue;
+        }
+        if t.starts_with("<Objs ") || t.contains("<S S=\"Error\">") {
+            out.extend(clixml_lines(t));
+            continue;
+        }
+        if !t.is_empty() {
+            out.push(t.to_string());
+        }
+    }
+    out.join("\n")
+}
+
+/// The `<S S="Error">…</S>` strings of a CLIXML record, unescaped
+/// (`_x000D__x000A_` line breaks, XML entities), as lines.
+fn clixml_lines(xml: &str) -> Vec<String> {
+    let mut text = String::new();
+    for part in xml.split("<S S=\"Error\">").skip(1) {
+        if let Some(s) = part.split("</S>").next() {
+            text.push_str(s);
+        }
+    }
+    let text = text
+        .replace("_x000D__x000A_", "\n")
+        .replace("_x000A_", "\n")
+        .replace("_x000D_", "")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&");
+    text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
 }
 
 /// The passphrase or password was kept only until the Platform Manager closed.
@@ -309,6 +383,8 @@ pub(crate) fn explain(err: &str) -> Option<String> {
         "The server's key is not the one accepted before. The connection was refused: if the server was reinstalled, remove and add the instance again; otherwise someone may be in between.".into()
     } else if e.contains("permission denied") {
         "The server refused the sign-in (user, key or password).".into()
+    } else if ["client_loop", "broken pipe", "connection reset", "closed by remote host", "timeout, server", "kex_exchange_identification"].iter().any(|w| e.contains(w)) {
+        "The connection to the server keeps dropping: the network or VPN between here and the server is losing packets. Check it, then try again.".into()
     } else if e.contains("connection timed out") || e.contains("operation timed out") {
         "The server did not answer (address, port or firewall).".into()
     } else if e.contains("connection refused") {
@@ -603,6 +679,7 @@ fn deploy_user(inst: &Instance, staging: &str, sink: &ProgressFn) -> Result<(), 
     sink(Progress::Log { line: format!("{} has no administrator rights on the server: the agent goes in its home folder, and jobs that need root will say so.", inst.user) });
     run(inst, &format!("mkdir -p \"{USER_JOBS}\" && install -m 0755 {staging} \"{USER_SPM}\""), None)
         .map_err(|e| failed("The agent could not be put in the account's home folder. The agent there is unchanged.", &e))?;
+    conn::close(&inst.id);
     Ok(())
 }
 
@@ -740,6 +817,8 @@ pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
                 clean(inst);
                 return Err(failed(&format!("The agent could not be put in place at {target} (as administrator). The agent there is unchanged."), &e));
             }
+            // The connection's agent is the old one: the next request starts the new one.
+            conn::close(&inst.id);
             if target == reuse::LINUX_OWN {
                 sink(Progress::Log { line: format!("This version's agent is set up beside the Platform Manager installed on the server, at {target}; the installed one is not changed.") });
             }
@@ -834,6 +913,19 @@ fn sftp_batch(inst: &Instance, command: &str) -> Result<(), String> {
 /// from the system place, else as the account from its home. A per-user
 /// agent refused for want of root says so plainly.
 fn agent_run(inst: &Instance, args: &str) -> Result<String, String> {
+    // Over the open connection: the agent there is the one this would run.
+    if let Some(argv) = conn::split_args(args).filter(|a| a.first().map(String::as_str) == Some("--job")) {
+        match conn::call(inst, serve::Work::Job(argv[1..].to_vec()), None) {
+            Ok((peer, r)) => {
+                if r.code == Some(0) {
+                    return Ok(r.out);
+                }
+                return Err(agent_failure(inst, !peer.root && inst.user != "root", || sudo_password(inst).is_some(), r.err.trim()));
+            }
+            Err(conn::Fail::Err(e)) => return Err(e),
+            Err(conn::Fail::PerCall) => {}
+        }
+    }
     let pw = sudo_password(inst);
     let mut c = ssh(inst, &agent_cmd(inst, args, pw.is_some()), None);
     if pw.is_some() {
@@ -852,14 +944,20 @@ fn agent_run(inst: &Instance, args: &str) -> Result<String, String> {
     if out.status.success() {
         return Ok(String::from_utf8_lossy(&out.stdout).to_string());
     }
+    Err(agent_failure(inst, user, || pw.is_some(), &err))
+}
+
+/// A failed job in plain words: a per-user agent refused for want of root
+/// says so; otherwise sudo's refusal, or the job's own error.
+fn agent_failure(inst: &Instance, user: bool, password: impl FnOnce() -> bool, err: &str) -> String {
     if user {
         let lower = err.to_lowercase();
         if lower.contains("permission denied") || lower.contains("operation not permitted") || lower.contains("must be root") || lower.contains("as root") {
-            return Err(failed(&format!("This takes root on the server, and {} has no sudo there. Sign in as an account with sudo, or as root, to do it.", inst.user), &err));
+            return failed(&format!("This takes root on the server, and {} has no sudo there. Sign in as an account with sudo, or as root, to do it.", inst.user), err);
         }
-        return Err(explain(&err).unwrap_or(err));
+        return explain(err).unwrap_or(err.to_string());
     }
-    Err(sudo_error(inst, pw.is_some(), &err))
+    sudo_error(inst, password(), err)
 }
 
 fn sudo_error(inst: &Instance, password: bool, err: &str) -> String {
@@ -874,6 +972,13 @@ fn sudo_error(inst: &Instance, password: bool, err: &str) -> String {
 }
 
 fn sudo_run(inst: &Instance, cmd: &str, _login: Option<&str>) -> Result<String, String> {
+    // Over the open connection, when its agent runs as root.
+    match conn::call(inst, serve::Work::Sh { cmd: cmd.to_string(), root: true }, None) {
+        Ok((_, r)) if r.code == Some(0) => return Ok(r.out),
+        Ok((_, r)) => return Err(sudo_error(inst, sudo_password(inst).is_some(), r.err.trim())),
+        Err(conn::Fail::Err(e)) => return Err(e),
+        Err(conn::Fail::PerCall) => {}
+    }
     let pw = sudo_password(inst);
     let password = pw.as_deref();
     let full = format!("{}sh -c '{}'", sudo(inst, password.is_some()), cmd.replace('\'', "'\\''"));
@@ -1071,6 +1176,31 @@ fn read_json<T: serde::de::DeserializeOwned>(inst: &Instance, job: &str) -> Resu
     serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
 }
 
+/// What the server's Uninstall dialog shows (crate::uninstall::Facts); the
+/// agent is brought up to date first (an older one does not know the job).
+pub fn uninstall_facts(inst: &Instance) -> Result<crate::uninstall::Facts, String> {
+    let _ = deploy(inst, &sentient_installer_core::progress::noop());
+    read_json(inst, "uninstall-facts-json")
+}
+
+/// Set when the instance list changed outside the Instances page (a
+/// server forgotten after its uninstall): the window takes the new list on
+/// its next frame (Manager::take_list_change).
+pub static LIST_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Forget a server here (Uninstall's "Remove from Instances").
+pub fn forget_instance(id: &str) {
+    let mut list = load();
+    if let Some(inst) = list.iter().find(|i| i.id == id) {
+        untrust(&inst.host, inst.port);
+    }
+    forget_secret(id);
+    reuse::forget(id);
+    list.retain(|i| i.id != id);
+    let _ = save(&list);
+    LIST_CHANGED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 pub fn services(inst: &Instance) -> Result<Vec<RemoteService>, String> {
     #[cfg(debug_assertions)]
     if let Some(secs) = std::env::var("SPM_DEBUG_REMOTE_SLOW").ok().and_then(|s| s.parse::<u64>().ok()) {
@@ -1095,6 +1225,33 @@ pub fn dbstatus(inst: &Instance) -> Result<crate::dbstatus::DbStatus, String> {
     read_json(inst, "dbstatus-json")
 }
 
+/// The databases that keep the server's shared PostgreSQL running when its
+/// stack stops (crate::installation::Platform::pg_other_databases there).
+pub fn pg_others(inst: &Instance) -> Result<Vec<String>, String> {
+    #[cfg(debug_assertions)]
+    if let Some(secs) = std::env::var("SPM_DEBUG_REMOTE_SLOW").ok().and_then(|s| s.parse::<u64>().ok()) {
+        std::thread::sleep(std::time::Duration::from_secs(secs));
+    }
+    #[cfg(debug_assertions)]
+    if let Some(v) = std::env::var_os("SPM_DEBUG_REMOTE_PG_OTHERS") {
+        let v = v.to_string_lossy().to_string();
+        return match v.strip_prefix("error:") {
+            Some(e) => Err(e.to_string()),
+            None => Ok(v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect()),
+        };
+    }
+    #[derive(serde::Deserialize)]
+    struct Answer {
+        names: Vec<String>,
+        error: Option<String>,
+    }
+    let a: Answer = read_json(inst, "pg-others-json")?;
+    match a.error {
+        Some(e) => Err(e),
+        None => Ok(a.names),
+    }
+}
+
 /// The server's settings by catalog name (crate::settings::current there).
 pub fn settings(inst: &Instance) -> Result<HashMap<String, String>, String> {
     #[cfg(debug_assertions)]
@@ -1111,7 +1268,13 @@ pub fn put_text(inst: &Instance, path: &str, text: &str) -> Result<(), String> {
         let b = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
         return win::ps(inst, &format!("[IO.File]::WriteAllText('{}', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{b}')))", path.replace('\'', "''"))).map(|_| ());
     }
-    let mut c = ssh(inst, &format!("umask 077 && cat > '{}'", path.replace('\'', "")), None);
+    let cmd = format!("umask 077 && cat > '{}'", path.replace('\'', ""));
+    match conn::call(inst, serve::Work::Sh { cmd: cmd.clone(), root: false }, Some(text.to_string())) {
+        Ok((_, r)) => return run_answer(r.code == Some(0), r.out, &r.err).map(|_| ()),
+        Err(conn::Fail::Err(e)) => return Err(e),
+        Err(conn::Fail::PerCall) => {}
+    }
+    let mut c = ssh(inst, &cmd, None);
     c.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
     let mut child = c.spawn().map_err(|e| format!("start ssh: {e}"))?;
     if let Some(mut s) = child.stdin.take() {
@@ -1399,10 +1562,7 @@ pub fn is_windows(inst: &Instance) -> bool {
 /// and return what it printed.
 fn spm_job(inst: &Instance, job: &str) -> Result<String, String> {
     let r = if is_windows(inst) {
-        // Piped, so PowerShell waits for it and reads its output even when
-        // it is the windowed build (an installed Platform Manager); its
-        // errors folded into the output.
-        win::exe(inst).and_then(|exe| win::ps(inst, &format!("& '{}' --job {job} 2>&1 | ForEach-Object {{ \"$_\" }}", exe.replace('\'', "''"))))
+        win::job(inst, job)
     } else {
         agent_run(inst, &format!("--job {job}"))
     };
@@ -1492,6 +1652,22 @@ pub fn check_takeover_password(inst: &Instance, ch: bool, password: &str) -> Res
 /// agent removes it once read, and so does this, in case it never ran.
 pub fn licence_api(inst: &Instance, req: &crate::licence::Request) -> Result<crate::licence::Reply, String> {
     let text = serde_json::to_string(req).map_err(|e| e.to_string())?;
+    // One ssh call: the request inline (an agent of this version). A key
+    // file being imported is large: that one still goes as a file, and so
+    // does every request to an older agent (it does not know the flag).
+    if text.len() <= 6000 {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+        match spm_job(inst, &format!("licence-api --request-b64 {b64}")) {
+            Ok(out) => {
+                if let Some(line) = out.lines().rev().find(|l| l.trim_start().starts_with('{')) {
+                    return serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"));
+                }
+            }
+            Err(e) if e != AGENT_OLD && !e.contains("usage:") => return Err(e),
+            Err(_) => {}
+        }
+    }
     let file = format!("{}/.spm-licence-{}", home(inst)?.trim_end_matches('/'), chrono::Utc::now().timestamp_millis());
     put_text(inst, &file, &text)?;
     let out = spm_job(inst, &format!("licence-api --request-file '{}'", file.replace('\'', "")));
@@ -1799,7 +1975,28 @@ mod win {
         use base64::Engine as _;
         let utf16: Vec<u8> = format!("$ProgressPreference='SilentlyContinue'; {script}").encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
         let enc = base64::engine::general_purpose::STANDARD.encode(utf16);
+        // Over the open connection (its agent starts PowerShell there).
+        match conn::call(inst, serve::Work::Ps(enc.clone()), None) {
+            Ok((_, r)) => return run_answer(r.code == Some(0), r.out, &r.err),
+            Err(conn::Fail::Err(e)) => return Err(e),
+            Err(conn::Fail::PerCall) => {}
+        }
         run(inst, &format!("powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {enc}"), None)
+    }
+
+    /// `--job <job>` with the agent: over the open connection (its agent is
+    /// this Platform Manager's own, at EXE), else through PowerShell, piped
+    /// so it waits for a windowed build too, with its errors in the output.
+    pub fn job(inst: &Instance, job: &str) -> Result<String, String> {
+        if let Some(argv) = conn::split_args(job) {
+            match conn::call(inst, serve::Work::Job(argv), None) {
+                Ok((_, r)) if r.code == Some(0) => return Ok(format!("{}{}", r.out, r.err)),
+                Ok((_, r)) => return Err(if r.err.trim().is_empty() { r.out } else { r.err }),
+                Err(conn::Fail::Err(e)) => return Err(e),
+                Err(conn::Fail::PerCall) => {}
+            }
+        }
+        exe(inst).and_then(|exe| ps(inst, &format!("& '{}' --job {job} 2>&1 | ForEach-Object {{ \"$_\" }}", exe.replace('\'', "''"))))
     }
 
     pub fn deploy(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
@@ -1825,20 +2022,48 @@ mod win {
             let _ = ps(inst, &format!("Remove-Item -Force -ErrorAction SilentlyContinue '{upload}'"));
             return Err("The copy on the server does not match (checksum); nothing was replaced. Try again.".into());
         }
-        ps(inst, &format!("Move-Item -Force '{upload}' '{EXE}'")).map_err(|e| super::failed("The agent could not be put in place. The agent there is unchanged.", &e))?;
+        // Windows PowerShell 5.1's Move-Item -Force does not replace a file
+        // ("Cannot create a file when that file already exists"): the old
+        // agent is renamed aside (a running exe can be), the new one moved
+        // in, the old one put back on a failure, and removed when it can be
+        // (a running one stays until the next deploy removes it).
+        let put = ps(inst, &replace_script(&upload, EXE)).map_err(|e| super::failed("The agent could not be put in place. The agent there is unchanged.", &e))?;
+        if !put.lines().any(|l| l.trim().eq_ignore_ascii_case(&want)) {
+            return Err(super::failed("The agent put in place does not match (checksum). Try again.", put.trim()));
+        }
         set_exe(&inst.id, &Agent::Own);
+        // The connection's agent is the old one (or none): made again.
+        conn::close(&inst.id);
         if reuse::found(&inst.id).is_some() {
             sink(Progress::Log { line: format!("This version's agent is set up beside the Platform Manager installed on the server, at {EXE}; the installed one is not changed.") });
         }
         Ok(())
     }
 
+    /// PowerShell that puts `from` in place of `to` on Windows PowerShell
+    /// 5.1 and later, then prints the new file's SHA-256.
+    pub(crate) fn replace_script(from: &str, to: &str) -> String {
+        let (f, t) = (from.replace('\'', "''"), to.replace('\'', "''"));
+        format!(
+            "$ErrorActionPreference='Stop'; $f='{f}'; $t='{t}'; \
+             Get-ChildItem -Force -ErrorAction SilentlyContinue -Path ($t + '.old*') | Remove-Item -Force -ErrorAction SilentlyContinue; \
+             $o = $null; \
+             try {{ \
+               if (Test-Path -LiteralPath $t -PathType Leaf) {{ $o = $t + '.old-' + [DateTime]::UtcNow.Ticks; Rename-Item -LiteralPath $t -NewName (Split-Path -Leaf $o) }}; \
+               Move-Item -LiteralPath $f -Destination $t \
+             }} catch {{ \
+               $m = $_.Exception.Message; \
+               if ($o -and (Test-Path -LiteralPath $o) -and -not (Test-Path -LiteralPath $t)) {{ Rename-Item -LiteralPath $o -NewName (Split-Path -Leaf $t) }}; \
+               [Console]::Error.WriteLine($m); exit 1 \
+             }}; \
+             if ($o) {{ Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $o }}; \
+             (Get-FileHash -Algorithm SHA256 -LiteralPath $t).Hash"
+        )
+    }
+
     pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {
-        let exe = match resolve(inst)? {
-            Agent::Own => EXE.to_string(),
-            Agent::Installed(path) => path,
-        };
-        let out = ps(inst, &format!("& '{}' --job status-json 2>&1 | ForEach-Object {{ \"$_\" }}", exe.replace('\'', "''")))?;
+        resolve(inst)?;
+        let out = job(inst, "status-json").or_else(|e| if not_elevated(&e) { Ok(e) } else { Err(e) })?;
         if not_elevated(&out) {
             return Err(not_admin(inst));
         }
@@ -1943,6 +2168,22 @@ mod win {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stderr_noise_and_clixml_are_cleaned() {
+        let raw = "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n#< CLIXML\n<Objs Version=\"1.1.0.1\" xmlns=\"http://schemas.microsoft.com/powershell/2004/04\"><Obj S=\"progress\" RefId=\"0\"><TN RefId=\"0\"><T>System.Management.Automation.PSCustomObject</T></TN></Obj><S S=\"Error\">Move-Item : Cannot create a file when that file already exists._x000D__x000A_</S><S S=\"Error\">At line:1 char:40_x000D__x000A_</S></Objs>";
+        assert_eq!(clean_stderr(raw), "Move-Item : Cannot create a file when that file already exists.\nAt line:1 char:40");
+        assert_eq!(clean_stderr("ssh: connect to host x port 22: Connection timed out\n"), "ssh: connect to host x port 22: Connection timed out");
+    }
+
+    #[test]
+    fn the_windows_replace_renames_the_old_file_aside() {
+        let s = win::replace_script(r"C:\d\upload.exe", r"C:\d\it's.exe");
+        assert!(s.contains("Rename-Item -LiteralPath $t"));
+        assert!(!s.contains("Move-Item -Force"));
+        assert!(s.contains("$t='C:\\d\\it''s.exe'"));
+        assert!(s.ends_with("(Get-FileHash -Algorithm SHA256 -LiteralPath $t).Hash"));
+    }
 
     #[test]
     fn text_stays_readable_on_any_colour() {
@@ -2284,6 +2525,8 @@ mod tests {
             installed_at: "2026-11-15T00:00:00Z".into(),
             kiosk: None,
             changes_done: Vec::new(),
+            shortcuts: Vec::new(),
+            installed: None,
         };
         let dir = std::env::temp_dir().join(format!("spm-e2e-bk-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -2616,7 +2859,8 @@ fn sftp_path(inst: &Instance, path: &str) -> String {
 
 fn rename_remote(inst: &Instance, from: &str, to: &str) -> Result<(), String> {
     if is_windows(inst) {
-        win::ps(inst, &format!("Move-Item -Force -LiteralPath '{}' '{}'", from.replace('\'', "''"), to.replace('\'', "''"))).map(|_| ())
+        // Move-Item -Force does not replace a file on PowerShell 5.1.
+        win::ps(inst, &win::replace_script(from, to)).map(|_| ())
     } else {
         run(inst, &format!("mv -f {} {}", shell_quote(from), shell_quote(to)), None).map(|_| ())
     }

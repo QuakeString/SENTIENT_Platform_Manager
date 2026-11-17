@@ -62,6 +62,10 @@ pub struct LogView {
     /// Its instance is not the open one (a kept page): no reading until
     /// it is shown again.
     paused: bool,
+    /// The page it is on, for a view that reads only while that page
+    /// shows (this computer's Logs page); None: a dialog's, or a server's
+    /// (`paused` covers that).
+    shown_on: Option<super::Page>,
     _poll: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -106,6 +110,7 @@ impl LogView {
             anchor: None,
             focus: cx.focus_handle(),
             paused: false,
+            shown_on: None,
             _poll: None,
             _subscriptions,
         };
@@ -124,7 +129,9 @@ impl LogView {
         let r1 = record.clone();
         let load: LoadFn = Arc::new(move |s, n, today| Ok(logsource::read(&r1, s, n, today)));
         let sources: SourcesFn = Arc::new(move || Ok(logsource::available(&record)));
-        Self::new(load, sources, window, cx)
+        let mut v = Self::new(load, sources, window, cx);
+        v.shown_on = Some(super::Page::Logs);
+        v
     }
 
     /// One log file (the Platform Manager's own log, About → Open the log).
@@ -199,9 +206,15 @@ impl LogView {
     fn start(&mut self, cx: &mut Context<Self>) {
         let load = self.load.clone();
         self._poll = Some(cx.spawn(async move |this, cx| loop {
-            let Ok((pick, sources, paused)) = this.update(cx, |v, _| (v.pick, v.sources.clone(), v.paused)) else { break };
+            let Ok((pick, sources, paused, on)) = this.update(cx, |v, _| (v.pick, v.sources.clone(), v.paused, v.shown_on)) else { break };
             if paused {
                 cx.background_executor().timer(FOLLOW_EVERY).await;
+                continue;
+            }
+            // This computer's Logs page hidden (another page, or a server
+            // open): no reading; at once when it shows again.
+            if let Some(page) = on.filter(|p| !super::shown_here(*p)) {
+                super::until_shown(page, cx).await;
                 continue;
             }
             let load = load.clone();
@@ -411,7 +424,7 @@ impl Render for LogView {
             }))
         }));
         let this = cx.entity().downgrade();
-        let save = crate::ui::button("log-save").outline().label("Save log…").dropdown_menu(move |menu, _, _| {
+        let save = crate::ui::button("log-save").outline().label("Save log").dropdown_menu(move |menu, _, _| {
             let opt = |label: &'static str, what: Option<(u32, bool)>| {
                 let t = this.clone();
                 PopupMenuItem::new(label).on_click(move |_, _, cx| {
@@ -431,7 +444,17 @@ impl Render for LogView {
                 h_flex()
                     .gap(crate::ui::button_gap())
                     .flex_wrap()
+                    // A wrapped line of controls ends at the right too.
+                    .justify_end()
                     .items_center()
+                    .relative()
+                    .child(ui::layout_probe("header-actions"))
+                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!(
+                        "{} · {}",
+                        if count == 1 { "1 line".to_string() } else { format!("{count} lines") },
+                        logsource::zone_label()
+                    )))
+                    .child(div().flex_1())
                     .child(div().w(px(280.)).child(Input::new(&self.filter)))
                     .child(Checkbox::new("log-follow").label("Follow").checked(self.follow).on_change(cx.listener(|v, on: &bool, _, cx| {
                         v.follow = *on;
@@ -443,13 +466,7 @@ impl Render for LogView {
                     })))
                     .child(crate::ui::probed(crate::ui::button("log-refresh").outline().label("Refresh").on_click(cx.listener(|v, _, _, cx| v.start(cx)))))
                     .child(crate::ui::probed(crate::ui::button("log-copy").outline().label(if selected_n > 0 { format!("Copy {selected_n}") } else { "Copy".into() }).on_click(cx.listener(|v, _, _, cx| v.copy(cx)))))
-                    .child(crate::ui::probed(save))
-                    .child(div().flex_1())
-                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!(
-                        "{} · {}",
-                        if count == 1 { "1 line".to_string() } else { format!("{count} lines") },
-                        logsource::zone_label()
-                    ))),
+                    .child(crate::ui::probed(save)),
             );
         let narrow = ui::narrow();
         // The level column only when the log has levels (SENTIENT's and the

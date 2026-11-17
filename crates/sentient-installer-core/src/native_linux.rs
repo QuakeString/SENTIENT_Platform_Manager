@@ -21,6 +21,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::exec::{self, shq};
+use crate::old_pg;
 use crate::native::{ArtifactSource, NativeConfig, NativeStatus, ServiceStatus};
 use crate::progress::{Progress, ProgressFn};
 use crate::stack;
@@ -117,26 +118,33 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         // PostgreSQL from the distribution. ClickHouse is appended below,
         // always from the vendor's static build (pinned; see CH_VERSION).
         Pm::Pacman => format!(
-            "pacman -Sy --noconfirm --needed postgresql{curl}\n\
+            "pacman -Sy --noconfirm --needed postgresql{extra}{curl}\n\
              DATA=/var/lib/postgres/data\n\
-             {same_major}\
+             {resolve}{same_major}\
              [ -f \"$DATA/PG_VERSION\" ] || runuser -u postgres -- initdb -D \"$DATA\" --locale=C.UTF-8 --encoding=UTF8 >/dev/null\n\
              {first_port}",
             curl = if ch { " curl" } else { "" },
+            extra = old_pg::extra_packages(old_pg::Family::Arch, cfg.old_pg),
+            resolve = old_pg::resolve_script(old_pg::Family::Arch, cfg.old_pg),
             same_major = SAME_MAJOR,
             first_port = first_port(cfg.pg_port),
         ),
+        // Debian keeps one cluster per major side by side: an older one is
+        // upgraded or renamed aside here when chosen, else left alone.
         Pm::Apt => format!(
-            "export DEBIAN_FRONTEND=noninteractive\napt-get update -qq\napt-get install -y -qq postgresql{curl}\n",
-            curl = if ch { " curl ca-certificates" } else { "" }
+            "export DEBIAN_FRONTEND=noninteractive\napt-get update -qq\napt-get install -y -qq postgresql{curl}\n{resolve}",
+            curl = if ch { " curl ca-certificates" } else { "" },
+            resolve = old_pg::resolve_script(old_pg::Family::Debian, cfg.old_pg),
         ),
         Pm::Dnf => format!(
-            "dnf install -y postgresql-server postgresql{curl}\n\
+            "dnf install -y postgresql-server postgresql{extra}{curl}\n\
              DATA=/var/lib/pgsql/data\n\
-             {same_major}\
+             {resolve}{same_major}\
              [ -f \"$DATA/PG_VERSION\" ] || postgresql-setup --initdb >/dev/null\n\
              {first_port}",
             curl = if ch { " curl" } else { "" },
+            extra = old_pg::extra_packages(old_pg::Family::Rhel, cfg.old_pg),
+            resolve = old_pg::resolve_script(old_pg::Family::Rhel, cfg.old_pg),
             same_major = SAME_MAJOR,
             first_port = first_port(cfg.pg_port),
         ),
@@ -152,7 +160,8 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     // the next free port; openSUSE initialises on its first start, on 5432.
     let start_port = match pm {
         Pm::Pacman | Pm::Dnf => cfg.pg_port.to_string(),
-        Pm::Apt => "$(pg_lsclusters -h 2>/dev/null | awk 'NR==1{print $3}')".into(),
+        // The newest major's cluster (an older one may still be listed).
+        Pm::Apt => "$(pg_lsclusters -h 2>/dev/null | sort -n | awk 'END{print $3}')".into(),
         Pm::Zypper => "5432".into(),
     };
 
@@ -271,9 +280,14 @@ fn setup_error(e: &str, port: u16) -> String {
     let code = |c: &str| e.contains(&format!("exited with {c}")) || e.contains(&format!("exit status: {c}"));
     if code("42") {
         "The PostgreSQL data folder holds a database from another PostgreSQL version (see the log above). \
-         If you need that data, upgrade it with pg_upgrade first; if not, move the folder aside \
-         (for example sudo mv /var/lib/postgres/data /var/lib/postgres/data.old) and run Setup again."
+         Upgrade it to the installed version, or keep it aside and start fresh: both keep the data."
             .into()
+    } else if code("44") {
+        "The PostgreSQL data could not be upgraded on this computer (see the log above). Nothing was changed; \
+         keep it aside and start fresh, or upgrade it by hand."
+            .into()
+    } else if code("45") {
+        "Upgrading the PostgreSQL data failed (see the log above). The old data is back in its folder, unchanged.".into()
     } else if code("43") {
         format!("PostgreSQL could not listen on its port because another program uses it (see the log above). Stop that program or choose another port than {port} in Network ports, and run Setup again.")
     } else if code("41") {
@@ -764,6 +778,7 @@ pub fn read_installed() -> Option<Result<FoundNative, String>> {
             ch_password: get("CLICKHOUSE_PASSWORD").unwrap_or_default().to_string(),
             ch_http_port,
             ch_native_port,
+            old_pg: Default::default(),
         };
         // PostgreSQL's settings as the server has them: through SENTIENT's
         // own database login when it answers, else as the postgres account
@@ -1026,6 +1041,116 @@ pub fn control(sink: ProgressFn, _cfg: &NativeConfig, action: &str) -> Result<()
     Ok(())
 }
 
+/// The databases in the PostgreSQL cluster that are not SENTIENT's (the
+/// distribution's postgresql.service is shared). Empty when PostgreSQL is
+/// not running: there is nothing to stop then. Asks for the administrator
+/// password (the listing runs as the postgres account).
+pub fn pg_other_databases(cfg: &NativeConfig) -> Result<Vec<String>, String> {
+    if unit_state(PG_UNIT) != "running" {
+        return Ok(Vec::new());
+    }
+    let script = format!("runuser -u postgres -- psql -p {} -XAtqc 'SELECT datname FROM pg_database'", cfg.pg_port);
+    match exec::privileged_output(&script) {
+        Some((true, out, _)) => {
+            let all: Vec<String> = out.lines().map(str::to_string).collect();
+            Ok(crate::stack_order::other_databases(&all, &cfg.db_name))
+        }
+        Some((false, _, err)) => Err(err.lines().last().unwrap_or("psql failed").trim().to_string()),
+        None => Err("could not run psql as the postgres account".into()),
+    }
+}
+
+/// The root script for a plan's steps (SENTIENT's own readiness is waited
+/// for over HTTP by the caller): systemctl on each unit, in order, and a
+/// wait for each database to answer.
+pub(crate) fn stack_script(steps: &[crate::stack_order::Step], cfg: &NativeConfig) -> String {
+    use crate::stack_order::{Part, Step};
+    let unit = |p: Part| match p {
+        Part::Sentient => APP_UNIT,
+        Part::ClickHouse => CH_UNIT,
+        Part::Postgres => PG_UNIT,
+    };
+    let mut s = String::from("set -e\n");
+    s.push_str(WAIT_PG);
+    s.push_str(
+        "wait_port() {\n  for i in $(seq 1 \"$3\"); do\n    (exec 3<>/dev/tcp/127.0.0.1/\"$2\") 2>/dev/null && return 0\n    sleep 1\n  done\n  echo \"!! $1 did not answer on port $2 within $3 seconds.\"\n  exit 44\n}\n",
+    );
+    for step in steps {
+        match step {
+            // A unit that is not there (no ClickHouse any more) is passed over.
+            Step::Stop(p) => s.push_str(&format!(
+                "if systemctl cat {u}.service >/dev/null 2>&1; then echo '>> Stopping {l}'; systemctl stop {u}.service; fi\n",
+                u = unit(*p),
+                l = p.label()
+            )),
+            Step::Start(p) => s.push_str(&format!(
+                "if systemctl cat {u}.service >/dev/null 2>&1; then echo '>> Starting {l}'; systemctl start {u}.service; fi\n",
+                u = unit(*p),
+                l = p.label()
+            )),
+            // Waited for only where the unit is there (as above).
+            Step::Ready(Part::Postgres) => s.push_str(&format!("if systemctl cat {PG_UNIT}.service >/dev/null 2>&1; then wait_pg {}; fi\n", cfg.pg_port)),
+            Step::Ready(Part::ClickHouse) => {
+                s.push_str(&format!("if systemctl cat {CH_UNIT}.service >/dev/null 2>&1; then wait_port ClickHouse {} 180; fi\n", cfg.ch_http_port))
+            }
+            Step::Ready(Part::Sentient) => {}
+            Step::KeepPostgres(why) => s.push_str(&format!("echo {}\n", shq(&format!(">> {why}")))),
+        }
+    }
+    s
+}
+
+/// What a failed stack script means, from its exit code.
+fn stack_error(e: &str) -> String {
+    let code = |c: &str| e.contains(&format!("exited with {c}")) || e.contains(&format!("exit status: {c}"));
+    if code("44") {
+        "ClickHouse did not answer after it was started; the log above says more.".into()
+    } else if code("43") {
+        "PostgreSQL could not listen on its port because another program uses it (see the log above).".into()
+    } else if code("41") {
+        "PostgreSQL stopped while starting; its log is above.".into()
+    } else if code("40") {
+        "PostgreSQL did not answer within 4 minutes; its log is above.".into()
+    } else {
+        e.to_string()
+    }
+}
+
+/// Start, stop or restart the whole stack in order (crate::stack_order):
+/// SENTIENT, ClickHouse, PostgreSQL down; the reverse up, each waited for.
+/// PostgreSQL stays running when it holds other databases, unless
+/// `stop_shared_pg`.
+pub fn control_stack(sink: ProgressFn, cfg: &NativeConfig, action: &str, stop_shared_pg: bool) -> Result<(), String> {
+    use crate::stack_order::{self as order, Part, Step};
+    let keep = if order::stops_postgres(action) && !stop_shared_pg {
+        order::keep_postgres(&pg_other_databases(cfg), false)
+    } else {
+        None
+    };
+    let steps = order::plan(action, cfg.flavor.uses_clickhouse(), keep)?;
+    if action != "stop" && !unit_exists(APP_UNIT) {
+        return Err(format!("{APP_UNIT}.service is not installed: Repair writes it again."));
+    }
+    step(&sink, match action {
+        "start" => "Starting SENTIENT and its databases",
+        "stop" => "Stopping SENTIENT and its databases",
+        _ => "Restarting SENTIENT and its databases",
+    });
+    exec::run_privileged(&sink, &stack_script(&steps, cfg)).map_err(|e| stack_error(&e))?;
+    if steps.contains(&Step::Ready(Part::Sentient)) {
+        step(&sink, "Waiting for SENTIENT to answer");
+        if !order::wait_until(order::SENTIENT_READY_SECS, || crate::native::is_running(cfg.http_port)) {
+            return Err(format!(
+                "SENTIENT was started but does not answer on port {} after {} minutes. Its log says why.",
+                cfg.http_port,
+                order::SENTIENT_READY_SECS / 60
+            ));
+        }
+    }
+    sink(Progress::Done { message: order::done_message(action, &steps) });
+    Ok(())
+}
+
 /// Start, stop or restart one systemd unit of the install (the caller checks
 /// it is one of the install's own).
 pub fn service_control(sink: ProgressFn, unit: &str, action: &str) -> Result<(), String> {
@@ -1133,6 +1258,7 @@ mod tests {
             tuning: Tuning::default(), pg: PgTuning::default(), ch: ChTuning::default(),
             ch_db: "sentient".into(), ch_user: "sentient".into(), ch_password: "pw".into(),
             ch_http_port: 8123, ch_native_port: 9000,
+            old_pg: Default::default(),
         }
     }
 
@@ -1144,6 +1270,40 @@ mod tests {
         let mut c = cfg();
         c.flavor = Flavor::Stock;
         assert!(unit_body(&c).contains("Requires=postgresql.service\n"));
+    }
+
+    /// The systemctl lines of a stack script, in order.
+    fn systemctl_lines(script: &str) -> Vec<String> {
+        script
+            .lines()
+            .filter_map(|l| l.split("; ").find(|p| p.starts_with("systemctl ") || p.starts_with("then wait_")).map(|p| p.trim_start_matches("then ").to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn stack_script_orders_the_units() {
+        use crate::stack_order::plan;
+        let c = cfg();
+        let stop = stack_script(&plan("stop", true, None).unwrap(), &c);
+        assert_eq!(
+            systemctl_lines(&stop),
+            ["systemctl stop sentient.service", "systemctl stop clickhouse-server.service", "systemctl stop postgresql.service"]
+        );
+        let start = stack_script(&plan("start", true, None).unwrap(), &c);
+        assert_eq!(
+            systemctl_lines(&start),
+            [
+                "systemctl start postgresql.service",
+                "wait_pg 5432",
+                "systemctl start clickhouse-server.service",
+                "wait_port ClickHouse 8123 180",
+                "systemctl start sentient.service"
+            ]
+        );
+        // Shared PostgreSQL: not stopped, and the script says so.
+        let kept = stack_script(&plan("stop", false, Some("PostgreSQL stays running: it also holds erp.".into())).unwrap(), &c);
+        assert_eq!(systemctl_lines(&kept), ["systemctl stop sentient.service"]);
+        assert!(kept.contains("echo '>> PostgreSQL stays running: it also holds erp.'"));
     }
 
     #[test]

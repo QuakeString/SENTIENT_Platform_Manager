@@ -343,6 +343,38 @@ foreach ($dir in $targets) {{
     }
 }
 
+/// The files [`create_shortcut`] writes (for the installation's manifest of
+/// shortcut files, so uninstall removes exactly those).
+pub fn shortcut_paths() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        let mut v = Vec::new();
+        if let Some(p) = std::env::var_os("PUBLIC") {
+            v.push(PathBuf::from(p).join("Desktop").join("SENTIENT.lnk"));
+        }
+        if let Some(p) = std::env::var_os("ProgramData") {
+            v.push(PathBuf::from(p).join(r"Microsoft\Windows\Start Menu\Programs").join("SENTIENT.lnk"));
+        }
+        v
+    }
+    #[cfg(not(windows))]
+    {
+        desktop_entry_paths()
+    }
+}
+
+/// The sign-in entry [`set_open_at_signin`] writes.
+pub fn signin_entry_path() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        startup_lnk()
+    }
+    #[cfg(not(windows))]
+    {
+        Some(PathBuf::from(XDG_AUTOSTART))
+    }
+}
+
 /// What the kiosk shortcut and the sign-in entry pass to the Platform
 /// Manager (`--open-sentient`, see the app's open_client).
 pub const KIOSK_LAUNCH_ARGS: &str = "--open-sentient --kiosk";

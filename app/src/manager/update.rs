@@ -14,7 +14,6 @@ use gpui_kit::component::{
     button::ButtonVariants as _,
     checkbox::Checkbox,
     menu::{DropdownMenu as _, PopupMenuItem},
-    progress::Progress,
 };
 use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -50,10 +49,12 @@ pub struct UpdatePage {
     changes_job: Entity<Job>,
     /// The operator chose "Later" for those changes.
     changes_later: bool,
+    /// The update or roll back shown in place of the page
+    /// (crate::manager::jobview) until "Back to Update": its title.
+    run_title: Option<String>,
     /// The release notes shown in place of the update rows ("What's new").
     /// The version list and package choice ("Other version").
     show_other: bool,
-    show_changes_log: bool,
     _observe: Subscription,
     _observe_updates: Subscription,
     _observe_manager: Subscription,
@@ -116,8 +117,8 @@ impl UpdatePage {
             manager_job,
             changes_job,
             changes_later: false,
+            run_title: None,
             show_other: false,
-            show_changes_log: false,
             _observe,
             _observe_updates,
             _observe_manager,
@@ -150,6 +151,25 @@ impl UpdatePage {
             Some(v) => list.iter().find(|x| &x.version == v).cloned(),
             None => list.first().cloned(),
         }
+    }
+
+    /// The next update or roll back: its title and steps, shown from the
+    /// first frame.
+    fn plan_run(&mut self, title: String, plan: Vec<sentient_installer_core::progress::PlanStep>, cx: &mut Context<Self>) {
+        self.run_title = Some(title);
+        self.job.update(cx, |job, _| {
+            job.set_plan(plan);
+            job.set_label("Updating SENTIENT");
+            job.set_on_page(true);
+        });
+    }
+
+    fn shape(&self) -> crate::jobplan::Shape {
+        self.record.as_ref().map(crate::jobplan::Shape::of).unwrap_or_default()
+    }
+
+    fn installed(&self) -> String {
+        self.record.as_ref().map(|r| r.sentient_version.clone()).unwrap_or_default()
     }
 
     /// Install `version` (a release number, also its tag): pull its image or
@@ -190,6 +210,7 @@ impl UpdatePage {
         let Some(mut record) = self.record.clone() else { return };
         record.stack.image = retag(&record.stack.image, &version);
         let accept = self.accept_breaking;
+        self.plan_run(format!("Updating SENTIENT {} to {version}", self.installed()), crate::jobplan::update(self.shape(), None, Some(&version)), cx);
         self.job.update(cx, |job, cx| {
             job.start(move |sink| crate::updating::run(record, None, accept, sink).map(|_| ()), cx)
         });
@@ -200,6 +221,7 @@ impl UpdatePage {
     fn run_download(&mut self, version: String, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         let accept = self.accept_breaking;
+        self.plan_run(format!("Updating SENTIENT {} to {version}", self.installed()), crate::jobplan::update(self.shape(), Some(&version), Some(&version)), cx);
         self.job.update(cx, |job, cx| {
             job.start(
                 move |sink| {
@@ -256,6 +278,7 @@ impl UpdatePage {
 
     fn run_rollback(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
+        self.plan_run("Rolling back the last update".into(), crate::jobplan::rollback(self.shape()), cx);
         if crate::rootjob::needed(&record) {
             let args = vec!["rollback".to_string()];
             self.job.update(cx, |job, cx| job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
@@ -286,6 +309,12 @@ impl UpdatePage {
         let Some(record) = self.record.clone() else { return };
         let package = self.package.clone();
         let accept = self.accept_breaking;
+        let to = package.as_deref().and_then(crate::updating::package_version);
+        let title = match &to {
+            Some(v) => format!("Updating SENTIENT {} to {v}", self.installed()),
+            None => "Updating SENTIENT".to_string(),
+        };
+        self.plan_run(title, crate::jobplan::update(self.shape(), None, to.as_deref()), cx);
         if crate::rootjob::needed(&record) {
             let mut args = vec!["update".to_string()];
             args.extend(package.map(|p| p.display().to_string()));
@@ -359,7 +388,7 @@ impl UpdatePage {
             Move::Same => crate::ui::button("install-version").outline().label(format!("{version} is installed")).disabled(true),
             Move::Older => crate::ui::button("install-version")
                 .outline()
-                .label(format!("Go back to {version}…"))
+                .label(format!("Go back to {version}"))
                 .disabled(busy)
                 .on_click(cx.listener(move |this, _, window, cx| this.confirm_older(version.clone(), window, cx))),
         };
@@ -411,6 +440,8 @@ impl UpdatePage {
     /// Download and install the offered Platform Manager (B1).
     pub fn start_manager_update(&mut self, cx: &mut Context<Self>) {
         let Some(offer) = self.updates.read(cx).manager().cloned() else { return };
+        let plan = crate::updates::SELF_UPDATE_STEPS.iter().map(|s| sentient_installer_core::progress::PlanStep::new(*s).weight(if *s == "Downloading" { 4. } else { 1. })).collect();
+        self.manager_job.update(cx, |job, _| job.set_plan(plan));
         self.manager_job.update(cx, |job, cx| job.start(move |sink| crate::updates::install_manager(&offer, &sink).map(|_| ()), cx));
         cx.notify();
     }
@@ -426,6 +457,8 @@ impl UpdatePage {
     fn apply_changes(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         self.changes_later = false;
+        let plan = crate::jobplan::changes(&crate::changes::pending(&record));
+        self.changes_job.update(cx, |job, _| job.set_plan(plan));
         if crate::rootjob::needed(&record) {
             let args = vec!["apply-changes".to_string()];
             self.changes_job.update(cx, |job, cx| job.start(move |sink| crate::rootjob::run(&args, &sink).map(|_| ()), cx));
@@ -481,35 +514,26 @@ impl UpdatePage {
         let n = pending.len();
         let panel = ui::panel(theme).border_color(theme.primary);
         let el = match state {
-            JobState::Running => {
-                let marked = ui::mark_steps(&self.changes_planned(), job.steps(), None);
-                panel
-                    .child(div().font_weight(FontWeight::MEDIUM).child(format!("Applying {} change{}", self.changes_planned_count(), if self.changes_planned_count() == 1 { "" } else { "s" })))
-                    .child(ui::steps(theme, &marked))
-                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("The database is not reinstalled or re-checked for these changes."))
+            // The run, in the shared job view (crate::manager::jobview).
+            JobState::Running | JobState::Failed(_) => {
+                let title = format!("Applying {} change{}", n.max(1), if n == 1 { "" } else { "s" });
+                let failed = matches!(state, JobState::Failed(_));
+                let acts: Vec<AnyElement> = if failed {
+                    vec![crate::ui::button("changes-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.apply_changes(cx))).into_any_element()]
+                } else {
+                    Vec::new()
+                };
+                return Some(crate::manager::jobview::JobView::new("changes", title, &self.changes_job).actions(acts).render(cx).into_any_element());
             }
             JobState::Done(_) if pending.is_empty() => {
-                let marked = ui::mark_steps(&self.changes_planned(), job.steps(), Some(true));
-                panel
-                    .child(ui::outcome(theme, Tone::Good, "The changes for this installation are applied. SENTIENT is running."))
-                    .child(ui::steps(theme, &marked))
-            }
-            JobState::Failed(m) => {
-                let marked = ui::mark_steps(&self.changes_planned(), job.steps(), Some(false));
-                let log: Vec<SharedString> = job.log().to_vec();
-                panel
-                    .child(ui::outcome(theme, Tone::Bad, m.clone()))
-                    .child(ui::steps(theme, &marked))
-                    .child(
-                        h_flex()
-                            .gap(crate::ui::button_gap())
-                            .child(crate::ui::probed(crate::ui::button("changes-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.apply_changes(cx)))))
-                            .child(crate::ui::probed(crate::ui::button("changes-log").outline().label(if self.show_changes_log { "Hide log" } else { "Show log" }).on_click(cx.listener(|this, _, _, cx| {
-                                this.show_changes_log = !this.show_changes_log;
-                                cx.notify();
-                            })))),
-                    )
-                    .when(self.show_changes_log, |p| p.children(log.into_iter().map(|l| div().text_size(px(13.)).text_color(theme.muted_foreground).child(l))))
+                let acts = vec![crate::ui::button("changes-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| this.changes_job.update(cx, |j, cx| j.reset(cx)))).into_any_element()];
+                return Some(
+                    crate::manager::jobview::JobView::new("changes", "The changes for this installation", &self.changes_job)
+                        .result(ui::outcome(theme, Tone::Good, "The changes for this installation are applied. SENTIENT is running."))
+                        .actions(acts)
+                        .render(cx)
+                        .into_any_element(),
+                );
             }
             _ => panel
                 .child(div().font_weight(FontWeight::MEDIUM).child(format!("{n} change{} for this installation", if n == 1 { "" } else { "s" })))
@@ -527,27 +551,6 @@ impl UpdatePage {
         };
         let _ = planned;
         Some(el.into_any_element())
-    }
-
-    /// The steps the running change job shows: what was pending when it began.
-    fn changes_planned(&self) -> Vec<String> {
-        let record = self.record.clone();
-        let all = crate::changes::all();
-        // While it runs the record still lists them as pending; afterwards
-        // the steps it started name them.
-        let pending: Vec<crate::changes::Change> = match &record {
-            Some(r) => crate::changes::pending(r),
-            None => Vec::new(),
-        };
-        if !pending.is_empty() {
-            return crate::changes::planned_steps(&pending);
-        }
-        let _ = all;
-        Vec::new()
-    }
-
-    fn changes_planned_count(&self) -> usize {
-        self.record.as_ref().map(|r| crate::changes::pending(r).len()).unwrap_or(0)
     }
 
     /// A product line: name, what is known, and its buttons on the right.
@@ -568,18 +571,10 @@ impl UpdatePage {
         let installed = self.record.as_ref().map(|r| r.sentient_version.clone());
         let mjob = self.manager_job.read(cx);
         let installing = mjob.is_running();
-        let mfinished = match mjob.state() {
-            JobState::Failed(_) => Some(false),
-            _ if installing => None,
-            _ => None,
-        };
         let mfailed = match mjob.state() {
             JobState::Failed(m) => Some(m.clone()),
             _ => None,
         };
-        let mlog_last = mjob.log().last().cloned();
-        let msteps: Vec<String> = crate::updates::SELF_UPDATE_STEPS.iter().map(|s| s.to_string()).collect();
-        let marked = ui::mark_steps(&msteps, mjob.steps(), mfinished);
 
         let seg_theme = cx.theme().clone();
         let channels = crate::ui::seg_track(&seg_theme).children(Channel::ALL.into_iter().map(|c| {
@@ -620,7 +615,7 @@ impl UpdatePage {
                         r.child(crate::ui::probed(
                             crate::ui::button("manager-install")
                                 .primary()
-                                .label(if installing { "Updating…" } else { "Update and restart" })
+                                .label(if installing { "Updating" } else { "Update and restart" })
                                 .disabled(installing || (o.unsigned && o.signing_started))
                                 .on_click(cx.listener(|this, _, _, cx| this.start_manager_update(cx))),
                         ))
@@ -631,29 +626,16 @@ impl UpdatePage {
         };
         let manager_progress = (installing || mfailed.is_some()).then(|| {
             let o = manager_offer.clone();
-            v_flex()
-                .gap_2()
-                .when_some(mfailed.clone(), |c, m| {
-                    c.child(
-                        h_flex()
-                            .gap(crate::ui::button_gap())
-                            .items_center()
-                            .child(div().flex_1().child(ui::outcome(theme, Tone::Bad, m)))
-                            .child(crate::ui::probed(crate::ui::button("manager-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.start_manager_update(cx)))))
-                            .child(crate::ui::probed(crate::ui::button("manager-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| {
-                                this.manager_job.update(cx, |job, cx| job.reset(cx));
-                            })))),
-                    )
-                })
-                .when(installing, |c| {
-                    c.child(div().font_weight(FontWeight::MEDIUM).child(format!(
-                        "Updating the Platform Manager: {this} to {}. SENTIENT keeps running.",
-                        o.as_ref().map(|o| o.version.clone()).unwrap_or_default()
-                    )))
-                    .when_some(mlog_last.clone(), |c, l| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(l)))
-                    .when_some(mjob.percent(), |c, v| c.child(Progress::new("manager-progress").value(v)))
-                })
-                .child(ui::steps(theme, &marked))
+            let title = format!("Updating the Platform Manager: {this} to {}. SENTIENT keeps running.", o.as_ref().map(|o| o.version.clone()).unwrap_or_default());
+            let acts: Vec<AnyElement> = if mfailed.is_some() {
+                vec![
+                    crate::ui::button("manager-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| this.manager_job.update(cx, |job, cx| job.reset(cx)))).into_any_element(),
+                    crate::ui::button("manager-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.start_manager_update(cx))).into_any_element(),
+                ]
+            } else {
+                Vec::new()
+            };
+            crate::manager::jobview::JobView::new("mgr-update", title, &self.manager_job).actions(acts).render(cx)
         });
 
         // SENTIENT row.
@@ -720,7 +702,7 @@ impl UpdatePage {
                     .child(
                         crate::ui::button("check-updates")
                             .outline()
-                            .label(if checking { "Checking…" } else { "Check for updates" })
+                            .label(if checking { "Checking" } else { "Check for updates" })
                             .disabled(checking)
                             .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))),
                     ),
@@ -744,7 +726,7 @@ impl UpdatePage {
                         .when(!e.contains("limiting"), |r| {
                             r.child(crate::ui::probed(crate::ui::button("retry-check").outline().label("Try again").on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx))))))
                         })
-                        .child(crate::ui::probed(crate::ui::button("from-file").outline().label("Update from a file…").on_click(cx.listener(|this, _, _, cx| this.update_from_file(cx))))),
+                        .child(crate::ui::probed(crate::ui::button("from-file").outline().label("Update from a file").on_click(cx.listener(|this, _, _, cx| this.update_from_file(cx))))),
                 )
             })
             .child(manager_row)
@@ -777,6 +759,26 @@ impl Render for UpdatePage {
         let Some(record) = &self.record else {
             return page.child(ui::not_installed(&theme));
         };
+        // An update or roll back, in place of the rest (crate::manager::jobview).
+        if let Some(title) = self.run_title.clone() {
+            if !matches!(self.job.read(cx).state(), JobState::Idle) {
+                let back = crate::manager::jobview::back_button("upd-run-back", "Update", {
+                    let me = cx.entity().downgrade();
+                    move |_, cx| {
+                        me.update(cx, |p, cx| {
+                            p.run_title = None;
+                            p.job.update(cx, |j, cx| j.reset(cx));
+                            p.record = InstallationRecord::load();
+                            p.refresh_rollback(cx);
+                            cx.notify();
+                        })
+                        .ok();
+                    }
+                });
+                let view = crate::manager::jobview::JobView::new("upd-run", title, &self.job).actions([back]).render(cx);
+                return ui::page(&theme, "Update", "Install a newer SENTIENT, with its database changes, and go back automatically if it fails.").child(view);
+            }
+        }
         let native = record.platform().needs_package();
         let job = self.job.read(cx);
         let busy = job.is_running();
@@ -853,7 +855,7 @@ impl Render for UpdatePage {
                             .child(
                                 crate::ui::button("choose")
                                     .outline()
-                                    .label("Update from a file…")
+                                    .label("Update from a file")
                                     .disabled(busy)
                                     .on_click(cx.listener(|this, _, _, cx| this.choose_package(cx))),
                             )
@@ -884,7 +886,7 @@ impl Render for UpdatePage {
                     h_flex().child(
                         crate::ui::button("update")
                             .primary()
-                            .label(if busy { "Updating…" } else { "Update SENTIENT" })
+                            .label(if busy { "Updating" } else { "Update SENTIENT" })
                             .disabled(!can_run)
                             .on_click(cx.listener(|this, _, _, cx| this.run(cx))),
                     ),
@@ -916,7 +918,7 @@ impl Render for UpdatePage {
                         crate::ui::button("rollback")
                             .danger()
                             .outline()
-                            .label("Roll back last update…")
+                            .label("Roll back last update")
                             .disabled(busy || point.is_none())
                             .on_click(cx.listener(|this, _, window, cx| this.confirm_rollback(window, cx))),
                     ),
