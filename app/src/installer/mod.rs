@@ -989,11 +989,14 @@ impl Installer {
             db_loopback: true,
             ..DeployConfig::default()
         };
-        // Docker pulls the picked version's image instead of :latest.
+        // Docker runs the version being installed under its own tag, never
+        // :latest: the picked one, else the newest found online.
         if self.engine == Engine::Docker && self.bundle.is_none() {
-            if let Some(v) = &self.chosen_version {
-                stack.image = format!("quakestring/sentient:{v}");
-            }
+            let version = self.chosen_version.clone().or_else(|| match &self.online {
+                Some(Ok(m)) => Some(m.version.clone()),
+                _ => None,
+            });
+            stack.image = plan::pinned_image(&stack.image, version.as_deref());
         }
         stack.tuning.instance_id = format!("sentient-{}", native::generate_secret().get(..8).unwrap_or("01"));
         if self.engine == Engine::Docker {

@@ -770,6 +770,81 @@ pub fn image_version(image: &str) -> Option<String> {
     .filter(|v| !v.is_empty() && v != "<no value>" && v != "dev")
 }
 
+/// The tag of an image reference: `quakestring/sentient:4.4.0.3` →
+/// `4.4.0.3`; none written is Docker's `latest`.
+pub fn image_tag(image: &str) -> &str {
+    match image.rfind(':') {
+        Some(i) if !image[i..].contains('/') => &image[i + 1..],
+        _ => "latest",
+    }
+}
+
+/// Which SENTIENT a container runs, from what it carries, most reliable
+/// first: the `SENTIENT_BUILD_VERSION` the image sets (4.3.0.53 and later),
+/// then the image's version label when it is a number (older images were
+/// labelled with their tag, "latest"). None: it does not say.
+pub fn running_version_from(build_env: Option<&str>, label: Option<&str>) -> Option<String> {
+    let numbered = |v: Option<&str>| v.map(str::trim).filter(|v| crate::releases::is_numbered(v)).map(String::from);
+    numbered(build_env).or_else(|| numbered(label))
+}
+
+/// The SENTIENT version the stack's container runs (see
+/// [`running_version_from`]). Blocking: asks Docker.
+pub fn running_version(cfg: &DeployConfig) -> Option<String> {
+    let app = cfg.names().app;
+    let env = container_env(&app, "SENTIENT_BUILD_VERSION");
+    let label = capture(&format!("docker inspect -f '{{{{index .Config.Labels \"org.opencontainers.image.version\"}}}}' {}", shell_quote(&app))).ok();
+    running_version_from(env.as_deref(), label.as_deref())
+}
+
+/// The id of the image the stack's SENTIENT container runs.
+pub fn running_image_id(cfg: &DeployConfig) -> Option<String> {
+    capture(&format!("docker inspect -f '{{{{.Image}}}}' {}", cfg.names().app)).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// Point the stack at `image` (a numbered tag) without changing which
+/// SENTIENT runs: the image the container runs now gets that tag, the
+/// compose file is written with it and Compose recreates the container. No
+/// database copy and no schema change: only for `image` naming the version
+/// that runs (the version it ran already, just updated to, or rolled back
+/// to). `cfg` carries the stack's passwords; returns it with the new image.
+pub fn pin_tag(sink: &ProgressFn, cfg: &DeployConfig, image: &str) -> Result<DeployConfig, String> {
+    if cfg.external.is_some() {
+        return Err(super::EXTERNAL_COMPOSE.into());
+    }
+    let running = running_image_id(cfg)
+        .or_else(|| image_id(&cfg.image))
+        .ok_or_else(|| format!("Could not tell which image SENTIENT runs, so {image} was not set. Nothing has been changed."))?;
+    if image_id(image).as_deref() != Some(running.as_str()) {
+        step(sink, &format!("Tagging the image SENTIENT runs as {image}"));
+        run(sink, &format!("docker tag {} {}", shell_quote(&running), shell_quote(image)))?;
+    }
+    let pinned = DeployConfig { image: image.to_string(), ..cfg.clone() };
+    step(sink, &format!("Writing {image} into the compose file"));
+    if let Err(e) = write_stack_files(sink, &pinned) {
+        return Err(format!("The compose file could not be written ({e}). Nothing has been changed."));
+    }
+    // Compose recreates SENTIENT under the new name, then it must answer.
+    if let Err(e) = start_and_check(sink, &pinned) {
+        log(sink, format!("{image} did not start: {e}"));
+        step(sink, "Putting the previous image tag back");
+        let _ = write_stack_files(sink, cfg);
+        let _ = start_and_check(sink, cfg);
+        return Err(format!("SENTIENT did not start under {image} ({e}). The compose file names {} again.", cfg.image));
+    }
+    Ok(pinned)
+}
+
+/// Give the image `from` the name `to` as well, if Docker can.
+pub fn retag_image(from: &str, to: &str) {
+    let _ = capture(&format!("docker tag {} {}", shell_quote(from), shell_quote(to)));
+}
+
+/// Drop the tag `tag` (the image goes with it when nothing else names it).
+pub fn untag_image(tag: &str) {
+    let _ = capture(&format!("docker image rm {}", shell_quote(tag)));
+}
+
 #[derive(Debug, Clone)]
 pub struct RollbackReport {
     pub point: RollbackPoint,
@@ -856,6 +931,27 @@ mod tests {
         assert_eq!(yaml_value(text, "POSTGRES_PASSWORD").as_deref(), Some("p\"w\\x"));
         assert_eq!(yaml_value(text, "CLICKHOUSE_PASSWORD").as_deref(), Some("ch"));
         assert_eq!(yaml_value(text, "MISSING"), None);
+    }
+
+    #[test]
+    fn tags() {
+        assert_eq!(image_tag("quakestring/sentient:4.4.0.3"), "4.4.0.3");
+        assert_eq!(image_tag("quakestring/sentient:latest"), "latest");
+        assert_eq!(image_tag("quakestring/sentient"), "latest");
+        assert_eq!(image_tag("registry:5000/sentient"), "latest");
+        assert_eq!(image_tag("registry:5000/sentient:dev"), "dev");
+    }
+
+    #[test]
+    fn running_version_prefers_the_build_variable() {
+        assert_eq!(running_version_from(Some("4.4.0.3"), Some("latest")).as_deref(), Some("4.4.0.3"));
+        assert_eq!(running_version_from(Some("4.4.0.3"), Some("4.4.0.2")).as_deref(), Some("4.4.0.3"));
+        // No variable (older image): a numbered label.
+        assert_eq!(running_version_from(None, Some("4.4.0.2\n")).as_deref(), Some("4.4.0.2"));
+        // Labelled with the tag, or a development build: unknown.
+        assert_eq!(running_version_from(None, Some("latest")), None);
+        assert_eq!(running_version_from(Some("dev"), Some("<no value>")), None);
+        assert_eq!(running_version_from(Some(""), None), None);
     }
 
     #[test]

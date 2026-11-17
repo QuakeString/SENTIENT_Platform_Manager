@@ -888,6 +888,33 @@ fn run_job(args: &[String]) -> i32 {
             }
             let record = record;
             let mut target: Option<String> = None;
+            // Docker pinned to a release, no version given: the newest
+            // release, pinned (crate::updating::plain_update).
+            let pinned = record.engine == crate::installation::Engine::Docker
+                && record.stack.external.is_none()
+                && sentient_installer_core::releases::is_numbered(sentient_installer_core::distro::docker_ops::image_tag(&record.stack.image));
+            let version = match version {
+                None if pinned => {
+                    let newest = match crate::online::versions(false) {
+                        Ok(list) => list.first().map(|v| v.version.clone()),
+                        Err(e) => {
+                            eprintln!("✗ The releases could not be read ({e}). Choose one with --version.");
+                            return 1;
+                        }
+                    };
+                    let tag = sentient_installer_core::distro::docker_ops::image_tag(&record.stack.image);
+                    let running = crate::installation::running_version(&record);
+                    match crate::updating::plain_update(tag, false, running.as_deref(), newest.as_deref()) {
+                        crate::updating::PlainUpdate::To(v) => Some(v),
+                        crate::updating::PlainUpdate::UpToDate => {
+                            eprintln!("✗ SENTIENT {} is the newest release: nothing to update.", running.as_deref().unwrap_or(tag));
+                            return 1;
+                        }
+                        crate::updating::PlainUpdate::Pull => None,
+                    }
+                }
+                v => v,
+            };
             let mut package = args
                 .iter()
                 .skip(1)
@@ -895,7 +922,9 @@ fn run_job(args: &[String]) -> i32 {
                 .find(|(i, a)| !a.starts_with("--") && args.get(*i).is_none_or(|prev| prev != "--version"))
                 .map(|(_, a)| PathBuf::from(a));
             if let Some(v) = &version {
-                if let Some(installed) = Some(record.sentient_version.as_str()).filter(|s| !s.is_empty()) {
+                // Docker decides in the update (crate::updating::docker_step):
+                // the version it runs under another tag is pinned to it.
+                if let Some(installed) = Some(record.sentient_version.as_str()).filter(|s| !s.is_empty() && record.platform().needs_package()) {
                     if sentient_installer_core::releases::movement(v, installed) == sentient_installer_core::releases::Move::Same {
                         eprintln!("✗ SENTIENT {v} is already installed.");
                         return 1;
@@ -910,8 +939,8 @@ fn run_job(args: &[String]) -> i32 {
                         }
                     }
                 } else {
-                    // The chosen release, run under the tag the stack's
-                    // compose file names (it is not rewritten here).
+                    // The chosen release. The compose file then names its
+                    // tag, unless it is the operator's (crate::updating).
                     target = Some(crate::maintenance_ops::retag(&record.stack.image, v));
                 }
             }
@@ -1218,28 +1247,20 @@ fn print_candidates(found: &[crate::adopt::Candidate]) {
     }
 }
 
-/// The SENTIENT version to show. A stack taken over from its own compose file
-/// may record an image tag such as "latest": then the running container's
-/// version label says which SENTIENT it is.
-/// SENTIENT's version as shown: an image tag like "latest" with the real
-/// version from the image's label, "4.4.0.2 (image tag latest)".
+/// SENTIENT's version as shown (crate::installation::version_text): what
+/// the container runs, with the image tag in brackets when that differs,
+/// "4.4.0.3 (image tag latest)". Native: the recorded version. Blocking.
 pub(crate) fn shown_version(record: &InstallationRecord) -> String {
-    let recorded = record.sentient_version.clone();
-    let numbered = recorded.split('.').next().is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
-    if numbered || record.engine != crate::installation::Engine::Docker {
-        return recorded;
+    shown_from(record, crate::installation::running_version(record).as_deref())
+}
+
+/// [`shown_version`] with the running version already read.
+pub(crate) fn shown_from(record: &InstallationRecord, running: Option<&str>) -> String {
+    if record.engine != crate::installation::Engine::Docker {
+        return record.sentient_version.clone();
     }
-    let label = sentient_installer_core::host::host_command("docker")
-        .args(["inspect", "-f", "{{index .Config.Labels \"org.opencontainers.image.version\"}}", &record.stack.names().app])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|v| !v.is_empty() && v != "<no value>" && v != "dev");
-    match label {
-        Some(v) => format!("{v} (image tag {recorded})"),
-        None => format!("version unknown (image tag {recorded})"),
-    }
+    let tag = sentient_installer_core::distro::docker_ops::image_tag(&record.stack.image);
+    crate::installation::version_text(running, &record.sentient_version, tag)
 }
 
 /// This computer's state for the Platform Manager on another computer.
@@ -1248,6 +1269,7 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
     // The same text as the window's About: version and build.
     let manager_version = format!("{} (build {})", crate::updates::manager_version(), crate::updates::build_commit());
     let Some(record) = record else { return crate::remote::RemoteStatus { manager_version, ..Default::default() } };
+    let running = crate::installation::running_version(record);
     let snap = record.platform().snapshot();
     // Without administrator rights the database's size needs a password
     // prompt (native Linux): leave it out rather than ask.
@@ -1263,7 +1285,9 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
     crate::remote::RemoteStatus {
         installed: snap.installed,
         serving: snap.serving,
-        sentient_version: shown_version(record),
+        sentient_version: shown_from(record, running.as_deref()),
+        running_version: running.clone(),
+        image_tag: (record.engine == crate::installation::Engine::Docker).then(|| sentient_installer_core::distro::docker_ops::image_tag(&record.stack.image).to_string()),
         database: crate::installation::flavor_label(record.flavor()).to_string(),
         database_bytes,
         disk_free: (mon.disk_total > 0).then_some(mon.disk_free),

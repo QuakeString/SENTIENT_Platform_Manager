@@ -208,6 +208,41 @@ pub fn record_path() -> PathBuf {
         .unwrap_or_else(crate::mode::installation_record)
 }
 
+/// The SENTIENT version a Docker install's container runs (its
+/// SENTIENT_BUILD_VERSION, else its numbered image label); None for a
+/// native install or when the container does not say. Blocking: asks
+/// Docker. The image tag alone says nothing (`latest`, or a tag an older
+/// update pointed at another release).
+pub fn running_version(record: &InstallationRecord) -> Option<String> {
+    if record.engine != Engine::Docker {
+        return None;
+    }
+    // Renders: the version a Docker record's container runs.
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("SPM_DEBUG_RUNNING_VERSION") {
+        return Some(v).filter(|v| !v.is_empty());
+    }
+    sentient_installer_core::distro::docker_ops::running_version(&record.stack)
+}
+
+/// The version updates compare with: what runs, else what was recorded.
+pub fn comparable_version(record: &InstallationRecord) -> String {
+    running_version(record).unwrap_or_else(|| record.sentient_version.clone())
+}
+
+/// SENTIENT's version as shown: the version that runs, and the image tag in
+/// brackets only when it is not that version: "4.4.0.3", "4.4.0.3 (image
+/// tag latest)", "version unknown (image tag latest)". `recorded` stands in
+/// for `running` when it is a release number.
+pub fn version_text(running: Option<&str>, recorded: &str, tag: &str) -> String {
+    let known = running.map(String::from).or_else(|| sentient_installer_core::releases::is_numbered(recorded).then(|| recorded.to_string()));
+    match known {
+        Some(v) if v == tag => v,
+        Some(v) => format!("{v} (image tag {tag})"),
+        None => format!("version unknown (image tag {tag})"),
+    }
+}
+
 pub fn flavor_label(flavor: Flavor) -> &'static str {
     match flavor {
         Flavor::Stock => "PostgreSQL",
@@ -379,6 +414,40 @@ pub(crate) mod tests {
     /// A record for tests.
     pub fn sample() -> InstallationRecord {
         serde_json::from_str(r#"{"sentient_version":"4.4.0.2","manager_version":"0.8.0-rc11","engine":"native","install_dir":"C:/SENTIENT","pg_dir":"C:/SENTIENT/pg","state_dir":"C:/ProgramData/SENTIENT","stack":{},"installed_at":"2026-11-09T10:00:00Z"}"#).unwrap()
+    }
+
+    #[test]
+    fn the_tag_shows_only_when_it_is_not_the_version() {
+        assert_eq!(version_text(Some("4.4.0.3"), "latest", "latest"), "4.4.0.3 (image tag latest)");
+        assert_eq!(version_text(Some("4.4.0.3"), "4.4.0.3", "4.4.0.3"), "4.4.0.3");
+        // An older update ran 4.4.0.3 under the tag 4.4.0.2.
+        assert_eq!(version_text(Some("4.4.0.3"), "4.4.0.3", "4.4.0.2"), "4.4.0.3 (image tag 4.4.0.2)");
+        // The container does not say: the recorded release, else unknown.
+        assert_eq!(version_text(None, "4.4.0.1", "4.4.0.1"), "4.4.0.1");
+        assert_eq!(version_text(None, "4.4.0.1", "latest"), "4.4.0.1 (image tag latest)");
+        assert_eq!(version_text(None, "latest", "latest"), "version unknown (image tag latest)");
+        assert_eq!(version_text(None, "unknown", "dev"), "version unknown (image tag dev)");
+    }
+
+    #[test]
+    fn updates_compare_with_what_runs() {
+        use sentient_installer_core::releases::{Move, movement};
+        let mut r = sample();
+        r.engine = Engine::Docker;
+        r.sentient_version = "latest".into();
+        r.stack.image = "quakestring/sentient:latest".into();
+        // "latest" alone reads as 0.0.0.0: everything looks newer.
+        assert_eq!(movement("4.4.0.2", &r.sentient_version), Move::Newer);
+        // What the container says (the renders' hook stands in for Docker).
+        std::env::set_var("SPM_DEBUG_RUNNING_VERSION", "4.4.0.2");
+        let installed = comparable_version(&r);
+        std::env::remove_var("SPM_DEBUG_RUNNING_VERSION");
+        assert_eq!(installed, "4.4.0.2");
+        assert_eq!(movement("4.4.0.3", &installed), Move::Newer);
+        assert_eq!(movement("4.4.0.2", &installed), Move::Same);
+        assert_eq!(movement("4.4.0.1", &installed), Move::Older);
+        // A native record is what it recorded.
+        assert_eq!(comparable_version(&sample()), "4.4.0.2");
     }
 
     #[test]

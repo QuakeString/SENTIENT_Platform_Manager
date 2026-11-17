@@ -60,6 +60,16 @@ pub struct InstallPlan {
     pub old_pg: sentient_installer_core::old_pg::OldPgChoice,
 }
 
+/// The image a new Docker install runs: `image` at the tag of `version`
+/// (the release being installed), so it stays on that release; `image` as
+/// it is when no release number is known.
+pub fn pinned_image(image: &str, version: Option<&str>) -> String {
+    match version.map(str::trim).filter(|v| sentient_installer_core::releases::is_numbered(v)) {
+        Some(v) => crate::maintenance_ops::retag(image, v),
+        None => image.to_string(),
+    }
+}
+
 impl InstallPlan {
     /// The wizard's configuration with the chosen settings folded in:
     /// PostgreSQL parameters into `pg`, the licence server into its field,
@@ -503,4 +513,19 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
 
     sink(Progress::Done { message: format!("SENTIENT is running at {url}") });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pinned_image;
+
+    #[test]
+    fn new_docker_installs_use_the_release_tag() {
+        let default = sentient_installer_core::distro::DeployConfig::default().image;
+        assert_eq!(pinned_image(&default, Some("4.4.0.3")), "quakestring/sentient:4.4.0.3");
+        assert_eq!(pinned_image("registry:5000/sentient:latest", Some("4.4.0.3")), "registry:5000/sentient:4.4.0.3");
+        // No release number known: the image as it is.
+        assert_eq!(pinned_image(&default, None), default);
+        assert_eq!(pinned_image(&default, Some("in this package")), default);
+    }
 }

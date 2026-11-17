@@ -126,6 +126,25 @@ pub fn update(shape: Shape, download: Option<&str>, to: Option<&str>) -> Vec<Pla
     v
 }
 
+/// A Docker install moved to the release `to` (crate::updating::docker_step):
+/// the update, the update then the new image tag, or the tag alone.
+pub fn docker_to(shape: Shape, to: &str, how: crate::updating::DockerStep) -> Vec<PlanStep> {
+    use crate::updating::DockerStep;
+    let tag = PlanStep::new(format!("Setting the image tag to {to}")).detail("The compose file names this release from now on").when(&["Setting the image tag", "Tagging the image SENTIENT runs", "Writing "]);
+    match how {
+        DockerStep::Update | DockerStep::AlreadyRunning => update(shape, None, Some(to)),
+        DockerStep::UpdateAndPin => {
+            let mut v = update(shape, None, Some(to));
+            v.push(tag);
+            v
+        }
+        DockerStep::QuickPin => vec![
+            tag,
+            PlanStep::new("Starting SENTIENT").detail("Under the new tag, and checking it stays up").when(&["Starting SENTIENT", "Checking SENTIENT stays up", "Waiting for SENTIENT"]).weight(2.),
+        ],
+    }
+}
+
 /// Going back to the version the last update replaced.
 pub fn rollback(shape: Shape) -> Vec<PlanStep> {
     vec![
@@ -299,6 +318,11 @@ pub fn for_job(record: &InstallationRecord, args: &[String]) -> Option<Vec<PlanS
         "backup" => backup_file(),
         "update" => {
             let version = args.windows(2).find(|w| w[0] == "--version").map(|w| w[1].clone());
+            if let (true, Some(v)) = (shape.docker, &version) {
+                let running = crate::installation::running_version(record);
+                let tag = sentient_installer_core::distro::docker_ops::image_tag(&record.stack.image);
+                return Some(docker_to(shape, v, crate::updating::docker_step(v, running.as_deref(), tag, record.stack.external.is_some())));
+            }
             let download = (!shape.docker).then(|| version.clone().or_else(|| has("--latest").then(|| "(newest)".to_string()))).flatten();
             update(shape, download.as_deref(), version.as_deref())
         }
