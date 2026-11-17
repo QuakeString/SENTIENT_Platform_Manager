@@ -122,20 +122,19 @@ impl AboutPage {
     /// licences at the bottom right.
     fn company_panel(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
         let link = |id: &'static str, label: &str, url: String| -> AnyElement {
-            // On the label's line, as the Build value.
-            div()
-                .when(!ui::stacked(), |d| d.pt(px(9.)))
-                .child(crate::ui::probed(
-                    crate::ui::button(id)
-                        .link()
-                        .label(SharedString::from(label.to_string()))
-                        .icon(IconName::ExternalLink)
-                        .on_click(move |_, _, cx| ui::open_url(&url, cx)),
-                ))
-                .into_any_element()
+            // On the label's line, as the Build value: a link is shorter
+            // than a control, so it is centred on a control-tall line.
+            ui::on_control_line(crate::ui::probed(
+                crate::ui::button(id)
+                    .link()
+                    .label(SharedString::from(label.to_string()))
+                    .icon(IconName::ExternalLink)
+                    .on_click(move |_, _, cx| ui::open_url(&url, cx)),
+            ))
+            .into_any_element()
         };
-        // On the label's line (setting_row pads the label 9 px when side by side).
-        let value = |t: String| div().when(!ui::stacked(), |d| d.pt(px(9.))).text_sm().child(t).into_any_element();
+        // On the label's line (ui::row_text).
+        let value = |t: String| ui::row_text(t).into_any_element();
         let host = company::WEBSITE.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/');
         let build = format!(
             "{} · commit {} · built {} · {}",

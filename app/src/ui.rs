@@ -2165,6 +2165,19 @@ pub fn setting_row(theme: &Theme, r: SettingRow, cx: &App) -> Div {
         .children(current)
 }
 
+/// A plain value in a row's control column: body text on the name's line
+/// (a line the standard control height, the text centred in it), its own
+/// height when the row is stacked.
+pub fn row_text(text: impl Into<SharedString>) -> Div {
+    div().when(!stacked(), |d| d.min_h(control_h()).flex().items_center()).text_sm().child(text.into())
+}
+
+/// Something smaller than a control beside one in a row (a Reset link):
+/// centred on the control's line.
+pub fn on_control_line(el: impl IntoElement) -> Div {
+    div().h(control_h()).flex().items_center().child(el)
+}
+
 impl SettingRow {
     /// A row with a control across the field and current columns.
     pub fn wide(label: impl Into<SharedString>, help: Option<String>, control: impl IntoElement) -> Self {

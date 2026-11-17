@@ -19,6 +19,20 @@ from PIL import Image
 PAD, PAGE_PAD, TOL, MIN_PIXELS = 16, 18, 28, 3
 
 
+def window_origin(im):
+    """Where the window starts in a screenshot of the whole screen: the
+    columns and rows of pure black (the bare X screen) before it."""
+    def bare(pixels):
+        return all(p[:3] == (0, 0, 0) for p in pixels)
+    ox = 0
+    while ox < min(16, im.width) and bare([im.getpixel((ox, y)) for y in range(0, im.height, 7)]):
+        ox += 1
+    oy = 0
+    while oy < min(16, im.height) and bare([im.getpixel((x, oy)) for x in range(0, im.width, 7)]):
+        oy += 1
+    return ox, oy
+
+
 def last_frame_lines(log):
     lines = open(log, errors="replace").read().splitlines()
     marks = [i for i, l in enumerate(lines) if l.startswith("LAYOUT-FRAME ")]
@@ -415,11 +429,15 @@ def main():
             bad.append(f"folder chooser: the path bar is at y {top[2]:.0f}, not at the dialog body's top {body[2] + 12:.0f} (did the whole body scroll?)")
     # The SENTIENT logo tile (ui::product_logo): its border shows on all
     # four sides (the artwork's own frame lost its right and bottom).
+    # Probes are in the window's coordinates; under Xvfb (no window manager)
+    # the window sits a little in from the screen's edge (2 device px of
+    # black on the left), so the screenshot is read from the window's origin.
+    ox, oy = window_origin(im)
     for l in last_frame_lines(log):
         if not l.startswith("LAYOUT logo-tile "):
             continue
         tl, tr_, tt, tb = (float(v) for v in l.split()[2:6])
-        x0, x1, y0, y1 = int(round(tl * scale)), int(round(tr_ * scale)) - 1, int(round(tt * scale)), int(round(tb * scale)) - 1
+        x0, x1, y0, y1 = int(round(tl * scale)) + ox, int(round(tr_ * scale)) - 1 + ox, int(round(tt * scale)) + oy, int(round(tb * scale)) - 1 + oy
         if x1 - x0 < 8 or y1 - y0 < 8 or x1 >= im.width or y1 >= im.height:
             continue
         mx, my = (x0 + x1) // 2, (y0 + y1) // 2
