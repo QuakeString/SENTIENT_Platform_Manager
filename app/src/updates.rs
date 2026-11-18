@@ -309,12 +309,20 @@ pub fn check(channel: Channel, installed: Option<String>, native: bool) -> Found
         }
     };
     let here = gateway::status();
+    // Screens: a canned newest gateway (SPM_DEBUG_GATEWAY_OFFER=<version>).
+    #[cfg(debug_assertions)]
+    let gateway_offer = match std::env::var("SPM_DEBUG_GATEWAY_OFFER") {
+        Ok(v) => Ok(Some(gateway::Offer { version: v, date: "2026-11-17".into(), notes: String::new(), page: String::new(), installer: None, checksum: None })),
+        Err(_) => gateway::newest(channel),
+    };
+    #[cfg(not(debug_assertions))]
+    let gateway_offer = gateway::newest(channel);
     Found {
         sentient,
         manager,
         sentient_candidate,
         manager_candidate,
-        gateway: gateway::newest(channel),
+        gateway: gateway_offer,
         gateway_installed: here.installed.then(|| here.version.unwrap_or_default()),
         at: now(),
     }

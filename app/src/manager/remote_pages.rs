@@ -384,6 +384,8 @@ impl RemotePages {
         let job = cx.new(|_| Job::new());
         let vars_search = cx.new(|cx| InputState::new(_window, cx).placeholder("Search settings and variables"));
         let vars_sub = cx.subscribe(&vars_search, |_, _, _: &InputEvent, cx| cx.notify());
+        // The gateway's "Update to <v>" follows the newest release found.
+        let updates_sub = cx.observe(&updates, |_, _, cx| cx.notify());
         let subs = vec![
             cx.observe(&job, |this, job, cx| {
                 if !job.read(cx).is_running() {
@@ -484,6 +486,7 @@ impl RemotePages {
             _subscriptions: {
                 let mut s = subs;
                 s.push(vars_sub);
+                s.push(updates_sub);
                 s
             },
             keep_input: None,
@@ -851,7 +854,15 @@ impl RemotePages {
                 self.fetch(cx, move || remote::status(&inst), |p| &mut p.status);
                 self.fetch(cx, move || remote::gateway(&i2), |p| &mut p.gateway);
             }
-            Kind::Gateway => self.fetch(cx, move || remote::gateway(&inst), |p| &mut p.gateway),
+            Kind::Gateway => {
+                // The newest gateway release, for "Update to <v>".
+                self.updates.update(cx, |u, cx| {
+                    if u.found.is_none() {
+                        u.check(cx);
+                    }
+                });
+                self.fetch(cx, move || remote::gateway(&inst), |p| &mut p.gateway)
+            }
         }
     }
 
@@ -2377,6 +2388,8 @@ impl RemotePages {
         let get = |k: &str| g.get(k).cloned().unwrap_or_default();
         let installed = get("installed") == "true";
         let running = get("running") == "true";
+        // The older Python gateway: never taken for the Rust one; one line.
+        let legacy = Some(get("legacy")).filter(|n| !n.is_empty()).map(|n| div().text_sm().text_color(theme.muted_foreground).child(crate::manager::gateway::legacy_line(&n, "this server")));
         let mut p = ui::panel(&theme).child(
             h_flex()
                 .gap_3()
@@ -2402,7 +2415,7 @@ impl RemotePages {
                         )
                         .into(),
                     )),
-            );
+            ).children(legacy);
         }
         let kind = get("kind");
         let recorded = get("recorded") == "true";
@@ -2417,6 +2430,7 @@ impl RemotePages {
         let version = get("version");
         let page = get("page");
         p = p
+            .children(legacy)
             .when(!version.is_empty(), |p| p.child(ui::fact(&theme, "Version", version.clone())))
             .when(!kind.is_empty(), |p| p.child(ui::fact(&theme, "Runs as", runs_as.clone())))
             .when(!host.is_empty(), |p| p.child(ui::fact(&theme, "Connects to", format!("{host}:{}", get("port")))))
@@ -2427,14 +2441,23 @@ impl RemotePages {
             .when(!volumes.is_empty(), |p| p.child(ui::fact(&theme, "Volumes", volumes.replace(',', ", "))))
             .when(!page.is_empty(), |p| {
                 p.child(if page == "off" {
-                    ui::fact_help(&theme, "Web page", "Off", "The gateway's own web page is off. In a container it is turned on with ST_GW_UI=on.")
+                    ui::fact_help(&theme, "Web page", "Off", crate::manager::gateway::page_off_help(&kind))
                 } else {
                     ui::fact(&theme, "Web page", page.clone())
                 })
             });
         // A plain process has no service to start it again: no controls.
         let controllable = kind != "process";
-        let updatable = (kind == "docker" && get("managed") == "true") || kind == "windows-service";
+        // "Update to <v>": only with a newer release than the server's
+        // gateway (this computer's channel), and only where an update can
+        // run there; else its reason on the disabled button.
+        let status = crate::manager::gateway::status_of(&get);
+        let offer = match &self.updates.read(cx).found {
+            Some(f) => f.gateway.as_ref().ok().cloned().flatten(),
+            None => None,
+        };
+        let newer = offer.filter(|o| !version.is_empty() && sentient_installer_core::releases::is_newer(&o.version, &version, false));
+        let blocker = newer.as_ref().and_then(|o| sentient_installer_core::gateway::update_blocker(&status, &o.version, o.installer.is_some(), crate::remote::is_windows(&self.inst)));
         let this = cx.entity().downgrade();
         let act = |action: &'static str| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
             let this = this.clone();
@@ -2469,8 +2492,18 @@ impl RemotePages {
                     cx.refresh_windows();
                 })))
                 .children(services.into_iter().map(crate::ui::probed))
-                .when(updatable, |r| {
-                    r.child(crate::ui::probed(crate::ui::button("r-gw-update").primary().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx)))))
+                .when_some(newer, |r, o| {
+                    let v = o.version.clone();
+                    let button = crate::ui::button("r-gw-update")
+                        .primary()
+                        .label(format!("Update to {}", o.version))
+                        .disabled(busy || blocker.is_some())
+                        .on_click(cx.listener(move |this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into(), v.clone()], cx)));
+                    r.child(crate::ui::probed(match blocker.clone() {
+                        // A disabled button carries its reason as a tooltip.
+                        Some(why) => div().id("r-gw-update-why").child(button).tooltip(crate::ui::tooltip(why)).into_any_element(),
+                        None => button.into_any_element(),
+                    }))
                 }),
         ))
     }

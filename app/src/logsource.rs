@@ -74,13 +74,19 @@ fn gateway_unit() -> Option<String> {
     }
 }
 
+/// The Windows gateway service's log folder (its rotating files, one per
+/// logger: service.log, connector.log, …), when the service is here.
+fn gateway_files() -> Option<std::path::PathBuf> {
+    sentient_installer_core::gateway::log_dir()
+}
+
 /// The sources this installation has.
 pub fn available(record: &InstallationRecord) -> Vec<Source> {
     let mut v = vec![Source::Sentient, Source::Database];
     if record.flavor().uses_clickhouse() && !cfg!(windows) {
         v.push(Source::ClickHouse);
     }
-    if !cfg!(windows) && (gateway_container().is_some() || gateway_unit().is_some()) {
+    if gateway_files().is_some() || gateway_container().is_some() || gateway_unit().is_some() {
         v.push(Source::Gateway);
     }
     v
@@ -141,9 +147,17 @@ pub fn read(record: &InstallationRecord, source: Source, tail: u32, today: bool)
         (Engine::Docker, Source::Sentient) => docker(&names.app),
         (Engine::Docker, Source::Database) => docker(&names.pg),
         (Engine::Docker, Source::ClickHouse) => docker(&names.ch),
-        (_, Source::Gateway) => match (gateway_container(), gateway_unit()) {
-            (Some(c), _) => docker(&c),
-            (None, Some(u)) => journal(&u).unwrap_or_else(|| "Could not read the gateway's journal.".into()),
+        // The Windows service first (as gateway::status finds it), then a
+        // container, then a systemd service.
+        (_, Source::Gateway) => match (gateway_files(), gateway_container(), gateway_unit()) {
+            (Some(dir), _, _) => {
+                let since = today.then(|| (Utc::now() - chrono::Duration::hours(24)).format("%Y-%m-%dT%H:%M:%S").to_string());
+                let tail = if today { 20_000 } else { tail as usize };
+                sentient_installer_core::gateway::read_log_dir(&dir, tail, since.as_deref())
+                    .unwrap_or_else(|| format!("No gateway log file yet in {}.", dir.display()))
+            }
+            (None, Some(c), _) => docker(&c),
+            (None, None, Some(u)) => journal(&u).unwrap_or_else(|| "Could not read the gateway's journal.".into()),
             _ => "No gateway on this computer.".into(),
         },
         (Engine::Native, Source::Sentient) => record.platform().logs(tail),
