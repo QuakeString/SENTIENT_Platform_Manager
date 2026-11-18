@@ -42,6 +42,11 @@ one() { # where page width scale theme [dialog env]
   # points its instance at an address that does not answer).
   local prof=$PROFILE wait=${WAIT:-18}
   [ "$where" = loading ] && { prof=$LOADING_PROFILE; wait=9; }
+  # "stopped": no online update check (fixtures/profile-no-update-check:
+  # daily checks off), so no "… is available" bar under the top bar that
+  # depends on the network and on what is installed here (tint.py samples
+  # the page just under the bar; the bar made it 8 findings, rc5 build 3).
+  [ "$where" = stopped ] && prof=$HERE/fixtures/profile-no-update-check
   [ -n "$prof" ] && cp -r "$prof"/. "$x"/ && rm -f "$x"/sentient-platform-manager/running.lock
   local pw ph; pw=$(python3 -c "print(int($w*$sc))"); ph=$(python3 -c "print(int($h*$sc))")
   # A display of its own: Xvfb refuses one in use (its lock file), so try
