@@ -2595,7 +2595,11 @@ impl RemotePages {
                                 sink(Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
                                 return Ok(());
                             }
-                            remote::deploy(&inst, &sink)?;
+                            // As run_job: an agent that could not be brought up to
+                            // date still runs the job when it knows it.
+                            if let Err(e) = remote::deploy(&inst, &sink) {
+                                sink(Progress::Log { line: format!("The agent could not be updated: {}", remote::split_failure(&e).0) });
+                            }
                             let file = format!("{}/.spm-gateway-apply.json", remote::home(&inst)?);
                             remote::put_text(&inst, &file, &serde_json::to_string(&plan).map_err(|e| e.to_string())?)?;
                             sink(Progress::Step { name: "Applying the settings".into() });
@@ -2622,7 +2626,9 @@ impl RemotePages {
                                 sink(Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
                                 return Ok(());
                             }
-                            remote::deploy(&inst, &sink)?;
+                            if let Err(e) = remote::deploy(&inst, &sink) {
+                                sink(Progress::Log { line: format!("The agent could not be updated: {}", remote::split_failure(&e).0) });
+                            }
                             sink(Progress::Step { name: "Setting the password".into() });
                             remote::gateway_ui_password(&inst, &pw).map(|m| sink(Progress::Done { message: m }))
                         },
