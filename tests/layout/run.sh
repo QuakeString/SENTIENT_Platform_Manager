@@ -113,7 +113,7 @@ done
 GATEWAY_FIXTURES=${GATEWAY_FIXTURES-"docker compose native native-unreadable native-hand windows legacy docker-legacy"}
 for g in $GATEWAY_FIXTURES; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local gateway $w $s $t SPM_DEBUG_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done
 if [ -n "${INSTANCE:-}" ]; then
-  for g in ${REMOTE_GATEWAY_FIXTURES-"native native-unreadable docker-legacy"}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote gateway $w $s $t SPM_DEBUG_REMOTE_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done
+  for g in ${REMOTE_GATEWAY_FIXTURES-native native-unreadable docker-legacy}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote gateway $w $s $t SPM_DEBUG_REMOTE_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done
 fi
 # Setup's window (its first step): the buttons' gaps only.
 [ "${SETUP:-1}" = 1 ] && for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("setup setup $w $s $t"); done; done; done

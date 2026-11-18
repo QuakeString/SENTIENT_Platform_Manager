@@ -444,6 +444,8 @@ impl Render for GatewayPage {
                 .child(
                     h_flex()
                         .gap_3()
+                        // A narrow window: "Open local page" goes to its own line.
+                        .flex_wrap()
                         .items_center()
                         .child(ui::product_logo(ui::Product::Gateway, 28.))
                         .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
@@ -599,6 +601,7 @@ impl Render for GatewayPage {
                         let label = format!("Install Sentient Gateway {}", o.version);
                         h_flex()
                             .gap_3()
+                            .flex_wrap()
                             .items_center()
                             .child(
                                 crate::ui::button("gw-install")
