@@ -825,13 +825,16 @@ impl StatsPage {
             .gap_1()
             .min_w_0()
             .child(
+                // A narrow card shortens the title, never the value or the
+                // High pill, and nothing reaches into the card's padding.
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(div().font_weight(FontWeight::MEDIUM).child(c.title))
-                    .when(c.high, |r| r.child(ui::pill(&theme, ui::Tone::Warn, "High").text_size(px(11.5))))
+                    .min_w_0()
+                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::MEDIUM).child(c.title))
+                    .when(c.high, |r| r.child(ui::pill(&theme, ui::Tone::Warn, "High").text_size(px(11.5)).flex_shrink_0()))
                     .child(div().flex_1())
-                    .child(div().text_size(px(12.)).text_color(theme.muted_foreground).font_features(ui::tabular()).whitespace_nowrap().child(format!("now {now}"))),
+                    .child(div().flex_shrink_0().text_size(px(12.)).text_color(theme.muted_foreground).font_features(ui::tabular()).whitespace_nowrap().child(format!("now {now}"))),
             )
             .child(
                 h_flex()
