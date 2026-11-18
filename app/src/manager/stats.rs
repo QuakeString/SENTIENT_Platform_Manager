@@ -42,6 +42,23 @@ pub fn set_open(open: bool) {
     OPEN.store(open, Ordering::Relaxed);
 }
 
+/// The Services card's reading.
+#[derive(Debug, Clone, PartialEq)]
+enum Services {
+    List(Vec<crate::stats::Service>),
+    /// SENTIENT is stopped: not read (no failure, nothing started to read).
+    Stopped,
+}
+
+impl Services {
+    fn of(s: &Sample) -> Self {
+        if s.services_stopped { Services::Stopped } else { Services::List(s.services.clone()) }
+    }
+}
+
+/// What the Services card says when SENTIENT is stopped.
+const SERVICES_STOPPED: &str = "SENTIENT is stopped. Its services are read when it runs.";
+
 #[derive(Clone)]
 pub enum Source {
     Local(Option<InstallationRecord>),
@@ -78,16 +95,19 @@ impl Source {
         }
     }
 
-    fn services(&self) -> Result<Vec<crate::stats::Service>, String> {
+    /// The services, or `Services::Stopped` when SENTIENT is stopped and
+    /// was not asked (distro::idle).
+    fn services(&self) -> Result<Services, String> {
         match self {
             Source::Local(r) => {
                 #[cfg(debug_assertions)]
                 if let Some(d) = std::env::var_os("SPM_DEBUG_STATS") {
-                    return crate::stats::debug_part(std::path::Path::new(&d), Part::Services).map(|s| s.services);
+                    return crate::stats::debug_part(std::path::Path::new(&d), Part::Services).map(|s| Services::of(&s));
                 }
-                Ok(sentient_installer_core::distro::idle::reading(|| crate::stats::services_over(r.as_ref(), Duration::from_secs(1))))
+                let (list, stopped) = sentient_installer_core::distro::idle::reading(|| crate::stats::services_read(r.as_ref(), Duration::from_secs(1)));
+                Ok(if stopped { Services::Stopped } else { Services::List(list) })
             }
-            Source::Remote(i) => crate::remote::stats_live_part(i, Part::Services).map(|s| s.services),
+            Source::Remote(i) => crate::remote::stats_live_part(i, Part::Services).map(|s| Services::of(&s)),
         }
     }
 
@@ -162,7 +182,7 @@ pub struct StatsPage {
     /// When a reading last came back (HH:MM).
     updated_at: Option<String>,
     /// Each source fills its own card: None while it is being read.
-    services: Option<Result<Vec<crate::stats::Service>, String>>,
+    services: Option<Result<Services, String>>,
     db: Option<DbRead>,
     /// The server's agent answers whole readings (from before the parts):
     /// services and database come with the processor reading.
@@ -221,7 +241,7 @@ impl StatsPage {
             refreshing: false,
             stale: Vec::new(),
             updated_at: None,
-            services: none.then(|| Ok(Vec::new())),
+            services: none.then(|| Ok(Services::List(Vec::new()))),
             db: none.then_some(DbRead::None),
             whole: Arc::new(AtomicBool::new(false)),
             opened: Instant::now(),
@@ -449,11 +469,11 @@ impl StatsPage {
 
     fn push_live(&mut self, sample: Sample) {
         // An agent from before the parts: its reading carries the rest.
-        if !sample.services.is_empty() || sample.db.is_some() {
+        if !sample.services.is_empty() || sample.services_stopped || sample.db.is_some() {
             self.whole.store(true, Ordering::Relaxed);
         }
         if self.whole.load(Ordering::Relaxed) {
-            self.services = Some(Ok(sample.services.clone()));
+            self.services = Some(Ok(Services::of(&sample)));
             self.db = Some(sample.db.clone().map(DbRead::Read).unwrap_or(DbRead::None));
             self.timing("services");
             self.timing("db");
@@ -1126,7 +1146,14 @@ impl Render for StatsPage {
         // it is read, left out when there is nothing in it.
         let services = match &self.services {
             None => Some(ui::skeleton_card(&theme, "stats-svc", Some("Services"), &["", "", ""])),
-            Some(Ok(list)) if !list.is_empty() => Some(services_panel(&theme, list, self.live.last())),
+            Some(Ok(Services::List(list))) if !list.is_empty() => Some(services_panel(&theme, list, self.live.last())),
+            // Stopped: a plain line in the card (nothing failed).
+            Some(Ok(Services::Stopped)) => Some(
+                ui::panel(&theme)
+                    .min_w_0()
+                    .child(div().font_weight(FontWeight::MEDIUM).child("Services"))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(SERVICES_STOPPED)),
+            ),
             Some(_) => None,
         };
         // The Server card in the Database card's place (the approved mockup).

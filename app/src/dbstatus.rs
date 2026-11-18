@@ -101,7 +101,15 @@ pub struct DbStatus {
     /// (crate::kept), when they could be listed.
     #[serde(default)]
     pub kept_bytes: Option<u64>,
+    /// Not read: SENTIENT is stopped (on Windows its WSL distro, which a
+    /// read never starts; distro::idle). Not a failure: the cards say
+    /// [`STOPPED`] plainly.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopped: bool,
 }
+
+/// What a card says about the database while SENTIENT is stopped.
+pub const STOPPED: &str = "SENTIENT is stopped. The database is read when it runs.";
 
 /// The size query: one row of JSON. Partitioned tables (telemetry history on
 /// stock PostgreSQL) count their partitions.
@@ -526,15 +534,23 @@ pub fn read(record: &InstallationRecord) -> DbStatus {
     }
     let record = record.clone();
     let (tx, rx) = std::sync::mpsc::channel();
-    // A read here is one on that thread too (distro::idle).
-    let reading = sentient_installer_core::distro::idle::is_reading();
+    // A read here is one on that thread too (distro::idle), and a command
+    // left out there (SENTIENT's distro stopped) makes it "stopped".
+    let carried = sentient_installer_core::distro::idle::carry();
     std::thread::spawn(move || {
-        let _ = tx.send(sentient_installer_core::distro::idle::reading_if(reading, || read_now(&record)));
+        let hybrid = record.flavor() == Flavor::Clickhouse;
+        let status = carried.run(|| sentient_installer_core::distro::idle::watch(|| read_now(&record)));
+        let _ = tx.send(status.unwrap_or_else(|| stopped(hybrid)));
     });
     rx.recv_timeout(LIMIT).unwrap_or_else(|_| DbStatus {
         pg_error: Some(format!("No answer within {} seconds.", LIMIT.as_secs())),
         ..Default::default()
     })
+}
+
+/// The reading of a stopped SENTIENT: nothing read, and no error.
+pub fn stopped(hybrid: bool) -> DbStatus {
+    DbStatus { stopped: true, hybrid, ..Default::default() }
 }
 
 fn read_now(record: &InstallationRecord) -> DbStatus {

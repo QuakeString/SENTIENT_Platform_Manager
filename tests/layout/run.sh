@@ -53,15 +53,20 @@ one() { # where page width scale theme [dialog env]
     sleep 1
     if kill -0 $xp 2>/dev/null && [ -e "/tmp/.X11-unix/X${d#:}" ]; then break; fi
   done
-  local inst=(); [ "$where" != local ] && [ "$where" != setup ] && [ "$where" != maint ] && inst=(--instance "${INSTANCE:?}")
+  local inst=(); [ "$where" != local ] && [ "$where" != setup ] && [ "$where" != maint ] && [ "$where" != stopped ] && inst=(--instance "${INSTANCE:?}")
   local mode=(--manager --page "$page"); [ "$where" = setup ] && mode=(--install)
   # "maint": Setup run again on an installation (its update tick boxes), on
   # the record fixture the page names (fixtures/record-<page>.json, its
   # filled copy in $RECORDS).
   local rec=${SPM_INSTALLATION_RECORD:-/nonexistent}
   [ "$where" = maint ] && { mode=(--maintenance); rec=$RECORDS/record-$page.json; }
+  # "stopped": this computer's page on a Docker installation (the record
+  # fixture) whose SENTIENT is stopped, its readings left out (on Windows
+  # its WSL distro is never started for a read).
+  [ "$where" = stopped ] && rec=$RECORDS/record-docker.json
   # A dialog's env: KEY=VAL, several joined with "+".
   local extra=(); [ -n "$dlg" ] && IFS=+ read -r -a extra <<<"$dlg"
+  [ "$where" = stopped ] && { local more=(); IFS=+ read -r -a more <<<"$STOPPED_ENV"; extra+=("${more[@]}"); }
   env "${extra[@]}" GPUI_X11_SCALE_FACTOR=$sc DISPLAY=$d WAYLAND_DISPLAY= XDG_CONFIG_HOME=$x SPM_THEME=$th SPM_WINDOW_SIZE=${w}x${h} \
     SPM_INSTALLATION_RECORD=$rec SPM_DEBUG_LAYOUT=1 SPM_REDUCED_MOTION=1 \
     "$BIN" "${mode[@]}" "${inst[@]}" 2>"$OUT/$name.log" >/dev/null & local ap=$!
@@ -135,6 +140,13 @@ if [ -n "${INSTANCE:-}" ]; then
   for g in ${REMOTE_UPDATE_GATEWAY_FIXTURES-docker legacy}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote update $w $s $t SPM_DEBUG_REMOTE_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done
   for g in ${REMOTE_GATEWAY_FIXTURES-native native-unreadable docker-legacy}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote gateway $w $s $t SPM_DEBUG_REMOTE_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done
 fi
+# SENTIENT stopped (Windows Docker with its distro stopped, any Docker
+# install with the stack down): Status's Database card, Statistics'
+# Services, Backup and Platform settings' administrators say so plainly
+# (canned readings: SPM_DEBUG_DBSTATUS, SPM_DEBUG_STATS,
+# SPM_DEBUG_SENTIENT_ADMIN=stopped).
+export STOPPED_ENV="SPM_DEBUG_DBSTATUS=$HERE/fixtures/dbstatus-stopped.json+SPM_DEBUG_STATS=$HERE/fixtures/stats-stopped+SPM_DEBUG_SERVER_INFO=vm+SPM_DEBUG_SENTIENT_ADMIN=stopped"
+for p in ${STOPPED_PAGES-status statistics backup settings}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("stopped $p $w $s $t"); done; done; done; done
 # Setup's window (its first step): the buttons' gaps only.
 [ "${SETUP:-1}" = 1 ] && for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("setup setup $w $s $t"); done; done; done
 if [ -n "${LOADING_PROFILE:-}" ]; then

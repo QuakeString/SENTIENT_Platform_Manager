@@ -13,12 +13,112 @@
 //! stopped stack's commands do), and [`super::status`] reports a stopped
 //! distro as SENTIENT stopped without asking it anything. What the operator
 //! starts (Start, Restart, Repair, an update) still starts it.
+//!
+//! A command left out this way is noted ([`note_skipped`]), so a reader
+//! wrapped in [`watch`] (or [`read`]) gets [`Read::Stopped`]: "SENTIENT is
+//! stopped, nothing was read", which a page shows as a plain line, not as
+//! the failure the left-out command looks like on its own.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 thread_local!(static READING: Cell<bool> = const { Cell::new(false) });
 static READING_PROCESS: AtomicBool = AtomicBool::new(false);
+thread_local!(static TALLY: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) });
+
+/// What a watched read came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Read<T> {
+    /// Read (the value may still hold its own failures).
+    Done(T),
+    /// Left out: SENTIENT's distro is stopped, and a read does not start
+    /// it. Not a failure.
+    Stopped,
+}
+
+impl<T> Read<T> {
+    pub fn is_stopped(&self) -> bool {
+        matches!(self, Read::Stopped)
+    }
+
+    /// The value, or `stopped()` in its place.
+    pub fn unwrap_or_else(self, stopped: impl FnOnce() -> T) -> T {
+        match self {
+            Read::Done(v) => v,
+            Read::Stopped => stopped(),
+        }
+    }
+}
+
+/// A command was left out (a read, its distro stopped): the watched read
+/// on this thread ([`watch`]) comes to [`Read::Stopped`].
+pub fn note_skipped() {
+    TALLY.with(|t| {
+        if let Some(t) = t.borrow().as_ref() {
+            t.store(true, Ordering::SeqCst);
+        }
+    });
+}
+
+/// Run `f`, noting whether any command in it was left out because
+/// SENTIENT's distro is stopped: then [`Read::Stopped`], whatever `f` made
+/// of the left-out command. It does not make `f` a read (see [`read`]); a
+/// nested watch passes what it noted to the outer one.
+pub fn watch<T>(f: impl FnOnce() -> T) -> Read<T> {
+    struct Restore(Option<Arc<AtomicBool>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            TALLY.with(|t| *t.borrow_mut() = previous);
+        }
+    }
+    let tally = Arc::new(AtomicBool::new(false));
+    let restore = Restore(TALLY.with(|t| t.borrow_mut().replace(tally.clone())));
+    let out = f();
+    drop(restore);
+    if tally.load(Ordering::SeqCst) {
+        note_skipped();
+        Read::Stopped
+    } else {
+        Read::Done(out)
+    }
+}
+
+/// [`reading`] and [`watch`] together: a read that never starts a stopped
+/// distro, and says when it was left out for that.
+pub fn read<T>(f: impl FnOnce() -> T) -> Read<T> {
+    watch(|| reading(f))
+}
+
+/// This thread's read and watch, for work it hands to another thread
+/// ([`carry`], then [`Carried::run`] there).
+#[derive(Clone)]
+pub struct Carried {
+    reading: bool,
+    tally: Option<Arc<AtomicBool>>,
+}
+
+/// What [`Carried::run`] takes to another thread: whether this is a read,
+/// and the watch that a left-out command there is noted in.
+pub fn carry() -> Carried {
+    Carried { reading: READING.with(|r| r.get()), tally: TALLY.with(|t| t.borrow().clone()) }
+}
+
+impl Carried {
+    /// Run `f` on this thread as the carrying thread would have.
+    pub fn run<T>(&self, f: impl FnOnce() -> T) -> T {
+        struct Restore(Option<Arc<AtomicBool>>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let previous = self.0.take();
+                TALLY.with(|t| *t.borrow_mut() = previous);
+            }
+        }
+        let _restore = Restore(TALLY.with(|t| std::mem::replace(&mut *t.borrow_mut(), self.tally.clone())));
+        reading_if(self.reading, f)
+    }
+}
 
 /// Run `f` as a read on this thread: no stopped distro is started by it.
 pub fn reading<T>(f: impl FnOnce() -> T) -> T {
@@ -142,6 +242,56 @@ mod tests {
         // Commands about WSL itself start no distro.
         assert!(!skip(true, &["-l", "--running", "-q"], |_| false));
         assert!(!skip(true, &["--terminate", "sentient"], |_| false));
+    }
+
+    #[test]
+    fn a_left_out_command_makes_the_watched_read_stopped() {
+        // Nothing left out: the value.
+        assert_eq!(read(|| 7), Read::Done(7));
+        assert_eq!(watch(|| "x"), Read::Done("x"));
+        // Left out: Stopped, whatever the reader made of it.
+        assert_eq!(read(|| { note_skipped(); Err::<(), _>("could not run wsl.exe") }), Read::Stopped);
+        // Outside a watch nothing is noted, and the next watch starts clean.
+        note_skipped();
+        assert_eq!(watch(|| 1), Read::Done(1));
+        // A nested watch passes it on to the outer one.
+        let outer = watch(|| {
+            let inner = watch(note_skipped);
+            assert!(inner.is_stopped());
+            2
+        });
+        assert!(outer.is_stopped());
+        // `watch` alone is not a read; `read` is.
+        assert_eq!(watch(is_reading), Read::Done(false));
+        assert_eq!(read(is_reading), Read::Done(true));
+        assert_eq!(Read::<u8>::Stopped.unwrap_or_else(|| 9), 9);
+    }
+
+    #[test]
+    fn another_thread_carries_the_read_and_its_watch() {
+        let r = read(|| {
+            let c = carry();
+            std::thread::spawn(move || {
+                c.run(|| {
+                    assert!(is_reading(), "a read there too");
+                    note_skipped();
+                })
+            })
+            .join()
+            .unwrap();
+            "read"
+        });
+        assert!(r.is_stopped(), "noted on the other thread, seen by the watch");
+        // Carried outside any read or watch: neither, and nothing breaks.
+        let c = carry();
+        std::thread::spawn(move || c.run(|| {
+            assert!(!is_reading());
+            note_skipped();
+        }))
+        .join()
+        .unwrap();
+        // The other thread's watch is put back afterwards.
+        assert_eq!(watch(|| carry().run(|| 3)), Read::Done(3));
     }
 
     #[test]

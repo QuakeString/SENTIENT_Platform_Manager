@@ -47,6 +47,12 @@ refreshes that repository's Downloads table.
   right after setup). With SENTIENT stopped the page says "SENTIENT must
   be running to read and change its settings." with Start SENTIENT, and
   never starts the stopped WSL distro to ask.
+- SENTIENT stopped (on Windows its WSL distro stopped): the Status page's
+  Database card says "SENTIENT is stopped. The database is read when it
+  runs." in plain text, not "Could not read PostgreSQL: read the stack's
+  compose file: could not run wsl.exe". The same on a server's Status
+  page, in Statistics' Services card ("Its services are read when it
+  runs.") and in Backup's size estimate.
 - Instances and the instance switcher show every server's state at once.
   The states are read for every added server as the Platform Manager
   starts, over the connections it opens then. They are read again every 15

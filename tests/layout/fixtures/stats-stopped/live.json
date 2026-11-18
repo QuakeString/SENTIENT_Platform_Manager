@@ -1,0 +1,1 @@
+{"t": 1794752016, "cpu": 9.0, "cores": 4, "load": 0.42, "mem_used": 3113851289, "mem_total": 7516192768, "swap_used": 107374182, "swap_total": 2147483648, "disk_free": 280998235340, "disk_total": 500256315801, "rx": 900000.0, "tx": 400000.0, "io": 18000000.0, "boot": 1790432016, "services": [], "services_stopped": true}

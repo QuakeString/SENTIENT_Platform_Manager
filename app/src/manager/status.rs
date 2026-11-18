@@ -1224,6 +1224,10 @@ pub(crate) fn db_details(
     dark: bool,
 ) -> Div {
     use crate::dbstatus::{CRITICAL_DISK, LOW_DISK, bytes_label, count_label, month_label, plain_table};
+    // SENTIENT stopped: nothing was read, and nothing failed.
+    if db.stopped {
+        return panel.child(div().text_sm().text_color(theme.muted_foreground).child(crate::dbstatus::STOPPED));
+    }
     let mut panel = panel;
         let pg_bytes = db.pg.as_ref().map(|p| p.db_bytes).unwrap_or(0);
     let ch_bytes = db.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0);

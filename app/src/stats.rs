@@ -55,6 +55,10 @@ pub struct Sample {
     pub boot: i64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub services: Vec<Service>,
+    /// The services were not read: SENTIENT is stopped (on Windows its WSL
+    /// distro, which a read never starts; distro::idle). Not a failure.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub services_stopped: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub db: Option<Db>,
 }
@@ -175,6 +179,7 @@ impl Reader {
             io,
             boot: System::boot_time() as i64,
             services: Vec::new(),
+            services_stopped: false,
             db: None,
         }
     }
@@ -261,6 +266,15 @@ pub fn db_unprompted(record: Option<&InstallationRecord>) -> DbRead {
     db(r).map(DbRead::Read).unwrap_or(DbRead::None)
 }
 
+/// [`services_over`], and whether they were left out because SENTIENT is
+/// stopped (distro::idle: then no list, and `true`).
+pub fn services_read(record: Option<&InstallationRecord>, window: Duration) -> (Vec<Service>, bool) {
+    match sentient_installer_core::distro::idle::watch(|| services_over(record, window)) {
+        sentient_installer_core::distro::idle::Read::Done(list) => (list, false),
+        sentient_installer_core::distro::idle::Read::Stopped => (Vec::new(), true),
+    }
+}
+
 /// Each SENTIENT service's processor (over `window`) and memory. Blocking.
 pub fn services_over(record: Option<&InstallationRecord>, window: Duration) -> Vec<Service> {
     let Some(r) = record else { return Vec::new() };
@@ -280,7 +294,10 @@ pub fn read_part(record: Option<&InstallationRecord>, part: Part) -> Sample {
             let mut r = Reader::new(record);
             r.read(Duration::from_millis(300))
         }
-        Part::Services => Sample { t: chrono::Utc::now().timestamp(), services: services_over(record, Duration::from_secs(1)), ..Default::default() },
+        Part::Services => {
+            let (services, services_stopped) = services_read(record, Duration::from_secs(1));
+            Sample { t: chrono::Utc::now().timestamp(), services, services_stopped, ..Default::default() }
+        }
         Part::Db => Sample {
             t: chrono::Utc::now().timestamp(),
             db: match db_unprompted(record) {
@@ -300,13 +317,13 @@ pub fn read(record: Option<&InstallationRecord>, window: Duration, with_db: bool
     // A read on the caller's thread is one on these too (Windows: no
     // stopped WSL distro is started, distro::idle).
     use sentient_installer_core::distro::idle;
-    let reading = idle::is_reading();
+    let carried = idle::carry();
     std::thread::scope(|scope| {
-        let services = scope.spawn(|| idle::reading_if(reading, || services_over(record, window)));
-        let db = with_db.then(|| scope.spawn(|| idle::reading_if(reading, || db_unprompted(record))));
+        let services = scope.spawn(|| carried.run(|| services_read(record, window)));
+        let db = with_db.then(|| scope.spawn(|| carried.run(|| db_unprompted(record))));
         let mut reader = Reader::new(record);
         let mut s = reader.read(window);
-        s.services = services.join().unwrap_or_default();
+        (s.services, s.services_stopped) = services.join().unwrap_or_default();
         s.db = match db.map(|h| h.join()) {
             Some(Ok(DbRead::Read(d))) => Some(d),
             _ => None,
@@ -670,10 +687,14 @@ pub fn debug_part(dir: &Path, part: Part) -> Result<Sample, String> {
     match part {
         Part::System => {
             s.services.clear();
+            s.services_stopped = false;
             s.db = None;
         }
         Part::Services => s.db = None,
-        Part::Db => s.services.clear(),
+        Part::Db => {
+            s.services.clear();
+            s.services_stopped = false;
+        }
     }
     Ok(s)
 }

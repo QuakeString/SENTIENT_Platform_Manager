@@ -75,6 +75,8 @@ pub struct BackupPage {
     checked: Option<(PathBuf, Option<Result<sentient_backup_core::restore::CheckReport, String>>)>,
     /// Sizes for the estimate: (database, ClickHouse, telemetry history in PostgreSQL), and free disk.
     sizes: Option<(u64, u64, u64, Option<u64>)>,
+    /// The sizes were not read: SENTIENT is stopped (crate::dbstatus::STOPPED).
+    sizes_stopped: bool,
     schedule_time: Entity<InputState>,
     /// Automatic backup is on (its switch).
     auto_on: bool,
@@ -221,6 +223,7 @@ impl BackupPage {
             shown_run: false,
             checked: None,
             sizes: None,
+            sizes_stopped: false,
             schedule_time,
             keep,
             part_gb,
@@ -621,6 +624,7 @@ impl BackupPage {
         let task = cx.spawn(async move |this, cx| {
             let st = cx.background_executor().spawn(async move { sentient_installer_core::distro::idle::reading(|| crate::dbstatus::read(&record)) }).await;
             this.update(cx, |page, cx| {
+                page.sizes_stopped = st.stopped;
                 if let Some(pg) = &st.pg {
                     let history = pg.tables.iter().find(|t| t.name == "ts_kv").map(|t| t.bytes).unwrap_or(0);
                     page.sizes = Some((pg.db_bytes, st.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0), history, pg.free_bytes));
@@ -1164,7 +1168,10 @@ impl BackupPage {
             (format!("Estimated file: {} · takes about {} minute{}{free_text}", bytes_label(bytes), mins, if mins == 1 { "" } else { "s" }), low)
         });
         let low = estimate.as_ref().filter(|(_, low)| *low).map(|(t, _)| t.clone());
-        let now_tip = estimate.map(|(t, _)| t).unwrap_or_else(|| "A backup now, with what the card says.".into());
+        let now_tip = estimate.map(|(t, _)| t).unwrap_or_else(|| {
+            // Stopped: its size is read when it runs (a backup starts it).
+            if self.sizes_stopped { format!("A backup now, with what the card says. {}", crate::dbstatus::STOPPED) } else { "A backup now, with what the card says.".into() }
+        });
         let mut list = ui::panel(theme).gap_0().child(
             h_flex()
                 .relative()

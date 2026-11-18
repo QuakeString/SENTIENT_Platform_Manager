@@ -765,6 +765,7 @@ pub(crate) fn shell_output(prog: &str, args: &[&str], limit: std::time::Duration
         // A read does not start a stopped distro (idle): it fails, as a
         // stopped stack's commands do.
         if idle::skip(idle::is_reading(), args, idle::running) {
+            idle::note_skipped();
             return None;
         }
         sys::output_wsl(prog, args, limit)
@@ -852,6 +853,7 @@ pub fn is_running(http_port: u16) -> bool {
         let distro = docker_distro();
         // A read does not start a stopped distro (idle): nothing answers.
         if idle::is_reading() && !idle::running(&distro) {
+            idle::note_skipped();
             return false;
         }
         let inside = sys::output_wsl("wsl.exe", &["-d", &distro, "-u", "root", "--", "curl", "-s", "-o", "/dev/null", "--max-time", "4", &url], std::time::Duration::from_secs(20))
