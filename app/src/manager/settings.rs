@@ -955,17 +955,28 @@ impl SettingsPage {
                 ));
             }
             // SENTIENT stopped: a plain line (nothing failed), and Start.
-            Some(Err(crate::sentient_admin::Failure::Stopped)) => rows.push(row(
-                theme,
-                "Accounts",
-                Some("For when nobody can sign in. Changes go through SENTIENT's own administration command and are written to its audit log; SENTIENT keeps running.".into()),
-                false,
-                h_flex()
-                    .gap(crate::ui::button_gap())
-                    .items_center()
-                    .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(crate::sentient_admin::STOPPED))
-                    .child(crate::ui::probed(crate::ui::button("admin-start").outline().label("Start SENTIENT").on_click(|_, _, cx| crate::manager::request("control:start", cx)))),
-            )),
+            // A wide row: the sentence fills the field and current columns
+            // and wraps; the button keeps its size on the sentence's line,
+            // and goes under it when the row is stacked.
+            Some(Err(crate::sentient_admin::Failure::Stopped)) => {
+                let stacked = ui::stacked();
+                // On the name's line: a control tall, the text centred in it
+                // (ui::row_text), the button at the line's top.
+                let line = ui::row_text(crate::sentient_admin::STOPPED).flex_1().min_w_0().text_color(theme.muted_foreground);
+                let start = div().flex_shrink_0().child(crate::ui::probed(crate::ui::button("admin-start").outline().label("Start SENTIENT").on_click(|_, _, cx| crate::manager::request("control:start", cx))));
+                let control = if stacked {
+                    v_flex().flex_1().min_w_0().gap_2().items_start().child(line.w_full()).child(start).into_any_element()
+                } else {
+                    h_flex().flex_1().min_w_0().gap(crate::ui::button_gap()).items_start().child(line).child(start).into_any_element()
+                };
+                rows.push(row(
+                    theme,
+                    "Accounts",
+                    Some("For when nobody can sign in. Changes go through SENTIENT's own administration command and are written to its audit log; SENTIENT keeps running.".into()),
+                    false,
+                    control,
+                ));
+            }
             Some(Err(crate::sentient_admin::Failure::Error(e))) => extra.push(ui::outcome(theme, Tone::Warn, e.clone()).into_any_element()),
             Some(Ok(list)) => {
                 for a in list.iter() {
