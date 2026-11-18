@@ -1,6 +1,6 @@
 {
   "sentient_version": "4.4.0.3",
-  "manager_version": "0.9.2-rc4",
+  "manager_version": "@MANAGER_VERSION@",
   "engine": "docker",
   "install_dir": "/opt/sentient",
   "pg_dir": "",

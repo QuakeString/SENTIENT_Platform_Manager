@@ -25,6 +25,13 @@ PAGES_LOCAL=${PAGES_LOCAL-"status statistics logs files update gateway backup mi
 PAGES_REMOTE=${PAGES_REMOTE-"status statistics logs files update gateway backup migration repair licence settings"}
 WIDTHS=${WIDTHS:-"560 900 1200"}; SCALES=${SCALES:-"1 1.5"}; THEMES=${THEMES:-"light dark"}
 JOBS=${JOBS:-3}
+# The record fixtures (fixtures/record-*.json) as the renders read them: a
+# copy in $OUT/records with @MANAGER_VERSION@ filled from app/Cargo.toml,
+# so a fixture that means "this Platform Manager" never goes stale.
+MANAGER_VERSION=$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$HERE/../../app/Cargo.toml" | head -1)
+[ -n "$MANAGER_VERSION" ] || { echo "run.sh: no version in app/Cargo.toml" >&2; exit 2; }
+RECORDS="$OUT/records"; rm -rf "$RECORDS"; mkdir -p "$RECORDS"
+for f in "$HERE"/fixtures/record-*.json; do sed "s/@MANAGER_VERSION@/$MANAGER_VERSION/g" "$f" > "$RECORDS/$(basename "$f")"; done
 one() { # where page width scale theme [dialog env]
   local where=$1 page=$2 w=$3 sc=$4 th=$5 dlg=${6:-} h=760
   # The dialog's env in the file name: "=" and "/" made safe.
@@ -49,9 +56,10 @@ one() { # where page width scale theme [dialog env]
   local inst=(); [ "$where" != local ] && [ "$where" != setup ] && [ "$where" != maint ] && inst=(--instance "${INSTANCE:?}")
   local mode=(--manager --page "$page"); [ "$where" = setup ] && mode=(--install)
   # "maint": Setup run again on an installation (its update tick boxes), on
-  # the record fixture the page names (fixtures/record-<page>.json).
+  # the record fixture the page names (fixtures/record-<page>.json, its
+  # filled copy in $RECORDS).
   local rec=${SPM_INSTALLATION_RECORD:-/nonexistent}
-  [ "$where" = maint ] && { mode=(--maintenance); rec=$HERE/fixtures/record-$page.json; }
+  [ "$where" = maint ] && { mode=(--maintenance); rec=$RECORDS/record-$page.json; }
   # A dialog's env: KEY=VAL, several joined with "+".
   local extra=(); [ -n "$dlg" ] && IFS=+ read -r -a extra <<<"$dlg"
   env "${extra[@]}" GPUI_X11_SCALE_FACTOR=$sc DISPLAY=$d WAYLAND_DISPLAY= XDG_CONFIG_HOME=$x SPM_THEME=$th SPM_WINDOW_SIZE=${w}x${h} \
@@ -73,7 +81,7 @@ one() { # where page width scale theme [dialog env]
   local expect=(); case "$dlg" in SPM_DEBUG_MOVE_STEP=*) expect=(EXPECT_SUB=movedata EXPECT_MENU="$page");; esac
   { env "${expect[@]}" python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" "${only[@]}" && { [ "$where" = setup ] || [ "$where" = maint ] || python3 "$HERE/icons.py" "$OUT/$name.log"; } && python3 "$HERE/fields.py" "$OUT/$name.log" "$dlg" && python3 "$HERE/rows.py" "$OUT/$name.log"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
 }
-export -f one; export OUT HERE BIN PROFILE LOADING_PROFILE INSTANCE WAIT SPM_INSTALLATION_RECORD HOVER_INFO 2>/dev/null
+export -f one; export RECORDS OUT HERE BIN PROFILE LOADING_PROFILE INSTANCE WAIT SPM_INSTALLATION_RECORD HOVER_INFO 2>/dev/null
 list=()
 for p in $PAGES_LOCAL; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local $p $w $s $t"); done; done; done; done
 # Dialogs and panels, opened by their debug hooks (this computer).
@@ -120,7 +128,8 @@ for g in $GATEWAY_FIXTURES; do for w in $WIDTHS; do for s in $SCALES; do for t i
 # with its reason) and the older Python gateway (with its (i)).
 for g in ${UPDATE_GATEWAY_FIXTURES-docker native legacy}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local update $w $s $t SPM_DEBUG_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done
 # Setup's update tick boxes with the gateway's line: beside a newer Platform
-# Manager (record-docker), and alone (record-docker-same: the same version).
+# Manager (record-docker), and alone (record-docker-same: this version,
+# @MANAGER_VERSION@ filled in).
 for r in ${MAINT_RECORDS-docker docker-same}; do for g in ${MAINT_GATEWAY_FIXTURES-docker legacy}; do for w in ${MAINT_WIDTHS-900 1200}; do for s in $SCALES; do for t in $THEMES; do list+=("maint $r $w $s $t SPM_DEBUG_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3+SPM_DEBUG_MANAGER_INSTALLED=1+SPM_DEBUG_BROKEN=0"); done; done; done; done; done
 if [ -n "${INSTANCE:-}" ]; then
   for g in ${REMOTE_UPDATE_GATEWAY_FIXTURES-docker legacy}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote update $w $s $t SPM_DEBUG_REMOTE_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done
