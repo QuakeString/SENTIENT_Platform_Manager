@@ -38,6 +38,15 @@ refreshes that repository's Downloads table.
 - After quitting, the Platform Manager starts on Status, of the instance that was open last. Closing only the window (the Platform Manager keeps running in the tray) and opening it again still returns to the page it was on.
 
 ### Fixed
+- Platform settings on a Windows Docker installation: the system
+  administrators and the default retention can be read and changed.
+  The page ran `sentient-admin` on Windows, where it is not ("start
+  sentient-admin: program not found"); it now runs in SENTIENT's
+  container inside the WSL distro, as every other Docker command does.
+  On Linux Docker it now goes through Docker's own shell too (`sg docker`
+  right after setup). With SENTIENT stopped the page says "SENTIENT must
+  be running to read and change its settings." with Start SENTIENT, and
+  never starts the stopped WSL distro to ask.
 - Instances and the instance switcher show every server's state at once.
   The states are read for every added server as the Platform Manager
   starts, over the connections it opens then. They are read again every 15

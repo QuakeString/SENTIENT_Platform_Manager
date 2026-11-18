@@ -2153,6 +2153,17 @@ impl Manager {
     }
 }
 
+/// An action a page asks the shell for, as the tray's
+/// ([`Manager::act`]): "control:start" from a page that needs SENTIENT
+/// running (Platform settings).
+static REQUEST: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+
+/// Ask the shell for `action` (see [`REQUEST`]); it runs at the next render.
+pub fn request(action: &'static str, cx: &mut App) {
+    *REQUEST.lock().unwrap_or_else(|e| e.into_inner()) = Some(action);
+    cx.refresh_windows();
+}
+
 impl Manager {
     /// A tray or taskbar action (crate::background::Command::Action).
     pub fn act(&mut self, action: &str, cx: &mut Context<Self>) {
@@ -2273,6 +2284,10 @@ impl Manager {
         crate::ui::set_side_by_side(width >= crate::ui::SIDE_BY_SIDE_W);
         self.window_h.set(f32::from(window.viewport_size().height));
         stats::set_open(self.page == Page::Statistics);
+        // A page asked for a tray action (request).
+        if let Some(a) = REQUEST.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            self.act(a, cx);
+        }
         // A service row's "Logs" asked for the Logs page.
         if crate::logsource::take_go() {
             self.page = Page::Logs;

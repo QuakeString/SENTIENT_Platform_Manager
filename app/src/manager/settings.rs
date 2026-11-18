@@ -162,8 +162,9 @@ pub struct SettingsPage {
     job: Entity<Job>,
     /// System administrators and the default retention, read through
     /// SENTIENT's own command (crate::sentient_admin).
-    admins: Option<Result<Vec<crate::sentient_admin::Admin>, String>>,
-    retention_now: Option<Result<crate::sentient_admin::Retention, String>>,
+    /// `Err(Failure::Stopped)`: SENTIENT is stopped, nothing was asked.
+    admins: Option<Result<Vec<crate::sentient_admin::Admin>, crate::sentient_admin::Failure>>,
+    retention_now: Option<Result<crate::sentient_admin::Retention, crate::sentient_admin::Failure>>,
     retention_edit: crate::sentient_admin::Retention,
     reading_admin: bool,
     /// The account whose password form is open.
@@ -391,7 +392,8 @@ impl SettingsPage {
         let task = cx.spawn(async move |this, cx| {
             let (admins, retention) = cx
                 .background_executor()
-                .spawn(async move { (crate::sentient_admin::admins(&record), crate::sentient_admin::retention(&record)) })
+                // A read: never starts SENTIENT's stopped WSL distro.
+                .spawn(async move { sentient_installer_core::distro::idle::reading(|| (crate::sentient_admin::admins(&record), crate::sentient_admin::retention(&record))) })
                 .await;
             this.update(cx, |page, cx| {
                 if let Ok(r) = &retention {
@@ -409,7 +411,7 @@ impl SettingsPage {
     }
 
     /// Run one administration action (background), then read again.
-    fn admin_action(&mut self, work: impl FnOnce(&InstallationRecord) -> Result<String, String> + Send + 'static, cx: &mut Context<Self>) {
+    fn admin_action(&mut self, work: impl FnOnce(&InstallationRecord) -> Result<String, crate::sentient_admin::Failure> + Send + 'static, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         self.admin_busy = true;
         self.admin_result = None;
@@ -426,7 +428,9 @@ impl SettingsPage {
                 page.admin_busy = false;
                 page.admin_result = Some(match r {
                     Ok(m) => (Tone::Good, m.lines().last().unwrap_or("Done.").to_string()),
-                    Err(e) => (Tone::Bad, e),
+                    // Stopped meanwhile: said plainly, not as a failure.
+                    Err(crate::sentient_admin::Failure::Stopped) => (Tone::Neutral, crate::sentient_admin::STOPPED.to_string()),
+                    Err(crate::sentient_admin::Failure::Error(e)) => (Tone::Bad, e),
                 });
                 if page.admin_result.as_ref().is_some_and(|(t, _)| matches!(t, Tone::Good)) {
                     page.reset_for = None;
@@ -950,7 +954,19 @@ impl SettingsPage {
                         .when(!self.reading_admin, |r| r.child(crate::ui::probed(crate::ui::button("read-admins").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx)))))),
                 ));
             }
-            Some(Err(e)) => extra.push(ui::outcome(theme, Tone::Warn, e.clone()).into_any_element()),
+            // SENTIENT stopped: a plain line (nothing failed), and Start.
+            Some(Err(crate::sentient_admin::Failure::Stopped)) => rows.push(row(
+                theme,
+                "Accounts",
+                Some("For when nobody can sign in. Changes go through SENTIENT's own administration command and are written to its audit log; SENTIENT keeps running.".into()),
+                false,
+                h_flex()
+                    .gap(crate::ui::button_gap())
+                    .items_center()
+                    .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(crate::sentient_admin::STOPPED))
+                    .child(crate::ui::probed(crate::ui::button("admin-start").outline().label("Start SENTIENT").on_click(|_, _, cx| crate::manager::request("control:start", cx)))),
+            )),
+            Some(Err(crate::sentient_admin::Failure::Error(e))) => extra.push(ui::outcome(theme, Tone::Warn, e.clone()).into_any_element()),
             Some(Ok(list)) => {
                 for a in list.iter() {
                     let email = a.email.clone().unwrap_or_default();
@@ -1164,7 +1180,7 @@ impl SettingsPage {
                     .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading…" } else { "Not read." }))
                     .when(!self.reading_admin, |r| r.child(crate::ui::probed(crate::ui::button("read-retention").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx)))))),
             )],
-            Some(Err(e)) => vec![row(theme, "Telemetry history and alarms", Some(help.into()), false, text_value(theme, e.clone()))],
+            Some(Err(e)) => vec![row(theme, "Telemetry history and alarms", Some(help.into()), false, text_value(theme, e.message()))],
             Some(Ok(now)) => {
                 let now = *now;
                 let edit = self.retention_edit;

@@ -635,6 +635,44 @@ fn shell_args(bash: &str) -> (String, Vec<String>) {
     ("wsl.exe".into(), wsl_bash_args(&docker_distro(), bash))
 }
 
+/// Program + arguments that run `argv` in `container` (`docker exec -i`),
+/// where Docker runs: on Windows `wsl.exe -d <distro> -u root --exec`
+/// (no shell in between, so nothing in `argv` is expanded; the distro's
+/// shell expanded the `$` of an argument before, see
+/// [`admin_account_cmd`]); on Linux [`shell_args`]' bash (or `sg docker`
+/// right after setup), each argument quoted. Standard input reaches the
+/// program in the container.
+pub fn docker_exec_command(container: &str, argv: &[String]) -> (String, Vec<String>) {
+    #[cfg(windows)]
+    {
+        docker_exec_args(true, &docker_distro(), false, container, argv)
+    }
+    #[cfg(not(windows))]
+    {
+        docker_exec_args(false, "", docker_needs_sg(), container, argv)
+    }
+}
+
+/// [`docker_exec_command`] for `windows` or Linux, the distro and `sg`
+/// given (unit tests build either).
+pub fn docker_exec_args(windows: bool, distro: &str, sg: bool, container: &str, argv: &[String]) -> (String, Vec<String>) {
+    if windows {
+        let mut args: Vec<String> = ["-d", distro, "-u", "root", "--exec", "docker", "exec", "-i", container].iter().map(|s| s.to_string()).collect();
+        args.extend(argv.iter().cloned());
+        return ("wsl.exe".into(), args);
+    }
+    let mut line = format!("exec docker exec -i {}", shell_quote(container));
+    for a in argv {
+        line.push(' ');
+        line.push_str(&shell_quote(a));
+    }
+    if sg {
+        ("sg".into(), vec!["docker".into(), "-c".into(), line])
+    } else {
+        ("bash".into(), vec!["-lc".into(), line])
+    }
+}
+
 /// On Linux: plain bash, or — right after `setup` added the user to the
 /// `docker` group, before they have logged out and in — `sg docker`, which
 /// applies the new group to just this command.
@@ -2162,6 +2200,26 @@ mod keepalive_tests {
         use base64::Engine as _;
         assert_eq!(String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b64).unwrap()).unwrap(), sql);
         assert!(cmd.ends_with("docker exec -i sentient-postgres psql -U sentient -d sentient -v ON_ERROR_STOP=1 -qAt -f -"));
+    }
+
+    #[test]
+    fn a_command_in_a_container_runs_where_docker_runs() {
+        let argv: Vec<String> = ["/usr/share/sentient/bin/sentient-admin", "unlock", "--email", "o'neil$x@example.test"].iter().map(|s| s.to_string()).collect();
+        // Windows: inside the distro, no shell in between (nothing expanded).
+        let (prog, args) = docker_exec_args(true, "Ubuntu", false, "sentient", &argv);
+        assert_eq!(prog, "wsl.exe");
+        assert_eq!(
+            args,
+            ["-d", "Ubuntu", "-u", "root", "--exec", "docker", "exec", "-i", "sentient", "/usr/share/sentient/bin/sentient-admin", "unlock", "--email", "o'neil$x@example.test"]
+        );
+        // Linux: bash, each argument quoted; `sg docker` right after setup.
+        let (prog, args) = docker_exec_args(false, "", false, "sentient", &argv);
+        assert_eq!(prog, "bash");
+        assert_eq!(args, ["-lc", "exec docker exec -i 'sentient' '/usr/share/sentient/bin/sentient-admin' 'unlock' '--email' 'o'\\''neil$x@example.test'"]);
+        let (prog, args) = docker_exec_args(false, "", true, "sentient", &argv);
+        assert_eq!(prog, "sg");
+        assert_eq!(args[..2], ["docker", "-c"]);
+        assert!(args[2].starts_with("exec docker exec -i 'sentient' "));
     }
 
     #[test]

@@ -1136,11 +1136,13 @@ fn run_job(args: &[String]) -> i32 {
                 let _ = std::io::stdin().read_line(&mut line);
                 line.trim_end_matches(['\r', '\n']).to_string()
             });
-            crate::sentient_admin::run(&record, &rest, input.as_deref()).map(|out| {
-                for line in out.lines() {
-                    sink(Progress::Log { line: line.to_string() });
-                }
-            })
+            crate::sentient_admin::run(&record, &rest, input.as_deref())
+                .map(|out| {
+                    for line in out.lines() {
+                        sink(Progress::Log { line: line.to_string() });
+                    }
+                })
+                .map_err(|f| f.message())
         }
         // The daily backup (scheduled task or systemd timer).
         "scheduled-backup" => {
