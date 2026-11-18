@@ -167,6 +167,9 @@ pub struct SettingsPage {
     retention_now: Option<Result<crate::sentient_admin::Retention, crate::sentient_admin::Failure>>,
     retention_edit: crate::sentient_admin::Retention,
     reading_admin: bool,
+    /// "SENTIENT is starting…" held from a start job here until the first
+    /// accounts reading after it came back ([`StartHold`]).
+    start_hold: StartHold,
     /// When the last reading of the accounts came back.
     admin_read_at: Option<std::time::Instant>,
     /// The reading under way (one at a time).
@@ -275,6 +278,7 @@ impl SettingsPage {
             retention_now: None,
             retention_edit: Default::default(),
             reading_admin: false,
+            start_hold: StartHold::default(),
             admin_read_at: None,
             _admin_read: None,
             _admin_retry: None,
@@ -407,6 +411,9 @@ impl SettingsPage {
         if let Some(l) = self.locations.clone() {
             l.update(cx, |l, cx| l.reload_if_stopped(cx));
         }
+        // A reading begun while a start job still runs may find SENTIENT
+        // not answering yet: it does not end the "starting…" line.
+        let while_starting = crate::manager::strip::starting_here(cx);
         let task = cx.spawn(async move |this, cx| {
             let (admins, retention) = cx
                 .background_executor()
@@ -428,6 +435,7 @@ impl SettingsPage {
                 page.admins = Some(admins);
                 page.retention_now = Some(retention);
                 page.reading_admin = false;
+                page.start_hold.on_read(while_starting);
                 page.admin_read_at = Some(std::time::Instant::now());
                 cx.notify();
             })
@@ -454,7 +462,14 @@ impl SettingsPage {
     /// a page left open on another one reads nothing.
     fn retry_while_stopped(&mut self, cx: &mut Context<Self>) {
         // Being started here: read when that job ends (sentient_changed).
-        if crate::manager::strip::starting_here(cx) {
+        let starting = crate::manager::strip::starting_here(cx);
+        self.start_hold.on_frame(starting);
+        if starting {
+            return;
+        }
+        // The job ended and no reading is under way to end the hold: one now.
+        if self.start_hold.held && !self.reading_admin {
+            self.read_admin(cx);
             return;
         }
         let stopped = matches!(self.admins, Some(Err(crate::sentient_admin::Failure::Stopped)));
@@ -850,6 +865,38 @@ pub(crate) fn admin_reading<A, R>(
     if serving { read() } else { (Err(crate::sentient_admin::Failure::Stopped), Err(crate::sentient_admin::Failure::Stopped)) }
 }
 
+/// The hand-over from "SENTIENT is starting…" to the accounts with no
+/// "stopped" frame between them (the rc5 build 5 VM: the start job ended
+/// when SENTIENT answered, a second before the accounts' reading did, and
+/// the row showed "must be running" and Start for that second). Held from
+/// the first frame that sees a start job here until a reading begun after
+/// it ended has come back, whatever it found.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct StartHold {
+    pub held: bool,
+}
+
+impl StartHold {
+    /// A frame: `starting`, a start job here runs.
+    pub fn on_frame(&mut self, starting: bool) {
+        if starting {
+            self.held = true;
+        }
+    }
+
+    /// A reading came back; `while_starting`: it was begun while the job ran.
+    pub fn on_read(&mut self, while_starting: bool) {
+        if !while_starting {
+            self.held = false;
+        }
+    }
+
+    /// Whether the row says "starting…".
+    pub fn shows_starting(&self, starting: bool) -> bool {
+        starting || self.held
+    }
+}
+
 /// What the Accounts row says while a job here starts SENTIENT.
 pub(crate) const STARTING: &str = "SENTIENT is starting…";
 
@@ -1048,7 +1095,7 @@ impl SettingsPage {
         let mut extra: Vec<AnyElement> = Vec::new();
         // A job here starts SENTIENT: said, and no Start to press again;
         // read when the job ends (sentient_changed).
-        let starting = crate::manager::strip::starting_here(cx) && !matches!(self.admins, Some(Ok(_)));
+        let starting = self.start_hold.shows_starting(crate::manager::strip::starting_here(cx)) && !matches!(self.admins, Some(Ok(_)));
         match &self.admins {
             _ if starting => {
                 rows.push(row(
@@ -1624,7 +1671,36 @@ pub(crate) fn settings_page(theme: &gpui_kit::component::Theme, title: &'static 
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
-    use super::{PRESET_KEYS, Preset, Retry, STOPPED_RETRY, admin_reading, preset_values, stopped_retry};
+    use super::{PRESET_KEYS, Preset, Retry, STOPPED_RETRY, StartHold, admin_reading, preset_values, stopped_retry};
+
+    #[test]
+    fn starting_hands_over_to_the_accounts_with_no_stopped_frame() {
+        let mut h = StartHold::default();
+        assert!(!h.shows_starting(false), "no start: as read");
+        // Start pressed: starting while the job runs.
+        h.on_frame(true);
+        assert!(h.shows_starting(true));
+        // A reading begun during the job (SENTIENT not answering yet) comes
+        // back "stopped": still starting.
+        h.on_read(true);
+        h.on_frame(true);
+        assert!(h.shows_starting(true));
+        // The job ends as SENTIENT answers: the frames before the next
+        // reading returns still say starting (the rc5 b5 flicker).
+        h.on_frame(false);
+        assert!(h.shows_starting(false));
+        h.on_frame(false);
+        assert!(h.shows_starting(false));
+        // The reading begun after the job came back: the accounts (or, if
+        // the start failed, stopped) show from the next frame.
+        h.on_read(false);
+        assert!(!h.shows_starting(false));
+        // Nothing held without a start job.
+        let mut idle = StartHold::default();
+        idle.on_frame(false);
+        idle.on_read(false);
+        assert!(!idle.shows_starting(false));
+    }
 
     #[test]
     fn accounts_are_read_only_once_sentient_answers() {
