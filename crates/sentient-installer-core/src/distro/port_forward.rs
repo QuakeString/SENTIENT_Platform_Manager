@@ -153,7 +153,12 @@ pub fn answers_from_outside(port: u16) -> bool {
 #[cfg(windows)]
 pub fn distro_address() -> Option<String> {
     use crate::sys;
-    let ask = |args: &[&str]| sys::output_wsl("wsl.exe", args, std::time::Duration::from_secs(30)).filter(|(ok, _, _)| *ok).map(|(_, out, _)| sys::decode(&out));
+    let ask = |args: &[&str]| {
+        if super::left_out(args) {
+            return None;
+        }
+        sys::output_wsl("wsl.exe", args, std::time::Duration::from_secs(30)).filter(|(ok, _, _)| *ok).map(|(_, out, _)| sys::decode(&out))
+    };
     for attempt in 0..10 {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_secs(2));

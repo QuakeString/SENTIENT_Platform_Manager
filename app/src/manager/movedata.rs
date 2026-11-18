@@ -240,6 +240,13 @@ impl LocationsCard {
         me
     }
 
+    /// Read again when the last reading found SENTIENT stopped.
+    pub fn reload_if_stopped(&mut self, cx: &mut Context<Self>) {
+        if matches!(&self.ov, Read::Failed(e) if e == crate::movedata::STOPPED) {
+            self.reload(cx);
+        }
+    }
+
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let t = self.target.clone();
         self._task = Some(cx.spawn(async move |this, cx| {
@@ -310,6 +317,8 @@ impl Render for LocationsCard {
                 }
                 return card;
             }
+            // SENTIENT stopped: a plain line, nothing failed.
+            Read::Failed(e) if e == crate::movedata::STOPPED => return card.child(div().pt_2().text_sm().text_color(theme.muted_foreground).child(e.clone())),
             Read::Failed(e) => return card.child(div().pt_2().text_sm().text_color(theme.danger).child(e.clone())),
             Read::Got(o) => o.clone(),
         };

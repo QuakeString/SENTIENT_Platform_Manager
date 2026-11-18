@@ -236,6 +236,14 @@ pub struct StatsPage {
     server_job_label: String,
     /// Debug builds: the dialog SPM_DEBUG_SERVER_DIALOG asks for was opened.
     debug_opened: bool,
+    /// When the Services card's last reading came back, and whether one
+    /// is under way outside the poll.
+    services_at: Option<Instant>,
+    services_reading: bool,
+    _services_once: Option<Task<()>>,
+    /// Services read while SENTIENT was stopped: looked at again soon
+    /// while the page shows (crate::manager::settings::stopped_retry).
+    _services_retry: Option<Task<()>>,
     _server_poll: Option<Task<()>>,
     _server_watch: Option<Subscription>,
     _watch: Option<Subscription>,
@@ -282,6 +290,10 @@ impl StatsPage {
             server_hidden: false,
             server_job_label: String::new(),
             debug_opened: false,
+            services_at: None,
+            services_reading: false,
+            _services_once: None,
+            _services_retry: None,
             _server_poll: None,
             _server_watch: None,
             _watch: None,
@@ -591,6 +603,7 @@ impl StatsPage {
                         if this
                             .update(cx, |p, cx| {
                                 if !p.whole.load(Ordering::Relaxed) {
+                                    p.services_at = Some(Instant::now());
                                     match got {
                                         // A failed re-read keeps what was read.
                                         Err(e) if matches!(p.services, Some(Ok(_))) => p.set_stale("services", Some(e)),
@@ -650,6 +663,65 @@ impl StatsPage {
                     cx.background_executor().timer(wait_after(Reader::History, range, 1)).await;
                 }
             }));
+        }
+    }
+
+    /// Read the services once now (SENTIENT's state changed, or a stopped
+    /// reading is looked at again), apart from the poll.
+    fn read_services_now(&mut self, cx: &mut Context<Self>) {
+        if self.services_reading || !self.src.has_install() || self.whole.load(Ordering::Relaxed) {
+            return;
+        }
+        self.services_reading = true;
+        self._services_retry = None;
+        let src = self.src.clone();
+        self._services_once = Some(cx.spawn(async move |this, cx| {
+            let got = cx.background_executor().spawn(async move { src.services() }).await;
+            this.update(cx, |p, cx| {
+                p.services_reading = false;
+                p.services_at = Some(Instant::now());
+                match got {
+                    Err(e) if matches!(p.services, Some(Ok(_))) => p.set_stale("services", Some(e)),
+                    got => {
+                        if got.is_ok() {
+                            p.set_stale("services", None);
+                        }
+                        p.services = Some(got);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// SENTIENT's state may have changed (a job here ended: Start, Stop,
+    /// Restart): the Services card is read again now.
+    pub fn sentient_changed(&mut self, cx: &mut Context<Self>) {
+        self.read_services_now(cx);
+    }
+
+    /// Shown with the services left out because SENTIENT was stopped: read
+    /// again when that reading is crate::manager::settings::STOPPED_RETRY
+    /// old, else look again then (a redraw: only while shown).
+    fn services_retry_while_stopped(&mut self, cx: &mut Context<Self>) {
+        use crate::manager::settings::{Retry, stopped_retry};
+        let stopped = matches!(self.services, Some(Ok(Services::Stopped)));
+        match stopped_retry(stopped, self.services_reading, self.services_at, Instant::now()) {
+            Retry::No => {}
+            Retry::Now => self.read_services_now(cx),
+            Retry::After(wait) => {
+                if self._services_retry.is_none() {
+                    self._services_retry = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(wait).await;
+                        this.update(cx, |p, cx| {
+                            p._services_retry = None;
+                            cx.notify();
+                        })
+                        .ok();
+                    }));
+                }
+            }
         }
     }
 
@@ -1006,6 +1078,9 @@ fn mini_bar(theme: &gpui_kit::component::Theme, f: f32) -> Div {
 
 impl Render for StatsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.paused {
+            self.services_retry_while_stopped(cx);
+        }
         let theme = cx.theme().clone();
         // The page's own width decides the layout (figures 4 → 2, charts
         // 3 → 2 → 1, Services and Database side by side or stacked).
@@ -1279,6 +1354,20 @@ fn services_panel(theme: &gpui_kit::component::Theme, list: &[crate::stats::Serv
 #[cfg(test)]
 mod tests {
     use super::{nice, nice_memory, tick, wait_after, Range, Reader, Services};
+
+    #[test]
+    fn stopped_services_are_looked_at_again_while_shown() {
+        use crate::manager::settings::{stopped_retry, Retry, STOPPED_RETRY};
+        use std::time::{Duration, Instant};
+        // The rc5 VM: "stopped" for 2.5 min after SENTIENT answered. Shown
+        // and stopped, the card reads again 5 s after its last reading
+        // (and at once when a job here ends: sentient_changed).
+        let t0 = Instant::now();
+        assert_eq!(stopped_retry(true, false, Some(t0), t0 + Duration::from_secs(1)), Retry::After(STOPPED_RETRY - Duration::from_secs(1)));
+        assert_eq!(stopped_retry(true, false, Some(t0), t0 + STOPPED_RETRY), Retry::Now);
+        assert_eq!(stopped_retry(false, false, Some(t0), t0 + Duration::from_secs(600)), Retry::No, "a list: the poll keeps it fresh");
+        assert!(matches!(Services::of(&crate::stats::Sample { services_stopped: true, ..Default::default() }), Services::Stopped));
+    }
 
     #[test]
     fn every_reader_sleeps_between_readings() {

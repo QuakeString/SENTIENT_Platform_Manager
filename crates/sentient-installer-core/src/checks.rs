@@ -849,7 +849,11 @@ fn distro_present() -> Check {
 fn docker_ready() -> Check {
     #[cfg(windows)]
     {
-        match output("wsl.exe", &["-d", "sentient", "--", "docker", "version"]) {
+        let args = ["-d", "sentient", "--", "docker", "version"];
+        if crate::distro::left_out(&args) {
+            return check("docker", "Docker Engine", Status::Unknown, "Not asked: the distro is stopped.");
+        }
+        match output("wsl.exe", &args) {
             Some((true, _, _)) => check("docker", "Docker Engine", Status::Pass, "Docker is running in the distro."),
             _ => check("docker", "Docker Engine", Status::Setup, "Not set up yet. The installer will install Docker Engine."),
         }

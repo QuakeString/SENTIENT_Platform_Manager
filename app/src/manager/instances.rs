@@ -1508,7 +1508,7 @@ fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<Remote
                     s.disk_free.is_some_and(|d| d < crate::dbstatus::LOW_DISK),
                 ))
                 .child(row("Last backup", s.last_backup.clone().unwrap_or_else(|| "None".into()), s.last_backup.is_none()))
-                .when_some(s.uptime_secs, |c, u| c.child(row("Up for", uptime_label(u), false)));
+                .when_some(up_for(s), |c, u| c.child(row("Up for", uptime_label(u), false)));
         }
         Some(Ok(s)) => {
             col = col
@@ -1533,6 +1533,12 @@ fn quick_facts(theme: &gpui_kit::component::Theme, status: Option<&Result<Remote
 }
 
 /// "3 days", "5 hours", "12 minutes".
+/// "Up for" only while SENTIENT answers: a stopped instance is not up
+/// (the rc5 VM: "Up for 3 minutes" on a stopped one, the computer's time).
+fn up_for(s: &crate::remote::RemoteStatus) -> Option<u64> {
+    s.uptime_secs.filter(|_| s.serving)
+}
+
 fn uptime_label(secs: u64) -> String {
     let (n, unit) = if secs >= 86_400 { (secs / 86_400, "day") } else if secs >= 3_600 { (secs / 3_600, "hour") } else { (secs / 60, "minute") };
     format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
@@ -1773,3 +1779,15 @@ fn hex_of(c: Hsla) -> String {
     format!("#{:02x}{:02x}{:02x}", b(r.r), b(r.g), b(r.b))
 }
 
+#[cfg(test)]
+mod up_for_tests {
+    #[test]
+    fn up_for_shows_only_while_running() {
+        let mut s = crate::remote::RemoteStatus { uptime_secs: Some(180), serving: false, ..Default::default() };
+        assert_eq!(super::up_for(&s), None, "stopped: no uptime");
+        s.serving = true;
+        assert_eq!(super::up_for(&s), Some(180));
+        s.uptime_secs = None;
+        assert_eq!(super::up_for(&s), None);
+    }
+}
