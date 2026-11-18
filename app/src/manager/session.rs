@@ -63,6 +63,22 @@ fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
     })
 }
 
+static WINDOW_OPENED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Which page a new window opens on, given the page left last: after a
+/// real quit (the first window of this run of the Platform Manager) it is
+/// Status; a window closed and opened again while the Platform Manager
+/// kept running in the background opens where it was left (his ask). The
+/// instance is restored either way.
+pub fn page_to_restore(saved: Option<&str>) -> Option<String> {
+    let reopened = WINDOW_OPENED.swap(true, std::sync::atomic::Ordering::SeqCst);
+    restore_page(saved, reopened)
+}
+
+fn restore_page(saved: Option<&str>, reopened: bool) -> Option<String> {
+    if reopened { saved.map(str::to_string) } else { None }
+}
+
 /// The session saved last (empty the first time).
 pub fn load() -> Session {
     with(|s| s.saved.clone().unwrap_or_default())
@@ -173,4 +189,21 @@ pub fn window_bounds(cx: &App, min: Size<Pixels>) -> Option<WindowBounds> {
         None => Bounds::centered(None, size(displays.first().map(|d| d.bounds()).as_ref()), cx),
     };
     Some(if s.maximized { WindowBounds::Maximized(bounds) } else { WindowBounds::Windowed(bounds) })
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::restore_page;
+
+    #[test]
+    fn after_a_quit_it_starts_on_status() {
+        assert_eq!(restore_page(Some("update"), false), None);
+        assert_eq!(restore_page(None, false), None);
+    }
+
+    #[test]
+    fn a_window_opened_again_keeps_its_page() {
+        assert_eq!(restore_page(Some("update"), true).as_deref(), Some("update"));
+        assert_eq!(restore_page(None, true), None);
+    }
 }
