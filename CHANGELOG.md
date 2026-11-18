@@ -15,6 +15,9 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Changed
+- After quitting, the Platform Manager starts on Status, of the instance that was open last. Closing only the window (the Platform Manager keeps running in the tray) and opening it again still returns to the page it was on.
+
 ### Fixed
 - Windows "In the system": other computers reach SENTIENT. Setup opens its
   ports in Windows Firewall (rule group SENTIENT: web and MQTT over TCP,

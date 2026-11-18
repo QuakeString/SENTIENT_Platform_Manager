@@ -343,7 +343,9 @@ impl Manager {
         // Control is part of Status now: a session left there opens Status.
         let page_of = |id: &str| if id == "control" { Some(Page::Status) } else { Page::ALL.into_iter().chain([Page::Instances, Page::About]).find(|p| p.id() == id) };
         let page_arg = args.windows(2).find(|w| w[0] == "--page").and_then(|w| page_of(&w[1]));
-        let page = page_arg.or_else(|| saved.page.as_deref().and_then(page_of)).unwrap_or(Page::Status);
+        // After a quit: Status (of the instance left open); a window opened
+        // again while the app kept running: the page it was left on.
+        let page = page_arg.or_else(|| session::page_to_restore(saved.page.as_deref()).as_deref().and_then(page_of)).unwrap_or(Page::Status);
         let record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
         let installed = record.as_ref().map(|r| r.sentient_version.clone());
         let native = record.as_ref().is_some_and(|r| r.platform().needs_package());
