@@ -40,3 +40,16 @@ pub fn took(what: &str, since: Instant) {
         eprintln!("TIMING {what} took_ms={:.2} ms={:.1}", since.elapsed().as_secs_f64() * 1000., since_start());
     }
 }
+
+/// A mark the first time `key` is seen (the first frame something shows).
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+pub fn once(key: &str, what: &str) {
+    if on() {
+        static SEEN: std::sync::Mutex<Option<std::collections::HashSet<String>>> = std::sync::Mutex::new(None);
+        let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        if g.get_or_insert_with(Default::default).insert(key.to_string()) {
+            drop(g);
+            mark(what);
+        }
+    }
+}

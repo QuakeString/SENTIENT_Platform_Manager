@@ -11,7 +11,7 @@ pub(crate) mod startup;
 pub(crate) mod files;
 pub(crate) mod folder_chooser;
 mod gateway;
-mod instances;
+pub(crate) mod instances;
 pub(crate) mod logs;
 pub(crate) mod migration;
 pub(crate) mod movedata;
@@ -29,6 +29,7 @@ pub(crate) mod setup_guide;
 pub(crate) mod shell;
 pub(crate) mod setting_field;
 pub(crate) mod status;
+pub(crate) mod status_store;
 pub(crate) mod stats;
 pub(crate) mod strip;
 pub(crate) mod uninstall_dialog;
@@ -364,11 +365,21 @@ impl Manager {
         // One connection per added server, open from now until the
         // Platform Manager quits (crate::remote::conn); made behind the window.
         std::thread::spawn(|| crate::remote::conn::open_all(&crate::remote::load()));
+        // Every server's state, read from now on (their first requests wait
+        // for those connections), and again when the window is focused.
+        let store = status_store::get(cx);
+        let focus = cx.observe_window_activation(_window, |_, window, cx| {
+            if window.is_window_active() {
+                status_store::get(cx).update(cx, |s, cx| s.focused(cx));
+            }
+        });
         // The progress line under the top bar follows the strip.
         let strip = strip::install(cx);
         let subscriptions = vec![
             cx.observe(&updates, |_, _, cx| cx.notify()),
             cx.observe(&strip, |_, _, cx| cx.notify()),
+            cx.observe(&store, |_, _, cx| cx.notify()),
+            focus,
             cx.subscribe(&strip, |this, _, e: &strip::JobEnded, cx| this.after_job(e.instance.clone(), cx)),
         ];
         let updated_from = args.windows(2).find(|w| w[0] == "--updated-from").map(|w| w[1].clone());
@@ -481,9 +492,6 @@ impl Manager {
             }
             manager.bell_open = std::env::var_os("SPM_DEBUG_BELL").is_some();
             manager.switcher_open = std::env::var_os("SPM_DEBUG_SWITCHER").is_some();
-            if manager.switcher_open {
-                manager.instances_page(cx);
-            }
             if std::env::var_os("SPM_DEBUG_ERROR_DIALOG").is_some() {
                 crate::ui::show_error_with(
                     "The server agent could not be updated",
@@ -1293,10 +1301,6 @@ impl Manager {
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.switcher_open = !this.switcher_open;
-                        // The rows' dots: every server's state.
-                        if this.switcher_open {
-                            this.instances_page(cx);
-                        }
                         cx.notify();
                     }));
                 let popover = open.then(|| {
@@ -1327,8 +1331,9 @@ impl Manager {
                     // Instances shows it (the cached status), else what its
                     // open pages last read; grey while not known. The
                     // instance's own colour stays on its card and the bar.
+                    let store = status_store::get(cx);
                     let card_tone = |id: &str, cx: &App| -> Option<ui::Tone> {
-                        if let Some(t) = self.instances.as_ref().and_then(|p| p.read(cx).tone_of(id)) {
+                        if let Some(t) = store.read(cx).tone(id) {
                             return Some(t);
                         }
                         let serving = self.remote_pages.get(id).and_then(|p| p.read(cx).serving()).or_else(|| crate::bg_app::serving(Some(id), cx));
@@ -1336,6 +1341,10 @@ impl Manager {
                     };
                     for r in &self.remotes {
                         let tone = card_tone(&r.id, cx);
+                        crate::timing::once(&format!("switcher-open {}", r.id), &format!("switcher-dot-open id={}", r.id));
+                        if tone.is_some() {
+                            crate::timing::once(&format!("switcher-dot {}", r.id), &format!("switcher-dot-known id={}", r.id));
+                        }
                         let dot: Hsla = match tone {
                             Some(ui::Tone::Good) => status_green,
                             Some(ui::Tone::Warn) => rgb(0xf59e0b).into(),
@@ -1422,8 +1431,8 @@ impl Manager {
 
     /// Switch to an instance (None: this computer). Remote instances are
     /// worked on from their card on Instances for now.
-    /// The Instances page, made the first time it is needed (shown, or the
-    /// switcher's state dots): it reads every server's state as it starts.
+    /// The Instances page, made the first time it is shown (the servers'
+    /// states are the store's, read from the start: status_store).
     fn instances_page(&mut self, cx: &mut Context<Self>) -> Entity<instances::InstancesPage> {
         if let Some(p) = &self.instances {
             return p.clone();
@@ -1440,6 +1449,7 @@ impl Manager {
                 this.open_instance(e.0.clone(), cx);
             }));
             self._subscriptions.push(cx.subscribe(&page, |this, _, _: &instances::ListChanged, cx| {
+                status_store::get(cx).update(cx, |s, cx| s.reload_list(cx));
                 let before = std::mem::replace(&mut this.remotes, crate::remote::load());
                 this.prune_kept(&before);
                 if this.open_remote.as_ref().is_some_and(|id| !this.remotes.iter().any(|r| &r.id == id)) {
@@ -1827,6 +1837,8 @@ impl Manager {
                 }
             }
             Some(id) => {
+                // Its card and dot.
+                status_store::get(cx).update(cx, |s, cx| s.refresh(&id, cx));
                 // A kept page of an instance not open now reads again too.
                 if let Some(page) = self.remote_pages.get(&id).cloned() {
                     page.update(cx, |p, cx| p.after_job(cx));
@@ -2209,6 +2221,7 @@ impl Manager {
         if let Some(p) = &self.instances {
             p.update(cx, |p, cx| p.reload_list(cx));
         }
+        status_store::get(cx).update(cx, |s, cx| s.reload_list(cx));
     }
 }
 

@@ -16,6 +16,17 @@ refreshes that repository's Downloads table.
 ## [Unreleased]
 
 ### Fixed
+- Instances and the instance switcher show every server's state at once.
+  The states are read for every added server as the Platform Manager
+  starts, over the connections it opens then. They are read again every 15
+  seconds while a window is open, and when the window is focused again.
+  Before, a server was first read only when Instances or the switcher was
+  opened, and its card and dot took a few seconds to appear. Each server's
+  last state is kept on disk, so a new start shows it at once as
+  "Checking…" until the server answers. A server that stops answering keeps
+  its last state on the card, marked "Not reachable" with the time of its
+  last answer. One request per server at a time; the tray's checks reuse
+  these readings.
 - Windows "In the system": other computers reach SENTIENT. Setup opens its
   ports in Windows Firewall (rule group SENTIENT: web and MQTT over TCP,
   CoAP over UDP). Repair, a SENTIENT update and the Platform Manager's

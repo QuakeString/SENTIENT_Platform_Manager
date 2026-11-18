@@ -462,7 +462,9 @@ fn check_instances(cx: &mut App) {
                         if matches!(sc::power_state(&inst.id), Some(Power::Restarting | Power::ShuttingDown)) {
                             continue;
                         }
-                        let status = crate::remote::status(&inst);
+                        // The Instances cards' reading when it is recent (one
+                        // request per server, crate::remote::status_cache).
+                        let status = crate::remote::status_cache::fetch(&inst, Duration::from_secs(30));
                         // Shut down from here: off is not a problem; once it
                         // answers it is on again.
                         if sc::power_state(&inst.id) == Some(Power::Off) {

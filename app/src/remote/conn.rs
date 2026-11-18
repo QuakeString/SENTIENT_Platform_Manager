@@ -207,7 +207,10 @@ fn supervise(slot: Arc<Slot>) {
             *st = State::Connecting;
         }
         slot.cv.notify_all();
+        let t0 = Instant::now();
         let r = connect(&slot);
+        let who = slot.key.split('|').next().unwrap_or("");
+        crate::timing::took(&format!("conn-{} id={who}", match &r { Opened::Up(_) => "up", Opened::NoServe => "noserve", Opened::Down(_) => "down" }), t0);
         *slot.last.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
         slot.attempts.fetch_add(1, Ordering::SeqCst);
         match r {
@@ -393,6 +396,18 @@ pub fn call(inst: &Instance, work: Work, stdin: Option<String>) -> Result<(Peer,
 }
 
 fn call_on(slot: &Arc<Slot>, work: Work, stdin: Option<String>) -> Result<(Peer, Response), Fail> {
+    let t0 = Instant::now();
+    let what = match &work {
+        Work::Job(a) => format!("job {}", a.first().map(String::as_str).unwrap_or("")),
+        Work::Sh { .. } => "sh".to_string(),
+        Work::Ps(_) => "ps".to_string(),
+    };
+    let r = call_link(slot, work, stdin);
+    crate::timing::took(&format!("conn-call {what} ok={}", r.is_ok()), t0);
+    r
+}
+
+fn call_link(slot: &Arc<Slot>, work: Work, stdin: Option<String>) -> Result<(Peer, Response), Fail> {
     let link = wait_up(slot)?;
     let peer = Peer { root: link.hello.root };
     let lost = || {

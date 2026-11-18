@@ -19,7 +19,7 @@ use gpui_kit::*;
 
 use crate::installation::InstallationRecord;
 use crate::jobs::{Job, JobState};
-use crate::remote::{self, Auth, Detected, Instance, Os, RemoteStatus};
+use crate::remote::{self, status_cache, Auth, Detected, Instance, Os, RemoteStatus};
 use crate::ui::{self, Tone};
 
 #[derive(Clone)]
@@ -71,10 +71,11 @@ struct Form {
 pub struct InstancesPage {
     local: Option<InstallationRecord>,
     list: Vec<Instance>,
+    /// This computer's quick status (the servers' are the store's).
     statuses: HashMap<String, Result<RemoteStatus, String>>,
-    /// Read again once the refresh under way ends.
-    refresh_again: HashSet<String>,
     refreshing: HashSet<String>,
+    /// Every server's state (crate::manager::status_store).
+    store: Entity<super::status_store::StatusStore>,
     /// The tile grid's own width as laid out (the last frame's), so the
     /// tiles fill exactly the width the title row has.
     grid_w: std::rc::Rc<std::cell::Cell<f32>>,
@@ -104,18 +105,10 @@ impl InstancesPage {
     /// The list again from the saved instances (one was removed elsewhere).
     pub fn reload_list(&mut self, cx: &mut Context<Self>) {
         self.list = remote::load();
-        self.statuses.retain(|id, _| id == LOCAL || self.list.iter().any(|i| &i.id == id));
         if self.open.as_ref().is_some_and(|id| !self.list.iter().any(|i| &i.id == id)) {
             self.open = None;
         }
         cx.notify();
-    }
-
-    /// A server's state as its card shows it (the switcher's dots), from
-    /// the cached status; None before it was first read.
-    pub fn tone_of(&self, id: &str) -> Option<Tone> {
-        let st = self.statuses.get(id)?;
-        Some(state_of(Some(st), false).0)
     }
 
     pub fn new(local: Option<InstallationRecord>, cx: &mut Context<Self>) -> Self {
@@ -139,7 +132,8 @@ impl InstancesPage {
                 .unwrap_or(false)
             }), false)
         });
-        let subs = vec![cx.observe(&job, |this, job, cx| {
+        let store = super::status_store::get(cx);
+        let subs = vec![cx.observe(&store, |_, _, cx| cx.notify()), cx.observe(&job, |this, job, cx| {
             // A finished job changes what the card shows.
             if !job.read(cx).is_running() {
                 if let Some((id, _)) = this.job_for.clone() {
@@ -171,8 +165,8 @@ impl InstancesPage {
             list: remote::load(),
             statuses: HashMap::new(),
             refreshing: HashSet::new(),
+            store,
             grid_w: Default::default(),
-            refresh_again: HashSet::new(),
             form: None,
             job,
             job_for: None,
@@ -185,10 +179,6 @@ impl InstancesPage {
             _tasks: Vec::new(),
             _subscriptions: subs,
         };
-        let ids: Vec<String> = page.list.iter().map(|i| i.id.clone()).collect();
-        for id in ids {
-            page.refresh(&id, cx);
-        }
         if page.local.is_some() {
             page.refresh_local(cx);
         }
@@ -226,15 +216,12 @@ impl InstancesPage {
                 )
             });
         }
-        // The cards refresh every minute.
+        // This computer's card refreshes every minute (the servers' are
+        // the store's).
         let tick = cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(std::time::Duration::from_secs(60)).await;
             let alive = this
                 .update(cx, |page, cx| {
-                    let ids: Vec<String> = page.list.iter().map(|i| i.id.clone()).collect();
-                    for id in ids {
-                        page.refresh(&id, cx);
-                    }
                     if page.local.is_some() {
                         page.refresh_local(cx);
                     }
@@ -252,31 +239,11 @@ impl InstancesPage {
         self.list.iter().find(|i| i.id == id).cloned()
     }
 
+    /// Read a server's state again (the store's; one under way is
+    /// followed by one more).
     fn refresh(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some(inst) = self.instance(id) else { return };
-        if !self.refreshing.insert(id.to_string()) {
-            // One is under way and may have started before a job changed the
-            // server: read again when it ends.
-            self.refresh_again.insert(id.to_string());
-            return;
-        }
         let id = id.to_string();
-        cx.notify();
-        let task = cx.spawn(async move |this, cx| {
-            let i = inst.clone();
-            let got = cx.background_executor().spawn(async move { remote::status(&i) }).await;
-            this.update(cx, |page, cx| {
-                page.refreshing.remove(&id);
-                let again = page.refresh_again.remove(&id);
-                page.statuses.insert(id.clone(), got);
-                if again {
-                    page.refresh(&id, cx);
-                }
-                cx.notify();
-            })
-            .ok();
-        });
-        self._tasks.push(task);
+        self.store.update(cx, |s, cx| s.refresh(&id, cx));
     }
 
     // -- the add / edit form ------------------------------------------------
@@ -501,8 +468,9 @@ impl InstancesPage {
                         return page.set_error(e, cx);
                     }
                     page.form = None;
+                    // The store reads it (new or changed) from the list.
+                    let _ = id;
                     cx.emit(ListChanged);
-                    page.refresh(&id, cx);
                 }
                 Err(e) => page.set_error(e, cx),
             })
@@ -518,7 +486,6 @@ impl InstancesPage {
             remote::reuse::forget(id);
         }
         self.list.retain(|i| i.id != id);
-        self.statuses.remove(id);
         let _ = remote::save(&self.list);
         self.confirm_remove = None;
         cx.emit(ListChanged);
@@ -568,8 +535,8 @@ impl InstancesPage {
         match remote::use_installed(&inst) {
             Ok(()) => self.refresh(id, cx),
             Err(e) => {
-                self.statuses.insert(id.to_string(), Err(e));
-                cx.notify();
+                let id = id.to_string();
+                self.store.update(cx, |s, cx| s.set(&id, Err(e), cx));
             }
         }
     }
@@ -633,7 +600,8 @@ impl InstancesPage {
     /// A job ended there: its card reads its state again.
     pub fn after_job(&mut self, id: Option<&str>, cx: &mut Context<Self>) {
         match id {
-            Some(id) => self.refresh(id, cx),
+            // The store reads it (crate::manager::Manager::after_job).
+            Some(_) => {}
             None => {
                 self.local = InstallationRecord::load();
                 self.refresh_local(cx);
@@ -706,11 +674,19 @@ impl InstancesPage {
         let id = inst.id.clone();
         let det = inst.detected.clone().unwrap_or(Detected { os: inst.os, ..Default::default() });
         let busy = self.job.read(cx).is_running();
-        let refreshing = self.refreshing.contains(&id);
-        let status = self.statuses.get(&id).cloned();
-        let (mut tone, mut state) = state_of(status.as_ref(), refreshing);
-        let can_work = matches!(&status, Some(Ok(s)) if s.installed) && !busy;
-        let can_read = matches!(&status, Some(Ok(s)) if s.installed);
+        let view = self.store.read(cx).view(&id);
+        let refreshing = view.in_flight;
+        let status = view.status.clone();
+        let (mut tone, mut state) = remote_state(&view);
+        // Shown from before the start, or the server stopped answering: no
+        // work on it until it answers.
+        let current_answer = !view.checking && view.stale.is_none();
+        crate::timing::once(&format!("card-open {id}"), &format!("card-shown id={id} state={state}"));
+        if status.is_some() {
+            crate::timing::once(&format!("card-known {id}"), &format!("card-known id={id} state={state}"));
+        }
+        let can_work = matches!(&status, Some(Ok(s)) if s.installed) && !busy && current_answer;
+        let can_read = matches!(&status, Some(Ok(s)) if s.installed) && current_answer;
         let not_set_up = matches!(&status, Some(Err(e)) if remote::needs_setup(e));
         // An installed Platform Manager there that works the same way: the
         // card offers to use it (the server's pages offer both choices).
@@ -753,7 +729,7 @@ impl InstancesPage {
                     .item(item(Lucide::RefreshCw, "Check again", true, Box::new(move |p, _, cx| p.refresh(&i4, cx))))
             }
         });
-        let unreachable = matches!(&status, Some(Err(e)) if !remote::needs_setup(e) && e != remote::FORGOTTEN && !e.contains("administrator rights"));
+        let unreachable = view.stale.is_some() || matches!(&status, Some(Err(e)) if !remote::needs_setup(e) && e != remote::FORGOTTEN && !e.contains("administrator rights"));
         let current = self.open.as_deref() == Some(id.as_str());
         let primary: AnyElement = if unreachable {
             crate::ui::button(SharedString::from(format!("retry-{id}"))).primary().h(px(28.)).label("Try again").loading(refreshing).on_click(cx.listener({
@@ -804,6 +780,10 @@ impl InstancesPage {
             sub.push_str(&format!(", {}", det.install));
         }
         let mut facts = quick_facts(&theme, status.as_ref(), Some(&det));
+        // An earlier answer: say when it was.
+        if let (Some(_), Some(at)) = (&view.stale, view.answered_at) {
+            facts = facts.child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(last_answer_text(at, chrono::Utc::now().timestamp())));
+        }
         let following = self.job.read(cx).is_running() && self.job_for.as_ref().is_some_and(|(i, _)| *i == id);
         if let (Some(Ok(s)), false) = (&status, following) {
             if let Some(job_id) = s.running_job.clone() {
@@ -1331,7 +1311,13 @@ impl Render for InstancesPage {
         self.sync_dialogs(window, cx);
         let local = self.local_card(cx);
         let cards: Vec<AnyElement> = self.list.clone().iter().map(|i| self.remote_card(i, cx)).collect();
-        let all: Vec<Option<&Result<RemoteStatus, String>>> = std::iter::once(self.statuses.get(LOCAL)).chain(self.list.iter().map(|i| self.statuses.get(&i.id))).collect();
+        let views: Vec<status_cache::View> = self.list.iter().map(|i| self.store.read(cx).view(&i.id)).collect();
+        // A server that stopped answering counts as not reachable; one
+        // shown from before the start, as being checked.
+        let gone: Result<RemoteStatus, String> = Err(String::new());
+        let all: Vec<Option<&Result<RemoteStatus, String>>> = std::iter::once(self.statuses.get(LOCAL))
+            .chain(views.iter().map(|v| if v.stale.is_some() { Some(&gone) } else if v.checking { None } else { v.status.as_ref() }))
+            .collect();
         // Named states, in this order, each only when there is one.
         let mut named: Vec<(&str, usize)> = vec![("running", 0), ("stopped", 0), ("without SENTIENT", 0), ("not set up", 0), ("not reachable", 0), ("waiting for sign-in", 0), ("being checked", 0)];
         for st in &all {
@@ -1436,8 +1422,28 @@ const CARD_MIN_W: f32 = 340.;
 /// "Open" and "Open now" share one width, so Edit and Remove stay put.
 const OPEN_W: f32 = 78.;
 
+/// A server card's state label: its last answer's, "Checking…" while
+/// that is the one kept from before the start, "Not reachable" when the
+/// server stopped answering (its last answer stays below).
+fn remote_state(v: &status_cache::View) -> (Tone, String) {
+    if v.stale.is_some() {
+        return (Tone::Bad, "Not reachable".into());
+    }
+    if v.checking {
+        return (Tone::Neutral, "Checking…".into());
+    }
+    state_of(v.status.as_ref(), v.in_flight)
+}
+
+/// "Last answer at 14:05" (today) or "Last answer on 17 Nov, 14:05".
+fn last_answer_text(at: i64, now: i64) -> String {
+    use chrono::{Local, TimeZone as _};
+    let (Some(t), Some(n)) = (Local.timestamp_opt(at, 0).single(), Local.timestamp_opt(now, 0).single()) else { return String::new() };
+    if t.date_naive() == n.date_naive() { format!("Last answer at {}", t.format("%H:%M")) } else { format!("Last answer on {}", t.format("%-d %b, %H:%M")) }
+}
+
 /// The state label of a card.
-fn state_of(status: Option<&Result<RemoteStatus, String>>, refreshing: bool) -> (Tone, String) {
+pub(crate) fn state_of(status: Option<&Result<RemoteStatus, String>>, refreshing: bool) -> (Tone, String) {
     let (t, s) = match status {
         None if refreshing => (Tone::Neutral, "Checking…"),
         None => (Tone::Neutral, "Not checked"),

@@ -29,6 +29,8 @@ use sentient_installer_core::progress::{Progress, ProgressFn};
 pub mod conn;
 pub mod reuse;
 pub mod serve;
+#[cfg(feature = "gui")]
+pub mod status_cache;
 pub mod winshell;
 
 /// What the agent jobs mean (`--job …`, crate::headless), as one number:
@@ -1110,6 +1112,13 @@ pub fn is_not_admin(e: &str) -> bool {
 
 /// The server's state, from its own Platform Manager (`--job status-json`).
 pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {
+    let t0 = std::time::Instant::now();
+    let r = status_now(inst);
+    crate::timing::took(&format!("remote-status id={} ok={}", inst.id, r.is_ok()), t0);
+    r
+}
+
+fn status_now(inst: &Instance) -> Result<RemoteStatus, String> {
     #[cfg(debug_assertions)]
     if let Some(secs) = std::env::var("SPM_DEBUG_REMOTE_SLOW").ok().and_then(|s| s.parse::<u64>().ok()) {
         std::thread::sleep(std::time::Duration::from_secs(secs));
