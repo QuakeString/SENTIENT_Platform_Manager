@@ -1024,9 +1024,10 @@ impl InstancesPage {
                     .child(div().font_weight(FontWeight::MEDIUM).child("Is this the right computer?"))
                     .child(ui::fact(&theme, "Address", host))
                     .child(ui::fact(&theme, "Its fingerprint", fingerprint.clone()))
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(
-                        "Compare it with the fingerprint shown on that server (ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub). It is asked once and remembered; if it ever changes, the connection is refused.",
-                    ))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child({
+                        let file = remote::host_key_file(&keys);
+                        format!("Compare it with the fingerprint shown on that server: ssh-keygen -lf /etc/ssh/{file} on Linux, ssh-keygen -lf C:\\ProgramData\\ssh\\{file} on Windows. It is asked once and remembered; if it ever changes, the connection is refused.")
+                    }))
                     .child(
                         h_flex()
                             .mt_2()

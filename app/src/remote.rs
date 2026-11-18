@@ -443,11 +443,14 @@ pub fn scan(host: &str, port: u16) -> Result<(String, String), String> {
     if keys.is_empty() {
         return Err(format!("{host}:{port} did not answer as an SSH server."));
     }
-    // The fingerprint of the first (strongest) key.
+    // The fingerprint of the strongest key it offers (ed25519, then ECDSA,
+    // then RSA; ssh-keyscan's order is not that: the rc6 build 5 VM showed
+    // the ECDSA one while the hint named the ed25519 file).
+    let line = shown_key(&keys).unwrap_or("");
     let mut kg = Command::new("ssh-keygen").args(["-lf", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().map_err(|e| format!("ssh-keygen: {e}"))?;
     if let Some(mut s) = kg.stdin.take() {
         use std::io::Write as _;
-        let _ = s.write_all(keys.lines().next().unwrap_or("").as_bytes());
+        let _ = s.write_all(line.as_bytes());
     }
     let fp = String::from_utf8_lossy(&kg.wait_with_output().map_err(|e| e.to_string())?.stdout)
         .split_whitespace()
@@ -455,6 +458,23 @@ pub fn scan(host: &str, port: u16) -> Result<(String, String), String> {
         .unwrap_or("")
         .to_string();
     Ok((keys, fp))
+}
+
+/// The key line whose fingerprint the trust step shows: ed25519, then
+/// ECDSA, then RSA.
+pub fn shown_key(keys: &str) -> Option<&str> {
+    let of = |t: &str| keys.lines().find(|l| l.split_whitespace().nth(1).is_some_and(|k| k.starts_with(t)));
+    of("ssh-ed25519").or_else(|| of("ecdsa-")).or_else(|| of("ssh-rsa")).or_else(|| keys.lines().next())
+}
+
+/// The host key file on the server that holds [`shown_key`]'s key:
+/// `ssh_host_ed25519_key.pub`, `…_ecdsa_…`, `…_rsa_…`.
+pub fn host_key_file(keys: &str) -> &'static str {
+    match shown_key(keys).and_then(|l| l.split_whitespace().nth(1)) {
+        Some(k) if k.starts_with("ecdsa-") => "ssh_host_ecdsa_key.pub",
+        Some(k) if k.starts_with("ssh-rsa") => "ssh_host_rsa_key.pub",
+        _ => "ssh_host_ed25519_key.pub",
+    }
 }
 
 /// Trust these host keys from now on.
@@ -2606,6 +2626,18 @@ mod tests {
         assert_eq!(super::windows_path("C:/Users/x"), "C:/Users/x");
         assert_eq!(super::windows_path("/home/ops/x"), "/home/ops/x");
         assert_eq!(super::windows_path("/C:/"), "C:/");
+    }
+
+    /// The trust step shows the ed25519 key when there is one, whatever
+    /// order ssh-keyscan printed them in, and names that key's file.
+    #[test]
+    fn the_shown_host_key_is_the_strongest_and_its_file_matches() {
+        let keys = "vm ecdsa-sha2-nistp256 AAAAE2\nvm ssh-rsa AAAAB3\nvm ssh-ed25519 AAAAC3\n";
+        assert_eq!(super::shown_key(keys), Some("vm ssh-ed25519 AAAAC3"));
+        assert_eq!(super::host_key_file(keys), "ssh_host_ed25519_key.pub");
+        let keys = "vm ssh-rsa AAAAB3\nvm ecdsa-sha2-nistp256 AAAAE2\n";
+        assert_eq!(super::host_key_file(keys), "ssh_host_ecdsa_key.pub");
+        assert_eq!(super::host_key_file("vm ssh-rsa AAAAB3\n"), "ssh_host_rsa_key.pub");
     }
 
     use super::*;
