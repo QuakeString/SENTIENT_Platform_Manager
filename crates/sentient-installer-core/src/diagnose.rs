@@ -448,6 +448,13 @@ pub fn collect(error: &str, lines: &[String], cache_dir: Option<&Path>) -> Evide
         if let Some((_, s)) = run("wsl.exe --status") {
             ev.windows.push(format!("wsl --status: {}", s.lines().take(6).collect::<Vec<_>>().join(" | ")));
         }
+        // Which way to turn WSL on: only a wsl.exe that lists
+        // --no-distribution in its help takes `wsl --install --no-distribution`
+        // (the inbox wsl.exe of older Windows 10 builds does not).
+        if let Some((_, s)) = run("wsl.exe --help") {
+            let knows = s.replace('\0', "").contains("--no-distribution");
+            ev.windows.push(format!("{}{}", NO_DISTRIBUTION_MARK, if knows { "yes" } else { "no" }));
+        }
         if let Some((_, s)) = run("wsl.exe -l -v") {
             let s = s.replace('\0', "");
             // Windows without the WSL feature: the old wsl.exe prints its help.
@@ -548,6 +555,7 @@ pub const RULES: &[Rule] = &[
     Rule { id: "clickhouse-memory", matches: clickhouse_memory },
     Rule { id: "clickhouse-limits", matches: clickhouse_limits },
     Rule { id: "wsl-restart", matches: wsl_restart },
+    Rule { id: "wsl-vm-timeout", matches: wsl_vm_timeout },
     Rule { id: "wsl-missing", matches: wsl_missing },
     Rule { id: "wsl-stopped", matches: wsl_stopped },
     Rule { id: "service-failed", matches: service_failed },
@@ -1019,15 +1027,55 @@ fn wsl_restart(_: &Evidence, t: &str) -> Option<Diagnosis> {
     )
 }
 
-fn wsl_missing(_: &Evidence, t: &str) -> Option<Diagnosis> {
-    if !has(t, &["Windows Subsystem for Linux is not installed", "WSL is not installed", "Windows Subsystem for Linux has no installed distributions", "wsl.exe' is not recognized", "0x8007019e", "WSL_E_WSL_OPTIONAL_COMPONENT_REQUIRED"]) {
+/// The support details' line saying whether this wsl.exe takes
+/// `--install --no-distribution` ("yes" or "no").
+const NO_DISTRIBUTION_MARK: &str = "wsl --install --no-distribution known: ";
+
+/// WSL 2's virtual machine did not answer in time (HCS_E_CONNECTION_TIMEOUT):
+/// WSL is installed and works, its VM was slow to start, typically the
+/// first start right after the WSL 2 kernel was installed, or on a busy
+/// computer. Retrying is the fix, not installing WSL.
+fn wsl_vm_timeout(_: &Evidence, t: &str) -> Option<Diagnosis> {
+    if !has(t, &["a response was not received from the virtual machine or container", "HCS_E_CONNECTION_TIMEOUT", "0x80370109"]) {
         return None;
     }
+    diag(
+        "wsl-vm-timeout",
+        "WSL 2's virtual machine did not answer in time.",
+        "WSL is installed. Its virtual machine was slow to start, which happens the first time it starts after the WSL 2 kernel was installed, or when the computer is busy.",
+        vec![
+            steps("Retry: Setup carries on where it stopped."),
+            cmd("If it happens again, stop WSL, then Retry", "wsl --shutdown"),
+            steps("Still failing: restart Windows, then Retry."),
+        ],
+    )
+}
+
+fn wsl_missing(_: &Evidence, t: &str) -> Option<Diagnosis> {
+    // "has no installed distributions" is a working WSL without a distro:
+    // not a missing WSL.
+    if !has(t, &["Windows Subsystem for Linux is not installed", "WSL is not installed", "wsl.exe' is not recognized", "0x8007019e", "WSL_E_WSL_OPTIONAL_COMPONENT_REQUIRED"]) {
+        return None;
+    }
+    // `wsl --install --no-distribution` only where this wsl.exe is known to
+    // take it; an inbox wsl.exe gets the Windows features and the kernel MSI.
+    let knows = t.contains(&format!("{NO_DISTRIBUTION_MARK}yes"));
+    let fixes = if knows {
+        vec![cmd("Install it (as administrator), then restart Windows", "wsl --install --no-distribution"), steps("After the restart, Retry.")]
+    } else {
+        vec![
+            cmd(
+                "Turn on the Windows features (as administrator), then restart Windows",
+                "dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart && dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart",
+            ),
+            steps(format!("After the restart, install Microsoft's WSL 2 kernel ({}) and Retry; Setup also does both when you Retry.", crate::wsl::KERNEL_MSI_X64)),
+        ]
+    };
     diag(
         "wsl-missing",
         "WSL (the Windows Subsystem for Linux) is not installed.",
         "On Windows, Docker (and the ClickHouse of PostgreSQL + ClickHouse) runs inside WSL 2.",
-        vec![cmd("Install it (as administrator), then restart Windows", "wsl --install --no-distribution"), steps("After the restart, Retry.")],
+        fixes,
     )
 }
 
@@ -1444,6 +1492,39 @@ mod tests {
         // Setup's own words, also when the support details say WSL is not installed yet.
         let ev = Evidence::from_text("Windows must restart to finish turning on WSL 2.\nWSL is not installed", &[]);
         assert_eq!(diagnose(&ev).id, "wsl-restart");
+    }
+
+    #[test]
+    fn a_wsl_vm_timeout_is_a_retry_not_a_missing_wsl() {
+        // rc4 on the Windows 10 19044 test VM: the first `wsl --import` after
+        // the kernel MSI, with `wsl -l -v` in the support details.
+        let lines = vec![
+            ">> Installing the WSL 2 kernel".to_string(),
+            ">> Creating the SENTIENT WSL distro".to_string(),
+            "The operation timed out because a response was not received from the virtual machine or container.".to_string(),
+            "wsl -l -v: Windows Subsystem for Linux has no installed distributions.".to_string(),
+            format!("{NO_DISTRIBUTION_MARK}no"),
+        ];
+        let d = diagnose(&Evidence::from_text("wsl --import sentient C:\\Program Files\\SENTIENT\\distro C:\\Program Files\\SENTIENT\\ubuntu.rootfs.tar.gz --version 2 failed", &lines));
+        assert_eq!(d.id, "wsl-vm-timeout");
+        assert!(!format!("{:?}", d.fixes).contains("--no-distribution"));
+        // A working WSL without a distro is not a missing WSL.
+        let ev = Evidence::from_text("wsl exited with 1", &["Windows Subsystem for Linux has no installed distributions.".to_string()]);
+        assert_ne!(diagnose(&ev).id, "wsl-missing");
+    }
+
+    #[test]
+    fn wsl_missing_names_the_command_this_wsl_exe_takes() {
+        let inbox = of("wsl exited with 1", "wsl-not-installed.txt");
+        assert_eq!(inbox.id, "wsl-missing");
+        let text = format!("{:?}", inbox.fixes);
+        assert!(!text.contains("--no-distribution"), "{text}");
+        assert!(text.contains("VirtualMachinePlatform") && text.contains("wsl_update_x64.msi"), "{text}");
+        let mut lines = fixture("wsl-not-installed.txt");
+        lines.push(format!("{NO_DISTRIBUTION_MARK}yes"));
+        let store = diagnose(&Evidence::from_text("wsl exited with 1", &lines));
+        assert_eq!(store.id, "wsl-missing");
+        assert!(format!("{:?}", store.fixes).contains("wsl --install --no-distribution"));
     }
 
     #[test]

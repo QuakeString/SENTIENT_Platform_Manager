@@ -1197,12 +1197,26 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
         sink(Progress::Step { name: "Creating the SENTIENT WSL distro".into() });
         let distro_dir = install_dir.join("distro");
         std::fs::create_dir_all(&distro_dir).ok();
-        wsl_native(&sink, &[
-            "--import", DISTRO,
-            &distro_dir.to_string_lossy(),
-            &rootfs.to_string_lossy(),
-            "--version", "2",
-        ])?;
+        let (dir, tar) = (distro_dir.to_string_lossy(), rootfs.to_string_lossy());
+        let args: [&str; 6] = ["--import", DISTRO, &dir, &tar, "--version", "2"];
+        let mut attempt = 0;
+        loop {
+            match wsl_native_output(&sink, &args) {
+                Ok(()) => break,
+                // The first start of WSL 2's VM right after the kernel was
+                // installed can miss Windows' deadline: once, stop WSL and
+                // import again instead of failing the install.
+                Err((_, output)) if retry_after_vm_timeout(attempt, &output) => {
+                    sink(Progress::Log { line: VM_TIMEOUT_RETRY_LINE.into() });
+                    let _ = sys::output("wsl.exe", &["--shutdown"]);
+                    if distro_present() {
+                        let _ = sys::output("wsl.exe", &["--unregister", DISTRO]);
+                    }
+                    attempt += 1;
+                }
+                Err((e, _)) => return Err(e),
+            }
+        }
         let _ = std::fs::remove_file(&rootfs);
     }
 
@@ -1838,12 +1852,20 @@ fn distro_probe() -> Result<(), String> {
 #[cfg(windows)]
 fn distro_probe_patient(sink: &ProgressFn) -> Result<(), String> {
     let mut last = String::new();
+    let mut restarted = 0;
     for attempt in 0..12 {
         match distro_probe() {
             Ok(()) => return Ok(()),
             Err(e) => {
                 if attempt == 0 {
                     sink(Progress::Log { line: format!("The new distro did not answer yet ({e}); asking again") });
+                }
+                // Its first start missed WSL's deadline: once, stop WSL so
+                // the next ask starts the VM afresh.
+                if retry_after_vm_timeout(restarted, &e) {
+                    sink(Progress::Log { line: VM_TIMEOUT_RETRY_LINE.into() });
+                    let _ = sys::output("wsl.exe", &["--shutdown"]);
+                    restarted += 1;
                 }
                 last = e;
             }
@@ -1882,14 +1904,44 @@ fn distro_listed(name: &str) -> bool {
 /// Run a native `wsl.exe` command (UTF-16 output), stream it, error on failure.
 #[cfg(windows)]
 fn wsl_native(sink: &ProgressFn, args: &[&str]) -> Result<(), String> {
+    wsl_native_output(sink, args).map_err(|(e, _)| e)
+}
+
+/// [`wsl_native`], with the command's output on failure (to tell why).
+#[cfg(windows)]
+fn wsl_native_output(sink: &ProgressFn, args: &[&str]) -> Result<(), (String, String)> {
     match sys::output_tracked("wsl.exe", args) {
         Some((ok, out, err)) => {
             exec::emit(sink, &out);
             exec::emit(sink, &err);
-            if ok { Ok(()) } else { Err(format!("wsl {} failed", args.join(" "))) }
+            if ok {
+                Ok(())
+            } else {
+                Err((format!("wsl {} failed", args.join(" ")), format!("{}\n{}", sys::decode(&out), sys::decode(&err))))
+            }
         }
-        None => Err("could not run wsl.exe".into()),
+        None => Err(("could not run wsl.exe".into(), String::new())),
     }
+}
+
+/// The log line of [`retry_after_vm_timeout`]'s one retry.
+#[cfg_attr(not(windows), allow(dead_code))]
+const VM_TIMEOUT_RETRY_LINE: &str =
+    "WSL 2's virtual machine did not answer in time (its first start after the kernel install can be slow); stopping WSL and trying once more";
+
+/// WSL's own words for its VM not answering in time (HCS_E_CONNECTION_TIMEOUT).
+pub(crate) fn is_vm_timeout(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    lower.contains("a response was not received from the virtual machine or container")
+        || lower.contains("hcs_e_connection_timeout")
+        || lower.contains("0x80370109")
+}
+
+/// Whether a failed import or first start is tried again: once (`retries`
+/// done so far is 0), and only when WSL's VM did not answer in time.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn retry_after_vm_timeout(retries: u32, output: &str) -> bool {
+    retries == 0 && is_vm_timeout(output)
 }
 
 /// Parse a Docker size token like "5.243MB", "1.049kB", "128B" into bytes.
@@ -2366,5 +2418,25 @@ mod tests {
         assert_eq!(cfg.db_name, "x");
         assert_eq!(cfg.flavor, Flavor::Clickhouse);
         assert_eq!(cfg.tuning.db_pool_primary_max, 48);
+    }
+}
+
+#[cfg(test)]
+mod vm_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn a_vm_timeout_is_retried_once_and_nothing_else_is() {
+        // wsl --import on the Windows 10 19044 test VM, right after the kernel MSI.
+        let out = "The operation timed out because a response was not received from the virtual machine or container.\r\n";
+        assert!(retry_after_vm_timeout(0, out));
+        assert!(!retry_after_vm_timeout(1, out), "only once");
+        assert!(retry_after_vm_timeout(0, "Error code: Wsl/Service/CreateInstance/HCS_E_CONNECTION_TIMEOUT"));
+        assert!(retry_after_vm_timeout(0, "Error: 0x80370109"));
+        // Other failures are reported as they are.
+        assert!(!retry_after_vm_timeout(0, "The Windows Subsystem for Linux is not installed."));
+        assert!(!retry_after_vm_timeout(0, "Error: 0x80370102 Please enable the Virtual Machine Platform"));
+        assert!(!retry_after_vm_timeout(0, ""));
+        assert!(!VM_TIMEOUT_RETRY_LINE.to_ascii_lowercase().starts_with("error"));
     }
 }
