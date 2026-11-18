@@ -120,7 +120,14 @@ pub trait Fs: Send {
     fn broken(&self, _err: &str) -> bool {
         false
     }
+    /// Round trips, bytes in, bytes out over the link so far (a server).
+    fn counters(&self) -> [u64; 3] {
+        [0; 3]
+    }
 }
+
+/// ssh connections the Files page has opened (its timing marks).
+pub static CONNECTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 // -- This computer -----------------------------------------------------------
 
@@ -183,7 +190,9 @@ impl Fs for LocalFs {
         };
         #[cfg(not(unix))]
         let (writable, owner) = (!meta.permissions().readonly(), String::new());
-        Ok(Listing { path: path.to_string(), entries, free: crate::backups::free_space(Path::new(path)), writable, owner })
+        // No free space: the pane shows it for a server only, and listing the
+        // disks took tens of milliseconds a folder (a network mount holds it).
+        Ok(Listing { path: path.to_string(), entries, free: None, writable, owner })
     }
 
     fn meta(&mut self, path: &str) -> Result<Option<(bool, u64, Option<i64>)>, String> {
@@ -311,7 +320,14 @@ impl RemoteFs {
     /// Connect as the account, or as administrator (sudo; its password must
     /// be kept already, crate::manager::remote_pages::ask_sudo_password).
     pub fn connect(inst: &Instance, admin: bool) -> Result<RemoteFs, String> {
-        let mut p = if crate::remote::is_windows(inst) { Probe { uid: u32::MAX, ..Default::default() } } else { probe(inst) };
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut p = if crate::remote::is_windows(inst) {
+            Probe { uid: u32::MAX, ..Default::default() }
+        } else {
+            CONNECTIONS.fetch_add(1, Relaxed);
+            probe(inst)
+        };
+        CONNECTIONS.fetch_add(1, Relaxed);
         let (mut cmd, pw) = crate::remote::sftp_command(inst, admin);
         let child = cmd.spawn().map_err(|e| format!("start ssh: {e}"))?;
         let mut s = Sftp::start(child, pw.as_deref())?;
@@ -327,13 +343,13 @@ impl RemoteFs {
 
 impl Fs for RemoteFs {
     fn list(&mut self, path: &str) -> Result<Listing, String> {
-        let here = self.s.stat(path)?;
-        let raw = self.s.list(path)?;
-        // The folder's owner: its long listing in the folder above.
-        let owner = sftp::parent(path)
-            .and_then(|up| self.s.list(&up).ok().and_then(|l| l.into_iter().find(|e| Some(e.name.as_str()) == path.trim_end_matches('/').rsplit('/').next()).map(|e| e.owner)))
-            .unwrap_or_else(|| if here.uid == Some(0) { "root".into() } else { String::new() });
-        let entries = raw
+        // One pipelined read (crate::sftp::Sftp::list_dir): the folder's
+        // attributes, entries with their owners, links followed, free space.
+        let d = self.s.list_dir(path)?;
+        let here = d.attrs;
+        let owner = d.owner.filter(|o| !o.is_empty()).unwrap_or_else(|| if here.uid == Some(0) { "root".into() } else { String::new() });
+        let entries = d
+            .entries
             .into_iter()
             .map(|e| Entry { dir: e.attrs.is_dir(), size: if e.attrs.is_dir() { 0 } else { e.attrs.size.unwrap_or(0) }, mtime: e.attrs.mtime.map(i64::from), owner: e.owner, name: e.name })
             .collect();
@@ -341,8 +357,7 @@ impl Fs for RemoteFs {
             (Some(o), Some(g), Some(m)) => may_write(self.p.uid, &self.p.gids, o, g, m),
             _ => true,
         };
-        let free = self.s.free(path);
-        Ok(Listing { path: path.to_string(), entries, free, writable, owner })
+        Ok(Listing { path: path.to_string(), entries, free: d.free, writable, owner })
     }
 
     fn meta(&mut self, path: &str) -> Result<Option<(bool, u64, Option<i64>)>, String> {
@@ -408,6 +423,10 @@ impl Fs for RemoteFs {
 
     fn broken(&self, err: &str) -> bool {
         err.starts_with("The connection to the server broke")
+    }
+
+    fn counters(&self) -> [u64; 3] {
+        self.s.counters()
     }
 }
 

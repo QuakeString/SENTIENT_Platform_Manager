@@ -38,6 +38,24 @@ refreshes that repository's Downloads table.
 - After quitting, the Platform Manager starts on Status, of the instance that was open last. Closing only the window (the Platform Manager keeps running in the tray) and opening it again still returns to the page it was on.
 
 ### Fixed
+- Files on a server: opening a folder (double click, Enter, a path-bar
+  segment or a place button) looked like it did nothing, because the
+  page waited for the whole listing before showing anything, and a
+  listing took 12 round trips (the folder's own attributes, the folder
+  above it listed again only to read the owner, each link, one request
+  at a time): about half a second on a 40 ms link. A listing is now one
+  pipelined read of 2 round trips (3 with links), about 85 ms on the
+  same link, and no new connection. Every click moves the path bar at
+  once; until the folder's rows come, the list shows the loading rows
+  the other pages use. Folders read in the last 45 s show at once and
+  are read again behind; after a folder opens, its subfolders (up to 50,
+  one at a time over the same connection, stopped by the next click),
+  and when Files opens, the place buttons' folders and the folders
+  above, are read ahead. The newest click wins; a folder that does not
+  open puts the bar back on the folder before, with the reason under
+  it. This computer's pane no longer lists every disk for each folder.
+  `tests/files/run.sh` clicks each of these on both panes against a real
+  server and checks the times.
 - Platform settings on a Windows Docker installation: the system
   administrators and the default retention can be read and changed.
   The page ran `sentient-admin` on Windows, where it is not ("start
