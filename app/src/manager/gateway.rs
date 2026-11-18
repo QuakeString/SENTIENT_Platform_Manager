@@ -785,10 +785,10 @@ impl Render for GatewayPage {
                 .child(
                     h_flex()
                         .gap_3()
-                        .child(field("Platform host (MQTT)", div().child(Input::new(&self.host))).flex_1())
-                        .child(field("Port", div().child(Input::new(&self.port))).w_24()),
+                        .child(field("Platform host (MQTT)", ui::probed_input(Input::new(&self.host))).flex_1())
+                        .child(field("Port", ui::probed_input(Input::new(&self.port))).w_24()),
                 )
-                .child(field("Access token", div().child(Input::new(&self.token).mask_toggle())))
+                .child(field("Access token", ui::probed_input(Input::new(&self.token).mask_toggle())))
                 .when(cfg!(windows), |p| {
                     p.child(
                         h_flex()
