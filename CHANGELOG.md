@@ -38,6 +38,30 @@ refreshes that repository's Downloads table.
 - After quitting, the Platform Manager starts on Status, of the instance that was open last. Closing only the window (the Platform Manager keeps running in the tray) and opening it again still returns to the page it was on.
 
 ### Fixed
+- Windows (a virtual machine without a GPU): Statistics took about 3 of 4
+  processors, on a stopped or a running SENTIENT. The loading placeholders'
+  shimmer asked for a new frame every frame even with motion reduced, and
+  there every frame is drawn on the processor. The placeholders and the
+  Refresh icon now stay still whenever motion is reduced: on a software
+  renderer, and when "Show animations in Windows" is off (now read too).
+- Statistics on Windows: the Server card stayed a loading placeholder for
+  minutes. It waited for Windows Update's count of waiting updates, which
+  can take minutes to search; that count is now searched for behind and
+  shown at the next reading, and Windows' reading itself stops after
+  60 s with a plain reason on the card instead of a placeholder.
+- Statistics on Windows with Docker: the Services card never showed. Its
+  `docker stats` ran on Windows, where there is no `docker`; it now runs
+  inside SENTIENT's WSL distro, in one command, every 6 s instead of
+  every 3. With SENTIENT stopped (its distro or every container) the card
+  says "SENTIENT is stopped. Its services are read when it runs." on
+  Windows and Linux alike.
+- Platform settings: after Start SENTIENT, the General tab kept saying
+  "SENTIENT must be running to read and change its settings." until the
+  Platform Manager was restarted, because the accounts were read only
+  when the page was first opened. They are now read again when a job
+  here ends (Start, Restart, an update), and every 5 s while the page
+  shows and SENTIENT was found stopped (started from the tray, Status or
+  with Windows).
 - Files on a server: opening a folder (double click, Enter, a path-bar
   segment or a place button) looked like it did nothing, because the
   page waited for the whole listing before showing anything, and a

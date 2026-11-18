@@ -187,8 +187,7 @@ pub(crate) fn output_tracked(program: &str, args: &[&str]) -> Option<(bool, Vec<
 
 /// [`output`] that gives up after `limit`: the child is killed and the
 /// answer is a failure saying so. For steps an uninstall must not hang on.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn output_limited(program: &str, args: &[&str], limit: std::time::Duration) -> Option<(bool, Vec<u8>, Vec<u8>)> {
+pub fn output_limited(program: &str, args: &[&str], limit: std::time::Duration) -> Option<(bool, Vec<u8>, Vec<u8>)> {
     use std::io::Read;
     use std::process::Stdio;
     let mut child = command(program).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;

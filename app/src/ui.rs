@@ -1014,6 +1014,11 @@ pub fn reduce_motion() -> bool {
         if std::env::var("SPM_REDUCE_MOTION").is_ok_and(|v| v == "1") || std::env::var_os("SPM_REDUCED_MOTION").is_some() {
             return true;
         }
+        // Windows: "Show animations in Windows" off.
+        #[cfg(windows)]
+        if !windows_animations_on() {
+            return true;
+        }
         #[cfg(target_os = "linux")]
         {
             let out = |cmd: &str, args: &[&str]| sentient_installer_core::host::host_command(cmd).args(args).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
@@ -1026,6 +1031,17 @@ pub fn reduce_motion() -> bool {
         }
         false
     })
+}
+
+/// Windows' "Show animations in Windows" (SPI_GETCLIENTAREAANIMATION);
+/// on when it cannot be read.
+#[cfg(windows)]
+fn windows_animations_on() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION};
+    let mut on: windows_sys::core::BOOL = 1;
+    // SAFETY: this action writes one BOOL to the pointer given.
+    let ok = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&mut on as *mut windows_sys::core::BOOL).cast(), 0) };
+    ok == 0 || on != 0
 }
 
 // Popups open with one motion per kind; pages switch instantly (the
@@ -1523,6 +1539,9 @@ pub fn refresh_button(id: &'static str, busy: bool, window: &mut Window, on: imp
     use gpui_kit::component::Disableable as _;
     let now = std::time::Instant::now();
     let turn = std::time::Duration::from_secs_f32(REFRESH_TURN);
+    // Reduce motion: upright (and not clickable) while it reads, no frames
+    // asked for, and clickable again as soon as the reading ended.
+    let motion = !reduce_motion();
     let start = SPINS.with(|s| {
         let mut s = s.borrow_mut();
         if busy {
@@ -1533,6 +1552,10 @@ pub fn refresh_button(id: &'static str, busy: bool, window: &mut Window, on: imp
         let stop = match stop {
             Some(t) => t,
             None if busy => return Some(start),
+            None if !motion => {
+                s.remove(id);
+                return None;
+            }
             None => {
                 // Busy no more: on at least one turn, to the end of this one.
                 let e = now.duration_since(start).as_secs_f32().max(REFRESH_TURN);
@@ -1548,8 +1571,8 @@ pub fn refresh_button(id: &'static str, busy: bool, window: &mut Window, on: imp
             Some(start)
         }
     });
-    let angle = start.map(|t| (now.duration_since(t).as_secs_f32() % REFRESH_TURN) / REFRESH_TURN * std::f32::consts::TAU).unwrap_or(0.);
-    if start.is_some() {
+    let angle = start.filter(|_| motion).map(|t| (now.duration_since(t).as_secs_f32() % REFRESH_TURN) / REFRESH_TURN * std::f32::consts::TAU).unwrap_or(0.);
+    if start.is_some() && motion {
         window.request_animation_frame();
     }
     button(id)
@@ -1681,17 +1704,14 @@ pub fn layout_probe(name: &'static str) -> impl IntoElement {
 // Skeletons: a page's final layout while its data loads
 // ---------------------------------------------------------------------------
 
-/// Motion off: static placeholders (SPM_REDUCED_MOTION, or GNOME/KDE's
-/// "reduce animations" when it can be read).
+/// Motion off: static placeholders. The same answer as [`reduce_motion`]
+/// (the desktop's choice, SPM_REDUCED_MOTION, or a software renderer):
+/// the placeholders' shimmer once asked for every frame on its own, also
+/// in a virtual machine without a GPU, where each frame is drawn on the
+/// processor (the 2026-11-18 rc5 VM pass: Statistics took 3 of 4
+/// processors while its Server card loaded).
 pub(crate) fn reduced_motion() -> bool {
-    static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *R.get_or_init(|| {
-        std::env::var_os("SPM_REDUCED_MOTION").is_some()
-            || sentient_installer_core::host::host_command("gsettings")
-                .args(["get", "org.gnome.desktop.interface", "enable-animations"])
-                .output()
-                .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "false")
-    })
+    reduce_motion()
 }
 
 /// A placeholder block of `w` × `h` in the muted surface tint, with the

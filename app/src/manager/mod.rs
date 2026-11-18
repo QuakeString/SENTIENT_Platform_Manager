@@ -1837,6 +1837,11 @@ impl Manager {
                 for page in self.migration.clone() {
                     page.update(cx, |p, cx| p.refresh_record(cx));
                 }
+                // Platform settings reads SENTIENT's accounts again (Start
+                // there opens Status; back on the page it is running).
+                for page in self.settings.clone() {
+                    page.update(cx, |p, cx| p.sentient_changed(cx));
+                }
             }
             Some(id) => {
                 // Its card and dot.

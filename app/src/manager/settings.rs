@@ -167,6 +167,13 @@ pub struct SettingsPage {
     retention_now: Option<Result<crate::sentient_admin::Retention, crate::sentient_admin::Failure>>,
     retention_edit: crate::sentient_admin::Retention,
     reading_admin: bool,
+    /// When the last reading of the accounts came back.
+    admin_read_at: Option<std::time::Instant>,
+    /// The reading under way (one at a time).
+    _admin_read: Option<Task<()>>,
+    /// SENTIENT was stopped at the last reading: the page looks again
+    /// after [`STOPPED_RETRY`] while it is shown.
+    _admin_retry: Option<Task<()>>,
     /// The account whose password form is open.
     reset_for: Option<String>,
     new_pw: Entity<InputState>,
@@ -265,6 +272,9 @@ impl SettingsPage {
             retention_now: None,
             retention_edit: Default::default(),
             reading_admin: false,
+            admin_read_at: None,
+            _admin_read: None,
+            _admin_retry: None,
             reset_for: None,
             new_pw,
             repeat_pw,
@@ -389,6 +399,7 @@ impl SettingsPage {
     fn read_admin(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         self.reading_admin = true;
+        self._admin_retry = None;
         let task = cx.spawn(async move |this, cx| {
             let (admins, retention) = cx
                 .background_executor()
@@ -402,12 +413,48 @@ impl SettingsPage {
                 page.admins = Some(admins);
                 page.retention_now = Some(retention);
                 page.reading_admin = false;
+                page.admin_read_at = Some(std::time::Instant::now());
                 cx.notify();
             })
             .ok();
         });
-        self._admin_tasks.push(task);
+        self._admin_read = Some(task);
         cx.notify();
+    }
+
+    /// SENTIENT's state may have changed (a job here ended: Start, Restart,
+    /// an update): the accounts are read again, if they were read before
+    /// (a read that asks for the administrator password is not started by
+    /// itself).
+    pub fn sentient_changed(&mut self, cx: &mut Context<Self>) {
+        if self.admins.is_some() && !self.reading_admin {
+            self.read_admin(cx);
+        }
+    }
+
+    /// While shown with SENTIENT stopped at the last reading: read again
+    /// when that reading is [`STOPPED_RETRY`] old (SENTIENT started from
+    /// the tray, the Status page, with Windows), else look again then. The
+    /// look is a redraw of this page, which happens only while it is shown:
+    /// a page left open on another one reads nothing.
+    fn retry_while_stopped(&mut self, cx: &mut Context<Self>) {
+        let stopped = matches!(self.admins, Some(Err(crate::sentient_admin::Failure::Stopped)));
+        match stopped_retry(stopped, self.reading_admin, self.admin_read_at, std::time::Instant::now()) {
+            Retry::No => {}
+            Retry::Now => self.read_admin(cx),
+            Retry::After(wait) => {
+                if self._admin_retry.is_none() {
+                    self._admin_retry = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(wait).await;
+                        this.update(cx, |page, cx| {
+                            page._admin_retry = None;
+                            cx.notify();
+                        })
+                        .ok();
+                    }));
+                }
+            }
+        }
     }
 
     /// Run one administration action (background), then read again.
@@ -775,6 +822,34 @@ impl SettingsPage {
 
 /// A row whose control takes the field and current columns (an account,
 /// a plain value, a set of buttons). Shared with Startup.
+/// How soon the accounts are read again after SENTIENT was found stopped,
+/// while the page shows: it may be starting (Start here, in the tray, on
+/// the Status page, with Windows). A read of a stopped SENTIENT asks
+/// nothing of it (Windows: one `wsl.exe -l --running`).
+pub(crate) const STOPPED_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// What the page does about a reading of the accounts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Retry {
+    /// Nothing: read, being read, or never read.
+    No,
+    /// Read again now.
+    Now,
+    /// Look again after this long.
+    After(std::time::Duration),
+}
+
+/// [`Retry`] for the last reading: `stopped` (SENTIENT was stopped),
+/// `reading` (one is under way), `last` (when it came back).
+pub(crate) fn stopped_retry(stopped: bool, reading: bool, last: Option<std::time::Instant>, now: std::time::Instant) -> Retry {
+    if !stopped || reading {
+        return Retry::No;
+    }
+    let Some(last) = last else { return Retry::Now };
+    let age = now.saturating_duration_since(last);
+    if age >= STOPPED_RETRY { Retry::Now } else { Retry::After(STOPPED_RETRY - age) }
+}
+
 pub(crate) fn row(_theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, help: Option<String>, changed: bool, control: impl IntoElement) -> ui::SettingRow {
     let mut r = ui::SettingRow::wide(label, help, control);
     r.changed = changed;
@@ -1419,6 +1494,7 @@ impl Render for SettingsPage {
                 window.defer(cx, |window, cx| ui::debug_leave_prompt(None, window, cx));
             }
         }
+        self.retry_while_stopped(cx);
         let job = self.job.read(cx);
         let busy = job.is_running();
         // Someone else's compose file: the notice, and Apply stays off.
@@ -1503,7 +1579,26 @@ pub(crate) fn settings_page(theme: &gpui_kit::component::Theme, title: &'static 
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
-    use super::{PRESET_KEYS, Preset, preset_values};
+    use super::{PRESET_KEYS, Preset, Retry, STOPPED_RETRY, preset_values, stopped_retry};
+
+    #[test]
+    fn a_stopped_reading_is_tried_again_while_shown() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        // Read, being read, never read: nothing to do.
+        assert_eq!(stopped_retry(false, false, Some(t0), t0 + Duration::from_secs(60)), Retry::No);
+        assert_eq!(stopped_retry(true, true, Some(t0), t0 + Duration::from_secs(60)), Retry::No, "one reading at a time");
+        // Stopped just now: look again when the reading is STOPPED_RETRY old.
+        assert_eq!(stopped_retry(true, false, Some(t0), t0), Retry::After(STOPPED_RETRY));
+        assert_eq!(stopped_retry(true, false, Some(t0), t0 + Duration::from_secs(2)), Retry::After(STOPPED_RETRY - Duration::from_secs(2)));
+        // Then read again: SENTIENT started meanwhile (Start, the tray, Windows).
+        assert_eq!(stopped_retry(true, false, Some(t0), t0 + STOPPED_RETRY), Retry::Now);
+        assert_eq!(stopped_retry(true, false, Some(t0), t0 + Duration::from_secs(150)), Retry::Now, "the rc5 VM: still stopped 2 minutes after Start");
+        // Stopped with no time (cannot happen, but not stuck): now.
+        assert_eq!(stopped_retry(true, false, None, t0), Retry::Now);
+        // Soon after a Start, not a second-long poll.
+        assert!(STOPPED_RETRY >= Duration::from_secs(3) && STOPPED_RETRY <= Duration::from_secs(10));
+    }
 
     #[test]
     fn presets_set_every_key_and_grow_with_size() {

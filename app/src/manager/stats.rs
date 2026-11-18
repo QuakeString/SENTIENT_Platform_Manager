@@ -34,6 +34,33 @@ const HISTORY_EVERY: Duration = Duration::from_secs(60);
 const SECOND_AFTER: Duration = Duration::from_secs(1);
 /// The Server card's reading again this often while shown.
 const SERVER_EVERY: Duration = Duration::from_secs(300);
+/// Live: the Services card again this often (`docker stats` samples for
+/// about two seconds itself; on Windows each reading is a few `wsl.exe`
+/// runs, so not on every live tick).
+const SERVICES_EVERY: Duration = Duration::from_secs(6);
+
+/// One of the page's readers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reader {
+    System,
+    Services,
+    History,
+    Server,
+}
+
+/// How long `reader` sleeps after reading number `round` (0 = the first,
+/// on open) in `range`. Every reader sleeps between readings; none reads
+/// again sooner than a second.
+fn wait_after(reader: Reader, range: Range, round: u32) -> Duration {
+    let live = range == Range::Live;
+    match reader {
+        Reader::System if live && round == 0 => SECOND_AFTER,
+        Reader::System if live => LIVE_EVERY,
+        Reader::Services if live => SERVICES_EVERY,
+        Reader::System | Reader::Services | Reader::History => HISTORY_EVERY,
+        Reader::Server => SERVER_EVERY,
+    }
+}
 
 static OPEN: AtomicBool = AtomicBool::new(false);
 
@@ -115,7 +142,7 @@ impl Source {
     /// here, one agent call on a server.
     fn server_info(&self) -> Result<crate::server_info::ServerInfo, String> {
         match self {
-            Source::Local(r) => Ok(crate::server_info::gather(r.as_ref())),
+            Source::Local(r) => crate::server_info::gather_here(r.as_ref()),
             Source::Remote(i) => crate::manager::server_card::read_remote(i),
         }
     }
@@ -292,7 +319,7 @@ impl StatsPage {
                         break;
                     }
                 }
-                cx.background_executor().timer(SERVER_EVERY).await;
+                cx.background_executor().timer(wait_after(Reader::Server, Range::Live, 1)).await;
             }
         }));
     }
@@ -512,7 +539,6 @@ impl StatsPage {
             .ok();
         });
         self._tasks.push(timeout);
-        let every = if range == Range::Live { LIVE_EVERY } else { HISTORY_EVERY };
 
         // Processor, memory, disk, network, uptime.
         let src = self.src.clone();
@@ -542,8 +568,9 @@ impl StatsPage {
                         break;
                     }
                 }
+                let wait = wait_after(Reader::System, range, round);
                 round += 1;
-                cx.background_executor().timer(if round == 1 && range == Range::Live { SECOND_AFTER } else { every }).await;
+                cx.background_executor().timer(wait).await;
             }
         }));
 
@@ -583,7 +610,7 @@ impl StatsPage {
                             break;
                         }
                     }
-                    cx.background_executor().timer(every).await;
+                    cx.background_executor().timer(wait_after(Reader::Services, range, 1)).await;
                 }
             }));
         }
@@ -620,7 +647,7 @@ impl StatsPage {
                             break;
                         }
                     }
-                    cx.background_executor().timer(HISTORY_EVERY).await;
+                    cx.background_executor().timer(wait_after(Reader::History, range, 1)).await;
                 }
             }));
         }
@@ -1251,7 +1278,34 @@ fn services_panel(theme: &gpui_kit::component::Theme, list: &[crate::stats::Serv
 
 #[cfg(test)]
 mod tests {
-    use super::{nice, nice_memory, tick, Services};
+    use super::{nice, nice_memory, tick, wait_after, Range, Reader, Services};
+
+    #[test]
+    fn every_reader_sleeps_between_readings() {
+        use std::time::Duration;
+        // Live: the figures a second after the first, then every 3 s; the
+        // services every 6 s; the Server card every 5 minutes.
+        assert_eq!(wait_after(Reader::System, Range::Live, 0), Duration::from_secs(1));
+        assert_eq!(wait_after(Reader::System, Range::Live, 1), Duration::from_secs(3));
+        assert_eq!(wait_after(Reader::System, Range::Live, 50), Duration::from_secs(3));
+        assert_eq!(wait_after(Reader::Services, Range::Live, 1), Duration::from_secs(6));
+        assert_eq!(wait_after(Reader::Server, Range::Live, 1), Duration::from_secs(300));
+        // The longer ranges: once a minute.
+        for r in [Reader::System, Reader::Services, Reader::History] {
+            assert_eq!(wait_after(r, Range::Hour, 0), Duration::from_secs(60));
+            assert_eq!(wait_after(r, Range::Week, 3), Duration::from_secs(60));
+        }
+        // Nothing reads in a loop: at least a second between readings, and
+        // the Server card's PowerShell reading (Windows) minutes apart.
+        for range in Range::ALL {
+            for round in 0..5 {
+                for r in [Reader::System, Reader::Services, Reader::History, Reader::Server] {
+                    assert!(wait_after(r, range, round) >= Duration::from_secs(1), "{r:?} {round}");
+                }
+                assert!(wait_after(Reader::Server, range, round) >= Duration::from_secs(60));
+            }
+        }
+    }
 
     #[test]
     fn services_left_out_while_stopped_are_their_own_state() {

@@ -1869,6 +1869,41 @@ pub fn service_control(sink: ProgressFn, container: &str, action: &str) -> Resul
     Ok(())
 }
 
+/// What separates `docker stats`' lines from `docker inspect`'s in
+/// [`container_stats_cmd`]'s output.
+const STATS_SEP: &str = "--sentient-restarts--";
+
+/// One command, where Docker runs, for each container's processor and
+/// memory (`docker stats` lines `name|cpu|memory`) and restarts (`docker
+/// inspect` lines `/name|count`), [`STATS_SEP`] between them.
+pub fn container_stats_cmd(containers: &[String]) -> String {
+    let names = containers.iter().map(|c| shell_quote(c)).collect::<Vec<_>>().join(" ");
+    format!(
+        "docker stats --no-stream --format '{{{{.Name}}}}|{{{{.CPUPerc}}}}|{{{{.MemUsage}}}}' {names} 2>/dev/null; echo {STATS_SEP}; docker inspect --format '{{{{.Name}}}}|{{{{.RestartCount}}}}' {names} 2>/dev/null"
+    )
+}
+
+/// Each container's `docker stats` and `docker inspect` lines (see
+/// [`container_stats_cmd`]), read where Docker runs: on Windows inside
+/// SENTIENT's WSL distro (there is no `docker` on Windows itself), on Linux
+/// through Docker's shell. A read leaves a stopped distro stopped: None,
+/// and the left-out command is noted (idle::note_skipped).
+pub fn container_stats(containers: &[String]) -> Option<(String, String)> {
+    if containers.is_empty() {
+        return Some((String::new(), String::new()));
+    }
+    let (_, out) = run_output(&container_stats_cmd(containers))?;
+    Some(split_container_stats(&out))
+}
+
+/// [`container_stats`]' output, as its two parts.
+pub fn split_container_stats(out: &str) -> (String, String) {
+    match out.split_once(STATS_SEP) {
+        Some((stats, restarts)) => (stats.trim().to_string(), restarts.trim().to_string()),
+        None => (out.trim().to_string(), String::new()),
+    }
+}
+
 /// The last `tail` lines of the combined container logs.
 pub fn logs(cfg: &DeployConfig, tail: u32) -> String {
     run_output(&cfg.compose_cmd(&format!("logs --no-color --tail {tail} 2>&1")))
@@ -2336,6 +2371,22 @@ mod keepalive_tests {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn container_stats_are_one_command_where_docker_runs() {
+        use super::{container_stats, container_stats_cmd, split_container_stats};
+        let cmd = container_stats_cmd(&["sentient".into(), "sentient-postgres".into()]);
+        // One shell line (one wsl.exe on Windows), each name quoted, no tab
+        // (the Docker shell's arguments pass through wsl.exe).
+        assert!(cmd.starts_with("docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 'sentient' 'sentient-postgres'"), "{cmd}");
+        assert!(cmd.contains("docker inspect --format '{{.Name}}|{{.RestartCount}}' 'sentient' 'sentient-postgres'"), "{cmd}");
+        assert!(!cmd.contains('\t'));
+        let (stats, restarts) = split_container_stats("sentient|3.10%|1.2GiB / 7.7GiB\nsentient-postgres|0.50%|160MiB / 7.7GiB\n--sentient-restarts--\n/sentient|0\n/sentient-postgres|2\n");
+        assert_eq!(stats.lines().count(), 2);
+        assert_eq!(restarts, "/sentient|0\n/sentient-postgres|2");
+        // No containers: nothing run.
+        assert_eq!(container_stats(&[]), Some((String::new(), String::new())));
+    }
 
     #[test]
     fn the_runner_picks_the_scoped_then_the_recorded_then_its_own_distro() {
