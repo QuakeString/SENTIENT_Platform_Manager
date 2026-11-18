@@ -279,6 +279,48 @@ fn definite(e: &str) -> bool {
     e == remote::AGENT_OLD || e == remote::NOT_SET_UP || e == remote::NOT_ADDED || needs_sudo_password(e)
 }
 
+/// What a server's pages read, kept when the window closes while the
+/// Platform Manager keeps running (the tray), so a window opened again
+/// draws them at once, as they were, and reads them again behind them.
+/// Memory only: a new start of the Platform Manager shows the loading
+/// skeleton until the server answers (crate::manager::licence keeps its
+/// readings the same way).
+struct Kept {
+    /// The connection the readings came over ([`conn_of`]): an instance
+    /// edited since is read afresh.
+    conn: String,
+    ready: Read<()>,
+    status: Read<RemoteStatus>,
+    services: Read<Vec<RemoteService>>,
+    db: Read<DbStatus>,
+    backups: Read<RemoteBackups>,
+    settings: Read<std::collections::HashMap<String, String>>,
+    gateway: Read<std::collections::HashMap<String, String>>,
+    gw_settings: Read<sentient_installer_core::gateway_settings::GwSettings>,
+    offer: Read<Option<crate::updates::Offer>>,
+    versions: Read<Vec<crate::online::Version>>,
+    restores: Read<Vec<crate::restore_flow::Entry>>,
+    updated_at: Option<String>,
+    auto_add_tried: bool,
+}
+
+/// Each server's [`Kept`], by instance id, for this run.
+static KEPT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Kept>>> = std::sync::LazyLock::new(Default::default);
+
+/// The server an instance reaches: where, and as whom (what is found
+/// there, `detected`, may change as it is read).
+fn conn_of(inst: &Instance) -> String {
+    serde_json::to_string(&(&inst.host, inst.port, &inst.user, &inst.auth, &inst.key_file)).unwrap_or_default()
+}
+
+/// What the pages of `inst` draw first: what this run read before (a
+/// window opened again), or None on a cold start, the loading skeleton.
+/// Taken once: the pages that take it own it from then on.
+fn take_kept(kept: &mut std::collections::HashMap<String, Kept>, inst: &Instance) -> Option<Kept> {
+    let k = kept.remove(&inst.id)?;
+    (k.conn == conn_of(inst)).then_some(k)
+}
+
 /// How long a reading may take before the page says the server does not answer.
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -542,9 +584,31 @@ impl RemotePages {
                 }),
             },
         );
+        // A window opened again: what this run read before shows at once
+        // (the reload below reads it again behind it, as for an instance
+        // opened again in the same window).
+        if let Some(k) = take_kept(&mut KEPT.lock().unwrap_or_else(|e| e.into_inner()), &p.inst) {
+            p.seed(k);
+        }
         p.reload(cx);
         p.refresh_agent(cx);
         p
+    }
+
+    fn seed(&mut self, k: Kept) {
+        self.ready = k.ready;
+        self.status = k.status;
+        self.services = k.services;
+        self.db = k.db;
+        self.backups = k.backups;
+        self.settings = k.settings;
+        self.gateway = k.gateway;
+        self.gw_settings = k.gw_settings;
+        self.offer = k.offer;
+        self.versions = k.versions;
+        self.restores = k.restores;
+        self.updated_at = k.updated_at;
+        self.auto_add_tried = k.auto_add_tried;
     }
 
     /// Platform settings: the values read, and the catalog setting of each input.
@@ -661,9 +725,22 @@ impl RemotePages {
         cx.notify();
     }
 
+    /// Reopen tests: what the page draws now: "skeleton" before anything
+    /// was read, "data" with what it read, "state" for the server's answer
+    /// that is not data (not set up, an error).
+    pub fn drawn(&self) -> &'static str {
+        if matches!(self.ready, Read::Loading) {
+            "skeleton"
+        } else if self.has_data() {
+            "data"
+        } else {
+            "state"
+        }
+    }
+
     /// Switch timing (SPM_DEBUG_SWITCH): Status shows what it read.
     pub fn has_data(&self) -> bool {
-        matches!(self.ready, Read::Got(_)) && self.status.got().is_some() && (self.kind != Kind::Status || (self.services.got().is_some() && self.db.got().is_some()))
+        shows_data(self.kind, &self.ready, &self.status, &self.services, &self.db)
     }
 
     /// Another instance is open: the log stops following meanwhile.
@@ -2928,6 +3005,40 @@ impl Render for RemotePages {
     }
 }
 
+/// The window closed (the app runs on): what the pages read stays for
+/// the next window ([`Kept`]).
+impl Drop for RemotePages {
+    fn drop(&mut self) {
+        let k = Kept {
+            conn: conn_of(&self.inst),
+            ready: std::mem::replace(&mut self.ready, Read::Loading),
+            status: std::mem::replace(&mut self.status, Read::Loading),
+            services: std::mem::replace(&mut self.services, Read::Loading),
+            db: std::mem::replace(&mut self.db, Read::Loading),
+            backups: std::mem::replace(&mut self.backups, Read::Loading),
+            settings: std::mem::replace(&mut self.settings, Read::Loading),
+            gateway: std::mem::replace(&mut self.gateway, Read::Loading),
+            gw_settings: std::mem::replace(&mut self.gw_settings, Read::Loading),
+            offer: std::mem::replace(&mut self.offer, Read::Loading),
+            versions: std::mem::replace(&mut self.versions, Read::Loading),
+            restores: std::mem::replace(&mut self.restores, Read::Loading),
+            updated_at: self.updated_at.take(),
+            auto_add_tried: self.auto_add_tried,
+        };
+        // Nothing read yet: nothing to keep.
+        if matches!(k.ready, Read::Loading) {
+            return;
+        }
+        KEPT.lock().unwrap_or_else(|e| e.into_inner()).insert(self.inst.id.clone(), k);
+    }
+}
+
+/// Whether a page of `kind` shows what it read rather than its loading
+/// skeleton (Status: the state, the services and the database).
+fn shows_data(kind: Kind, ready: &Read<()>, status: &Read<RemoteStatus>, services: &Read<Vec<RemoteService>>, db: &Read<DbStatus>) -> bool {
+    matches!(ready, Read::Got(_)) && status.got().is_some() && (kind != Kind::Status || (services.got().is_some() && db.got().is_some()))
+}
+
 /// Screens: a canned offer with two versions of notes.
 #[cfg(debug_assertions)]
 fn canned_offer() -> crate::updates::Offer {
@@ -2956,5 +3067,68 @@ fn canned_offer() -> crate::updates::Offer {
             ]),
             n("4.4.0.1", "2026-11-13", "First release of the 4.4 line.", vec![("Added", vec!["CoAP and LwM2M devices (DTLS, OSCORE).", "18 new widgets."])]),
         ],
+    }
+}
+
+#[cfg(test)]
+mod reopen_tests {
+    use super::{conn_of, shows_data, take_kept, DbStatus, Instance, Kept, Kind, Read, RemoteStatus};
+
+    fn inst(id: &str, host: &str) -> Instance {
+        serde_json::from_value(serde_json::json!({ "id": id, "name": "Plant B", "color": "#6b4fa0", "host": host, "user": "ops" })).unwrap()
+    }
+
+    fn kept(inst: &Instance) -> Kept {
+        Kept {
+            conn: conn_of(inst),
+            ready: Read::Got(()),
+            status: Read::Got(RemoteStatus { installed: true, ..Default::default() }),
+            services: Read::Got(Vec::new()),
+            db: Read::Got(DbStatus::default()),
+            backups: Read::Loading,
+            settings: Read::Loading,
+            gateway: Read::Loading,
+            gw_settings: Read::Loading,
+            offer: Read::Loading,
+            versions: Read::Loading,
+            restores: Read::Loading,
+            updated_at: Some("10:42".into()),
+            auto_add_tried: true,
+        }
+    }
+
+    /// Cold start: nothing read in this run, the loading skeleton.
+    #[test]
+    fn a_cold_start_has_nothing_to_draw() {
+        let mut map = std::collections::HashMap::new();
+        assert!(take_kept(&mut map, &inst("b", "10.0.0.2")).is_none());
+    }
+
+    /// A window opened again: Status draws what it read, at once.
+    #[test]
+    fn a_reopened_window_draws_what_was_read() {
+        let i = inst("b", "10.0.0.2");
+        let mut map = std::collections::HashMap::new();
+        map.insert(i.id.clone(), kept(&i));
+        let k = take_kept(&mut map, &i).expect("kept for the reopened window");
+        assert!(shows_data(Kind::Status, &k.ready, &k.status, &k.services, &k.db));
+        // Taken once: the new pages own it.
+        assert!(map.is_empty());
+    }
+
+    /// The instance was edited meanwhile (another address): read afresh.
+    #[test]
+    fn an_edited_instance_is_read_afresh() {
+        let i = inst("b", "10.0.0.2");
+        let mut map = std::collections::HashMap::new();
+        map.insert(i.id.clone(), kept(&i));
+        assert!(take_kept(&mut map, &inst("b", "10.0.0.9")).is_none());
+    }
+
+    /// Before a reading came back the page shows the skeleton.
+    #[test]
+    fn nothing_read_is_the_skeleton() {
+        assert!(!shows_data(Kind::Status, &Read::Loading, &Read::Loading, &Read::Loading, &Read::Loading));
+        assert!(!shows_data(Kind::Status, &Read::Got(()), &Read::Got(RemoteStatus::default()), &Read::Loading, &Read::Got(DbStatus::default())));
     }
 }

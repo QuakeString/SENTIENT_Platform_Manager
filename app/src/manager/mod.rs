@@ -266,6 +266,9 @@ pub struct Manager {
     /// (movedata::generation): a new opening is a sub-flow of the page it
     /// was opened from.
     move_gen: usize,
+    /// The window's first frame was drawn (its timing mark says whether
+    /// the page showed its data or the loading skeleton).
+    drawn: bool,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -316,6 +319,21 @@ impl Drop for SwitchTiming {
     }
 }
 
+/// The top bar's last readings (this computer's, and each server's), kept
+/// when the window closes while the app runs on: the next window's bar
+/// shows them at once, not its placeholders, and reads them again.
+static KEPT_MONITORS: std::sync::Mutex<Option<(Option<Monitor>, HashMap<String, Monitor>)>> = std::sync::Mutex::new(None);
+
+impl Drop for Manager {
+    fn drop(&mut self) {
+        let mut cache = std::mem::take(&mut self.monitor_cache);
+        if let (Some(id), Some(m)) = (&self.open_remote, self.remote_monitor) {
+            cache.insert(id.clone(), m);
+        }
+        *KEPT_MONITORS.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.monitor, cache));
+    }
+}
+
 /// The bell's events as saved (the tray's menu reads them without a window).
 pub fn saved_events() -> Vec<strip::Event> {
     strip::load_events()
@@ -348,7 +366,12 @@ impl Manager {
         // After a quit: Status (of the instance left open); a window opened
         // again while the app kept running: the page it was left on.
         let page = page_arg.or_else(|| session::page_to_restore(saved.page.as_deref()).as_deref().and_then(page_of)).unwrap_or(Page::Status);
-        let record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
+        // The pg_dump and pg_restore wrappers once per run, with the first
+        // window (writing them runs a shell, ~70 ms on the UI thread): a
+        // window opened again keeps them, a changed record sets them again
+        // (reload).
+        static PG_TOOLS: std::sync::Once = std::sync::Once::new();
+        let record = InstallationRecord::load().inspect(|r| PG_TOOLS.call_once(|| r.use_pg_tools()));
         let installed = record.as_ref().map(|r| r.sentient_version.clone());
         let native = record.as_ref().is_some_and(|r| r.platform().needs_package());
         let updates = cx.new(|cx| UpdateState::new(installed, native, cx));
@@ -430,10 +453,16 @@ impl Manager {
             updated_from,
             pending: None,
             move_gen: 0,
+            drawn: false,
             found_notice,
             _subscriptions: subscriptions,
             _tasks: Vec::new(),
         };
+        // A window opened again: the bar's last readings at once.
+        if let Some((monitor, cache)) = KEPT_MONITORS.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            manager.monitor = monitor;
+            manager.monitor_cache = cache;
+        }
         manager.start_monitor(cx);
         manager.refresh_running(cx);
         // Performance probes (tests/layout/perf.sh): go to pages in turn,
@@ -1464,6 +1493,15 @@ impl Manager {
         page
     }
 
+    /// The page shown has what it read (Status: its state, services and
+    /// database), not its loading skeleton.
+    fn page_has_data(&self, cx: &App) -> bool {
+        match &self.open_remote {
+            Some(id) => self.remote_pages.get(id).is_some_and(|p| p.read(cx).has_data()),
+            None => self.page != Page::Status || self.status.as_ref().is_some_and(|p| p.read(cx).has_data()),
+        }
+    }
+
     fn open_instance(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         let t0 = std::time::Instant::now();
         let _timing = SwitchTiming(t0, id.clone());
@@ -2381,10 +2419,7 @@ impl Manager {
         // Switch timing: each frame after a switch until the page shows
         // its data (render done, and the next frame's start ≈ presented).
         if let Some((t0, n)) = SWITCH_AT.with(|s| s.get()) {
-            let data = match &self.open_remote {
-                Some(id) => self.remote_pages.get(id).is_some_and(|p| p.read(cx).has_data()),
-                None => self.page != Page::Status || self.status.as_ref().is_some_and(|p| p.read(cx).has_data()),
-            };
+            let data = self.page_has_data(cx);
             let ms = t0.elapsed().as_secs_f64() * 1000.;
             eprintln!("SWITCH frame={} render_ms={ms:.2} data={data}", n + 1);
             if data {
@@ -2395,6 +2430,22 @@ impl Manager {
             } else {
                 SWITCH_AT.with(|s| s.set(None));
             }
+        }
+        // The window's first frame: the page with its data (a window
+        // opened again while the app kept running), or the loading skeleton
+        // (a first start). Reopen tests (tests/reopen) read this mark.
+        if !self.drawn {
+            self.drawn = true;
+            let drawn = match &self.open_remote {
+                _ if self.page == Page::Statistics => match self.stats.get(&self.open_remote) {
+                    Some(p) if p.read(cx).has_data() => "data",
+                    _ => "skeleton",
+                },
+                Some(id) => self.remote_pages.get(id).map(|p| p.read(cx).drawn()).unwrap_or("other"),
+                None if self.page == Page::Status => if self.page_has_data(cx) { "data" } else { "skeleton" },
+                None => "other",
+            };
+            crate::timing::mark(&format!("page-first-frame page={} instance={} drawn={drawn}", self.page.id(), self.open_remote.as_deref().unwrap_or("local")));
         }
         self.run_pending(cx);
         let layer = crate::modal::layer(window, cx, menu_w, shell::BAR_H);

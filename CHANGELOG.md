@@ -87,6 +87,14 @@ refreshes that repository's Downloads table.
   SENTIENT runs.
 - Files: the read-only banner says "You can view, but not change
   anything."
+- The window closed and opened again from the tray (the Platform Manager
+  kept running) showed the loading screen until the server or this
+  computer was read again. It now shows the page it was left on with what
+  was read last, at once, and reads it again behind it: Status and
+  Statistics, on this computer and on a server, and the top bar's
+  processor, memory and disk. Only a new start of the Platform Manager
+  shows the loading screen. The reopened window also draws about 70 ms
+  sooner (the backup tools are set up once per run, not for every window).
 - Windows (a virtual machine without a GPU): Statistics took about 3 of 4
   processors, on a stopped or a running SENTIENT. The loading placeholders'
   shimmer asked for a new frame every frame even with motion reduced, and
