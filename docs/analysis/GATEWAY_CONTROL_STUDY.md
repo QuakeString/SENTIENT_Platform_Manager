@@ -90,8 +90,15 @@ Paths in the tables are relative to those repositories: `core/` =
   6. only then stops and removes the Python gateway;
   7. on any failure removes the Rust one and leaves the Python gateway
      running as before.
-  It is never called a "migration" in the UI, the code or the docs. Not
-  built in P0; it is its own piece of work after P0.
+  It is never called a "migration" in the UI, the code or the docs.
+  **Built (branch `spm/0.9.2-gw-p0`, for the rc after rc4), Docker → Docker**
+  until the native install exists (P4). Two refinements agreed on
+  2026-11-18: the older container is **stopped and renamed before** the new
+  one starts (two gateways on one identity knock each other off the
+  platform), and removed only once the new one logs "connected to
+  platform"; a new data volume already used by another container is never
+  shared (a dated one is made). Native Python installs are not detected
+  yet.
 - **Default Linux install: Native** (package + systemd), preselected, with
   Docker as the alternative (answers open question 1).
 
