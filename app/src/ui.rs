@@ -471,6 +471,34 @@ pub fn info(id: SharedString, help: SharedString) -> impl IntoElement {
         .tooltip(move |_, cx| cx.new(|_| InfoTip(help.clone())).into())
 }
 
+/// A lock where a value cannot be changed here, its tooltip saying why
+/// and where to change it (the gateway's SENTIENT-owned settings).
+pub fn lock_tip(id: SharedString, why: SharedString) -> impl IntoElement {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(22.))
+        .flex_shrink_0()
+        .rounded(px(5.))
+        .cursor_default()
+        .hover(|d| d.bg(black().opacity(0.06)))
+        .relative()
+        .child(LockIcon)
+        .child(layout_probe("lock-icon"))
+        .tooltip(move |_, cx| cx.new(|_| InfoTip(why.clone())).into())
+}
+
+#[derive(IntoElement)]
+struct LockIcon;
+
+impl RenderOnce for LockIcon {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Lock).size(px(14.)).text_color(cx.theme().muted_foreground)
+    }
+}
+
 /// The (i) itself, in the muted text colour of its theme.
 #[derive(IntoElement)]
 struct InfoIcon;
@@ -2258,6 +2286,12 @@ pub fn stacked() -> bool {
 /// The settings card's tabs: on top, each with its count of changes (red
 /// when it holds a field that is not valid); they wrap on a narrow window.
 pub fn card_tabs(theme: &Theme, id: &str, titles: &[&'static str], active: usize, badges: &[(usize, bool)], pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
+    card_tabs_locked(theme, id, titles, active, badges, &[], pick)
+}
+
+/// [`card_tabs`], a small lock after the title of each tab in `locked`
+/// (its values are set elsewhere: the gateway's SENTIENT-owned tabs).
+pub fn card_tabs_locked(theme: &Theme, id: &str, titles: &[&'static str], active: usize, badges: &[(usize, bool)], locked: &[bool], pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
     h_flex()
         .flex_wrap()
         .gap(px(4.))
@@ -2283,6 +2317,9 @@ pub fn card_tabs(theme: &Theme, id: &str, titles: &[&'static str], active: usize
                 .text_color(if on { theme.primary } else { theme.muted_foreground })
                 .when(!on, |d| d.hover(|d| d.text_color(theme.foreground)))
                 .child(*title)
+                .when(locked.get(i).copied().unwrap_or(false), |d| {
+                    d.child(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Lock).size(px(13.)).text_color(theme.muted_foreground))
+                })
                 .when(n > 0 || bad, |d| {
                     d.child(
                         div()

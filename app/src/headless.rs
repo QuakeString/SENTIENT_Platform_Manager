@@ -57,7 +57,7 @@ use crate::installation::InstallationRecord;
 const USAGE: &str = "usage: --job install <plan.json> | diagnose-fix <fix json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | movedata-json | movedata-check <store> <folder> | movedata-estimate <store=folder,…> | move-data <store=folder,…> | move-data-remove-old <folder> | move-data-cancel | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
 use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-if-one [--pg-admin-password-stdin] | add-existing [<n> | --native] [--pg-admin-password-stdin] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> [--stop-shared-pg] | service <start|stop|restart> <name> | uninstall [--delete-data] | uninstall --parts <sentient,postgres,pg-database,clickhouse,ch-database,gateway,shortcuts,wsl-distro,wsl,manager> [--keep-files] [--keep-pg-data] [--keep-ch-data] [--wsl-distro] [--wsl] | uninstall-facts-json | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | --request-b64 <base64> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live [system|services|db] | stats-sample | stats-history <seconds> | stats-install | server-info-json | server-boot-json | server-power <reboot|poweroff> | docker-restart | system-updates | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | agent-info | agents | serve | pg-others-json | \
-gateway-status | gateway-install <host> <port> | gateway-update [<version>] | gateway-control <start|stop|restart> | gateway-remove [--delete-data] [--remove-image] | gateway-adopt
+gateway-status | gateway-install <host> <port> | gateway-update [<version>] | gateway-control <start|stop|restart> | gateway-remove [--delete-data] [--remove-image] | gateway-adopt | gateway-settings-json | gateway-apply <plan.json> | gateway-ui-password (the password on stdin) | gateway-test
 
 Administrator password (native Linux): a job typed in a terminal may ask for it, once for the
 whole job. Started without a terminal (a script, a timer, a service), a job never asks: a step
@@ -179,6 +179,9 @@ fn print_plain(p: Progress) {
     }
 }
 
+/// The start of `gateway-settings-json`'s one line (the JSON follows).
+pub const GW_SETTINGS_LINE: &str = "@@GW-SETTINGS ";
+
 fn json_printer() -> ProgressFn {
     Arc::new(|p| {
         remember(&p);
@@ -206,7 +209,7 @@ fn reading_job(args: &[String]) -> bool {
     let args = if args.first().is_some_and(|a| a == "--json") { &args[1..] } else { args };
     matches!(
         args.first().map(String::as_str),
-        Some("status-json" | "monitor-json" | "stats-live" | "stats-sample" | "services-json" | "dbstatus-json" | "gateway-status" | "server-info-json")
+        Some("status-json" | "monitor-json" | "stats-live" | "stats-sample" | "services-json" | "dbstatus-json" | "gateway-status" | "gateway-settings-json" | "server-info-json")
     )
 }
 
@@ -368,6 +371,30 @@ fn run_job(args: &[String]) -> i32 {
                 Some(action) => gateway::control(&sink, action),
                 None => Err(USAGE.into()),
             },
+            // The settings card (crate::manager::gateway_settings): its
+            // values without secrets, one line; Apply (a plan file with no
+            // secret in it); the page's password on standard input; the
+            // connection test (it prints nothing of the credentials).
+            "gateway-settings-json" => {
+                sentient_installer_core::distro::gateway_docker::set_cache_dir(crate::updates::prefs_dir());
+                let st = sentient_installer_core::gateway_settings::read(&gateway::status());
+                println!("{}{}", GW_SETTINGS_LINE, serde_json::to_string(&st).unwrap_or_default());
+                Ok(())
+            }
+            "gateway-apply" => match args.get(1) {
+                Some(path) => std::fs::read_to_string(path)
+                    .map_err(|e| format!("read {path}: {e}"))
+                    .and_then(|t| serde_json::from_str::<sentient_installer_core::gateway_settings::ApplyPlan>(&t).map_err(|e| format!("the plan: {e}")))
+                    .and_then(|plan| sentient_installer_core::gateway_settings::apply(&sink, &gateway::status(), &plan)),
+                None => Err(USAGE.into()),
+            },
+            "gateway-ui-password" => {
+                let mut line = String::new();
+                let _ = std::io::stdin().read_line(&mut line);
+                let pw = line.trim_end_matches(['\r', '\n']).to_string();
+                sentient_installer_core::gateway_settings::set_password(&gateway::status(), &pw).map(|m| sink(sentient_installer_core::progress::Progress::Done { message: m }))
+            }
+            "gateway-test" => sentient_installer_core::gateway_settings::test_connection(&gateway::status()).map(|m| sink(sentient_installer_core::progress::Progress::Done { message: m })),
             _ => Err(USAGE.into()),
         };
         return match result {

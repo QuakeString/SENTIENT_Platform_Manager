@@ -1378,6 +1378,7 @@ pub fn gateway(inst: &Instance) -> Result<HashMap<String, String>, String> {
     if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_GATEWAY") {
         // A fixture's name (crate::manager::gateway::debug_fixture) or a line.
         let t = t.to_string_lossy().into_owned();
+        #[cfg(feature = "gui")]
         let t = crate::manager::gateway::debug_fixture(&t).map(str::to_string).unwrap_or(t);
         return Ok(t.split([' ', '+']).filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect());
     }
@@ -1385,6 +1386,53 @@ pub fn gateway(inst: &Instance) -> Result<HashMap<String, String>, String> {
     let line = out.lines().rev().find(|l| l.starts_with("installed=")).ok_or("The server's Platform Manager gave no gateway state.")?;
     // Values with spaces come %20-escaped (headless's gateway-status).
     Ok(line.split(' ').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.replace("%20", " ").replace("%25", "%"))).collect())
+}
+
+/// The server's gateway settings, without secrets (the agent's
+/// `gateway-settings-json`, crate::manager::gateway_settings).
+pub fn gateway_settings(inst: &Instance) -> Result<sentient_installer_core::gateway_settings::GwSettings, String> {
+    #[cfg(debug_assertions)]
+    if let Some(name) = std::env::var("SPM_DEBUG_REMOTE_GATEWAY_SETTINGS").ok().or_else(|| std::env::var("SPM_DEBUG_REMOTE_GATEWAY").ok()) {
+        #[cfg(feature = "gui")]
+        if let Some(s) = crate::manager::gateway_settings::debug_settings(&name) {
+            return Ok(s);
+        }
+        let _ = name;
+    }
+    let out = spm_job(inst, "gateway-settings-json")?;
+    settings_of_output(&out)
+}
+
+/// The settings line in a `gateway-settings-json` job's output.
+pub fn settings_of_output(out: &str) -> Result<sentient_installer_core::gateway_settings::GwSettings, String> {
+    let line = out.lines().rev().find_map(|l| l.trim().strip_prefix(crate::headless::GW_SETTINGS_LINE).map(str::to_string)).ok_or("The server's Platform Manager gave no gateway settings.")?;
+    serde_json::from_str(&line).map_err(|e| format!("The gateway settings could not be read: {e}"))
+}
+
+/// Set the server's gateway page password: the agent's
+/// `gateway-ui-password`, the password as one line on its standard input
+/// (never on a command line, in a file or in a log). Waits for the answer.
+pub fn gateway_ui_password(inst: &Instance, password: &str) -> Result<String, String> {
+    let argv: Vec<String> = ["--json", "gateway-ui-password"].iter().map(|a| a.to_string()).collect();
+    let input = Some(format!("{password}\n"));
+    let (ok, out, err) = match conn::call(inst, serve::Work::Job(argv.clone()), input.clone()) {
+        Ok((_, r)) => (r.code == Some(0), r.out, r.err),
+        Err(conn::Fail::Err(e)) => return Err(e),
+        Err(conn::Fail::PerCall) => job_with_input(inst, &argv, input.as_deref())?,
+    };
+    job_answer(ok, &out, &err)
+}
+
+/// Test the server's gateway connection to SENTIENT (the agent's
+/// `gateway-test`; it prints nothing of the credentials).
+pub fn gateway_test(inst: &Instance) -> Result<String, String> {
+    let argv: Vec<String> = ["--json", "gateway-test"].iter().map(|a| a.to_string()).collect();
+    let (ok, out, err) = match conn::call(inst, serve::Work::Job(argv.clone()), None) {
+        Ok((_, r)) => (r.code == Some(0), r.out, r.err),
+        Err(conn::Fail::Err(e)) => return Err(e),
+        Err(conn::Fail::PerCall) => job_with_input(inst, &argv, None)?,
+    };
+    job_answer(ok, &out, &err)
 }
 
 /// The account's home folder on the server.

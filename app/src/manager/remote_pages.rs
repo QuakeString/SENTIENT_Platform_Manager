@@ -302,6 +302,10 @@ pub struct RemotePages {
     /// One input per catalog setting, made once the values are read.
     inputs: Vec<(String, Entity<InputState>)>,
     gateway: Read<std::collections::HashMap<String, String>>,
+    /// The Gateway page's settings card (crate::manager::gateway_settings)
+    /// and what it shows (the agent's gateway-settings-json).
+    gw_settings: Read<sentient_installer_core::gateway_settings::GwSettings>,
+    gw_card: Entity<crate::manager::gateway_settings::GatewaySettingsCard>,
     /// Migration's chosen target (an index into the types other than the one now).
     /// Migration: the type picked to change to (None: the current one).
     target: Option<sentient_installer_core::stack::Flavor>,
@@ -382,6 +386,15 @@ pub struct RemotePages {
 impl RemotePages {
     pub fn new(inst: Instance, kind: Kind, updates: Entity<crate::updates::UpdateState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let job = cx.new(|_| Job::new());
+        let me = cx.entity().downgrade();
+        let gw_card = cx.new(|_| {
+            crate::manager::gateway_settings::GatewaySettingsCard::new(
+                Some(inst.name.clone()),
+                std::rc::Rc::new(move |w, _: &mut Window, cx: &mut App| {
+                    me.update(cx, |p, cx| p.run_gw_work(w, cx)).ok();
+                }),
+            )
+        });
         let vars_search = cx.new(|cx| InputState::new(_window, cx).placeholder("Search settings and variables"));
         let vars_sub = cx.subscribe(&vars_search, |_, _, _: &InputEvent, cx| cx.notify());
         // The gateway's "Update to <v>" follows the newest release found.
@@ -452,6 +465,8 @@ impl RemotePages {
             settings: Read::Loading,
             inputs: Vec::new(),
             gateway: Read::Loading,
+            gw_settings: Read::Loading,
+            gw_card,
             target: None,
             migrate_confirm: false,
             // Screens: a canned preflight failure.
@@ -861,7 +876,12 @@ impl RemotePages {
                         u.check(cx);
                     }
                 });
-                self.fetch(cx, move || remote::gateway(&inst), |p| &mut p.gateway)
+                let (i2, i3) = (inst.clone(), inst.clone());
+                self.gw_card.update(cx, |c, _| c.reset());
+                self.fetch(cx, move || remote::gateway(&inst), |p| &mut p.gateway);
+                self.fetch(cx, move || remote::gateway_settings(&i2), |p| &mut p.gw_settings);
+                // SENTIENT's web port there, for the card's "Open in SENTIENT".
+                self.fetch(cx, move || remote::status(&i3), |p| &mut p.status)
             }
         }
     }
@@ -1125,6 +1145,7 @@ impl RemotePages {
             Kind::Backup => "Backup and restore",
             Kind::Repair => "Repair and uninstall",
             Kind::Settings => "Platform settings",
+            Kind::Gateway => "Gateway",
             _ => "the page",
         };
         let title = if self.pending_migrate.is_some() { format!("{label} (the migration follows)") } else { label };
@@ -2396,7 +2417,14 @@ impl RemotePages {
                 .items_center()
                 .child(ui::product_logo(ui::Product::Gateway, 24.))
                 .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
-                .child(if !installed { ui::pill(&theme, Tone::Neutral, "Not installed") } else if running { ui::pill(&theme, Tone::Good, "Gateway is running") } else { ui::pill(&theme, Tone::Bad, "Gateway is stopped") }),
+                .child(if !installed { ui::pill(&theme, Tone::Neutral, "Not installed") } else if running { ui::pill(&theme, Tone::Good, "Gateway is running") } else { ui::pill(&theme, Tone::Bad, "Gateway is stopped") })
+                .children({
+                    let s = match &self.gw_settings {
+                        Read::Got(s) => Some(Ok(s.clone())),
+                        _ => None,
+                    };
+                    crate::manager::gateway_settings::connected_pill(&theme, s.as_ref(), running && installed)
+                }),
         );
         if !installed {
             // The pill says it; the how-to and what was looked for are behind an (i).
@@ -2470,7 +2498,17 @@ impl RemotePages {
         } else {
             Vec::new()
         };
-        p.children(ui::card_actions(
+        // The settings card under the status card (crate::manager::gateway_settings).
+        let base = self.status.got().and_then(|st| st.http_port).map(|port| format!("http://{}:{port}", self.inst.host));
+        let url = crate::manager::gateway_settings::sentient_page(base.as_deref(), Some(host.as_str()).filter(|h| !h.is_empty()), &[self.inst.host.as_str()]);
+        let settings = match &self.gw_settings {
+            Read::Loading => None,
+            Read::Failed(e) => Some(Err(e.clone())),
+            Read::Got(s) => Some(Ok(s.clone())),
+        };
+        self.gw_card.update(cx, |c, _| c.feed(settings, url, busy));
+        let card = self.gw_card.clone();
+        let panel = p.children(ui::card_actions(
             &theme,
             h_flex()
                 .gap(crate::ui::button_gap())
@@ -2505,7 +2543,90 @@ impl RemotePages {
                         None => button.into_any_element(),
                     }))
                 }),
-        ))
+        ));
+        v_flex().gap(px(ui::GAP)).child(panel).child(card)
+    }
+
+    /// What the gateway's settings card asks for, on the server: Apply (a
+    /// plan with no secret, put in the account's home and given to the
+    /// agent's gateway-apply) and the password (the agent's
+    /// gateway-ui-password, on its standard input) as the page's job; the
+    /// test in the background.
+    fn run_gw_work(&mut self, work: crate::manager::gateway_settings::Work, cx: &mut Context<Self>) {
+        use crate::manager::gateway_settings::Work;
+        use sentient_installer_core::progress::{PlanStep, Progress};
+        let inst = self.inst.clone();
+        // Screens: a canned server gateway is never changed.
+        let canned = cfg!(debug_assertions) && (std::env::var_os("SPM_DEBUG_REMOTE_GATEWAY").is_some() || std::env::var_os("SPM_DEBUG_REMOTE_GATEWAY_SETTINGS").is_some());
+        if let Work::Test = work {
+            let card = self.gw_card.clone();
+            cx.spawn(async move |_, cx| {
+                let r = if canned { Ok("Screens: a canned gateway; nothing was tested.".to_string()) } else { cx.background_executor().spawn(async move { remote::gateway_test(&inst) }).await };
+                card.update(cx, |c, cx| c.set_test(Some(r), cx));
+            })
+            .detach();
+            return;
+        }
+        if self.job.read(cx).is_running() {
+            let other = self.job_label.clone().map(|l| l.to_string()).unwrap_or_else(|| "another job".into());
+            ui::show_error("The gateway's settings cannot be changed yet", format!("{other} is still running on {}. Try again once it has finished.", inst.name), cx);
+            return;
+        }
+        self.shown_job = Some(Kind::Gateway);
+        match work {
+            Work::Apply(plan) => {
+                self.job_label = Some(format!("Applying the gateway's settings on {}", inst.name).into());
+                let names = plan.names().join(", ");
+                self.job.update(cx, |job, cx| {
+                    job.set_plan(vec![crate::jobplan::connect(), PlanStep::new("Applying the settings").detail(names).weight(3.), PlanStep::new("Reading the settings back")]);
+                    job.set_label(format!("Applying the gateway's settings on {}", inst.name));
+                    job.set_on_page(true);
+                    job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
+                    job.start(
+                        move |sink| {
+                            sink(Progress::Step { name: crate::jobplan::CONNECT.into() });
+                            if canned {
+                                sink(Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
+                                return Ok(());
+                            }
+                            remote::deploy(&inst, &sink)?;
+                            let file = format!("{}/.spm-gateway-apply.json", remote::home(&inst)?);
+                            remote::put_text(&inst, &file, &serde_json::to_string(&plan).map_err(|e| e.to_string())?)?;
+                            sink(Progress::Step { name: "Applying the settings".into() });
+                            let id = remote::start_job(&inst, &["gateway-apply", &file])?;
+                            let r = remote::follow(&inst, &id, &sink);
+                            remote::remove_file(&inst, &file);
+                            r
+                        },
+                        cx,
+                    )
+                });
+            }
+            Work::Password(pw) => {
+                self.job_label = Some(format!("Changing the gateway page's password on {}", inst.name).into());
+                self.job.update(cx, |job, cx| {
+                    job.set_plan(vec![crate::jobplan::connect(), PlanStep::new("Setting the password")]);
+                    job.set_label(format!("Changing the gateway page's password on {}", inst.name));
+                    job.set_on_page(true);
+                    job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
+                    job.start(
+                        move |sink| {
+                            sink(Progress::Step { name: crate::jobplan::CONNECT.into() });
+                            if canned {
+                                sink(Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
+                                return Ok(());
+                            }
+                            remote::deploy(&inst, &sink)?;
+                            sink(Progress::Step { name: "Setting the password".into() });
+                            remote::gateway_ui_password(&inst, &pw).map(|m| sink(Progress::Done { message: m }))
+                        },
+                        cx,
+                    )
+                });
+            }
+            Work::Test => {}
+        }
+        cx.notify();
     }
 
     /// "Remove the Gateway…" on the server: the same dialog as here, then
