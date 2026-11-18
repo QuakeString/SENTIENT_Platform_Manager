@@ -1251,7 +1251,20 @@ fn services_panel(theme: &gpui_kit::component::Theme, list: &[crate::stats::Serv
 
 #[cfg(test)]
 mod tests {
-    use super::{nice, nice_memory, tick};
+    use super::{nice, nice_memory, tick, Services};
+
+    #[test]
+    fn services_left_out_while_stopped_are_their_own_state() {
+        let mut s = crate::stats::Sample { services_stopped: true, ..Default::default() };
+        assert_eq!(Services::of(&s), Services::Stopped);
+        // Across the agent (stats-live services), and from an older one.
+        let back: crate::stats::Sample = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(Services::of(&back), Services::Stopped);
+        s.services_stopped = false;
+        s.services = vec![crate::stats::Service { name: "sentient".into(), ..Default::default() }];
+        assert_eq!(Services::of(&s), Services::List(s.services.clone()));
+        assert!(!serde_json::to_string(&s).unwrap().contains("services_stopped"));
+    }
 
     #[test]
     fn scales_are_round_and_labels_distinct() {

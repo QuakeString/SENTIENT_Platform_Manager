@@ -858,6 +858,21 @@ pub fn ago_label(rfc3339: &str, now: chrono::DateTime<chrono::Local>) -> String 
 mod tests {
 
     #[test]
+    fn a_stopped_reading_is_not_an_error_and_crosses_the_agent() {
+        let st = super::stopped(true);
+        assert!(st.stopped && st.hybrid);
+        assert!(st.pg_error.is_none() && st.ch_error.is_none(), "no error to show");
+        let json = serde_json::to_string(&st).unwrap();
+        assert!(json.contains("\"stopped\":true"), "{json}");
+        let back: super::DbStatus = serde_json::from_str(&json).unwrap();
+        assert!(back.stopped);
+        // An older agent's answer (no such field), and a read one: not stopped.
+        let old: super::DbStatus = serde_json::from_str(r#"{"pg":null,"pg_error":"x","ch":null,"ch_error":null,"hybrid":false}"#).unwrap();
+        assert!(!old.stopped);
+        assert!(!serde_json::to_string(&super::DbStatus::default()).unwrap().contains("stopped"));
+    }
+
+    #[test]
     fn partition_bounds_give_the_period() {
         let b = vec![
             "FOR VALUES FROM ('1704067200000') TO ('1704672000000')".to_string(),
