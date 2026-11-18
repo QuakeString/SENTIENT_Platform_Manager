@@ -2576,7 +2576,11 @@ impl RemotePages {
         match work {
             Work::Apply(plan) => {
                 self.job_label = Some(format!("Applying the gateway's settings on {}", inst.name).into());
-                let names = plan.names().join(", ");
+                let kind = match &self.gw_settings {
+                    Read::Got(s) => s.machine.kind.clone(),
+                    _ => String::new(),
+                };
+                let names = format!("{}. {}", plan.names().join(", "), plan.restart_words(&kind));
                 self.job.update(cx, |job, cx| {
                     job.set_plan(vec![crate::jobplan::connect(), PlanStep::new("Applying the settings").detail(names).weight(3.), PlanStep::new("Reading the settings back")]);
                     job.set_label(format!("Applying the gateway's settings on {}", inst.name));

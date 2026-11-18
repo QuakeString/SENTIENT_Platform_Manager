@@ -5,8 +5,9 @@
 //! reads and applies them).
 //!
 //! - Connection to SENTIENT: host, port, credential, TLS; locked while the
-//!   gateway is connected (SENTIENT owns it then). Test connection signs
-//!   in under a client id of its own, so the gateway stays online.
+//!   gateway is connected (SENTIENT owns it then). Test connection checks
+//!   that SENTIENT's MQTT answers (TCP, and TLS when used), not yet with
+//!   the gateway's credentials.
 //! - Local web page: on or off, where it listens, its port, its extra host
 //!   names, and the administrator password (a dialog; the password goes to
 //!   the gateway's own command on its standard input).
@@ -451,14 +452,16 @@ impl Render for GatewaySettingsCard {
         };
         let changes = page_n + log_n + adv_n;
         let editable = s.machine.not_editable.is_none();
+        let plan = self.plan(cx);
+        let restarts = plan.restarts(&s.machine.kind);
         let line = match &invalid {
             Some((_, why)) => why.clone(),
             None => {
-                let mut names = self.plan(cx).names().join(", ");
+                let mut names = plan.names().join(", ");
                 if !names.is_empty() {
                     names.push_str(". ");
                 }
-                names.push_str(if changes == 1 { "The gateway restarts once to apply it; its buffer keeps the data meanwhile." } else { "The gateway restarts once to apply them; its buffer keeps the data meanwhile." });
+                names.push_str(plan.restart_words(&s.machine.kind));
                 if self.server.is_some() {
                     names.push_str(" Applied by the server's agent.");
                 }
@@ -471,7 +474,7 @@ impl Render for GatewaySettingsCard {
             changes,
             invalid.is_some() as usize,
             line,
-            true,
+            restarts,
             !self.busy && editable,
             cx.listener(|c, _, _, cx| c.discard(cx)),
             cx.listener(|c, _, window, cx| c.apply(window, cx)),
@@ -541,7 +544,7 @@ impl GatewaySettingsCard {
         );
         let mut test = SettingRow::wide(
             "Test connection",
-            Some("Signs in to SENTIENT's MQTT with the gateway's credentials under a client id of its own, so the gateway stays online. Over TLS, or with a fixed client id, it checks only that the address answers. The credentials are never shown.".into()),
+            Some("Checks that SENTIENT's MQTT answers where the gateway connects: a TCP connection, and a TLS handshake when it uses TLS. The gateway's credentials are not tried yet, so its own connection is never disturbed.".into()),
             ui::on_control_line(button),
         );
         test.first = true;
@@ -785,7 +788,7 @@ impl GatewaySettingsCard {
                 label: "Restart after a failure".into(),
                 help: Some(restart_help.into()),
                 desc: None,
-                restart: e.restart_on != b.restart_on,
+                restart: e.restart_on != b.restart_on && s.machine.kind != "windows-service",
                 changed: e.restart_on != b.restart_on,
                 control: ui::toggle(theme, "gw-restart", e.restart_on, None, cx.listener(|c, v: &bool, _, cx| {
                     c.edit.restart_on = *v;

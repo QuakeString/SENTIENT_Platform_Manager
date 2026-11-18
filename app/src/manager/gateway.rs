@@ -217,7 +217,7 @@ impl GatewayPage {
                     return;
                 }
                 self.shown = Some("Applying the gateway's settings".into());
-                let names = plan.names().join(", ");
+                let names = format!("{}. {}", plan.names().join(", "), plan.restart_words(status.kind()));
                 self.settings_job.update(cx, |job, cx| {
                     job.set_label("Applying the gateway's settings");
                     job.set_plan(vec![

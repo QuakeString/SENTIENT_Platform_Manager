@@ -776,34 +776,15 @@ mod windows {
         }
     }
 
-    /// Apply `plan` to the service: the page through the gateway's own
-    /// `--install`, the environment in the service's registry key, the
-    /// restart policy with `sc failure`, then one restart.
+    /// Apply `plan` to the service: the environment in the service's
+    /// registry key and the restart policy (`sc failure`) first, then the
+    /// gateway restarts once: through its own `--install` when the page
+    /// changes (it restarts the service), else a service restart.
     pub fn apply_settings(sink: &ProgressFn, before: &crate::gateway_settings::GwSettings, plan: &crate::gateway_settings::ApplyPlan) -> Result<(), String> {
         let program = program();
         let page = plan.ui_enabled.is_some() || plan.ui_listen.is_some();
-        let mut restart = false;
-        if page {
-            if !before.caps.ui_listen {
-                return Err("This gateway is older than 4.12: update it first to change its web page here.".into());
-            }
-            step(sink, "Setting the web page (the gateway's own --install)");
-            let mut args = vec!["--install".to_string()];
-            match plan.ui_enabled {
-                Some(true) => args.push("--ui".into()),
-                Some(false) => args.push("--no-ui".into()),
-                None => {}
-            }
-            if let Some(l) = &plan.ui_listen {
-                args.push("--ui-listen".into());
-                args.push(l.clone());
-            }
-            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            match crate::sys::output_limited(&program, &refs, std::time::Duration::from_secs(120)) {
-                Some((true, _, _)) => {}
-                Some((false, _, e)) => return Err(format!("The gateway's --install stopped: {}", crate::sys::decode(&e).trim())),
-                None => return Err("The gateway's program could not be started.".into()),
-            }
+        if page && !before.caps.ui_listen {
+            return Err("This gateway is older than 4.12: update it first to change its web page here.".into());
         }
         let mut env = service_environment();
         let mut set = |n: &str, v: Option<String>| {
@@ -841,7 +822,6 @@ mod windows {
         if env_changed {
             step(sink, "Writing the service's environment");
             write_environment(&env)?;
-            restart = true;
         }
         if let Some(on) = plan.restart_always {
             step(sink, "Setting what Windows does when the gateway fails");
@@ -850,7 +830,26 @@ mod windows {
                 return Err("sc.exe failure could not set the restart policy.".into());
             }
         }
-        if restart {
+        if page {
+            step(sink, "Setting the web page and restarting the gateway once (its own --install)");
+            let mut args = vec!["--install".to_string()];
+            match plan.ui_enabled {
+                Some(true) => args.push("--ui".into()),
+                Some(false) => args.push("--no-ui".into()),
+                None => {}
+            }
+            if let Some(l) = &plan.ui_listen {
+                args.push("--ui-listen".into());
+                args.push(l.clone());
+            }
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            match crate::sys::output_limited(&program, &refs, std::time::Duration::from_secs(120)) {
+                Some((true, _, _)) => {}
+                Some((false, _, e)) => return Err(format!("The gateway's --install stopped: {}", crate::sys::decode(&e).trim())),
+                None => return Err("The gateway's program could not be started.".into()),
+            }
+        } else if env_changed {
+            step(sink, "Restarting the gateway service once");
             control(sink, "restart")?;
         }
         Ok(())

@@ -13,7 +13,8 @@
 //!   environment, the container's flags, the Windows service's).
 //! - Secrets never leave this module: a token or a password is read only to
 //!   say "set" or its last four characters ([`hint`]); a test of the
-//!   connection reads it where it lives and prints nothing of it.
+//!   connection reads only where the gateway connects (TCP, and a TLS
+//!   handshake when it uses TLS), never its credentials.
 //!
 //! Who owns what (docs: the gateway control study, §2.2): SENTIENT pushes
 //! the connectors, storage, logging levels, statistics, remote shell and
@@ -665,6 +666,27 @@ impl ApplyPlan {
         *self == ApplyPlan::default()
     }
 
+    /// Whether applying it restarts the gateway (once) where it runs as
+    /// `kind`: a Windows service's restart policy alone does not.
+    pub fn restarts(&self, kind: &str) -> bool {
+        if kind == "windows-service" {
+            return self.ui_enabled.is_some() || self.ui_listen.is_some() || self.env.is_some() || self.rust_log.is_some();
+        }
+        !self.is_empty()
+    }
+
+    /// What Apply does to the running gateway, in one sentence (the Apply
+    /// bar's line and the job's step).
+    pub fn restart_words(&self, kind: &str) -> &'static str {
+        if !self.restarts(kind) {
+            return "Applied without a restart.";
+        }
+        match kind {
+            "docker" => "The container is created again once, with the same volumes; its buffer keeps the data meanwhile.",
+            _ => "The gateway restarts once to apply this; its buffer keeps the data meanwhile.",
+        }
+    }
+
     /// What changes, in words, for the job's steps and its last line.
     pub fn names(&self) -> Vec<&'static str> {
         let mut n = Vec::new();
@@ -839,85 +861,19 @@ pub fn listen_parts(listen: &str) -> (usize, String, u16) {
 // Test connection
 // ---------------------------------------------------------------------------
 
-/// The MQTT 3.1.1 CONNECT packet: a clean session, `client_id`, and the
-/// user name (the access token, or the MQTT user) and password when given.
-pub fn connect_packet(client_id: &str, username: Option<&str>, password: Option<&str>) -> Vec<u8> {
-    fn s(b: &mut Vec<u8>, v: &str) {
-        b.extend_from_slice(&(v.len() as u16).to_be_bytes());
-        b.extend_from_slice(v.as_bytes());
-    }
-    let mut body = Vec::new();
-    s(&mut body, "MQTT");
-    body.push(4);
-    let mut flags = 0x02u8;
-    if username.is_some() {
-        flags |= 0x80;
-    }
-    if password.is_some() {
-        flags |= 0x40;
-    }
-    body.push(flags);
-    body.extend_from_slice(&30u16.to_be_bytes());
-    s(&mut body, client_id);
-    if let Some(u) = username {
-        s(&mut body, u);
-    }
-    if let Some(p) = password {
-        s(&mut body, p);
-    }
-    let mut out = vec![0x10];
-    let mut len = body.len();
-    loop {
-        let mut byte = (len % 128) as u8;
-        len /= 128;
-        if len > 0 {
-            byte |= 0x80;
-        }
-        out.push(byte);
-        if len == 0 {
-            break;
-        }
-    }
-    out.extend(body);
-    out
-}
-
-/// CONNACK's return code in words (Ok: accepted).
-pub fn connack_words(packet: &[u8]) -> Result<(), String> {
-    if packet.len() < 4 || packet[0] != 0x20 {
-        return Err("SENTIENT's MQTT did not answer as an MQTT broker.".into());
-    }
-    match packet[3] {
-        0 => Ok(()),
-        1 => Err("SENTIENT's MQTT refused the protocol version.".into()),
-        2 => Err("SENTIENT's MQTT refused the test's client id.".into()),
-        3 => Err("SENTIENT's MQTT is not available now.".into()),
-        4 => Err("SENTIENT refused the gateway's credentials (bad user name or password, or an unknown access token).".into()),
-        5 => Err("SENTIENT refused the gateway's credentials (not authorised).".into()),
-        n => Err(format!("SENTIENT's MQTT refused the sign-in (code {n}).")),
-    }
-}
-
-/// The credentials a test signs in with: (host, port, tls, user, password,
-/// client id of the gateway). Read where they live; never printed.
-#[derive(Clone, Default)]
+/// What a test of the connection is told: where SENTIENT's MQTT is and
+/// whether it takes TLS. No credential is read for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TestCreds {
     pub host: String,
     pub port: u16,
     pub tls: bool,
-    pub credential: String,
-    pub username: Option<String>,
-    pub password: Option<String>,
-    pub client_id: Option<String>,
 }
 
-impl std::fmt::Debug for TestCreds {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TestCreds").field("host", &self.host).field("port", &self.port).field("tls", &self.tls).field("credential", &self.credential).finish_non_exhaustive()
-    }
-}
+/// The test's closing words: the gateway's credentials are not tried.
+pub const NOT_SIGNED_IN: &str = "Not yet tested with the gateway's credentials.";
 
-/// The credentials in a gateway file, the environment over them.
+/// Where the gateway connects, from its file, the environment over it.
 pub fn creds_of(file: Option<&str>, env: &[String]) -> Option<TestCreds> {
     let v = file.and_then(|t| serde_json::from_str::<Value>(t).ok()).unwrap_or(Value::Null);
     let p = v.get("sentient").or_else(|| v.get("thingsboard")).cloned().unwrap_or(Value::Null);
@@ -925,47 +881,65 @@ pub fn creds_of(file: Option<&str>, env: &[String]) -> Option<TestCreds> {
     let str_of = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::trim).filter(|x| !x.is_empty()).map(str::to_string);
     let host = env_any(env, &["host", "ST_GW_HOST", "TB_GW_HOST"]).map(str::to_string).or_else(|| str_of(&p, "host"))?;
     let port = env_any(env, &["port", "ST_GW_PORT", "TB_GW_PORT"]).and_then(|p| p.parse().ok()).or_else(|| p.get("port").and_then(Value::as_u64).map(|x| x as u16)).unwrap_or(1883);
-    let token = env_any(env, &["accessToken", "ST_GW_ACCESS_TOKEN", "TB_GW_ACCESS_TOKEN"]).filter(|t| !t.eq_ignore_ascii_case("YOUR_ACCESS_TOKEN")).map(str::to_string).or_else(|| str_of(&sec, "accessToken"));
-    let credential = str_of(&sec, "type").unwrap_or_else(|| "accessToken".into()).to_ascii_lowercase();
-    let tls = credential.starts_with("tls");
-    Some(if credential == "usernamepassword" {
-        TestCreds { host, port, tls: false, credential, username: str_of(&sec, "username"), password: str_of(&sec, "password"), client_id: str_of(&sec, "clientId") }
-    } else {
-        TestCreds { host, port, tls, credential, username: token, password: None, client_id: None }
-    })
+    let kind = str_of(&sec, "type").unwrap_or_default().to_ascii_lowercase();
+    let tls = kind.starts_with("tls") || kind.starts_with("x509") || str_of(&sec, "caCert").is_some();
+    Some(TestCreds { host, port, tls })
 }
 
-/// Test SENTIENT's MQTT with the gateway's credentials, under a client id
-/// of its own (the gateway's session stays up). Over TLS, or when the
-/// credentials bind a client id, only that the address answers.
+/// A TLS check that accepts any certificate: it only shows that the
+/// address speaks TLS. Nothing is sent over it.
+#[derive(Debug)]
+struct AnyCert(std::sync::Arc<rustls::crypto::CryptoProvider>);
+
+impl rustls::client::danger::ServerCertVerifier for AnyCert {
+    fn verify_server_cert(&self, _: &rustls::pki_types::CertificateDer<'_>, _: &[rustls::pki_types::CertificateDer<'_>], _: &rustls::pki_types::ServerName<'_>, _: &[u8], _: rustls::pki_types::UnixTime) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+    fn verify_tls12_signature(&self, m: &[u8], c: &rustls::pki_types::CertificateDer<'_>, d: &rustls::DigitallySignedStruct) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(m, c, d, &self.0.signature_verification_algorithms)
+    }
+    fn verify_tls13_signature(&self, m: &[u8], c: &rustls::pki_types::CertificateDer<'_>, d: &rustls::DigitallySignedStruct) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(m, c, d, &self.0.signature_verification_algorithms)
+    }
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+fn tls_handshake(tcp: &mut std::net::TcpStream, host: &str) -> Result<(), String> {
+    let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
+        .dangerous()
+        .with_custom_certificate_verifier(std::sync::Arc::new(AnyCert(provider)))
+        .with_no_client_auth();
+    let name = rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|e| e.to_string())?;
+    let mut conn = rustls::ClientConnection::new(std::sync::Arc::new(config), name).map_err(|e| e.to_string())?;
+    while conn.is_handshaking() {
+        conn.complete_io(tcp).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Test that SENTIENT's MQTT answers where the gateway connects: a TCP
+/// connection, and a TLS handshake when it takes TLS. The gateway's
+/// credentials are not tried (its own session is never touched).
 pub fn test_with(c: &TestCreds) -> Result<String, String> {
-    use std::io::{Read as _, Write as _};
     use std::net::ToSocketAddrs as _;
     let addr = (c.host.as_str(), c.port).to_socket_addrs().map_err(|e| format!("{}: the name is not known here ({e}).", c.host))?.next().ok_or_else(|| format!("{} has no address.", c.host))?;
     let mut tcp = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(5)).map_err(|e| format!("{}:{} does not answer: {e}.", c.host, c.port))?;
     if c.tls {
-        return Ok(format!("{}:{} answers. It takes TLS, so the sign-in itself is not tried from here.", c.host, c.port));
+        let _ = tcp.set_read_timeout(Some(std::time::Duration::from_secs(8)));
+        let _ = tcp.set_write_timeout(Some(std::time::Duration::from_secs(8)));
+        tls_handshake(&mut tcp, &c.host).map_err(|e| format!("{}:{} answers, but its TLS handshake failed: {e}.", c.host, c.port))?;
+        return Ok(format!("{}:{} answers and completes a TLS handshake. {NOT_SIGNED_IN}", c.host, c.port));
     }
-    if c.client_id.is_some() {
-        return Ok(format!("{}:{} answers. Its credentials name the gateway's client id, so signing in with them would sign the gateway out: not tried.", c.host, c.port));
-    }
-    if c.username.is_none() {
-        return Ok(format!("{}:{} answers. The gateway has no credentials to sign in with.", c.host, c.port));
-    }
-    let mut id = [0u8; 4];
-    let _ = getrandom::getrandom(&mut id);
-    let client_id = format!("spm-test-{}", id.iter().map(|b| format!("{b:02x}")).collect::<String>());
-    let _ = tcp.set_read_timeout(Some(std::time::Duration::from_secs(8)));
-    tcp.write_all(&connect_packet(&client_id, c.username.as_deref(), c.password.as_deref())).map_err(|e| format!("{}:{}: {e}.", c.host, c.port))?;
-    let mut ack = [0u8; 4];
-    tcp.read_exact(&mut ack).map_err(|_| format!("{}:{} closed the connection without an answer: it refused the sign-in, or it is not SENTIENT's MQTT.", c.host, c.port))?;
-    connack_words(&ack)?;
-    let _ = tcp.write_all(&[0xE0, 0x00]);
-    Ok(format!("{}:{} accepted the gateway's credentials (tested as {client_id}; the gateway stayed connected).", c.host, c.port))
+    Ok(format!("{}:{} answers. {NOT_SIGNED_IN}", c.host, c.port))
 }
 
-/// Test the gateway found as `status` on this computer (as root for a
-/// native one).
+/// Test where the gateway found as `status` on this computer connects (as
+/// root for a native one: its settings folder is closed).
 pub fn test_connection(status: &Status) -> Result<String, String> {
     let creds = match status.kind() {
         "docker" => crate::distro::gateway_docker::test_creds(status),
@@ -1084,28 +1058,24 @@ mod tests {
     }
 
     #[test]
-    fn the_connect_packet_and_its_answer() {
-        let p = connect_packet("spm-test-1", Some("tok"), None);
-        assert_eq!(p[0], 0x10);
-        assert_eq!(p[1] as usize, p.len() - 2);
-        assert_eq!(&p[2..8], b"\x00\x04MQTT");
-        assert_eq!(p[8], 4);
-        assert_eq!(p[9], 0x82);
-        assert!(connack_words(&[0x20, 2, 0, 0]).is_ok());
-        assert!(connack_words(&[0x20, 2, 0, 4]).unwrap_err().contains("credentials"));
-        assert!(connack_words(&[0x30, 2, 0, 0]).is_err());
-        let long = connect_packet(&"x".repeat(200), None, None);
-        assert_eq!((long[1], long[2]), (0xD4, 0x01));
+    fn the_test_reads_no_credential() {
+        let c = creds_of(Some(FILE), &[]).unwrap();
+        assert_eq!(c, TestCreds { host: "sentient.example.local".into(), port: 1883, tls: false });
+        assert!(!format!("{c:?}").contains("Q1w2"));
+        let tls = creds_of(Some(r#"{"sentient":{"host":"h","port":8883,"security":{"type":"tlsAccessToken","accessToken":"x"}}}"#), &["port=8884".into()]).unwrap();
+        assert_eq!((tls.port, tls.tls), (8884, true));
+        assert!(creds_of(Some("{}"), &[]).is_none());
     }
 
     #[test]
-    fn test_credentials_never_print() {
-        let c = creds_of(Some(FILE), &[]).unwrap();
-        assert_eq!((c.host.as_str(), c.port, c.tls), ("sentient.example.local", 1883, false));
-        assert!(!format!("{c:?}").contains("Q1w2"));
-        let basic = creds_of(Some(r#"{"sentient":{"host":"h","security":{"type":"usernamePassword","username":"u","password":"p","clientId":"gw-1"}}}"#), &[]).unwrap();
-        assert_eq!(basic.client_id.as_deref(), Some("gw-1"));
-        assert!(creds_of(Some("{}"), &[]).is_none());
+    fn the_test_says_it_did_not_sign_in() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let m = test_with(&TestCreds { host: "127.0.0.1".into(), port, tls: false }).unwrap();
+        assert!(m.ends_with(NOT_SIGNED_IN), "{m}");
+        drop(l);
+        // Nothing listening now: says so.
+        assert!(test_with(&TestCreds { host: "127.0.0.1".into(), port, tls: false }).unwrap_err().contains("does not answer"));
     }
 
     #[test]
@@ -1119,6 +1089,17 @@ mod tests {
         after.ui.listen = "127.0.0.1:8642".into();
         assert_eq!(mismatches(&plan, &after), vec!["the page listens on 127.0.0.1:8642"]);
         assert_eq!(plan.names(), vec!["Web page", "Listen on", "Level before SENTIENT connects"]);
+    }
+
+    #[test]
+    fn what_restarts_where() {
+        let policy = ApplyPlan { restart_always: Some(true), ..ApplyPlan::default() };
+        assert!(!policy.restarts("windows-service") && policy.restarts("service") && policy.restarts("docker"));
+        assert_eq!(policy.restart_words("windows-service"), "Applied without a restart.");
+        assert!(policy.restart_words("docker").contains("created again once"));
+        let level = ApplyPlan { rust_log: Some("debug".into()), ..ApplyPlan::default() };
+        assert!(level.restarts("windows-service") && level.restart_words("service").contains("restarts once"));
+        assert!(!ApplyPlan::default().restarts("service"));
     }
 
     #[test]

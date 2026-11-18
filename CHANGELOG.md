@@ -40,8 +40,9 @@ refreshes that repository's Downloads table.
     Platform Manager's for a native service, the container created again
     with the same volumes and environment, or the Windows service's
     settings; then the settings are read back.
-  - Test connection signs in to SENTIENT's MQTT with the gateway's
-    credentials under a client id of its own, so the gateway stays online.
+  - Test connection checks that SENTIENT's MQTT answers where the gateway
+    connects (TCP, and a TLS handshake when it uses TLS). It does not try
+    the gateway's credentials yet, and says so.
 
 ### Changed
 - After quitting, the Platform Manager starts on Status, of the instance that was open last. Closing only the window (the Platform Manager keeps running in the tray) and opening it again still returns to the page it was on.
