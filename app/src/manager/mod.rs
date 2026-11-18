@@ -2443,6 +2443,7 @@ impl Manager {
                 },
                 Some(id) => self.remote_pages.get(id).map(|p| p.read(cx).drawn()).unwrap_or("other"),
                 None if self.page == Page::Status => if self.page_has_data(cx) { "data" } else { "skeleton" },
+                None if self.page == Page::Logs => if self.logs.as_ref().is_some_and(|p| p.read(cx).has_data(cx)) { "data" } else { "skeleton" },
                 None => "other",
             };
             crate::timing::mark(&format!("page-first-frame page={} instance={} drawn={drawn}", self.page.id(), self.open_remote.as_deref().unwrap_or("local")));

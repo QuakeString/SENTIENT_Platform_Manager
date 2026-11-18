@@ -13,13 +13,16 @@
 # bg_app::show the tray click does. The app's timing marks (SPM_DEBUG_TIMING)
 # say what each window's first frame drew (`page-first-frame … drawn=`).
 #
-#   tests/reopen/reopen.py <debug binary> <out dir> local [--page statistics]
+#   tests/reopen/reopen.py <debug binary> <out dir> local [--page statistics|logs]
 #   tests/reopen/reopen.py <debug binary> <out dir> remote \
 #       --host 127.0.0.1 --port 2242 --user ops --key <private key>
 #
 # local: this computer's Status (the installation record is copied into the
 # profile and only read). remote: the server's Status; a bare server shows
 # its "set up" state (drawn=state), one with the agent its data.
+# --page: the first window goes to that page before it is closed, and the
+# reopened one must show it with what it read: statistics (local or remote),
+# logs (local: the lines shown, not "No log lines" before the first read).
 # Asserts: the first window's first frame is the skeleton (a cold start),
 # the reopened window's first frame is not, on the same page and instance,
 # and that frame comes within --frame-ms of the reopen. Exit status 1 on a
@@ -31,7 +34,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("bin"); ap.add_argument("out"); ap.add_argument("where", choices=["local", "remote"])
 ap.add_argument("--host", default="127.0.0.1"); ap.add_argument("--port", type=int, default=2242)
 ap.add_argument("--user", default="ops"); ap.add_argument("--key", default="")
-ap.add_argument("--page", default="", help="go to this page (statistics, …) in the first window before it is closed")
+ap.add_argument("--page", default="", help="go to this page (statistics, logs) in the first window before it is closed")
 ap.add_argument("--settle", type=float, default=12., help="seconds the first window reads before it is closed")
 ap.add_argument("--frame-ms", type=float, default=50., help="the reopened window's first frame within this of the window opening")
 a = ap.parse_args()
