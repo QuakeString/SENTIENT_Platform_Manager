@@ -79,7 +79,9 @@ def main(args):
         bad.append("no `LAYOUT btn` lines: was SPM_DEBUG_LAYOUT set on a debug build?")
     for b in bad:
         print(b)
-    if not bad:
+    # Silent on one render that passes: run.sh's SKIP_DONE takes an empty
+    # .result as a pass.
+    if not bad and len(logs) > 1:
         print(f"buttons.py: {seen} buttons in {len(logs)} renders, one size ({sorted(heights)} px, label {sorted(fonts)} px)")
     return 1 if bad else 0
 
