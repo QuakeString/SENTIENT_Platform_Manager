@@ -1935,6 +1935,25 @@ pub fn split_container_stats(out: &str) -> (String, String) {
     }
 }
 
+/// One container's `docker logs --timestamps` (its last `tail` lines, or
+/// the last 24 hours with `tail` None), stdout and stderr together, read
+/// where Docker runs: on Windows inside SENTIENT's WSL distro (there is no
+/// `docker` on Windows itself; the Logs page read the host's and said
+/// "Could not read", rc6 build 3 VM), on Linux through Docker's shell.
+/// None: it could not be read (a stopped distro is left stopped).
+pub fn container_logs(container: &str, tail: Option<u32>) -> Option<String> {
+    run_output(&container_logs_cmd(container, tail)).map(|(_, out)| out)
+}
+
+/// [`container_logs`]' command.
+pub fn container_logs_cmd(container: &str, tail: Option<u32>) -> String {
+    let range = match tail {
+        Some(n) => format!("--tail {n}"),
+        None => "--since 24h".into(),
+    };
+    format!("docker logs --timestamps {range} {} 2>&1", shell_quote(container))
+}
+
 /// The last `tail` lines of the combined container logs.
 pub fn logs(cfg: &DeployConfig, tail: u32) -> String {
     run_output(&cfg.compose_cmd(&format!("logs --no-color --tail {tail} 2>&1")))
@@ -2409,6 +2428,14 @@ mod keepalive_tests {
 
 #[cfg(test)]
 mod tests {
+
+    /// A container's log, read where Docker runs: its lines with their
+    /// timestamps, stderr included, the last N or the last day.
+    #[test]
+    fn container_logs_read_through_dockers_shell() {
+        assert_eq!(super::container_logs_cmd("sentient", Some(500)), "docker logs --timestamps --tail 500 'sentient' 2>&1");
+        assert_eq!(super::container_logs_cmd("sentient-postgres", None), "docker logs --timestamps --since 24h 'sentient-postgres' 2>&1");
+    }
 
     /// Every command that may run in SENTIENT's WSL distro asks
     /// [`super::left_out`] (or goes through `shell_output`, which does)

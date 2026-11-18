@@ -131,7 +131,13 @@ pub fn read(record: &InstallationRecord, source: Source, tail: u32, today: bool)
             args.extend(["--since", "24h"]);
         }
         args.push(container);
-        run("docker", &args).unwrap_or_else(|| format!("Could not read the {} log.", source.label()))
+        // Windows: Docker runs in SENTIENT's WSL distro, not on Windows.
+        let read = if cfg!(windows) {
+            sentient_installer_core::distro::container_logs(container, (!today).then_some(tail))
+        } else {
+            run("docker", &args)
+        };
+        read.unwrap_or_else(|| format!("Could not read the {} log.", source.label()))
     };
     let journal = |unit: &str| {
         let mut args = vec!["-u", unit, "--no-pager", "-o", "short-iso"];
