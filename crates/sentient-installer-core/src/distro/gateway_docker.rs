@@ -168,19 +168,6 @@ pub(crate) fn device_flags(devices: &[SerialDevice]) -> String {
     format!("{devs}{groups}")
 }
 
-/// The container `name` started again on `image` with what it has: its
-/// volumes and host folders where they are mounted, and its connection
-/// environment (gateway_legacy::carried_env). A gateway the update from
-/// the older one started keeps that one's configuration volume this way.
-pub fn recreate_spec(c: &super::gateway_legacy::Legacy, image: &str) -> super::gateway_legacy::RunSpec {
-    super::gateway_legacy::RunSpec {
-        name: c.name.clone(),
-        image: image.to_string(),
-        mounts: c.mounts.iter().map(|m| (m.source.clone(), m.dest.clone())).collect(),
-        env: super::gateway_legacy::carried_env(&c.env),
-    }
-}
-
 const INSPECT_FORMAT: &str = "{{.Name}}\t{{.Config.Image}}\t{{json .Config.Entrypoint}}\t{{.State.Running}}\t{{index .Config.Labels \"com.docker.compose.project\"}}\t{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}\t{{range .Mounts}}{{if eq .Type \"volume\"}}{{.Name}},{{end}}{{end}}\t{{index .Config.Labels \"org.opencontainers.image.version\"}}\t{{.Image}}";
 
 /// `docker inspect --format INSPECT_FORMAT` lines.
@@ -399,31 +386,51 @@ pub fn update(sink: &ProgressFn, version: &str) -> Result<(), String> {
         }
         None => return Err("There is no gateway container to update.".into()),
     }
-    let Some(c) = docker(&["inspect", CONTAINER]).filter(|(ok, _)| *ok).and_then(|(_, o)| super::gateway_legacy::parse_inspect_json(&o)) else {
-        return Err("The gateway container could not be read.".into());
-    };
-    recreate(sink, version, &c)
-}
-
-/// Start `c` again on the gateway `version` (crate::gateway::IMAGE), with
-/// what it has (recreate_spec) and the serial adapters found now.
-fn recreate(sink: &ProgressFn, version: &str, c: &super::gateway_legacy::Legacy) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let _ = (sink, version, c);
+        let _ = sink;
         Err("On Windows the gateway is installed as a service; use the Windows installer.".into())
     }
     #[cfg(not(windows))]
     {
+        let current = inspect_spec(CONTAINER).ok_or("The gateway container could not be read.")?;
         let image = format!("{IMAGE}:{version}");
         sink(Progress::Step { name: format!("Pulling {image}") });
         super::run_stream(sink, &format!("docker pull {}", super::shell_quote(&image)))?;
-        sink(Progress::Step { name: format!("Starting Sentient Gateway {version}") });
-        let _ = super::run(sink, &format!("docker rm -f {} >/dev/null 2>&1 || true", super::shell_quote(&c.name)));
-        let line = super::gateway_legacy::run_line(&recreate_spec(c, &image), &serial_devices());
-        super::gateway_legacy::sh(&line).map_err(|e| format!("The gateway container did not start again: {e}"))?;
-        wait_running(sink, version)
+        let found: Vec<SerialDevice> = serial_devices();
+        let spec = update_spec(&current, &image, &image_env(&current.image), &found);
+        recreate_container(sink, &spec, None, &format!("Starting Sentient Gateway {version}"), &format!("on {image}"))?;
+        sink(Progress::Done { message: format!("Sentient Gateway {version} is running.") });
+        Ok(())
     }
+}
+
+/// The container `current` started again on `image` with what it has: its
+/// volumes and host folders where they are mounted, its network, restart
+/// policy and capabilities, and its own environment (the connection, the
+/// ST_GW_/TB_GW_ settings, RUST_LOG …) without what its old image set
+/// (PATH, the gateway's folders: the new image has its own). Its serial
+/// devices stay as chosen (Gateway › Advanced); a container with none is
+/// given the adapters found now (`found`), as an update always did.
+pub fn update_spec(current: &Spec, image: &str, old_image_env: &[String], found: &[SerialDevice]) -> Spec {
+    let image_owned = |kv: &str| {
+        let Some((k, _)) = kv.split_once('=') else { return true };
+        let dir = k.strip_prefix("TB_GW_").or_else(|| k.strip_prefix("ST_GW_")).is_some_and(|r| matches!(r, "CONFIG_DIR" | "DATA_DIR" | "LOGS_PATH" | "EXTENSIONS_DIR"));
+        k == "PATH" || dir || old_image_env.iter().any(|e| e == kv)
+    };
+    let mut spec = current.clone();
+    spec.image = image.to_string();
+    spec.env = current.env.iter().filter(|kv| !image_owned(kv)).cloned().collect();
+    if spec.devices.is_empty() {
+        spec.devices = found.iter().map(|d| (d.path.clone(), d.path.clone())).collect();
+        for d in found {
+            let g = d.gid.to_string();
+            if d.gid != 0 && !spec.group_add.contains(&g) {
+                spec.group_add.push(g);
+            }
+        }
+    }
+    spec
 }
 
 #[cfg(not(windows))]
@@ -813,18 +820,30 @@ pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gatewa
         let name = status.container.clone().ok_or("There is no gateway container.")?;
         let spec = inspect_spec(&name).ok_or("The gateway container could not be read.")?;
         let new = planned_spec(&spec, before, plan, &gid_of)?;
-        recreate(sink, &new)
+        let name = new.name.clone();
+        recreate_container(sink, &new, Some(format!("Stopping the container {name}")), &format!("Creating {name} again with the same volumes"), "with the new settings")
     }
 }
 
+/// The one way the gateway's container is started again (an update to a
+/// new image, Apply of its settings): `spec` holds everything it runs with
+/// (crate inspect_spec, update_spec, planned_spec). Its environment goes
+/// in a private env file (the token never on a command line); the old
+/// container is stopped and waits under another name until the new one
+/// stays up, and is started again, unchanged, when it does not (with the
+/// new one's last log lines in the job's log). `stop_step`/`start_step`:
+/// the job's step names; `what` ends the failure ("on <image>").
 #[cfg(not(windows))]
-fn recreate(sink: &ProgressFn, spec: &Spec) -> Result<(), String> {
+pub(crate) fn recreate_container(sink: &ProgressFn, spec: &Spec, stop_step: Option<String>, start_step: &str, what: &str) -> Result<(), String> {
     let name = spec.name.clone();
     let old = format!("{name}-spm-previous");
     let env_file = write_env_file(&spec.env)?;
     let file = env_file.display().to_string();
     let result = (|| {
-        sink(Progress::Step { name: format!("Stopping the container {name}") });
+        match &stop_step {
+            Some(step) => sink(Progress::Step { name: step.clone() }),
+            None => sink(Progress::Log { line: format!("Stopping the container {name}") }),
+        }
         let _ = docker(&["rm", "-f", &old]);
         if !matches!(docker(&["stop", "-t", "25", &name]), Some((true, _))) {
             return Err(format!("docker stop {name} failed."));
@@ -833,7 +852,7 @@ fn recreate(sink: &ProgressFn, spec: &Spec) -> Result<(), String> {
             let _ = docker(&["start", &name]);
             return Err(format!("docker rename {name} failed; the gateway was started again as it was."));
         }
-        sink(Progress::Step { name: format!("Creating {name} again with the same volumes") });
+        sink(Progress::Step { name: start_step.to_string() });
         let args = run_args(spec, &file);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let started = matches!(docker(&refs), Some((true, _)));
@@ -856,7 +875,7 @@ fn recreate(sink: &ProgressFn, spec: &Spec) -> Result<(), String> {
             let _ = docker(&["rm", "-f", &name]);
             let _ = docker(&["rename", &old, &name]);
             let _ = docker(&["start", &name]);
-            return Err(format!("The gateway did not start with the new settings (its last lines are in the log); the previous container {name} runs again, unchanged."));
+            return Err(format!("The gateway did not start {what} (its last lines are in the log); the previous container {name} runs again, unchanged."));
         }
         let _ = docker(&["rm", &old]);
         Ok(())
@@ -1014,25 +1033,44 @@ mod tests {
 
     #[test]
     fn an_update_recreates_with_what_the_container_has() {
-        use super::super::gateway_legacy::{Legacy, Mount};
         // One the update from the older gateway started: its configuration
         // volume and environment are kept, not replaced by st-gw-config.
-        let c = Legacy {
+        let current = Spec {
             name: CONTAINER.into(),
             image: "quakestring/sentient-gateway-rs:4.16.2".into(),
-            running: true,
             env: vec!["accessToken=EXAMPLETOKEN".into(), "TB_GW_CLIENT_ID=gw-example".into(), "host=10.0.0.5".into(), "ST_GW_CONFIG_DIR=/sentient_gateway/config".into(), "PATH=/usr/bin".into()],
-            mounts: vec![
-                Mount { kind: "volume".into(), source: "gw-config".into(), dest: "/sentient_gateway/config".into() },
-                Mount { kind: "volume".into(), source: "st-gw-data".into(), dest: "/sentient_gateway/data".into() },
-            ],
-            compose_dir: None,
+            restart: "unless-stopped".into(),
+            network: "host".into(),
+            mounts: vec![("gw-config".into(), "/sentient_gateway/config".into(), false, false), ("st-gw-data".into(), "/sentient_gateway/data".into(), false, false)],
+            ..Spec::default()
         };
-        let spec = recreate_spec(&c, "quakestring/sentient-gateway-rs:4.16.3");
-        assert_eq!(spec.mounts[0], ("gw-config".to_string(), "/sentient_gateway/config".to_string()));
+        let found = [SerialDevice { path: "/dev/ttyACM0".into(), gid: 986 }];
+        let spec = update_spec(&current, "quakestring/sentient-gateway-rs:4.16.3", &[], &found);
+        assert_eq!(spec.mounts[0], ("gw-config".to_string(), "/sentient_gateway/config".to_string(), false, false));
         assert_eq!(spec.env, vec!["accessToken=EXAMPLETOKEN", "TB_GW_CLIENT_ID=gw-example", "host=10.0.0.5"]);
-        let line = super::super::gateway_legacy::run_line(&spec, &[SerialDevice { path: "/dev/ttyACM0".into(), gid: 986 }]);
-        assert!(line.contains(" --device '/dev/ttyACM0:/dev/ttyACM0' --group-add 986"), "{line}");
+        let args = run_args(&spec, "/run/user/1000/x.env").join(" ");
+        assert!(args.contains(" --device /dev/ttyACM0:/dev/ttyACM0 --group-add 986"), "{args}");
+        assert!(args.ends_with("'quakestring/sentient-gateway-rs:4.16.3'") || args.ends_with("quakestring/sentient-gateway-rs:4.16.3"), "{args}");
+        assert!(!args.contains("EXAMPLETOKEN"), "{args}");
+    }
+
+    /// An update keeps what Apply set (Gateway › Advanced): the chosen
+    /// devices, the restart policy, RUST_LOG and the page's variables; the
+    /// old image's own variables give way to the new image's.
+    #[test]
+    fn an_update_keeps_what_apply_set() {
+        let current = parse_spec(INSPECT).unwrap();
+        let mut current = Spec { restart: "no".into(), ..current };
+        current.env.push("RUST_LOG=debug".into());
+        current.env.push("ST_GW_UI=on".into());
+        let image_env = vec!["PATH=/usr/bin".to_string(), "ST_GW_CONFIG_DIR=/sentient_gateway/config".to_string(), "RUST_LOG=info".to_string()];
+        let found = [SerialDevice { path: "/dev/ttyACM0".into(), gid: 986 }];
+        let spec = update_spec(&current, "quakestring/sentient-gateway-rs:4.16.3", &image_env, &found);
+        assert_eq!(spec.env, vec!["host=127.0.0.1", "port=1883", "accessToken=Q1w2E3r4T5y6U7i8O9p0", "RUST_LOG=debug", "ST_GW_UI=on"]);
+        assert_eq!((spec.restart.as_str(), spec.network.as_str()), ("no", "host"));
+        // Its own device, not every adapter found now.
+        assert_eq!(spec.devices, vec![("/dev/ttyUSB0".to_string(), "/dev/ttyUSB0".to_string())]);
+        assert_eq!(spec.mounts.len(), 2);
     }
 
     const INSPECT: &str = r#"[{"Name":"/sentient-gateway","Config":{"Image":"quakestring/sentient-gateway-rs:4.16.2","Env":["host=127.0.0.1","port=1883","accessToken=Q1w2E3r4T5y6U7i8O9p0","PATH=/usr/bin","ST_GW_CONFIG_DIR=/sentient_gateway/config"]},
