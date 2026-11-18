@@ -1367,7 +1367,10 @@ pub fn put_text(inst: &Instance, path: &str, text: &str) -> Result<(), String> {
 pub fn gateway(inst: &Instance) -> Result<HashMap<String, String>, String> {
     #[cfg(debug_assertions)]
     if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_GATEWAY") {
-        return Ok(t.to_string_lossy().split([' ', '+']).filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect());
+        // A fixture's name (crate::manager::gateway::debug_fixture) or a line.
+        let t = t.to_string_lossy().into_owned();
+        let t = crate::manager::gateway::debug_fixture(&t).map(str::to_string).unwrap_or(t);
+        return Ok(t.split([' ', '+']).filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect());
     }
     let out = spm_job(inst, "gateway-status")?;
     let line = out.lines().rev().find(|l| l.starts_with("installed=")).ok_or("The server's Platform Manager gave no gateway state.")?;

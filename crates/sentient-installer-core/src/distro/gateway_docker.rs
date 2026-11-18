@@ -67,6 +67,98 @@ impl Container {
                 .and_then(|e| e.first().cloned())
                 .is_some_and(|p| crate::gateway::is_gateway_program(&p))
     }
+
+    /// The older Python gateway (its image, and not the Rust gateway's
+    /// program as the entrypoint: a local build tagged sentient-gateway is
+    /// the Rust one). Never ours: only reported.
+    pub fn is_legacy(&self) -> bool {
+        crate::gateway::is_legacy_image(&self.image)
+            && !serde_json::from_str::<Vec<String>>(&self.entrypoint)
+                .ok()
+                .and_then(|e| e.first().cloned())
+                .is_some_and(|p| crate::gateway::is_gateway_program(&p))
+    }
+}
+
+/// A serial adapter on this computer, for the gateway's container: its
+/// stable path (`/dev/serial/by-id/…` when it has one) and the group that
+/// may open it (the device node's gid: `dialout`, or `uucp` on Arch).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SerialDevice {
+    pub path: String,
+    pub gid: u32,
+}
+
+/// The serial adapters: every `/dev/serial/by-id` link (stable across
+/// reboots and re-plugging, where ttyUSB0/ttyUSB1 can swap), then the
+/// `ttyUSB*`/`ttyACM*` nodes that no link names. `by_id` and `dev` are the
+/// two folders (tests use their own).
+#[cfg(unix)]
+pub fn serial_devices_in(by_id: &std::path::Path, dev: &std::path::Path) -> Vec<SerialDevice> {
+    use std::os::unix::fs::MetadataExt as _;
+    let mut found = Vec::new();
+    let mut named = std::collections::HashSet::new();
+    let mut links: Vec<_> = std::fs::read_dir(by_id).map(|rd| rd.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+    links.sort();
+    for link in links {
+        // The device the link points at: its gid (metadata follows links).
+        let (Ok(target), Ok(meta)) = (std::fs::canonicalize(&link), std::fs::metadata(&link)) else { continue };
+        named.insert(target);
+        found.push(SerialDevice { path: link.to_string_lossy().into_owned(), gid: meta.gid() });
+    }
+    let mut nodes: Vec<_> = std::fs::read_dir(dev)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| {
+                    let n = e.file_name().to_string_lossy().into_owned();
+                    n.strip_prefix("ttyUSB").or_else(|| n.strip_prefix("ttyACM")).is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
+                })
+                .map(|e| e.path())
+                .collect()
+        })
+        .unwrap_or_default();
+    nodes.sort();
+    for node in nodes {
+        let real = std::fs::canonicalize(&node).unwrap_or_else(|_| node.clone());
+        if named.contains(&real) {
+            continue;
+        }
+        if let Ok(meta) = std::fs::metadata(&node) {
+            found.push(SerialDevice { path: node.to_string_lossy().into_owned(), gid: meta.gid() });
+        }
+    }
+    found
+}
+
+#[cfg(not(windows))]
+fn serial_devices() -> Vec<SerialDevice> {
+    serial_devices_in(std::path::Path::new("/dev/serial/by-id"), std::path::Path::new("/dev"))
+}
+
+/// The `docker run` line for the Platform Manager's gateway container:
+/// the host network, the named volumes, the image's env contract, and each
+/// serial adapter at the same path inside (a by-id path stays the one a
+/// Modbus RTU connector names) with its group added, so the image's
+/// non-root user may open it.
+pub fn run_command(image: &str, host: &str, port: u16, token: &str, devices: &[SerialDevice]) -> String {
+    let q = super::shell_quote;
+    let volumes: String = VOLUMES.iter().map(|(v, p)| format!(" -v {v}:{p}")).collect();
+    let mut devs = String::new();
+    let mut gids: Vec<u32> = Vec::new();
+    for d in devices {
+        devs.push_str(&format!(" --device {}", q(&format!("{0}:{0}", d.path))));
+        // root's group (0) is no group to add.
+        if d.gid != 0 && !gids.contains(&d.gid) {
+            gids.push(d.gid);
+        }
+    }
+    let groups: String = gids.iter().map(|g| format!(" --group-add {g}")).collect();
+    format!(
+        "docker run -d --name {CONTAINER} --restart unless-stopped --network host{volumes}{devs}{groups} -e host={} -e port={port} -e accessToken={} {}",
+        q(host),
+        q(token),
+        q(image)
+    )
 }
 
 const INSPECT_FORMAT: &str = "{{.Name}}\t{{.Config.Image}}\t{{json .Config.Entrypoint}}\t{{.State.Running}}\t{{index .Config.Labels \"com.docker.compose.project\"}}\t{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}\t{{range .Mounts}}{{if eq .Type \"volume\"}}{{.Name}},{{end}}{{end}}\t{{index .Config.Labels \"org.opencontainers.image.version\"}}\t{{.Image}}";
@@ -136,9 +228,21 @@ pub fn container() -> Option<String> {
     find().map(|(n, _)| n)
 }
 
+/// The first container of the older Python gateway (Container::is_legacy).
+pub fn legacy_in(all: &[Container]) -> Option<String> {
+    all.iter().find(|c| c.is_legacy()).map(|c| c.name.clone())
+}
+
+/// A container of the older Python gateway on this computer: its name.
+pub fn legacy() -> Option<String> {
+    legacy_in(&containers())
+}
+
 pub fn status() -> Status {
-    let Some((c, managed)) = find_container() else {
-        return Status::default();
+    let all = containers();
+    let legacy = legacy_in(&all);
+    let Some((c, managed)) = pick(&all) else {
+        return Status { legacy, ..Status::default() };
     };
     let name = c.name.clone();
     let env: Vec<String> = docker(&["inspect", &name, "--format", "{{range .Config.Env}}{{println .}}{{end}}"])
@@ -176,6 +280,7 @@ pub fn status() -> Status {
         compose_project: c.project.clone(),
         compose_dir: c.working_dir.clone(),
         volumes: c.volumes.clone(),
+        legacy,
         ..Status::default()
     }
 }
@@ -264,12 +369,11 @@ pub fn install(sink: &ProgressFn, version: &str, settings: &Settings) -> Result<
 /// The new tag with the same settings and volumes (the container the
 /// Platform Manager started; another one is updated through its compose file).
 pub fn update(sink: &ProgressFn, version: &str) -> Result<(), String> {
-    match find() {
+    match find_container() {
         Some((_, true)) => {}
-        Some((name, false)) => {
-            return Err(format!(
-                "The gateway container {name} was started from a compose file: change its image tag to {IMAGE}:{version} there and run docker compose up -d."
-            ))
+        Some((c, false)) => {
+            let s = Status { installed: true, container: Some(c.name.clone()), image: Some(c.image.clone()), compose_dir: c.working_dir.clone(), ..Status::default() };
+            return Err(crate::gateway::update_blocker(&s, version, false, cfg!(windows)).unwrap_or_default());
         }
         None => return Err("There is no gateway container to update.".into()),
     }
@@ -294,16 +398,11 @@ fn start(sink: &ProgressFn, version: &str, host: &str, port: u16, token: &str) -
         super::run_stream(sink, &format!("docker pull {}", super::shell_quote(&image)))?;
         sink(Progress::Step { name: format!("Starting Sentient Gateway {version}") });
         let _ = super::run(sink, &format!("docker rm -f {CONTAINER} >/dev/null 2>&1 || true"));
-        let volumes: String = VOLUMES.iter().map(|(v, p)| format!(" -v {v}:{p}")).collect();
-        super::run(
-            sink,
-            &format!(
-                "docker run -d --name {CONTAINER} --restart unless-stopped --network host{volumes} -e host={} -e port={port} -e accessToken={} {}",
-                super::shell_quote(host),
-                super::shell_quote(token),
-                super::shell_quote(&image)
-            ),
-        )?;
+        let devices = serial_devices();
+        if !devices.is_empty() {
+            sink(Progress::Log { line: format!("Serial adapters for the gateway: {}", devices.iter().map(|d| d.path.as_str()).collect::<Vec<_>>().join(", ")) });
+        }
+        super::run(sink, &run_command(&image, host, port, token, &devices))?;
         for _ in 0..30 {
             if status().running {
                 sink(Progress::Done { message: format!("Sentient Gateway {version} is running.") });
@@ -425,6 +524,14 @@ mod tests {
         let local = parse_inspect("/plant-gw\tsha256:fdd9ed12884e\t[\"/usr/local/bin/sentient-gateway\"]\ttrue\t\t\t\t4.16.2\n");
         assert_eq!(names(pick(&local)), Some(("plant-gw".into(), false)));
         assert_eq!(image_version(&local[0]).as_deref(), Some("4.16.2"));
+        // The older Python gateway under our name: not ours, only reported.
+        let py = parse_inspect("/sentient-gateway\tquakestring/sentient-gateway:3.7.10\t[\"/bin/sh\",\"-c\"]\ttrue\n");
+        assert_eq!(names(pick(&py)), None);
+        assert_eq!(legacy_in(&py).as_deref(), Some("sentient-gateway"));
+        // A local build of the Rust gateway tagged like the old image is ours.
+        let rs = parse_inspect("/sentient-gateway\tsentient-gateway:dev\t[\"/usr/local/bin/sentient-gateway\"]\ttrue\n");
+        assert_eq!(names(pick(&rs)), Some(("sentient-gateway".into(), true)));
+        assert_eq!(legacy_in(&rs), None);
         // Named like a gateway, but not ours.
         let other = parse_inspect("/sentient-gateway\tnginx:1.27\t[\"/docker-entrypoint.sh\"]\ttrue\n/journal-gatewayd\tdebian:12\tnull\tfalse\n");
         assert_eq!(names(pick(&other)), None);
@@ -433,5 +540,45 @@ mod tests {
         assert_eq!(names(pick(&both)), Some(("sentient-gateway".into(), true)));
         assert_eq!(image_version(&both[0]).as_deref(), Some("4.16.0"));
         assert_eq!(image_version(&all[2]), None);
+    }
+
+    #[test]
+    fn serial_adapters_prefer_their_stable_names() {
+        use std::os::unix::fs::MetadataExt as _;
+        let root = std::env::temp_dir().join(format!("spm-gw-serial-test-{}", std::process::id()));
+        let (dev, by_id) = (root.join("dev"), root.join("dev/serial/by-id"));
+        std::fs::create_dir_all(&by_id).unwrap();
+        for n in ["ttyUSB0", "ttyUSB1", "ttyACM0", "ttyS0", "ttyUSBx"] {
+            std::fs::write(dev.join(n), b"").unwrap();
+        }
+        std::os::unix::fs::symlink(dev.join("ttyUSB1"), by_id.join("usb-Example_RS485_A1-if00-port0")).unwrap();
+        let gid = std::fs::metadata(dev.join("ttyUSB0")).unwrap().gid();
+        let found = serial_devices_in(&by_id, &dev);
+        let paths: Vec<String> = found.iter().map(|d| d.path.replace(&*root.to_string_lossy(), "")).collect();
+        // ttyUSB1 only by its by-id name; ttyS0 (a built-in port) and odd names left out.
+        assert_eq!(paths, vec!["/dev/serial/by-id/usb-Example_RS485_A1-if00-port0", "/dev/ttyACM0", "/dev/ttyUSB0"]);
+        assert!(found.iter().all(|d| d.gid == gid));
+        std::fs::remove_dir_all(&root).unwrap();
+        // No folder at all: no devices.
+        assert!(serial_devices_in(std::path::Path::new("/nonexistent/by-id"), std::path::Path::new("/nonexistent")).is_empty());
+    }
+
+    #[test]
+    fn the_run_line_passes_serial_adapters_with_their_group() {
+        let none = run_command("quakestring/sentient-gateway-rs:4.16.2", "127.0.0.1", 1883, "tok", &[]);
+        assert!(!none.contains("--device") && !none.contains("--group-add"));
+        assert!(none.contains("--network host -v st-gw-config:/sentient_gateway/config"));
+        let devs = [
+            SerialDevice { path: "/dev/serial/by-id/usb-Example_RS485_A1-if00-port0".into(), gid: 986 },
+            SerialDevice { path: "/dev/ttyACM0".into(), gid: 986 },
+            SerialDevice { path: "/dev/ttyUSB3".into(), gid: 0 },
+        ];
+        let line = run_command("quakestring/sentient-gateway-rs:4.16.2", "127.0.0.1", 1883, "tok", &devs);
+        assert!(line.contains(" --device '/dev/serial/by-id/usb-Example_RS485_A1-if00-port0:/dev/serial/by-id/usb-Example_RS485_A1-if00-port0'"), "{line}");
+        assert!(line.contains(" --device '/dev/ttyACM0:/dev/ttyACM0'") && line.contains(" --device '/dev/ttyUSB3:/dev/ttyUSB3'"));
+        // One group, once; root's group never.
+        assert_eq!(line.matches("--group-add").count(), 1);
+        assert!(line.contains(" --group-add 986 ") && !line.contains("--group-add 0"));
+        assert!(line.ends_with("'quakestring/sentient-gateway-rs:4.16.2'"));
     }
 }

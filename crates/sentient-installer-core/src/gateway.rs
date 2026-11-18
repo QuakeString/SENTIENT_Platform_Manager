@@ -24,7 +24,7 @@ pub const CONTAINER: &str = "sentient-gateway";
 
 /// What the detection looks at, in order (for support and the gateway
 /// page's (i)).
-pub const CHECKS: &str = "Docker containers, running or stopped, of the image quakestring/sentient-gateway-rs (or the older quakestring/sentient-gateway) or whose program is sentient-gateway; the systemd unit sentient-gateway.service, or any unit that runs a program sentient-gateway that answers as the gateway; a running sentient-gateway; /usr/bin, /usr/local/bin and /opt/sentient-gateway; on Windows the service SentientGateway.";
+pub const CHECKS: &str = "Docker containers, running or stopped, of the image quakestring/sentient-gateway-rs or whose program is sentient-gateway; the systemd unit sentient-gateway.service, or any unit that runs a program sentient-gateway that answers as the gateway; a running sentient-gateway; /usr/bin, /usr/local/bin and /opt/sentient-gateway; on Windows the service SentientGateway.";
 
 #[cfg(windows)]
 const SERVICE: &str = "SentientGateway";
@@ -60,6 +60,16 @@ pub struct Status {
     /// from (None: installed by hand).
     pub program: Option<String>,
     pub package: Option<String>,
+    /// A native gateway whose settings folder this process may not read
+    /// (`/etc/sentient-gateway` is 0700, the gateway's own account): host,
+    /// port and page come from an administrator's read
+    /// (app crate::manager::gateway), never by loosening the folder.
+    pub config_unreadable: bool,
+    /// A container of the older Python gateway (quakestring/sentient-gateway)
+    /// on this computer: its name. The Platform Manager supports only the
+    /// Rust gateway, so it never takes it for the Rust one (an update would
+    /// recreate it on other volumes); the page says it is there.
+    pub legacy: Option<String>,
 }
 
 impl Status {
@@ -122,14 +132,58 @@ pub fn page_url(gateway_file: Option<&str>, env: &dyn Fn(&str) -> Option<String>
     Some(format!("{}://{reach}:{port}/", if loopback { "http" } else { "https" }))
 }
 
-/// A gateway image of ours: the Rust gateway, or the Python one it
-/// replaces (quakestring/sentient-gateway). Not other gateways
-/// (other vendors' gateway images).
-pub fn is_gateway_image(image: &str) -> bool {
+/// An image's own name: `registry:5000/org/name:tag@sha` → `name`.
+fn image_name(image: &str) -> &str {
     let image = image.split('@').next().unwrap_or(image);
     let repo = image.rsplit_once(':').map(|(r, t)| if t.contains('/') { image } else { r }).unwrap_or(image);
-    let name = repo.rsplit('/').next().unwrap_or(repo);
-    name == "sentient-gateway-rs" || name == "sentient-gateway"
+    repo.rsplit('/').next().unwrap_or(repo)
+}
+
+/// A gateway image of ours: the Rust gateway (quakestring/sentient-gateway-rs).
+/// Not the older Python gateway (is_legacy_image), not other vendors'
+/// gateway images.
+pub fn is_gateway_image(image: &str) -> bool {
+    image_name(image) == "sentient-gateway-rs"
+}
+
+/// The older Python gateway's image (quakestring/sentient-gateway): no
+/// longer supported, only reported.
+pub fn is_legacy_image(image: &str) -> bool {
+    image_name(image) == "sentient-gateway"
+}
+
+/// Why the gateway found as `s` cannot be updated to `version` from here
+/// (None: it can). `has_installer`: the release has the Windows installer;
+/// `windows`: the computer it runs on is Windows. The reasons say what is
+/// true and what to do instead; the update itself (update()) refuses the
+/// same cases.
+pub fn update_blocker(s: &Status, version: &str, has_installer: bool, windows: bool) -> Option<String> {
+    if !s.installed {
+        return Some("There is no Sentient Gateway to update.".into());
+    }
+    match s.kind() {
+        "docker" if windows => Some("On Windows the Platform Manager runs the gateway as a Windows service, not in Docker: update this container the way it was started.".into()),
+        "docker" if !s.managed => Some(match &s.compose_dir {
+            Some(dir) => format!("This container comes from a compose file in {dir}: set its image to {IMAGE}:{version} in that file and run docker compose up -d."),
+            None => format!(
+                "This container ({}) was started outside the Platform Manager: start it again with the image {IMAGE}:{version} the way it was started.",
+                s.container.as_deref().unwrap_or("?")
+            ),
+        }),
+        "docker" => None,
+        "service" => Some(match &s.package {
+            Some(p) => format!(
+                "This gateway came from the package {p}: update it with the system's package manager, using the package in the gateway-{version} release. The Platform Manager does not update a gateway installed without Docker yet."
+            ),
+            None => format!(
+                "This gateway runs as the service {} without a package: run the new version's sentient-gateway --install as administrator (it stops the service, replaces the program and starts it again). The Platform Manager does not update a gateway installed without Docker yet.",
+                s.service.as_deref().unwrap_or("?")
+            ),
+        }),
+        "process" => Some("This gateway runs as a plain program that no service started: replace that program by hand. The Platform Manager updates a gateway in Docker or a Windows service only.".into()),
+        _ if !has_installer => Some(format!("Gateway {version} has no Windows installer.")),
+        _ => None,
+    }
 }
 
 /// A path whose file name is the gateway's program (`sentient-gateway`,
@@ -179,12 +233,7 @@ pub fn newest(channel: releases::Channel) -> Result<Option<Offer>, String> {
     let mut candidates = releases::on_channel(&all, channel, is_gateway);
     // on_channel sorts by the tag; gateway-4.10 vs 4.9 needs the version.
     candidates.sort_by(|a, b| releases::compare(&version_of(b), &version_of(a)));
-    Ok(candidates.first().map(|r| {
-        let v = version_of(r);
-        let installer = r.assets.iter().find(|a| a.name == format!("SentientGatewaySetup-{v}.exe")).cloned();
-        let checksum = r.assets.iter().find(|a| a.name == format!("SentientGatewaySetup-{v}.exe.sha256")).cloned();
-        Offer { version: v, date: r.date(), notes: r.summary(), page: r.html_url.clone(), installer, checksum }
-    }))
+    Ok(candidates.first().map(|r| offer_of(r)))
 }
 
 pub fn status() -> Status {
@@ -192,13 +241,17 @@ pub fn status() -> Status {
     {
         // The service first; else a gateway container in Docker Desktop.
         let s = windows::status();
-        if s.installed { s } else { crate::distro::gateway_docker::status() }
+        if s.installed {
+            Status { legacy: crate::distro::gateway_docker::legacy(), ..s }
+        } else {
+            crate::distro::gateway_docker::status()
+        }
     }
     #[cfg(not(windows))]
     {
         // A container first; else a service or a plain process.
         let s = crate::distro::gateway_docker::status();
-        if s.installed { s } else { crate::distro::gateway_native::status() }
+        if s.installed { s } else { Status { legacy: s.legacy, ..crate::distro::gateway_native::status() } }
     }
 }
 
@@ -226,8 +279,117 @@ pub fn update(sink: &ProgressFn, offer: &Offer) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
+        let s = status();
+        if s.container.is_none() {
+            // A service or a program: said, never attempted.
+            let _ = sink;
+            return Err(update_blocker(&s, &offer.version, offer.installer.is_some(), false).unwrap_or_else(|| "There is no gateway container to update.".into()));
+        }
         crate::distro::gateway_docker::update(sink, &offer.version)
     }
+}
+
+/// The gateway release `version` (any channel): what a server is asked to
+/// update to when this computer showed that version.
+pub fn release(version: &str) -> Result<Offer, String> {
+    let all = releases::fetch(releases::SENTIENT_REPO)?;
+    let r = all.iter().find(|r| is_gateway(r) && version_of(r) == version).ok_or_else(|| format!("There is no gateway release {version}."))?;
+    Ok(offer_of(r))
+}
+
+fn offer_of(r: &Release) -> Offer {
+    let v = version_of(r);
+    let installer = r.assets.iter().find(|a| a.name == format!("SentientGatewaySetup-{v}.exe")).cloned();
+    let checksum = r.assets.iter().find(|a| a.name == format!("SentientGatewaySetup-{v}.exe.sha256")).cloned();
+    Offer { version: v, date: r.date(), notes: r.summary(), page: r.html_url.clone(), installer, checksum }
+}
+
+/// Where the Windows service writes its log files, as the gateway resolves
+/// it (gw/crates/gateway-core/src/logging.rs `LogFiles::directory`,
+/// paths.rs): `ST_GW_LOGS_PATH` (or `TB_GW_LOGS_PATH`), else `logs` in the
+/// data folder (`ST_GW_DATA_DIR`/`TB_GW_DATA_DIR`, else
+/// `%ProgramData%\Sentient Gateway\data`). `env` is the service's own
+/// environment, `NAME=value` each.
+pub fn windows_log_dir(env: &[String], program_data: Option<&str>) -> String {
+    let var = |suffix: &str| {
+        ["ST_GW_", "TB_GW_"].iter().find_map(|p| {
+            let k = format!("{p}{suffix}=");
+            env.iter().find_map(|l| l.strip_prefix(&k)).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string)
+        })
+    };
+    if let Some(dir) = var("LOGS_PATH") {
+        return dir;
+    }
+    let data = var("DATA_DIR").unwrap_or_else(|| format!("{}\\Sentient Gateway\\data", program_data.unwrap_or(r"C:\ProgramData").trim_end_matches(['\\', '/'])));
+    format!("{}\\logs", data.trim_end_matches(['\\', '/']))
+}
+
+/// The Windows gateway service's log folder (None: no service here, or not
+/// Windows).
+pub fn log_dir() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        windows::log_dir()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// A log line that starts a record: the gateway's lines begin with an
+/// RFC 3339 time (`2026-11-18T07:12:13.123456Z  INFO …`); others continue
+/// the line before (a wrapped message, a backtrace).
+fn starts_record(l: &str) -> bool {
+    let b = l.as_bytes();
+    b.len() >= 19 && b[..4].iter().all(u8::is_ascii_digit) && b[4] == b'-' && b[10] == b'T'
+}
+
+/// The gateway's log files (service.log, connector.log, …: one per logger)
+/// as one log: their records in time order, the last `tail`, or those since
+/// `since` (`YYYY-MM-DDTHH:MM:SS`, UTC) when given.
+pub fn merge_logs(files: &[String], tail: usize, since: Option<&str>) -> String {
+    let mut records: Vec<(String, usize, String)> = Vec::new();
+    for text in files {
+        let mut cur: Option<(String, String)> = None;
+        for l in text.lines() {
+            if starts_record(l) {
+                if let Some((k, r)) = cur.take() {
+                    records.push((k, records.len(), r));
+                }
+                cur = Some((l[..19].to_string(), l.to_string()));
+            } else if let Some((_, r)) = cur.as_mut() {
+                r.push('\n');
+                r.push_str(l);
+            } else if !l.trim().is_empty() {
+                // A file's first lines without a time: kept, first.
+                records.push((String::new(), records.len(), l.to_string()));
+            }
+        }
+        if let Some((k, r)) = cur.take() {
+            records.push((k, records.len(), r));
+        }
+    }
+    records.sort();
+    if let Some(since) = since {
+        records.retain(|(k, _, _)| k.as_str() >= since);
+    }
+    let start = records.len().saturating_sub(tail);
+    records[start..].iter().map(|(_, _, r)| r.as_str()).collect::<Vec<_>>().join("\n")
+}
+
+/// The newest records of the Windows gateway's log files in `dir`.
+pub fn read_log_dir(dir: &std::path::Path, tail: usize, since: Option<&str>) -> Option<String> {
+    let mut texts = Vec::new();
+    for e in std::fs::read_dir(dir).ok()?.flatten() {
+        // The current files only (`service.log`), not the rotated `.log.1`…
+        if e.file_name().to_string_lossy().ends_with(".log") {
+            if let Ok(t) = std::fs::read_to_string(e.path()) {
+                texts.push(t);
+            }
+        }
+    }
+    (!texts.is_empty()).then(|| merge_logs(&texts, tail, since))
 }
 
 /// `start`, `stop` or `restart`.
@@ -346,6 +508,14 @@ mod windows {
         let env = service_environment();
         let page_url = page_url(file.as_deref(), &|k| env.iter().find_map(|l| l.strip_prefix(&format!("{k}=")).map(str::to_string)), false);
         Status { installed, version, running, host, port, page_url, container: None, managed: true, ..Status::default() }
+    }
+
+    pub fn log_dir() -> Option<PathBuf> {
+        if !status().installed {
+            return None;
+        }
+        let pd = std::env::var("ProgramData").ok();
+        Some(PathBuf::from(windows_log_dir(&service_environment(), pd.as_deref())))
     }
 
     /// The service's Environment (REG_MULTI_SZ), one `NAME=value` per entry.
@@ -576,7 +746,10 @@ mod tests {
     #[test]
     fn gateway_images() {
         assert!(is_gateway_image("quakestring/sentient-gateway-rs:4.13.0"));
-        assert!(is_gateway_image("quakestring/sentient-gateway:3.7.10"));
+        // The older Python gateway: not managed, only reported.
+        assert!(!is_gateway_image("quakestring/sentient-gateway:3.7.10"));
+        assert!(is_legacy_image("quakestring/sentient-gateway:3.7.10"));
+        assert!(!is_legacy_image("quakestring/sentient-gateway-rs:4.16.2"));
         assert!(is_gateway_image("sentient-gateway-rs:dev"));
         assert!(is_gateway_image("registry.local:5000/quakestring/sentient-gateway-rs:4.16.2"));
         assert!(!is_gateway_image("example/other-gateway"));
@@ -591,5 +764,59 @@ mod tests {
         let file = r#"{"sentient":{"host":"127.0.0.1","port":1883,"security":{"type":"accessToken"}}}"#;
         assert_eq!(host_of(file), (Some("127.0.0.1".into()), Some(1883)));
         assert_eq!(host_of(r#"{"sentient":{"host":""}}"#), (None, None));
+    }
+
+    #[test]
+    fn update_reasons_say_what_is_true() {
+        let native = Status { installed: true, service: Some("sentient-gateway.service".into()), program: Some("/usr/bin/sentient-gateway".into()), package: Some("sentient-gateway".into()), ..Status::default() };
+        let why = update_blocker(&native, "4.16.3", false, false).unwrap();
+        assert!(why.contains("package manager") && why.contains("gateway-4.16.3") && !why.contains("compose"), "{why}");
+        let by_hand = Status { package: None, service: Some("example-gw.service".into()), ..native.clone() };
+        let why = update_blocker(&by_hand, "4.16.3", false, false).unwrap();
+        assert!(why.contains("example-gw.service") && why.contains("--install") && !why.contains("compose"), "{why}");
+        let process = Status { installed: true, process: Some("/opt/gw/sentient-gateway".into()), ..Status::default() };
+        assert!(update_blocker(&process, "4.16.3", false, false).unwrap().contains("plain program"));
+        // Docker: ours updates; a compose one names its folder; another is told plainly.
+        let ours = Status { installed: true, container: Some(CONTAINER.into()), managed: true, ..Status::default() };
+        assert_eq!(update_blocker(&ours, "4.16.3", false, false), None);
+        assert!(update_blocker(&ours, "4.16.3", false, true).unwrap().contains("Windows service"));
+        let compose = Status { managed: false, container: Some("plant-gw".into()), compose_dir: Some("/srv/example".into()), ..ours.clone() };
+        assert!(update_blocker(&compose, "4.16.3", false, false).unwrap().contains("compose file in /srv/example"));
+        let other = Status { compose_dir: None, ..compose };
+        let why = update_blocker(&other, "4.16.3", false, false).unwrap();
+        assert!(why.contains("outside the Platform Manager") && !why.contains("compose"), "{why}");
+        // The Windows service: needs the release's installer.
+        let win = Status { installed: true, managed: true, ..Status::default() };
+        assert_eq!(win.kind(), "windows-service");
+        assert_eq!(update_blocker(&win, "4.16.3", true, true), None);
+        assert!(update_blocker(&win, "4.16.3", false, true).unwrap().contains("no Windows installer"));
+        assert!(update_blocker(&Status::default(), "4.16.3", true, false).is_some());
+    }
+
+    #[test]
+    fn the_windows_log_folder_follows_the_gateway() {
+        assert_eq!(windows_log_dir(&[], Some(r"C:\ProgramData")), r"C:\ProgramData\Sentient Gateway\data\logs");
+        assert_eq!(windows_log_dir(&[], None), r"C:\ProgramData\Sentient Gateway\data\logs");
+        assert_eq!(windows_log_dir(&["ST_GW_DATA_DIR=D:\\gw\\data\\".into()], Some(r"C:\ProgramData")), r"D:\gw\data\logs");
+        assert_eq!(windows_log_dir(&["TB_GW_LOGS_PATH=E:\\logs".into(), "ST_GW_DATA_DIR=D:\\x".into()], None), r"E:\logs");
+        // An empty value counts as unset.
+        assert_eq!(windows_log_dir(&["ST_GW_LOGS_PATH=".into()], Some(r"C:\PD")), r"C:\PD\Sentient Gateway\data\logs");
+    }
+
+    #[test]
+    fn log_files_merge_in_time_order() {
+        let service = "2026-11-18T07:00:01.000001Z  INFO gateway: started\n2026-11-18T07:00:05.000000Z  WARN gateway: slow\n  continued line\n".to_string();
+        let connector = "2026-11-18T07:00:03.000000Z  INFO connector_modbus: polling\n".to_string();
+        let all = merge_logs(&[service.clone(), connector.clone()], 10, None);
+        assert_eq!(all, "2026-11-18T07:00:01.000001Z  INFO gateway: started\n2026-11-18T07:00:03.000000Z  INFO connector_modbus: polling\n2026-11-18T07:00:05.000000Z  WARN gateway: slow\n  continued line");
+        // The last record keeps its continuation.
+        assert_eq!(merge_logs(&[service.clone(), connector.clone()], 1, None), "2026-11-18T07:00:05.000000Z  WARN gateway: slow\n  continued line");
+        assert!(merge_logs(&[service, connector], 10, Some("2026-11-18T07:00:02")).starts_with("2026-11-18T07:00:03"));
+        let dir = std::env::temp_dir().join(format!("spm-gw-logs-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("service.log"), "2026-11-18T07:00:01.000000Z  INFO a\n").unwrap();
+        std::fs::write(dir.join("service.log.1"), "2026-11-17T07:00:01.000000Z  INFO old\n").unwrap();
+        assert_eq!(read_log_dir(&dir, 10, None).as_deref(), Some("2026-11-18T07:00:01.000000Z  INFO a"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

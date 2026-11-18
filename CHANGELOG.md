@@ -16,6 +16,28 @@ refreshes that repository's Downloads table.
 ## [Unreleased]
 
 ### Fixed
+- Gateway, Linux without Docker: the Update button says why it is off (a
+  package-installed gateway updates with the system's package manager; one
+  installed by hand with the new version's `--install`), instead of "comes
+  from a compose file". The update job refuses the same cases.
+- Gateway, Linux without Docker: the web page shows its real state (on at
+  127.0.0.1:8642 by default, or what the settings and the service's
+  environment say), not always "Off".
+- Gateway, Linux without Docker: a gateway whose settings folder is closed
+  to this account (`/etc/sentient-gateway`, 0700) no longer looks "Not
+  commissioned". The page says the settings are readable by an
+  administrator only and offers "Read its settings", which reads them as
+  administrator (host, port and page only, never the token).
+- Gateway on Windows: its logs show on the Logs page, from the service's
+  log files (`ProgramData\Sentient Gateway\data\logs`).
+- Gateway in Docker: the container the Platform Manager starts gets the
+  serial adapters it finds (`/dev/serial/by-id/*`, else `ttyUSB*`/`ttyACM*`)
+  with their group, so Modbus RTU works. An update passes them again.
+- Gateway on a server: "Update to <version>" shows only when a newer
+  gateway exists, names the version, and installs exactly that one.
+- Gateway: a container of the older Python gateway is no longer taken for
+  the Rust gateway (an update would have replaced it and lost its
+  configuration). The page names it in one line and leaves it as it is.
 - Windows "In the system": other computers reach SENTIENT. Setup opens its
   ports in Windows Firewall (rule group SENTIENT: web and MQTT over TCP,
   CoAP over UDP). Repair, a SENTIENT update and the Platform Manager's

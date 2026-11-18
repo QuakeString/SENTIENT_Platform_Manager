@@ -105,6 +105,16 @@ done
 [ -n "$SERVER_FIXTURES" ] && for g in ${SERVER_JOBS-SPM_DEBUG_SERVER_DIALOG=shutdown SPM_DEBUG_SERVER_DIALOG=job:restart+SPM_DEBUG_SERVER_RESTART=waiting}; do
   for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local statistics $w $s $t SPM_DEBUG_STATS=$STATS_FIXTURE+SPM_DEBUG_SERVER_INFO=vm+$g"); done; done; done
 done
+# The Gateway page on canned gateways (SPM_DEBUG_GATEWAY, fixtures in
+# crate::manager::gateway::debug_fixture), with a newer release offered:
+# Docker, a compose container, a native package service, one whose
+# settings are closed to this account, one by hand, the Windows service,
+# and the older Python gateway beside none and beside ours.
+GATEWAY_FIXTURES=${GATEWAY_FIXTURES-"docker compose native native-unreadable native-hand windows legacy docker-legacy"}
+for g in $GATEWAY_FIXTURES; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local gateway $w $s $t SPM_DEBUG_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done
+if [ -n "${INSTANCE:-}" ]; then
+  for g in ${REMOTE_GATEWAY_FIXTURES-"native native-unreadable docker-legacy"}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote gateway $w $s $t SPM_DEBUG_REMOTE_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done
+fi
 # Setup's window (its first step): the buttons' gaps only.
 [ "${SETUP:-1}" = 1 ] && for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("setup setup $w $s $t"); done; done; done
 if [ -n "${LOADING_PROFILE:-}" ]; then

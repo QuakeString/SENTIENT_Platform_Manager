@@ -10,7 +10,7 @@ pub(crate) mod backup;
 pub(crate) mod startup;
 pub(crate) mod files;
 pub(crate) mod folder_chooser;
-mod gateway;
+pub(crate) mod gateway;
 mod instances;
 pub(crate) mod logs;
 pub(crate) mod migration;

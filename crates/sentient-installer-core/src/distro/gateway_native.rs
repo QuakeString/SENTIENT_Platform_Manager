@@ -180,28 +180,82 @@ fn owner(path: &str) -> Option<String> {
     (name == PACKAGE).then_some(name)
 }
 
-fn host_port() -> (Option<String>, Option<u16>) {
-    FILES.iter().find_map(|f| std::fs::read_to_string(f).ok()).map(|t| crate::gateway::host_of(&t)).unwrap_or((None, None))
+/// The gateway file, read as this process: (its text, whether a settings
+/// folder or file was there but closed to this account). The package keeps
+/// `/etc/sentient-gateway` 0700 for its own account, so an unprivileged
+/// Platform Manager gets the second.
+fn read_file() -> (Option<String>, bool) {
+    let mut denied = false;
+    for f in FILES {
+        match std::fs::read_to_string(f) {
+            Ok(t) => return (Some(t), false),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => denied = true,
+            Err(_) => {}
+        }
+    }
+    // A closed folder hides even whether the file is there.
+    for d in DATA_DIRS.iter().take(1) {
+        if let Err(e) = std::fs::read_dir(d) {
+            denied |= e.kind() == std::io::ErrorKind::PermissionDenied;
+        }
+    }
+    (None, denied)
+}
+
+/// `systemctl show -p Environment --value`: `NAME=value NAME2=value2`.
+pub fn parse_environment(out: &str) -> Vec<String> {
+    out.split_whitespace().filter(|kv| kv.contains('=')).map(|kv| kv.trim_matches('"').to_string()).collect()
+}
+
+fn unit_environment(unit: &str) -> Vec<String> {
+    out("systemctl", &["show", "-p", "Environment", "--value", unit]).map(|o| parse_environment(&o)).unwrap_or_default()
+}
+
+/// Something accepts connections on the page's loopback address.
+fn listening(url: &str) -> bool {
+    use std::net::ToSocketAddrs as _;
+    let Some(hostport) = url.split("://").nth(1).map(|r| r.trim_end_matches('/')) else { return false };
+    let Some(addr) = hostport.to_socket_addrs().ok().and_then(|mut a| a.next()) else { return false };
+    addr.ip().is_loopback() && std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(300)).is_ok()
+}
+
+/// Host, port and the local page of a native gateway, from its file and
+/// its service's environment (env wins, as in the gateway). A file closed
+/// to this account: the page from the environment and the defaults, kept
+/// only when the gateway runs and something listens there (the real
+/// state; an administrator's read gives the rest).
+pub fn settings(file: Option<&str>, unreadable: bool, env: &[String], running: bool, listens: &dyn Fn(&str) -> bool) -> (Option<String>, Option<u16>, Option<String>) {
+    let (host, port) = file.map(crate::gateway::host_of).unwrap_or((None, None));
+    let get = |k: &str| env.iter().find_map(|l| l.strip_prefix(&format!("{k}=")).map(str::to_string));
+    let page = crate::gateway::page_url(file, &get, false);
+    let page = if unreadable && file.is_none() { page.filter(|u| running && listens(u)) } else { page };
+    (host, port, page)
+}
+
+fn read_settings(env: &[String], running: bool) -> (Option<String>, Option<u16>, Option<String>, bool) {
+    let (file, unreadable) = read_file();
+    let (h, p, page) = settings(file.as_deref(), unreadable, env, running, &listening);
+    (h, p, page, unreadable && file.is_none())
 }
 
 pub fn status() -> Status {
     if let Some(f) = found_unit() {
         let running = out("systemctl", &["is-active", &f.unit]).is_some_and(|s| s.trim() == "active");
-        let (host, port) = host_port();
+        let (host, port, page_url, config_unreadable) = read_settings(&unit_environment(&f.unit), running);
         let version = f.version.or_else(|| (f.unit == UNIT).then(package_version).flatten());
         let package = owner(&f.program);
-        return Status { installed: true, version, running, host, port, service: Some(f.unit), program: Some(f.program), package, ..Status::default() };
+        return Status { installed: true, version, running, host, port, page_url, config_unreadable, service: Some(f.unit), program: Some(f.program), package, ..Status::default() };
     }
     if let Some((program, version)) = process() {
-        let (host, port) = host_port();
+        let (host, port, page_url, config_unreadable) = read_settings(&[], true);
         let package = owner(&program);
-        return Status { installed: true, version: Some(version), running: true, host, port, process: Some(program.clone()), program: Some(program), package, ..Status::default() };
+        return Status { installed: true, version: Some(version), running: true, host, port, page_url, config_unreadable, process: Some(program.clone()), program: Some(program), package, ..Status::default() };
     }
     // The program installed, neither a service nor running.
     if let Some((program, version)) = installed_program() {
-        let (host, port) = host_port();
+        let (host, port, page_url, config_unreadable) = read_settings(&[], false);
         let package = owner(&program);
-        return Status { installed: true, version: Some(version), running: false, host, port, process: Some(program.clone()), program: Some(program), package, ..Status::default() };
+        return Status { installed: true, version: Some(version), running: false, host, port, page_url, config_unreadable, process: Some(program.clone()), program: Some(program), package, ..Status::default() };
     }
     Status::default()
 }
@@ -415,5 +469,24 @@ sshd.service                                 disabled        disabled\n";
         let pkg = Status { package: Some(PACKAGE.into()), service: Some(UNIT.into()), program: Some("/usr/bin/sentient-gateway".into()), ..s };
         let p = removal_script(&pkg, true, "x").unwrap();
         assert!(p.contains("pacman -R --noconfirm 'sentient-gateway'") && !p.contains("rm -f '/usr/bin/sentient-gateway'"));
+    }
+
+    #[test]
+    fn the_page_and_host_of_a_native_gateway() {
+        let never = |_: &str| false;
+        let always = |_: &str| true;
+        // Read: the file's settings; the page is on by default (B2).
+        let file = r#"{"sentient":{"host":"10.0.0.5","port":1883}}"#;
+        assert_eq!(settings(Some(file), false, &[], true, &never), (Some("10.0.0.5".into()), Some(1883), Some("http://127.0.0.1:8642/".into())));
+        let off = r#"{"sentient":{"host":"10.0.0.5","port":1883},"localUi":{"enabled":false}}"#;
+        assert_eq!(settings(Some(off), false, &[], true, &always).2, None);
+        // The service's environment wins over the file.
+        assert_eq!(settings(Some(off), false, &["ST_GW_UI=on".into()], true, &never).2.as_deref(), Some("http://127.0.0.1:8642/"));
+        // Closed to this account (B3): no host; the page only when it answers.
+        assert_eq!(settings(None, true, &[], true, &always), (None, None, Some("http://127.0.0.1:8642/".into())));
+        assert_eq!(settings(None, true, &[], true, &never).2, None);
+        assert_eq!(settings(None, true, &[], false, &always).2, None);
+        assert_eq!(parse_environment("ST_GW_UI=off RUST_LOG=info\n"), vec!["ST_GW_UI=off".to_string(), "RUST_LOG=info".to_string()]);
+        assert!(parse_environment("\n").is_empty());
     }
 }

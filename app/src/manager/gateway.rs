@@ -157,6 +157,28 @@ impl GatewayPage {
         });
     }
 
+    /// "Read its settings": the gateway's settings folder is closed to this
+    /// account, so an administrator reads them (one password prompt; the
+    /// root helper then serves the page's later reads for a while).
+    fn read_as_admin(&mut self, cx: &mut Context<Self>) {
+        self.action = Some("read");
+        self.job.update(cx, |job, cx| {
+            job.start(
+                move |sink| {
+                    let s = admin_read()?;
+                    sink(sentient_installer_core::progress::Progress::Done {
+                        message: match (&s.host, s.port) {
+                            (Some(h), Some(p)) => format!("Read as administrator: it sends to {h}:{p}."),
+                            _ => "Read as administrator: it is not commissioned yet.".to_string(),
+                        },
+                    });
+                    Ok(())
+                },
+                cx,
+            )
+        });
+    }
+
     fn remove(&mut self, keep: bool, image: bool, cx: &mut Context<Self>) {
         let Some(status) = self.status.clone() else { return };
         self.action = Some("remove");
@@ -403,14 +425,19 @@ impl Render for GatewayPage {
             .filter(|o| status.installed && status.version.as_deref().is_some_and(|v| sentient_installer_core::releases::is_newer(&o.version, v, false)));
 
         let recorded = self.record.as_ref().is_some_and(|r| r.is(&status));
+        // Closed to this account (a native gateway's 0700 folder) and not
+        // read as administrator yet.
+        let unreadable = status.config_unreadable;
         // Someone else's gateway: a compose container, or a unit by hand.
         let outside = !status.managed && !recorded && status.kind() != "windows-service";
         let controllable = status.kind() != "process";
         let outcome = match (self.action, job.state()) {
-            (Some("adopt" | "remove"), JobState::Done(m)) => Some((Tone::Good, m.clone())),
+            (Some("adopt" | "remove" | "read"), JobState::Done(m)) => Some((Tone::Good, m.clone())),
             (Some(_), JobState::Failed(m)) => Some((Tone::Bad, m.clone())),
             _ => None,
         };
+        // The older Python gateway: not supported, never managed; one line.
+        let legacy = status.legacy.clone().map(|n| div().text_sm().text_color(theme.muted_foreground).child(legacy_line(&n, "this computer")));
         let body = if status.installed {
             let (pill, tone) = if status.running { ("Gateway is running", Tone::Good) } else { ("Gateway is stopped", Tone::Bad) };
             ui::panel(&theme)
@@ -426,16 +453,14 @@ impl Render for GatewayPage {
                             r.child(crate::ui::button("gw-page").outline().label("Open local page").on_click(move |_, _, cx| ui::open_url(&url, cx)))
                         }),
                 )
+                .children(legacy)
                 .child(ui::fact(&theme, "Version", status.version.clone().unwrap_or_else(|| "unknown".into())))
-                .child(ui::fact(
-                    &theme,
-                    "Sends to",
-                    match (&status.host, status.port) {
-                        (Some(h), Some(p)) => format!("{h}:{p}"),
-                        (Some(h), None) => h.clone(),
-                        _ => "Not commissioned (set the platform on its local page)".into(),
-                    },
-                ))
+                .child(match (&status.host, status.port) {
+                    (Some(h), Some(p)) => ui::fact(&theme, "Sends to", format!("{h}:{p}")),
+                    (Some(h), None) => ui::fact(&theme, "Sends to", h.clone()),
+                    _ if unreadable => ui::fact_help(&theme, "Sends to", "Readable by an administrator only", UNREADABLE_HELP),
+                    _ => ui::fact(&theme, "Sends to", "Not commissioned (set the platform on its local page)"),
+                })
                 .child(ui::fact(&theme, "Runs as", runs_as(status.kind(), &RemoveTarget::of(&status, None).name, status.managed, recorded)))
                 .when_some(status.compose_dir.clone(), |p, dir| {
                     p.child(ui::fact(&theme, "Compose", match &status.compose_project {
@@ -446,7 +471,8 @@ impl Render for GatewayPage {
                 .when(!status.volumes.is_empty(), |p| p.child(ui::fact(&theme, "Volumes", status.volumes.join(", "))))
                 .child(match status.page_url.clone() {
                     Some(url) => ui::fact(&theme, "Web page", url),
-                    None => ui::fact_help(&theme, "Web page", "Off", "The gateway's own web page is off. In a container it is turned on with ST_GW_UI=on."),
+                    None if unreadable => ui::fact_help(&theme, "Web page", "Not known", "Nothing answers on its usual address (127.0.0.1:8642). Its settings may name another one: they are readable by an administrator only."),
+                    None => ui::fact_help(&theme, "Web page", "Off", page_off_help(status.kind())),
                 })
                 .children({
                     let this = cx.entity().downgrade();
@@ -467,6 +493,15 @@ impl Render for GatewayPage {
                             .justify_end()
                             .items_center()
                             .child(crate::ui::probed(crate::ui::button("gw-remove").danger().label("Remove the Gateway").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.open_remove(cx)))))
+                            .when(unreadable, |r| {
+                                r.child(crate::ui::probed(
+                                    h_flex()
+                                        .gap_1()
+                                        .items_center()
+                                        .child(crate::ui::button("gw-read").outline().label("Read its settings").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.read_as_admin(cx))))
+                                        .child(ui::info("gw-read-help".into(), UNREADABLE_HELP.into())),
+                                ))
+                            })
                             .when(outside, |r| {
                                 r.child(crate::ui::probed(
                                     h_flex().gap_1().items_center().child(crate::ui::button("gw-adopt").outline().label("Manage it here").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.adopt(cx)))).child(ui::info(
@@ -493,12 +528,8 @@ impl Render for GatewayPage {
                                     .gap_3()
                                     .items_center()
                                     .child({
-                                        let blocked = !status.managed || (status.container.is_none() && o.installer.is_none());
-                                        let why = if !status.managed {
-                                            format!("This container comes from a compose file: set its image to quakestring/sentient-gateway-rs:{} in that file and run docker compose up -d.", o.version)
-                                        } else {
-                                            "No installer for this system in this release.".to_string()
-                                        };
+                                        let why = gateway::update_blocker(&status, &o.version, o.installer.is_some(), cfg!(windows)).unwrap_or_default();
+                                        let blocked = !why.is_empty();
                                         let button = crate::ui::button("gw-update").primary().label(format!("Update to {}", o.version)).disabled(busy || blocked).on_click(cx.listener(move |p, _, _, cx| p.update_to(o2.clone(), cx)));
                                         // A disabled button carries its reason as a tooltip.
                                         if blocked {
@@ -542,6 +573,7 @@ impl Render for GatewayPage {
             let o = offer.clone();
             ui::panel(&theme)
                 .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Gateway, 28.)).child(div().font_weight(FontWeight::MEDIUM).child("No gateway on this computer")))
+                .children(legacy)
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
                     "The gateway reads devices next to this computer. In SENTIENT, add a gateway device and copy its access token (Manage credentials).",
                 ))
@@ -612,21 +644,127 @@ pub(crate) fn remove_panel(theme: &gpui_kit::component::Theme, id: &'static str,
         .child(ui::button_row(vec![button]))
 }
 
+/// Why "Sends to" is not shown for a native gateway an unprivileged
+/// Platform Manager cannot read.
+const UNREADABLE_HELP: &str = "The gateway keeps its settings in /etc/sentient-gateway, open to its own account only (the access token is in them). The Platform Manager does not loosen that: Read its settings reads them as administrator, once with your password, and keeps only the platform host, the port and the web page's address, never the token or a password.";
+
+/// The one line for an older Python gateway's container (Status::legacy).
+pub(crate) fn legacy_line(name: &str, place: &str) -> String {
+    format!("The older Sentient Gateway (the Python one) is on {place}, in the container {name}. The Platform Manager leaves it as it is.")
+}
+
+/// The web page's "Off" explained for how the gateway runs.
+pub(crate) fn page_off_help(kind: &str) -> &'static str {
+    match kind {
+        "docker" => "The gateway's own web page is off. In a container it is turned on with ST_GW_UI=on (the container is created again).",
+        "windows-service" => "The gateway's own web page is off in its settings (localUi in st_gateway.json, or ST_GW_UI in the service's environment). The gateway's installer turns it on again.",
+        _ => "The gateway's own web page is off in its settings (localUi.enabled in /etc/sentient-gateway/st_gateway.json, or ST_GW_UI in the service's environment).",
+    }
+}
+
+/// The last administrator's read of a native gateway's settings: the
+/// gateway it was (its service or program), when (for a re-read), and the
+/// non-secret values (host, port, page).
+struct AdminRead {
+    of: String,
+    at: std::time::Instant,
+    host: Option<String>,
+    port: Option<u16>,
+    page_url: Option<String>,
+}
+
+static ADMIN_READ: std::sync::Mutex<Option<AdminRead>> = std::sync::Mutex::new(None);
+/// A root helper that is alive anyway re-reads at most this often.
+const ADMIN_REREAD: Duration = Duration::from_secs(60);
+
+fn native_key(s: &Status) -> String {
+    s.service.clone().or_else(|| s.program.clone()).unwrap_or_default()
+}
+
+/// Run `gateway-status` as root (crate::rootjob: the job's own line, which
+/// carries no secret: no token, no password) and keep its values for the
+/// page. Asks for the password only inside a user action
+/// (sentient_installer_core::elevation::may_prompt).
+fn admin_read() -> Result<Status, String> {
+    let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let l2 = lines.clone();
+    let sink: sentient_installer_core::progress::ProgressFn = std::sync::Arc::new(move |p| {
+        if let sentient_installer_core::progress::Progress::Log { line } = p {
+            if let Ok(mut v) = l2.lock() {
+                v.push(line);
+            }
+        }
+    });
+    crate::rootjob::run(&["gateway-status".to_string()], &sink)?;
+    let line = lines.lock().ok().and_then(|v| v.iter().rev().find(|l| l.starts_with("installed=")).cloned()).ok_or("The administrator's read gave no gateway state.")?;
+    let s = status_of_line(&line);
+    if let Ok(mut g) = ADMIN_READ.lock() {
+        *g = Some(AdminRead { of: native_key(&s), at: std::time::Instant::now(), host: s.host.clone(), port: s.port, page_url: s.page_url.clone() });
+    }
+    Ok(s)
+}
+
+/// `s` with an administrator's read of the same gateway applied: its
+/// settings are known again.
+fn with_admin_read(mut s: Status) -> Status {
+    if !s.config_unreadable {
+        return s;
+    }
+    let due = ADMIN_READ.lock().ok().is_none_or(|g| g.as_ref().is_none_or(|r| r.of != native_key(&s) || r.at.elapsed() > ADMIN_REREAD));
+    // Only while the root helper lives (no prompt from a page's poll).
+    if due && sentient_installer_core::elevation::alive() {
+        let _ = admin_read();
+    }
+    if let Ok(g) = ADMIN_READ.lock() {
+        if let Some(r) = g.as_ref().filter(|r| r.of == native_key(&s)) {
+            s.host = r.host.clone();
+            s.port = r.port;
+            s.page_url = r.page_url.clone();
+            s.config_unreadable = false;
+        }
+    }
+    s
+}
+
 /// The gateway on this computer (gateway::status). Screens: SPM_DEBUG_GATEWAY
-/// holds a canned `gateway-status` line (`none` for no gateway).
+/// holds a canned `gateway-status` line (`none` for no gateway), or the
+/// name of one of debug_fixture's.
 pub(crate) fn local_status() -> Status {
     sentient_installer_core::distro::gateway_docker::set_cache_dir(crate::updates::prefs_dir());
     #[cfg(debug_assertions)]
     if let Ok(t) = std::env::var("SPM_DEBUG_GATEWAY") {
-        let kv: std::collections::HashMap<String, String> = t.split([' ', '+']).filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.replace("%20", " "))).collect();
-        return status_of(&|k| kv.get(k).cloned().unwrap_or_default());
+        let t = debug_fixture(&t).map(str::to_string).unwrap_or(t);
+        return status_of_line(&t);
     }
-    gateway::status()
+    with_admin_read(gateway::status())
+}
+
+/// Screens: canned gateways by name, one per way it runs (fictional names).
+#[cfg(debug_assertions)]
+pub(crate) fn debug_fixture(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "docker" => "installed=true version=4.16.1 running=true host=127.0.0.1 port=1883 page=off container=sentient-gateway managed=true kind=docker image=quakestring/sentient-gateway-rs:4.16.1 volumes=st-gw-config,st-gw-data,st-gw-logs",
+        "compose" => "installed=true version=4.16.1 running=true host=10.0.0.5 port=1883 page=off container=plant-gw managed=false kind=docker image=quakestring/sentient-gateway-rs:4.16.1 compose=/srv/example-site/gateway project=gateway volumes=gw-config,gw-data",
+        "legacy" => "installed=false legacy=example-old-gw",
+        "docker-legacy" => "installed=true version=4.16.1 running=true host=127.0.0.1 port=1883 page=off container=sentient-gateway managed=true kind=docker image=quakestring/sentient-gateway-rs:4.16.1 volumes=st-gw-config,st-gw-data,st-gw-logs legacy=example-old-gw",
+        "native" => "installed=true version=4.16.1 running=true host=127.0.0.1 port=1883 page=http://127.0.0.1:8642/ kind=service service=sentient-gateway.service program=/usr/bin/sentient-gateway package=sentient-gateway",
+        "native-unreadable" => "installed=true version=4.16.1 running=true page=off kind=service service=sentient-gateway.service program=/usr/bin/sentient-gateway package=sentient-gateway unreadable=true",
+        "native-hand" => "installed=true version=4.16.1 running=false host=192.168.10.20 port=1883 page=off kind=service service=example-gw.service program=/usr/local/lib/sentient-gateway/sentient-gateway",
+        "windows" => "installed=true version=4.16.1 running=true host=127.0.0.1 port=1883 page=http://127.0.0.1:8642/ managed=true kind=windows-service",
+        _ => return None,
+    })
+}
+
+/// A Status from a `gateway-status` line (headless: `key=value` with
+/// spaces as %20).
+pub(crate) fn status_of_line(line: &str) -> Status {
+    let kv: std::collections::HashMap<String, String> =
+        line.split([' ', '+']).filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.replace("%20", " ").replace("%25", "%"))).collect();
+    status_of(&|k| kv.get(k).cloned().unwrap_or_default())
 }
 
 /// A Status from a `gateway-status` line's values.
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
-fn status_of(get: &dyn Fn(&str) -> String) -> Status {
+pub(crate) fn status_of(get: &dyn Fn(&str) -> String) -> Status {
     let some = |k: &str| Some(get(k)).filter(|v| !v.is_empty());
     let kind = get("kind");
     Status {
@@ -646,5 +784,41 @@ fn status_of(get: &dyn Fn(&str) -> String) -> Status {
         volumes: get("volumes").split(',').filter(|v| !v.is_empty()).map(str::to_string).collect(),
         program: some("program"),
         package: some("package"),
+        config_unreadable: get("unreadable") == "true",
+        legacy: some("legacy"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
+    use super::{ADMIN_READ, AdminRead, Status, page_off_help, status_of_line, with_admin_read};
+
+    #[test]
+    fn a_status_line_round_trips() {
+        let s = status_of_line("installed=true version=4.16.1 running=true page=off kind=service service=sentient-gateway.service program=/usr/bin/sentient-gateway package=sentient-gateway unreadable=true");
+        assert_eq!((s.kind(), s.config_unreadable, s.page_url.clone(), s.host.clone()), ("service", true, None, None));
+        let d = status_of_line("installed=true kind=docker container=sentient-gateway managed=true image=quakestring/sentient-gateway-rs:4.16.1 legacy=example-old-gw compose=/srv/example%20site");
+        assert!(d.managed);
+        assert_eq!(d.legacy.as_deref(), Some("example-old-gw"));
+        assert_eq!(d.compose_dir.as_deref(), Some("/srv/example site"));
+    }
+
+    #[test]
+    fn the_page_off_hint_fits_how_it_runs() {
+        assert!(page_off_help("docker").contains("ST_GW_UI=on"));
+        assert!(!page_off_help("service").contains("container"));
+        assert!(page_off_help("service").contains("/etc/sentient-gateway"));
+    }
+
+    #[test]
+    fn an_admin_read_fills_only_its_own_gateway() {
+        let unreadable = Status { installed: true, service: Some("sentient-gateway.service".into()), config_unreadable: true, ..Status::default() };
+        *ADMIN_READ.lock().unwrap() = Some(AdminRead { of: "other.service".into(), at: std::time::Instant::now(), host: Some("10.0.0.9".into()), port: Some(1883), page_url: None });
+        assert!(with_admin_read(unreadable.clone()).host.is_none());
+        *ADMIN_READ.lock().unwrap() = Some(AdminRead { of: "sentient-gateway.service".into(), at: std::time::Instant::now(), host: Some("10.0.0.9".into()), port: Some(1883), page_url: Some("http://127.0.0.1:8642/".into()) });
+        let s = with_admin_read(unreadable);
+        assert_eq!((s.host.as_deref(), s.port, s.config_unreadable), (Some("10.0.0.9"), Some(1883), false));
+        *ADMIN_READ.lock().unwrap() = None;
     }
 }

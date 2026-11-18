@@ -57,7 +57,7 @@ use crate::installation::InstallationRecord;
 const USAGE: &str = "usage: --job install <plan.json> | diagnose-fix <fix json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | movedata-json | movedata-check <store> <folder> | movedata-estimate <store=folder,…> | move-data <store=folder,…> | move-data-remove-old <folder> | move-data-cancel | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
 use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-if-one [--pg-admin-password-stdin] | add-existing [<n> | --native] [--pg-admin-password-stdin] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> [--stop-shared-pg] | service <start|stop|restart> <name> | uninstall [--delete-data] | uninstall --parts <sentient,postgres,pg-database,clickhouse,ch-database,gateway,shortcuts,wsl-distro,wsl,manager> [--keep-files] [--keep-pg-data] [--keep-ch-data] [--wsl-distro] [--wsl] | uninstall-facts-json | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | --request-b64 <base64> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live [system|services|db] | stats-sample | stats-history <seconds> | stats-install | server-info-json | server-boot-json | server-power <reboot|poweroff> | docker-restart | system-updates | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | agent-info | agents | serve | pg-others-json | \
-gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart> | gateway-remove [--delete-data] [--remove-image] | gateway-adopt
+gateway-status | gateway-install <host> <port> | gateway-update [<version>] | gateway-control <start|stop|restart> | gateway-remove [--delete-data] [--remove-image] | gateway-adopt
 
 Administrator password (native Linux): a job typed in a terminal may ask for it, once for the
 whole job. Started without a terminal (a script, a timer, a service), a job never asks: a step
@@ -295,7 +295,7 @@ fn run_job(args: &[String]) -> i32 {
                 let esc = |v: Option<String>| v.unwrap_or_default().replace('%', "%25").replace(' ', "%20");
                 let recorded = crate::gateway_record::load().is_some_and(|r| r.is(&s));
                 println!(
-                    "installed={} version={} running={} host={} port={} page={} container={} managed={} kind={} service={} process={} image={} compose={} project={} volumes={} package={} recorded={recorded}",
+                    "installed={} version={} running={} host={} port={} page={} container={} managed={} kind={} service={} process={} image={} compose={} project={} volumes={} package={} recorded={recorded} unreadable={} legacy={}",
                     s.installed,
                     s.version.unwrap_or_default(),
                     s.running,
@@ -312,6 +312,8 @@ fn run_job(args: &[String]) -> i32 {
                     esc(s.compose_project.clone()),
                     esc(Some(s.volumes.join(","))),
                     esc(s.package.clone()),
+                    s.config_unreadable,
+                    s.legacy.clone().unwrap_or_default(),
                 );
                 Ok(())
             }
@@ -340,7 +342,13 @@ fn run_job(args: &[String]) -> i32 {
                 }),
                 _ => Err(USAGE.into()),
             },
-            "gateway-update" => newest().and_then(|offer| gateway::update(&sink, &offer)),
+            // A version: the one the asking Platform Manager showed (any
+            // channel); none: the newest on this computer's channel.
+            "gateway-update" => match args.get(1) {
+                Some(v) => gateway::release(v),
+                None => newest(),
+            }
+            .and_then(|offer| gateway::update(&sink, &offer)),
             "gateway-control" => match args.get(1) {
                 Some(action) => gateway::control(&sink, action),
                 None => Err(USAGE.into()),
