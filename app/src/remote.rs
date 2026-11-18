@@ -563,6 +563,18 @@ pub fn sftp_command(inst: &Instance, admin: bool) -> (Command, Option<String>) {
     (c, pw)
 }
 
+/// A Windows server's SFTP path (`/C:/Users/x`) as Windows names it
+/// (`C:/Users/x`): Remove-Item took the leading `/` for a drive "/C" and
+/// deleting failed (rc6 build 5 VM). Other paths stay as they are.
+pub fn windows_path(p: &str) -> String {
+    let b = p.as_bytes();
+    if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        p[1..].to_string()
+    } else {
+        p.to_string()
+    }
+}
+
 /// Delete a file or a whole folder tree on the server in one command
 /// (Files, after its confirm): `rm -rf` on Linux, as administrator with
 /// `admin`; Remove-Item on Windows. Refuses the root and empty paths.
@@ -572,7 +584,11 @@ pub fn remove_tree(inst: &Instance, path: &str, admin: bool) -> Result<(), Strin
         return Err(format!("{path} cannot be deleted from here."));
     }
     if is_windows(inst) {
-        return win::ps(inst, &format!("Remove-Item -LiteralPath '{}' -Recurse -Force -ErrorAction Stop", p.replace('\'', "''"))).map(|_| ());
+        let w = windows_path(p);
+        if w.trim_end_matches(['/', '\\']).len() <= 2 {
+            return Err(format!("{path} cannot be deleted from here."));
+        }
+        return win::ps(inst, &format!("Remove-Item -LiteralPath '{}' -Recurse -Force -ErrorAction Stop", w.replace('\'', "''"))).map(|_| ());
     }
     let cmd = format!("rm -rf -- '{}'", p.replace('\'', "'\\''"));
     if admin && inst.user != "root" { sudo_run(inst, &cmd, None) } else { run(inst, &cmd, None) }.map(|_| ())
@@ -2581,6 +2597,17 @@ mod win {
 
 #[cfg(test)]
 mod tests {
+
+    /// A Windows server's SFTP path is handed to PowerShell without its
+    /// leading slash (Remove-Item read "/C" as a drive).
+    #[test]
+    fn a_windows_sftp_path_loses_its_leading_slash() {
+        assert_eq!(super::windows_path("/C:/Users/spmtest/Downloads/x"), "C:/Users/spmtest/Downloads/x");
+        assert_eq!(super::windows_path("C:/Users/x"), "C:/Users/x");
+        assert_eq!(super::windows_path("/home/ops/x"), "/home/ops/x");
+        assert_eq!(super::windows_path("/C:/"), "C:/");
+    }
+
     use super::*;
 
     /// The built-in terminal's ssh: a terminal requested, and the kept
