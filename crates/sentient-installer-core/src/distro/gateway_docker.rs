@@ -912,7 +912,17 @@ fn docker_all(args: &[&str]) -> Option<(bool, String)> {
 }
 
 fn container_running(name: &str) -> bool {
-    docker(&["inspect", "--format", "{{.State.Running}}", name]).is_some_and(|(ok, o)| ok && o.trim() == "true")
+    docker(&["inspect", "--format", "{{.State.Running}} {{.State.Restarting}} {{.RestartCount}}", name]).is_some_and(|(ok, o)| ok && stays_up(&o))
+}
+
+/// `{{.State.Running}} {{.State.Restarting}} {{.RestartCount}}` of a
+/// container just created: up only when running, not restarting and never
+/// restarted. Docker reports a container its restart policy brings back
+/// again and again (a setting that makes the gateway exit) as running, so
+/// Running alone never noticed one.
+pub fn stays_up(state: &str) -> bool {
+    let mut w = state.split_whitespace();
+    matches!((w.next(), w.next(), w.next()), (Some("true"), Some("false"), Some("0")))
 }
 
 /// The page's password through the gateway in its container
@@ -1112,5 +1122,16 @@ mod tests {
         // A line break in a value is refused.
         let bad = ApplyPlan { env: Some(vec![("A".into(), "1\n2".into())]), ..ApplyPlan::default() };
         assert!(planned_spec(&spec, &before, &bad, &|_| None).is_err());
+    }
+
+    #[test]
+    fn a_restart_loop_is_not_up() {
+        assert!(stays_up("true false 0\n"));
+        // A setting that makes the gateway exit: the restart policy keeps
+        // bringing it back, and Docker still says running.
+        assert!(!stays_up("true true 3"));
+        assert!(!stays_up("true false 2"));
+        assert!(!stays_up("false false 0"));
+        assert!(!stays_up(""));
     }
 }

@@ -926,7 +926,7 @@ fn opens_on_press(click_count: usize, m: Modifiers) -> bool {
 
 fn read_only_text(p: &Pane) -> String {
     let owner = p.listing.as_ref().map(|l| l.owner.clone()).filter(|o| !o.is_empty()).unwrap_or_else(|| "another account".into());
-    format!("This folder belongs to {owner}. You can look, but not change anything.")
+    format!("This folder belongs to {owner}. You can view, but not change anything.")
 }
 
 fn folder_color() -> Hsla {
