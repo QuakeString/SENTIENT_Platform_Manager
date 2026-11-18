@@ -70,6 +70,8 @@ pub struct Status {
     /// Rust gateway, so it never takes it for the Rust one (an update would
     /// recreate it on other volumes); the page says it is there.
     pub legacy: Option<String>,
+    /// That container's image (its tag is the older gateway's version).
+    pub legacy_image: Option<String>,
 }
 
 impl Status {
@@ -159,7 +161,12 @@ pub fn is_legacy_image(image: &str) -> bool {
 /// same cases.
 pub fn update_blocker(s: &Status, version: &str, has_installer: bool, windows: bool) -> Option<String> {
     if !s.installed {
-        return Some("There is no Sentient Gateway to update.".into());
+        // The older Python gateway alone: updated to the Rust one in Docker.
+        return match &s.legacy {
+            Some(_) if windows => Some("On Windows the Platform Manager runs the gateway as a Windows service, not in Docker: remove the older gateway's container, then install the gateway here.".into()),
+            Some(_) => None,
+            None => Some("There is no Sentient Gateway to update.".into()),
+        };
     }
     match s.kind() {
         "docker" if windows => Some("On Windows the Platform Manager runs the gateway as a Windows service, not in Docker: update this container the way it was started.".into()),
@@ -242,7 +249,7 @@ pub fn status() -> Status {
         // The service first; else a gateway container in Docker Desktop.
         let s = windows::status();
         if s.installed {
-            Status { legacy: crate::distro::gateway_docker::legacy(), ..s }
+            Status { legacy: crate::distro::gateway_docker::legacy(), legacy_image: None, ..s }
         } else {
             crate::distro::gateway_docker::status()
         }
@@ -251,7 +258,7 @@ pub fn status() -> Status {
     {
         // A container first; else a service or a plain process.
         let s = crate::distro::gateway_docker::status();
-        if s.installed { s } else { Status { legacy: s.legacy, ..crate::distro::gateway_native::status() } }
+        if s.installed { s } else { Status { legacy: s.legacy, legacy_image: s.legacy_image, ..crate::distro::gateway_native::status() } }
     }
 }
 
@@ -280,6 +287,9 @@ pub fn update(sink: &ProgressFn, offer: &Offer) -> Result<(), String> {
     #[cfg(not(windows))]
     {
         let s = status();
+        if !s.installed && s.legacy.is_some() {
+            return crate::distro::gateway_legacy::update(sink, &offer.version).map(|_| ());
+        }
         if s.container.is_none() {
             // A service or a program: said, never attempted.
             let _ = sink;
@@ -791,6 +801,10 @@ mod tests {
         assert_eq!(update_blocker(&win, "4.16.3", true, true), None);
         assert!(update_blocker(&win, "4.16.3", false, true).unwrap().contains("no Windows installer"));
         assert!(update_blocker(&Status::default(), "4.16.3", true, false).is_some());
+        // The older Python gateway alone: an update here, not on Windows.
+        let older = Status { legacy: Some("st-gateway".into()), legacy_image: Some("quakestring/sentient-gateway:latest".into()), ..Status::default() };
+        assert_eq!(update_blocker(&older, "4.16.3", false, false), None);
+        assert!(update_blocker(&older, "4.16.3", false, true).unwrap().contains("Windows service"));
     }
 
     #[test]

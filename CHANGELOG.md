@@ -15,6 +15,25 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Added
+- Gateway: the older Python gateway in Docker is offered an update to the
+  Sentient Gateway ("Update available" on the Gateway page here and on a
+  server, on the Status card and in the notices). The update backs up its
+  configuration volume, stops the older container and keeps it aside,
+  starts the new gateway on the same configuration with the same
+  connection and identity, waits until it is connected to SENTIENT, and
+  only then removes the older container. On any failure the new one is
+  removed and the older one runs again as before. Its (i) lists what does
+  not carry over (custom Python converters, Python code in a
+  configuration, gRPC connectors, a file-storage backlog).
+- Update page and Setup's update choices: a Sentient Gateway line, here
+  and on a server. It shows the newer gateway release and runs the same
+  gateway update with its progress; a gateway that cannot be updated from
+  here is greyed with the reason. The older Python gateway's line carries
+  the (i) on what does not carry over.
+- Gateway in Docker: an update starts the container again with the
+  volumes, host folders and connection settings it has, not fixed ones.
+
 ### Changed
 - After quitting, the Platform Manager starts on Status, of the instance that was open last. Closing only the window (the Platform Manager keeps running in the tray) and opening it again still returns to the page it was on.
 
@@ -64,7 +83,8 @@ refreshes that repository's Downloads table.
   gateway exists, names the version, and installs exactly that one.
 - Gateway: a container of the older Python gateway is no longer taken for
   the Rust gateway (an update would have replaced it and lost its
-  configuration). The page names it in one line and leaves it as it is.
+  configuration).
+
 - Windows "In the system": other computers reach SENTIENT. Setup opens its
   ports in Windows Firewall (rule group SENTIENT: web and MQTT over TCP,
   CoAP over UDP). Repair, a SENTIENT update and the Platform Manager's

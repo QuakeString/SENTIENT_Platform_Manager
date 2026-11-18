@@ -793,6 +793,14 @@ impl RemotePages {
             Kind::Update => {
                 let i2 = inst.clone();
                 self.fetch(cx, move || remote::status(&i2), |p| &mut p.status);
+                // The server's gateway and the newest gateway release.
+                let i3 = inst.clone();
+                self.fetch(cx, move || remote::gateway(&i3), |p| &mut p.gateway);
+                self.updates.update(cx, |u, cx| {
+                    if u.found.is_none() {
+                        u.check(cx);
+                    }
+                });
                 let native = inst.detected.as_ref().is_some_and(|d| d.install != "Docker");
                 self.pick = None;
                 // Renders: a version picked from "Other version".
@@ -1500,6 +1508,37 @@ impl RemotePages {
                     menu
                 }),
         );
+        // The server's gateway: its update (the older Python one's too), run
+        // there by the same gateway-update job.
+        let gateway_row = match &self.gateway {
+            Read::Got(g) => {
+                let get = |k: &str| g.get(k).cloned().unwrap_or_default();
+                let status = crate::manager::gateway::status_of(&get);
+                let found = self.updates.read(cx).found.as_ref().map(|f| f.gateway.clone());
+                let gw_offer = found.clone().and_then(|r| r.ok()).flatten();
+                let update = crate::manager::gateway::gateway_update(&status, gw_offer.as_ref(), crate::remote::is_windows(&self.inst));
+                let summary = match &update {
+                    Some(u) => Some((u.about.clone(), None)),
+                    None => crate::manager::gateway::gateway_summary(&status, found.as_ref().map(|r| r.is_ok())),
+                };
+                summary.map(|(sub, pill)| {
+                    let mut r = product_row(&theme, update.as_ref().is_some_and(|u| u.why.is_none()), ui::Product::Gateway, "Sentient Gateway", sub);
+                    if let Some((tone, text)) = pill {
+                        r = r.child(ui::pill(&theme, tone, text));
+                    }
+                    if let Some(u) = update {
+                        let this = cx.entity().downgrade();
+                        let v = u.version.clone();
+                        r = r.child(crate::manager::gateway::update_button(&theme, "r-gateway-update", &u, busy, std::rc::Rc::new(move |_, cx: &mut App| {
+                            let v = v.clone();
+                            this.update(cx, |p, cx| p.run_job("Updating the gateway", vec!["gateway-update".into(), v], cx)).ok();
+                        })));
+                    }
+                    r
+                })
+            }
+            _ => None,
+        };
         let failed = match &self.offer {
             Read::Failed(e) => Some(e.clone()),
             _ => None,
@@ -1531,6 +1570,7 @@ impl RemotePages {
                 ))
             })
             .child(row)
+            .children(gateway_row)
             .when_some(pick, |p, v| {
                 let v2 = v.clone();
                 p.child(
@@ -2388,7 +2428,35 @@ impl RemotePages {
         let get = |k: &str| g.get(k).cloned().unwrap_or_default();
         let installed = get("installed") == "true";
         let running = get("running") == "true";
-        // The older Python gateway: never taken for the Rust one; one line.
+        // The older Python gateway alone: offered as an update (the same
+        // gateway-update job); beside the Rust one: one line.
+        if !installed && !get("legacy").is_empty() {
+            let status = crate::manager::gateway::status_of(&get);
+            let found = self.updates.read(cx).found.as_ref().map(|f| f.gateway.clone());
+            let offer = found.clone().and_then(|r| r.ok()).flatten();
+            let looking = match &found {
+                Some(Err(e)) => Some(format!("Gateway updates: {e}")),
+                Some(Ok(None)) => Some("No gateway release on this channel.".to_string()),
+                _ => None,
+            };
+            let why = offer.as_ref().and_then(|o| sentient_installer_core::gateway::update_blocker(&status, &o.version, o.installer.is_some(), crate::remote::is_windows(&self.inst)));
+            let this = cx.entity().downgrade();
+            let v = offer.as_ref().map(|o| o.version.clone()).unwrap_or_default();
+            return crate::manager::gateway::legacy_panel(
+                &theme,
+                "r-gw-older",
+                &get("legacy"),
+                Some(get("legacy_image")).filter(|i| !i.is_empty()).as_deref(),
+                offer.as_ref(),
+                looking,
+                why,
+                busy,
+                std::rc::Rc::new(move |_, cx: &mut App| {
+                    let v = v.clone();
+                    this.update(cx, |p, cx| p.run_job("Updating the gateway", vec!["gateway-update".into(), v], cx)).ok();
+                }),
+            );
+        }
         let legacy = Some(get("legacy")).filter(|n| !n.is_empty()).map(|n| div().text_sm().text_color(theme.muted_foreground).child(crate::manager::gateway::legacy_line(&n, "this server")));
         let mut p = ui::panel(&theme).child(
             h_flex()
@@ -2415,7 +2483,7 @@ impl RemotePages {
                         )
                         .into(),
                     )),
-            ).children(legacy);
+            );
         }
         let kind = get("kind");
         let recorded = get("recorded") == "true";

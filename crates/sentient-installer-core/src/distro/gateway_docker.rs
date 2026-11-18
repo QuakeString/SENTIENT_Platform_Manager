@@ -131,7 +131,7 @@ pub fn serial_devices_in(by_id: &std::path::Path, dev: &std::path::Path) -> Vec<
 }
 
 #[cfg(not(windows))]
-fn serial_devices() -> Vec<SerialDevice> {
+pub(crate) fn serial_devices() -> Vec<SerialDevice> {
     serial_devices_in(std::path::Path::new("/dev/serial/by-id"), std::path::Path::new("/dev"))
 }
 
@@ -143,6 +143,18 @@ fn serial_devices() -> Vec<SerialDevice> {
 pub fn run_command(image: &str, host: &str, port: u16, token: &str, devices: &[SerialDevice]) -> String {
     let q = super::shell_quote;
     let volumes: String = VOLUMES.iter().map(|(v, p)| format!(" -v {v}:{p}")).collect();
+    format!(
+        "docker run -d --name {CONTAINER} --restart unless-stopped --network host{volumes}{} -e host={} -e port={port} -e accessToken={} {}",
+        device_flags(devices),
+        q(host),
+        q(token),
+        q(image)
+    )
+}
+
+/// ` --device X:X … --group-add <gid> …` for the serial adapters.
+pub(crate) fn device_flags(devices: &[SerialDevice]) -> String {
+    let q = super::shell_quote;
     let mut devs = String::new();
     let mut gids: Vec<u32> = Vec::new();
     for d in devices {
@@ -153,12 +165,20 @@ pub fn run_command(image: &str, host: &str, port: u16, token: &str, devices: &[S
         }
     }
     let groups: String = gids.iter().map(|g| format!(" --group-add {g}")).collect();
-    format!(
-        "docker run -d --name {CONTAINER} --restart unless-stopped --network host{volumes}{devs}{groups} -e host={} -e port={port} -e accessToken={} {}",
-        q(host),
-        q(token),
-        q(image)
-    )
+    format!("{devs}{groups}")
+}
+
+/// The container `name` started again on `image` with what it has: its
+/// volumes and host folders where they are mounted, and its connection
+/// environment (gateway_legacy::carried_env). A gateway the update from
+/// the older one started keeps that one's configuration volume this way.
+pub fn recreate_spec(c: &super::gateway_legacy::Legacy, image: &str) -> super::gateway_legacy::RunSpec {
+    super::gateway_legacy::RunSpec {
+        name: c.name.clone(),
+        image: image.to_string(),
+        mounts: c.mounts.iter().map(|m| (m.source.clone(), m.dest.clone())).collect(),
+        env: super::gateway_legacy::carried_env(&c.env),
+    }
 }
 
 const INSPECT_FORMAT: &str = "{{.Name}}\t{{.Config.Image}}\t{{json .Config.Entrypoint}}\t{{.State.Running}}\t{{index .Config.Labels \"com.docker.compose.project\"}}\t{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}\t{{range .Mounts}}{{if eq .Type \"volume\"}}{{.Name}},{{end}}{{end}}\t{{index .Config.Labels \"org.opencontainers.image.version\"}}\t{{.Image}}";
@@ -241,8 +261,9 @@ pub fn legacy() -> Option<String> {
 pub fn status() -> Status {
     let all = containers();
     let legacy = legacy_in(&all);
+    let legacy_image = all.iter().find(|c| c.is_legacy()).map(|c| c.image.clone());
     let Some((c, managed)) = pick(&all) else {
-        return Status { legacy, ..Status::default() };
+        return Status { legacy, legacy_image, ..Status::default() };
     };
     let name = c.name.clone();
     let env: Vec<String> = docker(&["inspect", &name, "--format", "{{range .Config.Env}}{{println .}}{{end}}"])
@@ -281,6 +302,7 @@ pub fn status() -> Status {
         compose_dir: c.working_dir.clone(),
         volumes: c.volumes.clone(),
         legacy,
+        legacy_image,
         ..Status::default()
     }
 }
@@ -377,12 +399,43 @@ pub fn update(sink: &ProgressFn, version: &str) -> Result<(), String> {
         }
         None => return Err("There is no gateway container to update.".into()),
     }
-    let Some((true, out)) = docker(&["inspect", CONTAINER, "--format", "{{range .Config.Env}}{{println .}}{{end}}"]) else {
+    let Some(c) = docker(&["inspect", CONTAINER]).filter(|(ok, _)| *ok).and_then(|(_, o)| super::gateway_legacy::parse_inspect_json(&o)) else {
         return Err("The gateway container could not be read.".into());
     };
-    let get = |k: &str| out.lines().find_map(|l| l.strip_prefix(&format!("{k}=")).map(str::to_string)).unwrap_or_default();
-    let port = get("port").parse().unwrap_or(1883);
-    start(sink, version, &get("host"), port, &get("accessToken"))
+    recreate(sink, version, &c)
+}
+
+/// Start `c` again on the gateway `version` (crate::gateway::IMAGE), with
+/// what it has (recreate_spec) and the serial adapters found now.
+fn recreate(sink: &ProgressFn, version: &str, c: &super::gateway_legacy::Legacy) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let _ = (sink, version, c);
+        Err("On Windows the gateway is installed as a service; use the Windows installer.".into())
+    }
+    #[cfg(not(windows))]
+    {
+        let image = format!("{IMAGE}:{version}");
+        sink(Progress::Step { name: format!("Pulling {image}") });
+        super::run_stream(sink, &format!("docker pull {}", super::shell_quote(&image)))?;
+        sink(Progress::Step { name: format!("Starting Sentient Gateway {version}") });
+        let _ = super::run(sink, &format!("docker rm -f {} >/dev/null 2>&1 || true", super::shell_quote(&c.name)));
+        let line = super::gateway_legacy::run_line(&recreate_spec(c, &image), &serial_devices());
+        super::gateway_legacy::sh(&line).map_err(|e| format!("The gateway container did not start again: {e}"))?;
+        wait_running(sink, version)
+    }
+}
+
+#[cfg(not(windows))]
+fn wait_running(sink: &ProgressFn, version: &str) -> Result<(), String> {
+    for _ in 0..30 {
+        if status().running {
+            sink(Progress::Done { message: format!("Sentient Gateway {version} is running.") });
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    Err(format!("The gateway container did not stay up; see docker logs {CONTAINER}."))
 }
 
 fn start(sink: &ProgressFn, version: &str, host: &str, port: u16, token: &str) -> Result<(), String> {
@@ -403,14 +456,7 @@ fn start(sink: &ProgressFn, version: &str, host: &str, port: u16, token: &str) -
             sink(Progress::Log { line: format!("Serial adapters for the gateway: {}", devices.iter().map(|d| d.path.as_str()).collect::<Vec<_>>().join(", ")) });
         }
         super::run(sink, &run_command(&image, host, port, token, &devices))?;
-        for _ in 0..30 {
-            if status().running {
-                sink(Progress::Done { message: format!("Sentient Gateway {version} is running.") });
-                return Ok(());
-            }
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        }
-        Err(format!("The gateway container did not stay up; see docker logs {CONTAINER}."))
+        wait_running(sink, version)
     }
 }
 
@@ -580,5 +626,28 @@ mod tests {
         assert_eq!(line.matches("--group-add").count(), 1);
         assert!(line.contains(" --group-add 986 ") && !line.contains("--group-add 0"));
         assert!(line.ends_with("'quakestring/sentient-gateway-rs:4.16.2'"));
+    }
+
+    #[test]
+    fn an_update_recreates_with_what_the_container_has() {
+        use super::super::gateway_legacy::{Legacy, Mount};
+        // One the update from the older gateway started: its configuration
+        // volume and environment are kept, not replaced by st-gw-config.
+        let c = Legacy {
+            name: CONTAINER.into(),
+            image: "quakestring/sentient-gateway-rs:4.16.2".into(),
+            running: true,
+            env: vec!["accessToken=EXAMPLETOKEN".into(), "TB_GW_CLIENT_ID=gw-example".into(), "host=10.0.0.5".into(), "ST_GW_CONFIG_DIR=/sentient_gateway/config".into(), "PATH=/usr/bin".into()],
+            mounts: vec![
+                Mount { kind: "volume".into(), source: "gw-config".into(), dest: "/sentient_gateway/config".into() },
+                Mount { kind: "volume".into(), source: "st-gw-data".into(), dest: "/sentient_gateway/data".into() },
+            ],
+            compose_dir: None,
+        };
+        let spec = recreate_spec(&c, "quakestring/sentient-gateway-rs:4.16.3");
+        assert_eq!(spec.mounts[0], ("gw-config".to_string(), "/sentient_gateway/config".to_string()));
+        assert_eq!(spec.env, vec!["accessToken=EXAMPLETOKEN", "TB_GW_CLIENT_ID=gw-example", "host=10.0.0.5"]);
+        let line = super::super::gateway_legacy::run_line(&spec, &[SerialDevice { path: "/dev/ttyACM0".into(), gid: 986 }]);
+        assert!(line.contains(" --device '/dev/ttyACM0:/dev/ttyACM0' --group-add 986"), "{line}");
     }
 }

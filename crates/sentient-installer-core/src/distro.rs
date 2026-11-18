@@ -29,6 +29,7 @@ pub mod hosts;
 pub mod idle;
 pub mod move_data;
 pub mod gateway_docker;
+pub mod gateway_legacy;
 pub mod port_forward;
 #[cfg(not(windows))]
 pub mod gateway_native;
