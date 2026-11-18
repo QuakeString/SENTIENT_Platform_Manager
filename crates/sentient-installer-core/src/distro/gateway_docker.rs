@@ -789,7 +789,7 @@ fn gid_of(path: &str) -> Option<u32> {
 /// A private file for the container's environment (0600, the account's
 /// runtime folder), removed after the recreate.
 #[cfg(unix)]
-fn write_env_file(env: &[String]) -> Result<std::path::PathBuf, String> {
+pub(crate) fn write_env_file(env: &[String]) -> Result<std::path::PathBuf, String> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
     let dir = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(std::env::temp_dir);

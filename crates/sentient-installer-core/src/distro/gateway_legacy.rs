@@ -286,19 +286,35 @@ pub fn connected(logs: &str) -> bool {
     logs.lines().any(|l| l.contains("connected to platform"))
 }
 
-/// The `docker run` line for `spec`, with the serial adapters (gid added).
-pub fn run_line(spec: &RunSpec, devices: &[super::gateway_docker::SerialDevice]) -> String {
-    let q = super::shell_quote;
-    let mut line = format!("docker run -d --name {} --restart unless-stopped --network host", q(&spec.name));
-    for (s, d) in &spec.mounts {
-        line.push_str(&format!(" -v {}", q(&format!("{s}:{d}"))));
+/// The new container as the gateway's one container spec
+/// (gateway_docker::Spec): the host network, unless-stopped, its mounts,
+/// the serial adapters with their groups, its environment.
+pub fn docker_spec(spec: &RunSpec, devices: &[super::gateway_docker::SerialDevice]) -> super::gateway_docker::Spec {
+    let mut group_add: Vec<String> = Vec::new();
+    for d in devices {
+        let g = d.gid.to_string();
+        if d.gid != 0 && !group_add.contains(&g) {
+            group_add.push(g);
+        }
     }
-    line.push_str(&super::gateway_docker::device_flags(devices));
-    for e in &spec.env {
-        line.push_str(&format!(" -e {}", q(e)));
+    super::gateway_docker::Spec {
+        name: spec.name.clone(),
+        image: spec.image.clone(),
+        env: spec.env.clone(),
+        restart: "unless-stopped".into(),
+        network: "host".into(),
+        devices: devices.iter().map(|d| (d.path.clone(), d.path.clone())).collect(),
+        group_add,
+        cap_add: Vec::new(),
+        mounts: spec.mounts.iter().map(|(s, d)| (s.clone(), d.clone(), false, s.starts_with('/'))).collect(),
     }
-    line.push_str(&format!(" {}", q(&spec.image)));
-    line
+}
+
+/// The `docker run` arguments for `spec`: its environment from `env_file`
+/// (private, 0600), never a value on the command line, where every account
+/// on the computer could read the token (gateway_docker::run_args).
+pub fn run_args(spec: &RunSpec, devices: &[super::gateway_docker::SerialDevice], env_file: &str) -> Vec<String> {
+    super::gateway_docker::run_args(&docker_spec(spec, devices), env_file)
 }
 
 /// A Docker command through the Docker shell: its output, or its error
@@ -381,7 +397,12 @@ pub fn update(sink: &ProgressFn, version: &str) -> Result<String, String> {
         // Counted before the run: a container created but not started is
         // removed on the way back too.
         done.started = true;
-        sh(&run_line(&p.run, &devices)).map_err(|e| format!("The new gateway did not start: {e}"))?;
+        let env_file = super::gateway_docker::write_env_file(&p.run.env)?;
+        let line: Vec<String> = run_args(&p.run, &devices, &env_file.display().to_string()).iter().map(|a| q(a)).collect();
+        let started = sh(&format!("docker {}", line.join(" ")));
+        // Docker read the file when it made the container.
+        let _ = std::fs::remove_file(&env_file);
+        started.map_err(|e| format!("The new gateway did not start: {e}"))?;
         // Tests: a failure after the new gateway started (the way back).
         #[cfg(debug_assertions)]
         if std::env::var_os("SPM_DEBUG_GATEWAY_UPDATE_FAIL").is_some() {
@@ -440,11 +461,13 @@ fn wait_connected(name: &str, limit: std::time::Duration) -> Result<(), String> 
         if connected(&logs) {
             return Ok(());
         }
-        let running = sh(&format!("docker inspect -f '{{{{.State.Running}}}}' {}", q(name))).is_ok_and(|o| o.trim() == "true");
+        // Up: running, not restarting, never restarted (a setting that makes
+        // it exit is brought back by its restart policy and still "running").
+        let up = sh(&format!("docker inspect -f '{{{{.State.Running}}}} {{{{.State.Restarting}}}} {{{{.RestartCount}}}}' {}", q(name))).is_ok_and(|o| super::gateway_docker::stays_up(&o));
         let tail: Vec<&str> = logs.lines().rev().take(3).collect();
         let tail = tail.into_iter().rev().collect::<Vec<_>>().join(" / ");
-        if !running {
-            return Err(format!("the new gateway stopped ({tail})"));
+        if !up {
+            return Err(format!("the new gateway stopped or keeps restarting ({tail})"));
         }
         if start.elapsed() > limit {
             return Err(format!("the new gateway did not connect to SENTIENT within {} seconds ({tail})", limit.as_secs()));
@@ -517,10 +540,12 @@ mod tests {
         assert!(p.not_carried.iter().any(|n| n.contains("compose file in /srv/example-site")));
         // It is an update: never called anything else to the user.
         assert!(p.not_carried.iter().all(|n| !n.to_lowercase().contains("migrat")));
-        let line = run_line(&p.run, &[]);
-        assert!(line.starts_with("docker run -d --name 'sentient-gateway' --restart unless-stopped --network host -v 'gw-config:/sentient_gateway/config'"), "{line}");
-        assert!(line.contains(" -e 'accessToken=EXAMPLETOKEN'") && line.contains(" -e 'TB_GW_CLIENT_ID=gw-example'") && !line.contains("PYTHONPATH"));
-        assert!(line.ends_with(" 'quakestring/sentient-gateway-rs:4.16.3'"));
+        // The connection and identity go to the container through its env
+        // file; none of it is on the command line.
+        assert_eq!(p.run.env, vec!["host=192.168.10.5", "port=1883", "accessToken=EXAMPLETOKEN", "TB_GW_CLIENT_ID=gw-example"]);
+        let args = run_args(&p.run, &[], "/run/user/1000/spm-gateway-1.env").join(" ");
+        assert!(args.starts_with("run -d --name sentient-gateway --restart unless-stopped --network host -v gw-config:/sentient_gateway/config"), "{args}");
+        assert!(args.ends_with("--env-file /run/user/1000/spm-gateway-1.env quakestring/sentient-gateway-rs:4.16.3"), "{args}");
     }
 
     #[test]
@@ -582,5 +607,24 @@ mod tests {
         let v = std::env::var("SPM_GW_REALTEST_VERSION").expect("SPM_GW_REALTEST_VERSION");
         let sink: ProgressFn = std::sync::Arc::new(|p| eprintln!("PROGRESS {p:?}"));
         eprintln!("RESULT {:?}", super::super::gateway_docker::update(&sink, &v));
+    }
+
+    #[test]
+    fn no_secret_on_the_update_command_line() {
+        // Every credential the connection may carry, with the serial adapters.
+        let mut l = parse_inspect_json(INSPECT).unwrap();
+        l.env.extend(["password=EXAMPLE-PASSWORD".to_string(), "TB_GW_PRIVATE_KEY=EXAMPLE-KEY".to_string(), "username=example-user".to_string()]);
+        let p = plan(&l, "4.16.3", "t").unwrap();
+        let devices = [super::super::gateway_docker::SerialDevice { path: "/dev/ttyACM0".into(), gid: 986 }];
+        let args = run_args(&p.run, &devices, "/run/user/1000/spm-gateway-1.env");
+        for secret in ["EXAMPLETOKEN", "EXAMPLE-PASSWORD", "EXAMPLE-KEY", "accessToken", "gw-example", "192.168.10.5"] {
+            assert!(args.iter().all(|a| !a.contains(secret)), "{secret} on the command line: {args:?}");
+        }
+        assert!(!args.iter().any(|a| a == "-e" || a == "--env"), "{args:?}");
+        // The serial adapter and its group are still passed.
+        let joined = args.join(" ");
+        assert!(joined.contains("--device /dev/ttyACM0:/dev/ttyACM0") && joined.contains("--group-add 986"), "{joined}");
+        // The env file holds them all.
+        assert!(p.run.env.iter().any(|e| e == "password=EXAMPLE-PASSWORD") && p.run.env.iter().any(|e| e == "accessToken=EXAMPLETOKEN"));
     }
 }
