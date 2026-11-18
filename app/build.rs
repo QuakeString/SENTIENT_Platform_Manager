@@ -41,9 +41,12 @@ fn embed_agents() {
             Some(path) => {
                 println!("cargo:rerun-if-changed={path}");
                 let path = std::fs::canonicalize(&path).unwrap();
-                code.push_str(&format!("pub const {name}: Option<&[u8]> = Some(include_bytes!({:?}));\n", path.display().to_string()));
+                // A `static`, never a `const`: a const is copied into every
+                // codegen unit that uses it, and the shipped rc6 build 3
+                // carried each agent twice (91 of its 163 MB).
+                code.push_str(&format!("pub static {name}: Option<&[u8]> = Some(include_bytes!({:?}));\n", path.display().to_string()));
             }
-            None => code.push_str(&format!("pub const {name}: Option<&[u8]> = None;\n")),
+            None => code.push_str(&format!("pub static {name}: Option<&[u8]> = None;\n")),
         }
     }
     std::fs::write(out, code).unwrap();
