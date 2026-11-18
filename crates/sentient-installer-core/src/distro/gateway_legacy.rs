@@ -287,18 +287,104 @@ pub fn connected(logs: &str) -> bool {
 }
 
 /// The `docker run` line for `spec`, with the serial adapters (gid added).
-pub fn run_line(spec: &RunSpec, devices: &[super::gateway_docker::SerialDevice]) -> String {
+/// Its environment (the access token among it) is read from `env_file`
+/// ([`write_env_file`]): never a value on a command line, where any
+/// account on the computer could read it.
+pub fn run_line(spec: &RunSpec, devices: &[super::gateway_docker::SerialDevice], env_file: &str) -> String {
     let q = super::shell_quote;
     let mut line = format!("docker run -d --name {} --restart unless-stopped --network host", q(&spec.name));
     for (s, d) in &spec.mounts {
         line.push_str(&format!(" -v {}", q(&format!("{s}:{d}"))));
     }
     line.push_str(&super::gateway_docker::device_flags(devices));
-    for e in &spec.env {
-        line.push_str(&format!(" -e {}", q(e)));
-    }
-    line.push_str(&format!(" {}", q(&spec.image)));
+    line.push_str(&format!(" --env-file {} {}", q(env_file), q(&spec.image)));
     line
+}
+
+/// The env file's lines (`KEY=value`); a line break in a value is refused
+/// (it would start another variable).
+pub fn env_file_text(env: &[String]) -> Result<String, String> {
+    let mut text = String::new();
+    for l in env {
+        if l.contains('\n') || l.contains('\r') {
+            return Err("An environment value of the gateway holds a line break.".into());
+        }
+        text.push_str(l);
+        text.push('\n');
+    }
+    Ok(text)
+}
+
+/// A private file (0600, created new, in the account's runtime folder) for
+/// the new container's environment. The caller removes it after `docker
+/// run`, whatever came of it ([`EnvFile`] does on drop).
+#[cfg(unix)]
+pub fn write_env_file(env: &[String]) -> Result<EnvFile, String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let text = env_file_text(env)?;
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(std::env::temp_dir);
+    let path = dir.join(format!("spm-gateway-{}.env", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let file = EnvFile(path.clone());
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|e| format!("write {}: {e}", path.display()))?;
+    f.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(file)
+}
+
+/// The env file; removed when dropped (success, failure or an early return).
+pub struct EnvFile(pub std::path::PathBuf);
+
+impl EnvFile {
+    pub fn path(&self) -> String {
+        self.0.display().to_string()
+    }
+}
+
+impl Drop for EnvFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// `{{.State.Running}} {{.State.Restarting}} {{.RestartCount}}` of a
+/// container just created: up only when running, not restarting and never
+/// restarted. Docker reports a container its restart policy brings back
+/// again and again as running, so Running alone never noticed a gateway
+/// that exits at once.
+pub fn stays_up(state: &str) -> bool {
+    let mut w = state.split_whitespace();
+    matches!((w.next(), w.next(), w.next()), (Some("true"), Some("false"), Some("0")))
+}
+
+/// The format [`stays_up`] reads.
+pub const STATE_FORMAT: &str = "{{.State.Running}} {{.State.Restarting}} {{.RestartCount}}";
+
+/// Whether the container `name` is up ([`stays_up`]).
+#[cfg(not(windows))]
+pub(super) fn is_up(name: &str) -> bool {
+    sh(&format!("docker inspect -f {} {}", super::shell_quote(STATE_FORMAT), super::shell_quote(name))).is_ok_and(|o| stays_up(&o))
+}
+
+/// Start `spec` (its environment through a private env file, removed
+/// afterwards), then wait until it is up and still up a few seconds later:
+/// a container that exits or restarts is a failure.
+#[cfg(not(windows))]
+pub(super) fn start_and_check(spec: &RunSpec, devices: &[super::gateway_docker::SerialDevice]) -> Result<(), String> {
+    {
+        let env_file = write_env_file(&spec.env)?;
+        sh(&run_line(spec, devices, &env_file.path()))?;
+        // The env file goes here: Docker read it when it created the container.
+    }
+    let up = (0..30).any(|_| {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        is_up(&spec.name)
+    }) && {
+        // Still up a few seconds later (a bad setting exits, and restarts).
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        is_up(&spec.name)
+    };
+    if up { Ok(()) } else { Err("it did not stay up (it exited or keeps restarting)".into()) }
 }
 
 /// A Docker command through the Docker shell: its output, or its error
@@ -381,7 +467,7 @@ pub fn update(sink: &ProgressFn, version: &str) -> Result<String, String> {
         // Counted before the run: a container created but not started is
         // removed on the way back too.
         done.started = true;
-        sh(&run_line(&p.run, &devices)).map_err(|e| format!("The new gateway did not start: {e}"))?;
+        start_and_check(&p.run, &devices).map_err(|e| format!("The new gateway did not start: {e}"))?;
         // Tests: a failure after the new gateway started (the way back).
         #[cfg(debug_assertions)]
         if std::env::var_os("SPM_DEBUG_GATEWAY_UPDATE_FAIL").is_some() {
@@ -440,7 +526,8 @@ fn wait_connected(name: &str, limit: std::time::Duration) -> Result<(), String> 
         if connected(&logs) {
             return Ok(());
         }
-        let running = sh(&format!("docker inspect -f '{{{{.State.Running}}}}' {}", q(name))).is_ok_and(|o| o.trim() == "true");
+        // Running, not restarting, never restarted: a restart loop fails.
+        let running = is_up(name);
         let tail: Vec<&str> = logs.lines().rev().take(3).collect();
         let tail = tail.into_iter().rev().collect::<Vec<_>>().join(" / ");
         if !running {
@@ -517,10 +604,50 @@ mod tests {
         assert!(p.not_carried.iter().any(|n| n.contains("compose file in /srv/example-site")));
         // It is an update: never called anything else to the user.
         assert!(p.not_carried.iter().all(|n| !n.to_lowercase().contains("migrat")));
-        let line = run_line(&p.run, &[]);
+        let line = run_line(&p.run, &[], "/run/user/1000/spm-gateway-1.env");
         assert!(line.starts_with("docker run -d --name 'sentient-gateway' --restart unless-stopped --network host -v 'gw-config:/sentient_gateway/config'"), "{line}");
-        assert!(line.contains(" -e 'accessToken=EXAMPLETOKEN'") && line.contains(" -e 'TB_GW_CLIENT_ID=gw-example'") && !line.contains("PYTHONPATH"));
-        assert!(line.ends_with(" 'quakestring/sentient-gateway-rs:4.16.3'"));
+        assert!(line.ends_with(" --env-file '/run/user/1000/spm-gateway-1.env' 'quakestring/sentient-gateway-rs:4.16.3'"), "{line}");
+        // The connection carries over in the env file, never on the line.
+        let text = env_file_text(&p.run.env).unwrap();
+        assert!(text.contains("accessToken=EXAMPLETOKEN\n") && text.contains("TB_GW_CLIENT_ID=gw-example\n") && !text.contains("PYTHONPATH"));
+    }
+
+    #[test]
+    fn no_secret_is_on_a_docker_command_line() {
+        let l = parse_inspect_json(INSPECT).unwrap();
+        let p = plan(&l, "4.16.3", "t").unwrap();
+        let line = run_line(&p.run, &[super::super::gateway_docker::SerialDevice { path: "/dev/ttyACM0".into(), gid: 986 }], "/tmp/x.env");
+        for e in &p.run.env {
+            let value = e.split_once('=').map(|(_, v)| v).unwrap_or(e);
+            assert!(!line.contains(value), "{value} on the line: {line}");
+        }
+        assert!(!line.contains("EXAMPLETOKEN") && !line.contains(" -e "), "{line}");
+        // A line break would start another variable: refused.
+        assert!(env_file_text(&["accessToken=a\nhost=evil".into()]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_env_file_is_private_and_goes_away() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let f = write_env_file(&["accessToken=EXAMPLETOKEN".into()]).unwrap();
+        let path = f.0.clone();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "accessToken=EXAMPLETOKEN\n");
+        drop(f);
+        assert!(!path.exists(), "removed after the run, whatever came of it");
+    }
+
+    #[test]
+    fn up_means_running_not_restarting_never_restarted() {
+        assert!(stays_up("true false 0"));
+        assert!(stays_up("true false 0\n"));
+        // A restart loop: Docker says running, but it restarted.
+        assert!(!stays_up("true false 2"), "restarted: a failure, the rollback runs");
+        assert!(!stays_up("true true 1"), "restarting");
+        assert!(!stays_up("false false 0"), "exited");
+        assert!(!stays_up(""), "no answer");
+        assert_eq!(STATE_FORMAT, "{{.State.Running}} {{.State.Restarting}} {{.RestartCount}}");
     }
 
     #[test]

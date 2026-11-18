@@ -420,8 +420,8 @@ fn recreate(sink: &ProgressFn, version: &str, c: &super::gateway_legacy::Legacy)
         super::run_stream(sink, &format!("docker pull {}", super::shell_quote(&image)))?;
         sink(Progress::Step { name: format!("Starting Sentient Gateway {version}") });
         let _ = super::run(sink, &format!("docker rm -f {} >/dev/null 2>&1 || true", super::shell_quote(&c.name)));
-        let line = super::gateway_legacy::run_line(&recreate_spec(c, &image), &serial_devices());
-        super::gateway_legacy::sh(&line).map_err(|e| format!("The gateway container did not start again: {e}"))?;
+        // The environment in a private env file, removed after the run.
+        super::gateway_legacy::start_and_check(&recreate_spec(c, &image), &serial_devices()).map_err(|e| format!("The gateway container did not start again: {e}"))?;
         wait_running(sink, version)
     }
 }
@@ -647,7 +647,8 @@ mod tests {
         let spec = recreate_spec(&c, "quakestring/sentient-gateway-rs:4.16.3");
         assert_eq!(spec.mounts[0], ("gw-config".to_string(), "/sentient_gateway/config".to_string()));
         assert_eq!(spec.env, vec!["accessToken=EXAMPLETOKEN", "TB_GW_CLIENT_ID=gw-example", "host=10.0.0.5"]);
-        let line = super::super::gateway_legacy::run_line(&spec, &[SerialDevice { path: "/dev/ttyACM0".into(), gid: 986 }]);
+        let line = super::super::gateway_legacy::run_line(&spec, &[SerialDevice { path: "/dev/ttyACM0".into(), gid: 986 }], "/tmp/x.env");
         assert!(line.contains(" --device '/dev/ttyACM0:/dev/ttyACM0' --group-add 986"), "{line}");
+        assert!(!line.contains("EXAMPLETOKEN"), "{line}");
     }
 }
