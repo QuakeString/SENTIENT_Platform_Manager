@@ -102,7 +102,17 @@ fn plan(kind: &Kind, args: &[String], docker: DockerExec<'_>) -> Plan {
 /// is not running, Docker is not, or its database refuses connections.
 fn stopped_answer(text: &str) -> bool {
     let t = text.to_lowercase();
-    t.contains("is not running") || t.contains("cannot connect to the docker daemon") || t.contains("connection refused")
+    t.contains("is not running")
+        || t.contains("cannot connect to the docker daemon")
+        || t.contains("connection refused")
+        // Docker itself not started yet (its distro just booted, or after
+        // a reboot with SENTIENT off): no socket to talk to.
+        || t.contains("failed to connect to the docker api")
+        || t.contains("is the docker daemon running")
+        || t.contains("docker.sock")
+        // Its database still starting or gone.
+        || t.contains("the database system is starting up")
+        || t.contains("the database system is shutting down")
 }
 
 /// Run `sentient-admin <args>`, giving it `input` on standard input. Returns
@@ -155,6 +165,11 @@ pub fn run(record: &InstallationRecord, args: &[String], input: Option<&str>) ->
         }
         Plan::Program { program, args, env } => (program, args, env),
     };
+    // A read never starts a stopped WSL distro (it may have stopped since
+    // the check above): left out, SENTIENT is stopped.
+    if program.eq_ignore_ascii_case("wsl.exe") && sentient_installer_core::distro::left_out(&args.iter().map(String::as_str).collect::<Vec<_>>()) {
+        return Err(Failure::Stopped);
+    }
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let mut cmd = sentient_installer_core::host::host_command_env(&program, &env);
     cmd.args(&args).stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -286,6 +301,13 @@ mod tests {
         assert_eq!(classify("Error response from daemon: container 4f2a is not running".into()), Failure::Stopped);
         assert_eq!(classify("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?".into()), Failure::Stopped);
         assert_eq!(classify("error connecting to database: Connection refused (os error 111)".into()), Failure::Stopped);
+        // The rc5 VM: the distro running, Docker not started.
+        assert_eq!(
+            classify("failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory".into()),
+            Failure::Stopped
+        );
+        assert_eq!(classify("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?".into()), Failure::Stopped);
+        assert_eq!(classify("FATAL: the database system is starting up".into()), Failure::Stopped);
         // Across the root job: its words.
         assert_eq!(classify(STOPPED.into()), Failure::Stopped);
         assert_eq!(classify("no such user".into()), Failure::Error("no such user".into()));

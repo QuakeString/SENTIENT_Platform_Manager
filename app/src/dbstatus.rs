@@ -539,13 +539,35 @@ pub fn read(record: &InstallationRecord) -> DbStatus {
     let carried = sentient_installer_core::distro::idle::carry();
     std::thread::spawn(move || {
         let hybrid = record.flavor() == Flavor::Clickhouse;
-        let status = carried.run(|| sentient_installer_core::distro::idle::watch(|| read_now(&record)));
+        let status = carried.run(|| {
+            sentient_installer_core::distro::idle::watch(|| {
+                let st = read_now(&record);
+                // It failed: SENTIENT's database stopped (after a Stop, or
+                // Docker not started) is said plainly, not as the failure.
+                if st.pg_error.is_some() && record.engine == Engine::Docker {
+                    let services = record.platform().snapshot().services;
+                    if pg_stopped(&services, &record.stack.names().pg) {
+                        return stopped(hybrid);
+                    }
+                }
+                st
+            })
+        });
         let _ = tx.send(status.unwrap_or_else(|| stopped(hybrid)));
     });
     rx.recv_timeout(LIMIT).unwrap_or_else(|_| DbStatus {
         pg_error: Some(format!("No answer within {} seconds.", LIMIT.as_secs())),
         ..Default::default()
     })
+}
+
+/// Whether the stack's PostgreSQL container `pg` is stopped (or the whole
+/// stack is: Docker down lists each container stopped).
+pub fn pg_stopped(services: &[crate::installation::Service], pg: &str) -> bool {
+    match services.iter().find(|s| s.name == pg) {
+        Some(s) => !s.running,
+        None => crate::stats::all_stopped(services),
+    }
 }
 
 /// The reading of a stopped SENTIENT: nothing read, and no error.
@@ -856,6 +878,20 @@ pub fn ago_label(rfc3339: &str, now: chrono::DateTime<chrono::Local>) -> String 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_stopped_database_container_is_stopped_not_a_failure() {
+        let svc = |name: &str, running: bool| crate::installation::Service { name: name.into(), running, starting: false, detail: String::new() };
+        // After Stop on Status (the rc5 VM): both exited.
+        assert!(super::pg_stopped(&[svc("sentient", false), svc("sentient-postgres", false)], "sentient-postgres"));
+        // Only PostgreSQL down: stopped too (its failure is not news).
+        assert!(super::pg_stopped(&[svc("sentient", true), svc("sentient-postgres", false)], "sentient-postgres"));
+        // Running: a failure is a failure.
+        assert!(!super::pg_stopped(&[svc("sentient", true), svc("sentient-postgres", true)], "sentient-postgres"));
+        // Not listed: stopped only when everything listed is.
+        assert!(super::pg_stopped(&[svc("sentient", false)], "sentient-postgres"));
+        assert!(!super::pg_stopped(&[], "sentient-postgres"));
+    }
 
     #[test]
     fn a_stopped_reading_is_not_an_error_and_crosses_the_agent() {

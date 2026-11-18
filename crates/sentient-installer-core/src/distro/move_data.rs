@@ -266,6 +266,10 @@ fn log(sink: &ProgressFn, line: impl Into<String>) {
 fn capture(bash: &str) -> Result<String, String> {
     let (prog, args) = shell_args(bash);
     let argrefs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    // A read (the Data locations card) never starts a stopped distro.
+    if super::left_out(&argrefs) {
+        return Err("SENTIENT's WSL distro is stopped".into());
+    }
     match sys::output(&prog, &argrefs) {
         Some((true, out, _)) => Ok(sys::decode(&out)),
         Some((false, out, err)) => {
@@ -407,6 +411,10 @@ fn helper_stream(cfg: &DeployConfig, image: &str, script: &str, mut on_line: imp
     use std::io::BufRead;
     let name = helper_name(cfg);
     let (prog, args) = shell_args(&format!("{} 2>&1", helper_cmd(&name, image, script)));
+    let argrefs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    if super::left_out(&argrefs) {
+        return Err("SENTIENT's WSL distro is stopped".into());
+    }
     let mut child = sys::command(&prog)
         .args(&args)
         .stdout(std::process::Stdio::piped())

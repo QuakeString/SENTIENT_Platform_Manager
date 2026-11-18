@@ -742,6 +742,9 @@ fn run(sink: &ProgressFn, bash: &str) -> Result<(), String> {
 fn run_stream(sink: &ProgressFn, bash: &str) -> Result<(), String> {
     let (prog, args) = shell_args(bash);
     let argrefs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    if left_out(&argrefs) {
+        return Err(format!("not run: SENTIENT's WSL distro is stopped ({bash})"));
+    }
     exec::stream(sink, &prog, &argrefs).map_err(|e| if e == "Cancelled." { e } else { format!("command failed: {bash} ({e})") })
 }
 
@@ -759,13 +762,26 @@ const RUN_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
 /// The same for quick reads and checks.
 pub(crate) const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Whether a command (`wsl.exe` arguments on Windows) is left out because
+/// it is a read and its distro is stopped: `wsl.exe -d <distro>` starts a
+/// stopped distro, and with it SENTIENT. Noted (idle::note_skipped), so a
+/// watched read says "stopped". Every command that may run in SENTIENT's
+/// distro asks this first (the test `every_distro_command_asks_left_out`).
+/// Linux: never.
+pub fn left_out(args: &[&str]) -> bool {
+    if cfg!(windows) && idle::skip(idle::is_reading(), args, idle::running) {
+        idle::note_skipped();
+        return true;
+    }
+    false
+}
+
 /// A command through the Docker shell, stopped after `limit` on Windows.
 pub(crate) fn shell_output(prog: &str, args: &[&str], limit: std::time::Duration) -> Option<(bool, Vec<u8>, Vec<u8>)> {
     if cfg!(windows) {
         // A read does not start a stopped distro (idle): it fails, as a
         // stopped stack's commands do.
-        if idle::skip(idle::is_reading(), args, idle::running) {
-            idle::note_skipped();
+        if left_out(args) {
             return None;
         }
         sys::output_wsl(prog, args, limit)
@@ -856,7 +872,11 @@ pub fn is_running(http_port: u16) -> bool {
             idle::note_skipped();
             return false;
         }
-        let inside = sys::output_wsl("wsl.exe", &["-d", &distro, "-u", "root", "--", "curl", "-s", "-o", "/dev/null", "--max-time", "4", &url], std::time::Duration::from_secs(20))
+        let curl: [&str; 12] = ["-d", &distro, "-u", "root", "--", "curl", "-s", "-o", "/dev/null", "--max-time", "4", &url];
+        if left_out(&curl) {
+            return false;
+        }
+        let inside = sys::output_wsl("wsl.exe", &curl, std::time::Duration::from_secs(20))
             .map(|(ok, _, _)| ok)
             .unwrap_or(false);
         // The operator's distro may have no curl: WSL forwards the port to
@@ -1689,25 +1709,13 @@ pub fn status(cfg: &DeployConfig) -> StackStatus {
         return stopped_distro_status(cfg);
     }
     let installed = present && cfg.stack_defined();
-    let mut containers = Vec::new();
-    if present {
+    let containers = if present {
         // Only `.Status` — universally supported, unlike `.State` and
         // `--filter` — and derive the state from it ("Up …" == running).
-        if let Some((_, out)) = run_output("docker ps -a --format '{{.Names}}|{{.Status}}'") {
-            for line in out.lines() {
-                if let Some((name, status)) = line.trim().split_once('|') {
-                    if name == n.app || name == n.pg || name == n.ch {
-                        let state = if status.starts_with("Up") { "running" } else { "stopped" };
-                        containers.push(ContainerStatus {
-                            name: name.to_string(),
-                            state: state.to_string(),
-                            status: status.to_string(),
-                        });
-                    }
-                }
-            }
-        }
-    }
+        containers_from_ps(cfg, run_output("docker ps -a --format '{{.Names}}|{{.Status}}'"))
+    } else {
+        Vec::new()
+    };
     // Running is answering, where other computers reach it (Windows:
     // through the port forward): a container that is up may still be
     // starting, or not reachable. A stopped app container is not asked.
@@ -1716,18 +1724,41 @@ pub fn status(cfg: &DeployConfig) -> StackStatus {
     StackStatus { installed, running, containers }
 }
 
+/// The stack's containers from `docker ps -a` (`name|status` lines). Docker
+/// not answering (not started yet: on Windows its distro just booted, or
+/// the daemon is down): each of the stack's containers stopped, never an
+/// empty list ("0 of 0 running").
+pub fn containers_from_ps(cfg: &DeployConfig, ps: Option<(bool, String)>) -> Vec<ContainerStatus> {
+    let n = cfg.names();
+    match ps {
+        Some((true, out)) => out
+            .lines()
+            .filter_map(|line| line.trim().split_once('|'))
+            .filter(|(name, _)| *name == n.app || *name == n.pg || *name == n.ch)
+            .map(|(name, status)| ContainerStatus { name: name.to_string(), state: if status.starts_with("Up") { "running" } else { "stopped" }.to_string(), status: status.to_string() })
+            .collect(),
+        _ => stack_names(cfg).into_iter().map(|name| ContainerStatus { name, state: "stopped".into(), status: "Not running (Docker is not running)".into() }).collect(),
+    }
+}
+
+/// The stack's own containers: SENTIENT, PostgreSQL, and ClickHouse when
+/// it is the hybrid.
+fn stack_names(cfg: &DeployConfig) -> Vec<String> {
+    let n = cfg.names();
+    let mut names = vec![n.app, n.pg];
+    if cfg.flavor == Flavor::Clickhouse {
+        names.push(n.ch);
+    }
+    names
+}
+
 /// [`status`] while the stack's WSL distro is stopped: installed (its
 /// compose file cannot be looked at without starting the distro; the
 /// installation record says it is there), not running, each container
 /// stopped.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn stopped_distro_status(cfg: &DeployConfig) -> StackStatus {
-    let n = cfg.names();
-    let mut names = vec![n.app, n.pg];
-    if cfg.flavor == Flavor::Clickhouse {
-        names.push(n.ch);
-    }
-    let containers = names.into_iter().map(|name| ContainerStatus { name, state: "stopped".into(), status: "Not running (its WSL distro is stopped)".into() }).collect();
+    let containers = stack_names(cfg).into_iter().map(|name| ContainerStatus { name, state: "stopped".into(), status: "Not running (its WSL distro is stopped)".into() }).collect();
     StackStatus { installed: true, running: false, containers }
 }
 
@@ -1946,7 +1977,11 @@ pub fn update(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
 /// *and* a login shell that won't start.
 #[cfg(windows)]
 fn distro_probe() -> Result<(), String> {
-    match sys::output("wsl.exe", &["-d", DISTRO, "-u", "root", "--", "bash", "-lc", "echo ok"]) {
+    let probe = ["-d", DISTRO, "-u", "root", "--", "bash", "-lc", "echo ok"];
+    if left_out(&probe) {
+        return Err("SENTIENT's WSL distro is stopped".into());
+    }
+    match sys::output("wsl.exe", &probe) {
         Some((true, out, _)) if sys::decode(&out).contains("ok") => Ok(()),
         // The inbox wsl.exe prints its errors on standard output.
         Some((_, out, err)) => {
@@ -2084,6 +2119,9 @@ fn pull_images(sink: &ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     use std::time::{Duration, Instant};
 
     let (prog, args) = shell_args(&cfg.compose_cmd("pull --ignore-pull-failures"));
+    if left_out(&args.iter().map(String::as_str).collect::<Vec<_>>()) {
+        return Err("SENTIENT's WSL distro is stopped".into());
+    }
     let mut child = sys::command(&prog)
         .args(&args)
         .stdout(Stdio::piped())
@@ -2371,6 +2409,79 @@ mod keepalive_tests {
 
 #[cfg(test)]
 mod tests {
+
+    /// Every command that may run in SENTIENT's WSL distro asks
+    /// [`super::left_out`] (or goes through `shell_output`, which does)
+    /// first: a read must never start a stopped distro, and with it
+    /// SENTIENT (the rc5 VM: Platform settings' Data locations card read
+    /// through a path that skipped the check, and booted the distro with
+    /// "Start with Windows" off). Scans this crate and the Platform Manager.
+    #[test]
+    fn every_distro_command_asks_left_out() {
+        let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let roots = [here.join("src"), here.join("../../app/src")];
+        // Builders of the arguments (their callers are checked), and the
+        // installer's own job that hardens ClickHouse right after setup.
+        let allowed = ["fn wsl_bash_args", "fn docker_exec_args", "\"harden\" =>"];
+        let mut found = Vec::new();
+        let mut files = Vec::new();
+        let mut dirs: Vec<std::path::PathBuf> = roots.iter().filter(|r| r.is_dir()).cloned().collect();
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    files.push(p);
+                }
+            }
+        }
+        assert!(files.len() > 50, "the sources were found");
+        for f in files {
+            let text = std::fs::read_to_string(&f).unwrap();
+            let lines: Vec<&str> = text.lines().collect();
+            // Tests at the end are not run by a page.
+            let end = lines.windows(2).position(|w| w[0].trim() == "#[cfg(test)]" && w[1].trim_start().starts_with("mod ")).unwrap_or(lines.len());
+            for (i, l) in lines[..end].iter().enumerate() {
+                let t = l.trim_start();
+                if t.starts_with("//") {
+                    continue;
+                }
+                let hit = (t.contains("shell_args(") && !t.contains("fn shell_args")) || (t.contains("docker_exec_command") && !t.contains("fn docker_exec_command")) || t.contains("[\"-d\",");
+                if !hit {
+                    continue;
+                }
+                let from = i.saturating_sub(15);
+                let around = lines[from..(i + 16).min(end)].join("\n");
+                if around.contains("left_out(") || around.contains("shell_output(") || allowed.iter().any(|a| around.contains(a)) {
+                    continue;
+                }
+                found.push(format!("{}:{}: {}", f.display(), i + 1, t));
+            }
+        }
+        assert!(found.is_empty(), "a command in the distro without the read guard:\n{}", found.join("\n"));
+        // The guard itself: a read, its distro stopped, is left out.
+        assert!(super::idle::skip(true, &["-d", "sentient", "--", "docker", "ps"], |_| false));
+    }
+
+    #[test]
+    fn docker_not_answering_lists_the_containers_stopped() {
+        use super::{containers_from_ps, DeployConfig};
+        let cfg = DeployConfig::default();
+        let n = cfg.names();
+        // The rc5 VM: the distro up, Docker not started: never "0 of 0".
+        for ps in [None, Some((false, String::new()))] {
+            let list = containers_from_ps(&cfg, ps);
+            assert!(list.len() >= 2, "{}", list.len());
+            assert!(list.iter().all(|c| c.state == "stopped"));
+            assert!(list.iter().any(|c| c.name == n.app) && list.iter().any(|c| c.name == n.pg));
+        }
+        // Docker answers: its lines, others' containers left out.
+        let out = format!("{}|Up 3 minutes\n{}|Exited (0) 1 minute ago\nother|Up 1 hour\n", n.app, n.pg);
+        let list = containers_from_ps(&cfg, Some((true, out)));
+        assert_eq!(list.len(), 2);
+        assert_eq!((list[0].state.as_str(), list[1].state.as_str()), ("running", "stopped"));
+    }
 
     #[test]
     fn container_stats_are_one_command_where_docker_runs() {

@@ -1843,6 +1843,10 @@ impl Manager {
                 for page in self.settings.clone() {
                     page.update(cx, |p, cx| p.sentient_changed(cx));
                 }
+                // Statistics of this computer: its Services card.
+                if let Some(page) = self.stats.get(&None).cloned() {
+                    page.update(cx, |p, cx| p.sentient_changed(cx));
+                }
             }
             Some(id) => {
                 // Its card and dot.

@@ -158,7 +158,9 @@ fi
 # Services, Backup and Platform settings' administrators say so plainly
 # (canned readings: SPM_DEBUG_DBSTATUS, SPM_DEBUG_STATS,
 # SPM_DEBUG_SENTIENT_ADMIN=stopped).
-export STOPPED_ENV="SPM_DEBUG_DBSTATUS=$HERE/fixtures/dbstatus-stopped.json+SPM_DEBUG_STATS=$HERE/fixtures/stats-stopped+SPM_DEBUG_SERVER_INFO=vm+SPM_DEBUG_SENTIENT_ADMIN=stopped"
+# The stack's containers stopped and SENTIENT not answering
+# (SPM_DEBUG_SNAPSHOT), whatever a run exports for its running renders.
+export STOPPED_ENV="SPM_DEBUG_DBSTATUS=$HERE/fixtures/dbstatus-stopped.json+SPM_DEBUG_STATS=$HERE/fixtures/stats-stopped+SPM_DEBUG_SERVER_INFO=vm+SPM_DEBUG_SENTIENT_ADMIN=stopped+SPM_DEBUG_SNAPSHOT=false;sentient=stopped,sentient-postgres=stopped"
 for p in ${STOPPED_PAGES-status statistics backup settings}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("stopped $p $w $s $t"); done; done; done; done
 # The Gateway page's settings card (crate::manager::gateway_settings) on
 # the settings fixture of each canned gateway, every tab

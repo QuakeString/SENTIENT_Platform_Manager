@@ -65,6 +65,28 @@ refreshes that repository's Downloads table.
 - After quitting, the Platform Manager starts on Status, of the instance that was open last. Closing only the window (the Platform Manager keeps running in the tray) and opening it again still returns to the page it was on.
 
 ### Fixed
+- Windows with "Start with Windows" off: opening Platform settings started
+  SENTIENT's WSL distro. Its Data locations card read the Docker volumes
+  through a path that skipped the read guard. Every command that runs in
+  the distro now asks the guard first (a test scans the sources for any
+  that does not), and the card says "SENTIENT is stopped. Where its data
+  is kept is read when it runs."
+- Platform settings with the distro up but Docker not started: the
+  accounts showed a raw "failed to connect to the docker API … docker.sock"
+  error. That is SENTIENT stopped: the plain sentence and Start SENTIENT.
+  While a Start or Restart runs here the row says "SENTIENT is starting…"
+  with no button, and the accounts are read only once SENTIENT answers.
+- Statistics: the Services card said "stopped" for minutes after SENTIENT
+  started. It is read again when a job here ends, and every 5 s while
+  shown and stopped.
+- Status: with Docker not started, Services read "0 of 0 running"; each
+  container is now listed as stopped. After Stop, the Database card said
+  "Could not read PostgreSQL … connection failed" instead of SENTIENT is
+  stopped.
+- Instances: "Up for" showed on a stopped instance; it shows only while
+  SENTIENT runs.
+- Files: the read-only banner says "You can view, but not change
+  anything."
 - Windows (a virtual machine without a GPU): Statistics took about 3 of 4
   processors, on a stopped or a running SENTIENT. The loading placeholders'
   shimmer asked for a new frame every frame even with motion reduced, and
