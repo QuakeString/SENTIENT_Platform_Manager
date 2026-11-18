@@ -460,6 +460,27 @@ pub fn remove(sink: &ProgressFn, keep_data: bool, remove_image: bool) -> Result<
     }
 }
 
+/// The Windows service's settings (crate::gateway_settings).
+#[cfg(windows)]
+pub fn windows_read_settings() -> crate::gateway_settings::GwSettings {
+    windows::read_settings()
+}
+
+#[cfg(windows)]
+pub fn windows_apply_settings(sink: &ProgressFn, before: &crate::gateway_settings::GwSettings, plan: &crate::gateway_settings::ApplyPlan) -> Result<(), String> {
+    windows::apply_settings(sink, before, plan)
+}
+
+#[cfg(windows)]
+pub fn windows_program() -> String {
+    windows::program()
+}
+
+#[cfg(windows)]
+pub fn windows_test_creds() -> Option<crate::gateway_settings::TestCreds> {
+    windows::test_creds()
+}
+
 /// `sentient-gateway 4.13.0` → `4.13.0`.
 pub fn parse_version(out: &str) -> Option<String> {
     out.lines()
@@ -691,6 +712,162 @@ mod windows {
         } else {
             "The Sentient Gateway is removed.".to_string()
         })
+    }
+
+    pub fn program() -> String {
+        crate::sys::output("sc.exe", &["qc", SERVICE])
+            .and_then(|(ok, out, _)| ok.then(|| service_program(&crate::sys::decode(&out))).flatten())
+            .filter(|p| std::path::Path::new(p).is_file())
+            .unwrap_or_else(|| exe().display().to_string())
+    }
+
+    fn service_pid() -> Option<u32> {
+        let (_, out, _) = crate::sys::output("sc.exe", &["queryex", SERVICE])?;
+        crate::sys::decode(&out).lines().find_map(|l| l.trim().strip_prefix("PID").map(|r| r.trim_start_matches([' ', ':']).trim().to_string())).and_then(|p| p.parse().ok()).filter(|p| *p != 0)
+    }
+
+    /// The service's settings: its file and its registry Environment.
+    pub fn read_settings() -> crate::gateway_settings::GwSettings {
+        use crate::gateway_settings::{self as gs, GwSettings};
+        let file = config_file();
+        let dir = file.parent().map(PathBuf::from).unwrap_or_default();
+        let text = std::fs::read_to_string(&file).ok().or_else(|| std::fs::read_to_string(dir.join("tb_gateway.json")).ok());
+        let mut s = match text {
+            Some(t) => gs::from_files(&t, std::fs::read_to_string(dir.join("logs.json")).ok().as_deref()),
+            None => GwSettings { source: "none".into(), note: Some("The gateway has no settings file yet (not commissioned).".into()), ..GwSettings::default() },
+        };
+        s.config_path = Some(file.display().to_string());
+        s.ui.password_set = Some(dir.join("local-ui").join("admin.argon2").is_file());
+        let program = program();
+        s.caps = gs::Caps::of_help(&crate::sys::output(&program, &["--help"]).map(|(_, o, _)| crate::sys::decode(&o)).unwrap_or_default());
+        if s.caps.status_json {
+            if let Some((true, o, _)) = crate::sys::output(&program, &["--status-json"]) {
+                gs::merge_status_json(&mut s, &crate::sys::decode(&o));
+            }
+        }
+        let env = service_environment();
+        gs::apply_env(&mut s, &env, false);
+        if s.connected.is_none() {
+            match (service_pid(), s.conn.port) {
+                (None, _) => {
+                    s.connected = Some(false);
+                    s.connected_how = Some("the service is stopped".into());
+                }
+                (Some(pid), Some(port)) => {
+                    if let Some((true, o, _)) = crate::sys::output("netstat.exe", &["-ano", "-p", "TCP"]) {
+                        s.connected = Some(gs::netstat_established(&crate::sys::decode(&o), pid, port));
+                        s.connected_how = Some("the gateway's open connections".into());
+                    }
+                }
+                _ => {}
+            }
+        }
+        let pd = std::env::var("ProgramData").ok();
+        s.log_files = Some(windows_log_dir(&env, pd.as_deref()));
+        let failure = crate::sys::output("sc.exe", &["qfailure", SERVICE]).map(|(_, o, _)| crate::sys::decode(&o)).unwrap_or_default();
+        let restarts = failure.to_ascii_uppercase().contains("RESTART");
+        s.machine.restart_always = Some(restarts);
+        s.machine.restart_word = Some(if restarts { "restart after a failure".into() } else { "no".into() });
+        s.machine.env = gs::overrides(&env, &[], |_| true, "the service");
+        s
+    }
+
+    fn write_environment(env: &[String]) -> Result<(), String> {
+        let key = format!(r"HKLM\SYSTEM\CurrentControlSet\Services\{SERVICE}");
+        if env.is_empty() {
+            let _ = crate::sys::output("reg.exe", &["delete", &key, "/v", "Environment", "/f"]);
+            return Ok(());
+        }
+        let data = env.join("\\0");
+        match crate::sys::output("reg.exe", &["add", &key, "/v", "Environment", "/t", "REG_MULTI_SZ", "/d", &data, "/f"]) {
+            Some((true, _, _)) => Ok(()),
+            Some((false, _, e)) => Err(format!("The service's environment could not be written: {}", crate::sys::decode(&e).trim())),
+            None => Err("reg.exe could not be started.".into()),
+        }
+    }
+
+    /// Apply `plan` to the service: the environment in the service's
+    /// registry key and the restart policy (`sc failure`) first, then the
+    /// gateway restarts once: through its own `--install` when the page
+    /// changes (it restarts the service), else a service restart.
+    pub fn apply_settings(sink: &ProgressFn, before: &crate::gateway_settings::GwSettings, plan: &crate::gateway_settings::ApplyPlan) -> Result<(), String> {
+        let program = program();
+        let page = plan.ui_enabled.is_some() || plan.ui_listen.is_some();
+        if page && !before.caps.ui_listen {
+            return Err("This gateway is older than 4.12: update it first to change its web page here.".into());
+        }
+        let mut env = service_environment();
+        let mut set = |n: &str, v: Option<String>| {
+            env.retain(|l| !l.starts_with(&format!("{n}=")));
+            if let Some(v) = v {
+                env.push(format!("{n}={v}"));
+            }
+        };
+        let mut env_changed = false;
+        if page && before.machine.ui_env {
+            if let Some(on) = plan.ui_enabled {
+                set("ST_GW_UI", Some(if on { "on" } else { "off" }.into()));
+            }
+            if let Some(l) = &plan.ui_listen {
+                set("ST_GW_UI_LISTEN", Some(l.clone()));
+            }
+            env_changed = true;
+        }
+        if let Some(l) = &plan.rust_log {
+            set("RUST_LOG", (!l.is_empty()).then(|| l.clone()));
+            env_changed = true;
+        }
+        if let Some(vars) = &plan.env {
+            for e in before.machine.env.iter().filter(|e| e.value.is_some()) {
+                set(&e.name, None);
+            }
+            for (n, v) in vars {
+                if n.is_empty() || n.contains('=') {
+                    return Err(format!("{n}: not a usable variable"));
+                }
+                set(n, Some(v.clone()));
+            }
+            env_changed = true;
+        }
+        if env_changed {
+            step(sink, "Writing the service's environment");
+            write_environment(&env)?;
+        }
+        if let Some(on) = plan.restart_always {
+            step(sink, "Setting what Windows does when the gateway fails");
+            let args: Vec<&str> = if on { vec!["failure", SERVICE, "reset=", "86400", "actions=", "restart/5000/restart/5000/restart/5000"] } else { vec!["failure", SERVICE, "reset=", "0", "actions=", ""] };
+            if !matches!(crate::sys::output("sc.exe", &args), Some((true, _, _))) {
+                return Err("sc.exe failure could not set the restart policy.".into());
+            }
+        }
+        if page {
+            step(sink, "Setting the web page and restarting the gateway once (its own --install)");
+            let mut args = vec!["--install".to_string()];
+            match plan.ui_enabled {
+                Some(true) => args.push("--ui".into()),
+                Some(false) => args.push("--no-ui".into()),
+                None => {}
+            }
+            if let Some(l) = &plan.ui_listen {
+                args.push("--ui-listen".into());
+                args.push(l.clone());
+            }
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            match crate::sys::output_limited(&program, &refs, std::time::Duration::from_secs(120)) {
+                Some((true, _, _)) => {}
+                Some((false, _, e)) => return Err(format!("The gateway's --install stopped: {}", crate::sys::decode(&e).trim())),
+                None => return Err("The gateway's program could not be started.".into()),
+            }
+        } else if env_changed {
+            step(sink, "Restarting the gateway service once");
+            control(sink, "restart")?;
+        }
+        Ok(())
+    }
+
+    pub fn test_creds() -> Option<crate::gateway_settings::TestCreds> {
+        let file = std::fs::read_to_string(config_file()).ok();
+        crate::gateway_settings::creds_of(file.as_deref(), &service_environment())
     }
 
     fn download(url: &str, to: &std::path::Path) -> Result<(), String> {

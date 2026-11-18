@@ -37,6 +37,14 @@ one() { # where page width scale theme [dialog env]
   # The dialog's env in the file name: "=" and "/" made safe.
   local tag="${dlg//=/-}"; tag="${tag//\//_}"
   local name="$where-$page-$w-x$sc-$th${dlg:+-$tag}" x="$OUT/xdg-$where-$page-$w-$sc-$th${dlg:+-$tag}"
+  # SKIP_DONE="<out dir> …" (earlier runs, this one's own too): a render
+  # that passed there is not done again (a stopped run finished later).
+  local done_dir
+  for done_dir in ${SKIP_DONE:-}; do
+    if [ -e "$done_dir/$name.png" ] && [ -e "$done_dir/$name.result" ] && [ ! -s "$done_dir/$name.result" ]; then
+      echo "ok   $name (passed in $done_dir)"; return 0
+    fi
+  done
   rm -rf "$x"; mkdir -p "$x"
   # "loading": a server page with its readings held back (LOADING_PROFILE
   # points its instance at an address that does not answer).
@@ -91,7 +99,7 @@ one() { # where page width scale theme [dialog env]
   local expect=(); case "$dlg" in SPM_DEBUG_MOVE_STEP=*) expect=(EXPECT_SUB=movedata EXPECT_MENU="$page");; esac
   { env "${expect[@]}" python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" "${only[@]}" && { [ "$where" = setup ] || [ "$where" = maint ] || python3 "$HERE/icons.py" "$OUT/$name.log"; } && python3 "$HERE/fields.py" "$OUT/$name.log" "$dlg" && python3 "$HERE/rows.py" "$OUT/$name.log"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
 }
-export -f one; export RECORDS OUT HERE BIN PROFILE LOADING_PROFILE INSTANCE WAIT SPM_INSTALLATION_RECORD HOVER_INFO 2>/dev/null
+export -f one; export RECORDS OUT HERE BIN PROFILE LOADING_PROFILE INSTANCE WAIT SPM_INSTALLATION_RECORD HOVER_INFO SKIP_DONE 2>/dev/null
 list=()
 for p in $PAGES_LOCAL; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local $p $w $s $t"); done; done; done; done
 # Dialogs and panels, opened by their debug hooks (this computer).
@@ -152,6 +160,22 @@ fi
 # SPM_DEBUG_SENTIENT_ADMIN=stopped).
 export STOPPED_ENV="SPM_DEBUG_DBSTATUS=$HERE/fixtures/dbstatus-stopped.json+SPM_DEBUG_STATS=$HERE/fixtures/stats-stopped+SPM_DEBUG_SERVER_INFO=vm+SPM_DEBUG_SENTIENT_ADMIN=stopped"
 for p in ${STOPPED_PAGES-status statistics backup settings}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("stopped $p $w $s $t"); done; done; done; done
+# The Gateway page's settings card (crate::manager::gateway_settings) on
+# the settings fixture of each canned gateway, every tab
+# (SPM_DEBUG_GATEWAY_TAB), here and on the server; then the Apply bar with
+# changes pending and the Apply job view (SPM_DEBUG_GATEWAY_PENDING).
+# GW_LOCAL=0 leaves this computer's out (a run of the server's only).
+GW_SETTINGS_FIXTURES=${GW_SETTINGS_FIXTURES-}
+GW_TABS=${GW_TABS-"0 1 2 3 4 5 6"}
+GW_PENDING=${GW_PENDING-"SPM_DEBUG_GATEWAY_TAB=6+SPM_DEBUG_GATEWAY_PENDING=1 SPM_DEBUG_GATEWAY_TAB=1+SPM_DEBUG_GATEWAY_PENDING=1 SPM_DEBUG_GATEWAY_PENDING=apply"}
+for g in $GW_SETTINGS_FIXTURES; do
+  for e in $(for t in $GW_TABS; do echo "SPM_DEBUG_GATEWAY_TAB=$t"; done) $GW_PENDING; do
+    for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do
+      [ "${GW_LOCAL:-1}" = 1 ] && list+=("local gateway $w $s $t SPM_DEBUG_GATEWAY=$g+$e")
+      [ -n "${INSTANCE:-}" ] && list+=("remote gateway $w $s $t SPM_DEBUG_REMOTE_GATEWAY=$g+$e")
+    done; done; done
+  done
+done
 # Setup's window (its first step): the buttons' gaps only.
 [ "${SETUP:-1}" = 1 ] && for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("setup setup $w $s $t"); done; done; done
 if [ -n "${LOADING_PROFILE:-}" ]; then

@@ -33,6 +33,33 @@ refreshes that repository's Downloads table.
   the (i) on what does not carry over.
 - Gateway in Docker: an update starts the container again with the
   volumes, host folders and connection settings it has, not fixed ones.
+- Gateway: a settings card under the gateway's status, here and on a
+  server, with the tabs Connection to SENTIENT, Local web page, Connectors,
+  Storage, Logging, Statistics and Advanced, in the look of Platform
+  settings. Every value is read from the gateway's own settings (as
+  administrator for a native gateway, from its container and configuration
+  volume for Docker, through the agent on a server); a token or password
+  shows only as "set" or its last four characters. A gateway that has
+  `--status-json` is asked for its state; an older one is read from its
+  files.
+  - What SENTIENT manages (connectors, storage, logging levels, statistics,
+    remote shell, rate limits) is shown locked, with the reason and, when
+    SENTIENT's address is known, "Open in SENTIENT". The connection is
+    locked while the gateway is connected.
+  - The status card says whether the gateway is connected to SENTIENT.
+  - Local web page: on or off, where it listens, its port, and the
+    administrator password (set through the gateway's own command, on its
+    standard input).
+  - Advanced: restart after a failure, serial ports (the service account's
+    serial group, or a container's devices by their stable names) and
+    environment overrides; Logging: the level before SENTIENT connects.
+  - Apply runs as a job: the gateway's own `--install` and a drop-in of the
+    Platform Manager's for a native service, the container created again
+    with the same volumes and environment, or the Windows service's
+    settings; then the settings are read back.
+  - Test connection checks that SENTIENT's MQTT answers where the gateway
+    connects (TCP, and a TLS handshake when it uses TLS). It does not try
+    the gateway's credentials yet, and says so.
 
 ### Changed
 - After quitting, the Platform Manager starts on Status, of the instance that was open last. Closing only the window (the Platform Manager keeps running in the tray) and opening it again still returns to the page it was on.

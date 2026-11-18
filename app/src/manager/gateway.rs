@@ -17,7 +17,10 @@ use gpui_kit::*;
 
 use sentient_installer_core::gateway::{self, Offer, Settings, Status};
 
+use sentient_installer_core::gateway_settings::{self as gs, GwSettings};
+
 use crate::gateway_record::GatewayRecord;
+use crate::manager::gateway_settings::{GatewaySettingsCard, Work};
 use crate::installation::InstallationRecord;
 use crate::jobs::{Job, JobState};
 use crate::ui::{self, Tone};
@@ -39,14 +42,29 @@ pub struct GatewayPage {
     password2: Entity<InputState>,
     problem: Option<SharedString>,
     job: Entity<Job>,
+    /// The settings card (crate::manager::gateway_settings), what it shows,
+    /// when and of which gateway it was read.
+    card: Entity<GatewaySettingsCard>,
+    settings: Option<Result<GwSettings, String>>,
+    settings_read: Option<(String, std::time::Instant)>,
+    /// The settings' Apply and password job, shown in place of the card
+    /// (crate::manager::jobview) until "Back to Gateway".
+    settings_job: Entity<Job>,
+    shown: Option<String>,
+    /// This computer's SENTIENT, for the card's "Open in SENTIENT".
+    sentient_url: Option<String>,
     _subscriptions: Vec<Subscription>,
     _poll: Task<()>,
 }
+
+/// The card's values are read again at most this often while the page shows.
+const SETTINGS_REREAD: Duration = Duration::from_secs(30);
 
 impl GatewayPage {
     pub fn new(record: Option<InstallationRecord>, updates: Entity<UpdateState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // This SENTIENT's MQTT, the usual place for a gateway on the same computer.
         let port = record.as_ref().map(|r| r.stack.mqtt_port).unwrap_or(1883);
+        let sentient_url = record.as_ref().map(|r| r.url());
         let input = |cx: &mut Context<Self>, window: &mut Window, value: String| cx.new(|cx| InputState::new(window, cx).default_value(value));
         let host = input(cx, window, "127.0.0.1".into());
         let port = input(cx, window, port.to_string());
@@ -54,7 +72,25 @@ impl GatewayPage {
         let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("8 characters or more"));
         let password2 = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Again"));
         let job = cx.new(|_| Job::new());
+        let settings_job = cx.new(|_| Job::new());
+        let me = cx.entity().downgrade();
+        let card = cx.new(|_| {
+            GatewaySettingsCard::new(
+                None,
+                std::rc::Rc::new(move |w: Work, window: &mut Window, cx: &mut App| {
+                    me.update(cx, |p, cx| p.run_work(w, window, cx)).ok();
+                }),
+            )
+        });
         let mut subs = vec![
+            cx.observe(&settings_job, |page: &mut Self, job, cx| {
+                if matches!(job.read(cx).state(), JobState::Done(_) | JobState::Failed(_)) {
+                    page.settings_read = None;
+                    page.card.update(cx, |c, _| c.reset());
+                    page.refresh(cx);
+                }
+                cx.notify();
+            }),
             cx.observe(&job, |page: &mut Self, job, cx| {
                 if matches!(job.read(cx).state(), JobState::Done(_) | JobState::Failed(_)) {
                     page.refresh(cx);
@@ -73,6 +109,7 @@ impl GatewayPage {
             let (status, record) = cx.background_executor().spawn(async { (local_status(), crate::gateway_record::load()) }).await;
             if this.update(cx, |p, cx| {
                 let first = p.status.is_none();
+                p.read_settings_if_due(&status, cx);
                 p.status = Some(status);
                 p.record = record;
                 // Screens: the removal dialog open (SPM_DEBUG_GATEWAY_REMOVE=1).
@@ -90,15 +127,175 @@ impl GatewayPage {
                 u.check(cx);
             }
         });
-        Self { status: None, record: None, action: None, updates, host, port, token, password, password2, problem: None, job, _subscriptions: subs, _poll: poll }
+        Self {
+            status: None,
+            record: None,
+            action: None,
+            updates,
+            host,
+            port,
+            token,
+            password,
+            password2,
+            problem: None,
+            job,
+            card,
+            settings: None,
+            settings_read: None,
+            settings_job,
+            shown: None,
+            sentient_url,
+            _subscriptions: subs,
+            _poll: poll,
+        }
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             let (status, record) = cx.background_executor().spawn(async { (local_status(), crate::gateway_record::load()) }).await;
-            this.update(cx, |p, cx| { p.status = Some(status); p.record = record; cx.notify(); }).ok();
+            this.update(cx, |p, cx| {
+                p.read_settings_if_due(&status, cx);
+                p.status = Some(status);
+                p.record = record;
+                cx.notify();
+            })
+            .ok();
         })
         .detach();
+    }
+
+    /// Read the card's settings again: the first time, for another gateway
+    /// (or the same one started or stopped), after a job, and every
+    /// SETTINGS_REREAD. In the background; nothing is read while a
+    /// settings job runs.
+    fn read_settings_if_due(&mut self, status: &Status, cx: &mut Context<Self>) {
+        if !status.installed {
+            self.settings = None;
+            self.settings_read = None;
+            return;
+        }
+        if self.settings_job.read(cx).is_running() {
+            return;
+        }
+        let key = format!("{}|{}|{}|{}", status.kind(), RemoveTarget::of(status, None).name, status.running, status.config_unreadable);
+        let due = self.settings_read.as_ref().is_none_or(|(k, at)| *k != key || at.elapsed() > SETTINGS_REREAD);
+        if !due {
+            return;
+        }
+        self.settings_read = Some((key, std::time::Instant::now()));
+        let s = status.clone();
+        cx.spawn(async move |this, cx| {
+            let got = cx.background_executor().spawn(async move { local_settings(&s) }).await;
+            this.update(cx, |p, cx| {
+                p.settings = Some(got);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// What the settings card asks for: Apply and the password as a job
+    /// shown in place of the card; the test in the background, its answer
+    /// on the card. A native gateway's run as root (crate::rootjob).
+    fn run_work(&mut self, work: Work, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(status) = self.status.clone() else { return };
+        let as_root = status.kind() == "service" && cfg!(target_os = "linux") && !crate::rootjob::is_root();
+        // Screens: a canned gateway is never changed; the job says so.
+        let canned = cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_GATEWAY").is_some();
+        match work {
+            Work::Test => {
+                let card = self.card.clone();
+                cx.spawn(async move |_, cx| {
+                    let r = if canned { Ok("Screens: a canned gateway; nothing was tested.".to_string()) } else { cx.background_executor().spawn(async move { test_here(&status, as_root) }).await };
+                    card.update(cx, |c, cx| c.set_test(Some(r), cx));
+                })
+                .detach();
+            }
+            Work::Apply(plan) => {
+                if self.settings_job.read(cx).is_running() {
+                    return;
+                }
+                self.shown = Some("Applying the gateway's settings".into());
+                let names = format!("{}. {}", plan.names().join(", "), plan.restart_words(status.kind()));
+                self.settings_job.update(cx, |job, cx| {
+                    job.set_label("Applying the gateway's settings");
+                    job.set_plan(vec![
+                        sentient_installer_core::progress::PlanStep::new("Applying the settings").detail(names).weight(3.),
+                        sentient_installer_core::progress::PlanStep::new("Reading the settings back"),
+                    ]);
+                    job.set_on_page(true);
+                    job.start(
+                        move |sink| {
+                            sink(sentient_installer_core::progress::Progress::Step { name: "Applying the settings".into() });
+                            if canned {
+                                sink(sentient_installer_core::progress::Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
+                                return Ok(());
+                            }
+                            if as_root {
+                                let path = crate::updates::prefs_dir().join("gateway-apply.json");
+                                let text = serde_json::to_string(&plan).map_err(|e| e.to_string())?;
+                                let _ = std::fs::create_dir_all(crate::updates::prefs_dir());
+                                std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
+                                let r = crate::rootjob::run(&["gateway-apply".to_string(), path.display().to_string()], &sink).map(|_| ());
+                                let _ = std::fs::remove_file(&path);
+                                r
+                            } else {
+                                gs::apply(&sink, &status, &plan)
+                            }
+                        },
+                        cx,
+                    )
+                });
+            }
+            Work::Password(pw) => {
+                if self.settings_job.read(cx).is_running() {
+                    return;
+                }
+                self.shown = Some("Changing the web page's password".into());
+                self.settings_job.update(cx, |job, cx| {
+                    job.set_label("Changing the gateway page's password");
+                    job.set_plan(vec![sentient_installer_core::progress::PlanStep::new("Setting the password")]);
+                    job.set_on_page(true);
+                    job.start(
+                        move |sink| {
+                            sink(sentient_installer_core::progress::Progress::Step { name: "Setting the password".into() });
+                            if canned {
+                                sink(sentient_installer_core::progress::Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
+                                return Ok(());
+                            }
+                            if as_root {
+                                crate::rootjob::run_with_input(&["gateway-ui-password".to_string()], Some(format!("{pw}\n").as_str()), &sink).map(|_| ())
+                            } else {
+                                gs::set_password(&status, &pw).map(|m| sink(sentient_installer_core::progress::Progress::Done { message: m }))
+                            }
+                        },
+                        cx,
+                    )
+                });
+            }
+        }
+        cx.notify();
+    }
+
+    /// The settings job, in place of the card: running, or ended and not
+    /// yet left with "Back to Gateway".
+    fn settings_job_view(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let title = self.shown.clone()?;
+        let job = self.settings_job.read(cx);
+        if matches!(job.state(), JobState::Idle) {
+            return None;
+        }
+        let this = cx.entity().downgrade();
+        let back = crate::manager::jobview::back_button("gw-job-back", "Gateway", move |_, cx| {
+            this.update(cx, |p, cx| {
+                p.shown = None;
+                p.settings_job.update(cx, |j, cx| j.reset(cx));
+                cx.notify();
+            })
+            .ok();
+        });
+        Some(crate::manager::jobview::JobView::new("gw-set-job", title, &self.settings_job).actions([back]).render(cx))
     }
 
     fn value(&self, state: &Entity<InputState>, cx: &App) -> String {
@@ -481,6 +678,7 @@ impl Render for GatewayPage {
                         .child(ui::product_logo(ui::Product::Gateway, 28.))
                         .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
                         .child(ui::pill(&theme, tone, pill))
+                        .children(crate::manager::gateway_settings::connected_pill(&theme, self.settings.as_ref(), status.running))
                         .child(div().flex_1())
                         .when_some(status.page_url.clone(), |r, url| {
                             r.child(crate::ui::button("gw-page").outline().label("Open local page").on_click(move |_, _, cx| ui::open_url(&url, cx)))
@@ -495,6 +693,11 @@ impl Render for GatewayPage {
                     _ => ui::fact(&theme, "Sends to", "Not commissioned (set the platform on its local page)"),
                 })
                 .child(ui::fact(&theme, "Runs as", runs_as(status.kind(), &RemoveTarget::of(&status, None).name, status.managed, recorded)))
+                .children(self.settings.as_ref().and_then(|s| s.as_ref().ok()).and_then(|s| {
+                    let path = s.config_path.clone()?;
+                    let n = s.connectors.len();
+                    Some(ui::fact(&theme, "Configuration", format!("{path} · {n} connector{}", if n == 1 { "" } else { "s" })))
+                }))
                 .when_some(status.compose_dir.clone(), |p, dir| {
                     p.child(ui::fact(&theme, "Compose", match &status.compose_project {
                         Some(proj) => format!("{proj}, in {dir}"),
@@ -659,7 +862,21 @@ impl Render for GatewayPage {
                 })
         };
 
-        page.child(body)
+        let below = if status.installed {
+            match self.settings_job_view(cx) {
+                Some(v) => Some(v.into_any_element()),
+                None => {
+                    let url = crate::manager::gateway_settings::sentient_page(self.sentient_url.as_deref(), status.host.as_deref(), &[]);
+                    let settings = self.settings.clone();
+                    let busy = busy || self.settings_job.read(cx).is_running();
+                    self.card.update(cx, |c, _| c.feed(settings, url, busy));
+                    Some(self.card.clone().into_any_element())
+                }
+            }
+        } else {
+            None
+        };
+        page.child(body.flex_shrink_0()).children(below)
     }
 }
 
@@ -887,6 +1104,8 @@ struct AdminRead {
     host: Option<String>,
     port: Option<u16>,
     page_url: Option<String>,
+    /// The settings card's values (gateway-settings-json; no secret in them).
+    settings: Option<GwSettings>,
 }
 
 static ADMIN_READ: std::sync::Mutex<Option<AdminRead>> = std::sync::Mutex::new(None);
@@ -914,8 +1133,11 @@ fn admin_read() -> Result<Status, String> {
     crate::rootjob::run(&["gateway-status".to_string()], &sink)?;
     let line = lines.lock().ok().and_then(|v| v.iter().rev().find(|l| l.starts_with("installed=")).cloned()).ok_or("The administrator's read gave no gateway state.")?;
     let s = status_of_line(&line);
+    // The card's values in the same helper (no second prompt).
+    let quiet: sentient_installer_core::progress::ProgressFn = std::sync::Arc::new(|_| {});
+    let settings = crate::rootjob::run(&["gateway-settings-json".to_string()], &quiet).ok().and_then(|lines| crate::remote::settings_of_output(&lines.join("\n")).ok());
     if let Ok(mut g) = ADMIN_READ.lock() {
-        *g = Some(AdminRead { of: native_key(&s), at: std::time::Instant::now(), host: s.host.clone(), port: s.port, page_url: s.page_url.clone() });
+        *g = Some(AdminRead { of: native_key(&s), at: std::time::Instant::now(), host: s.host.clone(), port: s.port, page_url: s.page_url.clone(), settings });
     }
     Ok(s)
 }
@@ -954,6 +1176,47 @@ pub(crate) fn local_status() -> Status {
     }
     // A read: SENTIENT's stopped WSL distro stays stopped (Windows).
     with_admin_read(sentient_installer_core::distro::idle::reading(gateway::status))
+}
+
+/// The card's settings of the gateway on this computer: read here (Docker,
+/// the Windows service, a readable native one), or from the last
+/// administrator's read of a native one. Screens: SPM_DEBUG_GATEWAY_SETTINGS
+/// names a fixture (crate::manager::gateway_settings::debug_settings).
+pub(crate) fn local_settings(status: &Status) -> Result<GwSettings, String> {
+    // Screens: the fixture named, else the one of the canned gateway's name;
+    // a canned gateway is never read for real.
+    #[cfg(debug_assertions)]
+    if let Some(n) = std::env::var("SPM_DEBUG_GATEWAY_SETTINGS").ok().or_else(|| std::env::var("SPM_DEBUG_GATEWAY").ok()) {
+        return crate::manager::gateway_settings::debug_settings(&n).ok_or_else(|| format!("no settings fixture {n}"));
+    }
+    if status.kind() == "service" && cfg!(target_os = "linux") && !crate::rootjob::is_root() {
+        if let Some(s) = ADMIN_READ.lock().ok().and_then(|g| g.as_ref().filter(|r| r.of == native_key(status)).and_then(|r| r.settings.clone())) {
+            return Ok(s);
+        }
+        if status.config_unreadable {
+            return Err("readable by an administrator only. Read its settings (above) reads them, once with your password.".into());
+        }
+    }
+    Ok(gs::read(status))
+}
+
+/// Test connection on this computer (as root for a native gateway).
+fn test_here(status: &Status, as_root: bool) -> Result<String, String> {
+    if !as_root {
+        return gs::test_connection(status);
+    }
+    let done = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let d2 = done.clone();
+    let sink: sentient_installer_core::progress::ProgressFn = std::sync::Arc::new(move |p| {
+        if let sentient_installer_core::progress::Progress::Done { message } = p {
+            if let Ok(mut g) = d2.lock() {
+                *g = Some(message);
+            }
+        }
+    });
+    crate::rootjob::run(&["gateway-test".to_string()], &sink)?;
+    let m = done.lock().ok().and_then(|g| g.clone());
+    m.ok_or_else(|| "The test gave no answer.".to_string())
 }
 
 /// Screens: canned gateways by name, one per way it runs (fictional names).
@@ -1033,9 +1296,9 @@ mod tests {
     #[test]
     fn an_admin_read_fills_only_its_own_gateway() {
         let unreadable = Status { installed: true, service: Some("sentient-gateway.service".into()), config_unreadable: true, ..Status::default() };
-        *ADMIN_READ.lock().unwrap() = Some(AdminRead { of: "other.service".into(), at: std::time::Instant::now(), host: Some("10.0.0.9".into()), port: Some(1883), page_url: None });
+        *ADMIN_READ.lock().unwrap() = Some(AdminRead { of: "other.service".into(), at: std::time::Instant::now(), host: Some("10.0.0.9".into()), port: Some(1883), page_url: None, settings: None });
         assert!(with_admin_read(unreadable.clone()).host.is_none());
-        *ADMIN_READ.lock().unwrap() = Some(AdminRead { of: "sentient-gateway.service".into(), at: std::time::Instant::now(), host: Some("10.0.0.9".into()), port: Some(1883), page_url: Some("http://127.0.0.1:8642/".into()) });
+        *ADMIN_READ.lock().unwrap() = Some(AdminRead { of: "sentient-gateway.service".into(), at: std::time::Instant::now(), host: Some("10.0.0.9".into()), port: Some(1883), page_url: Some("http://127.0.0.1:8642/".into()), settings: None });
         let s = with_admin_read(unreadable);
         assert_eq!((s.host.as_deref(), s.port, s.config_unreadable), (Some("10.0.0.9"), Some(1883), false));
         *ADMIN_READ.lock().unwrap() = None;
