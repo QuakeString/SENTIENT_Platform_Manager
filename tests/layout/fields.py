@@ -63,7 +63,9 @@ def main():
             elif abs(home[0][1] - r) > 1.5:
                 bad.append(f"unit slot {l:.0f}-{r:.0f} y {t:.0f}: not at its field's right edge ({home[0][1]:.0f})")
     bars = f.get("pending-bar", [])
-    if dbg.startswith("SPM_DEBUG_SETTINGS_PENDING=") and not dbg.endswith("=leave") and not bars:
+    # The gateway card: no bar for a gateway not changed from here.
+    pending = (dbg.startswith("SPM_DEBUG_SETTINGS_PENDING=") and not dbg.endswith("=leave")) or ("SPM_DEBUG_GATEWAY_PENDING=1" in dbg and "=compose" not in dbg and "native-unreadable" not in dbg)
+    if pending and not bars:
         bad.append("Apply bar: not shown with changes pending")
     for (l, r, t, b) in bars:
         home = [c for c in card if c[0] - 0.5 <= l and r <= c[1] + 0.5 and c[2] <= t and b <= c[3] + 0.5]
@@ -76,7 +78,9 @@ def main():
         if abs(l - c[0]) > 1.5 or abs(r - c[1]) > 1.5:
             bad.append(f"Apply bar: {l:.0f}-{r:.0f} does not span the card {c[0]:.0f}-{c[1]:.0f}")
         areas = [a for a in f.get("page-area", []) if c[0] - 0.5 <= a[0] and a[1] <= c[1] + 0.5]
-        if areas and abs(areas[0][3] - t) > 1.5:
+        # The bar's probe sits inside its 1 px top line, which snaps to a
+        # whole device pixel: up to 2 px below the scrolling part at 2x.
+        if areas and not (-1.5 <= t - areas[0][3] <= 2.5):
             bad.append(f"Apply bar: starts at y {t:.0f}, the card's scrolling part ends at {areas[0][3]:.0f}")
     for b in bad:
         print(f"{log.split('/')[-1]}: {b}")

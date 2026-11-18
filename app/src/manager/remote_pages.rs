@@ -2414,6 +2414,8 @@ impl RemotePages {
         let mut p = ui::panel(&theme).child(
             h_flex()
                 .gap_3()
+                // A narrow window: the pills go to their own line.
+                .flex_wrap()
                 .items_center()
                 .child(ui::product_logo(ui::Product::Gateway, 24.))
                 .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
@@ -2544,7 +2546,7 @@ impl RemotePages {
                     }))
                 }),
         ));
-        v_flex().gap(px(ui::GAP)).child(panel).child(card)
+        v_flex().flex_1().min_h_0().gap(px(ui::GAP)).child(panel.flex_shrink_0()).child(card)
     }
 
     /// What the gateway's settings card asks for, on the server: Apply (a

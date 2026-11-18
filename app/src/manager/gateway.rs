@@ -846,7 +846,7 @@ impl Render for GatewayPage {
         } else {
             None
         };
-        page.child(body).children(below)
+        page.child(body.flex_shrink_0()).children(below)
     }
 }
 

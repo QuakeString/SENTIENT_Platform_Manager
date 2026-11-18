@@ -45,6 +45,8 @@ pub enum Work {
 pub type RunFn = Rc<dyn Fn(Work, &mut Window, &mut App)>;
 
 pub const TITLES: [&str; 7] = ["Connection to SENTIENT", "Local web page", "Connectors", "Storage", "Logging", "Statistics", "Advanced"];
+/// The settings card's least height: its tabs, a few rows and the Apply bar.
+const CARD_MIN_H: f32 = 380.;
 const LEVEL_WORDS: [&str; 3] = ["Errors", "Normal", "Detailed"];
 const LISTEN_WORDS: [&str; 3] = ["This computer", "All interfaces", "One address"];
 
@@ -183,7 +185,24 @@ impl GatewaySettingsCard {
         self.removed = 0;
         self.new_name = Some(self.input(String::new(), "ST_GW_…", window, cx));
         self.new_value = Some(self.input(String::new(), "value", window, cx));
+        let first = self.filled_from.is_none() && self.edit == self.base;
         self.filled_from = Some(s.clone());
+        // Screens: SPM_DEBUG_GATEWAY_PENDING=1 changes three settings (the
+        // Apply bar); =apply also applies them (the job view; a canned
+        // gateway is never changed).
+        if cfg!(debug_assertions) && first && s.machine.not_editable.is_none() {
+            static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if let Ok(v) = std::env::var("SPM_DEBUG_GATEWAY_PENDING") {
+                if !DONE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    self.edit.ui_on = !self.base.ui_on;
+                    self.edit.restart_on = !self.base.restart_on;
+                    self.edit.level = Some(2);
+                    if v == "apply" {
+                        cx.on_next_frame(window, |c, window, cx| c.apply(window, cx));
+                    }
+                }
+            }
+        }
     }
 
     fn text(i: &Option<Entity<InputState>>, cx: &App) -> String {
@@ -483,14 +502,17 @@ impl Render for GatewaySettingsCard {
         if let Some(n) = s.note.clone().filter(|_| s.source == "none") {
             top.push(info_line(&theme, "note", &n, None).into_any_element());
         }
-        shell(
-            v_flex()
-                .child(tabs)
-                .child(v_flex().pb(px(12.)).children(top).children(body))
-                .children(bar)
-                .into_any_element(),
-        )
-        .into_any_element()
+        // As Platform settings: the card fills what the page has left (at
+        // least CARD_MIN_H), its rows scroll inside it and the Apply bar
+        // stays at its bottom edge, in view.
+        div()
+            .flex_1()
+            .min_h(px(CARD_MIN_H))
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .child(ui::settings_card(&theme, "gw-settings-body", tabs, v_flex().pb(px(12.)).children(top).children(body).child(ui::layout_probe("gw-settings-card")), bar))
+            .into_any_element()
     }
 }
 
@@ -532,7 +554,7 @@ impl GatewaySettingsCard {
         let button = crate::ui::probed(
             crate::ui::button("gw-test")
                 .outline()
-                .label(if self.testing { "Testing…" } else { "Test" })
+                .label("Test")
                 .loading(self.testing)
                 .disabled(busy || c.host.is_none())
                 .on_click(cx.listener(|c, _, window, cx| {

@@ -115,6 +115,22 @@ for g in $GATEWAY_FIXTURES; do for w in $WIDTHS; do for s in $SCALES; do for t i
 if [ -n "${INSTANCE:-}" ]; then
   for g in ${REMOTE_GATEWAY_FIXTURES-native native-unreadable docker-legacy}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote gateway $w $s $t SPM_DEBUG_REMOTE_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done
 fi
+# The Gateway page's settings card (crate::manager::gateway_settings) on
+# the settings fixture of each canned gateway, every tab
+# (SPM_DEBUG_GATEWAY_TAB), here and on the server; then the Apply bar with
+# changes pending and the Apply job view (SPM_DEBUG_GATEWAY_PENDING).
+# GW_LOCAL=0 leaves this computer's out (a run of the server's only).
+GW_SETTINGS_FIXTURES=${GW_SETTINGS_FIXTURES-}
+GW_TABS=${GW_TABS-"0 1 2 3 4 5 6"}
+GW_PENDING=${GW_PENDING-"SPM_DEBUG_GATEWAY_TAB=6+SPM_DEBUG_GATEWAY_PENDING=1 SPM_DEBUG_GATEWAY_TAB=1+SPM_DEBUG_GATEWAY_PENDING=1 SPM_DEBUG_GATEWAY_PENDING=apply"}
+for g in $GW_SETTINGS_FIXTURES; do
+  for e in $(for t in $GW_TABS; do echo "SPM_DEBUG_GATEWAY_TAB=$t"; done) $GW_PENDING; do
+    for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do
+      [ "${GW_LOCAL:-1}" = 1 ] && list+=("local gateway $w $s $t SPM_DEBUG_GATEWAY=$g+$e")
+      [ -n "${INSTANCE:-}" ] && list+=("remote gateway $w $s $t SPM_DEBUG_REMOTE_GATEWAY=$g+$e")
+    done; done; done
+  done
+done
 # Setup's window (its first step): the buttons' gaps only.
 [ "${SETUP:-1}" = 1 ] && for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("setup setup $w $s $t"); done; done; done
 if [ -n "${LOADING_PROFILE:-}" ]; then
