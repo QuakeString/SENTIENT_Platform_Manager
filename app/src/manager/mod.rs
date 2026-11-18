@@ -316,6 +316,21 @@ impl Drop for SwitchTiming {
     }
 }
 
+/// The top bar's last readings (this computer's, and each server's), kept
+/// when the window closes while the app runs on: the next window's bar
+/// shows them at once, not its placeholders, and reads them again.
+static KEPT_MONITORS: std::sync::Mutex<Option<(Option<Monitor>, HashMap<String, Monitor>)>> = std::sync::Mutex::new(None);
+
+impl Drop for Manager {
+    fn drop(&mut self) {
+        let mut cache = std::mem::take(&mut self.monitor_cache);
+        if let (Some(id), Some(m)) = (&self.open_remote, self.remote_monitor) {
+            cache.insert(id.clone(), m);
+        }
+        *KEPT_MONITORS.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.monitor, cache));
+    }
+}
+
 /// The bell's events as saved (the tray's menu reads them without a window).
 pub fn saved_events() -> Vec<strip::Event> {
     strip::load_events()
@@ -434,6 +449,11 @@ impl Manager {
             _subscriptions: subscriptions,
             _tasks: Vec::new(),
         };
+        // A window opened again: the bar's last readings at once.
+        if let Some((monitor, cache)) = KEPT_MONITORS.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            manager.monitor = monitor;
+            manager.monitor_cache = cache;
+        }
         manager.start_monitor(cx);
         manager.refresh_running(cx);
         // Performance probes (tests/layout/perf.sh): go to pages in turn,
