@@ -1078,8 +1078,10 @@ impl SettingsPage {
                         h_flex()
                             .w_full()
                             .gap(crate::ui::button_gap())
-                            .items_center()
-                            .child(div().flex_1().min_w_0().text_sm().text_color(if locked { theme.danger } else { theme.muted_foreground }).child(format!("{state}{last}")))
+                            // The line wraps under itself; the buttons stay
+                            // on the name's line (as the stopped row's).
+                            .items_start()
+                            .child(ui::row_text(format!("{state}{last}")).flex_1().min_w_0().text_color(if locked { theme.danger } else { theme.muted_foreground }))
                             .when(locked, |r| {
                                 r.child(crate::ui::probed(crate::ui::button(SharedString::from(format!("unlock-{email}"))).outline().label("Unlock").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                     let e = e1.clone();
