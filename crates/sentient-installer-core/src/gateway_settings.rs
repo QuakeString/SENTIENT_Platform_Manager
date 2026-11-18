@@ -1023,6 +1023,22 @@ mod tests {
         assert!(!merge_status_json(&mut s, "not json"));
     }
 
+    /// The gateway's own --status-json (sentient-gateway-rs, branch
+    /// claude/project-thread-40rbqc), as it prints it.
+    #[test]
+    fn the_gateways_status_json_as_printed() {
+        let line = r#"{"version":"4.16.3","running":true,"connected":true,"stateAgeMs":3012,"phase":"running","configFile":"/etc/sentient-gateway/st_gateway.json","config":{"sentient":{"host":"sentient.example.local","port":1883,"security":{"type":"accessToken","accessToken":"set"}}},"localUi":{"enabled":true,"listen":"127.0.0.1:8642","hostnames":[],"passwordSet":true},"connectors":[{"name":"line-1-modbus","type":"modbus","enabled":true,"state":"running","devices":3}],"logs":{"loggers":{"service":{"level":"INFO"}}}}"#;
+        let mut s = GwSettings::default();
+        assert!(merge_status_json(&mut s, line));
+        assert_eq!((s.connected, s.ui.password_set, s.conn.secret_hint.as_deref()), (Some(true), Some(true), Some("set")));
+        assert_eq!((s.connectors[0].state.as_deref(), s.connectors[0].devices), (Some("running"), Some(3)));
+        assert!(s.logging.iter().any(|f| f.label == "Service" && f.value == "INFO"));
+        // Not known (an old state file of a live gateway): left to the sockets.
+        let mut u = GwSettings { connected: Some(false), ..GwSettings::default() };
+        assert!(merge_status_json(&mut u, &line.replace("\"connected\":true", "\"connected\":null")));
+        assert_eq!(u.connected, Some(false));
+    }
+
     #[test]
     fn connected_by_the_process_sockets() {
         let fd = "lrwx------ 1 sg sg 64 Nov 18 07:00 7 -> socket:[48123]\nlrwx------ 1 sg sg 64 Nov 18 07:00 8 -> /dev/null\n";
