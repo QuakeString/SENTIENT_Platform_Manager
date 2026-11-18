@@ -50,6 +50,19 @@ refreshes that repository's Downloads table.
   VM (half the computer's memory, or .wslconfig's memory=), not the whole
   computer; with ClickHouse beside a Windows PostgreSQL, PostgreSQL is
   sized for what the ClickHouse VM leaves.
+- On a virtual machine without a GPU, Windows' Microsoft Basic Render
+  Driver now counts as drawing without a GPU too (it does not say so in
+  DXGI's own flag): the job line and spinner stand still and the Platform
+  Manager no longer takes several processors while a job runs.
+- Windows Docker: the first start of WSL 2's virtual machine right after
+  Setup installed the WSL 2 kernel can miss Windows' deadline ("a response
+  was not received from the virtual machine or container"). Setup now
+  stops WSL and creates the distro once more by itself instead of failing;
+  when it does fail, the diagnosis says WSL did not answer in time and to
+  Retry, not that WSL is missing. When WSL is missing, the command offered
+  is the one this Windows takes (the Windows features and the WSL 2 kernel
+  on an inbox WSL, `wsl --install --no-distribution` only where wsl.exe
+  knows it).
 - Repair and a reinstall over a kept database: the schema installer's
   "duplicate key … tb_user_pkey" is no longer a red error line in the job
   log. An existing database is the expected case; the log says "The

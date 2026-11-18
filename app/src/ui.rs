@@ -980,10 +980,27 @@ static SOFTWARE_RENDERER: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 /// the job ran, slowing SENTIENT's own start in the same machine (the
 /// 2026-11-18 rc3 VM pass: 99 % while Start ran, its window open).
 pub fn note_renderer(window: &gpui_kit::Window, cx: &mut gpui_kit::App) {
-    if window.gpu_specs().is_some_and(|g| g.is_software_emulated) {
+    if window.gpu_specs().is_some_and(|g| software_renderer(g.is_software_emulated, &g.device_name, &g.driver_name)) {
         SOFTWARE_RENDERER.store(true, std::sync::atomic::Ordering::Relaxed);
         cx.set_reduce_motion(true);
     }
+}
+
+/// Whether a GPU description is a renderer on the processor. GPUI's own
+/// flag is not enough on Windows: DXGI's Microsoft Basic Render Driver
+/// (WARP, the adapter of a virtual machine without a GPU, vendor 0x1414)
+/// does not carry DXGI_ADAPTER_FLAG_SOFTWARE (the 2026-11-18 rc4 VM pass:
+/// the job line still moved and the Platform Manager took 2.7 processors
+/// while Start ran).
+pub fn software_renderer(flagged: bool, device: &str, driver: &str) -> bool {
+    let d = device.to_ascii_lowercase();
+    flagged
+        || d.contains("basic render driver")
+        || d.contains("llvmpipe")
+        || d.contains("softpipe")
+        || d.contains("swiftshader")
+        || d.contains("warp")
+        || driver.contains("0x1414")
 }
 
 /// Whether the desktop asks for less motion (KDE's animation speed at 0,
@@ -1951,6 +1968,18 @@ pub fn control_h() -> Length {
 
 #[cfg(test)]
 mod control_h_tests {
+
+    #[test]
+    fn a_renderer_on_the_processor_is_known_also_without_dxgi_flag() {
+        // The rc4 VM: DXGI's Basic Render Driver, flag not set, vendor 0x1414.
+        assert!(super::software_renderer(false, "Microsoft Basic Render Driver", "Unknown Vendor (ID: 0x1414)"));
+        assert!(super::software_renderer(false, "llvmpipe (LLVM 17.0.6, 256 bits)", "llvmpipe"));
+        assert!(super::software_renderer(true, "anything", ""));
+        assert!(!super::software_renderer(false, "NVIDIA GeForce RTX 4070", "NVIDIA Corporation"));
+        assert!(!super::software_renderer(false, "Intel(R) UHD Graphics 770", "Intel Corporation"));
+        assert!(!super::software_renderer(false, "Red Hat VirtIO GPU DOD controller", "Unknown Vendor (ID: 0x1AF4)"));
+    }
+
     use super::control_h;
     use gpui_kit::{rems, Length};
 
