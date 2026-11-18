@@ -112,7 +112,11 @@ done
 # and the older Python gateway beside none and beside ours.
 GATEWAY_FIXTURES=${GATEWAY_FIXTURES-"docker compose native native-unreadable native-hand windows legacy docker-legacy"}
 for g in $GATEWAY_FIXTURES; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local gateway $w $s $t SPM_DEBUG_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done
+# The Update page's gateway line: ours in Docker, a package service (off,
+# with its reason) and the older Python gateway (with its (i)).
+for g in ${UPDATE_GATEWAY_FIXTURES-docker native legacy}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local update $w $s $t SPM_DEBUG_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done
 if [ -n "${INSTANCE:-}" ]; then
+  for g in ${REMOTE_UPDATE_GATEWAY_FIXTURES-docker legacy}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote update $w $s $t SPM_DEBUG_REMOTE_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done
   for g in ${REMOTE_GATEWAY_FIXTURES-native native-unreadable docker-legacy}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote gateway $w $s $t SPM_DEBUG_REMOTE_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done
 fi
 # Setup's window (its first step): the buttons' gaps only.

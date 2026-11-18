@@ -145,6 +145,10 @@ pub struct Maintenance {
     screen: Screen,
     tick_manager: bool,
     tick_sentient: bool,
+    /// The gateway here and its update from the update channel (read in the
+    /// background; None: no gateway, or nothing newer).
+    gateway: Option<(crate::manager::gateway::GatewayUpdate, sentient_installer_core::gateway::Offer, Option<String>)>,
+    tick_gateway: bool,
     /// The steps the update run shows.
     planned: Vec<String>,
     show_log: bool,
@@ -203,8 +207,36 @@ impl Maintenance {
                 .ok();
             }));
         }
+        // The gateway's update: the newest gateway release on the update
+        // channel against the gateway found here.
+        tasks.push(cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    let s = crate::manager::gateway::local_status();
+                    if !s.installed && s.legacy.is_none() {
+                        return None;
+                    }
+                    #[cfg(debug_assertions)]
+                    if let Ok(v) = std::env::var("SPM_DEBUG_GATEWAY_OFFER") {
+                        let o = sentient_installer_core::gateway::Offer { version: v, date: "2026-11-17".into(), notes: String::new(), page: String::new(), installer: None, checksum: None };
+                        return crate::manager::gateway::gateway_update(&s, Some(&o), cfg!(windows)).map(|u| (u, o, s.version.clone()));
+                    }
+                    let o = sentient_installer_core::gateway::newest(crate::updates::Prefs::load().channel).ok().flatten()?;
+                    crate::manager::gateway::gateway_update(&s, Some(&o), cfg!(windows)).map(|u| (u, o, s.version.clone()))
+                })
+                .await;
+            this.update(cx, |page, cx| {
+                page.tick_gateway = found.as_ref().is_some_and(|(u, _, _)| u.why.is_none());
+                page.gateway = found;
+                cx.notify();
+            })
+            .ok();
+        }));
         Self {
             broken: None,
+            gateway: None,
+            tick_gateway: false,
             _tasks: tasks,
             _subs: Vec::new(),
             record,
@@ -296,6 +328,7 @@ impl Maintenance {
         let (Some(record), Some(found)) = (self.record.clone(), self.found.clone()) else { return };
         let manager = self.tick_manager;
         let sentient = self.tick_sentient.then(|| found.package.clone()).flatten();
+        let gateway = self.gateway_ticked().then(|| self.gateway.as_ref().map(|(_, o, _)| o.clone())).flatten();
         let install_only = !found.manager_installed;
         let mut planned: Vec<String> = Vec::new();
         if install_only {
@@ -306,6 +339,9 @@ impl Maintenance {
         }
         if let Some((_, v)) = &sentient {
             planned.push(updating_sentient(v));
+        }
+        if let Some(o) = &gateway {
+            planned.push(updating_gateway(&o.version));
         }
         self.job.update(cx, |job, _| job.set_plan(planned.iter().map(|p| sentient_installer_core::progress::PlanStep::new(p.clone())).collect()));
         self.planned = planned;
@@ -355,6 +391,11 @@ impl Maintenance {
                         updated.manager_version = crate::updates::manager_version().into();
                         save_record(&updated)?;
                     }
+                    // The gateway last: SENTIENT is running again by then.
+                    if let Some(o) = gateway {
+                        step(&sink, &updating_gateway(&o.version));
+                        sentient_installer_core::gateway::update(&nested(&sink), &o)?;
+                    }
                     Ok(())
                 },
                 cx,
@@ -364,13 +405,12 @@ impl Maintenance {
     }
 
     fn update_label(&self) -> String {
-        match (self.tick_manager, self.tick_sentient) {
-            (true, true) => "Update both".into(),
-            (true, false) if self.sentient_tickable() => "Update the Platform Manager".into(),
-            (false, true) if self.manager_tickable() => "Update SENTIENT".into(),
-            (false, true) => "Update SENTIENT".into(),
-            _ => "Update".into(),
-        }
+        update_label(self.tick_manager && self.manager_tickable(), self.tick_sentient, self.gateway_ticked())
+    }
+
+    /// The gateway's line is ticked and can run.
+    fn gateway_ticked(&self) -> bool {
+        self.tick_gateway && self.gateway.as_ref().is_some_and(|(u, _, _)| u.why.is_none())
     }
 
     fn manager_tickable(&self) -> bool {
@@ -383,6 +423,34 @@ impl Maintenance {
             _ => false,
         }
     }
+}
+
+/// The Update button's words for what is ticked.
+fn update_label(manager: bool, sentient: bool, gateway: bool) -> String {
+    match (manager, sentient, gateway) {
+        (true, true, true) => "Update all three".into(),
+        (true, true, false) | (true, false, true) | (false, true, true) => "Update both".into(),
+        (true, false, false) => "Update the Platform Manager".into(),
+        (false, true, false) => "Update SENTIENT".into(),
+        (false, false, true) => "Update the gateway".into(),
+        _ => "Update".into(),
+    }
+}
+
+/// What the update screen names: the ticked parts, in order.
+fn updated_parts(manager: bool, sentient: bool, gateway: bool) -> String {
+    let parts: Vec<&str> = [(manager, "the Platform Manager"), (sentient, "SENTIENT"), (gateway, "the Sentient Gateway")].into_iter().filter(|(on, _)| *on).map(|(_, n)| n).collect();
+    match parts.as_slice() {
+        [] => String::new(),
+        [one] => one.to_string(),
+        [a, b] => format!("{a} and {b}"),
+        [a, b, c] => format!("{a}, {b} and {c}"),
+        _ => parts.join(", "),
+    }
+}
+
+fn updating_gateway(version: &str) -> String {
+    format!("Updating the Sentient Gateway to {version}")
 }
 
 /// Start the installed Platform Manager with `args`.
@@ -412,7 +480,14 @@ fn line(
         .border_1()
         .border_color(if ticked && enabled { theme.primary } else { theme.border })
         .child(Checkbox::new(SharedString::from(format!("{id}-box"))).checked(ticked).disabled(!enabled))
-        .child(div().when(!enabled, |d| d.opacity(0.6)).child(ui::product_logo(if id == "line-sentient" { ui::Product::Sentient } else { ui::Product::Manager }, 28.)))
+        .child(div().when(!enabled, |d| d.opacity(0.6)).child(ui::product_logo(
+            match id {
+                "line-sentient" => ui::Product::Sentient,
+                "line-gateway" => ui::Product::Gateway,
+                _ => ui::Product::Manager,
+            },
+            28.,
+        )))
         .child(
             v_flex()
                 .flex_1()
@@ -582,7 +657,29 @@ impl Maintenance {
                     .into_any_element(),
             ),
         }
-        let nothing = !(self.tick_manager && manager_on) && !self.tick_sentient;
+        if let Some((u, _, installed)) = &self.gateway {
+            let enabled = u.why.is_none();
+            let about = match &u.why {
+                Some(why) => why.clone(),
+                None => u.about.clone(),
+            };
+            let title = match installed {
+                Some(v) if !u.older => format!("Sentient Gateway {v} to {}", u.version),
+                _ => format!("Sentient Gateway {}", u.version),
+            };
+            out.push(
+                line(theme, "line-gateway", self.tick_gateway && enabled, enabled, title, about, None)
+                    .when(u.older, |l| l.child(ui::info("line-gateway-help".into(), crate::manager::gateway::legacy_update_help().into())))
+                    .when(enabled, |l| {
+                        l.on_click(cx.listener(|this, _, _, cx| {
+                            this.tick_gateway = !this.tick_gateway;
+                            cx.notify();
+                        }))
+                    })
+                    .into_any_element(),
+            );
+        }
+        let nothing = !(self.tick_manager && manager_on) && !self.tick_sentient && !self.gateway_ticked();
         out.push(
             h_flex()
                 .gap(crate::ui::button_gap())
@@ -699,30 +796,31 @@ impl Maintenance {
         let install_only = !found.manager_installed;
         let manager = self.tick_manager || install_only;
         let sentient_v = self.tick_sentient.then(|| found.package.as_ref().map(|(_, v)| v.clone())).flatten();
-        let what = match (manager, &sentient_v) {
-            (true, Some(_)) => "the Platform Manager and SENTIENT",
-            (true, None) => "the Platform Manager",
-            _ => "SENTIENT",
-        };
+        let gateway = self.gateway_ticked().then(|| self.gateway.clone()).flatten();
+        let what = updated_parts(manager, sentient_v.is_some(), gateway.is_some());
+        let what = what.as_str();
         let title = match (finished, install_only) {
             (None, true) => "Installing the Platform Manager".to_string(),
             (None, false) => format!("Updating {what}"),
             (Some(true), true) => "The Platform Manager is installed".to_string(),
-            (Some(true), false) => match (manager, &sentient_v) {
-                (true, Some(_)) => "The Platform Manager and SENTIENT are updated".to_string(),
-                (true, None) => "The Platform Manager is updated".to_string(),
-                _ => "SENTIENT is updated".to_string(),
-            },
+            (Some(true), false) => format!("{} {} updated", capitalise(what), if what.contains(" and ") { "are" } else { "is" }),
             (Some(false), true) => "The Platform Manager was not installed".to_string(),
             (Some(false), false) => format!("{} was not updated", capitalise(what)),
         };
-        let versions = match (manager, &sentient_v) {
+        let mut versions = match (manager, &sentient_v) {
             (true, Some(v)) => format!("Platform Manager {} to {}, SENTIENT {} to {v}", found.installed_manager_label(), found.this_manager, record.sentient_version),
             (true, None) if install_only => format!("Platform Manager {}", found.this_manager),
             (true, None) => format!("{} to {}", found.installed_manager_label(), found.this_manager),
             (false, Some(v)) => format!("SENTIENT {} to {v}", record.sentient_version),
             _ => String::new(),
         };
+        if let Some((u, _, installed)) = &gateway {
+            let g = match installed {
+                Some(v) if !u.older => format!("Sentient Gateway {v} to {}", u.version),
+                _ => format!("the older Python gateway to Sentient Gateway {}", u.version),
+            };
+            versions = if versions.is_empty() { capitalise(&g) } else { format!("{versions}, {g}") };
+        }
         let result = match job.state() {
             JobState::Done(_) => {
                 let now = InstallationRecord::load();
@@ -816,9 +914,28 @@ impl Maintenance {
             Screen::WhatsNew => self.whats_new_screen(&theme, &record, &found, cx),
             Screen::Home if !found.manager_installed => self.install_manager_screen(&theme, &record, &found, cx),
             Screen::Home if found.manager_move == releases::Move::Older => self.choices_screen(&theme, &record, &found, cx),
-            Screen::Home if !self.manager_tickable() && !self.sentient_tickable() => self.choices_screen(&theme, &record, &found, cx),
+            Screen::Home if !self.manager_tickable() && !self.sentient_tickable() && self.gateway.is_none() => self.choices_screen(&theme, &record, &found, cx),
             Screen::Home => self.tick_screen(&theme, &record, &found, cx),
         };
         page.children(children)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
+    use super::{update_label, updated_parts, updating_gateway};
+
+    #[test]
+    fn the_update_button_and_title_name_what_is_ticked() {
+        assert_eq!(update_label(true, false, false), "Update the Platform Manager");
+        assert_eq!(update_label(false, false, true), "Update the gateway");
+        assert_eq!(update_label(true, false, true), "Update both");
+        assert_eq!(update_label(true, true, true), "Update all three");
+        assert_eq!(update_label(false, false, false), "Update");
+        assert_eq!(updated_parts(true, true, false), "the Platform Manager and SENTIENT");
+        assert_eq!(updated_parts(false, false, true), "the Sentient Gateway");
+        assert_eq!(updated_parts(true, true, true), "the Platform Manager, SENTIENT and the Sentient Gateway");
+        assert_eq!(updating_gateway("4.16.3"), "Updating the Sentient Gateway to 4.16.3");
     }
 }

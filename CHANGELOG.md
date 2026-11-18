@@ -26,6 +26,11 @@ refreshes that repository's Downloads table.
   removed and the older one runs again as before. Its (i) lists what does
   not carry over (custom Python converters, Python code in a
   configuration, gRPC connectors, a file-storage backlog).
+- Update page and Setup's update choices: a Sentient Gateway line, here
+  and on a server. It shows the newer gateway release and runs the same
+  gateway update with its progress; a gateway that cannot be updated from
+  here is greyed with the reason. The older Python gateway's line carries
+  the (i) on what does not carry over.
 - Gateway in Docker: an update starts the container again with the
   volumes, host folders and connection settings it has, not fixed ones.
 

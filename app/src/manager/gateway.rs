@@ -734,6 +734,78 @@ pub(crate) fn legacy_panel(
         .child(update)
 }
 
+/// The gateway's line on the Update pages and in Setup's choices: what
+/// its update would be.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct GatewayUpdate {
+    pub version: String,
+    /// One sentence: from what to what, and what it keeps.
+    pub about: String,
+    /// Why it cannot run here (the line is then greyed with it).
+    pub why: Option<String>,
+    /// The older Python gateway (its (i) says what does not carry over).
+    pub older: bool,
+}
+
+/// The update `offer` gives the gateway found as `s` (None: no gateway, or
+/// nothing newer). `windows`: the computer it runs on.
+pub(crate) fn gateway_update(s: &Status, offer: Option<&Offer>, windows: bool) -> Option<GatewayUpdate> {
+    let o = offer?;
+    let why = gateway::update_blocker(s, &o.version, o.installer.is_some(), windows);
+    if !s.installed {
+        let name = s.legacy.clone()?;
+        return Some(GatewayUpdate {
+            version: o.version.clone(),
+            about: format!(
+                "The older Python gateway (the container {name}) to Sentient Gateway {}. Its configuration is backed up and carried over with the same identity; if anything fails, it runs again as before.",
+                o.version
+            ),
+            why,
+            older: true,
+        });
+    }
+    let installed = s.version.clone()?;
+    if !sentient_installer_core::releases::is_newer(&o.version, &installed, false) {
+        return None;
+    }
+    let keeps = match s.kind() {
+        "docker" => " The container starts again with its volumes and settings.",
+        "windows-service" => " The configuration and the web page's password are kept.",
+        _ => "",
+    };
+    Some(GatewayUpdate { version: o.version.clone(), about: format!("{installed} to {}.{keeps}", o.version), why, older: false })
+}
+
+/// The line's "Update to <v>": off with its reason as a tooltip, and for
+/// the older gateway an (i) with what does not carry over.
+pub(crate) fn update_button(_theme: &gpui_kit::component::Theme, id: &'static str, u: &GatewayUpdate, busy: bool, on_click: std::rc::Rc<dyn Fn(&mut Window, &mut App)>) -> Div {
+    let button = crate::ui::button(id).primary().label(format!("Update to {}", u.version)).disabled(busy || u.why.is_some()).on_click(move |_, w, cx| on_click(w, cx));
+    let button = match &u.why {
+        Some(w) => div().id(SharedString::from(format!("{id}-why"))).child(button).tooltip(crate::ui::tooltip(w.clone())).into_any_element(),
+        None => button.into_any_element(),
+    };
+    h_flex()
+        .gap_1()
+        .items_center()
+        .child(crate::ui::probed(button))
+        .when(u.older, |r| r.child(ui::info(SharedString::from(format!("{id}-help")), legacy_update_help().into())))
+}
+
+/// The gateway's line on the Update page when there is no update: what is
+/// installed, and a label. None: no gateway here at all.
+pub(crate) fn gateway_summary(s: &Status, checked: Option<bool>) -> Option<(String, Option<(Tone, &'static str)>)> {
+    if !s.installed && s.legacy.is_none() {
+        return None;
+    }
+    let what = if s.installed { s.version.clone().map(|v| format!("{v} installed")).unwrap_or_else(|| "Installed, its version not known".into()) } else { "The older Python gateway".into() };
+    Some(match checked {
+        None => (format!("{what}. Checking…"), None),
+        Some(false) => (format!("{what}."), Some((Tone::Neutral, "Not checked"))),
+        Some(true) if s.installed && s.version.is_none() => (format!("{what}: updates cannot be checked."), None),
+        Some(true) => (format!("{what}. Up to date."), Some((Tone::Good, "Up to date"))),
+    })
+}
+
 /// The web page's "Off" explained for how the gateway runs.
 pub(crate) fn page_off_help(kind: &str) -> &'static str {
     match kind {
@@ -875,7 +947,7 @@ pub(crate) fn status_of(get: &dyn Fn(&str) -> String) -> Status {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
-    use super::{ADMIN_READ, AdminRead, Status, legacy_update_help, legacy_version, page_off_help, status_of_line, with_admin_read};
+    use super::{ADMIN_READ, AdminRead, Offer, Status, gateway_summary, gateway_update, legacy_update_help, legacy_version, page_off_help, status_of_line, with_admin_read};
 
     #[test]
     fn a_status_line_round_trips() {
@@ -916,5 +988,43 @@ mod tests {
         assert!(!help.to_lowercase().contains("migrat"));
         let s = status_of_line("installed=false legacy=example-old-gw legacy_image=quakestring/sentient-gateway:3.7.10");
         assert_eq!((s.installed, s.legacy.as_deref(), s.legacy_image.as_deref()), (false, Some("example-old-gw"), Some("quakestring/sentient-gateway:3.7.10")));
+    }
+
+    fn offer(v: &str, installer: bool) -> Offer {
+        let asset = sentient_installer_core::releases::Asset { name: format!("SentientGatewaySetup-{v}.exe"), browser_download_url: String::new(), size: 1, digest: None };
+        Offer { version: v.into(), date: "2026-11-17".into(), notes: String::new(), page: String::new(), installer: installer.then_some(asset), checksum: None }
+    }
+
+    #[test]
+    fn the_gateway_line_on_update_and_setup() {
+        let o = offer("4.16.3", false);
+        // Ours in Docker, older: an update that keeps its volumes.
+        let docker = status_of_line("installed=true version=4.16.1 kind=docker container=sentient-gateway managed=true");
+        let u = gateway_update(&docker, Some(&o), false).unwrap();
+        assert_eq!((u.version.as_str(), u.why.is_none(), u.older), ("4.16.3", true, false));
+        assert!(u.about.starts_with("4.16.1 to 4.16.3.") && u.about.contains("volumes"));
+        // Up to date, or no offer: no line to update.
+        assert!(gateway_update(&status_of_line("installed=true version=4.16.3 kind=docker container=sentient-gateway managed=true"), Some(&o), false).is_none());
+        assert!(gateway_update(&docker, None, false).is_none());
+        // A version not known is never compared.
+        assert!(gateway_update(&status_of_line("installed=true kind=docker container=sentient-gateway managed=true"), Some(&o), false).is_none());
+        // A package service: the line is there, greyed with its reason.
+        let native = status_of_line("installed=true version=4.16.1 kind=service service=sentient-gateway.service program=/usr/bin/sentient-gateway package=sentient-gateway");
+        assert!(gateway_update(&native, Some(&o), false).unwrap().why.unwrap().contains("package manager"));
+        // Windows service: needs the release's installer.
+        let win = status_of_line("installed=true version=4.16.1 kind=windows-service managed=true");
+        assert!(gateway_update(&win, Some(&o), true).unwrap().why.is_some());
+        assert!(gateway_update(&win, Some(&offer("4.16.3", true)), true).unwrap().why.is_none());
+        // The older Python gateway alone: always its update (not on Windows).
+        let older = status_of_line("installed=false legacy=example-old-gw legacy_image=quakestring/sentient-gateway:latest");
+        let u = gateway_update(&older, Some(&o), false).unwrap();
+        assert!(u.older && u.why.is_none() && u.about.contains("example-old-gw"));
+        assert!(!u.about.to_lowercase().contains("migrat"));
+        assert!(gateway_update(&older, Some(&o), true).unwrap().why.is_some());
+        // Nothing here at all: no line.
+        assert!(gateway_update(&status_of_line("installed=false"), Some(&o), false).is_none());
+        assert!(gateway_summary(&status_of_line("installed=false"), Some(true)).is_none());
+        assert_eq!(gateway_summary(&docker, Some(true)).unwrap().1.map(|p| p.1), Some("Up to date"));
+        assert_eq!(gateway_summary(&docker, None).unwrap().0, "4.16.1 installed. Checking…");
     }
 }
