@@ -309,6 +309,23 @@ fn probe(inst: &Instance) -> Probe {
     p
 }
 
+/// Whether the account may write in a server's folder, and the folder's
+/// owner to name. A Windows server's OpenSSH reports POSIX ids it makes up
+/// (uid 0, no write bits) even for the account's own folders: the read-only
+/// banner said "belongs to root" in its Downloads. There Windows decides on
+/// each write itself (a refused one shows its error) and no owner is named.
+fn folder_access(windows: bool, here: &crate::sftp::Attrs, owner: Option<String>, uid: u32, gids: &[u32]) -> (bool, String) {
+    if windows {
+        return (true, String::new());
+    }
+    let owner = owner.filter(|o| !o.is_empty()).unwrap_or_else(|| if here.uid == Some(0) { "root".into() } else { String::new() });
+    let writable = match (here.uid, here.gid, here.perm) {
+        (Some(o), Some(g), Some(m)) => may_write(uid, gids, o, g, m),
+        _ => true,
+    };
+    (writable, owner)
+}
+
 pub struct RemoteFs {
     s: Sftp,
     p: Probe,
@@ -347,16 +364,17 @@ impl Fs for RemoteFs {
         // attributes, entries with their owners, links followed, free space.
         let d = self.s.list_dir(path)?;
         let here = d.attrs;
-        let owner = d.owner.filter(|o| !o.is_empty()).unwrap_or_else(|| if here.uid == Some(0) { "root".into() } else { String::new() });
+        // A Windows server's OpenSSH reports POSIX ids it makes up (uid 0,
+        // no write bits) for folders the account owns: the read-only banner
+        // said "belongs to root" in the account's own Downloads. Windows
+        // decides on each write itself (a refused one shows its error).
+        let windows = crate::remote::is_windows(&self.inst);
+        let (writable, owner) = folder_access(windows, &here, d.owner, self.p.uid, &self.p.gids);
         let entries = d
             .entries
             .into_iter()
-            .map(|e| Entry { dir: e.attrs.is_dir(), size: if e.attrs.is_dir() { 0 } else { e.attrs.size.unwrap_or(0) }, mtime: e.attrs.mtime.map(i64::from), owner: e.owner, name: e.name })
+            .map(|e| Entry { dir: e.attrs.is_dir(), size: if e.attrs.is_dir() { 0 } else { e.attrs.size.unwrap_or(0) }, mtime: e.attrs.mtime.map(i64::from), owner: if windows { String::new() } else { e.owner }, name: e.name })
             .collect();
-        let writable = match (here.uid, here.gid, here.perm) {
-            (Some(o), Some(g), Some(m)) => may_write(self.p.uid, &self.p.gids, o, g, m),
-            _ => true,
-        };
         Ok(Listing { path: path.to_string(), entries, free: d.free, writable, owner })
     }
 
@@ -527,6 +545,18 @@ pub fn open(place: &Place, admin: bool) -> Result<Box<dyn Fs>, String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Windows OpenSSH's made-up ids (uid 0, gid 0, no write bits) never
+    /// make the account's own folder read-only or "root's"; on Linux the
+    /// same attributes do.
+    #[test]
+    fn a_windows_folder_is_never_roots_or_read_only_from_made_up_ids() {
+        let here = crate::sftp::Attrs { uid: Some(0), gid: Some(0), perm: Some(0o40555), ..Default::default() };
+        assert_eq!(super::folder_access(true, &here, None, u32::MAX, &[]), (true, String::new()));
+        assert_eq!(super::folder_access(false, &here, None, 1000, &[1000]), (false, "root".to_string()));
+        let mine = crate::sftp::Attrs { uid: Some(1000), gid: Some(1000), perm: Some(0o40755), ..Default::default() };
+        assert_eq!(super::folder_access(false, &mine, Some("ops".into()), 1000, &[1000]), (true, "ops".to_string()));
+    }
     use super::*;
 
     #[test]

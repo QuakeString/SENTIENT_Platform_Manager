@@ -181,7 +181,10 @@ impl Pane {
     /// Which of Size, Modified and Owner fit beside a Name of NAME_MIN:
     /// Owner goes first, then Size, then Modified.
     fn shown(&self) -> [bool; 3] {
-        let mut on = [true, true, self.place.is_remote()];
+        // Owner: a Linux server's account names; a Windows server's OpenSSH
+        // gives none (only made-up POSIX ids).
+        let owners = matches!(&self.place, Place::Remote(i) if !crate::remote::is_windows(i));
+        let mut on = [true, true, owners];
         let w = self.width.get();
         if w <= 0. {
             return on;
