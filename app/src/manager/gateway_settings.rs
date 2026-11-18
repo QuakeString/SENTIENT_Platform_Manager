@@ -1074,7 +1074,7 @@ pub fn debug_settings(name: &str) -> Option<GwSettings> {
             s.log_files = Some(r"C:\ProgramData\Sentient Gateway\data\logs".into());
         }
         "docker" | "docker-disconnected" | "docker-legacy" => {
-            s.conn.host = Some("10.0.4.12".into());
+            s.conn.host = Some("127.0.0.1".into());
             s.conn.from_env = true;
             s.connected = Some(false);
             s.connected_how = Some("the gateway's open connections".into());

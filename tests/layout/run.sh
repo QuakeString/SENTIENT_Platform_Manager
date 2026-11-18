@@ -30,6 +30,14 @@ one() { # where page width scale theme [dialog env]
   # The dialog's env in the file name: "=" and "/" made safe.
   local tag="${dlg//=/-}"; tag="${tag//\//_}"
   local name="$where-$page-$w-x$sc-$th${dlg:+-$tag}" x="$OUT/xdg-$where-$page-$w-$sc-$th${dlg:+-$tag}"
+  # SKIP_DONE="<out dir> …" (earlier runs, this one's own too): a render
+  # that passed there is not done again (a stopped run finished later).
+  local done_dir
+  for done_dir in ${SKIP_DONE:-}; do
+    if [ -e "$done_dir/$name.png" ] && [ -e "$done_dir/$name.result" ] && [ ! -s "$done_dir/$name.result" ]; then
+      echo "ok   $name (passed in $done_dir)"; return 0
+    fi
+  done
   rm -rf "$x"; mkdir -p "$x"
   # "loading": a server page with its readings held back (LOADING_PROFILE
   # points its instance at an address that does not answer).
@@ -69,7 +77,7 @@ one() { # where page width scale theme [dialog env]
   local expect=(); case "$dlg" in SPM_DEBUG_MOVE_STEP=*) expect=(EXPECT_SUB=movedata EXPECT_MENU="$page");; esac
   { env "${expect[@]}" python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" "${only[@]}" && { [ "$where" = setup ] || python3 "$HERE/icons.py" "$OUT/$name.log"; } && python3 "$HERE/fields.py" "$OUT/$name.log" "$dlg" && python3 "$HERE/rows.py" "$OUT/$name.log"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
 }
-export -f one; export OUT HERE BIN PROFILE LOADING_PROFILE INSTANCE WAIT SPM_INSTALLATION_RECORD HOVER_INFO 2>/dev/null
+export -f one; export OUT HERE BIN PROFILE LOADING_PROFILE INSTANCE WAIT SPM_INSTALLATION_RECORD HOVER_INFO SKIP_DONE 2>/dev/null
 list=()
 for p in $PAGES_LOCAL; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local $p $w $s $t"); done; done; done; done
 # Dialogs and panels, opened by their debug hooks (this computer).
