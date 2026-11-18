@@ -60,7 +60,7 @@ impl Source {
                 if let Some(d) = std::env::var_os("SPM_DEBUG_STATS") {
                     return crate::stats::debug_part(std::path::Path::new(&d), Part::System);
                 }
-                Ok(crate::stats::local_read(r.as_ref(), crate::stats::FIRST_WINDOW))
+                Ok(sentient_installer_core::distro::idle::reading(|| crate::stats::local_read(r.as_ref(), crate::stats::FIRST_WINDOW)))
             }
             Source::Remote(i) => crate::remote::stats_live_part(i, Part::System),
         }
@@ -85,7 +85,7 @@ impl Source {
                 if let Some(d) = std::env::var_os("SPM_DEBUG_STATS") {
                     return crate::stats::debug_part(std::path::Path::new(&d), Part::Services).map(|s| s.services);
                 }
-                Ok(crate::stats::services_over(r.as_ref(), Duration::from_secs(1)))
+                Ok(sentient_installer_core::distro::idle::reading(|| crate::stats::services_over(r.as_ref(), Duration::from_secs(1))))
             }
             Source::Remote(i) => crate::remote::stats_live_part(i, Part::Services).map(|s| s.services),
         }

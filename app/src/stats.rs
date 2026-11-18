@@ -297,9 +297,13 @@ pub fn read_part(record: Option<&InstallationRecord>, part: Part) -> Sample {
 /// also read the database numbers (never asking for a password).
 pub fn read(record: Option<&InstallationRecord>, window: Duration, with_db: bool) -> Sample {
     let window = window.max(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+    // A read on the caller's thread is one on these too (Windows: no
+    // stopped WSL distro is started, distro::idle).
+    use sentient_installer_core::distro::idle;
+    let reading = idle::is_reading();
     std::thread::scope(|scope| {
-        let services = scope.spawn(|| services_over(record, window));
-        let db = with_db.then(|| scope.spawn(|| db_unprompted(record)));
+        let services = scope.spawn(|| idle::reading_if(reading, || services_over(record, window)));
+        let db = with_db.then(|| scope.spawn(|| idle::reading_if(reading, || db_unprompted(record))));
         let mut reader = Reader::new(record);
         let mut s = reader.read(window);
         s.services = services.join().unwrap_or_default();

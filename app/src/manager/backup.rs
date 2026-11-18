@@ -619,7 +619,7 @@ impl BackupPage {
             return;
         }
         let task = cx.spawn(async move |this, cx| {
-            let st = cx.background_executor().spawn(async move { crate::dbstatus::read(&record) }).await;
+            let st = cx.background_executor().spawn(async move { sentient_installer_core::distro::idle::reading(|| crate::dbstatus::read(&record)) }).await;
             this.update(cx, |page, cx| {
                 if let Some(pg) = &st.pg {
                     let history = pg.tables.iter().find(|t| t.name == "ts_kv").map(|t| t.bytes).unwrap_or(0);

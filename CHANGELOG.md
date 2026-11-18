@@ -27,6 +27,19 @@ refreshes that repository's Downloads table.
   its last state on the card, marked "Not reachable" with the time of its
   last answer. One request per server at a time; the tray's checks reuse
   these readings.
+- Windows Docker: reading SENTIENT's state no longer starts its WSL distro.
+  Any command for the distro starts it, and with it SENTIENT, so the Status
+  page started SENTIENT about a minute after it was opened, also with
+  "Start SENTIENT automatically with Windows" off. The Status page, the
+  tray's checks, the statistics and their sampler, the instance cards and
+  what another computer's Platform Manager reads now first look whether
+  the distro is running; when it is not, SENTIENT shows as stopped and the
+  distro stays stopped. Start, Restart, Repair and updates start it as
+  before.
+- Windows Docker: changing "Start SENTIENT automatically with Windows" in
+  Platform settings no longer fails after a minute on a busy computer.
+  Changing the boot task may take 3 minutes and is tried once more when it
+  does not finish; the error names what did not finish.
 - Windows "In the system": other computers reach SENTIENT. Setup opens its
   ports in Windows Firewall (rule group SENTIENT: web and MQTT over TCP,
   CoAP over UDP). Repair, a SENTIENT update and the Platform Manager's

@@ -649,7 +649,7 @@ impl Manager {
                 continue;
             }
             let r = record.clone();
-            let m = cx.background_executor().spawn(async move { crate::sysmon::from_sample(&crate::stats::local_read(r.as_ref(), std::time::Duration::from_millis(250))) }).await;
+            let m = cx.background_executor().spawn(async move { crate::sysmon::from_sample(&sentient_installer_core::distro::idle::reading(|| crate::stats::local_read(r.as_ref(), std::time::Duration::from_millis(250)))) }).await;
             if this
                 .update(cx, |page, cx| {
                     if page.monitor != Some(m) {

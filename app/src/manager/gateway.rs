@@ -621,7 +621,8 @@ pub(crate) fn local_status() -> Status {
         let kv: std::collections::HashMap<String, String> = t.split([' ', '+']).filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.replace("%20", " "))).collect();
         return status_of(&|k| kv.get(k).cloned().unwrap_or_default());
     }
-    gateway::status()
+    // A read: SENTIENT's stopped WSL distro stays stopped (Windows).
+    sentient_installer_core::distro::idle::reading(gateway::status)
 }
 
 /// A Status from a `gateway-status` line's values.

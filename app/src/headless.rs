@@ -198,8 +198,23 @@ pub fn run(args: &[String]) -> i32 {
     code
 }
 
+/// The jobs that only read this computer's state, asked for again and
+/// again (an instance card, the tray, the statistics and their sampler):
+/// on Windows they never start SENTIENT's stopped WSL distro
+/// (sentient_installer_core::distro::idle).
+fn reading_job(args: &[String]) -> bool {
+    let args = if args.first().is_some_and(|a| a == "--json") { &args[1..] } else { args };
+    matches!(
+        args.first().map(String::as_str),
+        Some("status-json" | "monitor-json" | "stats-live" | "stats-sample" | "services-json" | "dbstatus-json" | "gateway-status" | "server-info-json")
+    )
+}
+
 fn run_job(args: &[String]) -> i32 {
     attach_console();
+    if reading_job(args) {
+        sentient_installer_core::distro::idle::reading_process();
+    }
     let json = args.first().is_some_and(|a| a == "--json");
     let args = if json { &args[1..] } else { args };
     // Which Platform Manager this is (crate::remote::reuse): read-only, so
@@ -1265,6 +1280,11 @@ pub(crate) fn shown_from(record: &InstallationRecord, running: Option<&str>) -> 
 
 /// This computer's state for the Platform Manager on another computer.
 pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote::RemoteStatus {
+    // A read: SENTIENT's stopped WSL distro stays stopped (Windows).
+    sentient_installer_core::distro::idle::reading(|| status_json_now(record))
+}
+
+fn status_json_now(record: Option<&InstallationRecord>) -> crate::remote::RemoteStatus {
     // The full version, as the window shows it (0.8.0-rc12).
     // The same text as the window's About: version and build.
     let manager_version = format!("{} (build {})", crate::updates::manager_version(), crate::updates::build_commit());
@@ -1353,4 +1373,26 @@ fn read_request(path: &str) -> Result<crate::restore_flow::Request, String> {
         let _ = std::fs::remove_file(path);
     }
     serde_json::from_str(&text).map_err(|e| format!("the restore request: {e}"))
+}
+
+#[cfg(test)]
+mod reading_tests {
+    use super::reading_job;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_periodic_reads_never_start_the_distro_and_the_actions_do() {
+        for job in ["status-json", "monitor-json", "stats-sample", "services-json", "dbstatus-json", "gateway-status", "server-info-json"] {
+            assert!(reading_job(&args(&[job])), "{job}");
+        }
+        assert!(reading_job(&args(&["stats-live", "services"])));
+        assert!(reading_job(&args(&["--json", "status-json"])));
+        for job in ["control", "repair", "update", "service", "apply-settings", "backup", "uninstall", "gateway-control", "serve"] {
+            assert!(!reading_job(&args(&[job, "start"])), "{job}");
+        }
+        assert!(!reading_job(&[]));
+    }
 }

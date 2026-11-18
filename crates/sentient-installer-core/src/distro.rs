@@ -26,6 +26,7 @@ pub const DISTRO: &str = "sentient";
 pub mod adopt;
 pub mod docker_ops;
 pub mod hosts;
+pub mod idle;
 pub mod move_data;
 pub mod gateway_docker;
 pub mod port_forward;
@@ -722,6 +723,11 @@ pub(crate) const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_se
 /// A command through the Docker shell, stopped after `limit` on Windows.
 pub(crate) fn shell_output(prog: &str, args: &[&str], limit: std::time::Duration) -> Option<(bool, Vec<u8>, Vec<u8>)> {
     if cfg!(windows) {
+        // A read does not start a stopped distro (idle): it fails, as a
+        // stopped stack's commands do.
+        if idle::skip(idle::is_reading(), args, idle::running) {
+            return None;
+        }
         sys::output_wsl(prog, args, limit)
     } else {
         let _ = limit;
@@ -805,6 +811,10 @@ pub fn is_running(http_port: u16) -> bool {
         // non-zero when the connection is refused.
         let url = format!("http://localhost:{http_port}");
         let distro = docker_distro();
+        // A read does not start a stopped distro (idle): nothing answers.
+        if idle::is_reading() && !idle::running(&distro) {
+            return false;
+        }
         let inside = sys::output_wsl("wsl.exe", &["-d", &distro, "-u", "root", "--", "curl", "-s", "-o", "/dev/null", "--max-time", "4", &url], std::time::Duration::from_secs(20))
             .map(|(ok, _, _)| ok)
             .unwrap_or(false);
@@ -1474,7 +1484,13 @@ pub fn set_keepalive_start(automatic: bool, delay_secs: u32) -> Result<(), Strin
     if keepalive_start().is_none() {
         return Err(format!("The task {KEEPALIVE_TASK} that starts SENTIENT is missing. Repair puts it back."));
     }
-    powershell(&keepalive_start_script(automatic.then_some(delay_secs)), &format!("could not change the task {KEEPALIVE_TASK}"))
+    // A busy computer can take more than a minute just to load the task
+    // scheduler's module: a long limit, and once more when it passes.
+    let script = keepalive_start_script(automatic.then_some(delay_secs));
+    idle::twice("Changing SENTIENT's start at boot (scheduled task)", idle::BOOT_TASK_LIMIT, || {
+        sys::output_limited("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", &script], idle::BOOT_TASK_LIMIT)
+            .map(|(ok, out, err)| (ok, sys::decode(&out), sys::decode(&err)))
+    })
 }
 
 /// Windows: before SENTIENT is started in its own distro, the keep-alive
@@ -1625,6 +1641,12 @@ pub fn status(cfg: &DeployConfig) -> StackStatus {
     #[cfg(not(windows))]
     let present = exec::have("docker");
 
+    // Its distro stopped: SENTIENT is stopped, and asking the distro
+    // anything would start it (idle).
+    #[cfg(windows)]
+    if present && !idle::running(&docker_distro()) {
+        return stopped_distro_status(cfg);
+    }
     let installed = present && cfg.stack_defined();
     let mut containers = Vec::new();
     if present {
@@ -1651,6 +1673,21 @@ pub fn status(cfg: &DeployConfig) -> StackStatus {
     let app_down = containers.iter().any(|c| c.name == n.app) && !containers.iter().any(|c| c.name == n.app && c.state == "running");
     let running = installed && !app_down && answers(cfg);
     StackStatus { installed, running, containers }
+}
+
+/// [`status`] while the stack's WSL distro is stopped: installed (its
+/// compose file cannot be looked at without starting the distro; the
+/// installation record says it is there), not running, each container
+/// stopped.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn stopped_distro_status(cfg: &DeployConfig) -> StackStatus {
+    let n = cfg.names();
+    let mut names = vec![n.app, n.pg];
+    if cfg.flavor == Flavor::Clickhouse {
+        names.push(n.ch);
+    }
+    let containers = names.into_iter().map(|name| ContainerStatus { name, state: "stopped".into(), status: "Not running (its WSL distro is stopped)".into() }).collect();
+    StackStatus { installed: true, running: false, containers }
 }
 
 /// Replace the default sys-admin sign-in inside the stack's PostgreSQL.
@@ -2221,6 +2258,18 @@ mod keepalive_tests {
         assert!(!keepalive_start_from_xml(&task("")).0);
         // Another trigger's delay is not the boot trigger's.
         assert!(!keepalive_start_from_xml(&task("<LogonTrigger><Delay>PT5S</Delay></LogonTrigger>")).0);
+    }
+
+    #[test]
+    fn a_stopped_distro_is_a_stopped_sentient() {
+        let mut cfg = DeployConfig { flavor: Flavor::Clickhouse, ..Default::default() };
+        let st = stopped_distro_status(&cfg);
+        assert!(st.installed && !st.running);
+        let names: Vec<&str> = st.containers.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["sentient", "sentient-postgres", "sentient-clickhouse"]);
+        assert!(st.containers.iter().all(|c| c.state == "stopped"));
+        cfg.flavor = Flavor::Stock;
+        assert_eq!(stopped_distro_status(&cfg).containers.len(), 2);
     }
 }
 

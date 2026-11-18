@@ -148,7 +148,7 @@ impl StatusPage {
                     let rec = rec.clone();
                     let (snapshot, version) = cx
                         .background_executor()
-                        .spawn(async move { (platform.snapshot(), crate::headless::shown_version(&rec)) })
+                        .spawn(async move { sentient_installer_core::distro::idle::reading(|| (platform.snapshot(), crate::headless::shown_version(&rec))) })
                         .await;
                     let alive = this
                         .update(cx, |page, cx| {
@@ -257,7 +257,7 @@ impl StatusPage {
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         let task = cx.spawn(async move |this, cx| {
-            let snapshot = cx.background_executor().spawn(async move { record.platform().snapshot() }).await;
+            let snapshot = cx.background_executor().spawn(async move { sentient_installer_core::distro::idle::reading(|| record.platform().snapshot()) }).await;
             this.update(cx, |page, cx| {
                 page.snapshot = Some(snapshot);
                 cx.notify();
@@ -320,7 +320,7 @@ impl StatusPage {
                 .background_executor()
                 .spawn(async move {
                     let _action = ask.then(sentient_installer_core::elevation::user_action);
-                    crate::dbstatus::read(&record)
+                    sentient_installer_core::distro::idle::reading(|| crate::dbstatus::read(&record))
                 })
                 .await;
             this.update(cx, |page, cx| {

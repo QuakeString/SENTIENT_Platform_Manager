@@ -400,7 +400,8 @@ pub fn tray_up(cx: &App) -> bool {
 /// This computer's SENTIENT for the menu: None when not installed.
 fn local_state() -> Option<bool> {
     let record = crate::installation::InstallationRecord::load()?;
-    Some(record.platform().snapshot().serving)
+    // A read: SENTIENT's stopped WSL distro stays stopped (Windows).
+    Some(sentient_installer_core::distro::idle::reading(|| record.platform().snapshot().serving))
 }
 
 fn refresh_tray(cx: &mut App) {

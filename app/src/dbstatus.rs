@@ -526,8 +526,10 @@ pub fn read(record: &InstallationRecord) -> DbStatus {
     }
     let record = record.clone();
     let (tx, rx) = std::sync::mpsc::channel();
+    // A read here is one on that thread too (distro::idle).
+    let reading = sentient_installer_core::distro::idle::is_reading();
     std::thread::spawn(move || {
-        let _ = tx.send(read_now(&record));
+        let _ = tx.send(sentient_installer_core::distro::idle::reading_if(reading, || read_now(&record)));
     });
     rx.recv_timeout(LIMIT).unwrap_or_else(|_| DbStatus {
         pg_error: Some(format!("No answer within {} seconds.", LIMIT.as_secs())),
