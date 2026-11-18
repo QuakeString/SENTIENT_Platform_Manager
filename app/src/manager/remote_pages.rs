@@ -725,6 +725,19 @@ impl RemotePages {
         cx.notify();
     }
 
+    /// Reopen tests: what the page draws now: "skeleton" before anything
+    /// was read, "data" with what it read, "state" for the server's answer
+    /// that is not data (not set up, an error).
+    pub fn drawn(&self) -> &'static str {
+        if matches!(self.ready, Read::Loading) {
+            "skeleton"
+        } else if self.has_data() {
+            "data"
+        } else {
+            "state"
+        }
+    }
+
     /// Switch timing (SPM_DEBUG_SWITCH): Status shows what it read.
     pub fn has_data(&self) -> bool {
         shows_data(self.kind, &self.ready, &self.status, &self.services, &self.db)

@@ -537,6 +537,12 @@ impl StatsPage {
 
     /// Shown again after another instance was open: what was read stays
     /// and every part is read again behind it.
+    /// Reopen tests: the page shows readings (or why there are none), not
+    /// its loading skeleton.
+    pub fn has_data(&self) -> bool {
+        !self.live.is_empty() || self.live_err.is_some()
+    }
+
     pub fn reshow(&mut self, cx: &mut Context<Self>) {
         self.paused = false;
         self.read_again(cx);

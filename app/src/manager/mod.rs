@@ -266,6 +266,9 @@ pub struct Manager {
     /// (movedata::generation): a new opening is a sub-flow of the page it
     /// was opened from.
     move_gen: usize,
+    /// The window's first frame was drawn (its timing mark says whether
+    /// the page showed its data or the loading skeleton).
+    drawn: bool,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -450,6 +453,7 @@ impl Manager {
             updated_from,
             pending: None,
             move_gen: 0,
+            drawn: false,
             found_notice,
             _subscriptions: subscriptions,
             _tasks: Vec::new(),
@@ -1489,6 +1493,15 @@ impl Manager {
         page
     }
 
+    /// The page shown has what it read (Status: its state, services and
+    /// database), not its loading skeleton.
+    fn page_has_data(&self, cx: &App) -> bool {
+        match &self.open_remote {
+            Some(id) => self.remote_pages.get(id).is_some_and(|p| p.read(cx).has_data()),
+            None => self.page != Page::Status || self.status.as_ref().is_some_and(|p| p.read(cx).has_data()),
+        }
+    }
+
     fn open_instance(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         let t0 = std::time::Instant::now();
         let _timing = SwitchTiming(t0, id.clone());
@@ -2402,10 +2415,7 @@ impl Manager {
         // Switch timing: each frame after a switch until the page shows
         // its data (render done, and the next frame's start ≈ presented).
         if let Some((t0, n)) = SWITCH_AT.with(|s| s.get()) {
-            let data = match &self.open_remote {
-                Some(id) => self.remote_pages.get(id).is_some_and(|p| p.read(cx).has_data()),
-                None => self.page != Page::Status || self.status.as_ref().is_some_and(|p| p.read(cx).has_data()),
-            };
+            let data = self.page_has_data(cx);
             let ms = t0.elapsed().as_secs_f64() * 1000.;
             eprintln!("SWITCH frame={} render_ms={ms:.2} data={data}", n + 1);
             if data {
@@ -2416,6 +2426,22 @@ impl Manager {
             } else {
                 SWITCH_AT.with(|s| s.set(None));
             }
+        }
+        // The window's first frame: the page with its data (a window
+        // opened again while the app kept running), or the loading skeleton
+        // (a first start). Reopen tests (tests/reopen) read this mark.
+        if !self.drawn {
+            self.drawn = true;
+            let drawn = match &self.open_remote {
+                _ if self.page == Page::Statistics => match self.stats.get(&self.open_remote) {
+                    Some(p) if p.read(cx).has_data() => "data",
+                    _ => "skeleton",
+                },
+                Some(id) => self.remote_pages.get(id).map(|p| p.read(cx).drawn()).unwrap_or("other"),
+                None if self.page == Page::Status => if self.page_has_data(cx) { "data" } else { "skeleton" },
+                None => "other",
+            };
+            crate::timing::mark(&format!("page-first-frame page={} instance={} drawn={drawn}", self.page.id(), self.open_remote.as_deref().unwrap_or("local")));
         }
         self.run_pending(cx);
         let layer = crate::modal::layer(window, cx, menu_w, shell::BAR_H);
