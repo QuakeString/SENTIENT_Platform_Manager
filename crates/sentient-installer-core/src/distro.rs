@@ -2420,9 +2420,11 @@ mod tests {
     fn every_distro_command_asks_left_out() {
         let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let roots = [here.join("src"), here.join("../../app/src")];
-        // Builders of the arguments (their callers are checked), and the
-        // installer's own job that hardens ClickHouse right after setup.
-        let allowed = ["fn wsl_bash_args", "fn docker_exec_args", "\"harden\" =>"];
+        // Builders of the arguments (their callers are checked), the
+        // installer's own job that hardens ClickHouse right after setup,
+        // and the gateway page's password: an action the user presses
+        // (Linux only; Windows runs Docker Desktop's docker.exe there).
+        let allowed = ["fn wsl_bash_args", "fn docker_exec_args", "\"harden\" =>", "pub fn set_ui_password"];
         let mut found = Vec::new();
         let mut files = Vec::new();
         let mut dirs: Vec<std::path::PathBuf> = roots.iter().filter(|r| r.is_dir()).cloned().collect();
@@ -2447,12 +2449,15 @@ mod tests {
                 if t.starts_with("//") {
                     continue;
                 }
-                let hit = (t.contains("shell_args(") && !t.contains("fn shell_args")) || (t.contains("docker_exec_command") && !t.contains("fn docker_exec_command")) || t.contains("[\"-d\",");
+                let from = i.saturating_sub(15);
+                let around = lines[from..(i + 16).min(end)].join("\n");
+                // `-d <distro>` of wsl.exe only (gpasswd -d, psql -d are
+                // the computer's own programs, no distro).
+                let wsl_d = t.contains("[\"-d\",") && (around.contains("wsl") || around.to_lowercase().contains("distro"));
+                let hit = (t.contains("shell_args(") && !t.contains("fn shell_args")) || (t.contains("docker_exec_command") && !t.contains("fn docker_exec_command")) || wsl_d;
                 if !hit {
                     continue;
                 }
-                let from = i.saturating_sub(15);
-                let around = lines[from..(i + 16).min(end)].join("\n");
                 if around.contains("left_out(") || around.contains("shell_output(") || allowed.iter().any(|a| around.contains(a)) {
                     continue;
                 }
