@@ -1,6 +1,8 @@
 # Gateway control in the Platform Manager: study and proposal
 
-Status: **study only**, 2026-11-18. No code was changed.
+Status: study, 2026-11-18. Owner's decisions of 2026-11-18 are recorded in
+§0.1. Only the P0 fixes (§4.5) are being built (branch `spm/0.9.2-gw-p0`);
+phases P1–P4 have no go yet.
 Sources read: SPM `wt-rc4` (0.9.2-rc4, `4846928`), `sentient-gateway-rs`
 (`eb5a596`, 4.16.2), `Sentient-Gateway` (the Python gateway, `4ff08a0`).
 Paths in the tables are relative to those repositories: `core/` =
@@ -11,16 +13,18 @@ Paths in the tables are relative to those repositories: `core/` =
 
 ## 0. Summary
 
-- **Which gateway SPM manages:** the Rust gateway, `sentient-gateway-rs`.
+- **Which gateway SPM manages:** the Rust gateway, `sentient-gateway-rs`,
+  only (owner, 2026-11-18).
   - Docker image `quakestring/sentient-gateway-rs` (`core/gateway.rs:22`).
   - Releases are `gateway-<v>` tags on `github.com/QuakeString/sentient-release`
     (`core/gateway.rs:167-188`). Each release carries the Windows setup,
     `.deb`/`.rpm`/Arch packages and bare static binaries for x86_64, aarch64
     and armv7 (`scripts/publish-gateway-to-sentient-release.sh:8-11`,
     `gw/packaging/linux/build.sh:4-7`).
-  - The Python gateway (`quakestring/sentient-gateway`) is only *recognised*
-    as a container (`core/gateway.rs:125-133`). Its native installs are not
-    detected at all.
+  - The Python gateway (`quakestring/sentient-gateway`) is not managed. A
+    found one is **offered as an update** to the Rust gateway (§0.1, B13).
+    Before 0.9.2 it was counted as a Rust gateway container
+    (`core/gateway.rs:125-133`); its native installs are not detected.
 - **Today SPM installs one shape per OS:**
   - Linux: Docker only (`core/gateway.rs:211-214`).
   - Windows: the native service only, through the gateway's Inno Setup
@@ -65,6 +69,31 @@ Paths in the tables are relative to those repositories: `core/` =
     its password, the version, and Docker's own settings.
   - It must **route** platform-owned settings through the gateway's local
     edit path, or show them read-only, never as file edits.
+
+### 0.1 Owner's decisions (2026-11-18)
+
+- **Rust gateway only.** SPM supports and manages only `sentient-gateway-rs`.
+- **Python gateway → an update.** A found Python gateway shows as "Update
+  available: Sentient Gateway <Rust version>" on the Gateway page, the
+  Update page and Setup's update choices, and runs the normal update flow.
+  Inside, the update:
+  1. backs up the Python gateway's config folder or volume (timestamped);
+  2. installs the Rust gateway the default way (Native on Linux, the
+     service on Windows; Docker when the Python one ran in Docker and native
+     is not possible there);
+  3. carries over the connection (host, port, credentials) and the
+     connectors (the Rust gateway reads `tb_gateway.json`, `TB_GW_*` and the
+     `thingsboard` root key, `gw/README.md:29`), listing beforehand what
+     does not carry over;
+  4. keeps the device identity (token / client id);
+  5. starts the Rust gateway and waits until it is connected to SENTIENT;
+  6. only then stops and removes the Python gateway;
+  7. on any failure removes the Rust one and leaves the Python gateway
+     running as before.
+  It is never called a "migration" in the UI, the code or the docs. Not
+  built in P0; it is its own piece of work after P0.
+- **Default Linux install: Native** (package + systemd), preselected, with
+  Docker as the alternative (answers open question 1).
 
 ---
 
@@ -134,7 +163,7 @@ Remote servers (the agent over SSH):
 | B10 | The token is visible to anyone who can run `docker inspect`, because it sits in the container env. The gateway itself says a token belongs on stdin or in a file (`cli.rs:39-52`). | `gateway_docker.rs:301` |
 | B11 | Remote "Update to the newest" is always offered, even when the gateway is up to date. | `app/manager/remote_pages.rs:2472-2474` |
 | B12 | The Windows status says `managed: true` for any `SentientGateway` service running our program, including one installed by hand. The local page then never offers "Manage it here" on Windows. Harmless, but inconsistent with Linux. | `core/gateway.rs:348`; `app/manager/gateway.rs:407` |
-| B13 | **Python gateways are a gap.** A Python container is counted as "ours" (`is_gateway_image`), but `--version` does not exist in it. If it were named `sentient-gateway`, an Update would recreate it on the Rust image with `st-gw-*` volumes mounted at `/sentient_gateway/*`, and its Python config volume would not be carried. Native Python installs (`thingsboard-gateway` unit, Windows `SentientGatewayService.exe`) are not detected at all. | `core/gateway.rs:125-133`; `gateway_docker.rs:266-282`; `gw/bins/sentient-gateway/src/install/windows.rs:56` |
+| B13 | **Python gateways.** A Python container was counted as "ours" (`is_gateway_image`), so a container named `sentient-gateway` would have been recreated on the Rust image with the `st-gw-*` volumes and its Python config left behind. P0 (0.9.2): a Python container is no longer the Rust gateway; the page names it in one line. Decision (§0.1): it is **offered as an update** to the Rust gateway, built after P0. Native Python installs (`thingsboard-gateway` unit, Windows `SentientGatewayService.exe`) are not detected yet. | `core/gateway.rs:125-133`; `gateway_docker.rs:266-282`; `gw/bins/sentient-gateway/src/install/windows.rs:56` |
 | B14 | "Manage it here" changes nothing: not the update path, not the controls. Only the "Runs as" wording changes (`app/manager/gateway.rs:367-378`). | `app/gateway_record.rs:102-108` |
 | B15 | Docker `control()` returns as soon as `docker start` succeeds, with no wait for the gateway to be up. The Windows path waits up to 30 s. | `gateway_docker.rs:326-332` vs `gateway.rs:456-464` |
 
@@ -275,11 +304,11 @@ What to find, in order:
    root, via rootjob or the agent (B3).
    - Show the host, port, credential type (never the token), the page
      settings, and the number of connector files and their names.
-5. **Python leftovers:**
+5. **Python gateways:**
    - a `thingsboard-gateway` unit or a `SentientGatewayService.exe` (the
      gateway's own installer refuses these, `install/windows.rs:56,415`);
    - a Python container.
-   - Offer only to show them, never an automatic migration (`gw/docs/MIGRATION.md`).
+   - Offered as an update to the Rust gateway (§0.1).
 
 Never lose the connectors:
 
@@ -412,7 +441,7 @@ Native and Docker, here and on a server. A compose container gets
 | **P2 – machine-side settings** | Local web page tab (on/off, listen, password, certificate), restart policy, `RUST_LOG`, serial devices; Docker recreate with the token moved out of the env (needs a gateway-side "token from file" or uses the config file; Q6); native via `--install`; Apply bar + restart; local and remote (agent jobs `gateway-settings-json`, `gateway-apply <file>`, secrets over stdin) | 1.5–2 weeks |
 | **P3 – connection editing** | Connection tab with the not-connected rule and test connection | 3–4 days |
 | **P4 – native install and update on Linux** | Install choice per OS (§4.3); package download + SHA256SUMS; update by package manager / `--install`; arm64/armv7 | 1–1.5 weeks |
-| **P5 – take over properly** | the §3.1 inspection, the backup, Docker "re-create the Platform Manager's way", Python leftovers shown | 1 week |
+| **P5 – take over properly** | the §3.1 inspection, the backup, Docker "re-create the Platform Manager's way" | 1 week |
 | **P6 – platform-owned edits (optional)** | "Edit here" for storage, logs, statistics, connectors via the local edit path; **blocked on SENTIENT taking up `localConfigurationEdits`** | 1 week SPM + SENTIENT work |
 
 ### 4.6 Risks
@@ -448,9 +477,9 @@ Native and Docker, here and on a server. A compose container gets
 
 ## 5. Open questions for the owner
 
-1. **Default install on Linux:** native (package + systemd) or Docker? The
-   recommendation is native on a Pi and on boxes without Docker, with
-   Docker still offered.
+1. ~~**Default install on Linux:** native or Docker?~~ **Answered
+   2026-11-18:** Native (package + systemd), preselected; Docker as the
+   alternative.
 2. **How SPM reads live state:**
    - ask for the page password (option A), or
    - add a root-only `--status-json` to the gateway (option B,
@@ -471,8 +500,6 @@ Native and Docker, here and on a server. A compose container gets
    containers are recreated.
 7. **Windows Docker Desktop gateways:** detect and control only (today),
    or drop them?
-8. **Python gateways:** show them only, or offer a guided migration
-   (`gw/docs/MIGRATION.md`)?
-9. **`remoteConfiguration: false`** is parsed but ignored by the gateway.
+8. **`remoteConfiguration: false`** is parsed but ignored by the gateway.
    Should it lock SENTIENT out (a gateway-side change), so that an
    SPM-managed site could choose local authority?
