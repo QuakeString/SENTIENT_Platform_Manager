@@ -432,7 +432,7 @@ impl Render for GatewayPage {
         let outside = !status.managed && !recorded && status.kind() != "windows-service";
         let controllable = status.kind() != "process";
         let outcome = match (self.action, job.state()) {
-            (Some("adopt" | "remove" | "read"), JobState::Done(m)) => Some((Tone::Good, m.clone())),
+            (Some("adopt" | "remove" | "read" | "update"), JobState::Done(m)) => Some((Tone::Good, m.clone())),
             (Some(_), JobState::Failed(m)) => Some((Tone::Bad, m.clone())),
             _ => None,
         };
@@ -575,7 +575,6 @@ impl Render for GatewayPage {
             let o = offer.clone();
             ui::panel(&theme)
                 .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Gateway, 28.)).child(div().font_weight(FontWeight::MEDIUM).child("No gateway on this computer")))
-                .children(legacy)
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
                     "The gateway reads devices next to this computer. In SENTIENT, add a gateway device and copy its access token (Manage credentials).",
                 ))
@@ -654,6 +653,85 @@ const UNREADABLE_HELP: &str = "The gateway keeps its settings in /etc/sentient-g
 /// The one line for an older Python gateway's container (Status::legacy).
 pub(crate) fn legacy_line(name: &str, place: &str) -> String {
     format!("The older Sentient Gateway (the Python one) is on {place}, in the container {name}. The Platform Manager leaves it as it is.")
+}
+
+/// The (i) beside "Update to <v>" for the older Python gateway: what the
+/// update does and what does not carry over
+/// (sentient_installer_core::distro::gateway_legacy).
+pub(crate) fn legacy_update_help() -> String {
+    let mut t = "Updates the older Python gateway to the Sentient Gateway in Docker. Its configuration is backed up first; the connection, the connectors and the gateway's identity (token, client id) carry over, so SENTIENT sees the same gateway. The older gateway is removed only once the new one is connected; if anything fails, it runs again as before.\n\nWhat does not carry over:".to_string();
+    for n in sentient_installer_core::distro::gateway_legacy::NOT_CARRIED {
+        t.push_str("\n• ");
+        t.push_str(n);
+    }
+    t
+}
+
+/// The older gateway's version: its image's tag when it is one.
+fn legacy_version(image: Option<&str>) -> String {
+    image
+        .and_then(|i| i.split('@').next())
+        .and_then(|i| i.rsplit_once(':'))
+        .map(|(_, t)| t)
+        .filter(|t| !t.contains('/') && t.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .map(|t| format!("{t} (the older Python gateway)"))
+        .unwrap_or_else(|| "the older Python gateway".into())
+}
+
+/// The older Python gateway alone, here or on a server: what it is and
+/// "Update to <v>" (the normal update job: gateway::update carries it to
+/// the Rust gateway). `offer`: the newest release (None: still looking or
+/// none); `why`: why it cannot run there (the button is then off with it).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn legacy_panel(
+    theme: &gpui_kit::component::Theme,
+    id: &'static str,
+    name: &str,
+    image: Option<&str>,
+    offer: Option<&Offer>,
+    looking: Option<String>,
+    why: Option<String>,
+    busy: bool,
+    on_update: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+) -> Div {
+    let update: AnyElement = match offer {
+        Some(o) => {
+            let button = crate::ui::button(SharedString::from(format!("{id}-update")))
+                .primary()
+                .label(format!("Update to {}", o.version))
+                .disabled(busy || why.is_some())
+                .on_click(move |_, w, cx| on_update(w, cx));
+            let button = match why {
+                Some(w) => div().id(SharedString::from(format!("{id}-update-why"))).child(button).tooltip(crate::ui::tooltip(w)).into_any_element(),
+                None => button.into_any_element(),
+            };
+            h_flex()
+                .gap_3()
+                .flex_wrap()
+                .items_center()
+                .child(crate::ui::probed(button))
+                .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Released {}", o.date)))
+                .child(ui::info(SharedString::from(format!("{id}-update-help")), legacy_update_help().into()))
+                .into_any_element()
+        }
+        None => div().text_sm().text_color(theme.muted_foreground).child(looking.unwrap_or_else(|| "Looking for gateway updates…".into())).into_any_element(),
+    };
+    ui::panel(theme)
+        .child(
+            h_flex()
+                .gap_3()
+                .flex_wrap()
+                .items_center()
+                .child(ui::product_logo(ui::Product::Gateway, 28.))
+                .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
+                .child(ui::pill(theme, Tone::Neutral, match offer {
+                    Some(o) => format!("Update available: Sentient Gateway {}", o.version),
+                    None => "Update available".to_string(),
+                })),
+        )
+        .child(ui::fact(theme, "Version", legacy_version(image)))
+        .child(ui::fact(theme, "Runs as", format!("Docker container {name}")))
+        .child(update)
 }
 
 /// The web page's "Off" explained for how the gateway runs.
@@ -748,7 +826,8 @@ pub(crate) fn debug_fixture(name: &str) -> Option<&'static str> {
     Some(match name {
         "docker" => "installed=true version=4.16.1 running=true host=127.0.0.1 port=1883 page=off container=sentient-gateway managed=true kind=docker image=quakestring/sentient-gateway-rs:4.16.1 volumes=st-gw-config,st-gw-data,st-gw-logs",
         "compose" => "installed=true version=4.16.1 running=true host=10.0.0.5 port=1883 page=off container=plant-gw managed=false kind=docker image=quakestring/sentient-gateway-rs:4.16.1 compose=/srv/example-site/gateway project=gateway volumes=gw-config,gw-data",
-        "legacy" => "installed=false legacy=example-old-gw",
+        "legacy" => "installed=false legacy=example-old-gw legacy_image=quakestring/sentient-gateway:3.7.10",
+        "legacy-running" => "installed=false legacy=example-old-gw legacy_image=quakestring/sentient-gateway:latest",
         "docker-legacy" => "installed=true version=4.16.1 running=true host=127.0.0.1 port=1883 page=off container=sentient-gateway managed=true kind=docker image=quakestring/sentient-gateway-rs:4.16.1 volumes=st-gw-config,st-gw-data,st-gw-logs legacy=example-old-gw",
         "native" => "installed=true version=4.16.1 running=true host=127.0.0.1 port=1883 page=http://127.0.0.1:8642/ kind=service service=sentient-gateway.service program=/usr/bin/sentient-gateway package=sentient-gateway",
         "native-unreadable" => "installed=true version=4.16.1 running=true page=off kind=service service=sentient-gateway.service program=/usr/bin/sentient-gateway package=sentient-gateway unreadable=true",
@@ -789,13 +868,14 @@ pub(crate) fn status_of(get: &dyn Fn(&str) -> String) -> Status {
         package: some("package"),
         config_unreadable: get("unreadable") == "true",
         legacy: some("legacy"),
+        legacy_image: some("legacy_image"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
-    use super::{ADMIN_READ, AdminRead, Status, page_off_help, status_of_line, with_admin_read};
+    use super::{ADMIN_READ, AdminRead, Status, legacy_update_help, legacy_version, page_off_help, status_of_line, with_admin_read};
 
     #[test]
     fn a_status_line_round_trips() {
@@ -823,5 +903,18 @@ mod tests {
         let s = with_admin_read(unreadable);
         assert_eq!((s.host.as_deref(), s.port, s.config_unreadable), (Some("10.0.0.9"), Some(1883), false));
         *ADMIN_READ.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn the_older_gateway_is_offered_an_update() {
+        assert_eq!(legacy_version(Some("quakestring/sentient-gateway:3.7.10")), "3.7.10 (the older Python gateway)");
+        assert_eq!(legacy_version(Some("quakestring/sentient-gateway:latest")), "the older Python gateway");
+        assert_eq!(legacy_version(None), "the older Python gateway");
+        let help = legacy_update_help();
+        assert!(help.contains("What does not carry over") && help.contains("converters"));
+        // It is an update, never anything else to the user.
+        assert!(!help.to_lowercase().contains("migrat"));
+        let s = status_of_line("installed=false legacy=example-old-gw legacy_image=quakestring/sentient-gateway:3.7.10");
+        assert_eq!((s.installed, s.legacy.as_deref(), s.legacy_image.as_deref()), (false, Some("example-old-gw"), Some("quakestring/sentient-gateway:3.7.10")));
     }
 }

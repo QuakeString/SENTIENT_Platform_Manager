@@ -247,6 +247,8 @@ pub struct Found {
     /// installs or updates to it), and the gateway installed here.
     pub gateway: Result<Option<gateway::Offer>, String>,
     pub gateway_installed: Option<String>,
+    /// Only the older Python gateway is here: any release is its update.
+    pub gateway_older: bool,
     pub at: u64,
 }
 
@@ -278,6 +280,7 @@ pub fn check(channel: Channel, installed: Option<String>, native: bool) -> Found
             manager_candidate: None,
             gateway: Ok(None),
             gateway_installed: None,
+            gateway_older: false,
             at: now(),
         };
     }
@@ -323,6 +326,7 @@ pub fn check(channel: Channel, installed: Option<String>, native: bool) -> Found
         sentient_candidate,
         manager_candidate,
         gateway: gateway_offer,
+        gateway_older: !here.installed && here.legacy.is_some() && !cfg!(windows),
         gateway_installed: here.installed.then(|| here.version.unwrap_or_default()),
         at: now(),
     }
@@ -660,6 +664,10 @@ impl UpdateState {
     /// A newer gateway than the one installed here, not dismissed.
     pub fn gateway_notice(&self) -> Option<gateway::Offer> {
         let f = self.found.as_ref()?;
+        if f.gateway_older {
+            let offer = f.gateway.as_ref().ok()?.as_ref()?;
+            return (self.prefs.dismissed_gateway.as_deref() != Some(&offer.version)).then(|| offer.clone());
+        }
         // An unknown version is never compared (nor called up to date).
         let installed = f.gateway_installed.as_deref().filter(|v| !v.is_empty())?;
         let offer = f.gateway.as_ref().ok()?.as_ref()?;

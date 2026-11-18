@@ -2388,7 +2388,35 @@ impl RemotePages {
         let get = |k: &str| g.get(k).cloned().unwrap_or_default();
         let installed = get("installed") == "true";
         let running = get("running") == "true";
-        // The older Python gateway: never taken for the Rust one; one line.
+        // The older Python gateway alone: offered as an update (the same
+        // gateway-update job); beside the Rust one: one line.
+        if !installed && !get("legacy").is_empty() {
+            let status = crate::manager::gateway::status_of(&get);
+            let found = self.updates.read(cx).found.as_ref().map(|f| f.gateway.clone());
+            let offer = found.clone().and_then(|r| r.ok()).flatten();
+            let looking = match &found {
+                Some(Err(e)) => Some(format!("Gateway updates: {e}")),
+                Some(Ok(None)) => Some("No gateway release on this channel.".to_string()),
+                _ => None,
+            };
+            let why = offer.as_ref().and_then(|o| sentient_installer_core::gateway::update_blocker(&status, &o.version, o.installer.is_some(), crate::remote::is_windows(&self.inst)));
+            let this = cx.entity().downgrade();
+            let v = offer.as_ref().map(|o| o.version.clone()).unwrap_or_default();
+            return crate::manager::gateway::legacy_panel(
+                &theme,
+                "r-gw-older",
+                &get("legacy"),
+                Some(get("legacy_image")).filter(|i| !i.is_empty()).as_deref(),
+                offer.as_ref(),
+                looking,
+                why,
+                busy,
+                std::rc::Rc::new(move |_, cx: &mut App| {
+                    let v = v.clone();
+                    this.update(cx, |p, cx| p.run_job("Updating the gateway", vec!["gateway-update".into(), v], cx)).ok();
+                }),
+            );
+        }
         let legacy = Some(get("legacy")).filter(|n| !n.is_empty()).map(|n| div().text_sm().text_color(theme.muted_foreground).child(crate::manager::gateway::legacy_line(&n, "this server")));
         let mut p = ui::panel(&theme).child(
             h_flex()
@@ -2415,7 +2443,7 @@ impl RemotePages {
                         )
                         .into(),
                     )),
-            ).children(legacy);
+            );
         }
         let kind = get("kind");
         let recorded = get("recorded") == "true";

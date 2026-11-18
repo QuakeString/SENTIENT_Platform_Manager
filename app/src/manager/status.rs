@@ -728,6 +728,12 @@ impl StatusPage {
         let newer = self.updates.read(cx).gateway_notice();
         let (tone, pill, line): (Tone, &str, String) = match &self.gateway {
             None => (Tone::Neutral, "Checking…", String::new()),
+            // The older Python gateway alone: its update to the Rust one.
+            Some(g) if !g.installed && g.legacy.is_some() => (
+                Tone::Neutral,
+                "Update available",
+                format!("The older Python gateway{}", newer.as_ref().map(|o| format!(" · Sentient Gateway {} available", o.version)).unwrap_or_default()),
+            ),
             Some(g) if !g.installed => (Tone::Neutral, "Not installed", "No Sentient Gateway on this computer.".into()),
             Some(g) => (
                 if g.running { Tone::Good } else { Tone::Bad },
@@ -740,7 +746,7 @@ impl StatusPage {
                 ),
             ),
         };
-        let installed = self.gateway.as_ref().is_some_and(|g| g.installed);
+        let installed = self.gateway.as_ref().is_some_and(|g| g.installed || g.legacy.is_some());
         ui::panel(theme)
             .child(h_flex().gap_2().items_center().child(ui::product_logo(ui::Product::Gateway, 24.)).child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway")))
             .child(

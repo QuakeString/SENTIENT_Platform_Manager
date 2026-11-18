@@ -295,7 +295,7 @@ fn run_job(args: &[String]) -> i32 {
                 let esc = |v: Option<String>| v.unwrap_or_default().replace('%', "%25").replace(' ', "%20");
                 let recorded = crate::gateway_record::load().is_some_and(|r| r.is(&s));
                 println!(
-                    "installed={} version={} running={} host={} port={} page={} container={} managed={} kind={} service={} process={} image={} compose={} project={} volumes={} package={} recorded={recorded} unreadable={} legacy={}",
+                    "installed={} version={} running={} host={} port={} page={} container={} managed={} kind={} service={} process={} image={} compose={} project={} volumes={} package={} recorded={recorded} unreadable={} legacy={} legacy_image={}",
                     s.installed,
                     s.version.unwrap_or_default(),
                     s.running,
@@ -314,6 +314,7 @@ fn run_job(args: &[String]) -> i32 {
                     esc(s.package.clone()),
                     s.config_unreadable,
                     s.legacy.clone().unwrap_or_default(),
+                    esc(s.legacy_image.clone()),
                 );
                 Ok(())
             }
