@@ -363,7 +363,12 @@ impl Manager {
         // After a quit: Status (of the instance left open); a window opened
         // again while the app kept running: the page it was left on.
         let page = page_arg.or_else(|| session::page_to_restore(saved.page.as_deref()).as_deref().and_then(page_of)).unwrap_or(Page::Status);
-        let record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
+        // The pg_dump and pg_restore wrappers once per run, with the first
+        // window (writing them runs a shell, ~70 ms on the UI thread): a
+        // window opened again keeps them, a changed record sets them again
+        // (reload).
+        static PG_TOOLS: std::sync::Once = std::sync::Once::new();
+        let record = InstallationRecord::load().inspect(|r| PG_TOOLS.call_once(|| r.use_pg_tools()));
         let installed = record.as_ref().map(|r| r.sentient_version.clone());
         let native = record.as_ref().is_some_and(|r| r.platform().needs_package());
         let updates = cx.new(|cx| UpdateState::new(installed, native, cx));
