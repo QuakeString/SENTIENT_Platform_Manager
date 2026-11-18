@@ -436,9 +436,40 @@ impl Render for GatewayPage {
             (Some(_), JobState::Failed(m)) => Some((Tone::Bad, m.clone())),
             _ => None,
         };
-        // The older Python gateway: not supported, never managed; one line.
-        let legacy = status.legacy.clone().map(|n| div().text_sm().text_color(theme.muted_foreground).child(legacy_line(&n, "this computer")));
-        let body = if status.installed {
+        // The older Python gateway beside the Rust one: one line.
+        let legacy = status.legacy.clone().filter(|_| status.installed).map(|n| div().text_sm().text_color(theme.muted_foreground).child(legacy_line(&n, "this computer")));
+        let body = if !status.installed && status.legacy.is_some() {
+            // The older Python gateway alone: offered as an update.
+            let o = offer.clone();
+            let why = o.as_ref().and_then(|o| gateway::update_blocker(&status, &o.version, o.installer.is_some(), cfg!(windows)));
+            let looking = match &newest {
+                Some(Err(e)) => Some(format!("Gateway updates: {e}")),
+                Some(Ok(None)) => Some("No gateway release on this channel.".to_string()),
+                _ => None,
+            };
+            let this = cx.entity().downgrade();
+            let o2 = o.clone();
+            legacy_panel(
+                &theme,
+                "gw-older",
+                status.legacy.as_deref().unwrap_or_default(),
+                status.legacy_image.as_deref(),
+                o.as_ref(),
+                looking,
+                why,
+                busy,
+                std::rc::Rc::new(move |_, cx: &mut App| {
+                    if let Some(o) = o2.clone() {
+                        this.update(cx, |p, cx| {
+                            p.action = Some("update");
+                            p.update_to(o, cx)
+                        })
+                        .ok();
+                    }
+                }),
+            )
+            .children(outcome.clone().map(|(tone, m)| ui::outcome(&theme, tone, m)))
+        } else if status.installed {
             let (pill, tone) = if status.running { ("Gateway is running", Tone::Good) } else { ("Gateway is stopped", Tone::Bad) };
             ui::panel(&theme)
                 .child(
@@ -694,7 +725,8 @@ pub(crate) fn legacy_panel(
     busy: bool,
     on_update: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
 ) -> Div {
-    let update: AnyElement = match offer {
+    // The update at the card's foot, at the right (the actions rule).
+    let update: Vec<AnyElement> = match offer {
         Some(o) => {
             let button = crate::ui::button(SharedString::from(format!("{id}-update")))
                 .primary()
@@ -705,16 +737,22 @@ pub(crate) fn legacy_panel(
                 Some(w) => div().id(SharedString::from(format!("{id}-update-why"))).child(button).tooltip(crate::ui::tooltip(w)).into_any_element(),
                 None => button.into_any_element(),
             };
-            h_flex()
-                .gap_3()
-                .flex_wrap()
-                .items_center()
-                .child(crate::ui::probed(button))
-                .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Released {}", o.date)))
-                .child(ui::info(SharedString::from(format!("{id}-update-help")), legacy_update_help().into()))
-                .into_any_element()
+            ui::card_actions(
+                theme,
+                h_flex()
+                    .gap(crate::ui::button_gap())
+                    .flex_wrap()
+                    .justify_end()
+                    .items_center()
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Released {}", o.date)))
+                    .child(ui::info(SharedString::from(format!("{id}-update-help")), legacy_update_help().into()))
+                    .child(crate::ui::probed(button)),
+            )
+            .into_iter()
+            .map(IntoElement::into_any_element)
+            .collect()
         }
-        None => div().text_sm().text_color(theme.muted_foreground).child(looking.unwrap_or_else(|| "Looking for gateway updates…".into())).into_any_element(),
+        None => vec![div().text_sm().text_color(theme.muted_foreground).child(looking.unwrap_or_else(|| "Looking for gateway updates…".into())).into_any_element()],
     };
     ui::panel(theme)
         .child(
@@ -731,7 +769,7 @@ pub(crate) fn legacy_panel(
         )
         .child(ui::fact(theme, "Version", legacy_version(image)))
         .child(ui::fact(theme, "Runs as", format!("Docker container {name}")))
-        .child(update)
+        .children(update)
 }
 
 /// The gateway's line on the Update pages and in Setup's choices: what
@@ -789,6 +827,31 @@ pub(crate) fn update_button(_theme: &gpui_kit::component::Theme, id: &'static st
         .items_center()
         .child(crate::ui::probed(button))
         .when(u.older, |r| r.child(ui::info(SharedString::from(format!("{id}-help")), legacy_update_help().into())))
+}
+
+/// The steps a gateway update shows (the engine's own step names): the
+/// older Python gateway's update, a Windows service's installer, or a
+/// container started again on the new image.
+pub(crate) fn update_plan(older: bool, windows_service: bool, version: &str) -> Vec<sentient_installer_core::progress::PlanStep> {
+    use sentient_installer_core::progress::PlanStep;
+    let start = format!("Starting Sentient Gateway {version}");
+    if older {
+        vec![
+            PlanStep::new("Pulling the new gateway").when(&["Pulling "]).weight(3.),
+            PlanStep::new("Backing up the configuration").when(&["Backing up the gateway's configuration"]),
+            PlanStep::new("Stopping the older gateway").when(&["Stopping the older gateway"]),
+            PlanStep::new(start),
+            PlanStep::new("Waiting for the new gateway to connect to SENTIENT").weight(2.),
+            PlanStep::new("Removing the older gateway's container").when(&["Removing the older gateway's container"]),
+        ]
+    } else if windows_service {
+        vec![
+            PlanStep::new("Downloading the installer").when(&["Downloading Sentient Gateway"]).weight(3.),
+            PlanStep::new(format!("Installing Sentient Gateway {version}")).weight(2.),
+        ]
+    } else {
+        vec![PlanStep::new("Pulling the new gateway").when(&["Pulling "]).weight(3.), PlanStep::new(start)]
+    }
 }
 
 /// The gateway's line on the Update page when there is no update: what is
@@ -947,7 +1010,7 @@ pub(crate) fn status_of(get: &dyn Fn(&str) -> String) -> Status {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
-    use super::{ADMIN_READ, AdminRead, Offer, Status, gateway_summary, gateway_update, legacy_update_help, legacy_version, page_off_help, status_of_line, with_admin_read};
+    use super::{ADMIN_READ, AdminRead, Offer, Status, gateway_summary, gateway_update, update_plan, legacy_update_help, legacy_version, page_off_help, status_of_line, with_admin_read};
 
     #[test]
     fn a_status_line_round_trips() {
@@ -1026,5 +1089,18 @@ mod tests {
         assert!(gateway_summary(&status_of_line("installed=false"), Some(true)).is_none());
         assert_eq!(gateway_summary(&docker, Some(true)).unwrap().1.map(|p| p.1), Some("Up to date"));
         assert_eq!(gateway_summary(&docker, None).unwrap().0, "4.16.1 installed. Checking…");
+    }
+
+    #[test]
+    fn the_update_steps_match_the_engines_names() {
+        let p = update_plan(true, false, "4.16.3");
+        assert!(p[0].matches("Pulling quakestring/sentient-gateway-rs:4.16.3"));
+        assert!(p[1].matches("Backing up the gateway's configuration to the volume gw-config-backup-x"));
+        assert!(p[2].matches("Stopping the older gateway (st-gateway)"));
+        assert!(p[3].matches("Starting Sentient Gateway 4.16.3"));
+        assert!(p[5].matches("Removing the older gateway's container (st-gateway-older-x)"));
+        let w = update_plan(false, true, "4.16.3");
+        assert!(w[0].matches("Downloading Sentient Gateway 4.16.3 (24 MB)") && w[1].matches("Installing Sentient Gateway 4.16.3"));
+        assert_eq!(update_plan(false, false, "4.16.3").len(), 2);
     }
 }

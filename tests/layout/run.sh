@@ -46,12 +46,16 @@ one() { # where page width scale theme [dialog env]
     sleep 1
     if kill -0 $xp 2>/dev/null && [ -e "/tmp/.X11-unix/X${d#:}" ]; then break; fi
   done
-  local inst=(); [ "$where" != local ] && [ "$where" != setup ] && inst=(--instance "${INSTANCE:?}")
+  local inst=(); [ "$where" != local ] && [ "$where" != setup ] && [ "$where" != maint ] && inst=(--instance "${INSTANCE:?}")
   local mode=(--manager --page "$page"); [ "$where" = setup ] && mode=(--install)
+  # "maint": Setup run again on an installation (its update tick boxes), on
+  # the record fixture the page names (fixtures/record-<page>.json).
+  local rec=${SPM_INSTALLATION_RECORD:-/nonexistent}
+  [ "$where" = maint ] && { mode=(--maintenance); rec=$HERE/fixtures/record-$page.json; }
   # A dialog's env: KEY=VAL, several joined with "+".
   local extra=(); [ -n "$dlg" ] && IFS=+ read -r -a extra <<<"$dlg"
   env "${extra[@]}" GPUI_X11_SCALE_FACTOR=$sc DISPLAY=$d WAYLAND_DISPLAY= XDG_CONFIG_HOME=$x SPM_THEME=$th SPM_WINDOW_SIZE=${w}x${h} \
-    SPM_INSTALLATION_RECORD=${SPM_INSTALLATION_RECORD:-/nonexistent} SPM_DEBUG_LAYOUT=1 SPM_REDUCED_MOTION=1 \
+    SPM_INSTALLATION_RECORD=$rec SPM_DEBUG_LAYOUT=1 SPM_REDUCED_MOTION=1 \
     "$BIN" "${mode[@]}" "${inst[@]}" 2>"$OUT/$name.log" >/dev/null & local ap=$!
   sleep "$wait"
   # HOVER_INFO=1: the pointer on the page's first (i), its tooltip open.
@@ -64,10 +68,10 @@ one() { # where page width scale theme [dialog env]
   rm -rf "$x"
   # The page's overflow, and the menu's icons on x = 32 (folded below
   # 1000 px, unfolded above).
-  local only=(); [ "$where" = setup ] && only=(buttons)
+  local only=(); { [ "$where" = setup ] || [ "$where" = maint ]; } && only=(buttons)
   # A sub-flow's render: it is open, and the menu keeps its parent page.
   local expect=(); case "$dlg" in SPM_DEBUG_MOVE_STEP=*) expect=(EXPECT_SUB=movedata EXPECT_MENU="$page");; esac
-  { env "${expect[@]}" python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" "${only[@]}" && { [ "$where" = setup ] || python3 "$HERE/icons.py" "$OUT/$name.log"; } && python3 "$HERE/fields.py" "$OUT/$name.log" "$dlg" && python3 "$HERE/rows.py" "$OUT/$name.log"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
+  { env "${expect[@]}" python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" "${only[@]}" && { [ "$where" = setup ] || [ "$where" = maint ] || python3 "$HERE/icons.py" "$OUT/$name.log"; } && python3 "$HERE/fields.py" "$OUT/$name.log" "$dlg" && python3 "$HERE/rows.py" "$OUT/$name.log"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
 }
 export -f one; export OUT HERE BIN PROFILE LOADING_PROFILE INSTANCE WAIT SPM_INSTALLATION_RECORD HOVER_INFO 2>/dev/null
 list=()
@@ -115,6 +119,9 @@ for g in $GATEWAY_FIXTURES; do for w in $WIDTHS; do for s in $SCALES; do for t i
 # The Update page's gateway line: ours in Docker, a package service (off,
 # with its reason) and the older Python gateway (with its (i)).
 for g in ${UPDATE_GATEWAY_FIXTURES-docker native legacy}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("local update $w $s $t SPM_DEBUG_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done
+# Setup's update tick boxes with the gateway's line: beside a newer Platform
+# Manager (record-docker), and alone (record-docker-same: the same version).
+for r in ${MAINT_RECORDS-docker docker-same}; do for g in ${MAINT_GATEWAY_FIXTURES-docker legacy}; do for w in ${MAINT_WIDTHS-900 1200}; do for s in $SCALES; do for t in $THEMES; do list+=("maint $r $w $s $t SPM_DEBUG_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3+SPM_DEBUG_MANAGER_INSTALLED=1+SPM_DEBUG_BROKEN=0"); done; done; done; done; done
 if [ -n "${INSTANCE:-}" ]; then
   for g in ${REMOTE_UPDATE_GATEWAY_FIXTURES-docker legacy}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote update $w $s $t SPM_DEBUG_REMOTE_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done
   for g in ${REMOTE_GATEWAY_FIXTURES-native native-unreadable docker-legacy}; do for w in $WIDTHS; do for s in $SCALES; do for t in $THEMES; do list+=("remote gateway $w $s $t SPM_DEBUG_REMOTE_GATEWAY=$g+SPM_DEBUG_GATEWAY_OFFER=4.16.3"); done; done; done; done

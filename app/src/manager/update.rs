@@ -167,6 +167,9 @@ impl UpdatePage {
     /// older Python gateway is carried to the Rust one the same way).
     fn start_gateway_update(&mut self, cx: &mut Context<Self>) {
         let Some(offer) = self.updates.read(cx).found.as_ref().and_then(|f| f.gateway.as_ref().ok().cloned().flatten()) else { return };
+        let (older, windows_service) = self.gateway.as_ref().map(|s| (!s.installed && s.legacy.is_some(), s.kind() == "windows-service")).unwrap_or_default();
+        let plan = crate::manager::gateway::update_plan(older, windows_service, &offer.version);
+        self.gateway_job.update(cx, |job, _| job.set_plan(plan));
         self.gateway_job.update(cx, |job, cx| job.start(move |sink| sentient_installer_core::gateway::update(&sink, &offer), cx));
         cx.notify();
     }
