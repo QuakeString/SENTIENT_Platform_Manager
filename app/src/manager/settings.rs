@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, h_flex, v_flex,
     button::ButtonVariants as _,
     input::{Input, InputEvent, InputState},
 };
@@ -1425,7 +1425,7 @@ impl SettingsPage {
                     let key = s.env.clone();
                     r.label = r.label.clone();
                     r.desc = Some(format!("{} · set here", s.env));
-                    let reset = crate::ui::button(SharedString::from(format!("reset-{}", s.env))).ghost().xsmall().label("Reset").on_click(cx.listener(move |this, _, window, cx| {
+                    let reset = crate::ui::button(SharedString::from(format!("reset-{}", s.env))).ghost().label("Reset").on_click(cx.listener(move |this, _, window, cx| {
                         this.set(&key, "", window, cx);
                         cx.notify();
                     }));

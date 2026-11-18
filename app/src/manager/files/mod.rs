@@ -17,7 +17,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, Icon, IconName, h_flex, v_flex,
     button::ButtonVariants as _,
     input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, PopupMenuItem},
@@ -985,13 +985,13 @@ impl FilesPage {
             .child(crate::ui::probed(
                 crate::ui::button(SharedString::from(format!("f-new-{side}")))
                     .ghost()
-                    .small()
+                    
                     .icon(Icon::empty().path("icons/folder-plus.svg"))
                     .tooltip("New folder")
                     .disabled(!writable)
                     .on_click(cx.listener(move |this, _, window, cx| this.start_new_folder(side, window, cx))),
             ))
-            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-reload-{side}"))).ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(move |this, _, _, cx| this.reload(side, cx)))));
+            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-reload-{side}"))).ghost().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(move |this, _, _, cx| this.reload(side, cx)))));
 
         // Where: the path's parts, each a way back.
         let crumbs = p.place.crumbs(&p.path);

@@ -6,7 +6,7 @@
 //! menu chooses which page it shows.
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, h_flex, v_flex,
     button::ButtonVariants as _,
     menu::{DropdownMenu as _, PopupMenuItem},
     input::{Input, InputEvent, InputState},
@@ -1821,7 +1821,7 @@ impl RemotePages {
                 .child(
                     crate::ui::button("r-auto-time")
                         .ghost()
-                        .small()
+                        
                         .disabled(!on || busy)
                         .label(if on { format!("Every day at {time}") } else { "Off".to_string() })
                         .dropdown_menu(move |menu, _, _| {

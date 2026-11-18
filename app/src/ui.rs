@@ -176,7 +176,7 @@ pub fn start_delay_row(theme: &Theme, state: &Entity<gpui_kit::component::input:
 /// The start delay with its message when the value cannot be used (a red
 /// border and one line under the row).
 pub fn start_delay_row_checked(theme: &Theme, state: &Entity<gpui_kit::component::input::InputState>, problem: Option<String>) -> Div {
-    use gpui_kit::component::{Sizable as _, button::ButtonVariants as _, IconName};
+    use gpui_kit::component::{button::ButtonVariants as _, IconName};
     v_flex()
         .gap_1()
         .child(
@@ -189,7 +189,7 @@ pub fn start_delay_row_checked(theme: &Theme, state: &Entity<gpui_kit::component
                     if problem.is_some() { i.border_color(theme.danger).focus_bordered(false) } else { i }
                 }))
                 .child(div().text_sm().text_color(theme.muted_foreground).child("seconds"))
-                .child(crate::ui::button("start-delay-help").ghost().xsmall().icon(IconName::Info).tooltip(START_DELAY_HELP)),
+                .child(crate::ui::button("start-delay-help").ghost().icon(IconName::Info).tooltip(START_DELAY_HELP)),
         )
         .when_some(problem, |d, p| d.child(div().text_xs().text_color(theme.danger).child(p)))
 }
@@ -1210,16 +1210,14 @@ pub fn stop_hover(theme: &Theme) -> (Hsla, Hsla, Hsla) {
     (theme.danger.opacity(0.14), theme.danger, theme.danger)
 }
 
-/// A service row's 32 px outline icon button with an 18 px icon and its
+/// A service row's outline icon button (the one icon-button square) with its
 /// name as the tooltip. It hovers teal, or red for Stop.
 pub fn svc_icon_button(theme: &Theme, id: SharedString, icon: gpui_kit::component::Icon, tip: &'static str, enabled: bool, stop: bool) -> gpui_kit::component::button::Button {
-    use gpui_kit::component::{Disableable as _, Sizable as _};
+    use gpui_kit::component::{Disableable as _};
     let (bg, border, fg) = if stop { stop_hover(theme) } else { (theme.primary.opacity(0.12), theme.primary, theme.primary) };
     button(id)
         .outline()
-        .with_size(px(32.))
         .icon(icon)
-        .icon_size(px(18.))
         .tooltip(tip)
         .hover_colors(bg, border, fg)
         .disabled(!enabled)
@@ -1442,9 +1440,66 @@ pub fn popover_menu(theme: &Theme, id: &'static str, width: f32, rows: Vec<MenuR
         .map(|d| menu_appear(d, SharedString::from(format!("{id}-open")), up))
 }
 
-/// Every button: the toolkit's, with the mockup's medium-weight label.
+/// Every button: the toolkit's at the one button size (crate::theme::BUTTON_H
+/// high, BUTTON_PAD_X either side, at least BUTTON_MIN_W wide with a label,
+/// an ICON_BUTTON square with only an icon, BUTTON_RADIUS corners, the
+/// toolkit's text_sm label at medium weight). Call sites never change its
+/// size, padding, corners or font (tests/layout/buttons.py --source).
 pub fn button(id: impl Into<gpui_kit::ElementId>) -> gpui_kit::component::button::Button {
-    gpui_kit::component::button::Button::new(id).font_weight(FontWeight::MEDIUM)
+    use crate::theme::{BUTTON_MIN_W, BUTTON_PAD_X, BUTTON_RADIUS};
+    use gpui_kit::component::Sizable as _;
+    gpui_kit::component::button::Button::new(id)
+        .with_size(gpui_kit::component::Size::Medium)
+        .label_box(px(BUTTON_PAD_X), px(BUTTON_MIN_W))
+        .rounded(px(BUTTON_RADIUS))
+        .font_weight(FontWeight::MEDIUM)
+}
+
+/// A button in a fill of its own (a dialog's red destructive action, an
+/// instance's Open in the instance colour), which the toolkit's variants do
+/// not give: the one button box of crate::ui::button (BUTTON_H, BUTTON_PAD_X,
+/// BUTTON_MIN_W, BUTTON_RADIUS, text_sm at medium weight), reported to the
+/// layout test as a labelled button (`LAYOUT btn label …`).
+pub fn solid_button(id: impl Into<gpui_kit::ElementId>, label: SharedString, bg: Hsla, fg: Hsla, on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
+    use crate::theme::{BUTTON_H, BUTTON_MIN_W, BUTTON_PAD_X, BUTTON_RADIUS};
+    let id = id.into();
+    let probe = cfg!(debug_assertions) && gpui_kit::component::button::LAYOUT_PROBE.load(std::sync::atomic::Ordering::Relaxed);
+    let name = format!("{id:?}");
+    h_flex()
+        .id(id)
+        .relative()
+        .flex_shrink_0()
+        .h(px(BUTTON_H))
+        .min_w(px(BUTTON_MIN_W))
+        .px(px(BUTTON_PAD_X))
+        .justify_center()
+        .items_center()
+        .rounded(px(BUTTON_RADIUS))
+        .bg(bg)
+        .text_color(fg)
+        .text_sm()
+        .font_weight(FontWeight::MEDIUM)
+        .whitespace_nowrap()
+        .cursor_pointer()
+        .hover(|d| d.opacity(0.9))
+        .child(label)
+        .when(probe, move |d| {
+            d.child(
+                div().absolute().inset_0().child(
+                    canvas(
+                        move |b, window, _| {
+                            let (l, r) = (f32::from(b.origin.x), f32::from(b.origin.x + b.size.width));
+                            let (t, bt) = (f32::from(b.origin.y), f32::from(b.origin.y + b.size.height));
+                            let fs = 0.875 * f32::from(window.rem_size());
+                            eprintln!("LAYOUT btn label {l:.2} {r:.2} {t:.2} {bt:.2} {fs:.2} {name}");
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .size_full(),
+                ),
+            )
+        })
+        .on_click(on_click)
 }
 
 /// A bar of coloured parts in a rounded track (the disk's PostgreSQL,
@@ -1943,16 +1998,13 @@ pub enum RowMenuItem {
 }
 
 /// A row's actions behind the three dots: the outlined 28 px button with
-/// the 8 px radius that every list row in SPM uses (Instances, Backup…),
+/// the button radius that every list row in SPM uses (Instances, Backup…),
 /// never a bare chevron.
 pub fn row_menu(id: impl Into<SharedString>, tip: &'static str, disabled: bool, items: Vec<RowMenuItem>) -> impl IntoElement {
     use gpui_kit::component::{Disableable as _, menu::{DropdownMenu as _, PopupMenuItem}};
     let items = std::rc::Rc::new(items);
     button(gpui_kit::ElementId::Name(id.into()))
         .outline()
-        .w(px(28.))
-        .h(px(28.))
-        .rounded(px(8.))
         .icon(gpui_kit::component::Icon::new(gpui_kit::component::IconName::Ellipsis).size(px(18.)))
         .tooltip(tip)
         .disabled(disabled)

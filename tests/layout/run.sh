@@ -11,8 +11,8 @@
 # fields.py checks the settings card's fields line up and its Apply bar sits
 # at the card's bottom (PENDING sets the states shown with the bar); rows.py
 # that every input, segmented choice and control side by side in a row is
-# the one standard height on one centre line; inputs.py the same in the
-# source.
+# the one standard height on one centre line; buttons.py that every button
+# is the one button size; inputs.py the same in the source.
 # MOVE_STEPS (default: every step of "Move data to another disk") and
 # MOVE_WIDTHS add that wizard's renders; empty MOVE_STEPS leaves them out.
 #
@@ -97,7 +97,7 @@ one() { # where page width scale theme [dialog env]
   local only=(); { [ "$where" = setup ] || [ "$where" = maint ]; } && only=(buttons)
   # A sub-flow's render: it is open, and the menu keeps its parent page.
   local expect=(); case "$dlg" in SPM_DEBUG_MOVE_STEP=*) expect=(EXPECT_SUB=movedata EXPECT_MENU="$page");; esac
-  { env "${expect[@]}" python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" "${only[@]}" && { [ "$where" = setup ] || [ "$where" = maint ] || python3 "$HERE/icons.py" "$OUT/$name.log"; } && python3 "$HERE/fields.py" "$OUT/$name.log" "$dlg" && python3 "$HERE/rows.py" "$OUT/$name.log"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
+  { env "${expect[@]}" python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" "${only[@]}" && { [ "$where" = setup ] || [ "$where" = maint ] || python3 "$HERE/icons.py" "$OUT/$name.log"; } && python3 "$HERE/fields.py" "$OUT/$name.log" "$dlg" && python3 "$HERE/rows.py" "$OUT/$name.log" && python3 "$HERE/buttons.py" "$OUT/$name.log"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
 }
 export -f one; export RECORDS OUT HERE BIN PROFILE LOADING_PROFILE INSTANCE WAIT SPM_INSTALLATION_RECORD HOVER_INFO SKIP_DONE 2>/dev/null
 list=()
@@ -214,4 +214,6 @@ python3 "$HERE/inputs.py" | tee "$OUT/inputs.txt"; inputs=${PIPESTATUS[0]}
 "$HERE/corners.sh" | tee "$OUT/corners.txt"; corners=${PIPESTATUS[0]}
 # Every long job in the shared job view, its steps declared (jobview.sh).
 "$HERE/jobview.sh" | tee "$OUT/jobview.txt"; jobs=${PIPESTATUS[0]}
-[ "$fails" -eq 0 ] && [ "$labels" -eq 0 ] && [ "$tint" -eq 0 ] && [ "$tips" -eq 0 ] && [ "$corners" -eq 0 ] && [ "$jobs" -eq 0 ] && [ "$inputs" -eq 0 ]
+# One button size across every render (each scale, theme and page).
+python3 "$HERE/buttons.py" "$OUT" | tail -5 | tee "$OUT/buttons.txt"; btns=${PIPESTATUS[0]}
+[ "$fails" -eq 0 ] && [ "$labels" -eq 0 ] && [ "$tint" -eq 0 ] && [ "$tips" -eq 0 ] && [ "$corners" -eq 0 ] && [ "$jobs" -eq 0 ] && [ "$inputs" -eq 0 ] && [ "$btns" -eq 0 ]

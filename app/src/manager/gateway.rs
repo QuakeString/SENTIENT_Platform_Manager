@@ -561,23 +561,10 @@ impl Render for RemoveDialog {
                     .justify_end()
                     .child(crate::ui::probed(crate::ui::button("gw-remove-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
                     .child(crate::ui::probed(
-                        h_flex()
-                            .id("gw-remove-ok")
-                            .h(px(32.))
-                            .px_3()
-                            .items_center()
-                            .rounded(theme.radius)
-                            .bg(theme.danger)
-                            .text_color(gpui_kit::white())
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .cursor_pointer()
-                            .hover(|d| d.opacity(0.9))
-                            .child(ok)
-                            .on_click(move |_, _, cx| {
-                                crate::modal::close(cx);
-                                on_ok(keep, image, cx);
-                            }),
+                        crate::ui::solid_button("gw-remove-ok", ok.into(), theme.danger, gpui_kit::white(), move |_, _, cx| {
+                            crate::modal::close(cx);
+                            on_ok(keep, image, cx);
+                        }),
                     )),
             )
     }

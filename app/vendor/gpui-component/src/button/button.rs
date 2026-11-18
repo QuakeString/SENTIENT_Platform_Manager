@@ -20,6 +20,11 @@ use gpui::{
 /// foreground, which the theme already keeps legible against that fill.
 const FOCUS_LINE_OPACITY: f32 = 0.6;
 
+/// Set by the app's layout test: every button reports its box, whether it
+/// shows only an icon, and its label's font size (`LAYOUT btn …` on stderr),
+/// so the test holds every button to one size.
+pub static LAYOUT_PROBE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[derive(Default, Clone, Copy)]
 pub enum ButtonRounded {
     None,
@@ -218,6 +223,10 @@ pub struct Button {
     /// variant's (an outline Stop that hovers red).
     hover_colors: Option<(Hsla, Hsla, Hsla)>,
     compact: bool,
+    /// The app's one button box at Medium: horizontal padding and the
+    /// smallest width of a button with a label (an icon-only button stays
+    /// the square of the height).
+    label_box: Option<(Pixels, Pixels)>,
     tooltip: Option<(
         SharedString,
         Option<(Rc<Box<dyn gpui::Action>>, Option<SharedString>)>,
@@ -279,6 +288,7 @@ impl Button {
             on_hover: None,
             loading: false,
             compact: false,
+            label_box: None,
             outline: false,
             loading_icon: None,
             dropdown_caret: false,
@@ -309,6 +319,13 @@ impl Button {
     pub(crate) fn content_style(mut self, style: StyleRefinement, icon_size: Size) -> Self {
         self.content_style = style;
         self.icon_size = Some(icon_size);
+        self
+    }
+
+    /// The app's one button box: `pad_x` either side of the content and at
+    /// least `min_w` wide when the button has a label (Medium only).
+    pub fn label_box(mut self, pad_x: Pixels, min_w: Pixels) -> Self {
+        self.label_box = Some((pad_x, min_w));
         self
     }
 
@@ -645,6 +662,7 @@ impl RenderOnce for Button {
             _ => self.size,
         });
         let has_content = self.icon.is_some() || self.label.is_some() || !children.is_empty();
+        let icon_only = self.label.is_none() && children.is_empty();
         // Only borderless variants use this; the others tint their border.
         let focus_line = if style.no_padding() {
             FocusLine::Outside
@@ -701,10 +719,13 @@ impl RenderOnce for Button {
                             .h_6()
                             .px_2()
                             .when(self.compact, |this| this.min_w_6().px_1p5()),
-                        Size::Medium => this
-                            .h_8()
-                            .px_2p5()
-                            .when(self.compact, |this| this.min_w_8().px_2()),
+                        Size::Medium => match self.label_box {
+                            Some((pad, min_w)) => this.h_8().px(pad).min_w(min_w),
+                            None => this
+                                .h_8()
+                                .px_2p5()
+                                .when(self.compact, |this| this.min_w_8().px_2()),
+                        },
                         Size::Large => this
                             .h_8()
                             .px_3()
@@ -848,6 +869,39 @@ impl RenderOnce for Button {
         .tab_index(self.tab_index)
         .tab_stop(self.tab_stop)
         .child(content)
+        .when(
+            LAYOUT_PROBE.load(std::sync::atomic::Ordering::Relaxed),
+            |this| {
+                let id = self.id.clone();
+                // A link or text button reads as text, not a button box.
+                let kind = if style.no_padding() { "link" } else if icon_only { "icon" } else { "label" };
+                // The probe fills the padding box: add the 1 px border back.
+                // (1 px is drawn as whole device pixels: one at x1.5).
+                let bordered = self.variant.is_default() || self.outline;
+                // The label's font size: button_text_size(size) on the content.
+                let font_rem = match self.size {
+                    Size::XSmall => 0.75,
+                    Size::Small | Size::Medium => 0.875,
+                    _ => 1.0,
+                };
+                this.child(
+                    div().absolute().inset_0().child(
+                        gpui::canvas(
+                            move |b, window, _| {
+                                let sf = window.scale_factor();
+                                let bw = if bordered { sf.floor().max(1.0) / sf } else { 0.0 };
+                                let (l, r) = (f32::from(b.origin.x) - bw, f32::from(b.origin.x + b.size.width) + bw);
+                                let (t, bt) = (f32::from(b.origin.y) - bw, f32::from(b.origin.y + b.size.height) + bw);
+                                let fs = font_rem * f32::from(window.rem_size());
+                                eprintln!("LAYOUT btn {kind} {l:.2} {r:.2} {t:.2} {bt:.2} {fs:.2} {id}");
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .size_full(),
+                    ),
+                )
+            },
+        )
         // Fade the whole button while loading, so every variant is dimmed by
         // the same amount. Fading `bg`, `border` and `fg` one by one instead
         // only shows up on variants that have a background to begin with:

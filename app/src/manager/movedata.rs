@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Icon, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, Icon, h_flex, v_flex,
     button::ButtonVariants as _,
     checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
@@ -342,9 +342,9 @@ impl Render for LocationsCard {
             let (target, on) = (self.target.clone(), self.on.clone());
             let id = SharedString::from(format!("dl-move-{}", store.as_str()));
             let btn = if store == Store::Backups {
-                ui::button(id).outline().small().icon(Icon::new(Lucide::Folder)).label("Change")
+                ui::button(id).outline().icon(Icon::new(Lucide::Folder)).label("Change")
             } else {
-                ui::button(id).outline().small().icon(Icon::empty().path("icons/move-data.svg")).label("Move")
+                ui::button(id).outline().icon(Icon::empty().path("icons/move-data.svg")).label("Move")
             }
             .disabled(!can)
             .when(!can && self.windows, |b| b.tooltip("Not on Windows yet: only ClickHouse's WSL disk moves there."))
@@ -360,7 +360,7 @@ impl Render for LocationsCard {
             let busy = self.removing.as_deref() == Some(o.path.as_str());
             let btn = ui::button(SharedString::from(format!("dl-rm-{i}")))
                 .outline()
-                .small()
+                
                 .icon(Icon::empty().path("icons/trash.svg"))
                 .label("Remove")
                 .loading(busy)

@@ -1605,7 +1605,6 @@ impl Installer {
             FINISH => "Close",
             _ => "Next",
         };
-        let h = px(crate::theme::BAR_CTRL_H);
         h_flex()
             .flex_shrink_0()
             .px(px(ui::PAGE_PAD))
@@ -1639,8 +1638,8 @@ impl Installer {
                 bar.child(crate::ui::probed(
                     crate::ui::button("cancel")
                         .outline()
-                        .h(h)
-                        .px_4()
+                        
+                        
                         .label("Cancel")
                         .on_click(cx.listener(|this, _, window, cx| this.confirm_cancel(window, cx))),
                 ))
@@ -1649,8 +1648,8 @@ impl Installer {
                 bar.child(crate::ui::probed(
                     crate::ui::button("back")
                         .outline()
-                        .h(h)
-                        .px_4()
+                        
+                        
                         .label("Back")
                         .on_click(cx.listener(|this, _, _, cx| this.go(this.previous_shown(this.step), cx))),
                 ))
@@ -1658,8 +1657,8 @@ impl Installer {
             .child(crate::ui::probed(
                 crate::ui::button("next")
                     .primary()
-                    .h(h)
-                    .px_5()
+                    
+                    
                     .label(next_label)
                     .disabled((self.step == INSTALL && !failed) || blocked.is_some())
                     .on_click(cx.listener(|this, _, window, cx| this.next(window, cx))),

@@ -613,19 +613,9 @@ impl Render for ActionDialog {
             .when_some(self.error.clone(), |c, e| c.child(ui::outcome(&theme, Tone::Bad, e)));
         let click = cx.listener(|d, _, _, cx| d.go(cx));
         let ok_button: AnyElement = if danger {
-            h_flex()
-                .id("licence-act-ok")
-                .h(px(32.))
-                .px_3()
-                .items_center()
-                .rounded(theme.radius)
-                .bg(theme.danger)
-                .text_color(gpui_kit::white())
-                .text_sm()
-                .font_weight(FontWeight::MEDIUM)
-                .when(!self.busy, |b| b.cursor_pointer().hover(|d| d.opacity(0.9)).on_click(click))
-                .when(self.busy, |b| b.opacity(0.6))
-                .child(if self.busy { "Working…" } else { ok })
+            let busy = self.busy;
+            ui::solid_button("licence-act-ok", (if busy { "Working…" } else { ok }).into(), theme.danger, gpui_kit::white(), move |e, w, cx| if !busy { click(e, w, cx) })
+                .when(busy, |b| b.opacity(0.6))
                 .into_any_element()
         } else {
             ui::button("licence-act-ok").primary().label(if self.busy { "Working" } else { ok }).disabled(self.busy).on_click(click).into_any_element()

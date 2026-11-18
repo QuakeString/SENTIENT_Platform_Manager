@@ -674,7 +674,7 @@ fn header(docker: bool, a: &Actions) -> Div {
     let open = a.on_terminal.clone();
     let terminal = div()
         .id("srv-terminal-tip")
-        .child(ui::button("srv-terminal").outline().w(px(28.)).h(px(28.)).rounded(px(8.)).icon(Icon::new(Lucide::SquareTerminal).size(px(16.))).disabled(!TERMINAL_READY).on_click(move |_, w, cx| open(w, cx)))
+        .child(ui::button("srv-terminal").outline().icon(Icon::new(Lucide::SquareTerminal).size(px(16.))).disabled(!TERMINAL_READY).on_click(move |_, w, cx| open(w, cx)))
         .tooltip(crate::ui::tooltip("Open terminal"));
     let items: Vec<ui::RowMenuItem> = menu_entries(a.remote, docker)
         .into_iter()
@@ -708,7 +708,7 @@ fn header(docker: bool, a: &Actions) -> Div {
                 .items_center()
                 .child(ui::probed(terminal))
                 .when(a.remote, |r| {
-                    r.child(ui::probed(ui::button("srv-restart").outline().w(px(28.)).h(px(28.)).rounded(px(8.)).icon(Icon::new(Lucide::RotateCw).size(px(16.))).tooltip("Restart server").disabled(a.busy).on_click(move |_, w, cx| restart(w, cx))))
+                    r.child(ui::probed(ui::button("srv-restart").outline().icon(Icon::new(Lucide::RotateCw).size(px(16.))).tooltip("Restart server").disabled(a.busy).on_click(move |_, w, cx| restart(w, cx))))
                 })
                 .child(ui::probed(ui::row_menu("srv-menu", "More actions", a.busy, items))),
         )

@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, IconName, h_flex, v_flex,
     button::ButtonVariants as _,
     input::{Input, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
@@ -646,7 +646,7 @@ impl InstancesPage {
         } else {
             colour_button("open-local".into(), "Open", remote::LOCAL_COLOR, cx.listener(|_, _, _, cx| cx.emit(OpenInstance(None)))).into_any_element()
         };
-        let more = crate::ui::button("more-local").outline().w(px(28.)).h(px(28.)).icon(gpui_kit::component::Icon::new(IconName::Ellipsis).size(px(18.)).text_color(cx.theme().foreground)).tooltip("More").dropdown_menu({
+        let more = crate::ui::button("more-local").outline().icon(gpui_kit::component::Icon::new(IconName::Ellipsis).size(px(18.)).text_color(cx.theme().foreground)).tooltip("More").dropdown_menu({
             let this = cx.entity().downgrade();
             move |menu, _, _| {
                 let t = this.clone();
@@ -702,7 +702,7 @@ impl InstancesPage {
             }
         }
         let this = cx.entity().downgrade();
-        let more = crate::ui::button(SharedString::from(format!("more-{id}"))).outline().w(px(28.)).h(px(28.)).icon(gpui_kit::component::Icon::new(IconName::Ellipsis).size(px(18.)).text_color(cx.theme().foreground)).tooltip("Work on this instance").dropdown_menu({
+        let more = crate::ui::button(SharedString::from(format!("more-{id}"))).outline().icon(gpui_kit::component::Icon::new(IconName::Ellipsis).size(px(18.)).text_color(cx.theme().foreground)).tooltip("Work on this instance").dropdown_menu({
             let (this, id) = (this.clone(), id.clone());
             move |menu, _, _| {
                 let item = |icon: Lucide, label: &'static str, enabled: bool, f: Box<dyn Fn(&mut InstancesPage, &mut Window, &mut Context<InstancesPage>)>| {
@@ -732,17 +732,17 @@ impl InstancesPage {
         let unreachable = view.stale.is_some() || matches!(&status, Some(Err(e)) if !remote::needs_setup(e) && e != remote::FORGOTTEN && !e.contains("administrator rights"));
         let current = self.open.as_deref() == Some(id.as_str());
         let primary: AnyElement = if unreachable {
-            crate::ui::button(SharedString::from(format!("retry-{id}"))).primary().h(px(28.)).label("Try again").loading(refreshing).on_click(cx.listener({
+            crate::ui::button(SharedString::from(format!("retry-{id}"))).primary().label("Try again").loading(refreshing).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.refresh(&id, cx)
             })).into_any_element()
         } else if use_installed {
-            crate::ui::button(SharedString::from(format!("use-installed-{id}"))).primary().h(px(28.)).label("Use it").disabled(busy).on_click(cx.listener({
+            crate::ui::button(SharedString::from(format!("use-installed-{id}"))).primary().label("Use it").disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.use_installed(&id, cx)
             })).into_any_element()
         } else if not_set_up {
-            crate::ui::button(SharedString::from(format!("setup-{id}"))).primary().h(px(28.)).label("Set up").disabled(busy).on_click(cx.listener({
+            crate::ui::button(SharedString::from(format!("setup-{id}"))).primary().label("Set up").disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| this.set_up(&id, cx)
             })).into_any_element()
@@ -758,11 +758,11 @@ impl InstancesPage {
             .gap(crate::ui::button_gap())
             .items_center()
             .child(crate::ui::probed(primary))
-            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("edit-{id}"))).outline().h(px(28.)).px(px(10.)).text_size(px(13.)).label("Edit").disabled(busy).on_click(cx.listener({
+            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("edit-{id}"))).outline().label("Edit").disabled(busy).on_click(cx.listener({
                 let inst = inst.clone();
                 move |this, _, window, cx| this.open_form(Some(inst.clone()), window, cx)
             }))))
-            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("remove-{id}"))).outline().h(px(28.)).px(px(10.)).text_size(px(13.)).label("Remove").disabled(busy).on_click(cx.listener({
+            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("remove-{id}"))).outline().label("Remove").disabled(busy).on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, _, cx| {
                     this.confirm_remove = Some(id.clone());
@@ -830,7 +830,7 @@ impl InstancesPage {
     fn form_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let f = self.form.as_ref()?;
         let theme = cx.theme().clone();
-        let help = |id: &'static str, text: &'static str| crate::ui::button(id).ghost().xsmall().icon(IconName::Info).tooltip(text);
+        let help = |id: &'static str, text: &'static str| crate::ui::button(id).ghost().icon(IconName::Info).tooltip(text);
         let busy = matches!(f.stage, Stage::Checking | Stage::Connecting);
         let swatches = h_flex().gap_2().items_center().children(remote::PALETTE.iter().map(|c| {
             let selected = f.color.eq_ignore_ascii_case(c);
@@ -1558,22 +1558,7 @@ fn text_on(c: Rgba) -> Hsla {
 /// The Open button in the instance's own colour (the mockup's option C).
 fn colour_button(id: SharedString, label: &'static str, color: &str, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
     let c = rgb(remote::parse_hex(color).unwrap_or(0x187074));
-    h_flex()
-        .id(id)
-        .min_w(px(OPEN_W))
-        .justify_center()
-        .h(px(28.))
-        .px(px(11.))
-        .rounded(px(8.))
-        .bg(c)
-        .text_color(text_on(c))
-        .text_size(px(13.))
-        .font_weight(FontWeight::MEDIUM)
-        .items_center()
-        .cursor_pointer()
-        .hover(|d| d.opacity(0.9))
-        .child(label)
-        .on_click(on_click)
+    crate::ui::solid_button(id, label.into(), c.into(), text_on(c), on_click).min_w(px(OPEN_W))
 }
 
 /// One instance as a tile (the mockup's option C): one rounded box with a

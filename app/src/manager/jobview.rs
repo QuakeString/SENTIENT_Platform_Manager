@@ -333,11 +333,11 @@ fn log_card(theme: &gpui_kit::component::Theme, id: &'static str, entity: &Entit
                 .items_center()
                 .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child("Log"))
                 .when_some(kept_note, |r, t| r.child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.)).text_color(theme.muted_foreground).child(t)))
-                .child(ui::probed(ui::button(SharedString::from(format!("{id}-log-copy"))).outline().small().label("Copy").disabled(count == 0).on_click(move |_, _, cx| {
+                .child(ui::probed(ui::button(SharedString::from(format!("{id}-log-copy"))).outline().label("Copy").disabled(count == 0).on_click(move |_, _, cx| {
                     let text = copy_job.read(cx).log_text();
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                 })))
-                .child(ui::probed(ui::button(SharedString::from(format!("{id}-log-save"))).outline().small().label("Save").disabled(count == 0).on_click(move |_, _, cx| save_log(&save_job, cx)))),
+                .child(ui::probed(ui::button(SharedString::from(format!("{id}-log-save"))).outline().label("Save").disabled(count == 0).on_click(move |_, _, cx| save_log(&save_job, cx)))),
         )
         .child(
             div()
@@ -358,7 +358,7 @@ fn log_card(theme: &gpui_kit::component::Theme, id: &'static str, entity: &Entit
                     list.into_any_element()
                 })
                 .when(!follow.get() && count > 0, |d| {
-                    d.child(div().absolute().right(px(14.)).bottom(px(12.)).child(ui::probed(ui::button(SharedString::from(format!("{id}-log-latest"))).primary().small().icon(IconName::ChevronDown).label("Latest").on_click(move |_, _, cx| {
+                    d.child(div().absolute().right(px(14.)).bottom(px(12.)).child(ui::probed(ui::button(SharedString::from(format!("{id}-log-latest"))).primary().icon(IconName::ChevronDown).label("Latest").on_click(move |_, _, cx| {
                         at_end.set(true);
                         let n = jump_job.read(cx).log().len();
                         if n > 0 {

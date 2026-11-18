@@ -254,8 +254,8 @@ impl Installer {
         Some(
             crate::ui::button("sentient-version")
                 .outline()
-                .h(px(crate::theme::BAR_CTRL_H))
-                .px_3()
+                
+                
                 .label(label)
                 .dropdown_caret(true)
                 .dropdown_menu(move |menu, _, _| {
@@ -1127,7 +1127,7 @@ impl Installer {
                         .child(
                             crate::ui::button(SharedString::from(format!("help-{}", s.env)))
                                 .ghost()
-                                .xsmall()
+                                
                                 .icon(IconName::Info)
                                 .tooltip(s.help.clone()),
                         )

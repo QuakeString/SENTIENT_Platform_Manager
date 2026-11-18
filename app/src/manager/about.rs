@@ -7,7 +7,7 @@
 //! third-party licences, and where it lives as a quiet footer.
 
 use gpui_kit::component::{
-    ActiveTheme, Icon, IconName, Disableable as _, Sizable as _, h_flex, v_flex, button::ButtonVariants as _,
+    ActiveTheme, Icon, IconName, Disableable as _, h_flex, v_flex, button::ButtonVariants as _,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -262,7 +262,7 @@ fn pref_row(theme: &gpui_kit::component::Theme, label: &'static str, about: Opti
                 .gap_1()
                 .items_center()
                 .child(div().text_sm().child(label))
-                .when_some(about, |c, a| c.child(crate::ui::button(SharedString::from(format!("ahelp-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(a))),
+                .when_some(about, |c, a| c.child(crate::ui::button(SharedString::from(format!("ahelp-{label}"))).ghost().icon(IconName::Info).tooltip(a))),
         )
         .child(control)
 }
@@ -427,7 +427,7 @@ impl Render for AboutPage {
                 .text_size(px(13.))
                 .text_color(theme.muted_foreground)
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(format!("{label} {}", ui::middle_ellipsis(&path, 64))))
-                .child(crate::ui::button(id).ghost().xsmall().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+                .child(crate::ui::button(id).ghost().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
         };
         let footer = v_flex()
             .gap_0p5()
