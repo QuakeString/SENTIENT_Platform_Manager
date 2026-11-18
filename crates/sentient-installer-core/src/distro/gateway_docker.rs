@@ -498,6 +498,350 @@ pub fn remove(sink: &ProgressFn, keep_data: bool, remove_image: bool) -> Result<
     Ok(msg)
 }
 
+// ---------------------------------------------------------------------------
+// Settings (crate::gateway_settings): read, apply by recreating, password
+// ---------------------------------------------------------------------------
+
+/// A container's run settings, from `docker inspect` (the ones a recreate
+/// keeps).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Spec {
+    pub name: String,
+    pub image: String,
+    pub env: Vec<String>,
+    /// The restart policy's name (no, always, unless-stopped, on-failure).
+    pub restart: String,
+    pub network: String,
+    /// (on the host, in the container).
+    pub devices: Vec<(String, String)>,
+    pub group_add: Vec<String>,
+    pub cap_add: Vec<String>,
+    /// (volume name or host path, in the container, read-only, a bind).
+    pub mounts: Vec<(String, String, bool, bool)>,
+}
+
+/// One container's `docker inspect` (an array of one).
+pub fn parse_spec(json: &str) -> Option<Spec> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let c = v.as_array().and_then(|a| a.first()).cloned().unwrap_or(v);
+    let strs = |v: Option<&serde_json::Value>| -> Vec<String> { v.and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default() };
+    let host = c.get("HostConfig").cloned().unwrap_or_default();
+    let devices = host
+        .get("Devices")
+        .and_then(|d| d.as_array())
+        .map(|a| a.iter().filter_map(|d| Some((d.get("PathOnHost")?.as_str()?.to_string(), d.get("PathInContainer")?.as_str()?.to_string()))).collect())
+        .unwrap_or_default();
+    let mounts = c
+        .get("Mounts")
+        .and_then(|m| m.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| {
+                    let kind = m.get("Type")?.as_str()?;
+                    let dest = m.get("Destination")?.as_str()?.to_string();
+                    let rw = m.get("RW").and_then(|r| r.as_bool()).unwrap_or(true);
+                    match kind {
+                        "volume" => Some((m.get("Name")?.as_str()?.to_string(), dest, !rw, false)),
+                        "bind" => Some((m.get("Source")?.as_str()?.to_string(), dest, !rw, true)),
+                        _ => None,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(Spec {
+        name: c.get("Name")?.as_str()?.trim_start_matches('/').to_string(),
+        image: c.get("Config").and_then(|x| x.get("Image")).and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        env: strs(c.get("Config").and_then(|x| x.get("Env"))),
+        restart: host.get("RestartPolicy").and_then(|r| r.get("Name")).and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        network: host.get("NetworkMode").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        devices,
+        group_add: strs(host.get("GroupAdd")),
+        cap_add: strs(host.get("CapAdd")),
+        mounts,
+    })
+}
+
+/// The `docker run` arguments that start `spec` again, its environment
+/// from `env_file` (no value on a command line).
+pub fn run_args(spec: &Spec, env_file: &str) -> Vec<String> {
+    let mut a: Vec<String> = vec!["run".into(), "-d".into(), "--name".into(), spec.name.clone()];
+    if !spec.restart.is_empty() && spec.restart != "no" {
+        a.extend(["--restart".into(), spec.restart.clone()]);
+    }
+    if !spec.network.is_empty() && spec.network != "default" {
+        a.extend(["--network".into(), spec.network.clone()]);
+    }
+    for (src, dest, ro, _) in &spec.mounts {
+        a.extend(["-v".into(), format!("{src}:{dest}{}", if *ro { ":ro" } else { "" })]);
+    }
+    for (h, c) in &spec.devices {
+        a.extend(["--device".into(), format!("{h}:{c}")]);
+    }
+    for g in &spec.group_add {
+        a.extend(["--group-add".into(), g.clone()]);
+    }
+    for c in &spec.cap_add {
+        a.extend(["--cap-add".into(), c.clone()]);
+    }
+    a.extend(["--env-file".into(), env_file.to_string(), spec.image.clone()]);
+    a
+}
+
+/// `docker inspect <name>` read as a Spec.
+pub fn inspect_spec(name: &str) -> Option<Spec> {
+    docker(&["inspect", name]).filter(|(ok, _)| *ok).and_then(|(_, o)| parse_spec(&o))
+}
+
+/// The image's own environment (PATH, the gateway's folders): kept, not listed.
+fn image_env(image: &str) -> Vec<String> {
+    docker(&["image", "inspect", "--format", "{{json .Config.Env}}", image]).filter(|(ok, _)| *ok).and_then(|(_, o)| serde_json::from_str(o.trim()).ok()).unwrap_or_default()
+}
+
+/// Why this container's settings are not changed from here (None: they are).
+fn not_editable(s: &Status) -> Option<String> {
+    if cfg!(windows) {
+        return Some("On Windows the Platform Manager manages the gateway as a Windows service, not in Docker: change this container the way it was started.".into());
+    }
+    if s.managed {
+        return None;
+    }
+    Some(match &s.compose_dir {
+        Some(dir) => format!("This container comes from a compose file in {dir}: change its settings in that file and run docker compose up -d."),
+        None => "This container was started outside the Platform Manager: change its settings the way it was started.".into(),
+    })
+}
+
+/// The config volume read by the read script, in the container (running)
+/// or in a throwaway one of its image on the config volume (stopped).
+fn read_script_out(spec: &Spec, running: bool) -> Option<String> {
+    let script = crate::gateway_settings::read_script();
+    if running {
+        let line = format!("D=\"${{ST_GW_CONFIG_DIR:-/sentient_gateway/config}}\"; P=1; {script}");
+        return docker(&["exec", &spec.name, "sh", "-c", &line]).filter(|(ok, _)| *ok).map(|(_, o)| o);
+    }
+    let dir = env_value(&spec.env, "ST_GW_CONFIG_DIR").unwrap_or_else(|| VOLUMES[0].1.to_string());
+    let (src, _, _, _) = spec.mounts.iter().find(|(_, d, _, _)| *d == dir)?;
+    let mount = format!("{src}:/c:ro");
+    let line = format!("D=/c; P=0; {script}");
+    docker(&["run", "--rm", "--pull=never", "--network", "none", "-v", &mount, "--entrypoint", "sh", &spec.image, "-c", &line]).filter(|(ok, _)| *ok).map(|(_, o)| o)
+}
+
+fn env_value(env: &[String], name: &str) -> Option<String> {
+    env.iter().find_map(|l| l.strip_prefix(&format!("{name}="))).map(str::to_string).filter(|v| !v.is_empty())
+}
+
+/// The container's settings (crate::gateway_settings::read).
+pub fn read_settings(status: &Status) -> crate::gateway_settings::GwSettings {
+    use crate::gateway_settings::{self as gs, GwSettings};
+    let Some(spec) = status.container.as_deref().and_then(inspect_spec) else {
+        return GwSettings { source: "none".into(), note: Some("The gateway container could not be read.".into()), ..GwSettings::default() };
+    };
+    let help = status.running.then(|| docker(&["exec", &spec.name, "sentient-gateway", "--help"])).flatten().map(|(_, o)| o).unwrap_or_default();
+    let caps = gs::Caps::of_help(&help);
+    let mut s = match read_script_out(&spec, status.running) {
+        Some(out) => gs::from_read(&out),
+        None => GwSettings { source: "none".into(), note: Some("The gateway's configuration volume could not be read.".into()), ..GwSettings::default() },
+    };
+    if caps.status_json {
+        if let Some((true, out)) = docker(&["exec", &spec.name, "sentient-gateway", "--status-json"]) {
+            gs::merge_status_json(&mut s, &out);
+        }
+    }
+    if !status.running {
+        s.connected = Some(false);
+        s.connected_how = Some("the container is stopped".into());
+    }
+    gs::apply_env(&mut s, &spec.env, true);
+    s.caps = caps;
+    let why = not_editable(status);
+    let editable = why.is_none();
+    s.machine.not_editable = why;
+    s.machine.restart_always = Some(matches!(spec.restart.as_str(), "always" | "unless-stopped" | "on-failure"));
+    s.machine.restart_word = Some(if spec.restart.is_empty() { "no".into() } else { spec.restart.clone() });
+    s.machine.serial.mode = "devices".into();
+    s.machine.serial.chosen = spec.devices.iter().map(|(h, _)| h.clone()).collect();
+    #[cfg(unix)]
+    {
+        s.machine.serial.available = serial_devices_in(std::path::Path::new("/dev/serial/by-id"), std::path::Path::new("/dev")).into_iter().map(|d| d.path).collect();
+    }
+    s.machine.env = gs::overrides(&spec.env, &image_env(&spec.image), |_| editable, "container");
+    s
+}
+
+/// `env` with `name` set to `value` (None: removed).
+fn set_env(env: &mut Vec<String>, name: &str, value: Option<&str>) {
+    env.retain(|l| !l.starts_with(&format!("{name}=")));
+    if let Some(v) = value {
+        env.push(format!("{name}={v}"));
+    }
+}
+
+/// The container's spec with `plan` applied (crate::gateway_settings::ApplyPlan).
+pub fn planned_spec(spec: &Spec, before: &crate::gateway_settings::GwSettings, plan: &crate::gateway_settings::ApplyPlan, gid_of: &dyn Fn(&str) -> Option<u32>) -> Result<Spec, String> {
+    let mut s = spec.clone();
+    if let Some(on) = plan.ui_enabled {
+        set_env(&mut s.env, "ST_GW_UI", Some(if on { "on" } else { "off" }));
+    }
+    if let Some(l) = &plan.ui_listen {
+        set_env(&mut s.env, "ST_GW_UI_LISTEN", Some(l));
+    }
+    if let Some(l) = &plan.rust_log {
+        set_env(&mut s.env, "RUST_LOG", (!l.is_empty()).then_some(l.as_str()));
+    }
+    if let Some(vars) = &plan.env {
+        // The listed overrides that have a value go; the new list comes in
+        // (a secret is kept as it was).
+        for e in before.machine.env.iter().filter(|e| e.editable && e.value.is_some()) {
+            set_env(&mut s.env, &e.name, None);
+        }
+        for (n, v) in vars {
+            if n.is_empty() || n.contains('=') || v.contains('\n') {
+                return Err(format!("{n}: not a usable variable"));
+            }
+            set_env(&mut s.env, n, Some(v));
+        }
+    }
+    if let Some(r) = plan.restart_always {
+        s.restart = if r { "unless-stopped".into() } else { "no".into() };
+    }
+    if let Some(devs) = &plan.serial_devices {
+        s.devices = devs.iter().map(|d| (d.clone(), d.clone())).collect();
+        let mut gids: Vec<String> = Vec::new();
+        for d in devs {
+            if let Some(g) = gid_of(d).filter(|g| *g != 0).map(|g| g.to_string()) {
+                if !gids.contains(&g) {
+                    gids.push(g);
+                }
+            }
+        }
+        s.group_add = gids;
+    }
+    Ok(s)
+}
+
+#[cfg(unix)]
+fn gid_of(path: &str) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata(path).ok().map(|m| m.gid())
+}
+
+/// A private file for the container's environment (0600, the account's
+/// runtime folder), removed after the recreate.
+#[cfg(unix)]
+fn write_env_file(env: &[String]) -> Result<std::path::PathBuf, String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(std::env::temp_dir);
+    let path = dir.join(format!("spm-gateway-{}.env", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|e| format!("write {}: {e}", path.display()))?;
+    for l in env {
+        if l.contains('\n') {
+            return Err("An environment value holds a line break.".into());
+        }
+        writeln!(f, "{l}").map_err(|e| e.to_string())?;
+    }
+    Ok(path)
+}
+
+/// Apply `plan` by recreating the container: the same image, volumes,
+/// network, environment and capabilities, the changes over them. The old
+/// container waits under another name until the new one stays up, and
+/// comes back when it does not.
+pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gateway_settings::GwSettings, plan: &crate::gateway_settings::ApplyPlan) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let _ = (sink, status, before, plan);
+        Err(not_editable(status).unwrap_or_default())
+    }
+    #[cfg(not(windows))]
+    {
+        let name = status.container.clone().ok_or("There is no gateway container.")?;
+        let spec = inspect_spec(&name).ok_or("The gateway container could not be read.")?;
+        let new = planned_spec(&spec, before, plan, &gid_of)?;
+        recreate(sink, &new)
+    }
+}
+
+#[cfg(not(windows))]
+fn recreate(sink: &ProgressFn, spec: &Spec) -> Result<(), String> {
+    let name = spec.name.clone();
+    let old = format!("{name}-spm-previous");
+    let env_file = write_env_file(&spec.env)?;
+    let file = env_file.display().to_string();
+    let result = (|| {
+        sink(Progress::Step { name: format!("Stopping the container {name}") });
+        let _ = docker(&["rm", "-f", &old]);
+        if !matches!(docker(&["stop", "-t", "25", &name]), Some((true, _))) {
+            return Err(format!("docker stop {name} failed."));
+        }
+        if !matches!(docker(&["rename", &name, &old]), Some((true, _))) {
+            let _ = docker(&["start", &name]);
+            return Err(format!("docker rename {name} failed; the gateway was started again as it was."));
+        }
+        sink(Progress::Step { name: format!("Creating {name} again with the same volumes") });
+        let args = run_args(spec, &file);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let started = matches!(docker(&refs), Some((true, _)));
+        let up = started && (0..30).any(|_| {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            container_running(&name)
+        }) && {
+            // Still up a few seconds later (a bad setting exits at once).
+            std::thread::sleep(std::time::Duration::from_secs(4));
+            container_running(&name)
+        };
+        if !up {
+            sink(Progress::Log { line: format!("The new container did not stay up; the previous one is started again. See docker logs {name}.") });
+            let _ = docker(&["rm", "-f", &name]);
+            let _ = docker(&["rename", &old, &name]);
+            let _ = docker(&["start", &name]);
+            return Err(format!("The gateway did not start with the new settings; the previous container {name} runs again, unchanged."));
+        }
+        let _ = docker(&["rm", &old]);
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&env_file);
+    result
+}
+
+fn container_running(name: &str) -> bool {
+    docker(&["inspect", "--format", "{{.State.Running}}", name]).is_some_and(|(ok, o)| ok && o.trim() == "true")
+}
+
+/// The page's password through the gateway in its container
+/// (`docker exec -i … --ui-password -`, the password on standard input).
+pub fn set_ui_password(status: &Status, password: &str) -> Result<String, String> {
+    let name = status.container.clone().ok_or("There is no gateway container.")?;
+    if !status.running {
+        return Err("Start the gateway first: its password is set by the gateway itself.".into());
+    }
+    #[cfg(windows)]
+    {
+        crate::gateway_settings::run_with_stdin("docker", &["exec", "-i", &name, "sentient-gateway", "--ui-password", "-"], password)
+    }
+    #[cfg(not(windows))]
+    {
+        let line = format!("docker exec -i {} sentient-gateway --ui-password -", super::shell_quote(&name));
+        let (prog, args) = super::shell_args(&line);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        crate::gateway_settings::run_with_stdin(&prog, &refs, password)
+    }
+}
+
+/// The credentials to test with: the container's environment over its file.
+pub fn test_creds(status: &Status) -> Option<crate::gateway_settings::TestCreds> {
+    let spec = inspect_spec(status.container.as_deref()?)?;
+    let file = status
+        .running
+        .then(|| docker(&["exec", &spec.name, "sh", "-c", "d=\"${ST_GW_CONFIG_DIR:-/sentient_gateway/config}\"; cat \"$d/st_gateway.json\" 2>/dev/null || cat \"$d/tb_gateway.json\" 2>/dev/null"]))
+        .flatten()
+        .filter(|(ok, _)| *ok)
+        .map(|(_, o)| o);
+    crate::gateway_settings::creds_of(file.as_deref(), &spec.env)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -580,5 +924,41 @@ mod tests {
         assert_eq!(line.matches("--group-add").count(), 1);
         assert!(line.contains(" --group-add 986 ") && !line.contains("--group-add 0"));
         assert!(line.ends_with("'quakestring/sentient-gateway-rs:4.16.2'"));
+    }
+
+    const INSPECT: &str = r#"[{"Name":"/sentient-gateway","Config":{"Image":"quakestring/sentient-gateway-rs:4.16.2","Env":["host=127.0.0.1","port=1883","accessToken=Q1w2E3r4T5y6U7i8O9p0","PATH=/usr/bin","ST_GW_CONFIG_DIR=/sentient_gateway/config"]},
+        "HostConfig":{"RestartPolicy":{"Name":"unless-stopped"},"NetworkMode":"host","Devices":[{"PathOnHost":"/dev/ttyUSB0","PathInContainer":"/dev/ttyUSB0","CgroupPermissions":"rwm"}],"GroupAdd":["986"],"CapAdd":null},
+        "Mounts":[{"Type":"volume","Name":"st-gw-config","Destination":"/sentient_gateway/config","RW":true},{"Type":"bind","Source":"/srv/example/certs","Destination":"/certs","RW":false}]}]"#;
+
+    #[test]
+    fn a_recreate_keeps_volumes_network_and_secrets() {
+        use crate::gateway_settings::{ApplyPlan, EnvVar, GwSettings};
+        let spec = parse_spec(INSPECT).unwrap();
+        assert_eq!((spec.name.as_str(), spec.restart.as_str(), spec.network.as_str()), ("sentient-gateway", "unless-stopped", "host"));
+        assert_eq!(spec.mounts.len(), 2);
+        let mut before = GwSettings::default();
+        before.machine.env = vec![EnvVar { name: "ST_GW_OLD".into(), value: Some("1".into()), editable: true, origin: "container".into() }];
+        let plan = ApplyPlan {
+            ui_enabled: Some(true),
+            ui_listen: Some("0.0.0.0:8642".into()),
+            restart_always: Some(false),
+            serial_devices: Some(vec!["/dev/serial/by-id/usb-Example_RS485-if00".into()]),
+            env: Some(vec![("ST_GW_NEW".into(), "2".into())]),
+            rust_log: Some("debug".into()),
+            ..ApplyPlan::default()
+        };
+        let new = planned_spec(&spec, &before, &plan, &|_| Some(986)).unwrap();
+        assert!(new.env.contains(&"accessToken=Q1w2E3r4T5y6U7i8O9p0".to_string()));
+        assert!(new.env.contains(&"ST_GW_UI=on".to_string()) && new.env.contains(&"RUST_LOG=debug".to_string()) && new.env.contains(&"ST_GW_NEW=2".to_string()));
+        assert_eq!((new.restart.as_str(), new.group_add.clone()), ("no", vec!["986".to_string()]));
+        let args = run_args(&new, "/run/user/1000/x.env").join(" ");
+        assert!(!args.contains("Q1w2E3r4"), "{args}");
+        assert!(args.contains("--network host -v st-gw-config:/sentient_gateway/config -v /srv/example/certs:/certs:ro"), "{args}");
+        assert!(args.contains("--device /dev/serial/by-id/usb-Example_RS485-if00:/dev/serial/by-id/usb-Example_RS485-if00 --group-add 986"));
+        assert!(!args.contains("--restart"));
+        assert!(args.ends_with("--env-file /run/user/1000/x.env quakestring/sentient-gateway-rs:4.16.2"));
+        // A line break in a value is refused.
+        let bad = ApplyPlan { env: Some(vec![("A".into(), "1\n2".into())]), ..ApplyPlan::default() };
+        assert!(planned_spec(&spec, &before, &bad, &|_| None).is_err());
     }
 }

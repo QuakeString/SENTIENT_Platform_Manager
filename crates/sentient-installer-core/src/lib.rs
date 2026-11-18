@@ -16,6 +16,7 @@ pub(crate) mod exec;
 pub mod stack;
 pub mod stack_order;
 pub mod gateway;
+pub mod gateway_settings;
 pub mod kiosk;
 pub mod kept_db;
 /// Native Windows deployment (PostgreSQL + TimescaleDB + the server as a

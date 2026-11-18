@@ -380,6 +380,250 @@ pub fn control(sink: &ProgressFn, action: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Settings (crate::gateway_settings): read as root, apply through the
+// gateway's own command and a drop-in of ours
+// ---------------------------------------------------------------------------
+
+/// `systemctl show -p A -p B …` lines as a map.
+fn show(unit: &str, props: &[&str]) -> std::collections::HashMap<String, String> {
+    let mut args = vec!["show".to_string()];
+    for p in props {
+        args.push("-p".into());
+        args.push((*p).into());
+    }
+    args.push(unit.to_string());
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    out("systemctl", &refs).map(|o| o.lines().filter_map(|l| l.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect()).unwrap_or_default()
+}
+
+/// The drop-in's path for `unit`.
+pub fn dropin_path(unit: &str) -> String {
+    format!("/etc/systemd/system/{unit}.d/{}", crate::gateway_settings::DROPIN)
+}
+
+/// Our drop-in's settings: (Restart= value, its variables).
+pub fn parse_dropin(text: &str) -> (Option<String>, Vec<(String, String)>) {
+    let mut restart = None;
+    let mut env = Vec::new();
+    for l in text.lines().map(str::trim) {
+        if let Some(r) = l.strip_prefix("Restart=") {
+            restart = Some(r.to_string());
+        } else if let Some(e) = l.strip_prefix("Environment=") {
+            let e = e.trim();
+            let e = e.strip_prefix('"').and_then(|x| x.strip_suffix('"')).map(|x| x.replace("\\\"", "\"").replace("\\\\", "\\")).unwrap_or_else(|| e.to_string());
+            let e = e.replace("%%", "%");
+            if let Some((n, v)) = e.split_once('=') {
+                env.push((n.to_string(), v.to_string()));
+            }
+        }
+    }
+    (restart, env)
+}
+
+/// Our drop-in: the restart policy and the variables, in systemd's quoting.
+pub fn dropin_text(restart: Option<bool>, env: &[(String, String)]) -> String {
+    let mut t = String::from("# Written by the SENTIENT Platform Manager (Gateway › Advanced); it rewrites this file.\n[Service]\n");
+    match restart {
+        Some(true) => t.push_str("Restart=always\nRestartSec=5\n"),
+        Some(false) => t.push_str("Restart=no\n"),
+        None => {}
+    }
+    for (n, v) in env {
+        let q = format!("{n}={v}").replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%");
+        t.push_str(&format!("Environment=\"{q}\"\n"));
+    }
+    t
+}
+
+/// The serial group here: the one serial adapters belong to, else dialout
+/// (uucp on Arch).
+fn serial_group() -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let groups = std::fs::read_to_string("/etc/group").unwrap_or_default();
+        let name_of = |gid: u32| groups.lines().find_map(|l| {
+            let f: Vec<&str> = l.split(':').collect();
+            (f.len() > 2 && f[2].parse::<u32>().ok() == Some(gid)).then(|| f[0].to_string())
+        });
+        let devs = crate::distro::gateway_docker::serial_devices_in(Path::new("/dev/serial/by-id"), Path::new("/dev"));
+        if let Some(g) = devs.iter().find_map(|d| std::fs::metadata(&d.path).ok().map(|m| m.gid())).filter(|g| *g != 0).and_then(name_of) {
+            return Some(g);
+        }
+        ["dialout", "uucp"].iter().find(|g| groups.lines().any(|l| l.starts_with(&format!("{g}:")))).map(|g| g.to_string())
+    }
+    #[cfg(not(unix))]
+    None
+}
+
+fn config_dir(env: &[String]) -> String {
+    if let Some(d) = env.iter().find_map(|l| l.strip_prefix("ST_GW_CONFIG_DIR=").or_else(|| l.strip_prefix("TB_GW_CONFIG_DIR="))) {
+        return d.to_string();
+    }
+    FILES.iter().find(|f| Path::new(f).is_file()).and_then(|f| Path::new(f).parent()).map(|p| p.display().to_string()).unwrap_or_else(|| DATA_DIRS[0].to_string())
+}
+
+/// A native gateway's settings, read as root (the job
+/// `gateway-settings-json`); unprivileged, says so.
+pub fn gw_settings(status: &Status) -> crate::gateway_settings::GwSettings {
+    use crate::gateway_settings::{self as gs, GwSettings};
+    let unit = status.service.clone();
+    let props = unit.as_deref().map(|u| show(u, &["Restart", "User", "MainPID", "Environment"])).unwrap_or_default();
+    let env = props.get("Environment").map(|e| parse_environment(e)).unwrap_or_default();
+    let dir = config_dir(&env);
+    if !crate::exec::is_root() && std::fs::read_dir(&dir).is_err() {
+        return GwSettings { source: "none".into(), note: Some("Readable by an administrator only.".into()), ..GwSettings::default() };
+    }
+    let pid = props.get("MainPID").cloned().filter(|p| p != "0").unwrap_or_else(|| "0".into());
+    let line = format!("D={}; P={}; {}", crate::exec::shq(&dir), crate::exec::shq(&pid), gs::read_script());
+    let mut s = out("sh", &["-c", &line]).map(|o| gs::from_read(&o)).unwrap_or_else(|| GwSettings { source: "none".into(), note: Some("The gateway's settings could not be read.".into()), ..GwSettings::default() });
+    let program = status.program.clone().unwrap_or_else(|| PROGRAM.into());
+    s.caps = gs::Caps::of_help(&out(&program, &["--help"]).unwrap_or_default());
+    if s.caps.status_json {
+        if let Some(o) = out(&program, &["--status-json"]) {
+            gs::merge_status_json(&mut s, &o);
+        }
+    }
+    if !status.running {
+        s.connected = Some(false);
+        s.connected_how = Some("the gateway is stopped".into());
+    }
+    gs::apply_env(&mut s, &env, false);
+    s.log_files = Some(env.iter().find_map(|l| l.strip_prefix("ST_GW_LOGS_PATH=").or_else(|| l.strip_prefix("TB_GW_LOGS_PATH="))).map(str::to_string).unwrap_or_else(|| "/var/lib/sentient-gateway/logs".into()));
+    let Some(unit) = unit else {
+        s.machine.not_editable = Some("This gateway runs as a plain process that no service started, so how it runs is not changed from here.".into());
+        return s;
+    };
+    let (_, ours) = parse_dropin(&std::fs::read_to_string(dropin_path(&unit)).unwrap_or_default());
+    let restart = props.get("Restart").cloned().unwrap_or_default();
+    s.machine.restart_always = Some(!restart.is_empty() && restart != "no");
+    s.machine.restart_word = Some(if restart.is_empty() { "no".into() } else { restart });
+    let account = props.get("User").cloned().filter(|u| !u.is_empty() && u != "root");
+    let group = serial_group();
+    let in_group = match (&account, &group) {
+        (None, _) => true,
+        (Some(a), Some(g)) => out("id", &["-nG", a]).is_some_and(|o| o.split_whitespace().any(|x| x == g)),
+        (Some(_), None) => false,
+    };
+    s.machine.serial = gs::Serial {
+        mode: if account.is_some() { "group".into() } else { String::new() },
+        group,
+        account,
+        in_group,
+        chosen: Vec::new(),
+        available: crate::distro::gateway_docker::serial_devices_in(Path::new("/dev/serial/by-id"), Path::new("/dev")).into_iter().map(|d| d.path).collect(),
+    };
+    s.machine.env = gs::overrides(&env, &[], |n| ours.iter().any(|(o, _)| o == n), "the unit file");
+    s
+}
+
+/// Apply `plan` to the native service (as root): the page through the
+/// gateway's own `--install --ui … --ui-listen …` (it stops and starts the
+/// service), the rest in our drop-in and the serial group, then one restart.
+pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gateway_settings::GwSettings, plan: &crate::gateway_settings::ApplyPlan) -> Result<(), String> {
+    let unit = status.service.clone().ok_or("This gateway runs as a plain process that no service started.")?;
+    let program = status.program.clone().unwrap_or_else(|| PROGRAM.into());
+    let mut restart_needed = false;
+    let page = plan.ui_enabled.is_some() || plan.ui_listen.is_some();
+    if page && !before.caps.ui_listen {
+        return Err("This gateway is older than 4.12: its web page is set up on the gateway's own command line only. Update it first.".into());
+    }
+    let mut env_after: Vec<(String, String)> = parse_dropin(&std::fs::read_to_string(dropin_path(&unit)).unwrap_or_default()).1;
+    let (restart_before, _) = parse_dropin(&std::fs::read_to_string(dropin_path(&unit)).unwrap_or_default());
+    let set = |env: &mut Vec<(String, String)>, n: &str, v: Option<String>| {
+        env.retain(|(k, _)| k != n);
+        if let Some(v) = v {
+            env.push((n.to_string(), v));
+        }
+    };
+    if page {
+        sink(Progress::Step { name: "Setting the web page (the gateway's own --install)".into() });
+        let mut args = vec!["--install".to_string()];
+        match plan.ui_enabled {
+            Some(true) => args.push("--ui".into()),
+            Some(false) => args.push("--no-ui".into()),
+            None => {}
+        }
+        if let Some(l) = &plan.ui_listen {
+            args.push("--ui-listen".into());
+            args.push(l.clone());
+        }
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let o = crate::sys::host_command(&program).args(&refs).output().map_err(|e| format!("{program}: {e}"))?;
+        crate::exec::emit(sink, &o.stdout);
+        if !o.status.success() {
+            return Err(format!("{program} {} failed: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()));
+        }
+        // The environment wins over the file: ours follows the page too.
+        if before.machine.ui_env {
+            if let Some(on) = plan.ui_enabled {
+                set(&mut env_after, "ST_GW_UI", Some(if on { "on" } else { "off" }.into()));
+            }
+            if let Some(l) = &plan.ui_listen {
+                set(&mut env_after, "ST_GW_UI_LISTEN", Some(l.clone()));
+            }
+        }
+    }
+    if let Some(vars) = &plan.env {
+        let keep: Vec<String> = ["ST_GW_UI", "ST_GW_UI_LISTEN", "RUST_LOG"].iter().map(|s| s.to_string()).collect();
+        env_after.retain(|(n, _)| keep.contains(n) || before.machine.env.iter().any(|e| &e.name == n && e.value.is_none()));
+        for (n, v) in vars {
+            if n.is_empty() || n.contains('=') || v.contains('\n') {
+                return Err(format!("{n}: not a usable variable"));
+            }
+            set(&mut env_after, n, Some(v.clone()));
+        }
+    }
+    if let Some(l) = &plan.rust_log {
+        set(&mut env_after, "RUST_LOG", (!l.is_empty()).then(|| l.clone()));
+    }
+    let restart = plan.restart_always.or_else(|| restart_before.map(|r| r != "no"));
+    if plan.env.is_some() || plan.rust_log.is_some() || plan.restart_always.is_some() || (page && before.machine.ui_env) {
+        sink(Progress::Step { name: format!("Writing {}", dropin_path(&unit)) });
+        let path = dropin_path(&unit);
+        if let Some(d) = Path::new(&path).parent() {
+            std::fs::create_dir_all(d).map_err(|e| format!("create {}: {e}", d.display()))?;
+        }
+        std::fs::write(&path, dropin_text(restart, &env_after)).map_err(|e| format!("write {path}: {e}"))?;
+        let _ = crate::sys::host_command("systemctl").arg("daemon-reload").output();
+        restart_needed = true;
+    }
+    if let Some(join) = plan.serial_group {
+        let (Some(account), Some(group)) = (&before.machine.serial.account, &before.machine.serial.group) else {
+            return Err("No serial group was found on this computer (dialout or uucp).".into());
+        };
+        sink(Progress::Step { name: format!("{} {account} {} the group {group}", if join { "Adding" } else { "Removing" }, if join { "to" } else { "from" }) });
+        let o = if join { crate::sys::host_command("usermod").args(["-aG", group, account]).output() } else { crate::sys::host_command("gpasswd").args(["-d", account, group]).output() }.map_err(|e| e.to_string())?;
+        if !o.status.success() {
+            return Err(format!("The group {group} could not be changed: {}", String::from_utf8_lossy(&o.stderr).trim()));
+        }
+        restart_needed = true;
+    }
+    if restart_needed {
+        sink(Progress::Step { name: format!("Restarting {unit}") });
+        let o = crate::sys::host_command("systemctl").args(["restart", &unit]).output().map_err(|e| e.to_string())?;
+        if !o.status.success() {
+            return Err(format!("systemctl restart {unit} failed: {}", String::from_utf8_lossy(&o.stderr).trim()));
+        }
+    }
+    for _ in 0..30 {
+        if out("systemctl", &["is-active", &unit]).is_some_and(|s| s.trim() == "active") {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    Err(format!("The gateway service {unit} did not come back within 30 seconds; see its log."))
+}
+
+/// The credentials to test with (as root): the file, the unit's environment over it.
+pub fn test_creds() -> Option<crate::gateway_settings::TestCreds> {
+    let env = unit().map(|u| unit_environment(&u)).unwrap_or_default();
+    let dir = config_dir(&env);
+    let file = std::fs::read_to_string(format!("{dir}/st_gateway.json")).or_else(|_| std::fs::read_to_string(format!("{dir}/tb_gateway.json"))).ok();
+    crate::gateway_settings::creds_of(file.as_deref(), &env)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,5 +732,18 @@ sshd.service                                 disabled        disabled\n";
         assert_eq!(settings(None, true, &[], false, &always).2, None);
         assert_eq!(parse_environment("ST_GW_UI=off RUST_LOG=info\n"), vec!["ST_GW_UI=off".to_string(), "RUST_LOG=info".to_string()]);
         assert!(parse_environment("\n").is_empty());
+    }
+
+    #[test]
+    fn our_drop_in_round_trips() {
+        let env = vec![("RUST_LOG".to_string(), "debug".to_string()), ("ST_GW_X".to_string(), "a \"b\" 100%".to_string())];
+        let t = dropin_text(Some(true), &env);
+        assert!(t.contains("Restart=always\nRestartSec=5\n"));
+        assert!(t.contains("Environment=\"ST_GW_X=a \\\"b\\\" 100%%\""), "{t}");
+        let (r, back) = parse_dropin(&t);
+        assert_eq!(r.as_deref(), Some("always"));
+        assert_eq!(back, env);
+        assert!(!dropin_text(None, &[]).contains("Restart="));
+        assert_eq!(dropin_path("sentient-gateway.service"), "/etc/systemd/system/sentient-gateway.service.d/50-platform-manager.conf");
     }
 }
