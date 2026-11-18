@@ -45,8 +45,10 @@ pub enum Work {
 pub type RunFn = Rc<dyn Fn(Work, &mut Window, &mut App)>;
 
 pub const TITLES: [&str; 7] = ["Connection to SENTIENT", "Local web page", "Connectors", "Storage", "Logging", "Statistics", "Advanced"];
-/// The settings card's least height: its tabs, a few rows and the Apply bar.
-const CARD_MIN_H: f32 = 380.;
+/// The settings card's least height: its tabs, three rows and the Apply
+/// bar, so that under the status card the bar is in view on the smallest
+/// window (760 px tall); below that the page scrolls.
+const CARD_MIN_H: f32 = 290.;
 const LEVEL_WORDS: [&str; 3] = ["Errors", "Normal", "Detailed"];
 const LISTEN_WORDS: [&str; 3] = ["This computer", "All interfaces", "One address"];
 

@@ -479,7 +479,7 @@ pub fn apply_env(s: &mut GwSettings, env: &[String], in_container: bool) {
         }
     }
     let file_ui = s.ui.clone();
-    if in_container && env_get(env, "ST_GW_UI").is_none() && s.source == "file" {
+    if in_container && env_get(env, "ST_GW_UI").is_none() && s.source != "status-json" {
         // Off by default in a container, whatever the file's default says.
         s.ui.enabled = false;
         if file_ui.listen.starts_with("127.0.0.1:") {
@@ -607,19 +607,43 @@ pub fn from_read(out: &str) -> GwSettings {
     let body = sec.get("PATH");
     let mut s = match body.map(|b| b.trim()).filter(|b| !b.is_empty()) {
         Some(b) => from_files(b, sec.get("LOGS").map(String::as_str).filter(|l| !l.trim().is_empty())),
-        None => GwSettings { source: "none".into(), note: Some("The gateway has no settings file yet (not commissioned).".into()), ..GwSettings::default() },
+        None => {
+            // No file (a container commissioned by its environment): the
+            // gateway's own defaults, the environment over them later.
+            let mut s = GwSettings { source: "none".into(), note: Some("The gateway has no settings file: it runs on its defaults and its environment.".into()), ..GwSettings::default() };
+            s.conn.credential = "accessToken".into();
+            s.ui.enabled = true;
+            s.ui.listen = format!("127.0.0.1:{}", crate::gateway::UI_PORT);
+            s
+        }
     };
     if !file.is_empty() {
         s.config_path = Some(file);
     }
     s.ui.password_set = sec.get("PW").map(|p| p.trim() == "yes");
+    connected_from_read(&mut s, out);
+    s
+}
+
+/// Connected or not by the process's own sockets in the read script's
+/// answer, to the port known now (the environment may name it after the
+/// file): only when nothing better said it.
+pub fn connected_from_read(s: &mut GwSettings, out: &str) {
+    // Said by the gateway itself, or stopped: kept. By the sockets: again,
+    // to the port known now.
+    if s.connected.is_some() && s.connected_how.as_deref() != Some(BY_SOCKETS) {
+        return;
+    }
+    s.connected = None;
+    let sec = sections(out);
     let inodes = socket_inodes(sec.get("FD").map(String::as_str).unwrap_or_default());
     if let (Some(port), false) = (s.conn.port, inodes.is_empty()) {
         s.connected = Some(established_to(sec.get("TCP").map(String::as_str).unwrap_or_default(), &inodes, port));
-        s.connected_how = Some("the gateway's open connections".into());
+        s.connected_how = Some(BY_SOCKETS.into());
     }
-    s
 }
+
+const BY_SOCKETS: &str = "the gateway's open connections";
 
 /// The gateway found as `status`, read on this computer (as root for a
 /// native one: the root job `gateway-settings-json`).
@@ -747,7 +771,10 @@ pub fn mismatches(plan: &ApplyPlan, after: &GwSettings) -> Vec<String> {
     }
     if let Some(l) = &plan.rust_log {
         let got = after.machine.rust_log.clone().unwrap_or_default();
-        if &got != l {
+        // Removed: the gateway's own default comes back (a container's
+        // image sets RUST_LOG=info).
+        let same = if l.is_empty() { got.is_empty() || got == "info" } else { &got == l };
+        if !same {
             out.push(format!("RUST_LOG is {}", if got.is_empty() { "not set" } else { &got }));
         }
     }
@@ -1002,6 +1029,17 @@ mod tests {
         assert_eq!(names, ["TB_GW_STORAGE_PASSWORD", "ST_GW_EXTRA"]);
         assert_eq!(o[0].value, None);
         assert_eq!(o[1].value.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn a_container_without_a_file_runs_on_its_environment() {
+        let out = "@@PATH /sentient_gateway/config/tb_gateway.json\n\n@@LOGS\n@@PW\nno\n@@FD\nlrwx 7 -> socket:[9]\n@@TCP\n 0: 0100007F:D2B4 0100007F:075B 01 0:0 0:0 0 0 0 9 1\n@@END\n";
+        let mut s = from_read(out);
+        assert_eq!(s.connected, None);
+        apply_env(&mut s, &["host=127.0.0.1".into(), "port=1883".into(), "accessToken=Ex4mpleT0kenAbcd3f9a".into()], true);
+        connected_from_read(&mut s, out);
+        assert_eq!((s.connected, s.conn.credential.as_str()), (Some(true), "accessToken"));
+        assert_eq!((s.ui.enabled, s.ui.listen.as_str()), (false, "0.0.0.0:8642"));
     }
 
     #[test]

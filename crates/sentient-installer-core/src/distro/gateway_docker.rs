@@ -618,6 +618,9 @@ fn read_script_out(spec: &Spec, running: bool) -> Option<String> {
     let script = crate::gateway_settings::read_script();
     if running {
         let line = format!("D=\"${{ST_GW_CONFIG_DIR:-/sentient_gateway/config}}\"; P=1; {script}");
+        // The gateway's file capability (NET_RAW) makes its process
+        // undumpable: not even root in the container lists its sockets, so
+        // "connected" is known here only from --status-json.
         return docker(&["exec", &spec.name, "sh", "-c", &line]).filter(|(ok, _)| *ok).map(|(_, o)| o);
     }
     let dir = env_value(&spec.env, "ST_GW_CONFIG_DIR").unwrap_or_else(|| VOLUMES[0].1.to_string());
@@ -639,8 +642,9 @@ pub fn read_settings(status: &Status) -> crate::gateway_settings::GwSettings {
     };
     let help = status.running.then(|| docker(&["exec", &spec.name, "sentient-gateway", "--help"])).flatten().map(|(_, o)| o).unwrap_or_default();
     let caps = gs::Caps::of_help(&help);
-    let mut s = match read_script_out(&spec, status.running) {
-        Some(out) => gs::from_read(&out),
+    let out = read_script_out(&spec, status.running);
+    let mut s = match &out {
+        Some(out) => gs::from_read(out),
         None => GwSettings { source: "none".into(), note: Some("The gateway's configuration volume could not be read.".into()), ..GwSettings::default() },
     };
     if caps.status_json {
@@ -653,6 +657,9 @@ pub fn read_settings(status: &Status) -> crate::gateway_settings::GwSettings {
         s.connected_how = Some("the container is stopped".into());
     }
     gs::apply_env(&mut s, &spec.env, true);
+    if let Some(out) = &out {
+        gs::connected_from_read(&mut s, out);
+    }
     s.caps = caps;
     let why = not_editable(status);
     let editable = why.is_none();
@@ -793,17 +800,50 @@ fn recreate(sink: &ProgressFn, spec: &Spec) -> Result<(), String> {
             container_running(&name)
         };
         if !up {
-            sink(Progress::Log { line: format!("The new container did not stay up; the previous one is started again. See docker logs {name}.") });
+            sink(Progress::Log { line: "The new container did not stay up; its last lines:".into() });
+            if let Some((_, out)) = docker_all(&["logs", "--tail", "15", &name]) {
+                for l in out.lines() {
+                    sink(Progress::Log { line: strip_ansi(l) });
+                }
+            }
+            sink(Progress::Log { line: "The previous container is started again.".into() });
             let _ = docker(&["rm", "-f", &name]);
             let _ = docker(&["rename", &old, &name]);
             let _ = docker(&["start", &name]);
-            return Err(format!("The gateway did not start with the new settings; the previous container {name} runs again, unchanged."));
+            return Err(format!("The gateway did not start with the new settings (its last lines are in the log); the previous container {name} runs again, unchanged."));
         }
         let _ = docker(&["rm", &old]);
         Ok(())
     })();
     let _ = std::fs::remove_file(&env_file);
     result
+}
+
+/// A log line without its colour codes (`ESC [ … m`).
+pub fn strip_ansi(l: &str) -> String {
+    let mut out = String::new();
+    let mut it = l.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\u{1b}' && it.peek() == Some(&'[') {
+            it.next();
+            for d in it.by_ref() {
+                if d.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// `docker <args>` with its standard error too (docker logs writes the
+/// container's stderr there).
+#[cfg(not(windows))]
+fn docker_all(args: &[&str]) -> Option<(bool, String)> {
+    let line: Vec<String> = args.iter().map(|a| super::shell_quote(a)).collect();
+    super::run_output(&format!("docker {} 2>&1", line.join(" ")))
 }
 
 fn container_running(name: &str) -> bool {
@@ -929,6 +969,11 @@ mod tests {
     const INSPECT: &str = r#"[{"Name":"/sentient-gateway","Config":{"Image":"quakestring/sentient-gateway-rs:4.16.2","Env":["host=127.0.0.1","port=1883","accessToken=Q1w2E3r4T5y6U7i8O9p0","PATH=/usr/bin","ST_GW_CONFIG_DIR=/sentient_gateway/config"]},
         "HostConfig":{"RestartPolicy":{"Name":"unless-stopped"},"NetworkMode":"host","Devices":[{"PathOnHost":"/dev/ttyUSB0","PathInContainer":"/dev/ttyUSB0","CgroupPermissions":"rwm"}],"GroupAdd":["986"],"CapAdd":null},
         "Mounts":[{"Type":"volume","Name":"st-gw-config","Destination":"/sentient_gateway/config","RW":true},{"Type":"bind","Source":"/srv/example/certs","Destination":"/certs","RW":false}]}]"#;
+
+    #[test]
+    fn log_lines_lose_their_colours() {
+        assert_eq!(strip_ansi("\u{1b}[2m2026-11-18T05:43:01Z\u{1b}[0m \u{1b}[33m WARN\u{1b}[0m uplink"), "2026-11-18T05:43:01Z  WARN uplink");
+    }
 
     #[test]
     fn a_recreate_keeps_volumes_network_and_secrets() {

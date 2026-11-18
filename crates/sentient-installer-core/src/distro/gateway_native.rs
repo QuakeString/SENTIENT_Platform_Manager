@@ -477,7 +477,8 @@ pub fn gw_settings(status: &Status) -> crate::gateway_settings::GwSettings {
     }
     let pid = props.get("MainPID").cloned().filter(|p| p != "0").unwrap_or_else(|| "0".into());
     let line = format!("D={}; P={}; {}", crate::exec::shq(&dir), crate::exec::shq(&pid), gs::read_script());
-    let mut s = out("sh", &["-c", &line]).map(|o| gs::from_read(&o)).unwrap_or_else(|| GwSettings { source: "none".into(), note: Some("The gateway's settings could not be read.".into()), ..GwSettings::default() });
+    let read = out("sh", &["-c", &line]);
+    let mut s = read.as_deref().map(gs::from_read).unwrap_or_else(|| GwSettings { source: "none".into(), note: Some("The gateway's settings could not be read.".into()), ..GwSettings::default() });
     let program = status.program.clone().unwrap_or_else(|| PROGRAM.into());
     s.caps = gs::Caps::of_help(&out(&program, &["--help"]).unwrap_or_default());
     if s.caps.status_json {
@@ -490,6 +491,9 @@ pub fn gw_settings(status: &Status) -> crate::gateway_settings::GwSettings {
         s.connected_how = Some("the gateway is stopped".into());
     }
     gs::apply_env(&mut s, &env, false);
+    if let Some(r) = &read {
+        gs::connected_from_read(&mut s, r);
+    }
     s.log_files = Some(env.iter().find_map(|l| l.strip_prefix("ST_GW_LOGS_PATH=").or_else(|| l.strip_prefix("TB_GW_LOGS_PATH="))).map(str::to_string).unwrap_or_else(|| "/var/lib/sentient-gateway/logs".into()));
     let Some(unit) = unit else {
         s.machine.not_editable = Some("This gateway runs as a plain process that no service started, so how it runs is not changed from here.".into());
