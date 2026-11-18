@@ -243,6 +243,60 @@ pub struct StatsPage {
     _tasks: Vec<Task<()>>,
 }
 
+/// What a Statistics page read, kept when the window closes while the
+/// Platform Manager keeps running (the tray): a window opened again draws
+/// it at once and reads it again behind it. Memory only, this run.
+struct Kept {
+    range: Range,
+    live: Vec<Sample>,
+    hist: Option<Result<Vec<Sample>, String>>,
+    live_err: Option<String>,
+    updated_at: Option<String>,
+    services: Option<Result<Services, String>>,
+    db: Option<DbRead>,
+    server: Option<Result<crate::server_info::ServerInfo, String>>,
+}
+
+thread_local! {
+    /// Each source's [`Kept`] ([`Source::key`]).
+    static KEPT: std::cell::RefCell<std::collections::HashMap<String, Kept>> = Default::default();
+}
+
+impl Source {
+    /// Which machine, read how: this computer's installation, or the
+    /// server's address and account (an instance edited since is read
+    /// afresh).
+    fn key(&self) -> String {
+        match self {
+            Source::Local(r) => format!("local {}", serde_json::to_string(r).unwrap_or_default()),
+            Source::Remote(i) => format!("remote {}", serde_json::to_string(&(&i.id, &i.host, i.port, &i.user, &i.auth, &i.key_file)).unwrap_or_default()),
+        }
+    }
+}
+
+/// The window closed (the app runs on): what the page read stays for the
+/// next window ([`Kept`]).
+impl Drop for StatsPage {
+    fn drop(&mut self) {
+        if self.live.is_empty() && self.server.is_none() {
+            return;
+        }
+        let k = Kept {
+            range: self.range,
+            live: std::mem::take(&mut self.live),
+            hist: self.hist.take(),
+            live_err: self.live_err.take(),
+            updated_at: self.updated_at.take(),
+            services: self.services.take(),
+            db: self.db.take(),
+            server: self.server.take(),
+        };
+        let key = self.src.key();
+        // (Not while the thread ends: nothing opens again then.)
+        let _ = KEPT.try_with(|m| m.borrow_mut().insert(key, k));
+    }
+}
+
 impl StatsPage {
     pub fn new(src: Source, cx: &mut Context<Self>) -> Self {
         #[allow(unused_mut)]
@@ -288,6 +342,18 @@ impl StatsPage {
             _poll: Vec::new(),
             _tasks: Vec::new(),
         };
+        // A window opened again: what this run read before shows at once
+        // (start and poll_server read it again behind it).
+        if let Some(k) = KEPT.with(|m| m.borrow_mut().remove(&p.src.key())) {
+            p.range = k.range;
+            p.live = k.live;
+            p.hist = k.hist;
+            p.live_err = k.live_err;
+            p.updated_at = k.updated_at;
+            p.services = k.services;
+            p.db = k.db;
+            p.server = k.server;
+        }
         p.start(cx);
         p.poll_server(cx);
         let w = cx.observe(&p.server_job, |p, job, cx| {
@@ -517,7 +583,9 @@ impl StatsPage {
     /// Read now and then on the range's rhythm, while the page is shown:
     /// each source on its own, so a slow one never holds the others back.
     fn start(&mut self, cx: &mut Context<Self>) {
-        self.restart(true, cx);
+        // A history kept from the window before stays while it is read again.
+        let clear = self.hist.is_none();
+        self.restart(clear, cx);
     }
 
     /// `clear`: a new range, whose history is not read yet.
