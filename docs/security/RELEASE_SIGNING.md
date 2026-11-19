@@ -121,6 +121,7 @@ signature.
 | Authenticode result | Decision |
 |---|---|
 | Valid signature from a trusted publisher | Runs |
+| Untrusted root, signer is exactly a pinned self-signed certificate (`PINNED_SIGNERS`) | Runs |
 | Signature present but the file changed after signing (bad digest) | Refused |
 | Certificate revoked, expired, untrusted root or explicitly distrusted | Refused |
 | Other verification error | Refused (the error code is shown) |
@@ -132,6 +133,55 @@ certificate is configured. Refusing them would stop every Windows update. Once
 releases carry a code-signing certificate, set `REQUIRE_SIGNATURE` to `true`
 in `app/src/authenticode.rs`; a missing signature is then refused too. The
 publisher's name is not pinned.
+
+### Code signing certificate: self-signed INVENIA SYSTEMS (for now)
+
+Until a public code-signing certificate is bought, Windows programs are signed
+with our own self-signed certificate:
+
+- Subject `CN=INVENIA SYSTEMS, O=INVENIA SYSTEMS, C=IN`, RSA 3072, SHA-256,
+  code signing only, valid 2026-11-19 to 2031-11-19, SHA-1 thumbprint
+  `C7DC8013F1ECD97ED20193F04E56359B17B24CBD`.
+- The public certificate: `packaging/windows/INVENIA-SYSTEMS-codesign.cer`.
+  Its SHA-256 is `PINNED_SIGNERS` in `app/src/authenticode.rs` (a test keeps
+  the two equal).
+- The key: `~/.sentient-keys/codesign-selfsigned-2026-11/codesign.pfx` and its
+  password file next to it, on the release machine only, mode 0600, like the
+  release key. Never in a repository, a CI secret or a log.
+
+No computer trusts it by itself: WinVerifyTrust answers "untrusted root", UAC
+shows "Publisher: Unknown", and SmartScreen behaves as for an unsigned file.
+What it gives now: the Platform Manager accepts it through the pin, a changed
+file is caught (bad digest), and a managed site can trust it:
+`packaging/windows/Trust-INVENIA.ps1` (as administrator; `-Remove`, `-Status`)
+adds the `.cer` next to it to the computer's Trusted Root and Trusted
+Publishers, after which UAC shows "Verified publisher: INVENIA SYSTEMS".
+Group Policy can deploy the same `.cer`. UAC remembers a file it has shown: a
+file approved while trusted still shows "Verified" after `-Remove`.
+
+What is signed:
+
+| Program | Where | From |
+|---|---|---|
+| SENTIENT `bin/sentient-server.exe`, `sentient-install.exe`, `sentient-admin.exe` | `sentient-payload.tar` | 4.4.1.1: `scripts/sign-sentient-payload.sh <payload.tar>`; `publish-sentient-release.sh` refuses an unsigned one while the certificate is on the machine |
+| Gateway program and `SentientGatewaySetup-<v>.exe` | sentient-gateway-rs `packaging/windows/build.sh` | the next gateway release; `publish-gateway-to-sentient-release.sh` refuses an unsigned installer the same way |
+| SENTIENT Client installer | SENTIENT `tauri-build.yml` artifact, signed on the release machine | the next Client build |
+| Platform Manager / SENTIENT Setup (one exe) and its Windows agent | `build-installers.yml` (`scripts/sign-windows.ps1`) | 0.9.4: 0.9.3 is the first release with the pin, so 0.9.3 itself stays unsigned (older Platform Managers refuse an untrusted root) |
+
+`SENTIENT_ALLOW_UNSIGNED=1` lets the publish scripts go ahead without a
+signature (say why in the notes).
+
+Signing from Linux: `scripts/sign-windows.sh [--desc "Name"] <file>...`
+(osslsigncode, from PATH or a throwaway `debian:12` container) with an
+RFC 3161 timestamp (`http://timestamp.digicert.com`), so a signature stays
+valid after the certificate expires; `--check` only verifies. On Windows CI:
+`scripts/sign-windows.ps1` with the `SPM_SIGN_PFX_BASE64` /
+`SPM_SIGN_PFX_PASSWORD` secrets (not set: the key stays off GitHub for now).
+
+A public certificate later: point `SENTIENT_CODESIGN_PFX` (or the default in
+`sign-windows.sh`) at it, or `SPM_SIGN_THUMBPRINT` for a token or cloud key.
+It needs no pin; keep the self-signed pin until no installed Platform Manager
+can meet a self-signed release.
 
 ## Rotating the key
 

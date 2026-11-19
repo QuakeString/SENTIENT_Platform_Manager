@@ -6601,6 +6601,7 @@ dependencies = [
  "sentient-installer-core",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sysinfo 0.32.1",
  "tar",
  "tokio",

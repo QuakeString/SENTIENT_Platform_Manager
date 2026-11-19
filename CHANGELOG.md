@@ -16,6 +16,14 @@ refreshes that repository's Downloads table.
 ## [Unreleased]
 
 ### Added
+- Code signing with INVENIA SYSTEMS' own (self-signed) certificate, until a
+  public one is bought. An update of the Platform Manager signed with exactly
+  that certificate is accepted on Windows even though no computer trusts it
+  by itself; any other untrusted signer is still refused. From 0.9.4 the
+  Platform Manager is signed; the SENTIENT server programs, the gateway
+  installer and the SENTIENT Client from their next releases.
+  `Trust-INVENIA.ps1` (optional, for managed sites) makes Windows show
+  "Verified publisher: INVENIA SYSTEMS".
 - Gateway: the older Python gateway in Docker is offered an update to the
   Sentient Gateway ("Update available" on the Gateway page here and on a
   server, on the Status card and in the notices). The update backs up its

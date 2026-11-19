@@ -38,6 +38,13 @@ work=$(mktemp -d)
 trap 'rm -rf "$work" "$authcfg"' EXIT
 exe="$gw/target/installer/SentientGatewaySetup-$version.exe"
 [ -f "$exe" ] || { echo "missing $exe (packaging/windows/build.sh)" >&2; exit 1; }
+# Code-signed (packaging/windows/build.sh signs it) whenever this machine has
+# the code-signing certificate; SENTIENT_ALLOW_UNSIGNED=1 publishes it anyway.
+pfx=${SENTIENT_CODESIGN_PFX:-$HOME/.sentient-keys/codesign-selfsigned-2026-11/codesign.pfx}
+if [ -f "$pfx" ] && [ "${SENTIENT_ALLOW_UNSIGNED:-}" != 1 ]; then
+  "$here/sign-windows.sh" --check "$exe" ||
+    { echo "$exe is not code-signed: sign it with scripts/sign-windows.sh --desc \"SENTIENT Gateway Setup\" first" >&2; exit 1; }
+fi
 cp "$exe" "$work/"
 ( cd "$work" && sha256sum "SentientGatewaySetup-$version.exe" > "SentientGatewaySetup-$version.exe.sha256" \
   && python3 -c 'import sys, zipfile; z = zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED); z.write(sys.argv[2]); z.close()' \
