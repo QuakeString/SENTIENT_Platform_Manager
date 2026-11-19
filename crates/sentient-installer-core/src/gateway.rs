@@ -545,6 +545,14 @@ pub fn host_of(gateway_file: &str) -> (Option<String>, Option<u16>) {
     (host, port)
 }
 
+/// The Windows installer's SHA-256 to check it against: the first word of
+/// its `.sha256` file, else the digest GitHub recorded for it
+/// (`sha256:<hex>`). None: the release publishes neither.
+pub fn installer_sha256(sum_file: Option<&str>, digest: Option<&str>) -> Option<String> {
+    let from_file = sum_file.and_then(|t| t.split_whitespace().next()).map(str::to_ascii_lowercase).filter(|h| !h.is_empty());
+    from_file.or_else(|| digest.and_then(|d| d.trim().strip_prefix("sha256:")).map(str::to_ascii_lowercase).filter(|h| !h.is_empty()))
+}
+
 fn step(sink: &ProgressFn, name: &str) {
     sink(Progress::Step { name: name.into() });
 }
@@ -617,20 +625,31 @@ mod windows {
             .ok_or_else(|| format!("Gateway {} has no Windows installer.", offer.version))?;
         let dir = std::env::temp_dir().join(format!("sentient-gateway-{}", offer.version));
         std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        // The token and the page's password are written here for the
+        // installer: the folder is for SYSTEM, the Administrators and this
+        // account only (as a server's agent, SYSTEM's temp folder).
+        let has_secrets = settings.is_some_and(|s| !s.token.is_empty() || !s.ui_password.is_empty());
+        if let Err(e) = crate::private_acl::make_private(&dir, true) {
+            if has_secrets {
+                return Err(format!("The gateway's access token has no private folder to wait in: {e}"));
+            }
+        }
         let file = dir.join(&asset.name);
         step(sink, &format!("Downloading Sentient Gateway {} ({} MB)", offer.version, asset.size >> 20));
         download(&asset.browser_download_url, &file)?;
-        if let Some(sum) = &offer.checksum {
-            let expected = fetch_text(&sum.browser_download_url)?
-                .split_whitespace()
-                .next()
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            let actual = crate::manifest::sha256_file(&file)?;
-            if expected != actual {
-                let _ = std::fs::remove_file(&file);
-                return Err(format!("The gateway installer did not match its checksum ({actual} instead of {expected})."));
+        let sum_file = match &offer.checksum {
+            Some(sum) => Some(fetch_text(&sum.browser_download_url)?),
+            None => None,
+        };
+        match installer_sha256(sum_file.as_deref(), asset.digest.as_deref()) {
+            Some(expected) => {
+                let actual = crate::manifest::sha256_file(&file)?;
+                if expected != actual {
+                    let _ = std::fs::remove_file(&file);
+                    return Err(format!("The gateway installer did not match its checksum ({actual} instead of {expected})."));
+                }
             }
+            None => sink(Progress::Log { line: format!("Gateway {} publishes no checksum for its installer; it is used as downloaded.", offer.version) }),
         }
         let mut args: Vec<String> = vec!["/VERYSILENT".into(), "/SUPPRESSMSGBOXES".into(), "/NORESTART".into()];
         let log = dir.join("setup.log");
@@ -641,12 +660,16 @@ mod windows {
             args.push(format!("/PORT={}", s.port));
             if !s.token.is_empty() {
                 let f = dir.join("token.txt");
+                // A fresh file takes the folder's private access (an old
+                // one would keep its own).
+                let _ = std::fs::remove_file(&f);
                 std::fs::write(&f, &s.token).map_err(|e| format!("write the token file: {e}"))?;
                 args.push(format!("/TOKENFILE={}", f.display()));
                 secrets.push(f);
             }
             if !s.ui_password.is_empty() {
                 let f = dir.join("page.txt");
+                let _ = std::fs::remove_file(&f);
                 std::fs::write(&f, &s.ui_password).map_err(|e| format!("write the password file: {e}"))?;
                 args.push(format!("/UIPASSWORDFILE={}", f.display()));
                 secrets.push(f);
@@ -670,9 +693,21 @@ mod windows {
             None => return Err("Could not start the gateway installer.".into()),
         }
         let _ = std::fs::remove_file(&file);
-        match status().version {
+        let now = status();
+        match now.version {
             Some(v) if v == offer.version => {
-                sink(Progress::Done { message: format!("Sentient Gateway {v} is installed.") });
+                // A first install sends at once: the service runs (the
+                // installer starts it; else it is started here).
+                let mut running = now.running;
+                if settings.is_some() && !running {
+                    step(sink, "Starting the gateway service");
+                    running = control(&crate::progress::noop(), "start").is_ok();
+                    if !running {
+                        sink(Progress::Log { line: "The gateway service did not start within 30 seconds; its log says why (Gateway, Logs).".into() });
+                    }
+                }
+                let message = if running || settings.is_none() { format!("Sentient Gateway {v} is installed.") } else { format!("Sentient Gateway {v} is installed, but its service is not running.") };
+                sink(Progress::Done { message });
                 Ok(())
             }
             Some(v) => Err(format!("The installer finished, but the gateway reports {v}, not {}.", offer.version)),
@@ -942,6 +977,18 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The installer is checked against its .sha256 file, else GitHub's digest.
+    #[test]
+    fn the_installers_checksum_comes_from_its_file_else_the_digest() {
+        let h = "a".repeat(64);
+        let file = format!("{}  SentientGatewaySetup-4.16.3.exe\n", h.to_ascii_uppercase());
+        assert_eq!(installer_sha256(Some(&file), Some("sha256:bbbb")), Some(h.clone()));
+        assert_eq!(installer_sha256(None, Some(&format!("sha256:{h}"))), Some(h.clone()));
+        assert_eq!(installer_sha256(Some("  \n"), Some(&format!("sha256:{h}"))), Some(h));
+        assert_eq!(installer_sha256(None, Some("md5:abc")), None);
+        assert_eq!(installer_sha256(None, None), None);
+    }
 
     #[test]
     fn windows_service_program() {

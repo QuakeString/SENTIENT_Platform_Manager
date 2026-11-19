@@ -2154,8 +2154,9 @@ pub fn gateway_install_args(host: &str, port: u16, version: &str) -> Vec<String>
 }
 
 /// Install the gateway on the server: the secrets on the agent's standard
-/// input first (kept there in a file only root reads), then the install
-/// as a job of its own, followed to its end. Blocking.
+/// input first (kept there in a file only root reads; on Windows only SYSTEM
+/// and the Administrators), then the install as a job of its own (Docker on
+/// Linux, the gateway's installer on Windows), followed to its end. Blocking.
 pub fn gateway_install(inst: &Instance, host: &str, port: u16, version: &str, secrets: GatewaySecrets, sink: &ProgressFn) -> Result<(), String> {
     let line = serde_json::to_string(&secrets).map_err(|e| e.to_string())?;
     drop(secrets);
@@ -2626,8 +2627,21 @@ mod win {
         IN_SESSION.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(id.to_string(), state);
     }
 
+    /// A job's arguments for cmd.exe and PowerShell alike: each in double
+    /// quotes, any quote in it dropped (hosts, ports, versions and paths
+    /// never carry one; a secret never comes here, it goes on standard input).
+    pub(crate) fn job_args(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| format!("\"{}\"", a.replace(['"', '\''], ""))).collect()
+    }
+
+    /// The scheduled task's cmd.exe argument: the agent with `--job --json`
+    /// and the job's arguments, its output to the job's files.
+    pub(crate) fn task_cmdline(exe: &str, id: &str, args: &[&str]) -> String {
+        format!("/c \"\"{exe}\" --job --json {} > \"{JOBS}\\{id}.log\" 2> \"{JOBS}\\{id}.err\"\"", job_args(args).join(" "))
+    }
+
     pub fn start_job(inst: &Instance, id: &str, args: &[&str], how: super::WinRun) -> Result<(), String> {
-        let quoted: Vec<String> = args.iter().map(|a| format!("\"{}\"", a.replace(['"', '\''], ""))).collect();
+        let quoted = job_args(args);
         let exe = exe(inst)?;
         if how == super::WinRun::InSession {
             // As the connecting account, in this connection's session: the
@@ -2660,7 +2674,7 @@ mod win {
             });
             return Ok(());
         }
-        let cmdline = format!("/c \"\"{exe}\" --job --json {} > \"{JOBS}\\{id}.log\" 2> \"{JOBS}\\{id}.err\"\"", quoted.join(" "));
+        let cmdline = task_cmdline(&exe, id, args);
         // SYSTEM, or the connecting account: with its desktop session when
         // it is signed in there, else S4U (no password stored).
         let principal = match how {
@@ -2935,6 +2949,29 @@ mod tests {
         assert_eq!(win_run_for(&[], false), WinRun::System);
     }
 
+    /// A gateway install on a Windows server: a scheduled task as SYSTEM (or
+    /// the account's own task, elevated, beside its WSL distro), its cmd.exe
+    /// line the agent with the host, port and release only, each quoted.
+    #[test]
+    fn the_windows_gateway_install_runs_as_a_task_with_no_secret() {
+        let argv = gateway_install_args("192.168.2.10", 1883, "4.16.3");
+        let a: Vec<&str> = argv.iter().map(String::as_str).collect();
+        assert_eq!(win_run_for(&a, false), WinRun::System);
+        assert_eq!(win_run_for(&a, true), WinRun::UserTask);
+        assert_eq!(win_run_for(&["gateway-install-secrets"], false), WinRun::System);
+        let line = win::task_cmdline(win::EXE, "20261119-101500", &a);
+        assert_eq!(
+            line,
+            r#"/c ""C:\ProgramData\SENTIENT\Platform Manager\remote\sentient-platform-manager.exe" --job --json "gateway-install" "192.168.2.10" "1883" "--version" "4.16.3" "--staged" > "C:\ProgramData\SENTIENT\Platform Manager\remote\jobs\20261119-101500.log" 2> "C:\ProgramData\SENTIENT\Platform Manager\remote\jobs\20261119-101500.err"""#
+        );
+    }
+
+    /// No argument closes its quotes early, for cmd.exe or PowerShell.
+    #[test]
+    fn windows_job_arguments_keep_their_quotes() {
+        assert_eq!(win::job_args(&["a b", r#"x" & calc & ""#, "it's"]), vec![r#""a b""#, r#""x & calc & ""#, r#""its""#]);
+    }
+
     #[test]
     fn stderr_noise_and_clixml_are_cleaned() {
         let raw = "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n#< CLIXML\n<Objs Version=\"1.1.0.1\" xmlns=\"http://schemas.microsoft.com/powershell/2004/04\"><Obj S=\"progress\" RefId=\"0\"><TN RefId=\"0\"><T>System.Management.Automation.PSCustomObject</T></TN></Obj><S S=\"Error\">Move-Item : Cannot create a file when that file already exists._x000D__x000A_</S><S S=\"Error\">At line:1 char:40_x000D__x000A_</S></Objs>";
@@ -3182,6 +3219,57 @@ mod tests {
         assert!(matches!(classify_admin("GROUPS ops sudo\n", "sudo: a password is required", false), Admin::NeedsPassword(_)));
         assert!(matches!(classify_admin("GROUPS solo\n", "Sorry, try again.", true), Admin::NeedsPassword(_)));
         assert_eq!(classify_admin("GROUPS solo\n", "solo is not in the sudoers file.", true), Admin::No);
+    }
+
+    /// End to end against a Windows server with OpenSSH and an administrator
+    /// account (SPM_E2E_WIN="host", SPM_E2E_WIN_USER, SPM_E2E_KEY,
+    /// SPM_AGENT_DIR with the Windows agent, SPM_E2E_GW_VERSION): set up,
+    /// install the gateway with secrets on standard input, and check that the
+    /// secret file is gone and the service runs.
+    #[test]
+    #[ignore]
+    fn installs_the_gateway_on_a_windows_server() {
+        let host = std::env::var("SPM_E2E_WIN").expect("SPM_E2E_WIN");
+        let user = std::env::var("SPM_E2E_WIN_USER").unwrap_or_else(|_| "spmtest".into());
+        let version = std::env::var("SPM_E2E_GW_VERSION").unwrap_or_else(|_| "4.16.3".into());
+        let _ = std::fs::remove_file(known_hosts());
+        let mut inst = Instance {
+            id: "e2e-win".into(),
+            name: "e2e windows".into(),
+            color: PALETTE[0].into(),
+            os: Os::Windows,
+            host: host.clone(),
+            port: 22,
+            user,
+            auth: Auth::Key,
+            key_file: Some(std::env::var("SPM_E2E_KEY").unwrap().into()),
+            key_has_passphrase: false,
+            host_key: None,
+            detected: None,
+        };
+        let (keys, fp) = scan(&host, 22).unwrap();
+        trust(&keys).unwrap();
+        inst.host_key = Some(fp);
+        let d = detect(&inst, None).unwrap();
+        eprintln!("detected: {d:?}");
+        assert_eq!(d.os, Os::Windows);
+        inst.detected = Some(d);
+        let sink: ProgressFn = std::sync::Arc::new(|p| eprintln!("  {p:?}"));
+        deploy(&inst, &sink).unwrap();
+        ready(&inst).unwrap();
+        let token = "e2e-gw-token-7Qx2Lp9V".to_string();
+        let page = "e2e-page-Pw-3kT8".to_string();
+        gateway_install(&inst, "192.168.122.1", 1883, &version, GatewaySecrets { token: token.clone(), ui_password: page.clone() }, &sink).unwrap();
+        let svc = win::ps(&inst, "(Get-Service SentientGateway).Status").unwrap();
+        eprintln!("service: {}", svc.trim());
+        assert!(svc.contains("Running"), "{svc}");
+        let left = win::ps(&inst, "Test-Path 'C:\\ProgramData\\SENTIENT\\gateway-install.secret'").unwrap();
+        assert!(left.trim().eq_ignore_ascii_case("false"), "the secret file is removed: {left}");
+        // Neither secret in the job logs or the installer's log.
+        let hits = win::ps(&inst, &format!(
+            "Get-ChildItem -Recurse -File -ErrorAction SilentlyContinue 'C:\\ProgramData\\SENTIENT','C:\\Windows\\Temp','C:\\Windows\\SystemTemp' | Select-String -SimpleMatch -List -Pattern '{token}','{page}' | ForEach-Object {{ $_.Path }}"
+        )).unwrap_or_default();
+        assert!(hits.trim().is_empty(), "a secret was found in: {hits}");
     }
 
     /// An account without sudo (SPM_E2E_NOSUDO="user", same key): the agent

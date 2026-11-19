@@ -248,6 +248,14 @@ pub fn stage_private_at<T: Serialize>(path: &std::path::Path, value: &T, what: &
         o.mode(0o600);
     }
     let mut f = o.open(path).map_err(fail)?;
+    // Windows: the file (empty yet) loses the access it inherits (every
+    // user reads ProgramData) before the secret is written into it.
+    #[cfg(windows)]
+    if let Err(e) = sentient_installer_core::private_acl::make_private(path, false) {
+        drop(f);
+        let _ = std::fs::remove_file(path);
+        return Err(format!("{what}: {e}"));
+    }
     f.write_all(serde_json::to_string(value).unwrap_or_default().as_bytes()).map_err(fail)
 }
 

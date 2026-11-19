@@ -53,18 +53,67 @@ pub(crate) fn take_go_status() -> bool {
     GO_STATUS.swap(false, std::sync::atomic::Ordering::SeqCst)
 }
 
-/// Installing SENTIENT or the gateway on a Windows server from here is not
-/// built yet (the owner's decision for 0.9.3): both installs say so.
-pub(crate) const WINDOWS_REMOTE_INSTALL: &str = "Remote install is not supported on Windows servers yet.";
+/// Installing SENTIENT on a Windows server from here is not built yet (the
+/// owner's decision for 0.9.3); the gateway installs there (its own
+/// installer, run by the server's agent).
+pub(crate) const WINDOWS_REMOTE_INSTALL: &str = "Remote install of SENTIENT is not supported on Windows servers yet.";
 
 /// Why Install SENTIENT cannot start on this server (its tooltip), or None.
 fn install_blocked(inst: &Instance, busy: bool) -> Option<&'static str> {
-    if remote::is_windows(inst) {
+    sentient_install_blocked(remote::is_windows(inst), busy)
+}
+
+const BUSY: &str = "Another job is running on this server.";
+
+/// [`install_blocked`] for a server's system: SENTIENT is refused on Windows.
+fn sentient_install_blocked(windows: bool, busy: bool) -> Option<&'static str> {
+    if windows {
         Some(WINDOWS_REMOTE_INSTALL)
     } else if busy {
-        Some("Another job is running on this server.")
+        Some(BUSY)
     } else {
         None
+    }
+}
+
+/// Why the empty server's "Install the gateway" cannot start, or None: only
+/// another job (Linux and Windows servers alike).
+fn gateway_offer_blocked(_windows: bool, busy: bool) -> Option<&'static str> {
+    busy.then_some(BUSY)
+}
+
+/// Why the Gateway page's Install cannot run (its tooltip), or None:
+/// nothing the server can run (`runs`), an image not published yet (Linux),
+/// a release without its Windows installer (Windows).
+fn gateway_install_blocker(windows: bool, runs: &Result<(String, String), String>, offer: Option<&sentient_installer_core::gateway::Offer>) -> Option<String> {
+    runs.clone().err().or_else(|| {
+        offer.and_then(|o| {
+            if o.image_missing && !windows {
+                Some(sentient_installer_core::dockerhub::not_published(&o.version))
+            } else if windows && o.installer.is_none() {
+                Some(format!("Gateway {} has no Windows installer.", o.version))
+            } else {
+                None
+            }
+        })
+    })
+}
+
+/// The steps a remote gateway install shows, after connecting and the token:
+/// Docker's pull and start on Linux, the installer's download and run on
+/// Windows (the agent's own step names, crate::gateway's windows::install).
+fn gateway_install_steps(windows: bool, version: &str) -> Vec<sentient_installer_core::progress::PlanStep> {
+    use sentient_installer_core::progress::PlanStep;
+    if windows {
+        vec![
+            PlanStep::new(format!("Downloading Sentient Gateway {version}")).when(&["Downloading Sentient Gateway"]).weight(3.),
+            PlanStep::new(format!("Installing Sentient Gateway {version}")).weight(2.),
+        ]
+    } else {
+        vec![
+            PlanStep::new(format!("Pulling {}:{version}", sentient_installer_core::gateway::IMAGE)).weight(3.),
+            PlanStep::new(format!("Starting Sentient Gateway {version}")),
+        ]
     }
 }
 
@@ -1502,11 +1551,11 @@ impl RemotePages {
                 "Sentient Gateway",
                 "Reads the plant's devices next to this server and sends their data to a SENTIENT, here or elsewhere.",
                 {
-                    let b = crate::ui::button("r-go-gateway").outline().label("Install the gateway").disabled(busy || remote::is_windows(&self.inst)).on_click(|_, _, cx| go_gateway(cx));
-                    if remote::is_windows(&self.inst) {
-                        div().id("r-go-gateway-why").flex_shrink_0().child(b).tooltip(crate::ui::tooltip(WINDOWS_REMOTE_INSTALL)).into_any_element()
-                    } else {
-                        b.into_any_element()
+                    let why = gateway_offer_blocked(remote::is_windows(&self.inst), busy);
+                    let b = crate::ui::button("r-go-gateway").outline().label("Install the gateway").disabled(why.is_some()).on_click(|_, _, cx| go_gateway(cx));
+                    match why {
+                        Some(why) => div().id("r-go-gateway-why").flex_shrink_0().child(b).tooltip(crate::ui::tooltip(why)).into_any_element(),
+                        None => b.into_any_element(),
                     }
                 },
                 gw_version,
@@ -3161,17 +3210,7 @@ impl RemotePages {
         let offer = found.clone().and_then(|r| r.ok()).flatten();
         // Why Install cannot run (its tooltip): nothing the server runs, an
         // image not published yet, a release without its Windows installer.
-        let blocker = windows.then(|| WINDOWS_REMOTE_INSTALL.to_string()).or_else(|| runs.clone().err()).or_else(|| {
-            offer.as_ref().and_then(|o| {
-                if o.image_missing && !windows {
-                    Some(sentient_installer_core::dockerhub::not_published(&o.version))
-                } else if windows && o.installer.is_none() {
-                    Some(format!("Gateway {} has no Windows installer.", o.version))
-                } else {
-                    None
-                }
-            })
-        });
+        let blocker = gateway_install_blocker(windows, &runs, offer.as_ref());
         let runs_row = match runs {
             Ok(r) => r,
             Err(why) => ("Docker container (Docker is not on this server)".to_string(), why),
@@ -3261,10 +3300,7 @@ impl RemotePages {
         let me = cx.entity().downgrade();
         self.job.update(cx, |job, cx| {
             let mut plan = vec![crate::jobplan::connect(), PlanStep::new("Sending the access token")];
-            if !windows {
-                plan.push(PlanStep::new(format!("Pulling {}:{version}", sentient_installer_core::gateway::IMAGE)).weight(3.));
-                plan.push(PlanStep::new(format!("Starting Sentient Gateway {version}")));
-            }
+            plan.extend(gateway_install_steps(windows, &version));
             job.set_plan(plan);
             job.set_label(label);
             job.set_on_page(true);
@@ -3674,5 +3710,58 @@ mod reopen_tests {
     fn nothing_read_is_the_skeleton() {
         assert!(!shows_data(Kind::Status, &Read::Loading, &Read::Loading, &Read::Loading, &Read::Loading));
         assert!(!shows_data(Kind::Status, &Read::Got(()), &Read::Got(RemoteStatus::default()), &Read::Loading, &Read::Got(DbStatus::default())));
+    }
+}
+
+#[cfg(test)]
+mod windows_gateway_tests {
+    use super::{gateway_install_blocker, gateway_install_steps, gateway_offer_blocked, sentient_install_blocked, BUSY, WINDOWS_REMOTE_INSTALL};
+    use sentient_installer_core::gateway::Offer;
+    use sentient_installer_core::releases::Asset;
+
+    fn offer(installer: bool, image_missing: bool) -> Offer {
+        let asset = Asset { name: "SentientGatewaySetup-4.16.3.exe".into(), browser_download_url: String::new(), size: 1, digest: None };
+        Offer { version: "4.16.3".into(), date: String::new(), notes: String::new(), page: String::new(), installer: installer.then_some(asset), checksum: None, image_missing }
+    }
+
+    /// SENTIENT stays refused on a Windows server; the gateway does not.
+    #[test]
+    fn windows_refuses_sentient_but_not_the_gateway() {
+        assert_eq!(sentient_install_blocked(true, false), Some(WINDOWS_REMOTE_INSTALL));
+        assert_eq!(sentient_install_blocked(true, true), Some(WINDOWS_REMOTE_INSTALL));
+        assert!(WINDOWS_REMOTE_INSTALL.contains("SENTIENT"));
+        assert_eq!(sentient_install_blocked(false, false), None);
+        assert_eq!(sentient_install_blocked(false, true), Some(BUSY));
+        assert_eq!(gateway_offer_blocked(true, false), None);
+        assert_eq!(gateway_offer_blocked(false, false), None);
+        assert_eq!(gateway_offer_blocked(true, true), Some(BUSY));
+    }
+
+    /// The Gateway page's Install on Windows: open with the installer,
+    /// closed without it; an image not on Docker Hub matters only on Linux.
+    #[test]
+    fn the_gateway_install_on_windows_needs_only_its_installer() {
+        let runs = crate::manager::gateway::install_runs_as(true, Some(false), "PLANT_W");
+        assert_eq!(gateway_install_blocker(true, &runs, Some(&offer(true, true))), None);
+        assert_eq!(gateway_install_blocker(true, &runs, None), None);
+        assert_eq!(gateway_install_blocker(true, &runs, Some(&offer(false, false))).as_deref(), Some("Gateway 4.16.3 has no Windows installer."));
+        let linux = crate::manager::gateway::install_runs_as(false, Some(true), "PLANT_L");
+        assert!(gateway_install_blocker(false, &linux, Some(&offer(true, true))).is_some());
+        assert_eq!(gateway_install_blocker(false, &linux, Some(&offer(false, false))), None);
+        let no_docker = crate::manager::gateway::install_runs_as(false, Some(false), "PLANT_L");
+        assert!(gateway_install_blocker(false, &no_docker, Some(&offer(false, false))).unwrap().contains("Docker is not on PLANT_L"));
+    }
+
+    /// The plan names the steps the agent reports: the installer's download
+    /// (its size after the version) and run on Windows, Docker on Linux.
+    #[test]
+    fn the_plan_follows_the_servers_system() {
+        let w = gateway_install_steps(true, "4.16.3");
+        assert_eq!(w.len(), 2);
+        assert!(w[0].when.iter().any(|s| "Downloading Sentient Gateway 4.16.3 (52 MB)".starts_with(s.as_str())));
+        assert_eq!(w[1].name, "Installing Sentient Gateway 4.16.3");
+        let l = gateway_install_steps(false, "4.16.3");
+        assert_eq!(l[0].name, format!("Pulling {}:4.16.3", sentient_installer_core::gateway::IMAGE));
+        assert_eq!(l[1].name, "Starting Sentient Gateway 4.16.3");
     }
 }

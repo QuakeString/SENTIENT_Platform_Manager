@@ -42,6 +42,9 @@ pub mod diagnose;
 /// SENTIENT as a systemd unit) — what [`native`] delegates to on Linux.
 #[cfg(target_os = "linux")]
 pub mod native_linux;
+/// A secret's file or folder on Windows, readable only by SYSTEM, the
+/// Administrators and this account.
+pub mod private_acl;
 pub mod progress;
 pub mod releases;
 /// The schema installer's output in the job log (an existing database is
