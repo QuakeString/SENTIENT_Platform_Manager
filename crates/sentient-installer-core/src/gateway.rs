@@ -24,7 +24,7 @@ pub const CONTAINER: &str = "sentient-gateway";
 
 /// What the detection looks at, in order (for support and the gateway
 /// page's (i)).
-pub const CHECKS: &str = "Docker containers, running or stopped, of the image quakestring/sentient-gateway-rs (or the older quakestring/sentient-gateway) or whose program is sentient-gateway; the systemd unit sentient-gateway.service, or any unit that runs a program sentient-gateway that answers as the gateway; a running sentient-gateway; /usr/bin, /usr/local/bin and /opt/sentient-gateway; on Windows the service SentientGateway.";
+pub const CHECKS: &str = "Docker containers, running or stopped, of the image quakestring/sentient-gateway-rs or whose program is sentient-gateway; the systemd unit sentient-gateway.service, or any unit that runs a program sentient-gateway that answers as the gateway; a running sentient-gateway; /usr/bin, /usr/local/bin and /opt/sentient-gateway; on Windows the service SentientGateway.";
 
 #[cfg(windows)]
 const SERVICE: &str = "SentientGateway";
@@ -60,6 +60,18 @@ pub struct Status {
     /// from (None: installed by hand).
     pub program: Option<String>,
     pub package: Option<String>,
+    /// A native gateway whose settings folder this process may not read
+    /// (`/etc/sentient-gateway` is 0700, the gateway's own account): host,
+    /// port and page come from an administrator's read
+    /// (app crate::manager::gateway), never by loosening the folder.
+    pub config_unreadable: bool,
+    /// A container of the older Python gateway (quakestring/sentient-gateway)
+    /// on this computer: its name. The Platform Manager supports only the
+    /// Rust gateway, so it never takes it for the Rust one (an update would
+    /// recreate it on other volumes); the page says it is there.
+    pub legacy: Option<String>,
+    /// That container's image (its tag is the older gateway's version).
+    pub legacy_image: Option<String>,
 }
 
 impl Status {
@@ -122,14 +134,63 @@ pub fn page_url(gateway_file: Option<&str>, env: &dyn Fn(&str) -> Option<String>
     Some(format!("{}://{reach}:{port}/", if loopback { "http" } else { "https" }))
 }
 
-/// A gateway image of ours: the Rust gateway, or the Python one it
-/// replaces (quakestring/sentient-gateway). Not other gateways
-/// (other vendors' gateway images).
-pub fn is_gateway_image(image: &str) -> bool {
+/// An image's own name: `registry:5000/org/name:tag@sha` → `name`.
+fn image_name(image: &str) -> &str {
     let image = image.split('@').next().unwrap_or(image);
     let repo = image.rsplit_once(':').map(|(r, t)| if t.contains('/') { image } else { r }).unwrap_or(image);
-    let name = repo.rsplit('/').next().unwrap_or(repo);
-    name == "sentient-gateway-rs" || name == "sentient-gateway"
+    repo.rsplit('/').next().unwrap_or(repo)
+}
+
+/// A gateway image of ours: the Rust gateway (quakestring/sentient-gateway-rs).
+/// Not the older Python gateway (is_legacy_image), not other vendors'
+/// gateway images.
+pub fn is_gateway_image(image: &str) -> bool {
+    image_name(image) == "sentient-gateway-rs"
+}
+
+/// The older Python gateway's image (quakestring/sentient-gateway): no
+/// longer supported, only reported.
+pub fn is_legacy_image(image: &str) -> bool {
+    image_name(image) == "sentient-gateway"
+}
+
+/// Why the gateway found as `s` cannot be updated to `version` from here
+/// (None: it can). `has_installer`: the release has the Windows installer;
+/// `windows`: the computer it runs on is Windows. The reasons say what is
+/// true and what to do instead; the update itself (update()) refuses the
+/// same cases.
+pub fn update_blocker(s: &Status, version: &str, has_installer: bool, windows: bool) -> Option<String> {
+    if !s.installed {
+        // The older Python gateway alone: updated to the Rust one in Docker.
+        return match &s.legacy {
+            Some(_) if windows => Some("On Windows the Platform Manager runs the gateway as a Windows service, not in Docker: remove the older gateway's container, then install the gateway here.".into()),
+            Some(_) => None,
+            None => Some("There is no Sentient Gateway to update.".into()),
+        };
+    }
+    match s.kind() {
+        "docker" if windows => Some("On Windows the Platform Manager runs the gateway as a Windows service, not in Docker: update this container the way it was started.".into()),
+        "docker" if !s.managed => Some(match &s.compose_dir {
+            Some(dir) => format!("This container comes from a compose file in {dir}: set its image to {IMAGE}:{version} in that file and run docker compose up -d."),
+            None => format!(
+                "This container ({}) was started outside the Platform Manager: start it again with the image {IMAGE}:{version} the way it was started.",
+                s.container.as_deref().unwrap_or("?")
+            ),
+        }),
+        "docker" => None,
+        "service" => Some(match &s.package {
+            Some(p) => format!(
+                "This gateway came from the package {p}: update it with the system's package manager, using the package in the gateway-{version} release. The Platform Manager does not update a gateway installed without Docker yet."
+            ),
+            None => format!(
+                "This gateway runs as the service {} without a package: run the new version's sentient-gateway --install as administrator (it stops the service, replaces the program and starts it again). The Platform Manager does not update a gateway installed without Docker yet.",
+                s.service.as_deref().unwrap_or("?")
+            ),
+        }),
+        "process" => Some("This gateway runs as a plain program that no service started: replace that program by hand. The Platform Manager updates a gateway in Docker or a Windows service only.".into()),
+        _ if !has_installer => Some(format!("Gateway {version} has no Windows installer.")),
+        _ => None,
+    }
 }
 
 /// A path whose file name is the gateway's program (`sentient-gateway`,
@@ -179,12 +240,7 @@ pub fn newest(channel: releases::Channel) -> Result<Option<Offer>, String> {
     let mut candidates = releases::on_channel(&all, channel, is_gateway);
     // on_channel sorts by the tag; gateway-4.10 vs 4.9 needs the version.
     candidates.sort_by(|a, b| releases::compare(&version_of(b), &version_of(a)));
-    Ok(candidates.first().map(|r| {
-        let v = version_of(r);
-        let installer = r.assets.iter().find(|a| a.name == format!("SentientGatewaySetup-{v}.exe")).cloned();
-        let checksum = r.assets.iter().find(|a| a.name == format!("SentientGatewaySetup-{v}.exe.sha256")).cloned();
-        Offer { version: v, date: r.date(), notes: r.summary(), page: r.html_url.clone(), installer, checksum }
-    }))
+    Ok(candidates.first().map(|r| offer_of(r)))
 }
 
 pub fn status() -> Status {
@@ -192,13 +248,17 @@ pub fn status() -> Status {
     {
         // The service first; else a gateway container in Docker Desktop.
         let s = windows::status();
-        if s.installed { s } else { crate::distro::gateway_docker::status() }
+        if s.installed {
+            Status { legacy: crate::distro::gateway_docker::legacy(), legacy_image: None, ..s }
+        } else {
+            crate::distro::gateway_docker::status()
+        }
     }
     #[cfg(not(windows))]
     {
         // A container first; else a service or a plain process.
         let s = crate::distro::gateway_docker::status();
-        if s.installed { s } else { crate::distro::gateway_native::status() }
+        if s.installed { s } else { Status { legacy: s.legacy, legacy_image: s.legacy_image, ..crate::distro::gateway_native::status() } }
     }
 }
 
@@ -226,8 +286,120 @@ pub fn update(sink: &ProgressFn, offer: &Offer) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
+        let s = status();
+        if !s.installed && s.legacy.is_some() {
+            return crate::distro::gateway_legacy::update(sink, &offer.version).map(|_| ());
+        }
+        if s.container.is_none() {
+            // A service or a program: said, never attempted.
+            let _ = sink;
+            return Err(update_blocker(&s, &offer.version, offer.installer.is_some(), false).unwrap_or_else(|| "There is no gateway container to update.".into()));
+        }
         crate::distro::gateway_docker::update(sink, &offer.version)
     }
+}
+
+/// The gateway release `version` (any channel): what a server is asked to
+/// update to when this computer showed that version.
+pub fn release(version: &str) -> Result<Offer, String> {
+    let all = releases::fetch(releases::SENTIENT_REPO)?;
+    let r = all.iter().find(|r| is_gateway(r) && version_of(r) == version).ok_or_else(|| format!("There is no gateway release {version}."))?;
+    Ok(offer_of(r))
+}
+
+fn offer_of(r: &Release) -> Offer {
+    let v = version_of(r);
+    let installer = r.assets.iter().find(|a| a.name == format!("SentientGatewaySetup-{v}.exe")).cloned();
+    let checksum = r.assets.iter().find(|a| a.name == format!("SentientGatewaySetup-{v}.exe.sha256")).cloned();
+    Offer { version: v, date: r.date(), notes: r.summary(), page: r.html_url.clone(), installer, checksum }
+}
+
+/// Where the Windows service writes its log files, as the gateway resolves
+/// it (gw/crates/gateway-core/src/logging.rs `LogFiles::directory`,
+/// paths.rs): `ST_GW_LOGS_PATH` (or `TB_GW_LOGS_PATH`), else `logs` in the
+/// data folder (`ST_GW_DATA_DIR`/`TB_GW_DATA_DIR`, else
+/// `%ProgramData%\Sentient Gateway\data`). `env` is the service's own
+/// environment, `NAME=value` each.
+pub fn windows_log_dir(env: &[String], program_data: Option<&str>) -> String {
+    let var = |suffix: &str| {
+        ["ST_GW_", "TB_GW_"].iter().find_map(|p| {
+            let k = format!("{p}{suffix}=");
+            env.iter().find_map(|l| l.strip_prefix(&k)).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string)
+        })
+    };
+    if let Some(dir) = var("LOGS_PATH") {
+        return dir;
+    }
+    let data = var("DATA_DIR").unwrap_or_else(|| format!("{}\\Sentient Gateway\\data", program_data.unwrap_or(r"C:\ProgramData").trim_end_matches(['\\', '/'])));
+    format!("{}\\logs", data.trim_end_matches(['\\', '/']))
+}
+
+/// The Windows gateway service's log folder (None: no service here, or not
+/// Windows).
+pub fn log_dir() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        windows::log_dir()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// A log line that starts a record: the gateway's lines begin with an
+/// RFC 3339 time (`2026-11-18T07:12:13.123456Z  INFO …`); others continue
+/// the line before (a wrapped message, a backtrace).
+fn starts_record(l: &str) -> bool {
+    let b = l.as_bytes();
+    b.len() >= 19 && b[..4].iter().all(u8::is_ascii_digit) && b[4] == b'-' && b[10] == b'T'
+}
+
+/// The gateway's log files (service.log, connector.log, …: one per logger)
+/// as one log: their records in time order, the last `tail`, or those since
+/// `since` (`YYYY-MM-DDTHH:MM:SS`, UTC) when given.
+pub fn merge_logs(files: &[String], tail: usize, since: Option<&str>) -> String {
+    let mut records: Vec<(String, usize, String)> = Vec::new();
+    for text in files {
+        let mut cur: Option<(String, String)> = None;
+        for l in text.lines() {
+            if starts_record(l) {
+                if let Some((k, r)) = cur.take() {
+                    records.push((k, records.len(), r));
+                }
+                cur = Some((l[..19].to_string(), l.to_string()));
+            } else if let Some((_, r)) = cur.as_mut() {
+                r.push('\n');
+                r.push_str(l);
+            } else if !l.trim().is_empty() {
+                // A file's first lines without a time: kept, first.
+                records.push((String::new(), records.len(), l.to_string()));
+            }
+        }
+        if let Some((k, r)) = cur.take() {
+            records.push((k, records.len(), r));
+        }
+    }
+    records.sort();
+    if let Some(since) = since {
+        records.retain(|(k, _, _)| k.as_str() >= since);
+    }
+    let start = records.len().saturating_sub(tail);
+    records[start..].iter().map(|(_, _, r)| r.as_str()).collect::<Vec<_>>().join("\n")
+}
+
+/// The newest records of the Windows gateway's log files in `dir`.
+pub fn read_log_dir(dir: &std::path::Path, tail: usize, since: Option<&str>) -> Option<String> {
+    let mut texts = Vec::new();
+    for e in std::fs::read_dir(dir).ok()?.flatten() {
+        // The current files only (`service.log`), not the rotated `.log.1`…
+        if e.file_name().to_string_lossy().ends_with(".log") {
+            if let Ok(t) = std::fs::read_to_string(e.path()) {
+                texts.push(t);
+            }
+        }
+    }
+    (!texts.is_empty()).then(|| merge_logs(&texts, tail, since))
 }
 
 /// `start`, `stop` or `restart`.
@@ -288,6 +460,27 @@ pub fn remove(sink: &ProgressFn, keep_data: bool, remove_image: bool) -> Result<
     }
 }
 
+/// The Windows service's settings (crate::gateway_settings).
+#[cfg(windows)]
+pub fn windows_read_settings() -> crate::gateway_settings::GwSettings {
+    windows::read_settings()
+}
+
+#[cfg(windows)]
+pub fn windows_apply_settings(sink: &ProgressFn, before: &crate::gateway_settings::GwSettings, plan: &crate::gateway_settings::ApplyPlan) -> Result<(), String> {
+    windows::apply_settings(sink, before, plan)
+}
+
+#[cfg(windows)]
+pub fn windows_program() -> String {
+    windows::program()
+}
+
+#[cfg(windows)]
+pub fn windows_test_creds() -> Option<crate::gateway_settings::TestCreds> {
+    windows::test_creds()
+}
+
 /// `sentient-gateway 4.13.0` → `4.13.0`.
 pub fn parse_version(out: &str) -> Option<String> {
     out.lines()
@@ -346,6 +539,14 @@ mod windows {
         let env = service_environment();
         let page_url = page_url(file.as_deref(), &|k| env.iter().find_map(|l| l.strip_prefix(&format!("{k}=")).map(str::to_string)), false);
         Status { installed, version, running, host, port, page_url, container: None, managed: true, ..Status::default() }
+    }
+
+    pub fn log_dir() -> Option<PathBuf> {
+        if !status().installed {
+            return None;
+        }
+        let pd = std::env::var("ProgramData").ok();
+        Some(PathBuf::from(windows_log_dir(&service_environment(), pd.as_deref())))
     }
 
     /// The service's Environment (REG_MULTI_SZ), one `NAME=value` per entry.
@@ -517,6 +718,162 @@ mod windows {
         })
     }
 
+    pub fn program() -> String {
+        crate::sys::output("sc.exe", &["qc", SERVICE])
+            .and_then(|(ok, out, _)| ok.then(|| service_program(&crate::sys::decode(&out))).flatten())
+            .filter(|p| std::path::Path::new(p).is_file())
+            .unwrap_or_else(|| exe().display().to_string())
+    }
+
+    fn service_pid() -> Option<u32> {
+        let (_, out, _) = crate::sys::output("sc.exe", &["queryex", SERVICE])?;
+        crate::sys::decode(&out).lines().find_map(|l| l.trim().strip_prefix("PID").map(|r| r.trim_start_matches([' ', ':']).trim().to_string())).and_then(|p| p.parse().ok()).filter(|p| *p != 0)
+    }
+
+    /// The service's settings: its file and its registry Environment.
+    pub fn read_settings() -> crate::gateway_settings::GwSettings {
+        use crate::gateway_settings::{self as gs, GwSettings};
+        let file = config_file();
+        let dir = file.parent().map(PathBuf::from).unwrap_or_default();
+        let text = std::fs::read_to_string(&file).ok().or_else(|| std::fs::read_to_string(dir.join("tb_gateway.json")).ok());
+        let mut s = match text {
+            Some(t) => gs::from_files(&t, std::fs::read_to_string(dir.join("logs.json")).ok().as_deref()),
+            None => GwSettings { source: "none".into(), note: Some("The gateway has no settings file yet (not commissioned).".into()), ..GwSettings::default() },
+        };
+        s.config_path = Some(file.display().to_string());
+        s.ui.password_set = Some(dir.join("local-ui").join("admin.argon2").is_file());
+        let program = program();
+        s.caps = gs::Caps::of_help(&crate::sys::output(&program, &["--help"]).map(|(_, o, _)| crate::sys::decode(&o)).unwrap_or_default());
+        if s.caps.status_json {
+            if let Some((true, o, _)) = crate::sys::output(&program, &["--status-json"]) {
+                gs::merge_status_json(&mut s, &crate::sys::decode(&o));
+            }
+        }
+        let env = service_environment();
+        gs::apply_env(&mut s, &env, false);
+        if s.connected.is_none() {
+            match (service_pid(), s.conn.port) {
+                (None, _) => {
+                    s.connected = Some(false);
+                    s.connected_how = Some("the service is stopped".into());
+                }
+                (Some(pid), Some(port)) => {
+                    if let Some((true, o, _)) = crate::sys::output("netstat.exe", &["-ano", "-p", "TCP"]) {
+                        s.connected = Some(gs::netstat_established(&crate::sys::decode(&o), pid, port));
+                        s.connected_how = Some("the gateway's open connections".into());
+                    }
+                }
+                _ => {}
+            }
+        }
+        let pd = std::env::var("ProgramData").ok();
+        s.log_files = Some(windows_log_dir(&env, pd.as_deref()));
+        let failure = crate::sys::output("sc.exe", &["qfailure", SERVICE]).map(|(_, o, _)| crate::sys::decode(&o)).unwrap_or_default();
+        let restarts = failure.to_ascii_uppercase().contains("RESTART");
+        s.machine.restart_always = Some(restarts);
+        s.machine.restart_word = Some(if restarts { "restart after a failure".into() } else { "no".into() });
+        s.machine.env = gs::overrides(&env, &[], |_| true, "the service");
+        s
+    }
+
+    fn write_environment(env: &[String]) -> Result<(), String> {
+        let key = format!(r"HKLM\SYSTEM\CurrentControlSet\Services\{SERVICE}");
+        if env.is_empty() {
+            let _ = crate::sys::output("reg.exe", &["delete", &key, "/v", "Environment", "/f"]);
+            return Ok(());
+        }
+        let data = env.join("\\0");
+        match crate::sys::output("reg.exe", &["add", &key, "/v", "Environment", "/t", "REG_MULTI_SZ", "/d", &data, "/f"]) {
+            Some((true, _, _)) => Ok(()),
+            Some((false, _, e)) => Err(format!("The service's environment could not be written: {}", crate::sys::decode(&e).trim())),
+            None => Err("reg.exe could not be started.".into()),
+        }
+    }
+
+    /// Apply `plan` to the service: the environment in the service's
+    /// registry key and the restart policy (`sc failure`) first, then the
+    /// gateway restarts once: through its own `--install` when the page
+    /// changes (it restarts the service), else a service restart.
+    pub fn apply_settings(sink: &ProgressFn, before: &crate::gateway_settings::GwSettings, plan: &crate::gateway_settings::ApplyPlan) -> Result<(), String> {
+        let program = program();
+        let page = plan.ui_enabled.is_some() || plan.ui_listen.is_some();
+        if page && !before.caps.ui_listen {
+            return Err("This gateway is older than 4.12: update it first to change its web page here.".into());
+        }
+        let mut env = service_environment();
+        let mut set = |n: &str, v: Option<String>| {
+            env.retain(|l| !l.starts_with(&format!("{n}=")));
+            if let Some(v) = v {
+                env.push(format!("{n}={v}"));
+            }
+        };
+        let mut env_changed = false;
+        if page && before.machine.ui_env {
+            if let Some(on) = plan.ui_enabled {
+                set("ST_GW_UI", Some(if on { "on" } else { "off" }.into()));
+            }
+            if let Some(l) = &plan.ui_listen {
+                set("ST_GW_UI_LISTEN", Some(l.clone()));
+            }
+            env_changed = true;
+        }
+        if let Some(l) = &plan.rust_log {
+            set("RUST_LOG", (!l.is_empty()).then(|| l.clone()));
+            env_changed = true;
+        }
+        if let Some(vars) = &plan.env {
+            for e in before.machine.env.iter().filter(|e| e.value.is_some()) {
+                set(&e.name, None);
+            }
+            for (n, v) in vars {
+                if n.is_empty() || n.contains('=') {
+                    return Err(format!("{n}: not a usable variable"));
+                }
+                set(n, Some(v.clone()));
+            }
+            env_changed = true;
+        }
+        if env_changed {
+            step(sink, "Writing the service's environment");
+            write_environment(&env)?;
+        }
+        if let Some(on) = plan.restart_always {
+            step(sink, "Setting what Windows does when the gateway fails");
+            let args: Vec<&str> = if on { vec!["failure", SERVICE, "reset=", "86400", "actions=", "restart/5000/restart/5000/restart/5000"] } else { vec!["failure", SERVICE, "reset=", "0", "actions=", ""] };
+            if !matches!(crate::sys::output("sc.exe", &args), Some((true, _, _))) {
+                return Err("sc.exe failure could not set the restart policy.".into());
+            }
+        }
+        if page {
+            step(sink, "Setting the web page and restarting the gateway once (its own --install)");
+            let mut args = vec!["--install".to_string()];
+            match plan.ui_enabled {
+                Some(true) => args.push("--ui".into()),
+                Some(false) => args.push("--no-ui".into()),
+                None => {}
+            }
+            if let Some(l) = &plan.ui_listen {
+                args.push("--ui-listen".into());
+                args.push(l.clone());
+            }
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            match crate::sys::output_limited(&program, &refs, std::time::Duration::from_secs(120)) {
+                Some((true, _, _)) => {}
+                Some((false, _, e)) => return Err(format!("The gateway's --install stopped: {}", crate::sys::decode(&e).trim())),
+                None => return Err("The gateway's program could not be started.".into()),
+            }
+        } else if env_changed {
+            step(sink, "Restarting the gateway service once");
+            control(sink, "restart")?;
+        }
+        Ok(())
+    }
+
+    pub fn test_creds() -> Option<crate::gateway_settings::TestCreds> {
+        let file = std::fs::read_to_string(config_file()).ok();
+        crate::gateway_settings::creds_of(file.as_deref(), &service_environment())
+    }
+
     fn download(url: &str, to: &std::path::Path) -> Result<(), String> {
         let response = crate::net::agent()
             .get(url)
@@ -580,7 +937,10 @@ mod tests {
     #[test]
     fn gateway_images() {
         assert!(is_gateway_image("quakestring/sentient-gateway-rs:4.13.0"));
-        assert!(is_gateway_image("quakestring/sentient-gateway:3.7.10"));
+        // The older Python gateway: not managed, only reported.
+        assert!(!is_gateway_image("quakestring/sentient-gateway:3.7.10"));
+        assert!(is_legacy_image("quakestring/sentient-gateway:3.7.10"));
+        assert!(!is_legacy_image("quakestring/sentient-gateway-rs:4.16.2"));
         assert!(is_gateway_image("sentient-gateway-rs:dev"));
         assert!(is_gateway_image("registry.local:5000/quakestring/sentient-gateway-rs:4.16.2"));
         assert!(!is_gateway_image("example/other-gateway"));
@@ -595,5 +955,63 @@ mod tests {
         let file = r#"{"sentient":{"host":"127.0.0.1","port":1883,"security":{"type":"accessToken"}}}"#;
         assert_eq!(host_of(file), (Some("127.0.0.1".into()), Some(1883)));
         assert_eq!(host_of(r#"{"sentient":{"host":""}}"#), (None, None));
+    }
+
+    #[test]
+    fn update_reasons_say_what_is_true() {
+        let native = Status { installed: true, service: Some("sentient-gateway.service".into()), program: Some("/usr/bin/sentient-gateway".into()), package: Some("sentient-gateway".into()), ..Status::default() };
+        let why = update_blocker(&native, "4.16.3", false, false).unwrap();
+        assert!(why.contains("package manager") && why.contains("gateway-4.16.3") && !why.contains("compose"), "{why}");
+        let by_hand = Status { package: None, service: Some("example-gw.service".into()), ..native.clone() };
+        let why = update_blocker(&by_hand, "4.16.3", false, false).unwrap();
+        assert!(why.contains("example-gw.service") && why.contains("--install") && !why.contains("compose"), "{why}");
+        let process = Status { installed: true, process: Some("/opt/gw/sentient-gateway".into()), ..Status::default() };
+        assert!(update_blocker(&process, "4.16.3", false, false).unwrap().contains("plain program"));
+        // Docker: ours updates; a compose one names its folder; another is told plainly.
+        let ours = Status { installed: true, container: Some(CONTAINER.into()), managed: true, ..Status::default() };
+        assert_eq!(update_blocker(&ours, "4.16.3", false, false), None);
+        assert!(update_blocker(&ours, "4.16.3", false, true).unwrap().contains("Windows service"));
+        let compose = Status { managed: false, container: Some("plant-gw".into()), compose_dir: Some("/srv/example".into()), ..ours.clone() };
+        assert!(update_blocker(&compose, "4.16.3", false, false).unwrap().contains("compose file in /srv/example"));
+        let other = Status { compose_dir: None, ..compose };
+        let why = update_blocker(&other, "4.16.3", false, false).unwrap();
+        assert!(why.contains("outside the Platform Manager") && !why.contains("compose"), "{why}");
+        // The Windows service: needs the release's installer.
+        let win = Status { installed: true, managed: true, ..Status::default() };
+        assert_eq!(win.kind(), "windows-service");
+        assert_eq!(update_blocker(&win, "4.16.3", true, true), None);
+        assert!(update_blocker(&win, "4.16.3", false, true).unwrap().contains("no Windows installer"));
+        assert!(update_blocker(&Status::default(), "4.16.3", true, false).is_some());
+        // The older Python gateway alone: an update here, not on Windows.
+        let older = Status { legacy: Some("st-gateway".into()), legacy_image: Some("quakestring/sentient-gateway:latest".into()), ..Status::default() };
+        assert_eq!(update_blocker(&older, "4.16.3", false, false), None);
+        assert!(update_blocker(&older, "4.16.3", false, true).unwrap().contains("Windows service"));
+    }
+
+    #[test]
+    fn the_windows_log_folder_follows_the_gateway() {
+        assert_eq!(windows_log_dir(&[], Some(r"C:\ProgramData")), r"C:\ProgramData\Sentient Gateway\data\logs");
+        assert_eq!(windows_log_dir(&[], None), r"C:\ProgramData\Sentient Gateway\data\logs");
+        assert_eq!(windows_log_dir(&["ST_GW_DATA_DIR=D:\\gw\\data\\".into()], Some(r"C:\ProgramData")), r"D:\gw\data\logs");
+        assert_eq!(windows_log_dir(&["TB_GW_LOGS_PATH=E:\\logs".into(), "ST_GW_DATA_DIR=D:\\x".into()], None), r"E:\logs");
+        // An empty value counts as unset.
+        assert_eq!(windows_log_dir(&["ST_GW_LOGS_PATH=".into()], Some(r"C:\PD")), r"C:\PD\Sentient Gateway\data\logs");
+    }
+
+    #[test]
+    fn log_files_merge_in_time_order() {
+        let service = "2026-11-18T07:00:01.000001Z  INFO gateway: started\n2026-11-18T07:00:05.000000Z  WARN gateway: slow\n  continued line\n".to_string();
+        let connector = "2026-11-18T07:00:03.000000Z  INFO connector_modbus: polling\n".to_string();
+        let all = merge_logs(&[service.clone(), connector.clone()], 10, None);
+        assert_eq!(all, "2026-11-18T07:00:01.000001Z  INFO gateway: started\n2026-11-18T07:00:03.000000Z  INFO connector_modbus: polling\n2026-11-18T07:00:05.000000Z  WARN gateway: slow\n  continued line");
+        // The last record keeps its continuation.
+        assert_eq!(merge_logs(&[service.clone(), connector.clone()], 1, None), "2026-11-18T07:00:05.000000Z  WARN gateway: slow\n  continued line");
+        assert!(merge_logs(&[service, connector], 10, Some("2026-11-18T07:00:02")).starts_with("2026-11-18T07:00:03"));
+        let dir = std::env::temp_dir().join(format!("spm-gw-logs-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("service.log"), "2026-11-18T07:00:01.000000Z  INFO a\n").unwrap();
+        std::fs::write(dir.join("service.log.1"), "2026-11-17T07:00:01.000000Z  INFO old\n").unwrap();
+        assert_eq!(read_log_dir(&dir, 10, None).as_deref(), Some("2026-11-18T07:00:01.000000Z  INFO a"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

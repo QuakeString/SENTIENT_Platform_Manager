@@ -15,7 +15,190 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Added
+- Gateway: the older Python gateway in Docker is offered an update to the
+  Sentient Gateway ("Update available" on the Gateway page here and on a
+  server, on the Status card and in the notices). The update backs up its
+  configuration volume, stops the older container and keeps it aside,
+  starts the new gateway on the same configuration with the same
+  connection and identity, waits until it is connected to SENTIENT, and
+  only then removes the older container. On any failure the new one is
+  removed and the older one runs again as before. Its (i) lists what does
+  not carry over (custom Python converters, Python code in a
+  configuration, gRPC connectors, a file-storage backlog).
+- Update page and Setup's update choices: a Sentient Gateway line, here
+  and on a server. It shows the newer gateway release and runs the same
+  gateway update with its progress; a gateway that cannot be updated from
+  here is greyed with the reason. The older Python gateway's line carries
+  the (i) on what does not carry over.
+- Gateway in Docker: an update starts the container again with the
+  volumes, host folders and connection settings it has, not fixed ones.
+- Gateway: a settings card under the gateway's status, here and on a
+  server, with the tabs Connection to SENTIENT, Local web page, Connectors,
+  Storage, Logging, Statistics and Advanced, in the look of Platform
+  settings. Every value is read from the gateway's own settings (as
+  administrator for a native gateway, from its container and configuration
+  volume for Docker, through the agent on a server); a token or password
+  shows only as "set" or its last four characters. A gateway that has
+  `--status-json` is asked for its state; an older one is read from its
+  files.
+  - What SENTIENT manages (connectors, storage, logging levels, statistics,
+    remote shell, rate limits) is shown locked, with the reason and, when
+    SENTIENT's address is known, "Open in SENTIENT". The connection is
+    locked while the gateway is connected.
+  - The status card says whether the gateway is connected to SENTIENT.
+  - Local web page: on or off, where it listens, its port, and the
+    administrator password (set through the gateway's own command, on its
+    standard input).
+  - Advanced: restart after a failure, serial ports (the service account's
+    serial group, or a container's devices by their stable names) and
+    environment overrides; Logging: the level before SENTIENT connects.
+  - Apply runs as a job: the gateway's own `--install` and a drop-in of the
+    Platform Manager's for a native service, the container created again
+    with the same volumes and environment, or the Windows service's
+    settings; then the settings are read back.
+  - Test connection checks that SENTIENT's MQTT answers where the gateway
+    connects (TCP, and a TLS handshake when it uses TLS). It does not try
+    the gateway's credentials yet, and says so.
+
+### Changed
+- After quitting, the Platform Manager starts on Status, of the instance that was open last. Closing only the window (the Platform Manager keeps running in the tray) and opening it again still returns to the page it was on.
+
 ### Fixed
+- Windows with "Start with Windows" off: opening Platform settings started
+  SENTIENT's WSL distro. Its Data locations card read the Docker volumes
+  through a path that skipped the read guard. Every command that runs in
+  the distro now asks the guard first (a test scans the sources for any
+  that does not), and the card says "SENTIENT is stopped. Where its data
+  is kept is read when it runs."
+- Platform settings with the distro up but Docker not started: the
+  accounts showed a raw "failed to connect to the docker API … docker.sock"
+  error. That is SENTIENT stopped: the plain sentence and Start SENTIENT.
+  While a Start or Restart runs here the row says "SENTIENT is starting…"
+  with no button, and the accounts are read only once SENTIENT answers.
+- Statistics: the Services card said "stopped" for minutes after SENTIENT
+  started. It is read again when a job here ends, and every 5 s while
+  shown and stopped.
+- Status: with Docker not started, Services read "0 of 0 running"; each
+  container is now listed as stopped. After Stop, the Database card said
+  "Could not read PostgreSQL … connection failed" instead of SENTIENT is
+  stopped.
+- Instances: "Up for" showed on a stopped instance; it shows only while
+  SENTIENT runs.
+- Files: the read-only banner says "You can view, but not change
+  anything."
+- The window closed and opened again from the tray (the Platform Manager
+  kept running) showed the loading screen until the server or this
+  computer was read again. It now shows the page it was left on with what
+  was read last, at once, and reads it again behind it: Status and
+  Statistics, on this computer and on a server, and the top bar's
+  processor, memory and disk. Only a new start of the Platform Manager
+  shows the loading screen. The reopened window also draws about 70 ms
+  sooner (the backup tools are set up once per run, not for every window).
+- Windows (a virtual machine without a GPU): Statistics took about 3 of 4
+  processors, on a stopped or a running SENTIENT. The loading placeholders'
+  shimmer asked for a new frame every frame even with motion reduced, and
+  there every frame is drawn on the processor. The placeholders and the
+  Refresh icon now stay still whenever motion is reduced: on a software
+  renderer, and when "Show animations in Windows" is off (now read too).
+- Statistics on Windows: the Server card stayed a loading placeholder for
+  minutes. It waited for Windows Update's count of waiting updates, which
+  can take minutes to search; that count is now searched for behind and
+  shown at the next reading, and Windows' reading itself stops after
+  60 s with a plain reason on the card instead of a placeholder.
+- Statistics on Windows with Docker: the Services card never showed. Its
+  `docker stats` ran on Windows, where there is no `docker`; it now runs
+  inside SENTIENT's WSL distro, in one command, every 6 s instead of
+  every 3. With SENTIENT stopped (its distro or every container) the card
+  says "SENTIENT is stopped. Its services are read when it runs." on
+  Windows and Linux alike.
+- Platform settings: after Start SENTIENT, the General tab kept saying
+  "SENTIENT must be running to read and change its settings." until the
+  Platform Manager was restarted, because the accounts were read only
+  when the page was first opened. They are now read again when a job
+  here ends (Start, Restart, an update), and every 5 s while the page
+  shows and SENTIENT was found stopped (started from the tray, Status or
+  with Windows).
+- Files on a server: opening a folder (double click, Enter, a path-bar
+  segment or a place button) looked like it did nothing, because the
+  page waited for the whole listing before showing anything, and a
+  listing took 12 round trips (the folder's own attributes, the folder
+  above it listed again only to read the owner, each link, one request
+  at a time): about half a second on a 40 ms link. A listing is now one
+  pipelined read of 2 round trips (3 with links), about 85 ms on the
+  same link, and no new connection. Every click moves the path bar at
+  once; until the folder's rows come, the list shows the loading rows
+  the other pages use. Folders read in the last 45 s show at once and
+  are read again behind; after a folder opens, its subfolders (up to 50,
+  one at a time over the same connection, stopped by the next click),
+  and when Files opens, the place buttons' folders and the folders
+  above, are read ahead. The newest click wins; a folder that does not
+  open puts the bar back on the folder before, with the reason under
+  it. This computer's pane no longer lists every disk for each folder.
+  `tests/files/run.sh` clicks each of these on both panes against a real
+  server and checks the times.
+- Platform settings on a Windows Docker installation: the system
+  administrators and the default retention can be read and changed.
+  The page ran `sentient-admin` on Windows, where it is not ("start
+  sentient-admin: program not found"); it now runs in SENTIENT's
+  container inside the WSL distro, as every other Docker command does.
+  On Linux Docker it now goes through Docker's own shell too (`sg docker`
+  right after setup). With SENTIENT stopped the page says "SENTIENT must
+  be running to read and change its settings." with Start SENTIENT, and
+  never starts the stopped WSL distro to ask.
+- SENTIENT stopped (on Windows its WSL distro stopped): the Status page's
+  Database card says "SENTIENT is stopped. The database is read when it
+  runs." in plain text, not "Could not read PostgreSQL: read the stack's
+  compose file: could not run wsl.exe". The same on a server's Status
+  page, in Statistics' Services card ("Its services are read when it
+  runs.") and in Backup's size estimate.
+- Instances and the instance switcher show every server's state at once.
+  The states are read for every added server as the Platform Manager
+  starts, over the connections it opens then. They are read again every 15
+  seconds while a window is open, and when the window is focused again.
+  Before, a server was first read only when Instances or the switcher was
+  opened, and its card and dot took a few seconds to appear. Each server's
+  last state is kept on disk, so a new start shows it at once as
+  "Checking…" until the server answers. A server that stops answering keeps
+  its last state on the card, marked "Not reachable" with the time of its
+  last answer. One request per server at a time; the tray's checks reuse
+  these readings.
+- Windows Docker: reading SENTIENT's state no longer starts its WSL distro.
+  Any command for the distro starts it, and with it SENTIENT, so the Status
+  page started SENTIENT about a minute after it was opened, also with
+  "Start SENTIENT automatically with Windows" off. The Status page, the
+  tray's checks, the statistics and their sampler, the instance cards and
+  what another computer's Platform Manager reads now first look whether
+  the distro is running; when it is not, SENTIENT shows as stopped and the
+  distro stays stopped. Start, Restart, Repair and updates start it as
+  before.
+- Windows Docker: changing "Start SENTIENT automatically with Windows" in
+  Platform settings no longer fails after a minute on a busy computer.
+  Changing the boot task may take 3 minutes and is tried once more when it
+  does not finish; the error names what did not finish.
+- Gateway, Linux without Docker: the Update button says why it is off (a
+  package-installed gateway updates with the system's package manager; one
+  installed by hand with the new version's `--install`), instead of "comes
+  from a compose file". The update job refuses the same cases.
+- Gateway, Linux without Docker: the web page shows its real state (on at
+  127.0.0.1:8642 by default, or what the settings and the service's
+  environment say), not always "Off".
+- Gateway, Linux without Docker: a gateway whose settings folder is closed
+  to this account (`/etc/sentient-gateway`, 0700) no longer looks "Not
+  commissioned". The page says the settings are readable by an
+  administrator only and offers "Read its settings", which reads them as
+  administrator (host, port and page only, never the token).
+- Gateway on Windows: its logs show on the Logs page, from the service's
+  log files (`ProgramData\Sentient Gateway\data\logs`).
+- Gateway in Docker: the container the Platform Manager starts gets the
+  serial adapters it finds (`/dev/serial/by-id/*`, else `ttyUSB*`/`ttyACM*`)
+  with their group, so Modbus RTU works. An update passes them again.
+- Gateway on a server: "Update to <version>" shows only when a newer
+  gateway exists, names the version, and installs exactly that one.
+- Gateway: a container of the older Python gateway is no longer taken for
+  the Rust gateway (an update would have replaced it and lost its
+  configuration).
+
 - Windows "In the system": other computers reach SENTIENT. Setup opens its
   ports in Windows Firewall (rule group SENTIENT: web and MQTT over TCP,
   CoAP over UDP). Repair, a SENTIENT update and the Platform Manager's

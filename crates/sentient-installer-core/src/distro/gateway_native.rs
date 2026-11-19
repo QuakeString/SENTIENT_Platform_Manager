@@ -180,28 +180,82 @@ fn owner(path: &str) -> Option<String> {
     (name == PACKAGE).then_some(name)
 }
 
-fn host_port() -> (Option<String>, Option<u16>) {
-    FILES.iter().find_map(|f| std::fs::read_to_string(f).ok()).map(|t| crate::gateway::host_of(&t)).unwrap_or((None, None))
+/// The gateway file, read as this process: (its text, whether a settings
+/// folder or file was there but closed to this account). The package keeps
+/// `/etc/sentient-gateway` 0700 for its own account, so an unprivileged
+/// Platform Manager gets the second.
+fn read_file() -> (Option<String>, bool) {
+    let mut denied = false;
+    for f in FILES {
+        match std::fs::read_to_string(f) {
+            Ok(t) => return (Some(t), false),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => denied = true,
+            Err(_) => {}
+        }
+    }
+    // A closed folder hides even whether the file is there.
+    for d in DATA_DIRS.iter().take(1) {
+        if let Err(e) = std::fs::read_dir(d) {
+            denied |= e.kind() == std::io::ErrorKind::PermissionDenied;
+        }
+    }
+    (None, denied)
+}
+
+/// `systemctl show -p Environment --value`: `NAME=value NAME2=value2`.
+pub fn parse_environment(out: &str) -> Vec<String> {
+    out.split_whitespace().filter(|kv| kv.contains('=')).map(|kv| kv.trim_matches('"').to_string()).collect()
+}
+
+fn unit_environment(unit: &str) -> Vec<String> {
+    out("systemctl", &["show", "-p", "Environment", "--value", unit]).map(|o| parse_environment(&o)).unwrap_or_default()
+}
+
+/// Something accepts connections on the page's loopback address.
+fn listening(url: &str) -> bool {
+    use std::net::ToSocketAddrs as _;
+    let Some(hostport) = url.split("://").nth(1).map(|r| r.trim_end_matches('/')) else { return false };
+    let Some(addr) = hostport.to_socket_addrs().ok().and_then(|mut a| a.next()) else { return false };
+    addr.ip().is_loopback() && std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(300)).is_ok()
+}
+
+/// Host, port and the local page of a native gateway, from its file and
+/// its service's environment (env wins, as in the gateway). A file closed
+/// to this account: the page from the environment and the defaults, kept
+/// only when the gateway runs and something listens there (the real
+/// state; an administrator's read gives the rest).
+pub fn settings(file: Option<&str>, unreadable: bool, env: &[String], running: bool, listens: &dyn Fn(&str) -> bool) -> (Option<String>, Option<u16>, Option<String>) {
+    let (host, port) = file.map(crate::gateway::host_of).unwrap_or((None, None));
+    let get = |k: &str| env.iter().find_map(|l| l.strip_prefix(&format!("{k}=")).map(str::to_string));
+    let page = crate::gateway::page_url(file, &get, false);
+    let page = if unreadable && file.is_none() { page.filter(|u| running && listens(u)) } else { page };
+    (host, port, page)
+}
+
+fn read_settings(env: &[String], running: bool) -> (Option<String>, Option<u16>, Option<String>, bool) {
+    let (file, unreadable) = read_file();
+    let (h, p, page) = settings(file.as_deref(), unreadable, env, running, &listening);
+    (h, p, page, unreadable && file.is_none())
 }
 
 pub fn status() -> Status {
     if let Some(f) = found_unit() {
         let running = out("systemctl", &["is-active", &f.unit]).is_some_and(|s| s.trim() == "active");
-        let (host, port) = host_port();
+        let (host, port, page_url, config_unreadable) = read_settings(&unit_environment(&f.unit), running);
         let version = f.version.or_else(|| (f.unit == UNIT).then(package_version).flatten());
         let package = owner(&f.program);
-        return Status { installed: true, version, running, host, port, service: Some(f.unit), program: Some(f.program), package, ..Status::default() };
+        return Status { installed: true, version, running, host, port, page_url, config_unreadable, service: Some(f.unit), program: Some(f.program), package, ..Status::default() };
     }
     if let Some((program, version)) = process() {
-        let (host, port) = host_port();
+        let (host, port, page_url, config_unreadable) = read_settings(&[], true);
         let package = owner(&program);
-        return Status { installed: true, version: Some(version), running: true, host, port, process: Some(program.clone()), program: Some(program), package, ..Status::default() };
+        return Status { installed: true, version: Some(version), running: true, host, port, page_url, config_unreadable, process: Some(program.clone()), program: Some(program), package, ..Status::default() };
     }
     // The program installed, neither a service nor running.
     if let Some((program, version)) = installed_program() {
-        let (host, port) = host_port();
+        let (host, port, page_url, config_unreadable) = read_settings(&[], false);
         let package = owner(&program);
-        return Status { installed: true, version: Some(version), running: false, host, port, process: Some(program.clone()), program: Some(program), package, ..Status::default() };
+        return Status { installed: true, version: Some(version), running: false, host, port, page_url, config_unreadable, process: Some(program.clone()), program: Some(program), package, ..Status::default() };
     }
     Status::default()
 }
@@ -326,6 +380,293 @@ pub fn control(sink: &ProgressFn, action: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Settings (crate::gateway_settings): read as root, apply through the
+// gateway's own command and a drop-in of ours
+// ---------------------------------------------------------------------------
+
+/// `systemctl show -p A -p B …` lines as a map.
+fn show(unit: &str, props: &[&str]) -> std::collections::HashMap<String, String> {
+    let mut args = vec!["show".to_string()];
+    for p in props {
+        args.push("-p".into());
+        args.push((*p).into());
+    }
+    args.push(unit.to_string());
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    out("systemctl", &refs).map(|o| o.lines().filter_map(|l| l.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect()).unwrap_or_default()
+}
+
+/// The drop-in's path for `unit`.
+pub fn dropin_path(unit: &str) -> String {
+    format!("/etc/systemd/system/{unit}.d/{}", crate::gateway_settings::DROPIN)
+}
+
+/// Our drop-in's settings: (Restart= value, its variables).
+pub fn parse_dropin(text: &str) -> (Option<String>, Vec<(String, String)>) {
+    let mut restart = None;
+    let mut env = Vec::new();
+    for l in text.lines().map(str::trim) {
+        if let Some(r) = l.strip_prefix("Restart=") {
+            restart = Some(r.to_string());
+        } else if let Some(e) = l.strip_prefix("Environment=") {
+            let e = e.trim();
+            let e = e.strip_prefix('"').and_then(|x| x.strip_suffix('"')).map(|x| x.replace("\\\"", "\"").replace("\\\\", "\\")).unwrap_or_else(|| e.to_string());
+            let e = e.replace("%%", "%");
+            if let Some((n, v)) = e.split_once('=') {
+                env.push((n.to_string(), v.to_string()));
+            }
+        }
+    }
+    (restart, env)
+}
+
+/// Our drop-in: the restart policy and the variables, in systemd's quoting.
+pub fn dropin_text(restart: Option<bool>, env: &[(String, String)]) -> String {
+    let mut t = String::from("# Written by the SENTIENT Platform Manager (Gateway › Advanced); it rewrites this file.\n[Service]\n");
+    match restart {
+        Some(true) => t.push_str("Restart=always\nRestartSec=5\n"),
+        Some(false) => t.push_str("Restart=no\n"),
+        None => {}
+    }
+    for (n, v) in env {
+        let q = format!("{n}={v}").replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%");
+        t.push_str(&format!("Environment=\"{q}\"\n"));
+    }
+    t
+}
+
+/// The serial group here: the one serial adapters belong to, else dialout
+/// (uucp on Arch).
+fn serial_group() -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let groups = std::fs::read_to_string("/etc/group").unwrap_or_default();
+        let name_of = |gid: u32| groups.lines().find_map(|l| {
+            let f: Vec<&str> = l.split(':').collect();
+            (f.len() > 2 && f[2].parse::<u32>().ok() == Some(gid)).then(|| f[0].to_string())
+        });
+        let devs = crate::distro::gateway_docker::serial_devices_in(Path::new("/dev/serial/by-id"), Path::new("/dev"));
+        if let Some(g) = devs.iter().find_map(|d| std::fs::metadata(&d.path).ok().map(|m| m.gid())).filter(|g| *g != 0).and_then(name_of) {
+            return Some(g);
+        }
+        ["dialout", "uucp"].iter().find(|g| groups.lines().any(|l| l.starts_with(&format!("{g}:")))).map(|g| g.to_string())
+    }
+    #[cfg(not(unix))]
+    None
+}
+
+fn config_dir(env: &[String]) -> String {
+    if let Some(d) = env.iter().find_map(|l| l.strip_prefix("ST_GW_CONFIG_DIR=").or_else(|| l.strip_prefix("TB_GW_CONFIG_DIR="))) {
+        return d.to_string();
+    }
+    FILES.iter().find(|f| Path::new(f).is_file()).and_then(|f| Path::new(f).parent()).map(|p| p.display().to_string()).unwrap_or_else(|| DATA_DIRS[0].to_string())
+}
+
+/// A native gateway's settings, read as root (the job
+/// `gateway-settings-json`); unprivileged, says so.
+pub fn gw_settings(status: &Status) -> crate::gateway_settings::GwSettings {
+    use crate::gateway_settings::{self as gs, GwSettings};
+    let unit = status.service.clone();
+    let props = unit.as_deref().map(|u| show(u, &["Restart", "User", "MainPID", "Environment"])).unwrap_or_default();
+    let env = props.get("Environment").map(|e| parse_environment(e)).unwrap_or_default();
+    let dir = config_dir(&env);
+    if !crate::exec::is_root() && std::fs::read_dir(&dir).is_err() {
+        return GwSettings { source: "none".into(), note: Some("Readable by an administrator only.".into()), ..GwSettings::default() };
+    }
+    let pid = props.get("MainPID").cloned().filter(|p| p != "0").unwrap_or_else(|| "0".into());
+    let line = format!("D={}; P={}; {}", crate::exec::shq(&dir), crate::exec::shq(&pid), gs::read_script());
+    let read = out("sh", &["-c", &line]);
+    let mut s = read.as_deref().map(gs::from_read).unwrap_or_else(|| GwSettings { source: "none".into(), note: Some("The gateway's settings could not be read.".into()), ..GwSettings::default() });
+    let program = status.program.clone().unwrap_or_else(|| PROGRAM.into());
+    s.caps = gs::Caps::of_help(&out(&program, &["--help"]).unwrap_or_default());
+    if s.caps.status_json {
+        if let Some(o) = out(&program, &["--status-json"]) {
+            gs::merge_status_json(&mut s, &o);
+        }
+    }
+    if !status.running {
+        s.connected = Some(false);
+        s.connected_how = Some("the gateway is stopped".into());
+    }
+    gs::apply_env(&mut s, &env, false);
+    if let Some(r) = &read {
+        gs::connected_from_read(&mut s, r);
+    }
+    s.log_files = Some(env.iter().find_map(|l| l.strip_prefix("ST_GW_LOGS_PATH=").or_else(|| l.strip_prefix("TB_GW_LOGS_PATH="))).map(str::to_string).unwrap_or_else(|| "/var/lib/sentient-gateway/logs".into()));
+    let Some(unit) = unit else {
+        s.machine.not_editable = Some("This gateway runs as a plain process that no service started, so how it runs is not changed from here.".into());
+        return s;
+    };
+    let (_, ours) = parse_dropin(&std::fs::read_to_string(dropin_path(&unit)).unwrap_or_default());
+    let restart = props.get("Restart").cloned().unwrap_or_default();
+    s.machine.restart_always = Some(!restart.is_empty() && restart != "no");
+    s.machine.restart_word = Some(if restart.is_empty() { "no".into() } else { restart });
+    let account = props.get("User").cloned().filter(|u| !u.is_empty() && u != "root");
+    let group = serial_group();
+    let in_group = match (&account, &group) {
+        (None, _) => true,
+        (Some(a), Some(g)) => out("id", &["-nG", a]).is_some_and(|o| o.split_whitespace().any(|x| x == g)),
+        (Some(_), None) => false,
+    };
+    s.machine.serial = gs::Serial {
+        mode: if account.is_some() { "group".into() } else { String::new() },
+        group,
+        account,
+        in_group,
+        chosen: Vec::new(),
+        available: crate::distro::gateway_docker::serial_devices_in(Path::new("/dev/serial/by-id"), Path::new("/dev")).into_iter().map(|d| d.path).collect(),
+    };
+    s.machine.env = gs::overrides(&env, &[], |n| ours.iter().any(|(o, _)| o == n), "the unit file");
+    s
+}
+
+/// How the gateway restarts once to take a native Apply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Restart {
+    /// The gateway's own `--install …` (it stops and starts the service).
+    ByInstall(Vec<String>),
+    /// `systemctl restart <unit>`.
+    Systemctl,
+    /// Nothing to restart for.
+    None,
+}
+
+/// A native Apply's steps, in order: our drop-in (then daemon-reload),
+/// the serial group, then ONE restart: by `--install` when the page
+/// changes (it restarts the service itself), else by systemctl.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeSteps {
+    pub dropin: Option<String>,
+    /// (join, account, group).
+    pub serial: Option<(bool, String, String)>,
+    pub restart: Restart,
+}
+
+/// The steps for `plan` on a service whose drop-in reads `dropin_now`.
+pub fn native_steps(before: &crate::gateway_settings::GwSettings, plan: &crate::gateway_settings::ApplyPlan, dropin_now: &str) -> Result<NativeSteps, String> {
+    let page = plan.ui_enabled.is_some() || plan.ui_listen.is_some();
+    if page && !before.caps.ui_listen {
+        return Err("This gateway is older than 4.12: its web page is set up on the gateway's own command line only. Update it first.".into());
+    }
+    let (restart_before, mut env) = parse_dropin(dropin_now);
+    let set = |env: &mut Vec<(String, String)>, n: &str, v: Option<String>| {
+        env.retain(|(k, _)| k != n);
+        if let Some(v) = v {
+            env.push((n.to_string(), v));
+        }
+    };
+    // The environment wins over the file: ours follows the page too.
+    let page_env = page && before.machine.ui_env;
+    if page_env {
+        if let Some(on) = plan.ui_enabled {
+            set(&mut env, "ST_GW_UI", Some(if on { "on" } else { "off" }.into()));
+        }
+        if let Some(l) = &plan.ui_listen {
+            set(&mut env, "ST_GW_UI_LISTEN", Some(l.clone()));
+        }
+    }
+    if let Some(vars) = &plan.env {
+        let keep = ["ST_GW_UI", "ST_GW_UI_LISTEN", "RUST_LOG"];
+        env.retain(|(n, _)| keep.contains(&n.as_str()) || before.machine.env.iter().any(|e| &e.name == n && e.value.is_none()));
+        for (n, v) in vars {
+            if n.is_empty() || n.contains('=') || v.contains('\n') {
+                return Err(format!("{n}: not a usable variable"));
+            }
+            set(&mut env, n, Some(v.clone()));
+        }
+    }
+    if let Some(l) = &plan.rust_log {
+        set(&mut env, "RUST_LOG", (!l.is_empty()).then(|| l.clone()));
+    }
+    let restart_policy = plan.restart_always.or_else(|| restart_before.map(|r| r != "no"));
+    let dropin = (plan.env.is_some() || plan.rust_log.is_some() || plan.restart_always.is_some() || page_env).then(|| dropin_text(restart_policy, &env));
+    let serial = match plan.serial_group {
+        None => None,
+        Some(join) => match (&before.machine.serial.account, &before.machine.serial.group) {
+            (Some(a), Some(g)) => Some((join, a.clone(), g.clone())),
+            _ => return Err("No serial group was found on this computer (dialout or uucp).".into()),
+        },
+    };
+    let restart = if page {
+        let mut args = vec!["--install".to_string()];
+        match plan.ui_enabled {
+            Some(true) => args.push("--ui".into()),
+            Some(false) => args.push("--no-ui".into()),
+            None => {}
+        }
+        if let Some(l) = &plan.ui_listen {
+            args.push("--ui-listen".into());
+            args.push(l.clone());
+        }
+        Restart::ByInstall(args)
+    } else if dropin.is_some() || serial.is_some() {
+        Restart::Systemctl
+    } else {
+        Restart::None
+    };
+    Ok(NativeSteps { dropin, serial, restart })
+}
+
+/// Apply `plan` to the native service (as root): [`native_steps`] — the
+/// drop-in and the serial group first, then the gateway restarts once.
+pub fn apply_settings(sink: &ProgressFn, status: &Status, before: &crate::gateway_settings::GwSettings, plan: &crate::gateway_settings::ApplyPlan) -> Result<(), String> {
+    let unit = status.service.clone().ok_or("This gateway runs as a plain process that no service started.")?;
+    let program = status.program.clone().unwrap_or_else(|| PROGRAM.into());
+    let path = dropin_path(&unit);
+    let steps = native_steps(before, plan, &std::fs::read_to_string(&path).unwrap_or_default())?;
+    if let Some(text) = &steps.dropin {
+        sink(Progress::Step { name: format!("Writing {path}") });
+        if let Some(d) = Path::new(&path).parent() {
+            std::fs::create_dir_all(d).map_err(|e| format!("create {}: {e}", d.display()))?;
+        }
+        std::fs::write(&path, text).map_err(|e| format!("write {path}: {e}"))?;
+        let _ = crate::sys::host_command("systemctl").arg("daemon-reload").output();
+    }
+    if let Some((join, account, group)) = &steps.serial {
+        sink(Progress::Step { name: format!("{} {account} {} the group {group}", if *join { "Adding" } else { "Removing" }, if *join { "to" } else { "from" }) });
+        let o = if *join { crate::sys::host_command("usermod").args(["-aG", group, account]).output() } else { crate::sys::host_command("gpasswd").args(["-d", account, group]).output() }.map_err(|e| e.to_string())?;
+        if !o.status.success() {
+            return Err(format!("The group {group} could not be changed: {}", String::from_utf8_lossy(&o.stderr).trim()));
+        }
+    }
+    match &steps.restart {
+        Restart::ByInstall(args) => {
+            sink(Progress::Step { name: "Setting the web page and restarting the gateway once (its own --install)".into() });
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            let o = crate::sys::host_command(&program).args(&refs).output().map_err(|e| format!("{program}: {e}"))?;
+            crate::exec::emit(sink, &o.stdout);
+            if !o.status.success() {
+                return Err(format!("{program} {} failed: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()));
+            }
+        }
+        Restart::Systemctl => {
+            sink(Progress::Step { name: format!("Restarting {unit} once") });
+            let o = crate::sys::host_command("systemctl").args(["restart", &unit]).output().map_err(|e| e.to_string())?;
+            if !o.status.success() {
+                return Err(format!("systemctl restart {unit} failed: {}", String::from_utf8_lossy(&o.stderr).trim()));
+            }
+        }
+        Restart::None => return Ok(()),
+    }
+    for _ in 0..30 {
+        if out("systemctl", &["is-active", &unit]).is_some_and(|s| s.trim() == "active") {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    Err(format!("The gateway service {unit} did not come back within 30 seconds; see its log."))
+}
+
+/// The credentials to test with (as root): the file, the unit's environment over it.
+pub fn test_creds() -> Option<crate::gateway_settings::TestCreds> {
+    let env = unit().map(|u| unit_environment(&u)).unwrap_or_default();
+    let dir = config_dir(&env);
+    let file = std::fs::read_to_string(format!("{dir}/st_gateway.json")).or_else(|_| std::fs::read_to_string(format!("{dir}/tb_gateway.json"))).ok();
+    crate::gateway_settings::creds_of(file.as_deref(), &env)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,5 +756,65 @@ sshd.service                                 disabled        disabled\n";
         let pkg = Status { package: Some(PACKAGE.into()), service: Some(UNIT.into()), program: Some("/usr/bin/sentient-gateway".into()), ..s };
         let p = removal_script(&pkg, true, "x").unwrap();
         assert!(p.contains("pacman -R --noconfirm 'sentient-gateway'") && !p.contains("rm -f '/usr/bin/sentient-gateway'"));
+    }
+
+    #[test]
+    fn the_page_and_host_of_a_native_gateway() {
+        let never = |_: &str| false;
+        let always = |_: &str| true;
+        // Read: the file's settings; the page is on by default (B2).
+        let file = r#"{"sentient":{"host":"10.0.0.5","port":1883}}"#;
+        assert_eq!(settings(Some(file), false, &[], true, &never), (Some("10.0.0.5".into()), Some(1883), Some("http://127.0.0.1:8642/".into())));
+        let off = r#"{"sentient":{"host":"10.0.0.5","port":1883},"localUi":{"enabled":false}}"#;
+        assert_eq!(settings(Some(off), false, &[], true, &always).2, None);
+        // The service's environment wins over the file.
+        assert_eq!(settings(Some(off), false, &["ST_GW_UI=on".into()], true, &never).2.as_deref(), Some("http://127.0.0.1:8642/"));
+        // Closed to this account (B3): no host; the page only when it answers.
+        assert_eq!(settings(None, true, &[], true, &always), (None, None, Some("http://127.0.0.1:8642/".into())));
+        assert_eq!(settings(None, true, &[], true, &never).2, None);
+        assert_eq!(settings(None, true, &[], false, &always).2, None);
+        assert_eq!(parse_environment("ST_GW_UI=off RUST_LOG=info\n"), vec!["ST_GW_UI=off".to_string(), "RUST_LOG=info".to_string()]);
+        assert!(parse_environment("\n").is_empty());
+    }
+
+    #[test]
+    fn our_drop_in_round_trips() {
+        let env = vec![("RUST_LOG".to_string(), "debug".to_string()), ("ST_GW_X".to_string(), "a \"b\" 100%".to_string())];
+        let t = dropin_text(Some(true), &env);
+        assert!(t.contains("Restart=always\nRestartSec=5\n"));
+        assert!(t.contains("Environment=\"ST_GW_X=a \\\"b\\\" 100%%\""), "{t}");
+        let (r, back) = parse_dropin(&t);
+        assert_eq!(r.as_deref(), Some("always"));
+        assert_eq!(back, env);
+        assert!(!dropin_text(None, &[]).contains("Restart="));
+        assert_eq!(dropin_path("sentient-gateway.service"), "/etc/systemd/system/sentient-gateway.service.d/50-platform-manager.conf");
+    }
+
+    #[test]
+    fn a_native_apply_restarts_once() {
+        use crate::gateway_settings::{ApplyPlan, Caps, GwSettings, Serial};
+        let mut before = GwSettings::default();
+        before.caps = Caps { ui_listen: true, ui_password: true, ..Caps::default() };
+        before.machine.serial = Serial { mode: "group".into(), group: Some("dialout".into()), account: Some("sentient-gateway".into()), ..Serial::default() };
+        // Page and drop-in: the drop-in first, then --install restarts it, once.
+        let both = ApplyPlan { ui_enabled: Some(true), ui_listen: Some("0.0.0.0:8642".into()), rust_log: Some("debug".into()), restart_always: Some(true), ..ApplyPlan::default() };
+        let s = native_steps(&before, &both, "").unwrap();
+        assert!(s.dropin.as_deref().is_some_and(|d| d.contains("RUST_LOG=debug") && d.contains("Restart=always")));
+        assert_eq!(s.restart, Restart::ByInstall(vec!["--install".into(), "--ui".into(), "--ui-listen".into(), "0.0.0.0:8642".into()]));
+        // No page change: one systemctl restart.
+        let env = ApplyPlan { env: Some(vec![("ST_GW_X".into(), "1".into())]), serial_group: Some(true), ..ApplyPlan::default() };
+        let s = native_steps(&before, &env, "Environment=\"ST_GW_OLD=1\"\n").unwrap();
+        assert_eq!(s.restart, Restart::Systemctl);
+        assert_eq!(s.serial, Some((true, "sentient-gateway".into(), "dialout".into())));
+        let d = s.dropin.unwrap();
+        assert!(d.contains("ST_GW_X=1") && !d.contains("ST_GW_OLD"), "{d}");
+        // The page alone: --install only, no drop-in.
+        let page = ApplyPlan { ui_enabled: Some(false), ..ApplyPlan::default() };
+        let s = native_steps(&before, &page, "").unwrap();
+        assert_eq!((s.dropin, s.restart), (None, Restart::ByInstall(vec!["--install".into(), "--no-ui".into()])));
+        // An old gateway: refused before anything.
+        before.caps.ui_listen = false;
+        assert!(native_steps(&before, &page, "").is_err());
+        assert_eq!(native_steps(&before, &ApplyPlan::default(), "").unwrap().restart, Restart::None);
     }
 }

@@ -187,8 +187,7 @@ pub(crate) fn output_tracked(program: &str, args: &[&str]) -> Option<(bool, Vec<
 
 /// [`output`] that gives up after `limit`: the child is killed and the
 /// answer is a failure saying so. For steps an uninstall must not hang on.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn output_limited(program: &str, args: &[&str], limit: std::time::Duration) -> Option<(bool, Vec<u8>, Vec<u8>)> {
+pub fn output_limited(program: &str, args: &[&str], limit: std::time::Duration) -> Option<(bool, Vec<u8>, Vec<u8>)> {
     use std::io::Read;
     use std::process::Stdio;
     let mut child = command(program).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
@@ -285,7 +284,7 @@ pub(crate) fn output_tracked_env(
 
 /// `wsl.exe` writes UTF-16LE on many Windows builds; decode either encoding.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn decode(bytes: &[u8]) -> String {
+pub fn decode(bytes: &[u8]) -> String {
     let nulls = bytes.iter().skip(1).step_by(2).take(8).filter(|&&b| b == 0).count();
     if bytes.len() >= 2 && nulls >= 3 {
         let u16s: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();

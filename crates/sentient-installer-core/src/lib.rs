@@ -16,6 +16,7 @@ pub(crate) mod exec;
 pub mod stack;
 pub mod stack_order;
 pub mod gateway;
+pub mod gateway_settings;
 pub mod kiosk;
 pub mod kept_db;
 /// Native Windows deployment (PostgreSQL + TimescaleDB + the server as a
@@ -56,7 +57,7 @@ pub mod privileged {
 mod sys;
 /// Running the computer's own programs, also from inside a Flatpak.
 pub mod host {
-    pub use crate::sys::{ensure_valid_cwd, flatpak_init, host_argv, host_command, host_command_env, in_flatpak, safe_dir};
+    pub use crate::sys::{decode, ensure_valid_cwd, flatpak_init, host_argv, host_command, host_command_env, in_flatpak, output_limited, safe_dir};
 }
 /// systemd units and port owners, as the System check reads them.
 pub mod units;
