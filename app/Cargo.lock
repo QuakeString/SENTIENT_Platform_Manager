@@ -6581,7 +6581,7 @@ dependencies = [
 
 [[package]]
 name = "sentient-platform-manager"
-version = "0.9.3-rc2"
+version = "0.9.3-rc3"
 dependencies = [
  "aes-gcm",
  "age",
