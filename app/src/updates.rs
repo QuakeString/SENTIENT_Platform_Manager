@@ -496,7 +496,7 @@ fn newest_manager(all: &[Release], channel: Channel, installed: &str) -> Option<
     offer.signature = offer.installer.as_ref().and_then(|a| r.assets.iter().find(|s| s.name == signing::signature_name(&a.name)).cloned());
     offer.unsigned = offer.signature.is_none();
     offer.signing_started = signing_started(Some(all), Product::Manager);
-    offer.between = crate::notes::between(all, installed, &version, |x| releases::is_manager(x) && (channel != Channel::Stable || !x.prerelease), releases::manager_version_of);
+    offer.between = crate::notes::between(all, installed, &version, |x| releases::is_manager(x) && (channel != Channel::Stable || releases::is_stable(x)), releases::manager_version_of);
     Some(offer)
 }
 

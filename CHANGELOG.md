@@ -16,6 +16,11 @@ refreshes that repository's Downloads table.
 ## [Unreleased]
 
 ### Fixed
+- The Stable channel offers a final Platform Manager release (0.9.3) even
+  though the download repository marks it a pre-release; only a version
+  with a suffix (0.9.4-rc1) is a release candidate. The release script
+  publishes final versions as normal releases (never "Latest", which stays
+  SENTIENT's) and -rc versions as pre-releases.
 - ClickHouse on Windows no longer forces every write straight to the disk.
   Since 0.8.0-rc11 it wrote each new part and each merge through to the
   disk, which kept a hard disk 100 % busy. An update or Repair removes the
