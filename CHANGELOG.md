@@ -36,6 +36,8 @@ refreshes that repository's Downloads table.
   records for its installer.
 
 ### Fixed
+- Logs on a computer or server with only the gateway (no SENTIENT) said
+  "SENTIENT is not installed here". It now shows the gateway's log.
 - The Stable channel offers a final Platform Manager release (0.9.3) even
   though the download repository marks it a pre-release; only a version
   with a suffix (0.9.4-rc1) is a release candidate. The release script

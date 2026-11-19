@@ -50,8 +50,8 @@ thread_local! {
     static KEPT: std::cell::RefCell<Option<Kept>> = const { std::cell::RefCell::new(None) };
 }
 
-fn record_key(record: &InstallationRecord) -> String {
-    serde_json::to_string(record).unwrap_or_default()
+fn record_key(record: Option<&InstallationRecord>) -> String {
+    serde_json::to_string(&record).unwrap_or_default()
 }
 
 /// What this computer's Logs draws first for `key`: the lines this run
@@ -170,12 +170,13 @@ impl LogView {
         v
     }
 
-    /// This computer's logs.
-    pub fn local(record: InstallationRecord, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let key = record_key(&record);
+    /// This computer's logs: SENTIENT's when it is installed, the
+    /// gateway's when one runs here (also on a gateway-only computer).
+    pub fn local(record: Option<InstallationRecord>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let key = record_key(record.as_ref());
         let r1 = record.clone();
-        let load: LoadFn = Arc::new(move |s, n, today| Ok(logsource::read(&r1, s, n, today)));
-        let sources: SourcesFn = Arc::new(move || Ok(logsource::available(&record)));
+        let load: LoadFn = Arc::new(move |s, n, today| Ok(logsource::read(r1.as_ref(), s, n, today)));
+        let sources: SourcesFn = Arc::new(move || Ok(logsource::available(record.as_ref())));
         let mut v = Self::new(load, sources, window, cx);
         v.shown_on = Some(super::Page::Logs);
         // A window opened again: the lines shown before, at once (the
@@ -660,7 +661,6 @@ impl Render for LogView {
 
 /// This computer's Logs page.
 pub struct LogsPage {
-    record: Option<InstallationRecord>,
     view: Option<Entity<LogView>>,
 }
 
@@ -672,8 +672,9 @@ impl LogsPage {
     }
 
     pub fn new(record: Option<InstallationRecord>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let view = record.clone().map(|r| cx.new(|cx| LogView::local(r, window, cx)));
-        Self { record, view }
+        // A gateway-only computer still has the gateway's log.
+        let view = (record.is_some() || logsource::gateway_here()).then(|| cx.new(|cx| LogView::local(record.clone(), window, cx)));
+        Self { view }
     }
 }
 
@@ -681,9 +682,9 @@ impl Render for LogsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let page = ui::page(&theme, "Logs", "SENTIENT's log and its database's, newest at the bottom.");
-        match (&self.record, &self.view) {
-            (Some(_), Some(v)) => page.child(v.clone()),
-            _ => page.child(ui::not_installed(&theme)),
+        match &self.view {
+            Some(v) => page.child(v.clone()),
+            None => page.child(ui::not_installed(&theme)),
         }
     }
 }

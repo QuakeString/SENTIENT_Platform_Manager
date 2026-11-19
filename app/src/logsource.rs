@@ -80,13 +80,24 @@ fn gateway_files() -> Option<std::path::PathBuf> {
     sentient_installer_core::gateway::log_dir()
 }
 
-/// The sources this installation has.
-pub fn available(record: &InstallationRecord) -> Vec<Source> {
-    let mut v = vec![Source::Sentient, Source::Database];
-    if record.flavor().uses_clickhouse() && !cfg!(windows) {
-        v.push(Source::ClickHouse);
+/// A gateway runs on this computer (Windows service, container or systemd
+/// service), with or without SENTIENT beside it.
+pub fn gateway_here() -> bool {
+    gateway_files().is_some() || gateway_container().is_some() || gateway_unit().is_some()
+}
+
+/// The sources this computer has: SENTIENT's (when it is installed here)
+/// and the gateway's (when one runs here). A gateway-only server has only
+/// the gateway's log.
+pub fn available(record: Option<&InstallationRecord>) -> Vec<Source> {
+    let mut v = Vec::new();
+    if let Some(record) = record {
+        v.extend([Source::Sentient, Source::Database]);
+        if record.flavor().uses_clickhouse() && !cfg!(windows) {
+            v.push(Source::ClickHouse);
+        }
     }
-    if gateway_files().is_some() || gateway_container().is_some() || gateway_unit().is_some() {
+    if gateway_here() {
         v.push(Source::Gateway);
     }
     v
@@ -121,8 +132,9 @@ fn newest(dir: &std::path::Path, ext: &str) -> Option<std::path::PathBuf> {
 }
 
 /// The last `tail` lines of one source (or since midnight with `today`).
-/// Docker and journal lines carry their own timestamp in front.
-pub fn read(record: &InstallationRecord, source: Source, tail: u32, today: bool) -> String {
+/// Docker and journal lines carry their own timestamp in front. The
+/// gateway's log needs no SENTIENT installation; the other sources do.
+pub fn read(record: Option<&InstallationRecord>, source: Source, tail: u32, today: bool) -> String {
     let n = tail.to_string();
     let docker = |container: &str| {
         let mut args = vec!["logs", "--timestamps", "--tail", n.as_str()];
@@ -148,14 +160,10 @@ pub fn read(record: &InstallationRecord, source: Source, tail: u32, today: bool)
         }
         run("journalctl", &args)
     };
-    let names = record.stack.names();
-    match (record.engine, source) {
-        (Engine::Docker, Source::Sentient) => docker(&names.app),
-        (Engine::Docker, Source::Database) => docker(&names.pg),
-        (Engine::Docker, Source::ClickHouse) => docker(&names.ch),
+    if source == Source::Gateway {
         // The Windows service first (as gateway::status finds it), then a
         // container, then a systemd service.
-        (_, Source::Gateway) => match (gateway_files(), gateway_container(), gateway_unit()) {
+        return match (gateway_files(), gateway_container(), gateway_unit()) {
             (Some(dir), _, _) => {
                 let since = today.then(|| (Utc::now() - chrono::Duration::hours(24)).format("%Y-%m-%dT%H:%M:%S").to_string());
                 let tail = if today { 20_000 } else { tail as usize };
@@ -165,7 +173,17 @@ pub fn read(record: &InstallationRecord, source: Source, tail: u32, today: bool)
             (None, Some(c), _) => docker(&c),
             (None, None, Some(u)) => journal(&u).unwrap_or_else(|| "Could not read the gateway's journal.".into()),
             _ => "No gateway on this computer.".into(),
-        },
+        };
+    }
+    let Some(record) = record else {
+        return format!("SENTIENT is not installed on this computer, so it has no {} log.", source.label());
+    };
+    let names = record.stack.names();
+    match (record.engine, source) {
+        (Engine::Docker, Source::Sentient) => docker(&names.app),
+        (Engine::Docker, Source::Database) => docker(&names.pg),
+        (Engine::Docker, Source::ClickHouse) => docker(&names.ch),
+        (_, Source::Gateway) => unreachable!("read above"),
         (Engine::Native, Source::Sentient) => record.platform().logs(tail),
         (Engine::Native, Source::Database) if cfg!(windows) => newest(&record.pg_dir.join("log"), ".log")
             .and_then(|p| tail_file(&p, tail))
