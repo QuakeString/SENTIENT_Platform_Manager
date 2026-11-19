@@ -206,11 +206,14 @@ fn window_options(mode: AppMode, cx: &mut gpui_kit::App) -> WindowOptions {
         .ok()
         .and_then(|v| v.split_once('x').and_then(|(w, h)| Some(gpui_kit::size(px(w.parse().ok()?), px(h.parse().ok()?)))))
         .unwrap_or(size);
+    // Small enough for a half screen, large enough that nothing breaks.
+    // (Setup keeps its steps unfolded beside the page: wider.)
+    let min = if mode == AppMode::Install { gpui_kit::size(px(820.), px(560.)) } else { gpui_kit::size(px(560.), px(480.)) };
     WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size, cx)),
-        // Small enough for a half screen, large enough that nothing breaks.
-        // (Setup keeps its steps unfolded beside the page: wider.)
-        window_min_size: Some(if mode == AppMode::Install { gpui_kit::size(px(820.), px(560.)) } else { gpui_kit::size(px(560.), px(480.)) }),
+        // Centred in the screen's work area and never larger (no part under
+        // the taskbar at 150 %: manager::session::fit_to_work_area).
+        window_bounds: Some(manager::session::centred_bounds(cx, size, min)),
+        window_min_size: Some(min),
         titlebar: Some(TitlebarOptions {
             title: Some(mode.window_title().into()),
             ..Default::default()
