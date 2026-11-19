@@ -1001,6 +1001,7 @@ mod tests {
         assert_eq!(image_version(&all[2]), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn serial_adapters_prefer_their_stable_names() {
         use std::os::unix::fs::MetadataExt as _;
