@@ -47,8 +47,8 @@ impl Model {
     pub fn tooltip(&self) -> String {
         match self.unread + self.conditions.len() {
             0 => "SENTIENT Platform Manager".into(),
-            1 => "SENTIENT Platform Manager · 1 new notification".into(),
-            n => format!("SENTIENT Platform Manager · {n} new notifications"),
+            1 => t!("SENTIENT Platform Manager · 1 new notification").into(),
+            n => tf!("SENTIENT Platform Manager · {n} new notifications"),
         }
     }
 }
@@ -69,7 +69,7 @@ fn act(label: impl Into<String>, cmd: Command) -> Item {
 
 /// The menu for `m`.
 pub fn items(m: &Model) -> Vec<Item> {
-    let mut v = vec![act("Open SENTIENT Platform Manager", Command::Show), Item::Separator];
+    let mut v = vec![act(t!("Open SENTIENT Platform Manager"), Command::Show), Item::Separator];
     // Notifications: the latest five, then the panel.
     let mut notes: Vec<Item> = m
         .notifications
@@ -86,32 +86,32 @@ pub fn items(m: &Model) -> Vec<Item> {
         notes.splice(0..0, conds.into_iter().chain(std::iter::once(Item::Separator)));
     }
     if notes.is_empty() {
-        notes.push(Item::Action { label: "No notifications".into(), cmd: Command::Show, enabled: false, error: false, warn: false });
+        notes.push(Item::Action { label: t!("No notifications").into(), cmd: Command::Show, enabled: false, error: false, warn: false });
     }
     notes.push(Item::Separator);
-    notes.push(act("Show all notifications", Command::Action("notifications".into())));
+    notes.push(act(t!("Show all notifications"), Command::Action("notifications".into())));
     let n = m.unread + m.conditions.len();
-    v.push(Item::Sub { label: if n > 0 { format!("Notifications ({n})") } else { "Notifications".into() }, items: notes });
+    v.push(Item::Sub { label: if n > 0 { tf!("Notifications ({n})") } else { t!("Notifications").into() }, items: notes });
     // Instances.
-    let mut inst = vec![act("This computer", Command::Action("instance:".into()))];
+    let mut inst = vec![act(t!("This computer"), Command::Action("instance:".into()))];
     inst.extend(m.instances.iter().map(|(id, name)| act(name.clone(), Command::Action(format!("instance:{id}")))));
-    v.push(Item::Sub { label: "Instances".into(), items: inst });
+    v.push(Item::Sub { label: t!("Instances").into(), items: inst });
     // This computer's SENTIENT.
     if let Some(running) = m.local {
         v.push(Item::Sub {
-            label: "SENTIENT on this computer".into(),
+            label: t!("SENTIENT on this computer").into(),
             items: vec![
-                Item::Action { label: "Start".into(), cmd: Command::Action("control:start".into()), enabled: !running, error: false, warn: false },
-                Item::Action { label: "Stop".into(), cmd: Command::Action("control:stop".into()), enabled: running, error: false, warn: false },
-                Item::Action { label: "Restart".into(), cmd: Command::Action("control:restart".into()), enabled: running, error: false, warn: false },
+                Item::Action { label: t!("Start").into(), cmd: Command::Action("control:start".into()), enabled: !running, error: false, warn: false },
+                Item::Action { label: t!("Stop").into(), cmd: Command::Action("control:stop".into()), enabled: running, error: false, warn: false },
+                Item::Action { label: t!("Restart").into(), cmd: Command::Action("control:restart".into()), enabled: running, error: false, warn: false },
             ],
         });
-        v.push(act("Back up this computer now", Command::Action("backup".into())));
+        v.push(act(t!("Back up this computer now"), Command::Action("backup".into())));
     }
-    v.push(act("Statistics", Command::Action("statistics".into())));
-    v.push(act("Check for updates", Command::Action("check-updates".into())));
+    v.push(act(t!("Statistics"), Command::Action("statistics".into())));
+    v.push(act(t!("Check for updates"), Command::Action("check-updates".into())));
     v.push(Item::Separator);
-    v.push(act("Exit", Command::Exit));
+    v.push(act(t!("Exit"), Command::Exit));
     v
 }
 
@@ -222,7 +222,7 @@ mod imp {
         match (Sni { model, tx, icons }).spawn() {
             Ok(h) => Some(Tray(h)),
             Err(e) => {
-                crate::maintenance_ops::log_line(&format!("No tray on this desktop: {e}"));
+                crate::maintenance_ops::log_line(&tf!("No tray on this desktop: {e}"));
                 None
             }
         }
@@ -344,7 +344,7 @@ mod imp {
             .with_menu(Box::new(menu(&model, &ids)))
             .with_menu_on_left_click(false)
             .build()
-            .map_err(|e| crate::maintenance_ops::log_line(&format!("No tray: {e}")))
+            .map_err(|e| crate::maintenance_ops::log_line(&nf!("No tray: {e}")))
             .ok()?;
         let t = tx.clone();
         let map = ids.clone();

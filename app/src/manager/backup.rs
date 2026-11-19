@@ -132,7 +132,7 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, String> {
         .enable_all()
         .build()
         .map(|rt| rt.block_on(future))
-        .map_err(|e| format!("start the backup runtime: {e}"))
+        .map_err(|e| nf!("start the backup runtime: {e}"))
 }
 
 impl BackupPage {
@@ -146,7 +146,7 @@ impl BackupPage {
         let ch_password = cx.new(|cx| InputState::new(window, cx).masked(true).default_value(saved_ch));
         let telemetry_days = cx.new(|cx| InputState::new(window, cx).default_value("30"));
         let passphrase = cx.new(|cx| {
-            InputState::new(window, cx).masked(true).placeholder("Optional: encrypt the backup")
+            InputState::new(window, cx).masked(true).placeholder(t!("Optional: encrypt the backup"))
         });
         let prefs = crate::backups::BackupPrefs::load();
         let prefs_folder = prefs.folder.clone();
@@ -357,14 +357,14 @@ impl BackupPage {
                                 server.database,
                                 // version() reads "PostgreSQL 18.6 on x86_64-…, compiled by …".
                                 server.postgres_version.split(" on ").next().unwrap_or_default(),
-                                server.timescaledb_version.map(|v| format!(" · TimescaleDB {v}")).unwrap_or_default(),
+                                server.timescaledb_version.map(|v| tf!(" · TimescaleDB {v}")).unwrap_or_default(),
                                 db::human_bytes(total),
                             )
                             .into(),
                             categories,
                         });
                     }
-                    Err(e) => page.inspect_error = Some(format!("Could not read the database: {e}").into()),
+                    Err(e) => page.inspect_error = Some(tf!("Could not read the database: {e}").into()),
                 }
                 cx.notify();
             })
@@ -376,7 +376,7 @@ impl BackupPage {
     fn choose_output(&mut self, cx: &mut Context<Self>) {
         let dir = if self.prefs.folder.is_dir() { self.prefs.folder.clone() } else { std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from).unwrap_or_default() };
         let name = format!("sentient-{}.sentient-backup", chrono::Local::now().format("%Y%m%d-%H%M"));
-        let rx = crate::chooser::save(cx, "Save the backup as", &dir, Some(&name));
+        let rx = crate::chooser::save(cx, t!("Save the backup as"), &dir, Some(&name));
         let task = cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(mut path))) = rx.await else { return };
             // The Windows dialog drops an extension it does not know.
@@ -431,7 +431,7 @@ impl BackupPage {
         self.made = None;
         self.backup.update(cx, |job, cx| {
             job.set_plan(crate::jobplan::backup_file());
-            job.set_label("Backing up");
+            job.set_label(t!("Backing up"));
             job.start(
                 move |sink| {
                     if let Some(r) = &record {
@@ -445,7 +445,7 @@ impl BackupPage {
                     // For the Status screen's "Last backup".
                     crate::dbstatus::record_backup(&summary.output);
                     sink(Progress::Done {
-                        message: format!(
+                        message: nf!(
                             "Saved {} ({}), checksum {}…",
                             summary.output.display(),
                             db::human_bytes(summary.archive_bytes as i64),
@@ -541,11 +541,11 @@ impl BackupPage {
                     .text_sm()
                     .text_color(theme.success_foreground)
                     .child(gpui_kit::component::Icon::new(IconName::Check).size_4())
-                    .child("Saved")
+                    .child(t!("Saved"))
                     .with_animation(SharedString::from(format!("{section}-saved")), Animation::new(std::time::Duration::from_millis(150)).with_easing(crate::ui::ease_out), |el, t| el.opacity(t))
                     .into_any_element(),
             ),
-            Some((s, Err(e))) if *s == section => Some(div().min_w_0().text_sm().text_color(theme.danger).overflow_hidden().whitespace_nowrap().text_ellipsis().child(format!("Not saved: {e}")).into_any_element()),
+            Some((s, Err(e))) if *s == section => Some(div().min_w_0().text_sm().text_color(theme.danger).overflow_hidden().whitespace_nowrap().text_ellipsis().child(tf!("Not saved: {e}")).into_any_element()),
             _ => None,
         }
     }
@@ -645,9 +645,9 @@ impl BackupPage {
         let me = cx.entity();
         self.backup.update(cx, |job, cx| {
             job.set_plan(plan);
-            job.set_label("Backing up");
+            job.set_label(t!("Backing up"));
             job.set_on_page(true);
-            job.set_details(std::rc::Rc::new(move |cx| BackupDialog::open(me.clone(), false, "Backup".into(), cx)));
+            job.set_details(std::rc::Rc::new(move |cx| BackupDialog::open(me.clone(), false, t!("Backup").into(), cx)));
             job.start(
                 move |sink| {
                     // Native Linux: the database password is root-only.
@@ -683,7 +683,7 @@ impl BackupPage {
         let pass = Some(self.passphrase.read(cx).value().to_string()).filter(|p| !p.is_empty());
         self.checked = Some((path.clone(), None));
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        BackupDialog::open(cx.entity(), true, format!("Verify {name}"), cx);
+        BackupDialog::open(cx.entity(), true, tf!("Verify {name}"), cx);
         let task = cx.spawn(async move |this, cx| {
             let p = path.clone();
             let r = cx.background_executor().spawn(async move { crate::backups::check(&p, pass.as_deref()) }).await;
@@ -704,7 +704,7 @@ impl BackupPage {
         crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             let path = path.clone();
-            dialog.title(format!("Delete {name}?")).description("The backup file (all its parts) and its .sha256 are deleted. This cannot be undone.").confirm().ok_text("Delete").on_ok(move |_, _, cx| {
+            dialog.title(tf!("Delete {name}?")).description(t!("The backup file (all its parts) and its .sha256 are deleted. This cannot be undone.")).confirm().ok_text(t!("Delete")).on_ok(move |_, _, cx| {
                 let path = path.clone();
                 this.update(cx, |page, cx| {
                     page.schedule_note = crate::backups::delete(&path).err().map(|e| (Tone::Bad, e));
@@ -722,8 +722,8 @@ impl BackupPage {
         let start = now.filter(|d| d.is_dir());
         let rx = crate::chooser::open(
             cx,
-            crate::chooser::Ask { title: if second { "Choose where to copy backups" } else { "Choose the backup folder" }, start: start.as_deref(), directory: true },
-            PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Use this folder".into()) },
+            crate::chooser::Ask { title: if second { t!("Choose where to copy backups") } else { t!("Choose the backup folder") }, start: start.as_deref(), directory: true },
+            PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(t!("Use this folder").into()) },
         );
         let task = cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
@@ -746,7 +746,7 @@ impl BackupPage {
         crate::manager::folder_chooser::open(
             crate::manager::folder_chooser::Opening {
                 target: crate::manager::folder_chooser::Target::Local,
-                on: "this computer".into(),
+                on: t!("this computer").into(),
                 current: self.prefs.folder.clone(),
                 here: (here.len(), here.iter().map(|e| e.bytes).sum()),
                 keep: self.prefs.keep,
@@ -781,8 +781,8 @@ impl BackupPage {
         let start = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from);
         let rx = crate::chooser::open(
             cx,
-            crate::chooser::Ask { title: "Choose a backup file to add", start: start.as_deref(), directory: false },
-            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Add this backup".into()) },
+            crate::chooser::Ask { title: t!("Choose a backup file to add"), start: start.as_deref(), directory: false },
+            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some(t!("Add this backup").into()) },
         );
         let folder = self.prefs.folder.clone();
         let task = cx.spawn(async move |this, cx| {
@@ -791,7 +791,7 @@ impl BackupPage {
             let r = cx.background_executor().spawn(async move { crate::backups::add(&file, &folder) }).await;
             this.update(cx, |page, cx| {
                 page.schedule_note = Some(match r {
-                    Ok(p) => (Tone::Good, format!("Added {}", p.display())),
+                    Ok(p) => (Tone::Good, tf!("Added {}", p.display())),
                     Err(e) => (Tone::Bad, e),
                 });
                 page.refresh_list();
@@ -835,8 +835,8 @@ impl BackupPage {
                         None => crate::backups::apply_schedule(&prefs),
                     }?;
                     Ok::<_, String>(Some(match crate::backups::next_run(&prefs) {
-                        Some(n) => format!("Saved. The next automatic backup is {n}."),
-                        None => "Saved. No automatic backup.".to_string(),
+                        Some(n) => tf!("Saved. The next automatic backup is {n}."),
+                        None => t!("Saved. No automatic backup.").to_string(),
                     }))
                 })
                 .await;
@@ -860,34 +860,34 @@ impl BackupPage {
         if matches!(job.state(), JobState::Idle) {
             return None;
         }
-        let mut view = crate::manager::jobview::JobView::new("bk-run", format!("Backing up to {}", self.prefs.folder.display()), &self.backup)
-            .cancel(crate::manager::jobview::Cancel::Cannot("A backup cannot be stopped half-way. SENTIENT keeps running while it is made."));
+        let mut view = crate::manager::jobview::JobView::new("bk-run", tf!("Backing up to {}", self.prefs.folder.display()), &self.backup)
+            .cancel(crate::manager::jobview::Cancel::Cannot(t!("A backup cannot be stopped half-way. SENTIENT keeps running while it is made.")));
         if let (JobState::Done(_), Some(m)) = (job.state(), &self.made) {
             let name = m.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             let whole = m.files.first().map(|(_, h, _)| h.clone()).unwrap_or_default();
             let short = if whole.len() > 16 { format!("{}…{}", &whole[..8], &whole[whole.len() - 8..]) } else { whole.clone() };
             view = view
-                .result(ui::outcome(theme, Tone::Good, format!("Backup finished and checked: {name}, {}.", crate::dbstatus::bytes_label(m.bytes))))
+                .result(ui::outcome(theme, Tone::Good, tf!("Backup finished and checked: {name}, {}.", crate::dbstatus::bytes_label(m.bytes))))
                 .extra(
                     v_flex()
                         .gap_2()
-                        .child(brow(theme, "Each part", None, div().text_sm().child(format!("SHA-256 stored inside the file, {} parts", m.members))))
+                        .child(brow(theme, t!("Each part"), None, div().text_sm().child(tf!("SHA-256 stored inside the file, {} parts", m.members))))
                         .child(if m.files.len() == 1 {
                             brow(
                                 theme,
-                                "Whole file SHA-256",
+                                t!("Whole file SHA-256"),
                                 None,
                                 h_flex()
                                     .gap(crate::ui::button_gap())
                                     .child(div().text_sm().font_family(theme.mono_font_family.clone()).child(short))
-                                    .child(crate::ui::button("copy-hash").outline().small().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(whole.clone())))),
+                                    .child(crate::ui::button("copy-hash").outline().small().label(t!("Copy")).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(whole.clone())))),
                             )
                         } else {
-                            brow(theme, "Files", None, div().text_sm().child(format!("{} parts, each with its SHA-256", m.files.len())))
+                            brow(theme, t!("Files"), None, div().text_sm().child(tf!("{} parts, each with its SHA-256", m.files.len())))
                         })
-                        .child(brow(theme, "Saved beside it", None, div().text_sm().child(m.sidecar.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())))
-                        .child(brow(theme, "Read back", None, div().text_sm().child(m.check.summary.clone())))
-                        .when_some(m.copied_to.clone(), |c, p| c.child(brow(theme, "Second copy", None, div().text_sm().child(p.display().to_string())))),
+                        .child(brow(theme, t!("Saved beside it"), None, div().text_sm().child(m.sidecar.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())))
+                        .child(brow(theme, t!("Read back"), None, div().text_sm().child(m.check.summary.clone())))
+                        .when_some(m.copied_to.clone(), |c, p| c.child(brow(theme, t!("Second copy"), None, div().text_sm().child(p.display().to_string())))),
                 );
         }
         view = view.actions(actions);
@@ -896,7 +896,7 @@ impl BackupPage {
 
     /// The page's actions under a backup's result: back, then the primary.
     fn run_actions(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let back = crate::ui::button("bk-run-back").outline().label("Back to Backup and restore").on_click(cx.listener(|p, _, _, cx| {
+        let back = crate::ui::button("bk-run-back").outline().label(t!("Back to Backup and restore")).on_click(cx.listener(|p, _, _, cx| {
             p.shown_run = false;
             p.backup.update(cx, |j, cx| j.reset(cx));
             p.refresh_list();
@@ -905,9 +905,9 @@ impl BackupPage {
         let next = match self.backup.read(cx).state() {
             JobState::Done(_) => {
                 let folder = self.prefs.folder.display().to_string();
-                Some(crate::ui::button("open-folder").primary().label("Open folder").on_click(move |_, _, cx| ui::open_url(&folder, cx)).into_any_element())
+                Some(crate::ui::button("open-folder").primary().label(t!("Open folder")).on_click(move |_, _, cx| ui::open_url(&folder, cx)).into_any_element())
             }
-            JobState::Failed(_) => Some(crate::ui::button("bk-run-again").primary().label("Try again").on_click(cx.listener(|p, _, _, cx| p.run_preset_backup(cx))).into_any_element()),
+            JobState::Failed(_) => Some(crate::ui::button("bk-run-again").primary().label(t!("Try again")).on_click(cx.listener(|p, _, _, cx| p.run_preset_backup(cx))).into_any_element()),
             _ => None,
         };
         std::iter::once(back.into_any_element()).chain(next).collect()
@@ -919,26 +919,26 @@ impl BackupPage {
             let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             let mut c = v_flex().gap_2();
             match result {
-                None => c = c.child(div().text_sm().text_color(theme.muted_foreground).child(format!("Checking {name}: reading every part…"))),
-                Some(Err(e)) => c = c.child(ui::outcome(theme, Tone::Bad, format!("{name} could not be checked: {e}"))),
+                None => c = c.child(div().text_sm().text_color(theme.muted_foreground).child(tf!("Checking {name}: reading every part…"))),
+                Some(Err(e)) => c = c.child(ui::outcome(theme, Tone::Bad, tf!("{name} could not be checked: {e}"))),
                 Some(Ok(r)) => {
                     let n = r.members.len() + r.missing.len();
                     c = c.child(ui::outcome(
                         theme,
                         if r.ok() { Tone::Good } else { Tone::Bad },
-                        if r.ok() { format!("{name}: all {n} parts match.") } else { format!("{name} is damaged. Do not rely on this file.") },
+                        if r.ok() { tf!("{name}: all {n} parts match.") } else { tf!("{name} is damaged. Do not rely on this file.") },
                     ));
                     let mark = |ok: bool| ui::StepMark::from_ok(ok);
                     let mut rows: Vec<(String, ui::StepMark)> = Vec::new();
                     if let Some(files) = &r.files {
                         let all = files.iter().all(|(_, ok)| *ok);
-                        rows.push((format!("File{} against its .sha256", if files.len() > 1 { "s" } else { "" }), mark(all)));
+                        rows.push((if files.len() > 1 { tf!("Files against their .sha256") } else { tf!("File against its .sha256") }, mark(all)));
                     }
                     for m in &r.members {
                         rows.push((format!("{} ({})", m.label, crate::dbstatus::bytes_label(m.bytes)), mark(m.ok)));
                     }
                     for missing in &r.missing {
-                        rows.push((format!("{}: missing", sentient_backup_core::restore::member_label(missing)), ui::StepMark::Failed));
+                        rows.push((tf!("{}: missing", sentient_backup_core::restore::member_label(missing)), ui::StepMark::Failed));
                     }
                     c = c.child(ui::steps(theme, &rows));
                 }
@@ -971,7 +971,7 @@ impl Render for BackupDialog {
         v_flex()
             .gap_3()
             .children(body)
-            .child(h_flex().justify_end().child(crate::ui::button("bk-dialog-close").primary().label("Close").on_click(|_, _, cx| crate::modal::close(cx))))
+            .child(h_flex().justify_end().child(crate::ui::button("bk-dialog-close").primary().label(t!("Close")).on_click(|_, _, cx| crate::modal::close(cx))))
     }
 }
 
@@ -1017,7 +1017,7 @@ impl BackupPage {
         let folder_row = card_row(
             theme,
             narrow,
-            "Backup folder",
+            t!("Backup folder"),
             None,
             folder_value(theme, &p.folder, self.folder_free, self.saved_note(theme, "folder")),
             Some(change_button("folder", busy).on_click(cx.listener(|this, _, window, cx| this.change_folder(window, cx))).into_any_element()),
@@ -1028,7 +1028,7 @@ impl BackupPage {
             let t = self.schedule_time.read(cx).value().trim().to_string();
             if t.is_empty() { "02:00".to_string() } else { t }
         };
-        let auto_row = card_row(theme, narrow, "Automatic backup", Some("A backup every day at this time, on this computer's clock."), {
+        let auto_row = card_row(theme, narrow, t!("Automatic backup"), Some(t!("A backup every day at this time, on this computer's clock.")), {
             let this = cx.entity().downgrade();
             h_flex()
                 .gap_3()
@@ -1042,7 +1042,7 @@ impl BackupPage {
                         .ghost()
                         .small()
                         .disabled(!on || busy)
-                        .label(if on { format!("Every day at {time}") } else { "Off".to_string() })
+                        .label(if on { tf!("Every day at {time}") } else { t!("Off").to_string() })
                         .dropdown_menu(move |menu, _, _| {
                             let mut menu = menu;
                             for h in 0..24 {
@@ -1063,7 +1063,7 @@ impl BackupPage {
                         }),
                 )
         }, None, false);
-        let keep_row = card_row(theme, narrow, "Keep", Some("Older automatic backups are deleted, across the folder and any folder used before."), keep_field(theme, &self.keep, busy), None, false);
+        let keep_row = card_row(theme, narrow, t!("Keep"), Some(t!("Older automatic backups are deleted, across the folder and any folder used before.")), keep_field(theme, &self.keep, busy), None, false);
         let seg_theme = cx.theme().clone();
         let what = match (p.preset, p.history) {
             (Preset::Configuration, _) => "configuration",
@@ -1071,7 +1071,7 @@ impl BackupPage {
             _ => "everything",
         };
         // Wide: the mockup's segments; narrow: the same as a menu.
-        let options = [("everything", "Everything"), ("last90", "Last 90 days"), ("configuration", "Configuration only"), ("choose", "Choose")];
+        let options = [("everything", t!("Everything")), ("last90", t!("Last 90 days")), ("configuration", t!("Configuration only")), ("choose", t!("Choose"))];
         let on = |key: &str| if key == "choose" { self.choose } else { what == key && !self.choose };
         let what_control = if narrow {
             let this = cx.entity().downgrade();
@@ -1099,8 +1099,8 @@ impl BackupPage {
         let what_row = card_row(
             theme,
             narrow,
-            "What to back up",
-            Some("Everything: settings and all telemetry.\nLast 90 days: settings and the last 90 days of telemetry.\nConfiguration only: devices, dashboards, users and settings, no telemetry."),
+            t!("What to back up"),
+            Some(t!("Everything: settings and all telemetry.\nLast 90 days: settings and the last 90 days of telemetry.\nConfiguration only: devices, dashboards, users and settings, no telemetry.")),
             what_control,
             None,
             false,
@@ -1109,8 +1109,8 @@ impl BackupPage {
         let pass_row = card_row(
             theme,
             narrow,
-            "Encrypt",
-            Some("A passphrase for Back up now; without it the file cannot be read. Automatic backups are not encrypted."),
+            t!("Encrypt"),
+            Some(t!("A passphrase for Back up now; without it the file cannot be read. Automatic backups are not encrypted.")),
             h_flex().min_w_0().flex_wrap().gap_2().items_center().child(div().w(px(260.)).child(Input::new(&self.passphrase).mask_toggle())).children(key_plain_note(theme, pass_empty)),
             None,
             false,
@@ -1118,34 +1118,34 @@ impl BackupPage {
         let copy_row = card_row(
             theme,
             narrow,
-            "Also copy to",
-            Some("A second disk or a network folder, in case this computer fails."),
+            t!("Also copy to"),
+            Some(t!("A second disk or a network folder, in case this computer fails.")),
             h_flex()
                 .min_w_0()
                 .gap(crate::ui::button_gap())
                 .items_center()
-                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().when(p.copy_to.is_some(), |d| d.font_family(theme.mono_font_family.clone()).text_size(px(13.5))).when(p.copy_to.is_none(), |d| d.text_color(theme.muted_foreground)).child(p.copy_to.as_ref().map(|d| d.display().to_string()).unwrap_or_else(|| "Nowhere".into())))
+                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().when(p.copy_to.is_some(), |d| d.font_family(theme.mono_font_family.clone()).text_size(px(13.5))).when(p.copy_to.is_none(), |d| d.text_color(theme.muted_foreground)).child(p.copy_to.as_ref().map(|d| d.display().to_string()).unwrap_or_else(|| t!("Nowhere").into())))
                 .when(p.copy_to.is_some(), |r| {
-                    r.child(crate::ui::button("copy-to-off").ghost().small().label("Stop copying").on_click(cx.listener(|this, _, _, cx| {
+                    r.child(crate::ui::button("copy-to-off").ghost().small().label(t!("Stop copying")).on_click(cx.listener(|this, _, _, cx| {
                         this.prefs.copy_to = None;
                         this.save_prefs(false, cx);
                     })))
                 }),
-            Some(crate::ui::button("copy-to").outline().label("Choose").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.choose_folder(true, cx))).into_any_element()),
+            Some(crate::ui::button("copy-to").outline().label(t!("Choose")).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.choose_folder(true, cx))).into_any_element()),
             false,
         );
         let split_row = card_row(
             theme,
             narrow,
-            "Split files over",
-            Some("Numbered parts for USB disks; 0 = never. Saved when you press Enter or leave the field."),
+            t!("Split files over"),
+            Some(t!("Numbered parts for USB disks; 0 = never. Saved when you press Enter or leave the field.")),
             h_flex().gap_2().items_center().child(div().w(px(72.)).child(Input::new(&self.part_gb))).child(div().text_sm().text_color(theme.muted_foreground).child("GB")),
             None,
             true,
         );
         let card = ui::panel(theme)
             .gap_0()
-            .child(h_flex().pb_1().gap_3().items_center().min_h(px(28.)).child(div().font_weight(FontWeight::MEDIUM).child("Backup")).children(self.saved_note(theme, "card")))
+            .child(h_flex().pb_1().gap_3().items_center().min_h(px(28.)).child(div().font_weight(FontWeight::MEDIUM).child(t!("Backup"))).children(self.saved_note(theme, "card")))
             .child(folder_row)
             .child(auto_row)
             .child(keep_row)
@@ -1159,12 +1159,12 @@ impl BackupPage {
         let estimate = self.sizes.map(|(pg, ch, hist, free)| {
             let (bytes, secs) = crate::backups::estimate(p, pg, ch, hist);
             let mins = secs.div_ceil(60);
-            let free_text = free.map(|f| format!(" · {} free", bytes_label(f))).unwrap_or_default();
+            let free_text = free.map(|f| tf!(" · {} free", bytes_label(f))).unwrap_or_default();
             let low = free.is_some_and(|f| f < bytes.saturating_mul(2));
-            (format!("Estimated file: {} · takes about {} minute{}{free_text}", bytes_label(bytes), mins, if mins == 1 { "" } else { "s" }), low)
+            (if mins == 1 { tf!("Estimated file: {} · takes about {} minute{free_text}", bytes_label(bytes), mins) } else { tf!("Estimated file: {} · takes about {} minutes{free_text}", bytes_label(bytes), mins) }, low)
         });
         let low = estimate.as_ref().filter(|(_, low)| *low).map(|(t, _)| t.clone());
-        let now_tip = estimate.map(|(t, _)| t).unwrap_or_else(|| "A backup now, with what the card says.".into());
+        let now_tip = estimate.map(|(t, _)| t).unwrap_or_else(|| t!("A backup now, with what the card says.").into());
         let mut list = ui::panel(theme).gap_0().child(
             h_flex()
                 .relative()
@@ -1172,11 +1172,11 @@ impl BackupPage {
                 .pb_2()
                 .items_center()
                 .child(ui::layout_probe("header-actions"))
-                .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child("Backups"))
-                .child(crate::ui::probed(crate::ui::button("add-backup").ghost().label("Add a file").tooltip("Add a backup file from elsewhere to the folder.").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx)))))
-                .child(crate::ui::probed(crate::ui::button("restore-from").outline().icon(crate::manager::restore::icon("history")).label("Restore from file").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
+                .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child(t!("Backups")))
+                .child(crate::ui::probed(crate::ui::button("add-backup").ghost().label(t!("Add a file")).tooltip(t!("Add a backup file from elsewhere to the folder.")).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.add_backup_file(cx)))))
+                .child(crate::ui::probed(crate::ui::button("restore-from").outline().icon(crate::manager::restore::icon("history")).label(t!("Restore from file")).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.restore_from(cx)))))
                 .when(!self.choose, |r| {
-                    r.child(crate::ui::probed(crate::ui::button("backup-now").outline().label(if busy { "Backing up" } else { "Back up now" }).tooltip(now_tip).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_preset_backup(cx)))))
+                    r.child(crate::ui::probed(crate::ui::button("backup-now").outline().label(if busy { t!("Backing up") } else { t!("Back up now") }).tooltip(now_tip).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_preset_backup(cx)))))
                 }),
         );
         if let Some(t) = low {
@@ -1186,7 +1186,7 @@ impl BackupPage {
             list = list.child(div().pb_2().child(ui::outcome(theme, tone, text)));
         }
         if self.list.is_empty() {
-            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child("No backups in this folder. Restore from… can still take a file from elsewhere or another instance."));
+            list = list.child(div().py_2().text_sm().text_color(theme.muted_foreground).child(t!("No backups in this folder. Restore from… can still take a file from elsewhere or another instance.")));
         } else {
             list = list.child(table_header(theme, narrow));
         }
@@ -1235,8 +1235,8 @@ impl Render for BackupPage {
         let theme = cx.theme().clone();
         let page = ui::page(
             &theme,
-            "Backup and restore",
-            "One file with the database, telemetry and file stores, a checksum for every part, and optional encryption.",
+            t!("Backup and restore"),
+            t!("One file with the database, telemetry and file stores, a checksum for every part, and optional encryption."),
         );
         // Screens and the layout test: a backup in the middle with a long
         // log (SPM_DEBUG_JOB_LOG=<lines>[:<step>], crate::manager::jobview).
@@ -1315,7 +1315,7 @@ impl Render for BackupPage {
         let panels = self.backup_panels(&theme, narrow, busy, cx);
         page.children(panels).when(self.choose, |page| page.child(
             ui::panel(&theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child("Choose what to back up"))
+                .child(div().font_weight(FontWeight::MEDIUM).child(t!("Choose what to back up")))
                 .child(
                     h_flex()
                         .gap_2()
@@ -1324,7 +1324,7 @@ impl Render for BackupPage {
                             v_flex()
                                 .gap_1p5()
                                 .w_64()
-                                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Database password"))
+                                .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(t!("Database password")))
                                 .child(Input::new(&self.password).mask_toggle()),
                         )
                         .when(clickhouse, |r| {
@@ -1332,19 +1332,19 @@ impl Render for BackupPage {
                                 v_flex()
                                     .gap_1p5()
                                     .w_64()
-                                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("ClickHouse password"))
+                                    .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(t!("ClickHouse password")))
                                     .child(Input::new(&self.ch_password).mask_toggle()),
                             )
                         })
                         .child(
                             crate::ui::button("inspect")
                                 .outline()
-                                .label(if self.inspection.is_some() { "Read again" } else { "Read the database" })
+                                .label(if self.inspection.is_some() { t!("Read again") } else { t!("Read the database") })
                                 .disabled(busy)
                                 .on_click(cx.listener(|this, _, _, cx| this.inspect(cx))),
                         ),
                 )
-                .children(self.inspect_error.clone().map(|e| div().text_sm().text_color(theme.danger).child(e)))
+                .children(self.inspect_error.clone().map(|e| div().text_sm().text_color(theme.danger).child(crate::ui::shown(e))))
                 .when_some(self.inspection.as_ref().map(|i| i.summary.clone()), |p, s| {
                     p.child(div().text_sm().text_color(theme.muted_foreground).child(s))
                 })
@@ -1354,10 +1354,10 @@ impl Render for BackupPage {
                         h_flex()
                             .gap_3()
                             .items_center()
-                            .child(div().text_sm().child("Telemetry history"))
+                            .child(div().text_sm().child(t!("Telemetry history")))
                             .child(
                                 RadioGroup::horizontal("telemetry")
-                                    .children(["All", "Last days", "None"])
+                                    .children([t!("All"), t!("Last days"), t!("None")])
                                     .selected_index(Some(self.telemetry))
                                     .on_change(cx.listener(|this, value: &usize, _, cx| {
                                         this.telemetry = *value;
@@ -1374,19 +1374,19 @@ impl Render for BackupPage {
                             .child(
                                 crate::ui::button("output")
                                     .outline()
-                                    .label("Save as")
+                                    .label(t!("Save as"))
                                     .disabled(busy)
                                     .on_click(cx.listener(|this, _, _, cx| this.choose_output(cx))),
                             )
                             .child(div().text_sm().text_color(theme.muted_foreground).child(
-                                self.output.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "No file chosen".into()),
+                                self.output.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| t!("No file chosen").into()),
                             )),
                     )
                     .child(
                         h_flex().child(
                             crate::ui::button("run-backup")
                                 .primary()
-                                .label("Back up now")
+                                .label(t!("Back up now"))
                                 .disabled(!can_backup)
                                 .on_click(cx.listener(|this, _, _, cx| this.run_backup(cx))),
                         ),
@@ -1441,10 +1441,10 @@ fn key_plain_note(theme: &gpui_kit::component::Theme, pass_empty: bool) -> Optio
             .flex_shrink_0()
             .gap_1()
             .items_center()
-            .child(ui::pill(theme, Tone::Warn, "Key not encrypted"))
+            .child(ui::pill(theme, Tone::Warn, t!("Key not encrypted")))
             .child(ui::info(
                 "key-plain".into(),
-                "Without a passphrase, SENTIENT's secrets key (it opens the stored mail, SMS and integration passwords) is saved beside the backup as a plain file, readable by this account only. Keep it apart from the backup when the backup leaves this computer. With a passphrase, the key is encrypted with it too.".into(),
+                t!("Without a passphrase, SENTIENT's secrets key (it opens the stored mail, SMS and integration passwords) is saved beside the backup as a plain file, readable by this account only. Keep it apart from the backup when the backup leaves this computer. With a passphrase, the key is encrypted with it too.").into(),
             ))
             .into_any_element()
     })
@@ -1484,7 +1484,7 @@ pub(crate) fn folder_value(theme: &gpui_kit::component::Theme, folder: &std::pat
         .gap(px(8.))
         .items_center()
         .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(theme.mono_font_family.clone()).text_size(px(13.5)).child(folder.display().to_string()))
-        .when_some(free, |r, f| r.child(div().flex_shrink_0().text_size(px(12.5)).text_color(theme.muted_foreground).child(format!("{} free", free_label(f)))))
+        .when_some(free, |r, f| r.child(div().flex_shrink_0().text_size(px(12.5)).text_color(theme.muted_foreground).child(tf!("{} free", free_label(f)))))
         .children(note)
 }
 
@@ -1495,7 +1495,7 @@ pub(crate) fn free_label(b: u64) -> String {
 
 /// A choice as a menu button (the card's segments on a narrow window).
 pub(crate) fn choice_menu(id: &'static str, disabled: bool, items: Vec<(&'static str, bool, std::rc::Rc<dyn Fn(&mut Window, &mut App)>)>) -> impl IntoElement {
-    let current = items.iter().find(|i| i.1).map(|i| i.0).unwrap_or("Choose");
+    let current = items.iter().find(|i| i.1).map(|i| i.0).unwrap_or(t!("Choose"));
     crate::ui::button(id).outline().disabled(disabled).label(current).icon(IconName::ChevronDown).dropdown_menu(move |menu, _, _| {
         let mut menu = menu;
         for (label, on, f) in items.iter().cloned() {
@@ -1513,7 +1513,7 @@ pub(crate) fn narrow(window: &Window) -> bool {
 
 /// "Change…" on the folder row.
 pub(crate) fn change_button(id: &'static str, disabled: bool) -> gpui_kit::component::button::Button {
-    crate::ui::button(id).outline().icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Folder)).label("Change").disabled(disabled)
+    crate::ui::button(id).outline().icon(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Folder)).label(t!("Change")).disabled(disabled)
 }
 
 /// Column widths of the Backups table: Made, Size, Integrity, the chevron.
@@ -1536,16 +1536,16 @@ pub(crate) fn table_header(theme: &gpui_kit::component::Theme, narrow: bool) -> 
         .text_color(theme.muted_foreground)
         .border_b_1()
         .border_color(theme.border)
-        .child(div().flex_1().min_w_0().child("File"))
-        .when(!narrow, |r| r.child(div().w(px(COL_MADE)).flex_shrink_0().child("Made")).child(div().w(px(COL_SIZE)).flex_shrink_0().child("Size")))
-        .child(div().w(px(if narrow { COL_CHECK_NARROW } else { COL_CHECK })).flex_shrink_0().child("Integrity"))
+        .child(div().flex_1().min_w_0().child(t!("File")))
+        .when(!narrow, |r| r.child(div().w(px(COL_MADE)).flex_shrink_0().child(t!("Made"))).child(div().w(px(COL_SIZE)).flex_shrink_0().child(t!("Size"))))
+        .child(div().w(px(if narrow { COL_CHECK_NARROW } else { COL_CHECK })).flex_shrink_0().child(t!("Integrity")))
         .child(div().w(px(if narrow { COL_RESTORE_NARROW } else { COL_RESTORE })).flex_shrink_0())
         .child(div().w(px(COL_MENU)).flex_shrink_0())
 }
 
 /// "16 Nov, 02:00" from the list's "2026-11-16 02:00".
 pub(crate) fn short_made(made: &str) -> String {
-    chrono::NaiveDateTime::parse_from_str(made, "%Y-%m-%d %H:%M").map(|t| t.format("%-d %b, %H:%M").to_string()).unwrap_or_else(|_| made.to_string())
+    chrono::NaiveDateTime::parse_from_str(made, "%Y-%m-%d %H:%M").map(|t| crate::i18n::date(&t.and_utc(), "%-d %b, %H:%M")).unwrap_or_else(|_| made.to_string())
 }
 
 /// What a row offers: Restore beside it, the rest in its three-dot menu.
@@ -1561,49 +1561,49 @@ pub(crate) struct RowActions {
 /// check, and the chevron with Restore, Verify and Delete.
 pub(crate) fn table_row(theme: &gpui_kit::component::Theme, narrow: bool, i: usize, e: &crate::backups::Entry, busy: bool, actions: RowActions) -> Div {
     let (tone, text, tip): (Tone, &str, String) = match &e.check {
-        Some(c) if c.ok => (Tone::Good, "Verified", format!("Every part of the file was read back on {} and matched its SHA-256 checksum. {}", check_time(&c.at), c.summary)),
-        Some(c) => (Tone::Bad, "Damaged", format!("Checked {}: {} Do not rely on this backup.", check_time(&c.at), c.summary)),
-        None => (Tone::Neutral, "Not verified", "Integrity check not run yet. Verify reads every part of the file and compares it with its SHA-256 checksum.".to_string()),
+        Some(c) if c.ok => (Tone::Good, t!("Verified"), tf!("Every part of the file was read back on {} and matched its SHA-256 checksum. {}", check_time(&c.at), c.summary)),
+        Some(c) => (Tone::Bad, t!("Damaged"), tf!("Checked {}: {} Do not rely on this backup.", check_time(&c.at), c.summary)),
+        None => (Tone::Neutral, t!("Not verified"), t!("Integrity check not run yet. Verify reads every part of the file and compares it with its SHA-256 checksum.").to_string()),
     };
     let made_tip = format!(
         "{} · {}{}{}",
         e.made,
-        if e.automatic { "Automatic" } else { "Manual" },
-        if e.parts > 1 { format!(" · {} parts", e.parts) } else { String::new() },
-        if e.old_folder { format!("\nIn {}", e.path.parent().map(|p| p.display().to_string()).unwrap_or_default()) } else { String::new() }
+        if e.automatic { t!("Automatic") } else { t!("Manual") },
+        if e.parts > 1 { tf!(" · {} parts", e.parts) } else { String::new() },
+        if e.old_folder { tf!("\nIn {}", e.path.parent().map(|p| p.display().to_string()).unwrap_or_default()) } else { String::new() }
     );
     let RowActions { restore, reveal, verify, delete } = actions;
     let details = format!("{}\n\n{}\n\n{}\n\n{}", e.name, made_tip, crate::dbstatus::bytes_label(e.bytes), tip);
     let path = e.path.display().to_string();
     let mut items = vec![
         crate::ui::RowMenuItem::Item {
-            label: "Details".into(),
+            label: t!("Details").into(),
             icon: Some(IconName::Info),
-            action: std::rc::Rc::new(move |_, cx| crate::ui::show_info("Backup details", details.clone(), cx)),
+            action: std::rc::Rc::new(move |_, cx| crate::ui::show_info(t!("Backup details"), details.clone(), cx)),
         },
-        crate::ui::RowMenuItem::Item { label: "Check integrity".into(), icon: Some(IconName::CircleCheck), action: verify },
+        crate::ui::RowMenuItem::Item { label: t!("Check integrity").into(), icon: Some(IconName::CircleCheck), action: verify },
     ];
     if let Some(r) = reveal {
-        items.push(crate::ui::RowMenuItem::Item { label: "Show in folder".into(), icon: Some(IconName::Folder), action: r });
+        items.push(crate::ui::RowMenuItem::Item { label: t!("Show in folder").into(), icon: Some(IconName::Folder), action: r });
     }
     items.push(crate::ui::RowMenuItem::Item {
-        label: "Copy path".into(),
+        label: t!("Copy path").into(),
         icon: Some(IconName::Copy),
         action: std::rc::Rc::new(move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(path.clone()))),
     });
     items.push(crate::ui::RowMenuItem::Divider);
-    items.push(crate::ui::RowMenuItem::Danger { label: "Delete".into(), icon: IconName::Delete, action: delete });
-    let menu = crate::ui::row_menu(format!("bk-row-{i}"), "More", busy, items);
+    items.push(crate::ui::RowMenuItem::Danger { label: t!("Delete").into(), icon: IconName::Delete, action: delete });
+    let menu = crate::ui::row_menu(format!("bk-row-{i}"), t!("More"), busy, items);
     // Restore… on every row, visible; off for a damaged backup.
     let damaged = restore.is_none();
     let mut restore_btn = crate::ui::button(SharedString::from(format!("bk-restore-{i}"))).outline().icon(crate::manager::restore::icon("history")).disabled(busy || damaged);
     if !narrow {
-        restore_btn = restore_btn.label("Restore");
+        restore_btn = restore_btn.label(t!("Restore"));
     }
     if damaged {
-        restore_btn = restore_btn.tooltip("A damaged backup cannot be restored");
+        restore_btn = restore_btn.tooltip(t!("A damaged backup cannot be restored"));
     } else if narrow {
-        restore_btn = restore_btn.tooltip("Restore");
+        restore_btn = restore_btn.tooltip(t!("Restore"));
     }
     if let Some(r) = restore {
         restore_btn = restore_btn.on_click(move |_, window, cx| r(window, cx));
@@ -1676,5 +1676,5 @@ fn small_pill(theme: &gpui_kit::component::Theme, tone: Tone, text: &'static str
 
 /// B5: a backup left in a folder used before.
 pub(crate) fn old_folder_pill(theme: &gpui_kit::component::Theme) -> Div {
-    h_flex().flex_shrink_0().px(px(7.)).py(px(1.)).rounded_full().bg(theme.secondary).text_color(theme.muted_foreground).text_size(px(12.)).child("Old folder")
+    h_flex().flex_shrink_0().px(px(7.)).py(px(1.)).rounded_full().bg(theme.secondary).text_color(theme.muted_foreground).text_size(px(12.)).child(t!("Old folder"))
 }

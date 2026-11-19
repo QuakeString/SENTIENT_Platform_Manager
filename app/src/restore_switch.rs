@@ -38,7 +38,7 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, String> {
         .enable_all()
         .build()
         .map(|rt| rt.block_on(future))
-        .map_err(|e| format!("start the runtime: {e}"))
+        .map_err(|e| nf!("start the runtime: {e}"))
 }
 
 fn quote_ident(name: &str) -> String {
@@ -88,7 +88,7 @@ async fn rename_database(pg: &ConnConfig, from: &str, to: &str) -> Result<(), St
 fn ch_exchange(ch: &ChConn, restored: &str) -> Result<(), String> {
     for table in CH_DATA_TABLES {
         ch.text(&format!("EXCHANGE TABLES {}.{table} AND {restored}.{table}", ch.database))
-            .map_err(|e| format!("exchange {table}: {e}"))?;
+            .map_err(|e| nf!("exchange {table}: {e}"))?;
     }
     Ok(())
 }
@@ -129,8 +129,8 @@ async fn schema_version(pg: &ConnConfig) -> Result<i64, String> {
     let row = client
         .query_opt("SELECT schema_version FROM tb_schema_settings LIMIT 1", &[])
         .await
-        .map_err(|e| format!("read the schema version of {}: {e}", pg.dbname))?;
-    row.map(|r| r.get(0)).ok_or_else(|| format!("{} has no schema version", pg.dbname))
+        .map_err(|e| nf!("read the schema version of {}: {e}", pg.dbname))?;
+    row.map(|r| r.get(0)).ok_or_else(|| nf!("{} has no schema version", pg.dbname))
 }
 
 /// After a restore into `target`: its schema against the running SENTIENT's.
@@ -148,7 +148,7 @@ pub(crate) fn match_schema(
     let restored = ConnConfig { dbname: target.to_string(), ..live.clone() };
     let (have, got) = block_on(async { Ok::<_, String>((schema_version(live).await?, schema_version(&restored).await?)) })??;
     if got > have {
-        return Err(format!(
+        return Err(nf!(
             "The backup is from a newer SENTIENT (schema {got}) than the installed one (schema {have}). Update SENTIENT, then put the restored database {target} into service."
         ));
     }
@@ -157,16 +157,16 @@ pub(crate) fn match_schema(
     }
     match record.engine {
         crate::installation::Engine::Docker => {
-            sink(Progress::Log { line: format!("The backup is from an older SENTIENT (schema {got}); SENTIENT upgrades it to schema {have} when it starts on it.") });
+            sink(Progress::Log { line: nf!("The backup is from an older SENTIENT (schema {got}); SENTIENT upgrades it to schema {have} when it starts on it.") });
             Ok(())
         }
         crate::installation::Engine::Native => {
-            step(sink, &format!("Upgrading the restored data from schema {got} to {have}"));
+            step(sink, &nf!("Upgrading the restored data from schema {got} to {have}"));
             let mut cfg = record.native_config();
             cfg.db_password = live.password.clone();
             cfg.ch_password = ch_password.to_string();
             let out = sentient_installer_core::native::safe_update::upgrade_restored(&cfg, target)
-                .map_err(|e| format!("The restored data could not be upgraded to this SENTIENT's schema: {e}"))?;
+                .map_err(|e| nf!("The restored data could not be upgraded to this SENTIENT's schema: {e}"))?;
             for line in out.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev() {
                 sink(Progress::Log { line: line.to_string() });
             }
@@ -186,21 +186,21 @@ pub fn run(record: &InstallationRecord, name: &str, sink: ProgressFn) -> Result<
 /// telemetry): only PostgreSQL switches.
 pub fn run_with(record: &InstallationRecord, name: &str, exchange_history: bool, sink: ProgressFn) -> Result<String, String> {
     if !valid_name(name) {
-        return Err(format!("'{name}' is not a database name this can use."));
+        return Err(nf!("'{name}' is not a database name this can use."));
     }
     let setup = Setup::current(record)?;
     let pg = setup.pg();
     let live = pg.dbname.clone();
     if name == live {
-        return Err("That is the database SENTIENT already uses.".into());
+        return Err(n!("That is the database SENTIENT already uses.").into());
     }
     if !block_on(database_exists(&pg, name))?? {
-        return Err(format!("There is no PostgreSQL database called {name}; restore a backup into it first."));
+        return Err(nf!("There is no PostgreSQL database called {name}; restore a backup into it first."));
     }
     let ch = (exchange_history && setup.flavor() == Flavor::Clickhouse).then(|| setup.ch());
     if let Some(ch) = &ch {
         if !ch_database_exists(ch, name)? {
-            return Err(format!(
+            return Err(nf!(
                 "There is no ClickHouse database called {name}: the backup was restored without its ClickHouse history."
             ));
         }
@@ -208,14 +208,14 @@ pub fn run_with(record: &InstallationRecord, name: &str, exchange_history: bool,
 
     // The restored data's secrets key, read while SENTIENT still runs.
     let key = crate::secrets_key::plan_switch(record, &pg, name).unwrap_or_else(|e| {
-        sink(Progress::Log { line: format!("The secrets key was not checked ({e}).") });
+        sink(Progress::Log { line: nf!("The secrets key was not checked ({e}).") });
         crate::secrets_key::KeyChange::None
     });
 
     setup.stop(&sink).inspect_err(|_| setup.restart_as_was(&sink))?;
     let aside = format!("{live}_before_restore_{}", chrono::Local::now().format("%Y%m%d%H%M"));
 
-    step(&sink, "Switching PostgreSQL to the restored database");
+    step(&sink, n!("Switching PostgreSQL to the restored database"));
     let switched = block_on(async {
         rename_database(&pg, &live, &aside).await?;
         if let Err(e) = rename_database(&pg, name, &live).await {
@@ -226,7 +226,7 @@ pub fn run_with(record: &InstallationRecord, name: &str, exchange_history: bool,
     })?;
     if let Err(e) = switched {
         setup.restart_as_was(&sink);
-        return Err(format!("Could not switch the databases ({e}); SENTIENT runs on its data as before."));
+        return Err(nf!("Could not switch the databases ({e}); SENTIENT runs on its data as before."));
     }
     let undo_pg = || {
         let _ = block_on(async {
@@ -236,37 +236,37 @@ pub fn run_with(record: &InstallationRecord, name: &str, exchange_history: bool,
     };
 
     if let Some(ch) = &ch {
-        step(&sink, "Switching ClickHouse to the restored history");
+        step(&sink, n!("Switching ClickHouse to the restored history"));
         if let Err(e) = ch_exchange(ch, name) {
             // A partial exchange is undone by exchanging again.
             let _ = ch_exchange(ch, name);
             undo_pg();
             setup.restart_as_was(&sink);
-            return Err(format!("Could not switch ClickHouse ({e}); SENTIENT runs on its data as before."));
+            return Err(nf!("Could not switch ClickHouse ({e}); SENTIENT runs on its data as before."));
         }
     }
 
     let mut key_note = String::new();
     match &key {
         crate::secrets_key::KeyChange::Install { new, .. } => {
-            step(&sink, "Installing the restored data's secrets key");
+            step(&sink, n!("Installing the restored data's secrets key"));
             match crate::secrets_key::install(record, new, &sink) {
                 Ok(()) => {
-                    key_note = " Its secrets key is installed. The previous key stays in the key file so the data from before still opens; SENTIENT reports this as an unfinished key rotation until the key is rotated (Security, Secrets).".into()
+                    key_note = n!(" Its secrets key is installed. The previous key stays in the key file so the data from before still opens; SENTIENT reports this as an unfinished key rotation until the key is rotated (Security, Secrets).").into()
                 }
-                Err(e) => key_note = format!(" Its secrets key could not be installed ({e}): stored passwords do not open until it is."),
+                Err(e) => key_note = nf!(" Its secrets key could not be installed ({e}): stored passwords do not open until it is."),
             }
         }
         crate::secrets_key::KeyChange::Missing => {
-            key_note = " Its stored passwords (mail, SMS, integrations…) need the secrets key file the backup was made with: restore again with that key file, or enter them again.".into();
+            key_note = n!(" Its stored passwords (mail, SMS, integrations…) need the secrets key file the backup was made with: restore again with that key file, or enter them again.").into();
         }
         crate::secrets_key::KeyChange::None => {}
     }
 
-    step(&sink, "Starting SENTIENT on the restored data");
+    step(&sink, n!("Starting SENTIENT on the restored data"));
     setup.restart_as_was(&sink);
     if !wait_answering(record.stack.http_port) {
-        sink(Progress::Log { line: "SENTIENT did not answer on the restored data; putting the previous data back".into() });
+        sink(Progress::Log { line: n!("SENTIENT did not answer on the restored data; putting the previous data back").into() });
         let _ = setup.stop(&sink);
         if let crate::secrets_key::KeyChange::Install { previous, .. } = &key {
             let _ = crate::secrets_key::install(record, previous, &sink);
@@ -277,16 +277,16 @@ pub fn run_with(record: &InstallationRecord, name: &str, exchange_history: bool,
         undo_pg();
         setup.restart_as_was(&sink);
         let back = if wait_answering(record.stack.http_port) {
-            "It runs on its previous data again"
+            n!("It runs on its previous data again")
         } else {
-            "Its previous data is back in place but SENTIENT is not answering yet; check Status and the logs"
+            n!("Its previous data is back in place but SENTIENT is not answering yet; check Status and the logs")
         };
-        return Err(format!("SENTIENT did not start on the restored data. {back}; the restored database is unchanged."));
+        return Err(nf!("SENTIENT did not start on the restored data. {back}; the restored database is unchanged."));
     }
 
-    let ch_note = if ch.is_some() { format!(", and ClickHouse's in the database {name}") } else { String::new() };
+    let ch_note = if ch.is_some() { nf!(", and ClickHouse's in the database {name}") } else { String::new() };
     sink(Progress::Done {
-        message: format!("SENTIENT runs on the restored data. The data from before is kept as {aside}{ch_note}.{key_note}"),
+        message: nf!("SENTIENT runs on the restored data. The data from before is kept as {aside}{ch_note}.{key_note}"),
     });
     Ok(aside)
 }

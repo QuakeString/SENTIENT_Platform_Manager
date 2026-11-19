@@ -42,7 +42,7 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, String> {
         .enable_all()
         .build()
         .map(|rt| rt.block_on(future))
-        .map_err(|e| format!("start the runtime: {e}"))
+        .map_err(|e| nf!("start the runtime: {e}"))
 }
 
 fn conn(record: &InstallationRecord, dbname: &str) -> Result<ConnConfig, String> {
@@ -95,7 +95,7 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
                 .to_string();
             out.push(Kept {
                 kind: KeptKind::History,
-                detail: format!("History from before the move away from {from}"),
+                detail: nf!("History from before the move away from {from}"),
                 bytes: row.get(1),
                 name,
             });
@@ -111,15 +111,15 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
         {
             let name: String = row.get(0);
             let detail = if name.contains("_failed_update_") {
-                "The database a failed update left behind"
+                n!("The database a failed update left behind")
             } else if name.contains("_rolled_back_") {
-                "The database in use before a roll back (what was written after that update)"
+                n!("The database in use before a roll back (what was written after that update)")
             } else if name.contains("_before_restore_") {
-                "The database from before a restore was put into service"
+                n!("The database from before a restore was put into service")
             } else if name.contains("_before_install_") {
-                "The database an earlier install left, set aside when this install started fresh"
+                n!("The database an earlier install left, set aside when this install started fresh")
             } else {
-                "Copy of the database from before an update"
+                n!("Copy of the database from before an update")
             };
             out.push(Kept { kind: KeptKind::DatabaseCopy, detail: detail.into(), bytes: row.get(1), name });
         }
@@ -128,18 +128,18 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
     if record.engine == Engine::Docker && sentient_installer_core::distro::docker_ops::clickhouse_left_behind(&record.stack) {
         kept.push(Kept {
             kind: KeptKind::ClickHouse,
-            name: "ClickHouse (container)".into(),
+            name: n!("ClickHouse (container)").into(),
             bytes: None,
-            detail: "No longer used; holds the history from when this installation used ClickHouse".into(),
+            detail: n!("No longer used; holds the history from when this installation used ClickHouse").into(),
         });
     }
     #[cfg(target_os = "linux")]
     if record.engine == Engine::Native && sentient_installer_core::native_linux::clickhouse_left_behind(&record.native_config()) {
         kept.push(Kept {
             kind: KeptKind::ClickHouse,
-            name: "ClickHouse (service)".into(),
+            name: n!("ClickHouse (service)").into(),
             bytes: None,
-            detail: "No longer used; holds the history from when this installation used ClickHouse".into(),
+            detail: n!("No longer used; holds the history from when this installation used ClickHouse").into(),
         });
     }
     #[cfg(windows)]
@@ -149,9 +149,9 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
     {
         kept.push(Kept {
             kind: KeptKind::ClickHouse,
-            name: "ClickHouse (WSL2)".into(),
+            name: n!("ClickHouse (WSL2)").into(),
             bytes: None,
-            detail: "No longer used; holds the history from when this installation used ClickHouse".into(),
+            detail: n!("No longer used; holds the history from when this installation used ClickHouse").into(),
         });
     }
     // ClickHouse databases besides SENTIENT's own.
@@ -178,9 +178,9 @@ pub fn list(record: &InstallationRecord) -> Result<Vec<Kept>, String> {
                     kept.push(Kept {
                         kind: KeptKind::ClickhouseDatabase,
                         detail: if name.contains("_before_install_") {
-                            "ClickHouse history from an earlier install, set aside when the current install started fresh".into()
+                            n!("ClickHouse history from an earlier install, set aside when the current install started fresh").into()
                         } else {
-                            "ClickHouse data: a restore, or the history from before a restore was put into service".into()
+                            n!("ClickHouse data: a restore, or the history from before a restore was put into service").into()
                         },
                         bytes: sizes.get(name).copied(),
                         name: name.to_string(),
@@ -204,7 +204,7 @@ fn quote_ident(name: &str) -> String {
 
 /// Remove one kept item. Cannot be undone.
 pub fn remove(record: &InstallationRecord, item: &Kept, sink: ProgressFn) -> Result<(), String> {
-    sink(Progress::Step { name: format!("Removing {}", item.name) });
+    sink(Progress::Step { name: nf!("Removing {}", item.name) });
     match item.kind {
         KeptKind::History => {
             let cfg = conn(record, &record.stack.db_name)?;
@@ -236,7 +236,7 @@ pub fn remove(record: &InstallationRecord, item: &Kept, sink: ProgressFn) -> Res
         #[cfg(not(target_os = "linux"))]
         KeptKind::ClickHouse => remove_clickhouse(&sink)?,
     }
-    sink(Progress::Done { message: format!("Removed {}.", item.name) });
+    sink(Progress::Done { message: nf!("Removed {}.", item.name) });
     Ok(())
 }
 
@@ -247,7 +247,7 @@ pub fn remove_clickhouse(sink: &ProgressFn) -> Result<(), String> {
     {
         use sentient_installer_core::clickhouse_wsl;
         if let Some(password) = crate::secrets::get(crate::secrets::Secret::ClickhouseAccount) {
-            sink(Progress::Step { name: "Removing ClickHouse's WSL distribution".into() });
+            sink(Progress::Step { name: n!("Removing ClickHouse's WSL distribution").into() });
             // A distribution WSL cannot stop must not hold the uninstall
             // forever: give up after three minutes and say so.
             if let Err(e) = clickhouse_wsl::run_as_account(
@@ -260,7 +260,7 @@ pub fn remove_clickhouse(sink: &ProgressFn) -> Result<(), String> {
                 "unregister",
                 Some(std::time::Duration::from_secs(180)),
             ) {
-                sink(Progress::Log { line: format!("ClickHouse's WSL distribution was not removed: {e}. Its disk stays under C:\\Users\\sentient-clickhouse until it is removed manually (wsl --unregister sentient, as that account).") });
+                sink(Progress::Log { line: nf!("ClickHouse's WSL distribution was not removed: {e}. Its disk stays under C:\\Users\\sentient-clickhouse until it is removed manually (wsl --unregister sentient, as that account).") });
             }
         }
         clickhouse_wsl::remove_account(sink);
@@ -271,7 +271,7 @@ pub fn remove_clickhouse(sink: &ProgressFn) -> Result<(), String> {
     #[cfg(not(windows))]
     {
         let _ = sink;
-        Err("ClickHouse in WSL2 exists on Windows only.".into())
+        Err(n!("ClickHouse in WSL2 exists on Windows only.").into())
     }
 }
 

@@ -99,7 +99,7 @@ impl std::fmt::Display for Failure {
 
 impl From<std::io::Error> for Failure {
     fn from(e: std::io::Error) -> Self {
-        Failure { code: 99, message: format!("The connection to the server broke: {e}") }
+        Failure { code: 99, message: tf!("The connection to the server broke: {e}") }
     }
 }
 
@@ -164,7 +164,7 @@ struct Rd<'a>(&'a [u8]);
 impl Rd<'_> {
     fn u32(&mut self) -> R<u32> {
         if self.0.len() < 4 {
-            return Err(fail(98, "The server's answer was cut short."));
+            return Err(fail(98, n!("The server's answer was cut short.")));
         }
         let v = u32::from_be_bytes([self.0[0], self.0[1], self.0[2], self.0[3]]);
         self.0 = &self.0[4..];
@@ -176,7 +176,7 @@ impl Rd<'_> {
     fn bytes(&mut self) -> R<Vec<u8>> {
         let n = self.u32()? as usize;
         if self.0.len() < n {
-            return Err(fail(98, "The server's answer was cut short."));
+            return Err(fail(98, n!("The server's answer was cut short.")));
         }
         let v = self.0[..n].to_vec();
         self.0 = &self.0[n..];
@@ -214,12 +214,12 @@ impl Rd<'_> {
 
 fn status_words(code: u32, msg: &str, path: &str) -> String {
     match code {
-        2 => format!("{path} is not there."),
-        3 => format!("Permission denied: {path}."),
+        2 => tf!("{path} is not there."),
+        3 => tf!("Permission denied: {path}."),
         4 if !msg.is_empty() && msg != "Failure" => format!("{path}: {msg}."),
-        4 => format!("{path}: the server refused it (a folder that is not empty, or a full disk)."),
+        4 => tf!("{path}: the server refused it (a folder that is not empty, or a full disk)."),
         _ if !msg.is_empty() => format!("{path}: {msg}."),
-        _ => format!("{path}: error {code}."),
+        _ => tf!("{path}: error {code}."),
     }
 }
 
@@ -235,7 +235,7 @@ impl Sftp {
         let mut s = Sftp { child, to, from, next: 1 };
         let mut init = Buf::new(INIT, None);
         init.u32(3);
-        if let Err(e) = s.send(init.done()).and_then(|_| s.recv()).and_then(|(t, _)| if t == VERSION { Ok(()) } else { Err(fail(98, "The server does not speak SFTP.")) }) {
+        if let Err(e) = s.send(init.done()).and_then(|_| s.recv()).and_then(|(t, _)| if t == VERSION { Ok(()) } else { Err(fail(98, n!("The server does not speak SFTP."))) }) {
             let err = s.stderr_text();
             let _ = s.child.kill();
             let _ = s.child.wait();
@@ -263,7 +263,7 @@ impl Sftp {
         self.from.read_exact(&mut len)?;
         let n = u32::from_be_bytes(len) as usize;
         if n == 0 || n > 4 * 1024 * 1024 {
-            return Err(fail(98, "The server sent a broken answer."));
+            return Err(fail(98, n!("The server sent a broken answer.")));
         }
         let mut body = vec![0u8; n];
         self.from.read_exact(&mut body)?;
@@ -293,7 +293,7 @@ impl Sftp {
                 let msg = r.string().unwrap_or_default();
                 if code == 0 { Ok(()) } else { Err(fail(code, status_words(code, &msg, path))) }
             }
-            _ => Err(fail(98, "The server sent an unexpected answer.")),
+            _ => Err(fail(98, n!("The server sent an unexpected answer."))),
         }
     }
 
@@ -309,7 +309,7 @@ impl Sftp {
         match t {
             HANDLE => Rd(&body).bytes(),
             STATUS => Err(Self::status_err(&body, path)),
-            _ => Err(fail(98, "The server sent an unexpected answer.")),
+            _ => Err(fail(98, n!("The server sent an unexpected answer."))),
         }
     }
 
@@ -325,7 +325,7 @@ impl Sftp {
                 r.string()
             }
             STATUS => Err(Self::status_err(&body, path)),
-            _ => Err(fail(98, "The server sent an unexpected answer.")),
+            _ => Err(fail(98, n!("The server sent an unexpected answer."))),
         }
     }
 
@@ -337,7 +337,7 @@ impl Sftp {
         match t {
             ATTRS => Rd(&body).attrs(),
             STATUS => Err(Self::status_err(&body, path)),
-            _ => Err(fail(98, "The server sent an unexpected answer.")),
+            _ => Err(fail(98, n!("The server sent an unexpected answer."))),
         }
     }
 
@@ -385,7 +385,7 @@ impl Sftp {
                     let _ = self.close(&h);
                     return Err(Self::status_err(&body, path));
                 }
-                _ => return Err(fail(98, "The server sent an unexpected answer.")),
+                _ => return Err(fail(98, n!("The server sent an unexpected answer."))),
             }
         }
         let _ = self.close(&h);
@@ -502,7 +502,7 @@ impl Sftp {
                     // The end came early (the file shrank).
                     stop = true;
                 }
-                _ => return Err(fail(98, "The server sent an unexpected answer.")),
+                _ => return Err(fail(98, n!("The server sent an unexpected answer."))),
             }
             if pending.is_empty() {
                 if stop {
@@ -544,7 +544,7 @@ impl Sftp {
             in_flight -= 1;
             let body = &body[4.min(body.len())..];
             if t != STATUS {
-                return Err(fail(98, "The server sent an unexpected answer."));
+                return Err(fail(98, n!("The server sent an unexpected answer.")));
             }
             let code = Rd(body).u32()?;
             if code != 0 {

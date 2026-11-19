@@ -169,7 +169,7 @@ pub fn set_secret(id: &str, value: &str) {
     #[cfg(not(windows))]
     {
         let stored = sentient_installer_core::host::host_command("secret-tool")
-            .args(["store", "--label", "SENTIENT Platform Manager instance", "service", "sentient-platform-manager", "instance", id])
+            .args(["store", "--label", t!("SENTIENT Platform Manager instance"), "service", "sentient-platform-manager", "instance", id])
             .stdin(Stdio::piped())
             .spawn()
             .and_then(|mut c| {
@@ -412,23 +412,23 @@ fn clixml_lines(xml: &str) -> Vec<String> {
 }
 
 /// The passphrase or password was kept only until the Platform Manager closed.
-pub const FORGOTTEN: &str = "The passphrase or password is not kept on this computer (no keyring). Enter it again with Edit.";
+pub const FORGOTTEN: &str = n!("The passphrase or password is not kept on this computer (no keyring). Enter it again with Edit.");
 
 /// ssh's messages in plain words.
 pub(crate) fn explain(err: &str) -> Option<String> {
     let e = err.to_lowercase();
     Some(if e.contains("remote host identification has changed") || e.contains("host key verification failed") {
-        "The server's key is not the one accepted before. The connection was refused: if the server was reinstalled, remove and add the instance again; otherwise someone may be in between.".into()
+        n!("The server's key is not the one accepted before. The connection was refused: if the server was reinstalled, remove and add the instance again; otherwise someone may be in between.").into()
     } else if e.contains("permission denied") {
-        "The server refused the sign-in (user, key or password).".into()
+        n!("The server refused the sign-in (user, key or password).").into()
     } else if ["client_loop", "broken pipe", "connection reset", "closed by remote host", "timeout, server", "kex_exchange_identification"].iter().any(|w| e.contains(w)) {
-        "The connection to the server keeps dropping: the network or VPN between here and the server is losing packets. Check it, then try again.".into()
+        n!("The connection to the server keeps dropping: the network or VPN between here and the server is losing packets. Check it, then try again.").into()
     } else if e.contains("connection timed out") || e.contains("operation timed out") {
-        "The server did not answer (address, port or firewall).".into()
+        n!("The server did not answer (address, port or firewall).").into()
     } else if e.contains("connection refused") {
-        "The server refused the connection: no SSH service on that port.".into()
+        n!("The server refused the connection: no SSH service on that port.").into()
     } else if e.contains("could not resolve") || e.contains("name or service not known") {
-        "That address is not known on this network.".into()
+        n!("That address is not known on this network.").into()
     } else {
         return None;
     })
@@ -439,7 +439,7 @@ pub fn scan(host: &str, port: u16) -> Result<(String, String), String> {
     let out = Command::new("ssh-keyscan").args(["-p", &port.to_string(), "-T", "8", "-t", "ed25519,ecdsa,rsa", host]).output().map_err(|e| format!("ssh-keyscan: {e}"))?;
     let keys: String = String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()).map(|l| format!("{l}\n")).collect();
     if keys.is_empty() {
-        return Err(format!("{host}:{port} did not answer as an SSH server."));
+        return Err(nf!("{host}:{port} did not answer as an SSH server."));
     }
     // The fingerprint of the first (strongest) key.
     let mut kg = Command::new("ssh-keygen").args(["-lf", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().map_err(|e| format!("ssh-keygen: {e}"))?;
@@ -489,23 +489,23 @@ pub fn detect(inst: &Instance, once: Option<&str>) -> Result<Detected, String> {
             let (id, pretty) = lines.next().unwrap_or("|").split_once('|').unwrap_or(("", ""));
             let install = match lines.next().unwrap_or("") {
                 "systemd" => "systemd services",
-                "docker" => "Docker",
+                "docker" => t!("Docker"),
                 _ => "",
             };
-            return Ok(Detected { os: Os::Linux, os_name: if pretty.is_empty() { "Linux".into() } else { pretty.into() }, distro: id.into(), arch, install: install.into() });
+            return Ok(Detected { os: Os::Linux, os_name: if pretty.is_empty() { t!("Linux").into() } else { pretty.into() }, distro: id.into(), arch, install: install.into() });
         }
     }
     // Windows: OpenSSH Server runs cmd or PowerShell (its DefaultShell);
     // an encoded command reads the same in both (crate::remote::winshell).
     let out = run(inst, &winshell::encoded("(Get-CimInstance Win32_OperatingSystem).Caption; $env:PROCESSOR_ARCHITECTURE; if (Get-Service SentientServer -ErrorAction SilentlyContinue) {'services'} else {'none'}"), once)?;
     let mut l = out.lines().map(str::trim);
-    let name = l.next().unwrap_or("Windows").to_string();
+    let name = l.next().unwrap_or(t!("Windows")).to_string();
     let arch = match l.next().unwrap_or("") {
         "AMD64" => "x86_64".to_string(),
         "ARM64" => "aarch64".to_string(),
         a => a.to_string(),
     };
-    let install = if l.next() == Some("services") { "Windows services" } else { "" };
+    let install = if l.next() == Some("services") { t!("Windows services") } else { "" };
     Ok(Detected { os: Os::Windows, os_name: name, distro: String::new(), arch, install: install.into() })
 }
 
@@ -567,7 +567,7 @@ pub fn sftp_command(inst: &Instance, admin: bool) -> (Command, Option<String>) {
 pub fn remove_tree(inst: &Instance, path: &str, admin: bool) -> Result<(), String> {
     let p = path.trim();
     if p.is_empty() || p == "/" || p.trim_end_matches(['/', '\\']).is_empty() || (p.len() <= 3 && p.ends_with(":\\")) {
-        return Err(format!("{path} cannot be deleted from here."));
+        return Err(nf!("{path} cannot be deleted from here."));
     }
     if is_windows(inst) {
         return win::ps(inst, &format!("Remove-Item -LiteralPath '{}' -Recurse -Force -ErrorAction Stop", p.replace('\'', "''"))).map(|_| ());
@@ -588,7 +588,7 @@ fn probe_admin(inst: &Instance) -> Admin {
     );
     let mut c = ssh(inst, &script, None);
     c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let Ok(mut child) = c.spawn() else { return Admin::NeedsPassword("ssh did not start".into()) };
+    let Ok(mut child) = c.spawn() else { return Admin::NeedsPassword(t!("ssh did not start").into()) };
     if let Some(mut s) = child.stdin.take() {
         use std::io::Write as _;
         if let Some(pw) = &pw {
@@ -603,7 +603,7 @@ fn classify_admin(stdout: &str, stderr: &str, had_password: bool) -> Admin {
     if stdout.contains("ADMIN_OK") {
         return Admin::Yes;
     }
-    if stdout.contains("NO_SUDO") || ["not in the sudoers", "may not run sudo", "is not allowed to execute"].iter().any(|w| stderr.contains(w)) {
+    if stdout.contains("NO_SUDO") || [t!("not in the sudoers"), t!("may not run sudo"), t!("is not allowed to execute")].iter().any(|w| stderr.contains(w)) {
         return Admin::No;
     }
     // Not in sudo, wheel or admin and sudo wants a password: most likely an
@@ -704,7 +704,7 @@ fn resolve(inst: &Instance) -> Result<Agent, String> {
 /// "Use it anyway": the installed Platform Manager found on the server does
 /// the jobs from now on (for its version and build).
 pub fn use_installed(inst: &Instance) -> Result<(), String> {
-    let found = reuse::found(&inst.id).ok_or("No installed Platform Manager was found on this server. Check again.")?;
+    let found = reuse::found(&inst.id).ok_or(n!("No installed Platform Manager was found on this server. Check again."))?;
     reuse::accept(&inst.id, &found.info)
 }
 
@@ -715,9 +715,9 @@ pub fn choose_user_install(inst: &Instance) -> Result<(), String> {
 
 /// Put the agent in the account's home (no sudo there).
 fn deploy_user(inst: &Instance, staging: &str, sink: &ProgressFn) -> Result<(), String> {
-    sink(Progress::Log { line: format!("{} has no administrator rights on the server: the agent goes in its home folder, and jobs that need root will say so.", inst.user) });
+    sink(Progress::Log { line: nf!("{} has no administrator rights on the server: the agent goes in its home folder, and jobs that need root will say so.", inst.user) });
     run(inst, &format!("mkdir -p \"{USER_JOBS}\" && install -m 0755 {staging} \"{USER_SPM}\""), None)
-        .map_err(|e| failed("The agent could not be put in the account's home folder. The agent there is unchanged.", &e))?;
+        .map_err(|e| failed(n!("The agent could not be put in the account's home folder. The agent there is unchanged."), &e))?;
     conn::close(&inst.id);
     Ok(())
 }
@@ -760,7 +760,7 @@ fn debug_plan(compose: Option<&str>) -> sentient_installer_core::distro::adopt::
         containers: vec!["sentient".into(), "sentient-postgres".into()],
         image: "quakestring/sentient:4.4.0.1".into(),
         volumes: vec!["sentient_data".into(), "sentient_pg".into()],
-        ports: vec!["8080 web".into(), "1883 MQTT".into(), "8883 MQTTS".into(), "5683 CoAP".into(), "5684 CoAPS".into()],
+        ports: vec![t!("8080 web").into(), t!("1883 MQTT").into(), t!("8883 MQTTS").into(), t!("5683 CoAP").into(), t!("5684 CoAPS").into()],
         extra_env: Vec::new(),
         loopback_port: Some(15432),
         problems: Vec::new(),
@@ -789,7 +789,7 @@ fn deploy_locked(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
             return Ok(());
         }
         Ok("sudo") if secret(&sudo_key(&inst.id)).is_none() => {
-            return Err(failed(&format!("{} needs administrator rights on the server: sudo asks for a password.", inst.user), "sudo: a password is required"));
+            return Err(failed(&nf!("{} needs administrator rights on the server: sudo asks for a password.", inst.user), "sudo: a password is required"));
         }
         Ok("sudo") => {
             DEBUG_AGENT_UPDATED.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -797,13 +797,13 @@ fn deploy_locked(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
         }
         _ => {}
     }
-    let det = inst.detected.clone().ok_or("Connect to the server first.")?;
+    let det = inst.detected.clone().ok_or(n!("Connect to the server first."))?;
     // An installed Platform Manager that does the jobs: nothing to copy.
     // One that cannot is left as it is, and this version's agent goes
     // beside it (crate::remote::reuse).
     let beside = match resolve(inst) {
         Ok(Agent::Installed(path)) => {
-            sink(Progress::Log { line: format!("The Platform Manager installed on the server does the work ({path}).") });
+            sink(Progress::Log { line: nf!("The Platform Manager installed on the server does the work ({path}).") });
             if det.os != Os::Windows {
                 ensure_sampler(inst, sink, false);
             }
@@ -818,7 +818,7 @@ fn deploy_locked(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
     let arch = match det.arch.as_str() {
         "x86_64" | "amd64" => Arch::X86_64,
         "aarch64" | "arm64" => Arch::Aarch64,
-        other => return Err(failed(&format!("There is no server agent for Linux on {other} processors. The agent runs on x86_64 and ARM64 (aarch64) servers."), "")),
+        other => return Err(failed(&nf!("There is no server agent for Linux on {other} processors. The agent runs on x86_64 and ARM64 (aarch64) servers."), "")),
     };
     let me = agent_file(System::Linux(arch), sink)?;
     // Where it goes as administrator: REMOTE_SPM, or beside an installed
@@ -827,11 +827,11 @@ fn deploy_locked(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
     let want = sentient_installer_core::manifest::sha256_file(&me)?;
     let have = run(inst, &format!("if [ -x {target} ]; then sha256sum {target}; else sha256sum \"{USER_SPM}\"; fi 2>/dev/null | cut -d' ' -f1"), None).unwrap_or_default();
     if have.trim() == want {
-        sink(Progress::Log { line: "The Platform Manager on the server is up to date.".into() });
+        sink(Progress::Log { line: n!("The Platform Manager on the server is up to date.").into() });
         ensure_sampler(inst, sink, false);
         return Ok(());
     }
-    sink(Progress::Step { name: "Copying the Platform Manager to the server".into() });
+    sink(Progress::Step { name: n!("Copying the Platform Manager to the server").into() });
     // Staged in the account's home, not /tmp: /tmp is often mounted
     // noexec, and the copy must run once before it replaces anything.
     let home = home(inst).unwrap_or_else(|_| "/tmp".into());
@@ -845,17 +845,17 @@ fn deploy_locked(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
     let staged = run(inst, &format!("sha256sum {staging} 2>/dev/null | cut -d' ' -f1"), None).unwrap_or_default();
     if staged.trim() != want {
         clean(inst);
-        sftp_copy(inst, &me, &staging).map_err(|e| failed("The agent could not be copied to the server. Nothing on the server was changed.", &e))?;
+        sftp_copy(inst, &me, &staging).map_err(|e| failed(n!("The agent could not be copied to the server. Nothing on the server was changed."), &e))?;
         let got = run(inst, &format!("sha256sum {staging} | cut -d' ' -f1"), None)?;
         if got.trim() != want {
             clean(inst);
-            return Err("The copy on the server does not match (checksum); nothing was replaced. Try again.".into());
+            return Err(n!("The copy on the server does not match (checksum); nothing was replaced. Try again.").into());
         }
     }
     // It must start on the server before it replaces anything.
     if let Err(e) = run(inst, &format!("chmod +x {staging} && {staging} --job monitor-json"), None) {
         clean(inst);
-        return Err(failed(&format!("The Platform Manager agent does not start on {}. Nothing on the server was changed.", if det.os_name.is_empty() { inst.name.as_str() } else { det.os_name.as_str() }), &e));
+        return Err(failed(&nf!("The Platform Manager agent does not start on {}. Nothing on the server was changed.", if det.os_name.is_empty() { inst.name.as_str() } else { det.os_name.as_str() }), &e));
     }
     // Where it goes: the system place when sudo works; the account's home
     // when it has no sudo, or chose that earlier (a per-user agent and no
@@ -865,12 +865,12 @@ fn deploy_locked(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
         Admin::Yes => {
             if let Err(e) = sudo_run(inst, &format!("install -D -m 0755 {staging} {target} && mkdir -p {REMOTE_JOBS}"), None) {
                 clean(inst);
-                return Err(failed(&format!("The agent could not be put in place at {target} (as administrator). The agent there is unchanged."), &e));
+                return Err(failed(&nf!("The agent could not be put in place at {target} (as administrator). The agent there is unchanged."), &e));
             }
             // The connection's agent is the old one: the next request starts the new one.
             conn::close(&inst.id);
             if target == reuse::LINUX_OWN {
-                sink(Progress::Log { line: format!("This version's agent is set up beside the Platform Manager installed on the server, at {target}; the installed one is not changed.") });
+                sink(Progress::Log { line: nf!("This version's agent is set up beside the Platform Manager installed on the server, at {target}; the installed one is not changed.") });
             }
         }
         Admin::No => {
@@ -888,9 +888,9 @@ fn deploy_locked(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
             let had = sudo_password(inst).is_some();
             return Err(failed(
                 &if had {
-                    format!("sudo refused the administrator password for {} on the server. Enter it again.", inst.user)
+                    nf!("sudo refused the administrator password for {} on the server. Enter it again.", inst.user)
                 } else {
-                    format!("{} needs administrator rights on the server: sudo asks for a password.", inst.user)
+                    nf!("{} needs administrator rights on the server: sudo asks for a password.", inst.user)
                 },
                 &why,
             ));
@@ -905,7 +905,7 @@ fn deploy_locked(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
 fn sftp_copy(inst: &Instance, local: &Path, remote: &str) -> Result<(), String> {
     match sftp_batch(inst, &format!("put \"{}\" \"{remote}\"", local.display())) {
         Ok(()) => Ok(()),
-        Err(e) if ["Connection closed", "Connection reset", "Broken pipe", "Connection lost", "timed out"].iter().any(|w| e.contains(w)) => {
+        Err(e) if [t!("Connection closed"), t!("Connection reset"), t!("Broken pipe"), t!("Connection lost"), "timed out"].iter().any(|w| e.contains(w)) => {
             sftp_batch(inst, &format!("reput \"{}\" \"{remote}\"", local.display()))
         }
         Err(e) => Err(e),
@@ -920,7 +920,7 @@ fn ensure_sampler(inst: &Instance, sink: &ProgressFn, always: bool) {
     }
     match spm_job(inst, "stats-install") {
         Ok(out) => sink(Progress::Log { line: out.trim().to_string() }),
-        Err(e) => sink(Progress::Log { line: format!("The statistics sampler was not installed: {e}") }),
+        Err(e) => sink(Progress::Log { line: nf!("The statistics sampler was not installed: {e}") }),
     }
 }
 
@@ -957,7 +957,7 @@ fn sftp_batch(inst: &Instance, command: &str) -> Result<(), String> {
     if out.status.success() {
         Ok(())
     } else {
-        Err(format!("The copy to the server failed: {}", String::from_utf8_lossy(&out.stderr).trim()))
+        Err(nf!("The copy to the server failed: {}", String::from_utf8_lossy(&out.stderr).trim()))
     }
 }
 
@@ -1005,7 +1005,7 @@ fn agent_failure(inst: &Instance, user: bool, password: impl FnOnce() -> bool, e
     if user {
         let lower = err.to_lowercase();
         if lower.contains("permission denied") || lower.contains("operation not permitted") || lower.contains("must be root") || lower.contains("as root") {
-            return failed(&format!("This takes root on the server, and {} has no sudo there. Sign in as an account with sudo, or as root, to do it.", inst.user), err);
+            return failed(&nf!("This takes root on the server, and {} has no sudo there. Sign in as an account with sudo, or as root, to do it.", inst.user), err);
         }
         return explain(err).unwrap_or(err.to_string());
     }
@@ -1015,9 +1015,9 @@ fn agent_failure(inst: &Instance, user: bool, password: impl FnOnce() -> bool, e
 fn sudo_error(inst: &Instance, password: bool, err: &str) -> String {
     if err.contains("a password is required") || err.contains("sudo:") {
         return if password {
-            format!("sudo refused the administrator password for {} on the server. Enter it again with Edit.", inst.user)
+            nf!("sudo refused the administrator password for {} on the server. Enter it again with Edit.", inst.user)
         } else {
-            format!("{} needs administrator rights on the server: enter its sudo password with Edit, sign in as root, or allow it sudo without a password.", inst.user)
+            nf!("{} needs administrator rights on the server: enter its sudo password with Edit, sign in as root, or allow it sudo without a password.", inst.user)
         };
     }
     explain(err).unwrap_or(err.to_string())
@@ -1064,9 +1064,9 @@ pub fn ready(inst: &Instance) -> Result<(), String> {
 
 /// What [`status`] says before the Platform Manager is on the server.
 /// The Platform Manager there has no SENTIENT added yet: nothing to report.
-pub const NOT_ADDED: &str = "No SENTIENT is added on this server.";
+pub const NOT_ADDED: &str = n!("No SENTIENT is added on this server.");
 
-pub const NOT_SET_UP: &str = "The server agent is not set up on this server. Set up installs it, to read the server's state and work on it.";
+pub const NOT_SET_UP: &str = n!("The server agent is not set up on this server. Set up installs it, to read the server's state and work on it.");
 
 /// Whether an error means the agent needs setting up (or choosing): none on
 /// the server, or an installed Platform Manager not used as it is yet.
@@ -1076,7 +1076,7 @@ pub fn needs_setup(e: &str) -> bool {
 
 /// What the agent prints on Windows when the account is not an
 /// administrator (crate::headless::run).
-const NOT_ELEVATED: &str = "Run this from an elevated prompt";
+const NOT_ELEVATED: &str = n!("Run this from an elevated prompt");
 
 /// Whether a job's answer is the agent's refusal for want of rights.
 fn not_elevated(out: &str) -> bool {
@@ -1098,7 +1098,7 @@ pub fn not_admin(inst: &Instance) -> String {
 }
 
 pub fn not_admin_message(user: &str, host: &str) -> String {
-    format!(
+    nf!(
         "The account {user} on {host} is not an administrator. The Platform Manager needs an administrator account there: add it to the Administrators group, or use an administrator account for this instance."
     )
 }
@@ -1137,8 +1137,8 @@ pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {
     }
     resolve(inst)?;
     let out = spm_job(inst, "status-json")?;
-    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's Platform Manager gave no status.")?;
-    let mut st: RemoteStatus = serde_json::from_str(line).map_err(|e| format!("unexpected status from the server: {e}"))?;
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or(n!("The server's Platform Manager gave no status."))?;
+    let mut st: RemoteStatus = serde_json::from_str(line).map_err(|e| nf!("unexpected status from the server: {e}"))?;
     st.running_job = running_job(inst);
     Ok(st)
 }
@@ -1233,12 +1233,12 @@ fn no_answer(out: &str) -> String {
     let lines: Vec<&str> = out.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
     if lines.is_empty() {
         failed(
-            "The server's Platform Manager printed nothing for this request.",
-            "It may have stopped at once (a missing file or a blocked program), or it is a windowed build that was not waited for. Run Set up again; if it stays, run it there by hand with --job status-json and look at what it says.",
+            n!("The server's Platform Manager printed nothing for this request."),
+            n!("It may have stopped at once (a missing file or a blocked program), or it is a windowed build that was not waited for. Run Set up again; if it stays, run it there by hand with --job status-json and look at what it says."),
         )
     } else {
         let tail = lines[lines.len().saturating_sub(6)..].join("\n");
-        failed("The server's Platform Manager answered, but not with the data asked for. What it printed:", &tail)
+        failed(n!("The server's Platform Manager answered, but not with the data asked for. What it printed:"), &tail)
     }
 }
 
@@ -1251,7 +1251,7 @@ fn read_json<T: serde::de::DeserializeOwned>(inst: &Instance, job: &str) -> Resu
         return Err(NOT_ADDED.into());
     }
     let line = out.lines().rev().find(|l| { let t = l.trim_start(); t.starts_with('{') || t.starts_with('[') }).ok_or_else(|| no_answer(&out))?;
-    serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
+    serde_json::from_str(line).map_err(|e| nf!("unexpected answer from the server: {e}"))
 }
 
 /// What the server's Uninstall dialog shows (crate::uninstall::Facts); the
@@ -1370,7 +1370,7 @@ pub fn gateway(inst: &Instance) -> Result<HashMap<String, String>, String> {
         return Ok(t.to_string_lossy().split([' ', '+']).filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect());
     }
     let out = spm_job(inst, "gateway-status")?;
-    let line = out.lines().rev().find(|l| l.starts_with("installed=")).ok_or("The server's Platform Manager gave no gateway state.")?;
+    let line = out.lines().rev().find(|l| l.starts_with("installed=")).ok_or(n!("The server's Platform Manager gave no gateway state."))?;
     // Values with spaces come %20-escaped (headless's gateway-status).
     Ok(line.split(' ').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.replace("%20", " ").replace("%25", "%"))).collect())
 }
@@ -1396,7 +1396,7 @@ pub fn backups(inst: &Instance) -> Result<RemoteBackups, String> {
 /// server's shell (a quote in it is refused, never stripped).
 fn job_arg(a: &str) -> Result<String, String> {
     if a.contains(['\'', '"', '\n']) {
-        return Err(format!("{a} has a quote in it; pick a folder without one."));
+        return Err(nf!("{a} has a quote in it; pick a folder without one."));
     }
     Ok(format!("'{a}'"))
 }
@@ -1445,7 +1445,7 @@ pub fn dir_list(inst: &Instance, path: &str) -> Result<crate::backups::DirList, 
 fn debug_dirs(path: &str) -> Option<Result<crate::backups::DirList, String>> {
     let file = std::env::var_os("SPM_DEBUG_REMOTE_DIRS")?;
     let all: std::collections::HashMap<String, crate::backups::DirList> = serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
-    Some(all.get(path).cloned().ok_or_else(|| format!("{path} cannot be opened: No such file or directory")))
+    Some(all.get(path).cloned().ok_or_else(|| nf!("{path} cannot be opened: No such file or directory")))
 }
 
 /// Make the folder `name` in `path` on the server; the new folder, listed.
@@ -1552,7 +1552,7 @@ pub fn start_job(inst: &Instance, args: &[&str]) -> Result<String, String> {
     // One job at a time on a server.
     let busy = run(inst, &running_script(), None).unwrap_or_default();
     if !busy.trim().is_empty() {
-        return Err("Another job is still running on this server. Wait until it ends.".into());
+        return Err(n!("Another job is still running on this server. Wait until it ends.").into());
     }
     let quoted: Vec<String> = args.iter().map(|a| format!("'{}'", a.replace('\'', ""))).collect();
     let system = run(inst, &format!("{} [ -x $A ] && echo \"$A\" || echo no", pick_system_agent()), None)?.trim().to_string();
@@ -1618,7 +1618,7 @@ pub fn follow(inst: &Instance, id: &str, sink: &ProgressFn) -> Result<(), String
             };
         }
         drops += 1;
-        sink(Progress::Log { line: format!("The connection to {} was lost; the job keeps running there. Reconnecting…", inst.name) });
+        sink(Progress::Log { line: nf!("The connection to {} was lost; the job keeps running there. Reconnecting…", inst.name) });
         std::thread::sleep(std::time::Duration::from_secs((2 * drops as u64).min(30)));
     }
 }
@@ -1641,7 +1641,7 @@ fn watch_needs_pg_admin(inst: &Instance, sink: &ProgressFn) -> ProgressFn {
         match ask {
             Some(ask) => {
                 NEEDS_PG.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(id.clone(), ask);
-                inner(Progress::Log { line: "Adding it needs the PostgreSQL admin (postgres) password.".into() });
+                inner(Progress::Log { line: n!("Adding it needs the PostgreSQL admin (postgres) password.").into() });
             }
             None => inner(p),
         }
@@ -1728,17 +1728,17 @@ fn job_answer(ok: bool, out: &str, err: &str) -> Result<String, String> {
     }
     match (ok, done) {
         (true, Some(m)) => Ok(m),
-        (true, None) => Ok(last.unwrap_or_else(|| "Added.".into())),
+        (true, None) => Ok(last.unwrap_or_else(|| t!("Added.").into())),
         (false, _) => {
             let e = clean_stderr(err);
-            Err(if !e.is_empty() { explain(&e).unwrap_or(e) } else { last.unwrap_or_else(|| "The server did not say why.".into()) })
+            Err(if !e.is_empty() { explain(&e).unwrap_or(e) } else { last.unwrap_or_else(|| n!("The server did not say why.").into()) })
         }
     }
 }
 
 /// The last lines of SENTIENT's log on the server.
 pub fn logs(inst: &Instance, lines: u32) -> Result<String, String> {
-    spm_job(inst, &format!("logs {lines}"))
+    spm_job(inst, &tf!("logs {lines}"))
 }
 
 /// One log source on the server: the last `lines`, or since midnight with
@@ -1746,7 +1746,7 @@ pub fn logs(inst: &Instance, lines: u32) -> Result<String, String> {
 pub fn logs_from(inst: &Instance, source: crate::logsource::Source, lines: u32, today: bool) -> Result<String, String> {
     #[cfg(debug_assertions)]
     if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_LOGS") {
-        return std::fs::read_to_string(std::path::Path::new(&t).join(format!("{}.log", source.key()))).map_err(|_| format!("Could not read the {} log.", source.label()));
+        return std::fs::read_to_string(std::path::Path::new(&t).join(format!("{}.log", source.key()))).map_err(|_| nf!("Could not read the {} log.", crate::i18n::t(source.label())));
     }
     spm_job(inst, &format!("logs {lines} --source {}{}", source.key(), if today { " --today" } else { "" }))
 }
@@ -1818,7 +1818,7 @@ fn spm_job(inst: &Instance, job: &str) -> Result<String, String> {
     // text goes to the activity log, the pages say the agent is out of date.
     r.map_err(|e| {
         if e.contains("usage: --job") || e.contains("Unknown job") {
-            crate::maintenance_ops::log_line(&format!("{}: the agent does not know \"{job}\" (out of date)", inst.name));
+            crate::maintenance_ops::log_line(&nf!("{}: the agent does not know \"{job}\" (out of date)", inst.name));
             // An installed Platform Manager in use: Update agent sets up
             // this version's own beside it.
             if reuse::found(&inst.id).is_some() {
@@ -1858,8 +1858,8 @@ pub fn takeover_plan(inst: &Instance, compose: Option<&str>) -> Result<sentient_
     if out.lines().any(|l| l.trim() == "null") {
         return Err(NOT_ADDED.into());
     }
-    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's Platform Manager gave no plan.")?;
-    serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or(n!("The server's Platform Manager gave no plan."))?;
+    serde_json::from_str(line).map_err(|e| nf!("unexpected answer from the server: {e}"))
 }
 
 /// The plan, updating an agent too old to answer it first (the same update
@@ -1875,7 +1875,7 @@ pub(crate) fn after_agent_update<T>(mut ask: impl FnMut() -> Result<T, String>, 
         Err(e) if e == AGENT_OLD => {
             update().map_err(|e| {
                 let (head, details) = split_failure(&e);
-                failed(&format!("The server agent is out of date and could not be updated first: {head}"), details.as_deref().unwrap_or(""))
+                failed(&nf!("The server agent is out of date and could not be updated first: {head}"), details.as_deref().unwrap_or(""))
             })?;
             ask()
         }
@@ -1914,7 +1914,7 @@ pub fn licence_api(inst: &Instance, req: &crate::licence::Request) -> Result<cra
         match spm_job(inst, &format!("licence-api --request-b64 {b64}")) {
             Ok(out) => {
                 if let Some(line) = out.lines().rev().find(|l| l.trim_start().starts_with('{')) {
-                    return serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"));
+                    return serde_json::from_str(line).map_err(|e| nf!("unexpected answer from the server: {e}"));
                 }
             }
             Err(e) if e != AGENT_OLD && !e.contains("usage:") => return Err(e),
@@ -1927,7 +1927,7 @@ pub fn licence_api(inst: &Instance, req: &crate::licence::Request) -> Result<cra
     remove_file(inst, &file);
     let out = out?;
     let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or_else(|| no_answer(&out))?;
-    serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
+    serde_json::from_str(line).map_err(|e| nf!("unexpected answer from the server: {e}"))
 }
 
 /// Whether a migration could start on the server now (crate::migration::
@@ -1942,7 +1942,7 @@ pub fn migrate_preflight(inst: &Instance) -> Result<(), String> {
 
 /// The agent on the server answered a job it does not know: it is older
 /// than this Platform Manager. Pages show one notice with Update agent.
-pub const AGENT_OLD: &str = "The agent on this server is out of date.";
+pub const AGENT_OLD: &str = n!("The agent on this server is out of date.");
 
 /// Delete a file on the server (the settings file after applying).
 pub fn remove_file(inst: &Instance, path: &str) {
@@ -1967,11 +1967,11 @@ pub fn split_failure(m: &str) -> (String, Option<String>) {
         return (m.to_string(), None);
     }
     let headline = if m.contains("no such file") || m.contains("not found") && m.contains(".yml") {
-        "A compose file SENTIENT's stack needs is missing."
+        t!("A compose file SENTIENT's stack needs is missing.")
     } else if m.contains("permission denied") || m.contains("Permission denied") {
-        "The server refused the action: not enough rights."
+        t!("The server refused the action: not enough rights.")
     } else {
-        "The action did not finish on the server."
+        t!("The action did not finish on the server.")
     };
     (headline.to_string(), Some(m.to_string()))
 }
@@ -1981,7 +1981,7 @@ pub fn failed(headline: &str, details: &str) -> String {
 }
 
 /// Where [`failed`] splits the headline from the details.
-pub const DETAILS: &str = "\n\nDetails: ";
+pub const DETAILS: &str = n!("\n\nDetails: ");
 
 /// A server's processor, for its Linux agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2001,9 +2001,9 @@ impl System {
     /// How the messages name it.
     pub fn label(self) -> &'static str {
         match self {
-            System::Linux(Arch::X86_64) => "Linux (x86_64)",
-            System::Linux(Arch::Aarch64) => "Linux (ARM64)",
-            System::Windows => "Windows",
+            System::Linux(Arch::X86_64) => t!("Linux (x86_64)"),
+            System::Linux(Arch::Aarch64) => t!("Linux (ARM64)"),
+            System::Windows => t!("Windows"),
         }
     }
 }
@@ -2034,26 +2034,26 @@ pub enum NoAgent {
 
 impl std::fmt::Display for NoAgent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let fix = |s: &System| format!("Install the Platform Manager on that computer, or use a Platform Manager package that includes the {} agent.", s.label());
+        let fix = |s: &System| tf!("Install the Platform Manager on that computer, or use a Platform Manager package that includes the {} agent.", crate::i18n::t(s.label()));
         match self {
             NoAgent::NotPublished { system, version } => write!(
                 f,
-                "This package has no {} agent, and this build ({version}) is not a published release, so none can be downloaded. {}",
-                system.label(),
-                fix(system)
+                "{}", tf!("This package has no {} agent, and this build ({version}) is not a published release, so none can be downloaded. {}",
+                crate::i18n::t(system.label()),
+                fix(system))
             ),
-            NoAgent::NotInRelease { system, version } => write!(f, "This package has no {} agent, and the published release {version} has none either. {}", system.label(), fix(system)),
+            NoAgent::NotInRelease { system, version } => write!(f, "{}", tf!("This package has no {} agent, and the published release {version} has none either. {}", crate::i18n::t(system.label()), fix(system))),
             NoAgent::Download { system, version, .. } => write!(
                 f,
-                "This package has no {} agent, and the one published with {version} could not be downloaded. Check this computer's internet connection and try again. {}",
-                system.label(),
-                fix(system)
+                "{}", tf!("This package has no {} agent, and the one published with {version} could not be downloaded. Check this computer's internet connection and try again. {}",
+                crate::i18n::t(system.label()),
+                fix(system))
             ),
             NoAgent::Checksum { system, version } => write!(
                 f,
-                "This package has no {} agent, and the one downloaded for {version} does not match its published checksum, so it was not used. Try again. {}",
-                system.label(),
-                fix(system)
+                "{}", tf!("This package has no {} agent, and the one downloaded for {version} does not match its published checksum, so it was not used. Try again. {}",
+                crate::i18n::t(system.label()),
+                fix(system))
             ),
         }
     }
@@ -2065,7 +2065,7 @@ impl NoAgent {
         let details = match self {
             NoAgent::Download { error, .. } => error.clone(),
             NoAgent::NotPublished { system, version } | NoAgent::NotInRelease { system, version } | NoAgent::Checksum { system, version } => {
-                format!("{} for Platform Manager {version}", agent_name(*system))
+                tf!("{} for Platform Manager {version}", agent_name(*system))
             }
         };
         failed(&self.to_string(), &details)
@@ -2163,7 +2163,7 @@ fn released_agent(system: System, sink: &ProgressFn) -> Result<PathBuf, NoAgent>
     let download = |error: String| NoAgent::Download { system, version: version.clone(), error };
     let dir = crate::updates::prefs_dir().join("remote-builds");
     std::fs::create_dir_all(&dir).map_err(|e| download(e.to_string()))?;
-    sink(Progress::Step { name: format!("Getting the server agent of Platform Manager {version}") });
+    sink(Progress::Step { name: nf!("Getting the server agent of Platform Manager {version}") });
     let all = releases::fetch(releases::MANAGER_REPO).map_err(download)?;
     let r = all
         .iter()
@@ -2178,9 +2178,9 @@ fn released_agent(system: System, sink: &ProgressFn) -> Result<PathBuf, NoAgent>
             .get(&asset.browser_download_url)
             .set("User-Agent", "SENTIENT-Platform-Manager")
             .call()
-            .map_err(|e| download(format!("download {name}: {e}")))?;
+            .map_err(|e| download(nf!("download {name}: {e}")))?;
         let mut out = std::fs::File::create(&file).map_err(|e| download(e.to_string()))?;
-        std::io::copy(&mut resp.into_reader(), &mut out).map_err(|e| download(format!("download {name}: {e}")))?;
+        std::io::copy(&mut resp.into_reader(), &mut out).map_err(|e| download(nf!("download {name}: {e}")))?;
         if !ok(&file) {
             let _ = std::fs::remove_file(&file);
             return Err(NoAgent::Checksum { system, version });
@@ -2276,10 +2276,10 @@ mod win {
         let want = sentient_installer_core::manifest::sha256_file(&file)?;
         let have = ps(inst, &format!("if (Test-Path '{EXE}') {{ (Get-FileHash -Algorithm SHA256 '{EXE}').Hash }}")).unwrap_or_default();
         if have.trim().eq_ignore_ascii_case(&want) {
-            sink(Progress::Log { line: "The Platform Manager on the server is up to date.".into() });
+            sink(Progress::Log { line: n!("The Platform Manager on the server is up to date.").into() });
             return Ok(());
         }
-        sink(Progress::Step { name: "Copying the Platform Manager to the server".into() });
+        sink(Progress::Step { name: n!("Copying the Platform Manager to the server").into() });
         ps(inst, &format!("New-Item -ItemType Directory -Force '{JOBS}' | Out-Null"))?;
         let upload = format!("{DIR}\\upload.exe");
         let sftp_path = format!("/{}", upload.replace('\\', "/"));
@@ -2287,7 +2287,7 @@ mod win {
         let staged = ps(inst, &format!("if (Test-Path '{upload}') {{ (Get-FileHash -Algorithm SHA256 '{upload}').Hash }}")).unwrap_or_default();
         if !staged.trim().eq_ignore_ascii_case(&want) {
             let _ = ps(inst, &format!("Remove-Item -Force -ErrorAction SilentlyContinue '{upload}'"));
-            super::sftp_copy(inst, &file, &sftp_path).map_err(|e| super::failed("The agent could not be copied to the server. Nothing on the server was changed.", &e))?;
+            super::sftp_copy(inst, &file, &sftp_path).map_err(|e| super::failed(n!("The agent could not be copied to the server. Nothing on the server was changed."), &e))?;
         }
         let got = ps(inst, &format!("if (Test-Path '{upload}') {{ (Get-FileHash -Algorithm SHA256 '{upload}').Hash }}"))?;
         if !got.trim().eq_ignore_ascii_case(&want) {
@@ -2295,26 +2295,26 @@ mod win {
             // place meanwhile: then it is up to date, not a failure.
             let now = ps(inst, &format!("if (Test-Path '{EXE}') {{ (Get-FileHash -Algorithm SHA256 '{EXE}').Hash }}")).unwrap_or_default();
             if now.trim().eq_ignore_ascii_case(&want) {
-                sink(Progress::Log { line: "The Platform Manager on the server is up to date.".into() });
+                sink(Progress::Log { line: n!("The Platform Manager on the server is up to date.").into() });
                 return Ok(());
             }
             let _ = ps(inst, &format!("Remove-Item -Force -ErrorAction SilentlyContinue '{upload}'"));
-            return Err("The copy on the server does not match (checksum); nothing was replaced. Try again.".into());
+            return Err(n!("The copy on the server does not match (checksum); nothing was replaced. Try again.").into());
         }
         // Windows PowerShell 5.1's Move-Item -Force does not replace a file
         // ("Cannot create a file when that file already exists"): the old
         // agent is renamed aside (a running exe can be), the new one moved
         // in, the old one put back on a failure, and removed when it can be
         // (a running one stays until the next deploy removes it).
-        let put = ps(inst, &replace_script(&upload, EXE)).map_err(|e| super::failed("The agent could not be put in place. The agent there is unchanged.", &e))?;
+        let put = ps(inst, &replace_script(&upload, EXE)).map_err(|e| super::failed(n!("The agent could not be put in place. The agent there is unchanged."), &e))?;
         if !put.lines().any(|l| l.trim().eq_ignore_ascii_case(&want)) {
-            return Err(super::failed("The agent put in place does not match (checksum). Try again.", put.trim()));
+            return Err(super::failed(n!("The agent put in place does not match (checksum). Try again."), put.trim()));
         }
         set_exe(&inst.id, &Agent::Own);
         // The connection's agent is the old one (or none): made again.
         conn::close(&inst.id);
         if reuse::found(&inst.id).is_some() {
-            sink(Progress::Log { line: format!("This version's agent is set up beside the Platform Manager installed on the server, at {EXE}; the installed one is not changed.") });
+            sink(Progress::Log { line: nf!("This version's agent is set up beside the Platform Manager installed on the server, at {EXE}; the installed one is not changed.") });
         }
         Ok(())
     }
@@ -2346,8 +2346,8 @@ mod win {
         if not_elevated(&out) {
             return Err(not_admin(inst));
         }
-        let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or("The server's Platform Manager gave no status.")?;
-        let mut st: RemoteStatus = serde_json::from_str(line).map_err(|e| format!("unexpected status from the server: {e}"))?;
+        let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or(n!("The server's Platform Manager gave no status."))?;
+        let mut st: RemoteStatus = serde_json::from_str(line).map_err(|e| nf!("unexpected status from the server: {e}"))?;
         st.running_job = running_job(inst);
         super::remember_user_distro(inst, st.wsl_distro.as_deref());
         Ok(st)
@@ -2387,10 +2387,10 @@ mod win {
                 ),
             )?;
             if busy.contains("BUSY") {
-                return Err("Another job is still running on this server. Wait until it ends.".into());
+                return Err(n!("Another job is still running on this server. Wait until it ends.").into());
             }
             if !busy.contains("READY") {
-                return Err(format!("The job did not start on the server: {}", busy.trim()));
+                return Err(nf!("The job did not start on the server: {}", busy.trim()));
             }
             let script = format!(
                 "& '{}' --job --json {} > '{JOBS}\\{id}.log' 2> '{JOBS}\\{id}.err'; Set-Content -Encoding ascii '{JOBS}\\{id}.done' \"$LASTEXITCODE\"",
@@ -2429,10 +2429,10 @@ mod win {
         );
         let out = ps(inst, &script)?;
         if out.contains("BUSY") {
-            return Err("Another job is still running on this server. Wait until it ends.".into());
+            return Err(n!("Another job is still running on this server. Wait until it ends.").into());
         }
         if !out.contains("STARTED") {
-            return Err(format!("The job did not start on the server: {}", out.trim()));
+            return Err(nf!("The job did not start on the server: {}", out.trim()));
         }
         Ok(())
     }
@@ -2477,7 +2477,7 @@ mod win {
                     // end marker (the connection dropped): it stopped there.
                     if !ended {
                         if let Some(Some(Err(e))) = in_session_state(id) {
-                            failure.get_or_insert(format!(
+                            failure.get_or_insert(tf!(
                                 "The job ran in the connection's session and stopped when the connection to {} ended: {e}",
                                 inst.name
                             ));
@@ -2511,7 +2511,7 @@ mod win {
                 }
                 Err(_) => {
                     drops += 1;
-                    sink(Progress::Log { line: format!("The connection to {} was lost; the job keeps running there. Reconnecting…", inst.name) });
+                    sink(Progress::Log { line: nf!("The connection to {} was lost; the job keeps running there. Reconnecting…", inst.name) });
                     std::thread::sleep(std::time::Duration::from_secs((2 * drops as u64).min(30)));
                 }
             }
@@ -3222,11 +3222,11 @@ pub fn restore_args(inst: &Instance, job: &str, req: &crate::restore_flow::Reque
 pub fn run_followed(inst: &Instance, args: &[String], sink: &ProgressFn) -> Result<(), String> {
     let updated = deploy(inst, sink);
     if let Err(e) = &updated {
-        sink(Progress::Log { line: format!("The agent could not be updated: {}", split_failure(e).0) });
+        sink(Progress::Log { line: nf!("The agent could not be updated: {}", split_failure(e).0) });
     }
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
     match (start_job(inst, &a).and_then(|id| follow(inst, &id, sink)), updated) {
-        (Err(e), Err(u)) if e == AGENT_OLD || e.contains("usage: --job") => Err(failed("The agent on this server could not be updated, and the one there is too old for this.", &split_failure(&u).1.unwrap_or(u.clone()))),
+        (Err(e), Err(u)) if e == AGENT_OLD || e.contains("usage: --job") => Err(failed(n!("The agent on this server could not be updated, and the one there is too old for this."), &split_failure(&u).1.unwrap_or(u.clone()))),
         (r, _) => r,
     }
 }
@@ -3239,7 +3239,7 @@ pub fn restore_history(inst: &Instance) -> Result<Vec<crate::restore_flow::Entry
     }
     let out = spm_job(inst, "restore-history-json")?;
     let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or_else(|| no_answer(&out))?;
-    serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
+    serde_json::from_str(line).map_err(|e| nf!("unexpected answer from the server: {e}"))
 }
 
 /// One restore's log on the server.
@@ -3293,7 +3293,7 @@ fn rename_remote(inst: &Instance, from: &str, to: &str) -> Result<(), String> {
         // Move-Item -Force does not replace a file on PowerShell 5.1.
         win::ps(inst, &win::replace_script(from, to)).map(|_| ())
     } else {
-        run(inst, &format!("mv -f {} {}", shell_quote(from), shell_quote(to)), None).map(|_| ())
+        run(inst, &tf!("mv -f {} {}", shell_quote(from), shell_quote(to)), None).map(|_| ())
     }
 }
 
@@ -3328,7 +3328,7 @@ pub fn upload_backup(inst: &Instance, local: &Path, folder: &str, progress: &(dy
     let total: u64 = files.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum();
     let mut before = 0u64;
     for f in &files {
-        let name = f.file_name().ok_or("no file name")?.to_string_lossy().to_string();
+        let name = f.file_name().ok_or(n!("no file name"))?.to_string_lossy().to_string();
         let dest = join_remote(inst, folder, &name);
         let part = format!("{dest}.part");
         let len = std::fs::metadata(f).map(|m| m.len()).unwrap_or(0);
@@ -3339,7 +3339,7 @@ pub fn upload_backup(inst: &Instance, local: &Path, folder: &str, progress: &(dy
             return Err(format!("{}\n{}", UPLOAD_BROKE, serde_json::json!({"sent": base + sent, "total": total, "why": e})));
         }
         if remote_size(inst, &part) != len {
-            return Err(format!("{}\n{}", UPLOAD_BROKE, serde_json::json!({"sent": base + remote_size(inst, &part), "total": total, "why": "The size on the server does not match."})));
+            return Err(format!("{}\n{}", UPLOAD_BROKE, serde_json::json!({"sent": base + remote_size(inst, &part), "total": total, "why": n!("The size on the server does not match.")})));
         }
         rename_remote(inst, &part, &dest)?;
         before += len;
@@ -3408,7 +3408,7 @@ pub fn copy_between(src: &Instance, dst: &Instance, path: &str, folder: &str, wa
     };
     r?;
     if remote_size(dst, &part) != total {
-        return Err(format!("The copy on {} is {} bytes, the backup on {} {total}. Try again.", dst.name, remote_size(dst, &part), src.name));
+        return Err(nf!("The copy on {} is {} bytes, the backup on {} {total}. Try again.", dst.name, remote_size(dst, &part), src.name));
     }
     rename_remote(dst, &part, &dest)?;
     // The checksum file and the secrets key go along (small).
@@ -3433,10 +3433,10 @@ fn pipe_copy(src: &Instance, dst: &Instance, path: &str, part: &str) -> Result<(
     let w = writer.wait().map_err(|e| e.to_string())?;
     let r = reader.wait_with_output().map_err(|e| e.to_string())?;
     if !r.status.success() {
-        return Err(format!("Reading the backup on {} failed: {}", src.name, String::from_utf8_lossy(&r.stderr).trim()));
+        return Err(nf!("Reading the backup on {} failed: {}", src.name, String::from_utf8_lossy(&r.stderr).trim()));
     }
     if !w.success() {
-        return Err(format!("Writing the copy on {} failed.", dst.name));
+        return Err(nf!("Writing the copy on {} failed.", dst.name));
     }
     Ok(())
 }
@@ -3470,7 +3470,7 @@ fn pinned_host_keys(dst: &Instance) -> Result<String, String> {
     let out = Command::new("ssh-keygen").args(["-F", &pattern, "-f"]).arg(known_hosts()).output().map_err(|e| format!("ssh-keygen: {e}"))?;
     let lines = pinned_lines(&String::from_utf8_lossy(&out.stdout), &pattern);
     if lines.is_empty() {
-        return Err(format!("This computer has no pinned host key for {0}, so the other server could not check whom it sends the backup to. Connect to {0} from here once, or copy through this computer instead.", dst.name));
+        return Err(nf!("This computer has no pinned host key for {0}, so the other server could not check whom it sends the backup to. Connect to {0} from here once, or copy through this computer instead.", dst.name));
     }
     Ok(lines)
 }
@@ -3478,7 +3478,7 @@ fn pinned_host_keys(dst: &Instance) -> Result<String, String> {
 /// The scp the source server runs: only `dst`'s pinned keys in a known_hosts
 /// file of their own (`known` on the source), checked strictly.
 fn direct_copy_command(dst: &Instance, key: &str, known: &str, path: &str, part: &str) -> String {
-    format!(
+    tf!(
         "scp -q -i {} -P {} -o StrictHostKeyChecking=yes -o UserKnownHostsFile={} -o GlobalKnownHostsFile=/dev/null -o BatchMode=yes {} {}",
         shell_quote(key),
         dst.port,
@@ -3499,7 +3499,7 @@ fn direct_copy(src: &Instance, dst: &Instance, path: &str, part: &str) -> Result
     let made = Command::new("ssh-keygen").args(["-q", "-t", "ed25519", "-N", "", "-C", &tag, "-f"]).arg(&key).output().map_err(|e| format!("ssh-keygen: {e}"))?;
     if !made.status.success() {
         let _ = std::fs::remove_dir_all(&dir);
-        return Err("A key for the copy could not be made on this computer.".into());
+        return Err(n!("A key for the copy could not be made on this computer.").into());
     }
     let public = std::fs::read_to_string(key.with_extension("pub")).map_err(|e| e.to_string())?;
     let private = std::fs::read_to_string(&key).map_err(|e| e.to_string())?;
@@ -3509,14 +3509,14 @@ fn direct_copy(src: &Instance, dst: &Instance, path: &str, part: &str) -> Result
         let _ = run(src, &format!("rm -f ~/.{tag} ~/.{tag}.known_hosts"), None);
     };
     let r = (|| -> Result<(), String> {
-        run(dst, &format!("mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo {} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys", shell_quote(&format!("restrict {}", public.trim()))), None)?;
+        run(dst, &format!("mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo {} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys", shell_quote(&tf!("restrict {}", public.trim()))), None)?;
         let base = home(src)?.trim_end_matches('/').to_string();
         let (key_at, known_at) = (format!("{base}/.{tag}"), format!("{base}/.{tag}.known_hosts"));
         put_text(src, &key_at, &private)?;
         put_text(src, &known_at, &known_keys)?;
         run(src, &direct_copy_command(dst, &key_at, &known_at, path, part), None)
             .map(|_| ())
-            .map_err(|e| format!("{} could not send it to {} ({e}). Copy through this computer instead.", src.name, dst.name))
+            .map_err(|e| nf!("{} could not send it to {} ({e}). Copy through this computer instead.", src.name, dst.name))
     })();
     cleanup();
     r
@@ -3564,7 +3564,7 @@ pub fn backups_in(inst: &Instance, folder: &str) -> Result<Vec<crate::backups::E
     }
     let out = spm_job(inst, &format!("backup-list {}", job_arg(folder)?))?;
     let line = out.lines().rev().find(|l| l.trim_start().starts_with('[')).ok_or_else(|| no_answer(&out))?;
-    serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
+    serde_json::from_str(line).map_err(|e| nf!("unexpected answer from the server: {e}"))
 }
 
 /// Copy a backup from a server into `folder` on this computer (another
@@ -3589,7 +3589,7 @@ pub fn download_backup(src: &Instance, path: &str, folder: &Path, progress: &(dy
     });
     r?;
     if std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0) != total {
-        return Err("The copy here does not have the backup's size. Try again.".into());
+        return Err(n!("The copy here does not have the backup's size. Try again.").into());
     }
     std::fs::rename(&part, &dest).map_err(|e| e.to_string())?;
     let _ = sftp_batch(src, &format!("get \"{}.sha256\" \"{}.sha256\"", sftp_path(src, path), dest.display()));

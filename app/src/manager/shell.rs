@@ -28,19 +28,12 @@ pub struct Appearance {
     /// desktop can (`see_through_supported`).
     #[serde(default = "yes")]
     pub see_through: bool,
-    /// The Platform Manager's language (a code from LANGUAGES).
-    #[serde(default = "english")]
+    /// The Platform Manager's language (a code from crate::i18n::LANGUAGES);
+    /// empty: the computer's own.
+    #[serde(default)]
     pub language: String,
 }
 
-fn english() -> String {
-    "en_US".into()
-}
-
-/// The languages the Platform Manager can show: code and the language's
-/// own name. Only English is translated so far; SENTIENT's set (ui-ngx
-/// locales) is added here as data when its translations come.
-pub const LANGUAGES: &[(&str, &str)] = &[("en_US", "English")];
 
 fn yes() -> bool {
     true
@@ -48,7 +41,7 @@ fn yes() -> bool {
 
 impl Default for Appearance {
     fn default() -> Self {
-        Self { folded: false, see_through: true, language: english() }
+        Self { folded: false, see_through: true, language: String::new() }
     }
 }
 
@@ -91,11 +84,11 @@ pub fn see_through_why_not() -> Option<&'static str> {
         return None;
     }
     if GL_ONLY.with(|g| g.get()) {
-        return Some("The menu cannot be translucent without Vulkan graphics: install your graphics card's Vulkan driver (on Arch vulkan-intel, vulkan-radeon or nvidia-utils; on Debian and Ubuntu mesa-vulkan-drivers), then start the Platform Manager again.");
+        return Some(t!("The menu cannot be translucent without Vulkan graphics: install your graphics card's Vulkan driver (on Arch vulkan-intel, vulkan-radeon or nvidia-utils; on Debian and Ubuntu mesa-vulkan-drivers), then start the Platform Manager again."));
     }
     let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_uppercase();
     let blurs = desktop.contains("KDE") || desktop.contains("HYPRLAND") || picom_runs();
-    if blurs { None } else { Some("Needs a desktop that blurs what is behind a window: KDE Plasma, Hyprland, picom, or Windows. Here the menu is solid.") }
+    if blurs { None } else { Some(t!("Needs a desktop that blurs what is behind a window: KDE Plasma, Hyprland, picom, or Windows. Here the menu is solid.")) }
 }
 
 pub fn see_through_supported() -> bool {
@@ -520,14 +513,15 @@ impl Manager {
                 .child(ui::layout_probe("menu-row"))
                 .when(on, |r| r.child(selected_probe(id)))
                 .child(div().relative().flex_shrink_0().child(icon.size(px(ICON)).text_color(if on { theme.primary } else { theme.muted_foreground })).child(ui::layout_probe("menu-icon")))
-                .when(!rail, |r| r.child(div().relative().whitespace_nowrap().opacity(names).child(title.clone()).child(ui::layout_probe(if on { "menu-label-on" } else { "menu-label" }))))
-                .when(rail, move |r| r.tooltip(crate::ui::tooltip(title.clone())))
+                // A long name (German, Tamil) ends in "…" with the whole name on hover.
+                .when(!rail, |r| r.child(div().relative().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().opacity(names).child(title.clone()).child(ui::layout_probe(if on { "menu-label-on" } else { "menu-label" }))))
+                .when(rail || title.chars().count() > 22, move |r| r.tooltip(crate::ui::tooltip(title.clone())))
         };
         let items = Page::ALL.into_iter().map(|page| {
             row(page.id(), page.icon(), page.title().into(), page == current)
                 // Files is new in this release (the mockup's pill).
                 .when(page == Page::Files && !rail, |r| {
-                    r.child(div().flex_1()).child(div().px(px(7.)).rounded_full().bg(theme.muted).text_size(px(11.)).text_color(theme.muted_foreground).child("New"))
+                    r.child(div().flex_1()).child(div().px(px(7.)).rounded_full().bg(theme.muted).text_size(px(11.)).text_color(theme.muted_foreground).child(t!("New")))
                 })
                 .on_click(cx.listener(move |this, _, window, cx| {
                 // Platform settings with changes not applied asks first
@@ -590,7 +584,7 @@ impl Manager {
                             this.logo_hover = false;
                             cx.notify();
                         }))
-                        .tooltip(crate::ui::tooltip("Unfold menu"))
+                        .tooltip(crate::ui::tooltip(t!("Unfold menu")))
                 })
                 // The swap cross-fades (150 ms, the app's ease-out): the logo
                 // fades and shrinks a little as the unfold button fades in,
@@ -649,7 +643,7 @@ impl Manager {
                             .text_color(theme.muted_foreground)
                             .hover(|d| d.bg(theme.list_hover))
                             .child(menu_icon("panel-left-close").size(px(ICON)))
-                            .tooltip(crate::ui::tooltip("Fold menu"))
+                            .tooltip(crate::ui::tooltip(t!("Fold menu")))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if forced {
                                     this.menu_overlay = false;
@@ -686,7 +680,7 @@ impl Manager {
                 .cursor_pointer()
                 .when(!on, |d| d.hover(|d| d.bg(theme.list_hover)))
                 .child(menu_icon("sliders-horizontal").size(px(ICON)))
-                .tooltip(crate::ui::tooltip("About and preferences"))
+                .tooltip(crate::ui::tooltip(t!("About and preferences")))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.page = Page::About;
                     this.menu_overlay = false;
@@ -733,7 +727,7 @@ impl Manager {
                                                         .text_size(px(11.))
                                                         .font_weight(FontWeight::SEMIBOLD)
                                                         .cursor_pointer()
-                                                        .child("Update")
+                                                        .child(t!("Update"))
                                                         .on_click(cx.listener(|this, _, _, cx| {
                                                             this.page = Page::Update;
                                                             this.menu_overlay = false;

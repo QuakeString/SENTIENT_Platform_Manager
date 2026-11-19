@@ -43,7 +43,7 @@ impl Target {
         match self {
             Target::Local => {
                 let made = Path::new(path).join(name);
-                std::fs::create_dir(&made).map_err(|e| format!("{name} cannot be made here: {e}"))?;
+                std::fs::create_dir(&made).map_err(|e| nf!("{name} cannot be made here: {e}"))?;
                 crate::backups::dir_list(&made)
             }
             Target::Remote(inst) => remote::dir_mkdir(inst, path, name).map_err(|e| remote::split_failure(&e).0),
@@ -132,7 +132,7 @@ pub const OLD_W: f32 = 520.;
 
 /// Open the chooser in the shared dialog.
 pub fn open(o: Opening, window: &mut Window, cx: &mut App) {
-    let title = o.title.clone().unwrap_or_else(|| format!("Choose the backup folder on {}", o.on));
+    let title = o.title.clone().unwrap_or_else(|| tf!("Choose the backup folder on {}", o.on));
     let view = cx.new(|cx| FolderChooser::new(o, window, cx));
     let footer = cx.new(|cx| ChooserFooter { _observe: cx.observe(&view, |_, _, cx| cx.notify()), chooser: view.clone() });
     crate::modal::open(crate::modal::Modal { title: title.into(), body: view.into(), width: CHOOSE_W, icon: Some(Icon::new(TITLE_ICON)), on_close: None }, cx);
@@ -158,12 +158,12 @@ impl Render for ChooserFooter {
         match stage {
             Stage::Old(move_them) => {
                 let (c1, c2) = (chooser.clone(), chooser);
-                row.child(crate::ui::probed(crate::ui::button("fc-back").outline().label("Back").on_click(move |_, _, cx| c1.update(cx, |this, cx| this.back(cx)))))
-                    .child(crate::ui::probed(crate::ui::button("fc-use-new").primary().label("Use the new folder").on_click(move |_, _, cx| c2.update(cx, |this, cx| this.finish(move_them, cx)))))
+                row.child(crate::ui::probed(crate::ui::button("fc-back").outline().label(t!("Back")).on_click(move |_, _, cx| c1.update(cx, |this, cx| this.back(cx)))))
+                    .child(crate::ui::probed(crate::ui::button("fc-use-new").primary().label(t!("Use the new folder")).on_click(move |_, _, cx| c2.update(cx, |this, cx| this.finish(move_them, cx)))))
             }
             Stage::Choose => row
-                .child(crate::ui::probed(crate::ui::button("fc-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
-                .child(crate::ui::probed(crate::ui::button("fc-use").primary().label("Use this folder").disabled(!usable || busy).on_click(move |_, _, cx| chooser.update(cx, |this, cx| this.use_it(cx))))),
+                .child(crate::ui::probed(crate::ui::button("fc-cancel").outline().label(t!("Cancel")).on_click(|_, _, cx| crate::modal::close(cx))))
+                .child(crate::ui::probed(crate::ui::button("fc-use").primary().label(t!("Use this folder")).disabled(!usable || busy).on_click(move |_, _, cx| chooser.update(cx, |this, cx| this.use_it(cx))))),
         }
     }
 }
@@ -395,7 +395,7 @@ impl FolderChooser {
         if self.o.here.0 > 0 {
             // B4: the backups in the old folder.
             self.stage = Stage::Old(false);
-            crate::modal::set_title("Backups in the old folder", cx);
+            crate::modal::set_title(t!("Backups in the old folder"), cx);
             crate::modal::set_width(OLD_W, cx);
             set_icon(Icon::new(Lucide::Archive), cx);
             cx.notify();
@@ -411,7 +411,7 @@ impl FolderChooser {
 
     fn back(&mut self, cx: &mut Context<Self>) {
         self.stage = Stage::Choose;
-        crate::modal::set_title(format!("Choose the backup folder on {}", self.o.on), cx);
+        crate::modal::set_title(tf!("Choose the backup folder on {}", self.o.on), cx);
         crate::modal::set_width(CHOOSE_W, cx);
         set_icon(Icon::new(TITLE_ICON), cx);
         cx.notify();
@@ -455,7 +455,7 @@ impl Render for FolderChooser {
                     .outline()
                     .icon(Icon::new(Lucide::ChevronUp))
                     .disabled(up_to.is_none() || self.loading)
-                    .tooltip("Up one folder")
+                    .tooltip(t!("Up one folder"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(p) = up_to.clone() {
                             this.go(p, cx);
@@ -467,10 +467,10 @@ impl Render for FolderChooser {
                 crate::ui::button("fc-new")
                     .outline()
                     .icon(Icon::new(Lucide::FolderPlus))
-                    .label("New folder")
+                    .label(t!("New folder"))
                     .disabled(self.listing.is_none() || self.loading)
                     .on_click(cx.listener(|this, _, window, cx| {
-                        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
+                        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("Folder name")));
                         let sub = cx.subscribe(&input, |this: &mut Self, _, e: &InputEvent, cx| {
                             if let InputEvent::PressEnter { .. } = e {
                                 this.make_folder(cx);
@@ -493,8 +493,8 @@ impl Render for FolderChooser {
         let chips = h_flex().flex_wrap().gap_2().children(shortcuts.into_iter().enumerate().map(|(i, (label, p))| {
             let on = marked.as_ref() == Some(&p);
             let icon = match label.as_str() {
-                "Home" => Lucide::House,
-                "Current backup folder" => Lucide::Archive,
+                l if l == "Home" || l == t!("Home") => Lucide::House,
+                l if l == "Current backup folder" || l == t!("Current backup folder") => Lucide::Archive,
                 _ => Lucide::HardDrive,
             };
             let to = if p == current { (p.parent().map(Path::to_path_buf).unwrap_or(p.clone()), Some(p.clone())) } else { (p.clone(), None) };
@@ -511,7 +511,7 @@ impl Render for FolderChooser {
                 .when(on, |c| c.border_color(theme.primary).bg(theme.primary.opacity(0.08)).text_color(theme.primary))
                 .when(!on, |c| c.border_color(theme.border).hover(|c| c.bg(theme.list_hover)))
                 .child(Icon::new(icon).size_3p5())
-                .child(label)
+                .child(crate::ui::shown(label.clone()))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let (dir, pick) = to.clone();
                     this.load(dir, pick, cx);
@@ -528,8 +528,8 @@ impl Render for FolderChooser {
             .border_color(theme.border)
             .text_size(px(12.))
             .text_color(theme.muted_foreground)
-            .child(div().flex_1().child("Name"))
-            .child("Free space");
+            .child(div().flex_1().child(t!("Name")))
+            .child(t!("Free space"));
         let mut rows = v_flex().id("fc-rows").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.rows_scroll).child(crate::ui::layout_probe("fc-rows"));
         if let Some(input) = &self.new_name {
             rows = rows.child(
@@ -542,8 +542,8 @@ impl Render for FolderChooser {
                     .border_color(theme.border)
                     .child(Icon::empty().path("icons/folder-fill.svg").size_4().text_color(folder_color()))
                     .child(div().flex_1().child(Input::new(input)))
-                    .child(crate::ui::probed(crate::ui::button("fc-make").primary().label("Make").loading(busy == Some("mkdir")).on_click(cx.listener(|this, _, _, cx| this.make_folder(cx)))))
-                    .child(crate::ui::probed(crate::ui::button("fc-make-no").ghost().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button("fc-make").primary().label(t!("Make")).loading(busy == Some("mkdir")).on_click(cx.listener(|this, _, _, cx| this.make_folder(cx)))))
+                    .child(crate::ui::probed(crate::ui::button("fc-make-no").ghost().label(t!("Cancel")).on_click(cx.listener(|this, _, _, cx| {
                         this.new_name = None;
                         cx.notify();
                     })))),
@@ -554,10 +554,10 @@ impl Render for FolderChooser {
                 rows = rows.child(h_flex().h(px(34.)).px(px(14.)).gap_3().items_center().child(crate::ui::skeleton_line(&theme, format!("fc-sk-{i}"), 160.)).child(div().flex_1()).child(crate::ui::skeleton_line(&theme, format!("fc-sk2-{i}"), 50.)));
             }
         } else if let Some(e) = &self.listing_error {
-            rows = rows.child(div().px(px(14.)).py_3().text_sm().text_color(theme.danger).child(e.clone()));
+            rows = rows.child(div().px(px(14.)).py_3().text_sm().text_color(theme.danger).child(crate::ui::shown(e.clone())));
         } else if let Some(l) = &self.listing {
             if l.dirs.is_empty() && self.new_name.is_none() {
-                rows = rows.child(div().px(px(14.)).py_3().text_sm().text_color(theme.muted_foreground).child("No folders here."));
+                rows = rows.child(div().px(px(14.)).py_3().text_sm().text_color(theme.muted_foreground).child(t!("No folders here.")));
             }
             for (i, (name, free)) in l.dirs.iter().enumerate() {
                 let p = l.path.join(name);
@@ -593,19 +593,19 @@ impl Render for FolderChooser {
         // B2/B3: what the picked folder allows.
         let full = self.o.full_bytes;
         let status = match &self.check {
-            Check::Checking => h_flex().gap_2().items_center().text_sm().text_color(theme.muted_foreground).child("Checking the folder…").into_any_element(),
+            Check::Checking => h_flex().gap_2().items_center().text_sm().text_color(theme.muted_foreground).child(t!("Checking the folder…")).into_any_element(),
             Check::Failed(e) => status_line(&theme, false, e.clone()).into_any_element(),
             Check::Got(l) => match &l.writable {
-                Ok(()) if self.too_small(l) => status_line(&theme, false, format!("Only {} free here; a full backup is about {}.", bytes_label(l.free), bytes_label(full.unwrap_or(0)))).into_any_element(),
+                Ok(()) if self.too_small(l) => status_line(&theme, false, tf!("Only {} free here; a full backup is about {}.", bytes_label(l.free), bytes_label(full.unwrap_or(0)))).into_any_element(),
                 Ok(()) => status_line(
                     &theme,
                     true,
-                    format!("Writable by SENTIENT · {} free{}", bytes_label(l.free), full.map(|b| format!(" · a full backup is about {}", bytes_label(b))).unwrap_or_default()),
+                    tf!("Writable by SENTIENT · {} free{}", bytes_label(l.free), full.map(|b| tf!(" · a full backup is about {}", bytes_label(b))).unwrap_or_default()),
                 )
                 .into_any_element(),
                 Err(why) => v_flex()
                     .gap(px(10.))
-                    .child(status_line(&theme, false, format!("SENTIENT cannot write here: {}", why.trim_end_matches('.').to_string() + ".")))
+                    .child(status_line(&theme, false, tf!("SENTIENT cannot write here: {}", why.trim_end_matches('.').to_string() + ".")))
                     // A read-only disk: no button fixes that.
                     .when(l.fixable, |c| c.child(
                         h_flex()
@@ -615,12 +615,12 @@ impl Render for FolderChooser {
                                 crate::ui::button("fc-writable")
                                     .outline()
                                     .icon(Icon::new(Lucide::Lock))
-                                    .label("Make it writable")
+                                    .label(t!("Make it writable"))
                                     .loading(busy == Some("writable"))
                                     .disabled(busy.is_some())
                                     .on_click(cx.listener(|this, _, _, cx| this.make_writable(cx))),
                             )
-                            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Asks for the administrator password once.")),
+                            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(t!("Asks for the administrator password once."))),
                     ))
                     .into_any_element(),
             },
@@ -646,9 +646,9 @@ impl FolderChooser {
         let (n, bytes) = self.o.here;
         let seg = ui_seg(theme, move_them, cx);
         let explain = if move_them {
-            "They are moved to the new folder; large files on another disk take a while. The list shows them there when it is done.".to_string()
+            t!("They are moved to the new folder; large files on another disk take a while. The list shows them there when it is done.").to_string()
         } else {
-            format!("Left backups stay in the list and can still be restored. Automatic clean-up keeps the newest {} across both folders.", self.o.keep)
+            tf!("Left backups stay in the list and can still be restored. Automatic clean-up keeps the newest {} across both folders.", self.o.keep)
         };
         v_flex()
             .gap(px(12.))
@@ -657,7 +657,7 @@ impl FolderChooser {
                     .flex_wrap()
                     .gap_x_1()
                     .text_sm()
-                    .child(format!("{n} backup{} ({}) {} in", if n == 1 { "" } else { "s" }, bytes_label(bytes), if n == 1 { "is" } else { "are" }))
+                    .child(if n == 1 { tf!("{n} backup ({}) is in", bytes_label(bytes)) } else { tf!("{n} backups ({}) are in", bytes_label(bytes)) })
                     .child(div().font_family(mono.clone()).text_size(px(13.)).child(format!("{}.", self.o.current.display()))),
             )
             .child(h_flex().child(seg))
@@ -669,7 +669,7 @@ impl FolderChooser {
                     .gap_4()
                     .items_center()
                     .text_sm()
-                    .child(div().w(px(170.)).flex_shrink_0().text_color(theme.muted_foreground).child("New folder"))
+                    .child(div().w(px(170.)).flex_shrink_0().text_color(theme.muted_foreground).child(t!("New folder")))
                     .child(div().min_w_0().overflow_hidden().text_ellipsis().font_family(mono).text_size(px(13.)).child(self.picked.display().to_string())),
             )
     }
@@ -677,11 +677,11 @@ impl FolderChooser {
 
 fn ui_seg(theme: &gpui_kit::component::Theme, move_them: bool, cx: &mut Context<FolderChooser>) -> Div {
     crate::ui::seg_track(theme)
-        .child(crate::ui::seg_item(theme, "fc-move", "Move them", move_them).on_click(cx.listener(|this, _, _, cx| {
+        .child(crate::ui::seg_item(theme, "fc-move", t!("Move them"), move_them).on_click(cx.listener(|this, _, _, cx| {
             this.stage = Stage::Old(true);
             cx.notify();
         })))
-        .child(crate::ui::seg_item(theme, "fc-leave", "Leave them", !move_them).on_click(cx.listener(|this, _, _, cx| {
+        .child(crate::ui::seg_item(theme, "fc-leave", t!("Leave them"), !move_them).on_click(cx.listener(|this, _, _, cx| {
             this.stage = Stage::Old(false);
             cx.notify();
         })))

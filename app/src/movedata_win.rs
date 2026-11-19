@@ -87,30 +87,30 @@ pub fn check(record: &InstallationRecord, store: Store, path: &str) -> Check {
     let needed = ov.places.iter().find(|p| p.store == store).and_then(|p| p.bytes).unwrap_or(0);
     let mut c = Check { path: path.to_string(), needed, ..Default::default() };
     if store != Store::Ch {
-        c.blocks.push(block(BlockKind::NoPermission, format!("{} does not move on Windows yet", store.label()), "Only ClickHouse's WSL disk moves on a Windows server for now.".into(), &[]));
+        c.blocks.push(block(BlockKind::NoPermission, nf!("{} does not move on Windows yet", store.label()), n!("Only ClickHouse's WSL disk moves on a Windows server for now.").into(), &[]));
         return c;
     }
     let p = Path::new(path);
     if !(p.is_absolute() || path.starts_with("\\\\")) {
-        c.blocks.push(block(BlockKind::NotAbsolute, "Not a full path".into(), "The folder must be a full path such as D:\\WSL\\sentient.".into(), &["Pick the folder with Browse."]));
+        c.blocks.push(block(BlockKind::NotAbsolute, n!("Not a full path").into(), n!("The folder must be a full path such as D:\\WSL\\sentient.").into(), &[n!("Pick the folder with Browse.")]));
         return c;
     }
     let disks = disks();
     c.disk = mount_of(&disks, path).and_then(|m| disks.iter().find(|d| d.mount == m).cloned());
     if path.starts_with("\\\\") {
-        c.blocks.push(block(BlockKind::Network, format!("{path} is a network folder"), "WSL's disk must be on a local disk.".into(), &["Pick a local disk."]));
+        c.blocks.push(block(BlockKind::Network, nf!("{path} is a network folder"), n!("WSL's disk must be on a local disk.").into(), &[n!("Pick a local disk.")]));
         return c;
     }
     if let Some(d) = &c.disk {
-        c.blocks.extend(move_data::disk_blocks(d, store, needed, "ClickHouse's disk"));
+        c.blocks.extend(move_data::disk_blocks(d, store, needed, n!("ClickHouse's disk")));
     }
     if ov.places.iter().any(|x| x.store == Store::Ch && Path::new(&x.path).parent() == Some(p)) {
-        c.blocks.push(block(BlockKind::SamePlace, "ClickHouse's disk is already here".into(), String::new(), &["Pick another folder."]));
+        c.blocks.push(block(BlockKind::SamePlace, n!("ClickHouse's disk is already here").into(), String::new(), &[n!("Pick another folder.")]));
     }
     c.exists = p.exists();
     c.empty = !c.exists || std::fs::read_dir(p).map(|mut r| r.next().is_none()).unwrap_or(false);
     if !c.empty {
-        c.blocks.push(block(BlockKind::NotEmpty, format!("{path} is not empty"), "WSL needs an empty folder for the disk.".into(), &["Make a new folder inside it, or", "pick an empty folder."]));
+        c.blocks.push(block(BlockKind::NotEmpty, nf!("{path} is not empty"), n!("WSL needs an empty folder for the disk.").into(), &[n!("Make a new folder inside it, or"), n!("pick an empty folder.")]));
     }
     c
 }
@@ -167,7 +167,7 @@ fn wait(mut ok: impl FnMut() -> bool, secs: u64) -> bool {
 }
 
 fn agent_move(record: &InstallationRecord, dest: &str, sink: &ProgressFn) -> Result<(), String> {
-    let password = crate::secrets::get(crate::secrets::Secret::ClickhouseAccount).ok_or("The ClickHouse account's password is not kept on this computer; run Repair first.")?;
+    let password = crate::secrets::get(crate::secrets::Secret::ClickhouseAccount).ok_or(n!("The ClickHouse account's password is not kept on this computer; run Repair first."))?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     std::fs::write(clickhouse_wsl::move_request_path(), dest).map_err(|e| e.to_string())?;
     let _ = record;
@@ -184,7 +184,7 @@ fn start_clickhouse(record: &InstallationRecord) -> bool {
 /// the account, start both, check. A failure after the move moves it back.
 pub fn run(record: &InstallationRecord, moves: &[Move], sink: ProgressFn) -> Result<(), String> {
     let Some(m) = moves.iter().find(|m| m.store == Store::Ch).cloned() else {
-        return Err("Only ClickHouse's WSL disk moves on Windows.".into());
+        return Err(n!("Only ClickHouse's WSL disk moves on Windows.").into());
     };
     let c = check(record, Store::Ch, &m.to);
     if let Some(b) = c.blocks.first() {
@@ -194,10 +194,10 @@ pub fn run(record: &InstallationRecord, moves: &[Move], sink: ProgressFn) -> Res
     let t0 = std::time::Instant::now();
     let mut out = Outcome { ended: Ended::SwitchedBack, reason: None, failed_step: None, locations: Default::default(), old_copies: Vec::new(), backups_dir: None, rows: Vec::new(), down_secs: 0 };
     let platform = record.platform();
-    sink(Progress::Step { name: "Stopping SENTIENT".into() });
+    sink(Progress::Step { name: n!("Stopping SENTIENT").into() });
     let mut result = platform.control(sink.clone(), "stop");
     if result.is_ok() && !clickhouse_wsl::stop_clickhouse(record.stack.ch_http_port, std::time::Duration::from_secs(150), |_| {}) {
-        result = Err("ClickHouse did not stop cleanly in time; nothing was moved.".into());
+        result = Err(n!("ClickHouse did not stop cleanly in time; nothing was moved.").into());
     }
     let mut moved = false;
     if result.is_ok() {
@@ -205,17 +205,17 @@ pub fn run(record: &InstallationRecord, moves: &[Move], sink: ProgressFn) -> Res
         moved = result.is_ok();
     }
     if result.is_ok() {
-        sink(Progress::Step { name: "Starting ClickHouse, then the SENTIENT service".into() });
+        sink(Progress::Step { name: n!("Starting ClickHouse, then the SENTIENT service").into() });
         if !start_clickhouse(record) {
-            result = Err("ClickHouse did not answer within 4 minutes after the move.".into());
+            result = Err(n!("ClickHouse did not answer within 4 minutes after the move.").into());
         } else {
             result = platform.control(sink.clone(), "start");
         }
     }
     if result.is_ok() {
-        sink(Progress::Step { name: "Checking SENTIENT answers".into() });
+        sink(Progress::Step { name: n!("Checking SENTIENT answers").into() });
         if !wait(|| sentient_installer_core::native::http_answers(record.stack.http_port), 180) {
-            result = Err("SENTIENT did not answer within 3 minutes after the move.".into());
+            result = Err(n!("SENTIENT did not answer within 3 minutes after the move.").into());
         }
     }
     out.down_secs = t0.elapsed().as_secs();
@@ -223,19 +223,19 @@ pub fn run(record: &InstallationRecord, moves: &[Move], sink: ProgressFn) -> Res
         Ok(()) => {
             out.ended = Ended::Moved;
             sink(Progress::Log { line: format!("{}{}", move_data::OUTCOME_MARK, serde_json::to_string(&out).unwrap_or_default()) });
-            sink(Progress::Done { message: format!("ClickHouse's disk is in {}.", m.to) });
+            sink(Progress::Done { message: nf!("ClickHouse's disk is in {}.", m.to) });
             Ok(())
         }
         Err(e) => {
             if moved {
-                sink(Progress::Step { name: "Pointing the volumes back at their old places".into() });
+                sink(Progress::Step { name: n!("Pointing the volumes back at their old places").into() });
                 let _ = clickhouse_wsl::stop_clickhouse(record.stack.ch_http_port, std::time::Duration::from_secs(150), |_| {});
                 if let Err(b) = agent_move(record, &old_dir, &sink) {
                     out.ended = Ended::Broken;
-                    out.reason = Some(format!("{e} Moving it back failed too: {b}"));
+                    out.reason = Some(nf!("{e} Moving it back failed too: {b}"));
                 }
             }
-            sink(Progress::Step { name: "Starting SENTIENT on the old places".into() });
+            sink(Progress::Step { name: n!("Starting SENTIENT on the old places").into() });
             let _ = start_clickhouse(record);
             let _ = platform.control(sink.clone(), "start");
             if out.reason.is_none() {
@@ -248,5 +248,5 @@ pub fn run(record: &InstallationRecord, moves: &[Move], sink: ProgressFn) -> Res
 }
 
 pub fn remove_old(_record: &InstallationRecord, path: &str, _sink: ProgressFn) -> Result<(), String> {
-    Err(format!("{path}: WSL moves the disk itself, so no old copy is kept on Windows."))
+    Err(nf!("{path}: WSL moves the disk itself, so no old copy is kept on Windows."))
 }

@@ -36,12 +36,12 @@ fn staged(sink: &ProgressFn, record: &InstallationRecord, package: &Path) -> Res
     let tar_name = if cfg!(windows) { "sentient-payload.tar".to_string() } else { native::linux_payload_name() };
     let tar = package.join(&tar_name);
     if !tar.exists() {
-        return Err(format!("{} is not a SENTIENT package (no {tar_name})", package.display()));
+        return Err(nf!("{} is not a SENTIENT package (no {tar_name})", package.display()));
     }
     let staging = record.state_dir.join("update-staging");
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(|e| format!("create {}: {e}", staging.display()))?;
-    step(sink, "Unpacking the new SENTIENT");
+    step(sink, n!("Unpacking the new SENTIENT"));
     // Windows' own bsdtar: a Git-for-Windows tar earlier on PATH reads
     // "C:\…" as a remote host.
     let tar_exe = if cfg!(windows) { r"C:\Windows\System32\tar.exe" } else { "tar" };
@@ -53,7 +53,7 @@ fn staged(sink: &ProgressFn, record: &InstallationRecord, package: &Path) -> Res
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    if ok { Ok((staging, true)) } else { Err(format!("Could not unpack {}", tar.display())) }
+    if ok { Ok((staging, true)) } else { Err(nf!("Could not unpack {}", tar.display())) }
 }
 
 /// The SENTIENT version a Docker install runs, read from its container
@@ -158,25 +158,25 @@ pub fn run_to(
             };
             match how {
                 DockerStep::AlreadyRunning => {
-                    return Err(format!("SENTIENT {} is already running.", target_version.unwrap_or_default()));
+                    return Err(nf!("SENTIENT {} is already running.", target_version.unwrap_or_default()));
                 }
                 DockerStep::QuickPin => {
                     let image = target.unwrap_or_default();
                     let v = target_version.clone().unwrap_or_default();
                     let pinned = distro::docker_ops::pin_tag(&sink, &cfg, image)?;
                     pinned_image = Some(pinned.image);
-                    (Some(v.clone()), format!(" The stack now runs under the image tag {v}, the version it ran already: nothing was updated and the database was not copied."))
+                    (Some(v.clone()), nf!(" The stack now runs under the image tag {v}, the version it ran already: nothing was updated and the database was not copied."))
                 }
                 DockerStep::Update | DockerStep::UpdateAndPin => {
                     let report = distro::docker_ops::safe_update_to(sink.clone(), &cfg, target, accept_breaking)?;
-                    let mut message = format!(
+                    let mut message = nf!(
                         " The database from before the update is kept as {}{}, until the next update.",
                         report.snapshot,
-                        report.previous_image.as_ref().map(|t| format!(" and the previous image as {t}")).unwrap_or_default()
+                        report.previous_image.as_ref().map(|t| nf!(" and the previous image as {t}")).unwrap_or_default()
                     );
                     if how == DockerStep::UpdateAndPin {
                         let image = target.unwrap_or_default();
-                        step(&sink, &format!("Setting the image tag to {}", distro::docker_ops::image_tag(image)));
+                        step(&sink, &nf!("Setting the image tag to {}", distro::docker_ops::image_tag(image)));
                         match distro::docker_ops::pin_tag(&sink, &cfg, image) {
                             Ok(pinned) => {
                                 // The update ran the new image under the old
@@ -184,10 +184,10 @@ pub fn run_to(
                                 if let Some(prev) = &report.previous_image {
                                     distro::docker_ops::retag_image(prev, &cfg.image);
                                 }
-                                message.push_str(&format!(" The compose file now names {}.", pinned.image));
+                                message.push_str(&nf!(" The compose file now names {}.", pinned.image));
                                 pinned_image = Some(pinned.image);
                             }
-                            Err(e) => message.push_str(&format!(" The image tag could not be changed ({e}); it still runs as {}.", cfg.image)),
+                            Err(e) => message.push_str(&nf!(" The image tag could not be changed ({e}); it still runs as {}.", cfg.image)),
                         }
                     }
                     let shown = DeployConfig { image: pinned_image.clone().unwrap_or_else(|| cfg.image.clone()), ..cfg.clone() };
@@ -197,7 +197,7 @@ pub fn run_to(
             }
         }
         Engine::Native => {
-            let package = package.ok_or("Choose the folder of the new SENTIENT package first.")?;
+            let package = package.ok_or(n!("Choose the folder of the new SENTIENT package first."))?;
             let cfg = record.native_config_with_secrets()?;
             let (dir, temporary) = staged(&sink, &record, package)?;
             let result = native::safe_update::safe_update(
@@ -215,9 +215,9 @@ pub fn run_to(
             let report = result?;
             // An install from before the Windows Firewall rules gets them.
             if let Err(e) = crate::changes::open_firewall(&record, &sink) {
-                sink(Progress::Log { line: format!("note: SENTIENT's ports were not opened in Windows Firewall: {e}") });
+                sink(Progress::Log { line: nf!("note: SENTIENT's ports were not opened in Windows Firewall: {e}") });
             }
-            let message = format!(
+            let message = nf!(
                 " The database from before the update is kept as {} and the previous program files in {}, until the next update.",
                 report.snapshot,
                 report.previous_files.display()
@@ -234,7 +234,7 @@ pub fn run_to(
     }
     let json = serde_json::to_string_pretty(&updated).map_err(|e| e.to_string())?;
     crate::self_install::write_record(&crate::installation::record_path(), &json)?;
-    sink(Progress::Done { message: format!("SENTIENT {} is running.{message}", updated.sentient_version) });
+    sink(Progress::Done { message: nf!("SENTIENT {} is running.{message}", updated.sentient_version) });
     Ok(updated)
 }
 
@@ -279,7 +279,7 @@ pub fn rollback(record: InstallationRecord, sink: ProgressFn) -> Result<Installa
             let tag = distro::docker_ops::image_tag(&cfg.image);
             if let Some(v) = rollback_tag(running.as_deref(), tag, cfg.external.is_some()) {
                 let image = crate::maintenance_ops::retag(&cfg.image, &v);
-                step(&sink, &format!("Setting the image tag to {v}"));
+                step(&sink, &nf!("Setting the image tag to {v}"));
                 match distro::docker_ops::pin_tag(&sink, &cfg, &image) {
                     Ok(p) => {
                         // The roll back put the previous image under the
@@ -290,7 +290,7 @@ pub fn rollback(record: InstallationRecord, sink: ProgressFn) -> Result<Installa
                         }
                         pinned_image = Some(p.image);
                     }
-                    Err(e) => sink(Progress::Log { line: format!("The image tag could not be set to {v} ({e}); it runs as {}.", cfg.image) }),
+                    Err(e) => sink(Progress::Log { line: nf!("The image tag could not be set to {v} ({e}); it runs as {}.", cfg.image) }),
                 }
             }
             distro::docker_ops::untag_image(&keep);
@@ -311,9 +311,9 @@ pub fn rollback(record: InstallationRecord, sink: ProgressFn) -> Result<Installa
     let json = serde_json::to_string_pretty(&updated).map_err(|e| e.to_string())?;
     crate::self_install::write_record(&crate::installation::record_path(), &json)?;
     sink(Progress::Done {
-        message: format!(
+        message: nf!(
             "Rolled back: {} is running. The database that was in use is kept as {set_aside} (under Kept on the Migration screen) until you remove it.",
-            point.version.as_deref().map(|v| format!("SENTIENT {v}")).unwrap_or_else(|| "the previous version".into())
+            point.version.as_deref().map(|v| nf!("SENTIENT {v}")).unwrap_or_else(|| n!("the previous version").into())
         ),
     });
     Ok(updated)

@@ -62,29 +62,29 @@ impl Candidate {
         let st = &self.record.stack;
         if self.needs_admin {
             return vec![
-                ("Runs as", self.kind.clone()),
-                ("From", self.location.clone()),
-                ("State", if self.running { "Running".into() } else { "Stopped".into() }),
-                ("Details", "Read as administrator when you choose to manage it (its settings file is root-only).".into()),
+                (n!("Runs as"), self.kind.clone()),
+                (n!("From"), self.location.clone()),
+                (n!("State"), if self.running { n!("Running").into() } else { n!("Stopped").into() }),
+                (n!("Details"), n!("Read as administrator when you choose to manage it (its settings file is root-only).").into()),
             ];
         }
         let mut f = vec![
-            ("Runs as", self.kind.clone()),
-            ("From", self.location.clone()),
-            ("Version", self.record.sentient_version.clone()),
-            ("Database type", flavor_label(st.flavor).to_string()),
-            ("State", if self.running { "Running".into() } else { "Stopped".into() }),
-            ("Web port", st.http_port.to_string()),
+            (n!("Runs as"), self.kind.clone()),
+            (n!("From"), self.location.clone()),
+            (n!("Version"), self.record.sentient_version.clone()),
+            (n!("Database type"), flavor_label(st.flavor).to_string()),
+            (n!("State"), if self.running { n!("Running").into() } else { n!("Stopped").into() }),
+            (n!("Web port"), st.http_port.to_string()),
             (
-                "Database",
+                n!("Database"),
                 match st.pg_port {
-                    0 => format!("{} (user {}, not published on this machine)", st.db_name, st.db_user),
-                    port => format!("{} (user {}, port {port})", st.db_name, st.db_user),
+                    0 => nf!("{} (user {}, not published on this machine)", st.db_name, st.db_user),
+                    port => nf!("{} (user {}, port {port})", st.db_name, st.db_user),
                 },
             ),
         ];
         if st.flavor.uses_clickhouse() {
-            f.push(("ClickHouse", format!("{} (user {}, HTTP port {})", st.ch_db, st.ch_user, st.ch_http_port)));
+            f.push(("ClickHouse", nf!("{} (user {}, HTTP port {})", st.ch_db, st.ch_user, st.ch_http_port)));
         }
         f
     }
@@ -126,7 +126,7 @@ impl Search {
 
 /// "Looked in: a; b; c." (empty when nothing was listed).
 pub fn looked_text(looked: &[String]) -> String {
-    if looked.is_empty() { String::new() } else { format!("Looked in: {}.", looked.join("; ")) }
+    if looked.is_empty() { String::new() } else { nf!("Looked in: {}.", looked.join("; ")) }
 }
 
 /// add-if-one's line when the one SENTIENT found needs the PostgreSQL
@@ -160,7 +160,7 @@ pub fn parse_needs_pg_admin(line: &str) -> Option<NeedsPgAdmin> {
 
 /// "no SENTIENT", "1 SENTIENT", "2 SENTIENT".
 fn count_text(n: usize) -> String {
-    if n == 0 { "no SENTIENT".into() } else { format!("{n} SENTIENT") }
+    if n == 0 { "no SENTIENT".into() } else { nf!("{n} SENTIENT") }
 }
 
 fn record_for_docker(cfg: &DeployConfig, version: Option<String>) -> InstallationRecord {
@@ -192,34 +192,34 @@ fn docker_candidates() -> Vec<(Candidate, distro::adopt::FoundStack)> {
 
 /// A found stack as a candidate.
 fn docker_candidate(found: &distro::adopt::FoundStack) -> Candidate {
-    let in_distro = found.cfg.wsl_distro.as_ref().map(|d| format!(" in WSL distro {d}")).unwrap_or_default();
+    let in_distro = found.cfg.wsl_distro.as_ref().map(|d| nf!(" in WSL distro {d}")).unwrap_or_default();
     // Windows: a stack outside any WSL distro is one only Docker Desktop's
     // Windows side shows (desktop_only).
     let desktop = cfg!(windows) && found.cfg.wsl_distro.is_none();
     let location = match &found.cfg.external {
-        _ if desktop => "Docker Desktop on Windows".to_string(),
-        Some(ext) => format!("compose project {} ({}){in_distro}", ext.project, ext.files.join(", ")),
-        None if found.problem.is_some() => format!("Docker{in_distro}"),
-        None => format!("the Platform Manager's compose file ({}){in_distro}", found.cfg.stack_dir()),
+        _ if desktop => n!("Docker Desktop on Windows").to_string(),
+        Some(ext) => nf!("compose project {} ({}){in_distro}", ext.project, ext.files.join(", ")),
+        None if found.problem.is_some() => nf!("Docker{in_distro}"),
+        None => nf!("the Platform Manager's compose file ({}){in_distro}", found.cfg.stack_dir()),
     };
     let mut notes = found.notes.clone();
     if let Some(d) = &found.cfg.wsl_distro {
-        notes.push(format!(
+        notes.push(nf!(
             "Docker runs in your WSL distro {d}: the Platform Manager runs its Docker commands there and never stops, removes or sets up that distro. Keep {d} running for SENTIENT to run."
         ));
     }
     if found.cfg.external.is_some() {
         notes.push(match &found.take_over {
-            Ok(()) => "It runs from a compose file the Platform Manager did not write. Changing settings or the database type needs the Platform Manager to take it over first (Repair and uninstall).".into(),
-            Err(why) => format!("It runs from a compose file the Platform Manager did not write. Settings and the database type cannot be changed by the Platform Manager: {why}"),
+            Ok(()) => n!("It runs from a compose file the Platform Manager did not write. Changing settings or the database type needs the Platform Manager to take it over first (Repair and uninstall).").into(),
+            Err(why) => nf!("It runs from a compose file the Platform Manager did not write. Settings and the database type cannot be changed by the Platform Manager: {why}"),
         });
     }
     Candidate {
         record: record_for_docker(&found.cfg, found.version.clone()),
         kind: match &found.cfg.wsl_distro {
-            Some(d) => format!("Docker in WSL distro {d} (container {})", found.cfg.app_container()),
-            None if desktop => format!("Docker Desktop (container {})", found.cfg.app_container()),
-            None => format!("Docker (container {})", found.cfg.app_container()),
+            Some(d) => nf!("Docker in WSL distro {d} (container {})", found.cfg.app_container()),
+            None if desktop => nf!("Docker Desktop (container {})", found.cfg.app_container()),
+            None => nf!("Docker (container {})", found.cfg.app_container()),
         },
         location,
         running: found.running,
@@ -240,12 +240,12 @@ fn docker_search(looked: &mut Vec<String>) -> Vec<(Candidate, distro::adopt::Fou
         let found = distro::adopt::find();
         looked.push(if found.is_empty() {
             match distro::hosts::docker_here() {
-                distro::hosts::DockerState::Missing => "Docker on this computer: not installed".to_string(),
-                distro::hosts::DockerState::NotRunning => "Docker on this computer: not running, or this account may not use it".to_string(),
-                distro::hosts::DockerState::Running => "Docker on this computer: no SENTIENT".to_string(),
+                distro::hosts::DockerState::Missing => n!("Docker on this computer: not installed").to_string(),
+                distro::hosts::DockerState::NotRunning => n!("Docker on this computer: not running, or this account may not use it").to_string(),
+                distro::hosts::DockerState::Running => n!("Docker on this computer: no SENTIENT").to_string(),
             }
         } else {
-            format!("Docker on this computer: {}", count_text(found.len()))
+            nf!("Docker on this computer: {}", count_text(found.len()))
         });
         found
     };
@@ -265,7 +265,7 @@ fn windows_docker_search(looked: &mut Vec<String>) -> Vec<distro::adopt::FoundSt
         out.iter().any(|f| distro::hosts::same_container(&f.container_id, id))
     }
     match hosts::wsl_distros() {
-        Err(e) => looked.push(format!("WSL distros: none listed ({e})")),
+        Err(e) => looked.push(nf!("WSL distros: none listed ({e})")),
         Ok(list) if list.is_empty() => looked.push("WSL distros: none".into()),
         Ok(list) => {
             for d in list {
@@ -273,15 +273,15 @@ fn windows_docker_search(looked: &mut Vec<String>) -> Vec<distro::adopt::FoundSt
                 if !d.running && !own {
                     // Looking would start it, and its Docker with it (the
                     // Platform Manager's own distro it may start).
-                    looked.push(format!("WSL distro {}: stopped, not looked in (start it, then look again)", d.name));
+                    looked.push(nf!("WSL distro {}: stopped, not looked in (start it, then look again)", d.name));
                     continue;
                 }
                 match hosts::docker_in(&d.name) {
-                    DockerState::Missing => looked.push(format!("WSL distro {}: no Docker", d.name)),
-                    DockerState::NotRunning => looked.push(format!("WSL distro {}: Docker is not running", d.name)),
+                    DockerState::Missing => looked.push(nf!("WSL distro {}: no Docker", d.name)),
+                    DockerState::NotRunning => looked.push(nf!("WSL distro {}: Docker is not running", d.name)),
                     DockerState::Running => {
                         let new: Vec<_> = distro::adopt::find_in_distro(&d.name).into_iter().filter(|f| !seen(&out, &f.container_id)).collect();
-                        looked.push(format!("WSL distro {}: Docker, {}", d.name, count_text(new.len())));
+                        looked.push(nf!("WSL distro {}: Docker, {}", d.name, count_text(new.len())));
                         out.extend(new);
                     }
                 }
@@ -293,7 +293,7 @@ fn windows_docker_search(looked: &mut Vec<String>) -> Vec<distro::adopt::FoundSt
         Desktop::NotRunning => looked.push("Docker Desktop: not running".into()),
         Desktop::Running(containers) => {
             let only_here: Vec<_> = containers.into_iter().filter(|c| !seen(&out, &c.id)).collect();
-            looked.push(format!("Docker Desktop: {}", if only_here.is_empty() { "no other SENTIENT".to_string() } else { count_text(only_here.len()) }));
+            looked.push(nf!("Docker Desktop: {}", if only_here.is_empty() { n!("no other SENTIENT").to_string() } else { count_text(only_here.len()) }));
             for c in only_here {
                 out.push(desktop_only(&c));
             }
@@ -315,7 +315,7 @@ fn desktop_only(c: &distro::hosts::DesktopContainer) -> distro::adopt::FoundStac
     let mut names = cfg.names();
     names.app = c.name.clone();
     cfg.names = Some(names);
-    let why = format!(
+    let why = nf!(
         "SENTIENT (container {}) runs in Docker Desktop, which the Platform Manager reaches through a WSL distro. Turn on Docker Desktop's WSL integration for one (Docker Desktop, Settings, Resources, WSL integration), start that distro, then look again.",
         c.name
     );
@@ -373,7 +373,7 @@ fn native_record(cfg: &sentient_installer_core::native::NativeConfig) -> Install
 fn native_candidate() -> Option<(Candidate, Option<sentient_installer_core::native_linux::FoundNative>)> {
     use sentient_installer_core::native_linux as nl;
     let dir = nl::installed_dir()?;
-    let kind = "Native (systemd service sentient)".to_string();
+    let kind = n!("Native (systemd service sentient)").to_string();
     let location = dir.display().to_string();
     if !crate::rootjob::is_root() {
         let mut record = native_record(&crate::installation::InstallationRecord::placeholder_native(&dir));
@@ -411,7 +411,7 @@ fn native_candidate() -> Option<(Candidate, Option<sentient_installer_core::nati
                 location,
                 running: nl::installed_running(),
                 notes: Vec::new(),
-                problem: Some(format!("Its settings could not be read: {e}")),
+                problem: Some(nf!("Its settings could not be read: {e}")),
                 needs_admin: false,
                 sets_admin_password: false,
             };
@@ -425,7 +425,7 @@ fn native_candidate() -> Option<(Candidate, Option<sentient_installer_core::nati
 fn windows_candidate() -> Option<(Candidate, Option<sentient_installer_core::native::adopt_windows::FoundWindows>)> {
     use sentient_installer_core::native::adopt_windows as aw;
     let dir = aw::installed_dir()?;
-    let kind = "Windows services (SentientServer)".to_string();
+    let kind = n!("Windows services (SentientServer)").to_string();
     let location = dir.display().to_string();
     Some(match aw::read_installed()? {
         Ok(found) => {
@@ -452,7 +452,7 @@ fn windows_candidate() -> Option<(Candidate, Option<sentient_installer_core::nat
                 location,
                 running: aw::installed_running(),
                 notes: Vec::new(),
-                problem: Some(format!("Its settings could not be read: {e}")),
+                problem: Some(nf!("Its settings could not be read: {e}")),
                 needs_admin: false,
                 sets_admin_password: false,
             };
@@ -474,13 +474,13 @@ pub fn search() -> Search {
     #[cfg(target_os = "linux")]
     {
         let native = native_candidate().map(|(c, _)| c);
-        looked.push(format!("systemd service sentient: {}", if native.is_some() { "found" } else { "not installed" }));
+        looked.push(nf!("systemd service sentient: {}", if native.is_some() { "found" } else { "not installed" }));
         found.extend(native);
     }
     #[cfg(windows)]
     {
         let native = windows_candidate().map(|(c, _)| c);
-        looked.push(format!("Windows services (SentientServer): {}", if native.is_some() { "found" } else { "not installed" }));
+        looked.push(nf!("Windows services (SentientServer): {}", if native.is_some() { "found" } else { "not installed" }));
         found.extend(native);
     }
     found.extend(docker_search(&mut looked).into_iter().map(|(c, _)| c));
@@ -495,33 +495,33 @@ pub fn adopt(wanted: &Candidate, pg_admin: Option<String>, sink: ProgressFn) -> 
         // release's, one whose services are gone) does not stand in the way:
         // it is kept beside the new one.
         if old.platform().snapshot().installed {
-            return Err("The Platform Manager already manages a SENTIENT instance on this computer.".into());
+            return Err(n!("The Platform Manager already manages a SENTIENT instance on this computer.").into());
         }
         let path = crate::installation::record_path();
         let aside = path.with_extension(format!("json.replaced-{}", chrono::Utc::now().format("%Y%m%d%H%M%S")));
         match std::fs::rename(&path, &aside) {
-            Ok(()) => sink(Progress::Log { line: format!("An earlier installation record that no longer matches this computer was kept as {}.", aside.display()) }),
-            Err(e) => return Err(format!("An earlier installation record ({}) could not be set aside: {e}", path.display())),
+            Ok(()) => sink(Progress::Log { line: nf!("An earlier installation record that no longer matches this computer was kept as {}.", aside.display()) }),
+            Err(e) => return Err(nf!("An earlier installation record ({}) could not be set aside: {e}", path.display())),
         }
     }
     let candidate = if wanted.record.engine == Engine::Native {
         adopt_native(pg_admin, &sink)?
     } else {
-        sink(Progress::Step { name: "Looking at the instance again".into() });
+        sink(Progress::Step { name: n!("Looking at the instance again").into() });
         let key = wanted.key();
         let (candidate, found) = docker_candidates()
             .into_iter()
             .find(|(c, _)| c.key() == key)
-            .ok_or("That instance no longer exists.")?;
+            .ok_or(n!("That instance no longer exists."))?;
         if let Some(p) = &candidate.problem {
             return Err(p.clone());
         }
-        sink(Progress::Step { name: "Checking the Platform Manager can reach its databases".into() });
+        sink(Progress::Step { name: n!("Checking the Platform Manager can reach its databases").into() });
         // In the distro it was found in, before any record names it.
         distro::with_docker_distro(found.cfg.wsl_distro.as_deref(), || distro::adopt::verify(&found))?;
         candidate
     };
-    sink(Progress::Step { name: "Saving the installation record".into() });
+    sink(Progress::Step { name: n!("Saving the installation record").into() });
     let json = serde_json::to_string_pretty(&candidate.record).map_err(|e| e.to_string())?;
     crate::self_install::write_record(&crate::installation::record_path(), &json)?;
     // Everything after this in this process runs where the record says.
@@ -531,8 +531,8 @@ pub fn adopt(wanted: &Candidate, pg_admin: Option<String>, sink: ProgressFn) -> 
     }
     sink(Progress::Done {
         message: match version_known(&candidate.record.sentient_version) {
-            Some(v) => format!("Added: the Platform Manager now manages SENTIENT {v} ({}).", candidate.kind),
-            None => format!("Added: the Platform Manager now manages this SENTIENT ({}).", candidate.kind),
+            Some(v) => nf!("Added: the Platform Manager now manages SENTIENT {v} ({}).", candidate.kind),
+            None => nf!("Added: the Platform Manager now manages this SENTIENT ({}).", candidate.kind),
         },
     });
     Ok(candidate.record)
@@ -551,30 +551,30 @@ fn adopt_native(pg_admin: Option<String>, sink: &ProgressFn) -> Result<Candidate
     {
         use crate::secrets::{Secret, get, save};
         use sentient_installer_core::native::adopt_windows as aw;
-        sink(Progress::Step { name: "Reading the SENTIENT services' settings".into() });
-        let (candidate, found) = windows_candidate().ok_or("There is no SENTIENT service on this computer any more.")?;
+        sink(Progress::Step { name: n!("Reading the SENTIENT services' settings").into() });
+        let (candidate, found) = windows_candidate().ok_or(n!("There is no SENTIENT service on this computer any more."))?;
         let found = found.ok_or_else(|| candidate.problem.clone().unwrap_or_default())?;
         if let Some(p) = &found.problem {
             return Err(p.clone());
         }
         let mut cfg = found.cfg.clone();
-        sink(Progress::Step { name: "Checking the PostgreSQL admin password".into() });
+        sink(Progress::Step { name: n!("Checking the PostgreSQL admin password").into() });
         cfg.pg_superuser_password = match pg_admin.filter(|p| !p.is_empty()) {
             Some(p) if aw::admin_password_works(&cfg, &p) => p,
-            Some(_) => return Err("The PostgreSQL admin (postgres) password you gave does not work.".into()),
+            Some(_) => return Err(n!("The PostgreSQL admin (postgres) password you gave does not work.").into()),
             None => match get(Secret::PostgresAdmin).filter(|p| aw::admin_password_works(&cfg, p)) {
                 Some(p) => p,
                 None => {
                     let p = sentient_installer_core::native::generate_secret();
                     aw::set_admin_password(&cfg, &p)?;
-                    sink(Progress::Log { line: "The PostgreSQL admin (postgres) password was unknown: a new one was set and saved in the Platform Manager's secret store.".into() });
+                    sink(Progress::Log { line: n!("The PostgreSQL admin (postgres) password was unknown: a new one was set and saved in the Platform Manager's secret store.").into() });
                     p
                 }
             },
         };
-        sink(Progress::Step { name: "Checking the Platform Manager can reach its databases".into() });
+        sink(Progress::Step { name: n!("Checking the Platform Manager can reach its databases").into() });
         aw::verify(&found, &cfg)?;
-        sink(Progress::Step { name: "Saving the passwords in the secret store".into() });
+        sink(Progress::Step { name: n!("Saving the passwords in the secret store").into() });
         save(Secret::Database, &cfg.db_password)?;
         save(Secret::PostgresAdmin, &cfg.pg_superuser_password)?;
         save(Secret::Jwt, &cfg.jwt_secret)?;
@@ -586,17 +586,17 @@ fn adopt_native(pg_admin: Option<String>, sink: &ProgressFn) -> Result<Candidate
     #[cfg(target_os = "linux")]
     {
         let _ = pg_admin;
-        sink(Progress::Step { name: "Reading the SENTIENT service's settings".into() });
-        let (candidate, found) = native_candidate().ok_or("There is no SENTIENT service on this computer any more.")?;
-        let found = found.ok_or_else(|| candidate.problem.clone().unwrap_or_else(|| "Its settings are root-only: add it as administrator.".into()))?;
-        sink(Progress::Step { name: "Checking the Platform Manager can reach its databases".into() });
+        sink(Progress::Step { name: n!("Reading the SENTIENT service's settings").into() });
+        let (candidate, found) = native_candidate().ok_or(n!("There is no SENTIENT service on this computer any more."))?;
+        let found = found.ok_or_else(|| candidate.problem.clone().unwrap_or_else(|| n!("Its settings are root-only: add it as administrator.").into()))?;
+        sink(Progress::Step { name: n!("Checking the Platform Manager can reach its databases").into() });
         sentient_installer_core::native_linux::verify_installed(&found)?;
         Ok(candidate)
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (pg_admin, sink);
-        Err("A native installation is not supported on this system.".into())
+        Err(n!("A native installation is not supported on this system.").into())
     }
 }
 
@@ -606,7 +606,7 @@ fn adopt_native(pg_admin: Option<String>, sink: &ProgressFn) -> Result<Candidate
 /// it); else it is found in the containers and compose files (or not needed).
 pub fn take_over_compose(record: InstallationRecord, compose: Option<&str>, password: Option<&str>, ch_password: Option<&str>, sink: ProgressFn) -> Result<InstallationRecord, String> {
     if record.engine != Engine::Docker || record.stack.external.is_none() {
-        return Err("This installation already runs from the Platform Manager's compose file.".into());
+        return Err(n!("This installation already runs from the Platform Manager's compose file.").into());
     }
     let distro_name = record.stack.wsl_distro.clone();
     distro::with_docker_distro(distro_name.as_deref(), move || take_over_compose_here(record, compose, password, ch_password, sink))
@@ -616,7 +616,7 @@ pub fn take_over_compose(record: InstallationRecord, compose: Option<&str>, pass
 fn take_over_compose_here(record: InstallationRecord, compose: Option<&str>, password: Option<&str>, ch_password: Option<&str>, sink: ProgressFn) -> Result<InstallationRecord, String> {
     let mut full = record.stack.clone();
     if let Some(p) = password.filter(|p| !p.is_empty()) {
-        distro::adopt::check_db_password(&full, p).map_err(|e| format!("{e} Nothing was changed."))?;
+        distro::adopt::check_db_password(&full, p).map_err(|e| nf!("{e} Nothing was changed."))?;
         full.db_password = p.to_string();
     }
     // ClickHouse's password from the containers, when they carry one.
@@ -627,7 +627,7 @@ fn take_over_compose_here(record: InstallationRecord, compose: Option<&str>, pas
         full.ch_password = s.ch_password;
     }
     if let Some(p) = ch_password {
-        distro::docker_ops::check_ch_password(&full, p).map_err(|e| format!("{e} Nothing was changed."))?;
+        distro::docker_ops::check_ch_password(&full, p).map_err(|e| nf!("{e} Nothing was changed."))?;
         full.ch_password = p.to_string();
     }
     let own = distro::adopt::take_over(sink, &full, compose)?;
@@ -644,7 +644,7 @@ fn take_over_compose_here(record: InstallationRecord, compose: Option<&str>, pas
 /// confirmation): the compose file and env files found, what is kept.
 pub fn take_over_plan(record: &InstallationRecord, compose: Option<&str>) -> Result<distro::adopt::TakeOverPlan, String> {
     if record.engine != Engine::Docker || record.stack.external.is_none() {
-        return Err("This installation already runs from the Platform Manager's compose file.".into());
+        return Err(n!("This installation already runs from the Platform Manager's compose file.").into());
     }
     // The record keeps no passwords: the plan finds the database's (or
     // says it needs it given).

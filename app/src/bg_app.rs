@@ -93,12 +93,12 @@ pub struct Problem {
 
 impl Problem {
     pub fn title(&self) -> &'static str {
-        if self.no_answer { "The server does not answer" } else { "SENTIENT stopped" }
+        if self.no_answer { t!("The server does not answer") } else { t!("SENTIENT stopped") }
     }
 
     pub fn detail(&self) -> String {
         let on = if self.instance.is_none() { "this computer".to_string() } else { self.name.clone() };
-        if self.no_answer { format!("{} could not be reached over SSH.", self.name) } else { format!("SENTIENT on {on} does not answer on its web port.") }
+        if self.no_answer { tf!("{} could not be reached over SSH.", self.name) } else { tf!("SENTIENT on {on} does not answer on its web port.") }
     }
 }
 
@@ -147,8 +147,8 @@ pub fn start(options: fn(&mut App) -> WindowOptions, open_window: bool, request:
     #[cfg(debug_assertions)]
     if std::env::var_os("SPM_DEBUG_PROBLEMS").is_some() {
         let mut h = HashMap::new();
-        h.insert(Some("plantb".to_string()), ("Plant B server".to_string(), "#6b4fa0".to_string(), Seen::NoAnswer));
-        h.insert(None, ("This computer".to_string(), crate::remote::LOCAL_COLOR.to_string(), Seen::Stopped));
+        h.insert(Some("plantb".to_string()), (t!("Plant B server").to_string(), "#6b4fa0".to_string(), Seen::NoAnswer));
+        h.insert(None, (t!("This computer").to_string(), crate::remote::LOCAL_COLOR.to_string(), Seen::Stopped));
         cx.set_global(Health(h));
     }
 
@@ -166,7 +166,7 @@ pub fn start(options: fn(&mut App) -> WindowOptions, open_window: bool, request:
         let on = cx.global::<Bg>().prefs.start_at_signin && cx.global::<Bg>().prefs.show_tray;
         std::thread::spawn(move || {
             if let Err(e) = crate::background::set_autostart(on) {
-                crate::maintenance_ops::log_line(&format!("Start at sign-in could not be set: {e}"));
+                crate::maintenance_ops::log_line(&tf!("Start at sign-in could not be set: {e}"));
                 eprintln!("Start at sign-in could not be set: {e}");
             }
         });
@@ -176,7 +176,7 @@ pub fn start(options: fn(&mut App) -> WindowOptions, open_window: bool, request:
     // the window.
     let wait_for_tray = !open_window && !running && cx.global::<Bg>().prefs.show_tray;
     if wait_for_tray {
-        crate::maintenance_ops::log_line("Started in the background; no tray yet, waiting for the desktop's");
+        crate::maintenance_ops::log_line(t!("Started in the background; no tray yet, waiting for the desktop's"));
         let tx = cx.global::<Bg>().tx.clone();
         cx.spawn(async move |cx| {
             for _ in 0..40 {
@@ -187,7 +187,7 @@ pub fn start(options: fn(&mut App) -> WindowOptions, open_window: bool, request:
                     }
                     let Some(tray) = crate::tray::spawn(tx.clone(), crate::tray::Model::read(None)) else { return false };
                     cx.global_mut::<Bg>().tray = Some(tray);
-                    crate::maintenance_ops::log_line("The tray is up");
+                    crate::maintenance_ops::log_line(t!("The tray is up"));
                     refresh_tray(cx);
                     check_instances(cx);
                     true
@@ -197,7 +197,7 @@ pub fn start(options: fn(&mut App) -> WindowOptions, open_window: bool, request:
                 }
             }
             cx.update(|cx| {
-                crate::maintenance_ops::log_line("No tray after 2 minutes: opening the window");
+                crate::maintenance_ops::log_line(t!("No tray after 2 minutes: opening the window"));
                 show(cx);
             });
         })
@@ -248,7 +248,7 @@ fn hand_over(request: String, tx: UnboundedSender<Command>) {
     std::thread::spawn(move || {
         let args = vec!["--manager".to_string(), "--takeover".to_string(), "--request".to_string(), request];
         if !crate::elevate::relaunch_elevated(&args) {
-            crate::maintenance_ops::log_line("Administrator rights were not given: the window stays closed");
+            crate::maintenance_ops::log_line(t!("Administrator rights were not given: the window stays closed"));
             let _ = tx.unbounded_send(Command::TakeoverDeclined);
         }
     });
@@ -281,7 +281,7 @@ fn handle(cmd: Command, cx: &mut App) {
         Command::Handover => {
             // The elevated copy is the one copy from now on. Requests clicked
             // while it was on its way follow it once it listens.
-            crate::maintenance_ops::log_line("Handing over to the elevated Platform Manager");
+            crate::maintenance_ops::log_line(t!("Handing over to the elevated Platform Manager"));
             crate::background::release();
             let queued = std::mem::take(&mut cx.global_mut::<Bg>().queued);
             cx.global_mut::<Bg>().tray = None;
@@ -490,7 +490,7 @@ fn check_instances(cx: &mut App) {
                 let mut health = HashMap::new();
                 for (inst, seen) in found {
                     let key = inst.as_ref().map(|i| i.0.clone());
-                    let name = inst.as_ref().map(|i| i.1.clone()).unwrap_or_else(|| "This computer".into());
+                    let name = inst.as_ref().map(|i| i.1.clone()).unwrap_or_else(|| t!("This computer").into());
                     let color = inst.as_ref().map(|i| i.2.clone()).unwrap_or_else(|| crate::remote::LOCAL_COLOR.into());
                     health.insert(key.clone(), (name.clone(), color, seen));
                     let before = last.insert(key, seen);
@@ -548,12 +548,12 @@ struct Note {
 
 fn transition(before: Option<Seen>, now: Seen, name: &str) -> Option<Note> {
     let before = before.filter(|b| *b != now)?;
-    let on = if name == "This computer" { "this computer".to_string() } else { name.to_string() };
+    let on = if name == "This computer" || name == t!("This computer") { t!("this computer").to_string() } else { name.to_string() };
     Some(match now {
-        Seen::Stopped => Note { failed: true, title: "SENTIENT stopped".into(), detail: format!("SENTIENT on {on} does not answer on its web port.") },
-        Seen::NoAnswer => Note { failed: true, title: "The server does not answer".into(), detail: format!("{name} could not be reached over SSH.") },
-        Seen::Running if before == Seen::NoAnswer => Note { failed: false, title: "The server answers again".into(), detail: format!("{name} is reachable again; SENTIENT runs.") },
-        Seen::Running => Note { failed: false, title: "SENTIENT answers again".into(), detail: format!("SENTIENT on {on} answers again.") },
+        Seen::Stopped => Note { failed: true, title: t!("SENTIENT stopped").into(), detail: tf!("SENTIENT on {on} does not answer on its web port.") },
+        Seen::NoAnswer => Note { failed: true, title: t!("The server does not answer").into(), detail: tf!("{name} could not be reached over SSH.") },
+        Seen::Running if before == Seen::NoAnswer => Note { failed: false, title: t!("The server answers again").into(), detail: tf!("{name} is reachable again; SENTIENT runs.") },
+        Seen::Running => Note { failed: false, title: t!("SENTIENT answers again").into(), detail: tf!("SENTIENT on {on} answers again.") },
     })
 }
 

@@ -52,6 +52,15 @@ pub fn groups() -> Vec<Group> {
             setting.default = value.clone();
         }
     }
+    // In the language shown (its texts are in the catalogue, tools/i18n).
+    let tr = |s: &mut String| *s = crate::i18n::dynamic(s).into_owned();
+    for g in groups.iter_mut() {
+        tr(&mut g.name);
+        for s in g.settings.iter_mut() {
+            tr(&mut s.label);
+            tr(&mut s.help);
+        }
+    }
     groups
 }
 
@@ -262,9 +271,9 @@ impl Setting {
                     _ if self.env.ends_with("_PORT") => "a port number",
                     _ => "a whole number",
                 };
-                Some(format!("Enter {what} from {lo} to {hi}."))
+                Some(tf!("Enter {what} from {lo} to {hi}."))
             }
-            ValueKind::Switch => (!matches!(v, "true" | "false")).then(|| "Enter true or false.".to_string()),
+            ValueKind::Switch => (!matches!(v, "true" | "false")).then(|| t!("Enter true or false.").to_string()),
             _ => None,
         }
     }

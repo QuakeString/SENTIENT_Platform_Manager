@@ -50,9 +50,9 @@ impl GatewayPage {
         let input = |cx: &mut Context<Self>, window: &mut Window, value: String| cx.new(|cx| InputState::new(window, cx).default_value(value));
         let host = input(cx, window, "127.0.0.1".into());
         let port = input(cx, window, port.to_string());
-        let token = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("From SENTIENT: the gateway device, Manage credentials"));
-        let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("8 characters or more"));
-        let password2 = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Again"));
+        let token = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("From SENTIENT: the gateway device, Manage credentials")));
+        let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("8 characters or more")));
+        let password2 = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("Again")));
         let job = cx.new(|_| Job::new());
         let mut subs = vec![
             cx.observe(&job, |page: &mut Self, job, cx| {
@@ -109,7 +109,7 @@ impl GatewayPage {
         let port: u16 = match self.value(&self.port, cx).parse() {
             Ok(p) if p > 0 => p,
             _ => {
-                self.problem = Some("The MQTT port is a number from 1 to 65535.".into());
+                self.problem = Some(t!("The MQTT port is a number from 1 to 65535.").into());
                 return;
             }
         };
@@ -117,16 +117,16 @@ impl GatewayPage {
         let token = self.value(&self.token, cx);
         let (p1, p2) = (self.value(&self.password, cx), self.value(&self.password2, cx));
         if host.is_empty() || token.is_empty() {
-            self.problem = Some("Enter the platform host and the gateway device's access token.".into());
+            self.problem = Some(t!("Enter the platform host and the gateway device's access token.").into());
             return;
         }
         if cfg!(windows) && (!p1.is_empty() || !p2.is_empty()) {
             if p1.len() < 8 {
-                self.problem = Some("The local page's password needs 8 characters or more.".into());
+                self.problem = Some(t!("The local page's password needs 8 characters or more.").into());
                 return;
             }
             if p1 != p2 {
-                self.problem = Some("The two passwords differ.".into());
+                self.problem = Some(t!("The two passwords differ.").into());
                 return;
             }
         }
@@ -247,25 +247,25 @@ impl RemoveTarget {
 
     /// What the removal does, in one sentence.
     fn what(&self) -> String {
-        let place = self.server.as_ref().map(|s| format!(" on {s}")).unwrap_or_default();
+        let place = self.server.as_ref().map(|s| tf!(" on {s}")).unwrap_or_default();
         match self.kind.as_str() {
-            "docker" => format!("The Docker container {} is stopped and removed{place}. A compose file it came from is not changed.", self.name),
+            "docker" => tf!("The Docker container {} is stopped and removed{place}. A compose file it came from is not changed.", self.name),
             "service" => match &self.package {
-                Some(p) => format!("The service {} is stopped and disabled, and the package {p} is removed{place}.", self.name),
-                None => format!("The service {} is stopped and disabled, and its unit file and program are removed{place}.", self.name),
+                Some(p) => tf!("The service {} is stopped and disabled, and the package {p} is removed{place}.", self.name),
+                None => tf!("The service {} is stopped and disabled, and its unit file and program are removed{place}.", self.name),
             },
-            "windows-service" => format!("The Windows service SentientGateway is stopped and the gateway is uninstalled{place}."),
-            _ => format!("The gateway's program {} is removed{place}.", self.name),
+            "windows-service" => tf!("The Windows service SentientGateway is stopped and the gateway is uninstalled{place}."),
+            _ => tf!("The gateway's program {} is removed{place}.", self.name),
         }
     }
 
     /// Where "Keep its configuration and data" keeps them.
     fn kept_where(&self) -> String {
         match self.kind.as_str() {
-            "docker" if !self.volumes.is_empty() => format!("Its volumes are kept: {}. A new gateway container can use them again.", self.volumes.join(", ")),
-            "docker" => "The container has no volumes: its configuration lives in the container and goes with it.".into(),
-            "windows-service" => "Moved to a dated folder: ProgramData\\Sentient Gateway kept <date>.".into(),
-            _ => "The configuration (/etc/sentient-gateway, with the platform's access token) and the local buffer (/var/lib/sentient-gateway) are moved to a dated folder: /var/backups/sentient-gateway-<date>-<time>.".into(),
+            "docker" if !self.volumes.is_empty() => tf!("Its volumes are kept: {}. A new gateway container can use them again.", self.volumes.join(", ")),
+            "docker" => t!("The container has no volumes: its configuration lives in the container and goes with it.").into(),
+            "windows-service" => t!("Moved to a dated folder: ProgramData\\Sentient Gateway kept <date>.").into(),
+            _ => t!("The configuration (/etc/sentient-gateway, with the platform's access token) and the local buffer (/var/lib/sentient-gateway) are moved to a dated folder: /var/backups/sentient-gateway-<date>-<time>.").into(),
         }
     }
 }
@@ -274,7 +274,7 @@ impl RemoveTarget {
 /// switch (on), and for a container the image too (off). `on_ok(keep, image)`.
 pub(crate) fn open_remove_dialog(target: RemoveTarget, on_ok: std::rc::Rc<dyn Fn(bool, bool, &mut App)>, cx: &mut App) {
     let view = cx.new(|_| RemoveDialog { target, keep: true, image: false, on_ok });
-    crate::modal::open(crate::modal::Modal { title: "Remove the Sentient Gateway?".into(), body: view.into(), width: 520., icon: None, on_close: None }, cx);
+    crate::modal::open(crate::modal::Modal { title: t!("Remove the Sentient Gateway?").into(), body: view.into(), width: 520., icon: None, on_close: None }, cx);
 }
 
 struct RemoveDialog {
@@ -290,7 +290,7 @@ impl Render for RemoveDialog {
         let theme = cx.theme().clone();
         let t = &self.target;
         let docker = t.kind == "docker";
-        let ok = if self.keep { "Remove" } else { "Remove and delete the data" };
+        let ok = if self.keep { t!("Remove") } else { t!("Remove and delete the data") };
         let (keep, image) = (self.keep, self.image);
         let on_ok = self.on_ok.clone();
         v_flex()
@@ -306,7 +306,7 @@ impl Render for RemoveDialog {
                             .min_w_0()
                             .gap_1()
                             .items_center()
-                            .child(div().text_sm().child("Keep its configuration and data"))
+                            .child(div().text_sm().child(t!("Keep its configuration and data")))
                             .child(ui::info("gw-remove-keep".into(), t.kept_where().into())),
                     )
                     .child(Switch::new("gw-remove-keep-switch").checked(self.keep).on_click(cx.listener(|d, v: &bool, _, cx| {
@@ -317,7 +317,7 @@ impl Render for RemoveDialog {
             .when(docker && t.image.is_some(), |b| {
                 b.child(
                     Checkbox::new("gw-remove-image")
-                        .label(format!("Also remove the image {}", t.image.clone().unwrap_or_default()))
+                        .label(tf!("Also remove the image {}", t.image.clone().unwrap_or_default()))
                         .checked(self.image)
                         .on_change(cx.listener(|d, v: &bool, _, cx| {
                             d.image = *v;
@@ -330,9 +330,9 @@ impl Render for RemoveDialog {
                     &theme,
                     Tone::Bad,
                     if docker {
-                        "Its volumes are deleted: the gateway's configuration, its access token and the data it buffered. This can't be undone."
+                        t!("Its volumes are deleted: the gateway's configuration, its access token and the data it buffered. This can't be undone.")
                     } else {
-                        "Its configuration, its access token and the data it buffered are deleted. This can't be undone."
+                        t!("Its configuration, its access token and the data it buffered are deleted. This can't be undone.")
                     },
                 ))
             })
@@ -340,7 +340,7 @@ impl Render for RemoveDialog {
                 h_flex()
                     .gap(crate::ui::button_gap())
                     .justify_end()
-                    .child(crate::ui::probed(crate::ui::button("gw-remove-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
+                    .child(crate::ui::probed(crate::ui::button("gw-remove-cancel").outline().label(t!("Cancel")).on_click(|_, _, cx| crate::modal::close(cx))))
                     .child(crate::ui::probed(
                         h_flex()
                             .id("gw-remove-ok")
@@ -367,13 +367,13 @@ impl Render for RemoveDialog {
 /// How the gateway runs, for "Runs as": a container also says who manages it.
 pub(crate) fn runs_as(kind: &str, name: &str, managed: bool, recorded: bool) -> String {
     match kind {
-        "docker" if managed => format!("Docker container {name}"),
-        "docker" if recorded => format!("Docker container {name}, managed here (it was installed outside the Platform Manager)"),
-        "docker" => format!("Docker container {name}, installed outside the Platform Manager"),
-        "service" if recorded => format!("Service {name}, managed here"),
-        "service" => format!("Service {name}"),
-        "process" => format!("A process ({name}), started outside a service"),
-        _ => "Windows service SentientGateway".to_string(),
+        "docker" if managed => tf!("Docker container {name}"),
+        "docker" if recorded => tf!("Docker container {name}, managed here (it was installed outside the Platform Manager)"),
+        "docker" => tf!("Docker container {name}, installed outside the Platform Manager"),
+        "service" if recorded => tf!("Service {name}, managed here"),
+        "service" => tf!("Service {name}"),
+        "process" => tf!("A process ({name}), started outside a service"),
+        _ => t!("Windows service SentientGateway").to_string(),
     }
 }
 
@@ -382,8 +382,8 @@ impl Render for GatewayPage {
         let theme = cx.theme().clone();
         let page = ui::page(
             &theme,
-            "Gateway",
-            "The Sentient Gateway on this computer: it collects data from the plant's devices and sends it to SENTIENT.",
+            t!("Gateway"),
+            t!("The Sentient Gateway on this computer: it collects data from the plant's devices and sends it to SENTIENT."),
         );
         let u = self.updates.read(cx);
         let newest = u.found.as_ref().map(|f| f.gateway.clone());
@@ -392,7 +392,7 @@ impl Render for GatewayPage {
         let busy = job.is_running();
 
         let Some(status) = self.status.clone() else {
-            return page.child(ui::panel(&theme).child(div().text_sm().text_color(theme.muted_foreground).child("Looking for the gateway…")));
+            return page.child(ui::panel(&theme).child(div().text_sm().text_color(theme.muted_foreground).child(t!("Looking for the gateway…"))));
         };
         let offer: Option<Offer> = match &newest {
             Some(Ok(Some(o))) => Some(o.clone()),
@@ -412,41 +412,41 @@ impl Render for GatewayPage {
             _ => None,
         };
         let body = if status.installed {
-            let (pill, tone) = if status.running { ("Gateway is running", Tone::Good) } else { ("Gateway is stopped", Tone::Bad) };
+            let (pill, tone) = if status.running { (t!("Gateway is running"), Tone::Good) } else { (t!("Gateway is stopped"), Tone::Bad) };
             ui::panel(&theme)
                 .child(
                     h_flex()
                         .gap_3()
                         .items_center()
                         .child(ui::product_logo(ui::Product::Gateway, 28.))
-                        .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
+                        .child(div().font_weight(FontWeight::MEDIUM).child(t!("Sentient Gateway")))
                         .child(ui::pill(&theme, tone, pill))
                         .child(div().flex_1())
                         .when_some(status.page_url.clone(), |r, url| {
-                            r.child(crate::ui::button("gw-page").outline().label("Open local page").on_click(move |_, _, cx| ui::open_url(&url, cx)))
+                            r.child(crate::ui::button("gw-page").outline().label(t!("Open local page")).on_click(move |_, _, cx| ui::open_url(&url, cx)))
                         }),
                 )
-                .child(ui::fact(&theme, "Version", status.version.clone().unwrap_or_else(|| "unknown".into())))
+                .child(ui::fact(&theme, t!("Version"), status.version.clone().unwrap_or_else(|| "unknown".into())))
                 .child(ui::fact(
                     &theme,
-                    "Sends to",
+                    t!("Sends to"),
                     match (&status.host, status.port) {
                         (Some(h), Some(p)) => format!("{h}:{p}"),
                         (Some(h), None) => h.clone(),
-                        _ => "Not commissioned (set the platform on its local page)".into(),
+                        _ => t!("Not commissioned (set the platform on its local page)").into(),
                     },
                 ))
-                .child(ui::fact(&theme, "Runs as", runs_as(status.kind(), &RemoveTarget::of(&status, None).name, status.managed, recorded)))
+                .child(ui::fact(&theme, t!("Runs as"), runs_as(status.kind(), &RemoveTarget::of(&status, None).name, status.managed, recorded)))
                 .when_some(status.compose_dir.clone(), |p, dir| {
-                    p.child(ui::fact(&theme, "Compose", match &status.compose_project {
-                        Some(proj) => format!("{proj}, in {dir}"),
+                    p.child(ui::fact(&theme, t!("Compose"), match &status.compose_project {
+                        Some(proj) => tf!("{proj}, in {dir}"),
                         None => dir,
                     }))
                 })
-                .when(!status.volumes.is_empty(), |p| p.child(ui::fact(&theme, "Volumes", status.volumes.join(", "))))
+                .when(!status.volumes.is_empty(), |p| p.child(ui::fact(&theme, t!("Volumes"), status.volumes.join(", "))))
                 .child(match status.page_url.clone() {
-                    Some(url) => ui::fact(&theme, "Web page", url),
-                    None => ui::fact_help(&theme, "Web page", "Off", "The gateway's own web page is off. In a container it is turned on with ST_GW_UI=on."),
+                    Some(url) => ui::fact(&theme, t!("Web page"), url),
+                    None => ui::fact_help(&theme, t!("Web page"), t!("Off"), t!("The gateway's own web page is off. In a container it is turned on with ST_GW_UI=on.")),
                 })
                 .children({
                     let this = cx.entity().downgrade();
@@ -457,7 +457,7 @@ impl Render for GatewayPage {
                         })
                     };
                     let running = Some(crate::manager::status::Running { serving: status.running, any_up: status.running });
-                    let services = if controllable { crate::manager::status::service_buttons(&theme, "gw-", busy, running, "Stop", act("start"), act("restart"), act("stop")) } else { Vec::new() };
+                    let services = if controllable { crate::manager::status::service_buttons(&theme, "gw-", busy, running, t!("Stop"), act("start"), act("restart"), act("stop")) } else { Vec::new() };
                     ui::card_actions(
                         &theme,
                         h_flex()
@@ -466,12 +466,12 @@ impl Render for GatewayPage {
                             // A wrapped line ends at the right too.
                             .justify_end()
                             .items_center()
-                            .child(crate::ui::probed(crate::ui::button("gw-remove").danger().label("Remove the Gateway").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.open_remove(cx)))))
+                            .child(crate::ui::probed(crate::ui::button("gw-remove").danger().label(t!("Remove the Gateway")).disabled(busy).on_click(cx.listener(|p, _, _, cx| p.open_remove(cx)))))
                             .when(outside, |r| {
                                 r.child(crate::ui::probed(
-                                    h_flex().gap_1().items_center().child(crate::ui::button("gw-adopt").outline().label("Manage it here").disabled(busy).on_click(cx.listener(|p, _, _, cx| p.adopt(cx)))).child(ui::info(
+                                    h_flex().gap_1().items_center().child(crate::ui::button("gw-adopt").outline().label(t!("Manage it here")).disabled(busy).on_click(cx.listener(|p, _, _, cx| p.adopt(cx)))).child(ui::info(
                                         "gw-adopt-help".into(),
-                                        "Records this gateway as the one the Platform Manager manages: it lists it, starts and stops it, and offers its removal. Nothing about it changes: the container, its compose file and its volumes stay as they are.".into(),
+                                        t!("Records this gateway as the one the Platform Manager manages: it lists it, starts and stops it, and offers its removal. Nothing about it changes: the container, its compose file and its volumes stay as they are.").into(),
                                     )),
                                 ))
                             })
@@ -495,11 +495,11 @@ impl Render for GatewayPage {
                                     .child({
                                         let blocked = !status.managed || (status.container.is_none() && o.installer.is_none());
                                         let why = if !status.managed {
-                                            format!("This container comes from a compose file: set its image to quakestring/sentient-gateway-rs:{} in that file and run docker compose up -d.", o.version)
+                                            tf!("This container comes from a compose file: set its image to quakestring/sentient-gateway-rs:{} in that file and run docker compose up -d.", o.version)
                                         } else {
-                                            "No installer for this system in this release.".to_string()
+                                            t!("No installer for this system in this release.").to_string()
                                         };
-                                        let button = crate::ui::button("gw-update").primary().label(format!("Update to {}", o.version)).disabled(busy || blocked).on_click(cx.listener(move |p, _, _, cx| p.update_to(o2.clone(), cx)));
+                                        let button = crate::ui::button("gw-update").primary().label(tf!("Update to {}", o.version)).disabled(busy || blocked).on_click(cx.listener(move |p, _, _, cx| p.update_to(o2.clone(), cx)));
                                         // A disabled button carries its reason as a tooltip.
                                         if blocked {
                                             div().id("gw-update-why").child(button).tooltip(crate::ui::tooltip(why.clone())).into_any_element()
@@ -507,33 +507,33 @@ impl Render for GatewayPage {
                                             button.into_any_element()
                                         }
                                     })
-                                    .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Released {}", o.date)))
+                                    .child(div().text_sm().text_color(theme.muted_foreground).child(tf!("Released {}", o.date)))
                                     .child(ui::info("gw-update-help".into(), {
-                                        let mut t = if status.managed { "The configuration and the web page's password are kept.".to_string() } else { String::new() };
+                                        let mut t = if status.managed { t!("The configuration and the web page's password are kept.").to_string() } else { String::new() };
                                         if !o.notes.is_empty() {
                                             if !t.is_empty() {
                                                 t.push_str("\n\n");
                                             }
                                             t.push_str(&o.notes);
                                         }
-                                        if t.is_empty() { "What's in it: see the gateway's change log.".into() } else { t.into() }
+                                        if t.is_empty() { t!("What's in it: see the gateway's change log.").into() } else { t.into() }
                                     })),
                             )
                             .into_any_element()
                     }
-                    (None, Some(Err(e))) => div().text_sm().text_color(theme.muted_foreground).child(format!("Gateway updates: {e}")).into_any_element(),
+                    (None, Some(Err(e))) => div().text_sm().text_color(theme.muted_foreground).child(tf!("Gateway updates: {e}")).into_any_element(),
                     // Up to date only against a known version.
                     (None, Some(Ok(_))) if status.version.is_none() => div()
                         .text_sm()
                         .text_color(theme.muted_foreground)
-                        .child("Its version is not known, so updates cannot be checked.")
+                        .child(t!("Its version is not known, so updates cannot be checked."))
                         .into_any_element(),
                     (None, Some(Ok(_))) => div()
                         .text_sm()
                         .text_color(theme.muted_foreground)
-                        .child(format!("Up to date on the {} channel.", channel.label()))
+                        .child(tf!("Up to date on the {} channel.", crate::i18n::t(channel.label())))
                         .into_any_element(),
-                    (None, None) => div().text_sm().text_color(theme.muted_foreground).child("Looking for gateway updates…").into_any_element(),
+                    (None, None) => div().text_sm().text_color(theme.muted_foreground).child(t!("Looking for gateway updates…")).into_any_element(),
                 })
         } else {
             let field = |label: &'static str, input: Div| {
@@ -541,31 +541,32 @@ impl Render for GatewayPage {
             };
             let o = offer.clone();
             ui::panel(&theme)
-                .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Gateway, 28.)).child(div().font_weight(FontWeight::MEDIUM).child("No gateway on this computer")))
+                .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Gateway, 28.)).child(div().font_weight(FontWeight::MEDIUM).child(t!("No gateway on this computer"))))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
-                    "The gateway reads devices next to this computer. In SENTIENT, add a gateway device and copy its access token (Manage credentials).",
+                    t!("The gateway reads devices next to this computer. In SENTIENT, add a gateway device and copy its access token (Manage credentials)."),
                 ))
                 .child(
                     h_flex()
                         .gap_3()
-                        .child(field("Platform host (MQTT)", div().child(Input::new(&self.host))).flex_1())
-                        .child(field("Port", div().child(Input::new(&self.port))).w_24()),
+                        .child(field(t!("Platform host (MQTT)"), div().child(Input::new(&self.host))).flex_1())
+                        .child(field(t!("Port"), div().child(Input::new(&self.port))).w_24()),
                 )
-                .child(field("Access token", div().child(Input::new(&self.token).mask_toggle())))
+                .child(field(t!("Access token"), div().child(Input::new(&self.token).mask_toggle())))
                 .when(cfg!(windows), |p| {
                     p.child(
                         h_flex()
                             .gap_3()
-                            .child(field("Local page password", div().child(Input::new(&self.password).mask_toggle())).flex_1())
-                            .child(field("Again", div().child(Input::new(&self.password2).mask_toggle())).flex_1()),
+                            .child(field(t!("Local page password"), div().child(Input::new(&self.password).mask_toggle())).flex_1())
+                            .child(field(t!("Again"), div().child(Input::new(&self.password2).mask_toggle())).flex_1()),
                     )
                 })
                 .children(outcome.clone().map(|(tone, m)| ui::outcome(&theme, tone, m)))
                 .children(self.problem.clone().map(|p| ui::outcome(&theme, Tone::Bad, p)))
                 .child(match o {
                     Some(o) => {
-                        let label = format!("Install Sentient Gateway {}", o.version);
+                        let label = tf!("Install Sentient Gateway {}", o.version);
                         h_flex()
+                            .flex_wrap()
                             .gap_3()
                             .items_center()
                             .child(
@@ -575,10 +576,10 @@ impl Render for GatewayPage {
                                     .disabled(busy || (cfg!(windows) && o.installer.is_none()))
                                     .on_click(cx.listener(move |p, _, _, cx| p.install(o.clone(), cx))),
                             )
-                            .child(div().text_sm().text_color(theme.muted_foreground).child(if cfg!(windows) {
-                                "the installer from the SENTIENT releases site, checked before use"
+                            .child(div().min_w_0().text_sm().text_color(theme.muted_foreground).child(if cfg!(windows) {
+                                t!("the installer from the SENTIENT releases site, checked before use")
                             } else {
-                                "the quakestring/sentient-gateway-rs image, run by Docker"
+                                t!("the quakestring/sentient-gateway-rs image, run by Docker")
                             }))
                             .into_any_element()
                     }
@@ -586,9 +587,9 @@ impl Render for GatewayPage {
                         .text_sm()
                         .text_color(theme.muted_foreground)
                         .child(match &newest {
-                            Some(Err(e)) => format!("The gateway releases could not be read: {e}"),
-                            Some(Ok(_)) => "No gateway release on this channel.".to_string(),
-                            None => "Looking for the newest gateway…".to_string(),
+                            Some(Err(e)) => tf!("The gateway releases could not be read: {e}"),
+                            Some(Ok(_)) => t!("No gateway release on this channel.").to_string(),
+                            None => t!("Looking for the newest gateway…").to_string(),
                         })
                         .into_any_element(),
                 })
@@ -601,13 +602,13 @@ impl Render for GatewayPage {
 /// Repair and uninstall's Gateway choice: the gateway found, and its removal.
 pub(crate) fn remove_panel(theme: &gpui_kit::component::Theme, id: &'static str, runs_as: String, button: AnyElement) -> Div {
     ui::panel(theme)
-        .child(h_flex().gap_2().items_center().child(ui::product_logo(ui::Product::Gateway, 24.)).child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway")))
+        .child(h_flex().gap_2().items_center().child(ui::product_logo(ui::Product::Gateway, 24.)).child(div().font_weight(FontWeight::MEDIUM).child(t!("Sentient Gateway"))))
         .child(
             h_flex()
                 .gap_1()
                 .items_center()
                 .child(div().text_sm().text_color(theme.muted_foreground).child(runs_as))
-                .child(ui::info(SharedString::from(format!("{id}-help")), "Remove the Gateway stops it and removes it. Its configuration and data are kept unless you choose otherwise. SENTIENT is not touched.".into())),
+                .child(ui::info(SharedString::from(format!("{id}-help")), t!("Remove the Gateway stops it and removes it. Its configuration and data are kept unless you choose otherwise. SENTIENT is not touched.").into())),
         )
         .child(ui::button_row(vec![button]))
 }

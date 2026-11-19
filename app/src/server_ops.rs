@@ -25,12 +25,12 @@ use sentient_installer_core::progress::{Progress, ProgressFn};
 use crate::installation::{Engine, InstallationRecord};
 
 /// The step names (crate::jobplan lists them before the job starts).
-pub const STEP_DOCKER_RESTART: &str = "Restart Docker";
-pub const STEP_DOCKER_WAIT: &str = "Wait for Docker to answer";
-pub const STEP_DOCKER_SENTIENT: &str = "SENTIENT running again";
-pub const STEP_UPD_LOOK: &str = "Look for updates";
-pub const STEP_UPD_INSTALL: &str = "Download and install the updates";
-pub const STEP_UPD_CHECK: &str = "Check whether a restart is needed";
+pub const STEP_DOCKER_RESTART: &str = n!("Restart Docker");
+pub const STEP_DOCKER_WAIT: &str = n!("Wait for Docker to answer");
+pub const STEP_DOCKER_SENTIENT: &str = n!("SENTIENT running again");
+pub const STEP_UPD_LOOK: &str = n!("Look for updates");
+pub const STEP_UPD_INSTALL: &str = n!("Download and install the updates");
+pub const STEP_UPD_CHECK: &str = n!("Check whether a restart is needed");
 
 /// `--job …` names this module answers; None: not one of them.
 pub fn job(job: &str, args: &[String], sink: &ProgressFn) -> Option<Result<(), String>> {
@@ -79,7 +79,7 @@ pub fn boot_time() -> i64 {
 /// a few seconds later (the answer gets back first).
 fn power(reboot: bool, sink: &ProgressFn) -> Result<(), String> {
     if let Some(record) = InstallationRecord::load() {
-        sink(Progress::Log { line: "Stopping SENTIENT and its database cleanly".into() });
+        sink(Progress::Log { line: n!("Stopping SENTIENT and its database cleanly").into() });
         record.use_pg_tools();
         // The machine stops anyway: a PostgreSQL other databases use stops too.
         record.platform().control_stack(sink.clone(), "stop", true)?;
@@ -95,7 +95,7 @@ fn power(reboot: bool, sink: &ProgressFn) -> Result<(), String> {
             .or_else(|_| run_status("sh", &["-c", &format!("(sleep 4; systemctl {verb} || shutdown {} now) >/dev/null 2>&1 </dev/null &", if reboot { "-r" } else { "-h" })]))
     };
     sent?;
-    sink(Progress::Log { line: format!("The {} was sent; it starts in a few seconds", if reboot { "restart" } else { "shutdown" }) });
+    sink(Progress::Log { line: nf!("The {} was sent; it starts in a few seconds", if reboot { "restart" } else { "shutdown" }) });
     println!("{}", serde_json::json!({ "boot": boot, "sent": true }));
     Ok(())
 }
@@ -106,7 +106,7 @@ fn run_status(cmd: &str, args: &[&str]) -> Result<(), String> {
         Ok(())
     } else {
         let e = String::from_utf8_lossy(&o.stderr).trim().to_string();
-        Err(if e.is_empty() { format!("{cmd} ended with {}", o.status) } else { e })
+        Err(if e.is_empty() { nf!("{cmd} ended with {}", o.status) } else { e })
     }
 }
 
@@ -146,7 +146,7 @@ fn stream(cmd: &str, args: &[&str], env: &[(&str, &str)], sink: &ProgressFn) -> 
         return Ok(());
     }
     let tail = err_lines.lock().map(|v| v.iter().rev().take(4).rev().cloned().collect::<Vec<_>>().join("\n")).unwrap_or_default();
-    Err(format!("{cmd} {} ended with {st}{}", args.first().copied().unwrap_or(""), if tail.is_empty() { String::new() } else { format!(":\n{tail}") }))
+    Err(nf!("{cmd} {} ended with {st}{}", args.first().copied().unwrap_or(""), if tail.is_empty() { String::new() } else { format!(":\n{tail}") }))
 }
 
 fn docker_restart(record: Option<&InstallationRecord>, sink: &ProgressFn) -> Result<(), String> {
@@ -162,7 +162,7 @@ fn docker_restart(record: Option<&InstallationRecord>, sink: &ProgressFn) -> Res
             break;
         }
         if t0.elapsed() > Duration::from_secs(120) {
-            return Err("Docker did not answer within 2 minutes after its restart. Look at its log (journalctl -u docker) on the server.".into());
+            return Err(n!("Docker did not answer within 2 minutes after its restart. Look at its log (journalctl -u docker) on the server.").into());
         }
         std::thread::sleep(Duration::from_secs(2));
     }
@@ -170,13 +170,13 @@ fn docker_restart(record: Option<&InstallationRecord>, sink: &ProgressFn) -> Res
         sink(Progress::Step { name: STEP_DOCKER_SENTIENT.into() });
         r.platform().control_stack(sink.clone(), "start", false)?;
     }
-    sink(Progress::Done { message: "Docker was restarted and answers.".into() });
+    sink(Progress::Done { message: n!("Docker was restarted and answers.").into() });
     Ok(())
 }
 
 #[cfg(windows)]
 fn ps(script: &str) -> Result<String, String> {
-    let o = quiet("powershell.exe").args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script]).output().map_err(|e| e.to_string())?;
+    let o = quiet("powershell.exe").args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", n!("Bypass"), "-Command", script]).output().map_err(|e| e.to_string())?;
     if o.status.success() { Ok(String::from_utf8_lossy(&o.stdout).to_string()) } else { Err(String::from_utf8_lossy(&o.stderr).trim().to_string()) }
 }
 
@@ -200,7 +200,7 @@ fn package_commands() -> Option<(Vec<&'static str>, Vec<&'static str>)> {
 fn system_updates(sink: &ProgressFn) -> Result<(), String> {
     #[cfg(not(windows))]
     {
-        let (look, install) = package_commands().ok_or("No package manager this job knows (apt, dnf, pacman or zypper) is on this server.")?;
+        let (look, install) = package_commands().ok_or(n!("No package manager this job knows (apt, dnf, pacman or zypper) is on this server."))?;
         let env = [("DEBIAN_FRONTEND", "noninteractive")];
         sink(Progress::Step { name: STEP_UPD_LOOK.into() });
         stream(look[0], &look[1..], &env, sink)?;
@@ -208,19 +208,19 @@ fn system_updates(sink: &ProgressFn) -> Result<(), String> {
         stream(install[0], &install[1..], &env, sink)?;
         sink(Progress::Step { name: STEP_UPD_CHECK.into() });
         let needed = std::path::Path::new("/var/run/reboot-required").exists();
-        sink(Progress::Done { message: if needed { "The updates are installed. The server needs a restart to finish them.".into() } else { "The updates are installed.".into() } });
+        sink(Progress::Done { message: if needed { n!("The updates are installed. The server needs a restart to finish them.").into() } else { n!("The updates are installed.").into() } });
         Ok(())
     }
     #[cfg(windows)]
     {
         sink(Progress::Step { name: STEP_UPD_LOOK.into() });
         let n = ps(crate::server_info::WINDOWS_UPDATES_SCRIPT)?;
-        sink(Progress::Log { line: format!("{} update(s) waiting", n.trim()) });
+        sink(Progress::Log { line: nf!("{} update(s) waiting", n.trim()) });
         sink(Progress::Step { name: STEP_UPD_INSTALL.into() });
-        stream("powershell.exe", &["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", WINDOWS_INSTALL], &[], sink)?;
+        stream("powershell.exe", &["-NoProfile", "-NonInteractive", "-ExecutionPolicy", n!("Bypass"), "-Command", WINDOWS_INSTALL], &[], sink)?;
         sink(Progress::Step { name: STEP_UPD_CHECK.into() });
         let needed = ps("(Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired')").unwrap_or_default().trim() == "True";
-        sink(Progress::Done { message: if needed { "The updates are installed. The server needs a restart to finish them.".into() } else { "The updates are installed.".into() } });
+        sink(Progress::Done { message: if needed { n!("The updates are installed. The server needs a restart to finish them.").into() } else { n!("The updates are installed.").into() } });
         Ok(())
     }
 }

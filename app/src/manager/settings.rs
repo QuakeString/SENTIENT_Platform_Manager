@@ -68,15 +68,15 @@ impl Tab {
 
     fn title(self) -> &'static str {
         match self {
-            Tab::Startup => STARTUP_TITLE,
-            t => TAB_TITLES[t.session_index()],
+            Tab::Startup => crate::i18n::t(STARTUP_TITLE),
+            t => crate::i18n::t(TAB_TITLES[t.session_index()]),
         }
     }
 
     fn about(self) -> &'static str {
         match self {
-            Tab::Startup => STARTUP_ABOUT,
-            t => TAB_ABOUT[t.session_index()],
+            Tab::Startup => crate::i18n::t(STARTUP_ABOUT),
+            t => crate::i18n::t(TAB_ABOUT[t.session_index()]),
         }
     }
 }
@@ -94,9 +94,9 @@ impl Preset {
 
     fn label(self) -> &'static str {
         match self {
-            Preset::Small => "Small (up to 50 devices)",
-            Preset::Medium => "Medium (recommended)",
-            Preset::Large => "Large",
+            Preset::Small => t!("Small (up to 50 devices)"),
+            Preset::Medium => t!("Medium (recommended)"),
+            Preset::Large => t!("Large"),
         }
     }
 }
@@ -129,13 +129,13 @@ fn preset_values(p: Preset, groups: &[Group], ram_mb: u64) -> HashMap<&'static s
 }
 
 const CERTS: [(&str, &str); 7] = [
-    ("SSL_PEM_CERT", "HTTPS certificate"),
-    ("SSL_PEM_KEY", "HTTPS private key"),
-    ("MQTT_SSL_PEM_CERT", "MQTT over TLS certificate"),
-    ("MQTT_SSL_PEM_KEY", "MQTT over TLS key"),
-    ("MQTT_SSL_PEM_CA", "MQTT over TLS CA"),
-    ("COAP_SSL_PEM_CERT", "CoAP over DTLS certificate"),
-    ("COAP_SSL_PEM_KEY", "CoAP over DTLS key"),
+    ("SSL_PEM_CERT", n!("HTTPS certificate")),
+    ("SSL_PEM_KEY", n!("HTTPS private key")),
+    ("MQTT_SSL_PEM_CERT", n!("MQTT over TLS certificate")),
+    ("MQTT_SSL_PEM_KEY", n!("MQTT over TLS key")),
+    ("MQTT_SSL_PEM_CA", n!("MQTT over TLS CA")),
+    ("COAP_SSL_PEM_CERT", n!("CoAP over DTLS certificate")),
+    ("COAP_SSL_PEM_KEY", n!("CoAP over DTLS key")),
 ];
 
 pub struct SettingsPage {
@@ -200,7 +200,7 @@ impl SettingsPage {
                 this.update(cx, |page, cx| {
                     let Some(record) = page.record.clone() else { return };
                     page.job.update(cx, |job, cx| {
-                        job.set_label("Taking over the compose file");
+                        job.set_label(t!("Taking over the compose file"));
                         job.start(move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), creds.db.as_deref(), creds.ch.as_deref(), sink).map(|_| ()), cx)
                     });
                 })
@@ -243,7 +243,7 @@ impl SettingsPage {
         let new_name = cx.new(|cx| InputState::new(window, cx).placeholder("NAME_OF_THE_VARIABLE"));
         let new_value = cx.new(|cx| InputState::new(window, cx).placeholder("value"));
         subscriptions.push(cx.subscribe(&new_name, |_, _, _: &InputEvent, cx| cx.notify()));
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search settings and variables"));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder(t!("Search settings and variables")));
         subscriptions.push(cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify()));
         let job = cx.new(|_| Job::new());
         subscriptions.push(cx.observe(&job, |page: &mut Self, job, cx| {
@@ -255,7 +255,7 @@ impl SettingsPage {
             }
             cx.notify();
         }));
-        let new_pw = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("At least 8 characters"));
+        let new_pw = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(t!("At least 8 characters")));
         let repeat_pw = cx.new(|cx| InputState::new(window, cx).masked(true));
         subscriptions.push(cx.subscribe(&new_pw, |_, _, _: &InputEvent, cx| cx.notify()));
         subscriptions.push(cx.subscribe(&repeat_pw, |_, _, _: &InputEvent, cx| cx.notify()));
@@ -294,7 +294,7 @@ impl SettingsPage {
         // on Windows), or in the mockup's screens.
         let movable = page.record.as_ref().is_some_and(|r| crate::movedata::unsupported(r).is_none()) || (cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_MOVEDATA").is_some());
         if movable {
-            page.locations = Some(cx.new(|cx| super::movedata::LocationsCard::new(crate::movedata::Target::Local, "This computer".into(), cfg!(windows), cx)));
+            page.locations = Some(cx.new(|cx| super::movedata::LocationsCard::new(crate::movedata::Target::Local, t!("This computer").into(), cfg!(windows), cx)));
         }
         // Development aid: open on a tab (screens).
         #[cfg(debug_assertions)]
@@ -425,7 +425,7 @@ impl SettingsPage {
             this.update(cx, |page, cx| {
                 page.admin_busy = false;
                 page.admin_result = Some(match r {
-                    Ok(m) => (Tone::Good, m.lines().last().unwrap_or("Done.").to_string()),
+                    Ok(m) => (Tone::Good, m.lines().last().unwrap_or(t!("Done.")).to_string()),
                     Err(e) => (Tone::Bad, e),
                 });
                 if page.admin_result.as_ref().is_some_and(|(t, _)| matches!(t, Tone::Good)) {
@@ -452,10 +452,10 @@ impl SettingsPage {
         crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             dialog
-                .title("Sign everyone out?")
-                .description("Every open session, on every device, has to sign in again within a few seconds. SENTIENT keeps running. It is written to SENTIENT's audit log.")
+                .title(t!("Sign everyone out?"))
+                .description(t!("Every open session, on every device, has to sign in again within a few seconds. SENTIENT keeps running. It is written to SENTIENT's audit log."))
                 .confirm()
-                .ok_text("Sign everyone out")
+                .ok_text(t!("Sign everyone out"))
                 .on_ok(move |_, _, cx| {
                     this.update(cx, |page, cx| page.admin_action(crate::sentient_admin::sign_out_all, cx)).ok();
                     true
@@ -686,8 +686,8 @@ impl SettingsPage {
         let start = crate::chooser::start_for(&self.value(&key, cx), None);
         let rx = crate::chooser::open(
             cx,
-            crate::chooser::Ask { title: "Choose the file", start: start.as_deref(), directory: false },
-            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Use this file".into()) },
+            crate::chooser::Ask { title: t!("Choose the file"), start: start.as_deref(), directory: false },
+            PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some(t!("Use this file").into()) },
         );
         let handle = window.window_handle();
         cx.spawn(async move |this, cx| {
@@ -712,7 +712,7 @@ impl SettingsPage {
         let Some(restarts) = crate::settings::restarts(&record.stack, &new_stack) else { return };
         let changed = self.changed(cx).len();
         let this = cx.entity().downgrade();
-        let text = format!(
+        let text = tf!(
             "{changed} setting(s) change. {restarts}, so SENTIENT is unavailable for a minute or so. If it does not start with the new settings, the previous ones are put back."
         );
         crate::modal::alert(window, cx, move |dialog, _, _| {
@@ -720,7 +720,7 @@ impl SettingsPage {
             let record = record.clone();
             let values = values.clone();
             let custom = custom.clone();
-            dialog.title("Apply the new settings?").description(text.clone()).confirm().ok_text("Apply").on_ok(move |_, _, cx| {
+            dialog.title(t!("Apply the new settings?")).description(text.clone()).confirm().ok_text(t!("Apply")).on_ok(move |_, _, cx| {
                 let (record, values, custom) = (record.clone(), values.clone(), custom.clone());
                 this.update(cx, |page, cx| page.run_apply(record, values, custom, cx)).ok();
                 true
@@ -828,7 +828,7 @@ pub(crate) fn tab_index_of(key: &str) -> usize {
 /// A setting's line in the leave prompt: "Name: old to new".
 pub(crate) fn change_line(s: &Setting, old: &str, new: &str) -> String {
     use crate::manager::setting_field::current_words;
-    format!("{}: {} to {}", s.short_label(), current_words(s, old), current_words(s, new))
+    tf!("{}: {} to {}", s.short_label(), current_words(s, old), current_words(s, new))
 }
 
 /// The bar's small line when a field is not valid: its name and whether
@@ -845,8 +845,8 @@ impl SettingsPage {
     /// A catalog setting's help with its variable name, for the (i).
     fn help(&self, key: &str) -> Option<String> {
         let s = self.find(key)?;
-        let default = if s.default.is_empty() { "SENTIENT's own".to_string() } else { s.default.clone() };
-        Some(format!("{}\n\nVariable: {}. Built-in value: {default}.", s.help, s.env))
+        let default = if s.default.is_empty() { t!("SENTIENT's own").to_string() } else { s.default.clone() };
+        Some(tf!("{}\n\nVariable: {}. Built-in value: {default}.", s.help, s.env))
     }
 
     /// A catalog setting's control (crate::manager::setting_field).
@@ -900,12 +900,12 @@ impl SettingsPage {
         ui::SettingRow {
             label: label.into(),
             help: None,
-            desc: busy.then(|| "In use by another program".to_string()),
+            desc: busy.then(|| t!("In use by another program").to_string()),
             restart: changed,
             changed,
             control: ui::field_input(&theme, &self.inputs[key], Some(ui::Slot::Unit("port".into())), self.problem(key, cx), false, window, cx).into_any_element(),
             wide: false,
-            current: Some(if applied.is_empty() { "Not set".to_string() } else { applied }),
+            current: Some(if applied.is_empty() { t!("Not set").to_string() } else { applied }),
             first: false,
         }
     }
@@ -914,20 +914,20 @@ impl SettingsPage {
 
     fn platform(&self, theme: &gpui_kit::component::Theme, record: &InstallationRecord, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let start = crate::self_install::autostart()
-            .map(|(on, delay)| if on { format!("With Windows, after {delay} s") } else { "Manual".into() })
-            .unwrap_or_else(|| "With the system".into());
+            .map(|(on, delay)| if on { tf!("With Windows, after {delay} s") } else { t!("Manual").into() })
+            .unwrap_or_else(|| t!("With the system").into());
         let platform: Vec<ui::SettingRow> = vec![
-            row(theme, "Address users open", Some("Where browsers open SENTIENT. The web port is under Network and certificates.".into()), false, text_value(theme, record.url())),
+            row(theme, t!("Address users open"), Some(t!("Where browsers open SENTIENT. The web port is under Network and certificates.").into()), false, text_value(theme, record.url())),
         ]
         .into_iter()
         .chain(["RUST_LOG", "ANALYTICS_ENABLED"].iter().filter_map(|k| self.setting_row(k, None, window, cx)))
-        .chain(std::iter::once(row(theme, "Starts", Some("Start with Windows, the start delay and the operator screen are under Startup.".into()), false, text_value(theme, start))))
+        .chain(std::iter::once(row(theme, t!("Starts"), Some(t!("Start with Windows, the start delay and the operator screen are under Startup.").into()), false, text_value(theme, start))))
         .collect();
         let licence: Vec<ui::SettingRow> = ["LICENSE_SERVER_URL", "LICENSE_HEARTBEAT_INTERVAL_SECS", "LICENSE_BINDING_CHECK_INTERVAL_SECS"].iter().filter_map(|k| self.setting_row(k, None, window, cx)).collect();
         vec![
             self.admin_section(theme, cx).into_any_element(),
-            ui::group(theme, "Platform", platform, vec![], cx).into_any_element(),
-            ui::group(theme, "Licence", licence, vec![], cx).into_any_element(),
+            ui::group(theme, t!("Platform"), platform, vec![], cx).into_any_element(),
+            ui::group(theme, t!("Licence"), licence, vec![], cx).into_any_element(),
         ]
     }
 
@@ -940,14 +940,14 @@ impl SettingsPage {
             None => {
                 rows.push(row(
                     theme,
-                    "Accounts",
-                    Some("For when nobody can sign in. Changes go through SENTIENT's own administration command and are written to its audit log; SENTIENT keeps running.".into()),
+                    t!("Accounts"),
+                    Some(t!("For when nobody can sign in. Changes go through SENTIENT's own administration command and are written to its audit log; SENTIENT keeps running.").into()),
                     false,
                     h_flex()
                         .gap(crate::ui::button_gap())
                         .items_center()
-                        .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading the accounts…" } else { "Not read. Reading asks for the administrator password." }))
-                        .when(!self.reading_admin, |r| r.child(crate::ui::probed(crate::ui::button("read-admins").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx)))))),
+                        .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { t!("Reading the accounts…") } else { t!("Not read. Reading asks for the administrator password.") }))
+                        .when(!self.reading_admin, |r| r.child(crate::ui::probed(crate::ui::button("read-admins").outline().label(t!("Read")).on_click(cx.listener(|this, _, _, cx| this.read_admin(cx)))))),
                 ));
             }
             Some(Err(e)) => extra.push(ui::outcome(theme, Tone::Warn, e.clone()).into_any_element()),
@@ -956,16 +956,16 @@ impl SettingsPage {
                     let email = a.email.clone().unwrap_or_default();
                     let locked = a.locked_since.is_some();
                     let state = if locked {
-                        format!("Locked after {} failed sign-ins", a.failed_sign_ins)
+                        tf!("Locked after {} failed sign-ins", a.failed_sign_ins)
                     } else if a.failed_sign_ins > 0 {
-                        format!("Not locked · {} failed sign-ins", a.failed_sign_ins)
+                        tf!("Not locked · {} failed sign-ins", a.failed_sign_ins)
                     } else {
-                        "Not locked".to_string()
+                        t!("Not locked").to_string()
                     };
                     let last = a
                         .last_sign_in
                         .and_then(chrono::DateTime::from_timestamp_millis)
-                        .map(|t| format!(" · last sign-in {}", t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M")))
+                        .map(|t| tf!(" · last sign-in {}", t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M")))
                         .unwrap_or_default();
                     let (e1, e2) = (email.clone(), email.clone());
                     rows.push(row(
@@ -979,12 +979,12 @@ impl SettingsPage {
                             .items_center()
                             .child(div().flex_1().min_w_0().text_sm().text_color(if locked { theme.danger } else { theme.muted_foreground }).child(format!("{state}{last}")))
                             .when(locked, |r| {
-                                r.child(crate::ui::probed(crate::ui::button(SharedString::from(format!("unlock-{email}"))).outline().label("Unlock").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
+                                r.child(crate::ui::probed(crate::ui::button(SharedString::from(format!("unlock-{email}"))).outline().label(t!("Unlock")).disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                     let e = e1.clone();
                                     this.admin_action(move |r| crate::sentient_admin::unlock(r, &e), cx);
                                 }))))
                             })
-                            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("reset-{email}"))).outline().label("Reset password").disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
+                            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("reset-{email}"))).outline().label(t!("Reset password")).disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                 this.reset_for = Some(e2.clone());
                                 this.admin_result = None;
                                 cx.notify();
@@ -993,10 +993,10 @@ impl SettingsPage {
                 }
                 rows.push(row(
                     theme,
-                    "Everyone signed in",
-                    Some("Makes every open session sign in again, on every device.".into()),
+                    t!("Everyone signed in"),
+                    Some(t!("Makes every open session sign in again, on every device.").into()),
                     false,
-                    h_flex().child(crate::ui::probed(crate::ui::button("sign-out-all").outline().label("Sign everyone out").disabled(self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.confirm_sign_out_all(window, cx))))),
+                    h_flex().child(crate::ui::probed(crate::ui::button("sign-out-all").outline().label(t!("Sign everyone out")).disabled(self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.confirm_sign_out_all(window, cx))))),
                 ));
             }
         }
@@ -1004,9 +1004,9 @@ impl SettingsPage {
             let pw = self.new_pw.read(cx).value().to_string();
             let again = self.repeat_pw.read(cx).value().to_string();
             let problem = if pw.chars().count() < 8 {
-                Some("At least 8 characters.")
+                Some(t!("At least 8 characters."))
             } else if pw != again {
-                Some("The two passwords differ.")
+                Some(t!("The two passwords differ."))
             } else {
                 None
             };
@@ -1017,14 +1017,14 @@ impl SettingsPage {
                     .rounded(theme.radius)
                     .border_1()
                     .border_color(theme.primary)
-                    .child(div().font_weight(FontWeight::MEDIUM).child(format!("Reset the password of {email}")))
-                    .child(div().text_sm().text_color(theme.muted_foreground).child("The new password works at once; the account's open sessions are signed out and it is unlocked."))
+                    .child(div().font_weight(FontWeight::MEDIUM).child(tf!("Reset the password of {email}")))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(t!("The new password works at once; the account's open sessions are signed out and it is unlocked.")))
                     .child(
                         h_flex()
                             .flex_wrap()
                             .gap_3()
-                            .child(v_flex().gap_1().w(px(240.)).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("New password")).child(Input::new(&self.new_pw).mask_toggle()))
-                            .child(v_flex().gap_1().w(px(240.)).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child("Repeat it")).child(Input::new(&self.repeat_pw).mask_toggle())),
+                            .child(v_flex().gap_1().w(px(240.)).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(t!("New password"))).child(Input::new(&self.new_pw).mask_toggle()))
+                            .child(v_flex().gap_1().w(px(240.)).child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(t!("Repeat it"))).child(Input::new(&self.repeat_pw).mask_toggle())),
                     )
                     .when_some(problem.filter(|_| !pw.is_empty()), |c, p| c.child(div().text_sm().text_color(theme.danger).child(p)))
                     .child(
@@ -1032,22 +1032,22 @@ impl SettingsPage {
                         h_flex()
                             .justify_end()
                             .gap(crate::ui::button_gap())
-                            .child(crate::ui::probed(crate::ui::button("cancel-reset").outline().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
+                            .child(crate::ui::probed(crate::ui::button("cancel-reset").outline().label(t!("Cancel")).on_click(cx.listener(|this, _, _, cx| {
                                 this.reset_for = None;
                                 cx.notify();
                             }))))
-                            .child(crate::ui::probed(crate::ui::button("do-reset").primary().label("Reset password").disabled(problem.is_some() || self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.reset_password(window, cx))))),
+                            .child(crate::ui::probed(crate::ui::button("do-reset").primary().label(t!("Reset password")).disabled(problem.is_some() || self.admin_busy).on_click(cx.listener(|this, _, window, cx| this.reset_password(window, cx))))),
                     )
                     .into_any_element(),
             );
         }
         if self.admin_busy {
-            extra.push(div().text_sm().text_color(theme.muted_foreground).child("Working…").into_any_element());
+            extra.push(div().text_sm().text_color(theme.muted_foreground).child(t!("Working…")).into_any_element());
         }
         if let Some((tone, text)) = &self.admin_result {
             extra.push(ui::outcome(theme, *tone, text.clone()).into_any_element());
         }
-        ui::group(theme, "System administrator", rows, extra, cx)
+        ui::group(theme, t!("System administrator"), rows, extra, cx)
     }
 
     fn database(&self, theme: &gpui_kit::component::Theme, record: &InstallationRecord, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -1055,44 +1055,44 @@ impl SettingsPage {
         let open_custom = self.custom_db || current.is_none();
         let presets = ui::seg_track(theme)
             .children(Preset::ALL.into_iter().map(|p| {
-                ui::seg_item(theme, SharedString::from(format!("preset-{p:?}")), p.label(), current == Some(p) && !self.custom_db)
+                ui::seg_item(theme, SharedString::from(format!("preset-{p:?}")), crate::i18n::t(p.label()), current == Some(p) && !self.custom_db)
                     .on_click(cx.listener(move |this, _, window, cx| this.apply_preset(p, window, cx)))
             }))
-            .child(ui::seg_item(theme, "preset-custom", "Custom", open_custom).on_click(cx.listener(|this, _, _, cx| {
+            .child(ui::seg_item(theme, "preset-custom", t!("Custom"), open_custom).on_click(cx.listener(|this, _, _, cx| {
                 this.custom_db = true;
                 cx.notify();
             })));
         let shown = |key: &str| {
             let v = self.value(key, cx);
             if v.is_empty() {
-                self.find(key).map(|s| if s.default.is_empty() { "SENTIENT's default".to_string() } else { s.default.clone() }).unwrap_or_default()
+                self.find(key).map(|s| if s.default.is_empty() { t!("SENTIENT's default").to_string() } else { s.default.clone() }).unwrap_or_default()
             } else {
                 v
             }
         };
         let pg_changed = PRESET_KEYS.iter().filter(|k| k.starts_with("pg:")).any(|k| self.is_changed(k, cx));
         let mut rows = vec![
-            row(theme, "This computer", None, false, text_value(theme, format!("{} of memory", crate::dbstatus::bytes_label(self.ram_mb << 20)))),
-            row(theme, "Size for", Some("Sets PostgreSQL's memory and connections and SENTIENT's connection pools together. Custom shows the exact numbers.".into()), false, h_flex().child(presets)),
+            row(theme, t!("This computer"), None, false, text_value(theme, tf!("{} of memory", crate::dbstatus::bytes_label(self.ram_mb << 20)))),
+            row(theme, t!("Size for"), Some(t!("Sets PostgreSQL's memory and connections and SENTIENT's connection pools together. Custom shows the exact numbers.").into()), false, h_flex().child(presets)),
         ];
         if open_custom {
             for k in DB_EXACT {
                 rows.extend(self.setting_row(k, Some(k.trim_start_matches("pg:").to_string()), window, cx));
             }
         } else {
-            for (label, k) in [("Memory for PostgreSQL", "pg:shared_buffers"), ("Memory per query", "pg:work_mem"), ("Connections allowed", "pg:max_connections"), ("SENTIENT's connection pool", "DATABASE_POOL_MAX")] {
+            for (label, k) in [(t!("Memory for PostgreSQL"), "pg:shared_buffers"), (t!("Memory per query"), "pg:work_mem"), (t!("Connections allowed"), "pg:max_connections"), (t!("SENTIENT's connection pool"), "DATABASE_POOL_MAX")] {
                 rows.push(row(theme, label, self.help(k), self.is_changed(k, cx), text_value(theme, shown(k))));
             }
         }
         let warn = if pg_changed {
-            vec![ui::outcome(theme, Tone::Warn, "Changing PostgreSQL's memory or connections restarts PostgreSQL: SENTIENT is offline for about half a minute.").into_any_element()]
+            vec![ui::outcome(theme, Tone::Warn, t!("Changing PostgreSQL's memory or connections restarts PostgreSQL: SENTIENT is offline for about half a minute.")).into_any_element()]
         } else {
             vec![]
         };
-        let mut out = vec![ui::group(theme, "PostgreSQL memory and connections", rows, warn, cx).into_any_element()];
+        let mut out = vec![ui::group(theme, t!("PostgreSQL memory and connections"), rows, warn, cx).into_any_element()];
         let title = match record.flavor() {
-            Flavor::Clickhouse => Some("Telemetry history (ClickHouse)"),
-            Flavor::Timescaledb => Some("Telemetry history (TimescaleDB)"),
+            Flavor::Clickhouse => Some(t!("Telemetry history (ClickHouse)")),
+            Flavor::Timescaledb => Some(t!("Telemetry history (TimescaleDB)")),
             _ => None,
         };
         if let Some(title) = title {
@@ -1100,17 +1100,17 @@ impl SettingsPage {
             out.push(ui::group(theme, title, rows, vec![], cx).into_any_element());
         }
         if let Some(l) = &self.locations {
-            out.push(ui::group(theme, "Where the data is", vec![], vec![l.clone().into_any_element()], cx).into_any_element());
+            out.push(ui::group(theme, t!("Where the data is"), vec![], vec![l.clone().into_any_element()], cx).into_any_element());
             return out;
         }
         out.push(
             ui::group(
                 theme,
-                "Where the data is",
-                vec![row(theme, "PostgreSQL", Some("Sizes, free disk and growth are on Status.".into()), false, text_value(theme, if record.engine == Engine::Docker {
-                    "In its Docker volume".to_string()
+                t!("Where the data is"),
+                vec![row(theme, "PostgreSQL", Some(t!("Sizes, free disk and growth are on Status.").into()), false, text_value(theme, if record.engine == Engine::Docker {
+                    t!("In its Docker volume").to_string()
                 } else {
-                    format!("{}, port {}", record.pg_dir.display(), record.stack.pg_port)
+                    tf!("{}, port {}", record.pg_dir.display(), record.stack.pg_port)
                 }))],
                 vec![],
                 cx,
@@ -1121,21 +1121,21 @@ impl SettingsPage {
     }
 
     fn network(&self, theme: &gpui_kit::component::Theme, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let mut ports: Vec<ui::SettingRow> = PORTS.into_iter().map(|(key, label)| self.port_row(key, label, window, cx)).collect();
+        let mut ports: Vec<ui::SettingRow> = PORTS.into_iter().map(|(key, label)| self.port_row(key, crate::i18n::t(label), window, cx)).collect();
         ports.extend(self.setting_row("EDGE_GRPC_PORT", None, window, cx));
         let certs: Vec<ui::SettingRow> = CERTS
             .into_iter()
             .filter_map(|(key, label)| {
                 let mut r = self.setting_row(key, None, window, cx)?;
-                r.label = label.into();
+                r.label = crate::i18n::t(label).into();
                 Some(r)
             })
             .collect();
         let access: Vec<ui::SettingRow> = ["SENTIENT_CORS_ALLOWED_ORIGINS", "SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT"].iter().filter_map(|k| self.setting_row(k, None, window, cx)).collect();
         vec![
-            ui::group(theme, "Ports", ports, vec![], cx).into_any_element(),
-            ui::group(theme, "Certificates", certs, vec![], cx).into_any_element(),
-            ui::group(theme, "Access", access, vec![], cx).into_any_element(),
+            ui::group(theme, t!("Ports"), ports, vec![], cx).into_any_element(),
+            ui::group(theme, t!("Certificates"), certs, vec![], cx).into_any_element(),
+            ui::group(theme, t!("Access"), access, vec![], cx).into_any_element(),
         ]
     }
 
@@ -1143,34 +1143,34 @@ impl SettingsPage {
         let mut keep: Vec<ui::SettingRow> = ["AUDIT_LOG_TTL_DAYS", "NOTIFICATIONS_TTL_DAYS", "SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS", "SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS"].iter().filter_map(|k| self.setting_row(k, None, window, cx)).collect();
         keep.extend(self.history_rows(theme, cx));
         let cleanup: Vec<ui::SettingRow> = ["AUDIT_LOG_CLEANUP_ENABLED", "SENTIENT__EVENT_CLEANUP__ENABLED"].iter().filter_map(|k| self.setting_row(k, None, window, cx)).collect();
-        vec![ui::group(theme, "How long data is kept", keep, vec![], cx).into_any_element(), ui::group(theme, "Cleanup", cleanup, vec![], cx).into_any_element()]
+        vec![ui::group(theme, t!("How long data is kept"), keep, vec![], cx).into_any_element(), ui::group(theme, t!("Cleanup"), cleanup, vec![], cx).into_any_element()]
     }
 
     /// Telemetry history and alarms: the default tenant profile's retention,
     /// through SENTIENT's own command (applied with the bar).
     fn history_rows(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Vec<ui::SettingRow> {
-        const DAYS: [(&str, i64); 5] = [("Forever", 0), ("30 days", 30), ("90 days", 90), ("1 year", 365), ("3 years", 1095)];
-        let help = "For tenants that use the default tenant profile (a tenant with its own profile keeps its own). Older values are deleted by SENTIENT's nightly cleanup.";
-        let words = |d: i64| DAYS.iter().find(|(_, x)| *x == d).map(|(l, _)| l.to_string()).unwrap_or_else(|| format!("{d} days"));
+        const DAYS: [(&str, i64); 5] = [(n!("Forever"), 0), (n!("30 days"), 30), (n!("90 days"), 90), (n!("1 year"), 365), (n!("3 years"), 1095)];
+        let help = t!("For tenants that use the default tenant profile (a tenant with its own profile keeps its own). Older values are deleted by SENTIENT's nightly cleanup.");
+        let words = |d: i64| DAYS.iter().find(|(_, x)| *x == d).map(|(l, _)| crate::i18n::t(l).to_string()).unwrap_or_else(|| tf!("{d} days"));
         match &self.retention_now {
             None => vec![row(
                 theme,
-                "Telemetry history and alarms",
+                t!("Telemetry history and alarms"),
                 Some(help.into()),
                 false,
                 h_flex()
                     .gap(crate::ui::button_gap())
                     .items_center()
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { "Reading…" } else { "Not read." }))
-                    .when(!self.reading_admin, |r| r.child(crate::ui::probed(crate::ui::button("read-retention").outline().label("Read").on_click(cx.listener(|this, _, _, cx| this.read_admin(cx)))))),
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { t!("Reading…") } else { t!("Not read.") }))
+                    .when(!self.reading_admin, |r| r.child(crate::ui::probed(crate::ui::button("read-retention").outline().label(t!("Read")).on_click(cx.listener(|this, _, _, cx| this.read_admin(cx)))))),
             )],
-            Some(Err(e)) => vec![row(theme, "Telemetry history and alarms", Some(help.into()), false, text_value(theme, e.clone()))],
+            Some(Err(e)) => vec![row(theme, t!("Telemetry history and alarms"), Some(help.into()), false, text_value(theme, e.clone()))],
             Some(Ok(now)) => {
                 let now = *now;
                 let edit = self.retention_edit;
-                let labels: Vec<&str> = DAYS.iter().map(|(l, _)| *l).collect();
+                let labels: Vec<&str> = DAYS.iter().map(|(l, _)| crate::i18n::t(l)).collect();
                 let mut out = Vec::new();
-                for (label, id, current, was, telemetry) in [("Telemetry history", "ret-tel", edit.telemetry_days, now.telemetry_days, true), ("Alarms", "ret-alarm", edit.alarms_days, now.alarms_days, false)] {
+                for (label, id, current, was, telemetry) in [(t!("Telemetry history"), "ret-tel", edit.telemetry_days, now.telemetry_days, true), (t!("Alarms"), "ret-alarm", edit.alarms_days, now.alarms_days, false)] {
                     let this = cx.entity().downgrade();
                     let pick = std::rc::Rc::new(move |i: usize, _: &mut Window, cx: &mut App| {
                         let d = DAYS[i].1;
@@ -1216,8 +1216,8 @@ impl SettingsPage {
                 .px(px(18.))
                 .pt(px(14.))
                 .child(div().flex_1().min_w(px(200.)).child(Input::new(&self.search).cleanable(true)))
-                .child(crate::ui::probed(filter("filter-all", format!("All {total}"), !self.changed_only, false)))
-                .child(crate::ui::probed(filter("filter-set", format!("Set {set_here}"), self.changed_only, true)))
+                .child(crate::ui::probed(filter("filter-all", tf!("All {total}"), !self.changed_only, false)))
+                .child(crate::ui::probed(filter("filter-set", tf!("Set {set_here}"), self.changed_only, true)))
                 .into_any_element(),
         ];
         let mut any = false;
@@ -1230,8 +1230,8 @@ impl SettingsPage {
                 if !self.value(&s.env, cx).is_empty() {
                     let key = s.env.clone();
                     r.label = r.label.clone();
-                    r.desc = Some(format!("{} · set here", s.env));
-                    let reset = crate::ui::button(SharedString::from(format!("reset-{}", s.env))).ghost().xsmall().label("Reset").on_click(cx.listener(move |this, _, window, cx| {
+                    r.desc = Some(tf!("{} · set here", s.env));
+                    let reset = crate::ui::button(SharedString::from(format!("reset-{}", s.env))).ghost().xsmall().label(t!("Reset")).on_click(cx.listener(move |this, _, window, cx| {
                         this.set(&key, "", window, cx);
                         cx.notify();
                     }));
@@ -1245,7 +1245,7 @@ impl SettingsPage {
             }
         }
         if !any {
-            out.push(div().px(px(18.)).py_3().text_sm().text_color(theme.muted_foreground).child("Nothing matches.").into_any_element());
+            out.push(div().px(px(18.)).py_3().text_sm().text_color(theme.muted_foreground).child(t!("Nothing matches.")).into_any_element());
         }
         let mut added: Vec<ui::SettingRow> = Vec::new();
         for (i, (n, v)) in self.custom.iter().enumerate() {
@@ -1258,7 +1258,7 @@ impl SettingsPage {
                     .gap_2()
                     .items_center()
                     .child(div().w(px(ui::FIELD_W)).child(Input::new(v)))
-                    .child(crate::ui::button(SharedString::from(format!("remove-var-{i}"))).ghost().label("Remove").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(crate::ui::button(SharedString::from(format!("remove-var-{i}"))).ghost().label(t!("Remove")).on_click(cx.listener(move |this, _, _, cx| {
                         if i < this.custom.len() {
                             this.custom.remove(i);
                         }
@@ -1269,8 +1269,8 @@ impl SettingsPage {
         let name_ok = crate::settings::valid_name(&self.new_name.read(cx).value());
         added.push(row(
             theme,
-            "Add a variable",
-            Some("Variables SENTIENT reads that are not in the list above. For support and special cases.".into()),
+            t!("Add a variable"),
+            Some(t!("Variables SENTIENT reads that are not in the list above. For support and special cases.").into()),
             false,
             h_flex()
                 .flex_wrap()
@@ -1278,9 +1278,9 @@ impl SettingsPage {
                 .items_center()
                 .child(div().w(px(180.)).child(Input::new(&self.new_name)))
                 .child(div().w(px(140.)).child(Input::new(&self.new_value)))
-                .child(crate::ui::probed(crate::ui::button("add-var").outline().label("Add").disabled(!name_ok).on_click(cx.listener(|this, _, window, cx| this.add_variable(window, cx))))),
+                .child(crate::ui::probed(crate::ui::button("add-var").outline().label(t!("Add")).disabled(!name_ok).on_click(cx.listener(|this, _, window, cx| this.add_variable(window, cx))))),
         ));
-        out.push(ui::group(theme, "Added variables", added, vec![], cx).into_any_element());
+        out.push(ui::group(theme, t!("Added variables"), added, vec![], cx).into_any_element());
         out
     }
 
@@ -1324,22 +1324,22 @@ impl SettingsPage {
             match self.find(&k) {
                 Some(s) => out.push(change_line(s, &old, &new)),
                 None => {
-                    let label = PORTS.iter().find(|(p, _)| *p == k).map(|(_, l)| format!("{l} port")).unwrap_or_else(|| k.clone());
-                    out.push(format!("{label}: {} to {}", if old.is_empty() { "not set" } else { &old }, if new.is_empty() { "not set" } else { &new }));
+                    let label = PORTS.iter().find(|(p, _)| *p == k).map(|(_, l)| tf!("{} port", crate::i18n::t(l))).unwrap_or_else(|| k.clone());
+                    out.push(tf!("{label}: {} to {}", if old.is_empty() { "not set" } else { &old }, if new.is_empty() { "not set" } else { &new }));
                 }
             }
         }
         if let Some(Ok(now)) = &self.retention_now {
             if self.retention_edit.telemetry_days != now.telemetry_days {
-                out.push(format!("Telemetry history: {} to {} days", now.telemetry_days, self.retention_edit.telemetry_days));
+                out.push(tf!("Telemetry history: {} to {} days", now.telemetry_days, self.retention_edit.telemetry_days));
             }
             if self.retention_edit.alarms_days != now.alarms_days {
-                out.push(format!("Alarms: {} to {} days", now.alarms_days, self.retention_edit.alarms_days));
+                out.push(tf!("Alarms: {} to {} days", now.alarms_days, self.retention_edit.alarms_days));
             }
         }
         let n = self.startup.read(cx).pending_count(cx);
         if n > 0 {
-            out.push(format!("Startup: {n} change{}", if n == 1 { "" } else { "s" }));
+            out.push(if n == 1 { tf!("Startup: {n} change") } else { tf!("Startup: {n} changes") });
         }
         out
     }
@@ -1352,16 +1352,16 @@ impl SettingsPage {
         if let Some(k) = self.invalid_keys(cx).first() {
             let (label, number) = match self.find(k) {
                 Some(s) => first_invalid_of(s, &self.value(k, cx)),
-                None => (PORTS.iter().find(|(p, _)| p == k).map(|(_, l)| format!("{l} port")).unwrap_or_else(|| k.clone()), self.value(k, cx).parse::<u64>().is_err()),
+                None => (PORTS.iter().find(|(p, _)| p == k).map(|(_, l)| tf!("{} port", crate::i18n::t(l))).unwrap_or_else(|| k.clone()), self.value(k, cx).parse::<u64>().is_err()),
             };
             return (ui::pending_line(changes, &[], restart, Some((&label, number))), restart);
         }
         if self.startup.read(cx).invalid_count(cx) > 0 {
-            return (ui::pending_line(changes, &[], restart, Some(("Start delay", true))), restart);
+            return (ui::pending_line(changes, &[], restart, Some((t!("Start delay"), true))), restart);
         }
         let mut names: Vec<String> = changed
             .iter()
-            .map(|k| self.find(k).map(|s| s.short_label()).or_else(|| PORTS.iter().find(|(p, _)| p == k).map(|(_, l)| format!("{l} port"))).unwrap_or_else(|| k.clone()))
+            .map(|k| self.find(k).map(|s| s.short_label()).or_else(|| PORTS.iter().find(|(p, _)| p == k).map(|(_, l)| tf!("{} port", crate::i18n::t(l)))).unwrap_or_else(|| k.clone()))
             .collect();
         if let Some(Ok(now)) = &self.retention_now {
             if self.retention_edit.telemetry_days != now.telemetry_days {
@@ -1383,7 +1383,7 @@ impl Render for SettingsPage {
         let theme = cx.theme().clone();
         ui::set_stacked(f32::from(window.viewport_size().width) < ui::ROW_STACK_W);
         let Some(record) = self.record.clone() else {
-            return ui::page(&theme, "Platform settings", "How SENTIENT runs on this computer. Change a value and apply it; only what changed restarts.").child(ui::not_installed(&theme)).into_any_element();
+            return ui::page(&theme, t!("Platform settings"), t!("How SENTIENT runs on this computer. Change a value and apply it; only what changed restarts.")).child(ui::not_installed(&theme)).into_any_element();
         };
         #[cfg(debug_assertions)]
         {
@@ -1399,15 +1399,15 @@ impl Render for SettingsPage {
         let foreign = external.then(|| {
             crate::manager::remote_pages::foreign_compose_notice(
                 &theme,
-                "The settings cannot be changed now.",
-                crate::ui::button("set-take-over").outline().label("Take over the compose file").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element(),
+                t!("The settings cannot be changed now."),
+                crate::ui::button("set-take-over").outline().label(t!("Take over the compose file")).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element(),
             )
         });
         // What no single field shows: two ports alike, an added variable's name.
         let mut problems: Vec<String> = crate::settings::check(&self.values(cx)).into_iter().filter(|p| p.contains("already used")).collect();
         for (n, _) in self.custom_values(cx) {
             if !crate::settings::valid_name(&n) {
-                problems.push(format!("{n}: not a usable variable name (letters, digits and _)"));
+                problems.push(tf!("{n}: not a usable variable name (letters, digits and _)"));
             }
         }
 
@@ -1445,8 +1445,8 @@ impl Render for SettingsPage {
             Tab::Advanced => self.advanced(&theme, window, cx),
         };
 
-        let notices = (foreign.is_some() || !problems.is_empty()).then(|| v_flex().gap_2().children(foreign).children(problems.into_iter().map(|p| div().text_sm().text_color(theme.danger).child(p))));
-        settings_page(&theme, "Platform settings", self.tab.about(), notices, ui::settings_card(&theme, "settings-body", tabs, v_flex().pb(px(12.)).children(body), bar))
+        let notices = (foreign.is_some() || !problems.is_empty()).then(|| v_flex().gap_2().children(foreign).children(problems.into_iter().map(|p| div().text_sm().text_color(theme.danger).child(crate::ui::shown(p)))));
+        settings_page(&theme, t!("Platform settings"), self.tab.about(), notices, ui::settings_card(&theme, "settings-body", tabs, v_flex().pb(px(12.)).children(body), bar))
             .into_any_element()
     }
 }
@@ -1507,20 +1507,20 @@ mod tests {
 }
 
 /// The Startup tab's title and line (this computer only).
-const STARTUP_TITLE: &str = "Startup";
-const STARTUP_ABOUT: &str = "What happens when this computer starts and someone signs in.";
+const STARTUP_TITLE: &str = n!("Startup");
+const STARTUP_ABOUT: &str = n!("What happens when this computer starts and someone signs in.");
 
 /// The tab titles of Platform settings a remote server has, in order; this
 /// computer's add Startup before All variables.
-pub(crate) const TAB_TITLES: [&str; 5] = ["General", "Database", "Network and certificates", "History and cleanup", "All variables"];
+pub(crate) const TAB_TITLES: [&str; 5] = [n!("General"), n!("Database"), n!("Network and certificates"), n!("History and cleanup"), n!("All variables")];
 
 /// What each category holds (the page's line under its title).
 pub(crate) const TAB_ABOUT: [&str; 5] = [
-    "How SENTIENT runs, its administrator account and the licence.",
-    "PostgreSQL's memory and connections, and the telemetry history store.",
-    "SENTIENT's ports, certificates and which sites may call it.",
-    "How long data is kept and the nightly cleanup.",
-    "Every setting SENTIENT reads, with its built-in value.",
+    n!("How SENTIENT runs, its administrator account and the licence."),
+    n!("PostgreSQL's memory and connections, and the telemetry history store."),
+    n!("SENTIENT's ports, certificates and which sites may call it."),
+    n!("How long data is kept and the nightly cleanup."),
+    n!("Every setting SENTIENT reads, with its built-in value."),
 ];
 
 /// The catalog settings each of the first four tabs shows on a remote
@@ -1535,17 +1535,17 @@ pub(crate) const TAB_KEYS: [&[&str]; 4] = [
 /// The setting groups each of the first four tabs shows on a remote
 /// server: (heading, keys).
 pub(crate) const TAB_GROUPS: [&[(&str, &[&str])]; 4] = [
-    &[("Platform", &["RUST_LOG", "ANALYTICS_ENABLED"]), ("Licence", &["LICENSE_SERVER_URL", "LICENSE_HEARTBEAT_INTERVAL_SECS", "LICENSE_BINDING_CHECK_INTERVAL_SECS"])],
+    &[(n!("Platform"), &["RUST_LOG", "ANALYTICS_ENABLED"]), (n!("Licence"), &["LICENSE_SERVER_URL", "LICENSE_HEARTBEAT_INTERVAL_SECS", "LICENSE_BINDING_CHECK_INTERVAL_SECS"])],
     &[
-        ("Connection pools", &["DATABASE_POOL_MAX", "DATABASE_POOL_MIN", "DB_POOL_PRIMARY_MAX", "DB_POOL_PRIMARY_MIN", "DB_POOL_REPORT_MAX", "DB_POOL_REPORT_MIN", "DB_MAX_CONNECTIONS"]),
-        ("Telemetry history", &["CLICKHOUSE_TS_BATCH_SIZE", "CLICKHOUSE_TS_BATCH_MAX_DELAY_MS", "CLICKHOUSE_TS_BATCH_THREADS", "SENTIENT_TS_KV_CHUNK_DAYS", "SENTIENT_TS_KV_COMPRESS_AFTER_DAYS"]),
+        (n!("Connection pools"), &["DATABASE_POOL_MAX", "DATABASE_POOL_MIN", "DB_POOL_PRIMARY_MAX", "DB_POOL_PRIMARY_MIN", "DB_POOL_REPORT_MAX", "DB_POOL_REPORT_MIN", "DB_MAX_CONNECTIONS"]),
+        (n!("Telemetry history"), &["CLICKHOUSE_TS_BATCH_SIZE", "CLICKHOUSE_TS_BATCH_MAX_DELAY_MS", "CLICKHOUSE_TS_BATCH_THREADS", "SENTIENT_TS_KV_CHUNK_DAYS", "SENTIENT_TS_KV_COMPRESS_AFTER_DAYS"]),
     ],
     &[
-        ("Ports", &["EDGE_GRPC_PORT"]),
-        ("Certificates", &["SSL_PEM_CERT", "SSL_PEM_KEY", "MQTT_SSL_PEM_CERT", "MQTT_SSL_PEM_KEY", "MQTT_SSL_PEM_CA", "COAP_SSL_PEM_CERT", "COAP_SSL_PEM_KEY"]),
-        ("Access", &["SENTIENT_CORS_ALLOWED_ORIGINS", "SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT"]),
+        (n!("Ports"), &["EDGE_GRPC_PORT"]),
+        (n!("Certificates"), &["SSL_PEM_CERT", "SSL_PEM_KEY", "MQTT_SSL_PEM_CERT", "MQTT_SSL_PEM_KEY", "MQTT_SSL_PEM_CA", "COAP_SSL_PEM_CERT", "COAP_SSL_PEM_KEY"]),
+        (n!("Access"), &["SENTIENT_CORS_ALLOWED_ORIGINS", "SECURITY_CLAIM_ALLOW_CLAIMING_BY_DEFAULT"]),
     ],
-    &[("How long data is kept", &["AUDIT_LOG_TTL_DAYS", "NOTIFICATIONS_TTL_DAYS", "SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS", "SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS"]), ("Cleanup", &["AUDIT_LOG_CLEANUP_ENABLED", "SENTIENT__EVENT_CLEANUP__ENABLED"])],
+    &[(n!("How long data is kept"), &["AUDIT_LOG_TTL_DAYS", "NOTIFICATIONS_TTL_DAYS", "SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS", "SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS"]), (n!("Cleanup"), &["AUDIT_LOG_CLEANUP_ENABLED", "SENTIENT__EVENT_CLEANUP__ENABLED"])],
 ];
 
 impl super::Manager {

@@ -213,9 +213,9 @@ fn run_job(args: &[String]) -> i32 {
     if args.first().map(String::as_str) == Some("agents") {
         for (system, file) in crate::remote::carried_agents() {
             match file {
-                Ok(Some(path)) => println!("{}\t{}\t{}", system.label(), std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0), path.display()),
-                Ok(None) => println!("{}\tnot carried", system.label()),
-                Err(e) => println!("{}\t{e}", system.label()),
+                Ok(Some(path)) => println!("{}\t{}\t{}", crate::i18n::t(system.label()), std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0), path.display()),
+                Ok(None) => println!("{}\tnot carried", crate::i18n::t(system.label())),
+                Err(e) => println!("{}\t{e}", crate::i18n::t(system.label())),
             }
         }
         return 0;
@@ -285,7 +285,7 @@ fn run_job(args: &[String]) -> i32 {
         use sentient_installer_core::gateway;
         let sink = if json { json_printer() } else { printer() };
         let channel = crate::updates::Prefs::load().channel;
-        let newest = || gateway::newest(channel).and_then(|o| o.ok_or_else(|| "No gateway release on this channel.".to_string()));
+        let newest = || gateway::newest(channel).and_then(|o| o.ok_or_else(|| n!("No gateway release on this channel.").to_string()));
         let result = match job {
             "gateway-status" => {
                 sentient_installer_core::distro::gateway_docker::set_cache_dir(crate::updates::prefs_dir());
@@ -322,7 +322,7 @@ fn run_job(args: &[String]) -> i32 {
                 let image = args.iter().any(|a| a == "--remove-image");
                 gateway::remove(&sink, keep, image).map(|msg| {
                     if let Err(e) = crate::gateway_record::save(None) {
-                        sink(sentient_installer_core::progress::Progress::Log { line: format!("The gateway's record was not cleared: {e}") });
+                        sink(sentient_installer_core::progress::Progress::Log { line: nf!("The gateway's record was not cleared: {e}") });
                     }
                     sink(sentient_installer_core::progress::Progress::Done { message: msg });
                 })
@@ -395,15 +395,15 @@ fn run_job(args: &[String]) -> i32 {
         let search = crate::adopt::search();
         let found = search.found.clone();
         let message = match found.as_slice() {
-            [] => format!("No SENTIENT found on this server. {}", search.looked_text()).trim_end().to_string(),
+            [] => tf!("No SENTIENT found on this server. {}", search.looked_text()).trim_end().to_string(),
             [c] if c.problem.is_none() && (!c.sets_admin_password || (c.only_needs_pg_admin() && pg_admin.is_some())) => match crate::adopt::adopt_as_needed(c, pg_admin.clone(), sink.clone()) {
-                Ok(()) => format!(
+                Ok(()) => tf!(
                     "SENTIENT {}{} was found and added. Nothing on it was changed.",
                     c.record.sentient_version,
                     if c.kind.is_empty() { String::new() } else { format!(" ({})", c.kind) }
                 ),
                 Err(e) => {
-                    sink(Progress::Error { message: format!("SENTIENT was found but could not be added: {e}") });
+                    sink(Progress::Error { message: nf!("SENTIENT was found but could not be added: {e}") });
                     return 1;
                 }
             },
@@ -413,7 +413,7 @@ fn run_job(args: &[String]) -> i32 {
                 let what = if c.kind.is_empty() { String::new() } else { format!(" ({}, {})", c.kind, c.location) };
                 match &c.problem {
                     Some(p) => {
-                        sink(Progress::Error { message: format!("SENTIENT was found on this server{what} but cannot be added: {p}") });
+                        sink(Progress::Error { message: nf!("SENTIENT was found on this server{what} but cannot be added: {p}") });
                         return 1;
                     }
                     // The window that started this asks for the password
@@ -423,12 +423,12 @@ fn run_job(args: &[String]) -> i32 {
                             sink(Progress::Log { line: n.clone() });
                         }
                         sink(Progress::Log { line: crate::adopt::needs_pg_admin_line(c) });
-                        format!("SENTIENT was found on this server{what}. Adding it needs the PostgreSQL admin (postgres) password.")
+                        tf!("SENTIENT was found on this server{what}. Adding it needs the PostgreSQL admin (postgres) password.")
                     }
-                    None => format!("SENTIENT was found on this server{what}. Add it with the Platform Manager on that server."),
+                    None => tf!("SENTIENT was found on this server{what}. Add it with the Platform Manager on that server."),
                 }
             }
-            many => format!(
+            many => tf!(
                 "{} SENTIENT instances were found on this server: {}. Add the one you want with the Platform Manager on that server.",
                 many.len(),
                 many.iter().map(|c| format!("{} ({})", c.kind, c.location)).collect::<Vec<_>>().join("; ")
@@ -447,7 +447,7 @@ fn run_job(args: &[String]) -> i32 {
                     sink(Progress::Log { line: crate::adopt::encode(c) });
                 }
                 if found.is_empty() {
-                    sink(Progress::Log { line: format!("No existing SENTIENT instance was found on this computer. {}", search.looked_text()) });
+                    sink(Progress::Log { line: nf!("No existing SENTIENT instance was found on this computer. {}", search.looked_text()) });
                 }
             } else {
                 print_candidates(&found);
@@ -458,15 +458,15 @@ fn run_job(args: &[String]) -> i32 {
             return 0;
         }
         let chosen = if args.iter().any(|a| a == "--native") {
-            found.iter().find(|c| c.record.engine == crate::installation::Engine::Native).ok_or_else(|| "No SENTIENT service was found on this computer.".to_string())
+            found.iter().find(|c| c.record.engine == crate::installation::Engine::Native).ok_or_else(|| n!("No SENTIENT service was found on this computer.").to_string())
         } else {
             let n: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(1);
             let n = if found.len() == 1 { 1 } else { n };
             found.get(n.saturating_sub(1)).ok_or_else(|| {
                 if found.is_empty() {
-                    format!("No existing SENTIENT instance was found on this computer. {}", search.looked_text()).trim_end().to_string()
+                    nf!("No existing SENTIENT instance was found on this computer. {}", search.looked_text()).trim_end().to_string()
                 } else {
-                    format!("Only {} instance(s) were found.", found.len())
+                    nf!("Only {} instance(s) were found.", found.len())
                 }
             })
         };
@@ -474,7 +474,7 @@ fn run_job(args: &[String]) -> i32 {
         // Asked for on standard input and none came: never fall back to
         // setting a new one.
         let chosen = if pg_admin.is_none() && args.iter().any(|a| a == "--pg-admin-password-stdin") {
-            Err("No PostgreSQL admin password was given.".to_string())
+            Err(n!("No PostgreSQL admin password was given.").to_string())
         } else {
             chosen
         };
@@ -500,9 +500,9 @@ fn run_job(args: &[String]) -> i32 {
             let path = std::path::PathBuf::from(args.get(1).ok_or(USAGE)?);
             match job {
                 "dir-mkdir" => {
-                    let name = args.get(2).map(String::as_str).filter(|n| !n.is_empty() && !n.contains(['/', '\\']) && *n != "." && *n != "..").ok_or("Not a folder name.")?;
+                    let name = args.get(2).map(String::as_str).filter(|n| !n.is_empty() && !n.contains(['/', '\\']) && *n != "." && *n != "..").ok_or(n!("Not a folder name."))?;
                     let made = path.join(name);
-                    std::fs::create_dir(&made).map_err(|e| format!("{name} cannot be made in {}: {e}", path.display()))?;
+                    std::fs::create_dir(&made).map_err(|e| nf!("{name} cannot be made in {}: {e}", path.display()))?;
                     crate::backups::dir_list(&made)
                 }
                 "dir-make-writable" => {
@@ -1142,20 +1142,20 @@ fn run_job(args: &[String]) -> i32 {
                 prefs.daily_at = match at.as_str() {
                     "off" => None,
                     t if crate::backups::parse_time(t).is_some() => Some(t.to_string()),
-                    _ => return Err(format!("Not a time: {at}")),
+                    _ => return Err(nf!("Not a time: {at}")),
                 };
                 prefs.keep = keep;
                 (prefs.preset, prefs.history) = match include {
                     "everything" => (crate::backups::Preset::Everything, crate::backups::History::All),
                     "last90" => (crate::backups::Preset::Everything, crate::backups::History::LastDays(90)),
                     "configuration" => (crate::backups::Preset::Configuration, prefs.history),
-                    _ => return Err(format!("Not a choice: {include}")),
+                    _ => return Err(nf!("Not a choice: {include}")),
                 };
                 prefs.save().and_then(|_| crate::backups::apply_schedule(&prefs)).map(|_| {
                     sink(Progress::Done {
                         message: match &prefs.daily_at {
-                            Some(t) => format!("Automatic backup every day at {t}, keeping {keep}."),
-                            None => "Automatic backup is off.".into(),
+                            Some(t) => nf!("Automatic backup every day at {t}, keeping {keep}."),
+                            None => n!("Automatic backup is off.").into(),
                         },
                     })
                 })
@@ -1172,7 +1172,7 @@ fn run_job(args: &[String]) -> i32 {
             Some(file) => {
                 let prefs = crate::backups::BackupPrefs::load();
                 match crate::backups::list_all(&prefs).into_iter().find(|e| e.path == std::path::Path::new(file)) {
-                    None => Err(format!("{file} is not a backup in {}.", prefs.folder.display())),
+                    None => Err(nf!("{file} is not a backup in {}.", prefs.folder.display())),
                     Some(e) if job == "backup-delete" => crate::backups::delete(&e.path).map(|_| sink(Progress::Done { message: format!("{} is deleted.", e.name) })),
                     Some(e) => crate::backups::check(&e.path, None).and_then(|r| {
                         let summary = crate::backups::check_of(&e.path).map(|c| c.summary).unwrap_or_default();
@@ -1204,7 +1204,7 @@ fn run_job(args: &[String]) -> i32 {
         }),
         "remove-kept" => match args.get(1) {
             Some(name) => crate::kept::list(&record).and_then(|items| {
-                let item = items.into_iter().find(|k| &k.name == name).ok_or(format!("Nothing kept is called {name}."))?;
+                let item = items.into_iter().find(|k| &k.name == name).ok_or(nf!("Nothing kept is called {name}."))?;
                 crate::kept::remove(&record, &item, sink.clone())
             }),
             None => Err(USAGE.into()),
@@ -1267,7 +1267,7 @@ pub(crate) fn shown_from(record: &InstallationRecord, running: Option<&str>) -> 
 pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote::RemoteStatus {
     // The full version, as the window shows it (0.8.0-rc12).
     // The same text as the window's About: version and build.
-    let manager_version = format!("{} (build {})", crate::updates::manager_version(), crate::updates::build_commit());
+    let manager_version = tf!("{} (build {})", crate::updates::manager_version(), crate::updates::build_commit());
     let Some(record) = record else { return crate::remote::RemoteStatus { manager_version, ..Default::default() } };
     let running = crate::installation::running_version(record);
     let snap = record.platform().snapshot();
@@ -1352,5 +1352,5 @@ fn read_request(path: &str) -> Result<crate::restore_flow::Request, String> {
     if std::path::Path::new(path).file_name().is_some_and(|n| n.to_string_lossy().starts_with(".spm-restore-")) {
         let _ = std::fs::remove_file(path);
     }
-    serde_json::from_str(&text).map_err(|e| format!("the restore request: {e}"))
+    serde_json::from_str(&text).map_err(|e| nf!("the restore request: {e}"))
 }

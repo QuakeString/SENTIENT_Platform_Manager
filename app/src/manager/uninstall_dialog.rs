@@ -61,7 +61,7 @@ pub fn open(opts: Opts, cx: &mut App) {
         let Some(handle) = cx.active_window().or_else(|| cx.windows().into_iter().next()) else { return };
         let _ = handle.update(cx, |_, window, cx| {
             let view = cx.new(|cx| UninstallDialog::new(opts, window, cx));
-            crate::modal::open(crate::modal::Modal { title: "Uninstall".into(), body: view.into(), width: 640., icon: None, on_close: None }, cx);
+            crate::modal::open(crate::modal::Modal { title: t!("Uninstall").into(), body: view.into(), width: 640., icon: None, on_close: None }, cx);
         });
     });
 }
@@ -102,7 +102,7 @@ impl UninstallDialog {
             cx.observe(&job, |d: &mut Self, job, cx| {
                 if matches!(d.phase, Phase::Running) && matches!(job.read(cx).state(), JobState::Done(_) | JobState::Failed(_)) {
                     d.phase = Phase::Done;
-                    crate::modal::set_title(if d.ran.on.iter().any(|k| !k.is_keep()) { "Removed" } else { "Nothing removed" }, cx);
+                    crate::modal::set_title(if d.ran.on.iter().any(|k| !k.is_keep()) { t!("Removed") } else { t!("Nothing removed") }, cx);
                     (d.opts.on_done)(cx);
                 }
                 cx.notify();
@@ -166,7 +166,7 @@ impl UninstallDialog {
         self.phase = Phase::Running;
         let run = self.opts.run.clone();
         self.job.update(cx, |job, cx| {
-            job.set_label("Uninstalling");
+            job.set_label(t!("Uninstalling"));
             job.set_on_page(true);
             job.start(move |sink| run(args, sink), cx)
         });
@@ -184,9 +184,9 @@ fn rows_for(f: &Facts, remote: bool) -> Vec<Row> {
     if remote {
         for r in &mut rows {
             if r.key == Key::Manager {
-                r.title = "Manager agent on the server".into();
-                r.detail = "The Platform Manager there; removed last".into();
-                r.name = "Manager agent".into();
+                r.title = t!("Manager agent on the server").into();
+                r.detail = t!("The Platform Manager there; removed last").into();
+                r.name = t!("Manager agent").into();
                 r.default_on = true;
             }
         }
@@ -268,8 +268,8 @@ impl UninstallDialog {
                             .flex_1()
                             .min_w_0()
                             .gap_0p5()
-                            .child(div().font_weight(FontWeight::MEDIUM).child("Remove from Instances"))
-                            .child(div().text_xs().text_color(theme.muted_foreground).child("Forget this server and its SSH key here")),
+                            .child(div().font_weight(FontWeight::MEDIUM).child(t!("Remove from Instances")))
+                            .child(div().text_xs().text_color(theme.muted_foreground).child(t!("Forget this server and its SSH key here"))),
                     )
                     .child(div().w(px(ROW_SIZE_W)).flex_shrink_0()),
             );
@@ -281,7 +281,7 @@ impl UninstallDialog {
         let typed = self.confirm.read(cx).value().trim().to_string();
         let confirmed = !deletes || typed == self.opts.name;
         let restart = e.has(Key::Wsl);
-        let label: SharedString = if restart { "Remove and restart".into() } else { "Remove".into() };
+        let label: SharedString = if restart { t!("Remove and restart").into() } else { t!("Remove").into() };
         let ok_enabled = anything && confirmed;
         v_flex()
             .gap_3()
@@ -303,7 +303,7 @@ impl UninstallDialog {
                     v_flex()
                         .gap_1()
                         .text_sm()
-                        .child(h_flex().gap_1().items_center().child(format!("Type {} to delete the data", self.opts.name)).child(crate::ui::info("un-confirm-help".into(), "A Keep its data switch is off, or a database is picked: its data cannot be brought back. Typing the instance name confirms it.".into())))
+                        .child(h_flex().gap_1().items_center().child(tf!("Type {} to delete the data", self.opts.name)).child(crate::ui::info("un-confirm-help".into(), t!("A Keep its data switch is off, or a database is picked: its data cannot be brought back. Typing the instance name confirms it.").into())))
                         .child(Input::new(&self.confirm)),
                 )
             })
@@ -311,7 +311,7 @@ impl UninstallDialog {
                 h_flex()
                     .gap(crate::ui::button_gap())
                     .justify_end()
-                    .child(crate::ui::probed(crate::ui::button("un-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
+                    .child(crate::ui::probed(crate::ui::button("un-cancel").outline().label(t!("Cancel")).on_click(|_, _, cx| crate::modal::close(cx))))
                     .child(crate::ui::probed(if ok_enabled {
                         crate::modal::danger_button(theme, "un-remove", label, cx.listener(|d, _, _, cx| d.start(cx))).into_any_element()
                     } else {
@@ -368,13 +368,13 @@ impl UninstallDialog {
             list = push(list, line("un-res-fail".into(), "!", bad_fg, bad_bg, m.clone()));
         } else {
             for (i, g) in gone.iter().enumerate() {
-                list = push(list, line(format!("un-res-g{i}"), "✓", ok_fg, ok_bg, format!("{} removed", capital(g)).into()));
+                list = push(list, line(format!("un-res-g{i}"), "✓", ok_fg, ok_bg, tf!("{} removed", capital(g)).into()));
             }
             if let Some(c) = uninstall::checked_line(&checks) {
                 list = push(list, line("un-res-checked".into(), "✓", ok_fg, ok_bg, c.into()));
             }
             for (i, k) in kept.iter().enumerate() {
-                list = push(list, line(format!("un-res-k{i}"), "•", kp_fg, kp_bg, format!("{} kept", capital(k)).into()));
+                list = push(list, line(format!("un-res-k{i}"), "•", kp_fg, kp_bg, tf!("{} kept", capital(k)).into()));
             }
         }
         for (i, c) in checks.iter().enumerate().filter(|(_, c)| !c.ok) {
@@ -392,7 +392,7 @@ impl UninstallDialog {
                             .pr_3()
                             .pb(px(8.))
                             .child(div().flex_1().min_w_0().px(px(10.)).py(px(8.)).rounded(px(8.)).border_1().border_color(theme.border).bg(theme.secondary).font_family("monospace").text_xs().overflow_hidden().child(fix))
-                            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("un-copy-{i}"))).outline().small().label(if copied { "Copied" } else { "Copy" }).on_click(cx.listener(move |d, _, _, cx| {
+                            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("un-copy-{i}"))).outline().small().label(if copied { t!("Copied") } else { t!("Copy") }).on_click(cx.listener(move |d, _, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(f2.clone()));
                                 d.copied = Some(i);
                                 cx.notify();
@@ -403,15 +403,15 @@ impl UninstallDialog {
             list = push(list, el);
         }
         if self.ran.has(Key::Wsl) && failed.is_none() {
-            list = push(list, line("un-res-wsl".into(), "!", bad_fg, bad_bg, "WSL is off after Windows restarts.".into()));
+            list = push(list, line("un-res-wsl".into(), "!", bad_fg, bad_bg, t!("WSL is off after Windows restarts.").into()));
         }
         let after = self.after();
         let label: SharedString = if after.remove_manager {
-            "Close and remove Platform Manager".into()
+            t!("Close and remove Platform Manager").into()
         } else if after.restart {
-            "Restart Windows".into()
+            t!("Restart Windows").into()
         } else {
-            "Close".into()
+            t!("Close").into()
         };
         let on_close = self.opts.on_close.clone();
         v_flex().gap_3().child(list).child(
@@ -434,12 +434,12 @@ impl Render for UninstallDialog {
         let body = match (&self.facts, &self.phase) {
             (None, _) => v_flex()
                 .gap_2()
-                .child(h_flex().gap_2().items_center().text_sm().text_color(theme.muted_foreground).child(crate::ui::skeleton_block(&theme, "un-load", px(14.).into(), 14.)).child("Looking at what is installed…"))
+                .child(h_flex().gap_2().items_center().text_sm().text_color(theme.muted_foreground).child(crate::ui::skeleton_block(&theme, "un-load", px(14.).into(), 14.)).child(t!("Looking at what is installed…")))
                 .children(crate::ui::skeleton_service_rows(&theme, "un-load-rows", 5)),
             (Some(Err(e)), _) => v_flex()
                 .gap_3()
-                .child(crate::ui::outcome(&theme, crate::ui::Tone::Bad, format!("What is installed could not be read: {e}")))
-                .child(h_flex().justify_end().child(crate::ui::probed(crate::ui::button("un-cancel").outline().label("Close").on_click(|_, _, cx| crate::modal::close(cx))))),
+                .child(crate::ui::outcome(&theme, crate::ui::Tone::Bad, tf!("What is installed could not be read: {e}")))
+                .child(h_flex().justify_end().child(crate::ui::probed(crate::ui::button("un-cancel").outline().label(t!("Close")).on_click(|_, _, cx| crate::modal::close(cx))))),
             (Some(Ok(_)), Phase::Choose) => self.choose(&theme, cx),
             (Some(Ok(_)), Phase::Running) => self.running(&theme, cx),
             (Some(Ok(_)), Phase::Done) => self.done(&theme, cx),
@@ -461,15 +461,15 @@ pub fn open_fixture(spec: &str, cx: &mut App) {
     let run: RunUninstall = Arc::new(move |_args, sink| {
         use sentient_installer_core::progress::Progress;
         let lines = [
-            Check { what: "No PostgreSQL process running".into(), ok: true, left: None, fix: None },
-            Check { what: "Port 5432 (PostgreSQL) is free".into(), ok: true, left: None, fix: None },
-            Check { what: "No postgresql.service service".into(), ok: true, left: None, fix: None },
+            Check { what: t!("No PostgreSQL process running").into(), ok: true, left: None, fix: None },
+            Check { what: t!("Port 5432 (PostgreSQL) is free").into(), ok: true, left: None, fix: None },
+            Check { what: t!("No postgresql.service service").into(), ok: true, left: None, fix: None },
             Check { what: "/etc/postgresql/17 is still there".into(), ok: false, left: Some("/etc/postgresql/17".into()), fix: Some("sudo rm -r /etc/postgresql/17".into()) },
         ];
         for c in lines {
             sink(Progress::Log { line: c.encode() });
         }
-        sink(Progress::Done { message: "Removed.".into() });
+        sink(Progress::Done { message: n!("Removed.").into() });
         Ok(())
     });
     let opts = Opts {
@@ -508,7 +508,7 @@ pub fn finish_local(after: After, cx: &mut App) {
 
 fn restart_windows() {
     #[cfg(windows)]
-    let _ = std::process::Command::new("shutdown.exe").args(["/r", "/t", "5", "/c", "Restarting to finish turning WSL off"]).spawn();
+    let _ = std::process::Command::new("shutdown.exe").args(["/r", "/t", "5", "/c", t!("Restarting to finish turning WSL off")]).spawn();
 }
 
 /// The dialog for this computer's installation (the Platform Manager's

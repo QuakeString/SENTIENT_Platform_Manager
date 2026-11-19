@@ -486,7 +486,7 @@ pub fn append(path: &Path, s: &Sample) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     }
     let line = serde_json::to_string(s).map_err(|e| e.to_string())?;
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| nf!("open {}: {e}", path.display()))?;
     writeln!(f, "{line}").map_err(|e| e.to_string())?;
     drop(f);
     trim(path, KEEP, SLACK)
@@ -556,7 +556,7 @@ pub fn sample_now() -> Result<(), String> {
 
 const UNIT: &str = "sentient-pm-stats";
 #[cfg(windows)]
-const TASK: &str = "SENTIENT Platform Manager statistics";
+const TASK: &str = t!("SENTIENT Platform Manager statistics");
 
 /// Run the sampler once a minute: a system timer as the administrator, a user
 /// timer otherwise (this computer, no password asked), a scheduled task on
@@ -569,7 +569,7 @@ pub fn install_sampler(exe: &Path) -> Result<String, String> {
             .args(["/Create", "/TN", TASK, "/SC", "MINUTE", "/MO", "1", "/RU", "SYSTEM", "/TR", &tr, "/F"])
             .output()
             .map_err(|e| e.to_string())?;
-        return if out.status.success() { Ok("scheduled task".into()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) };
+        return if out.status.success() { Ok(t!("scheduled task").into()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) };
     }
     #[cfg(not(windows))]
     {
@@ -580,7 +580,7 @@ pub fn install_sampler(exe: &Path) -> Result<String, String> {
             std::env::var_os("XDG_CONFIG_HOME")
                 .map(PathBuf::from)
                 .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-                .ok_or("no home folder")?
+                .ok_or(n!("no home folder"))?
                 .join("systemd/user")
         };
         std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
@@ -636,7 +636,7 @@ pub fn debug_live(dir: &Path) -> Result<Sample, String> {
         return Err(crate::remote::AGENT_OLD.into());
     }
     if dir.join("fail").exists() {
-        return Err("The server did not answer (address, port or firewall).".into());
+        return Err(n!("The server did not answer (address, port or firewall).").into());
     }
     if dir.join("slow").exists() {
         std::thread::sleep(std::time::Duration::from_secs(600));

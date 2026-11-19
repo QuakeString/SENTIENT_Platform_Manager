@@ -165,7 +165,7 @@ impl InstallPlan {
 
 /// The error `run` returns when Windows must restart to finish enabling
 /// WSL2. The plan is saved first and setup continues after the next logon.
-pub const RESTART_REQUIRED: &str = "Windows must restart to finish turning on WSL 2.";
+pub const RESTART_REQUIRED: &str = n!("Windows must restart to finish turning on WSL 2.");
 
 /// Passwords of a saved plan, kept apart from it: they go to the secret
 /// store (crate::secrets), the rest to a plain file.
@@ -214,7 +214,7 @@ fn save_pending(plan: &InstallPlan) -> Result<(), String> {
             .map(|s| s.success())
             .unwrap_or(false);
         if !ok {
-            return Err("could not arrange for setup to continue after the restart".into());
+            return Err(n!("could not arrange for setup to continue after the restart").into());
         }
     }
     Ok(())
@@ -238,7 +238,7 @@ pub fn take_pending() -> Option<InstallPlan> {
 pub fn restart_now() {
     #[cfg(windows)]
     let _ = std::process::Command::new("shutdown.exe")
-        .args(["/r", "/t", "5", "/c", "Restarting to finish installing SENTIENT"])
+        .args(["/r", "/t", "5", "/c", n!("Restarting to finish installing SENTIENT")])
         .spawn();
 }
 
@@ -257,7 +257,7 @@ fn turn_on_wsl(plan: &InstallPlan, sink: &ProgressFn) -> Result<(), String> {
     }
     if plan.wsl_restarted {
         let status = wsl::facts().status;
-        return Err(format!(
+        return Err(nf!(
             "WSL 2 still does not run after the restart. {}",
             wsl::vm_error(&status).unwrap_or_else(|| status.trim().lines().last().unwrap_or("wsl --status gave no answer").to_string())
         ));
@@ -304,13 +304,13 @@ fn provision_clickhouse_wsl_with(stack: &DeployConfig, manager: &std::path::Path
     let config = clickhouse_wsl::work_dir().join("config.json");
     std::fs::write(&config, serde_json::to_string(&ch).map_err(|e| e.to_string())?)
         .map_err(|e| format!("write {}: {e}", config.display()))?;
-    step(sink, "Installing WSL2, Docker and ClickHouse as the service account");
+    step(sink, n!("Installing WSL2, Docker and ClickHouse as the service account"));
     clickhouse_wsl::run_as_account(sink, &password, manager, if reuse_kept { "provision-reuse" } else { "provision" }, None)?;
-    step(sink, "Starting ClickHouse at every boot");
+    step(sink, n!("Starting ClickHouse at every boot"));
     clickhouse_wsl::register_keepalive(&password)?;
-    step(sink, "Stopping ClickHouse cleanly when Windows shuts down");
+    step(sink, n!("Stopping ClickHouse cleanly when Windows shuts down"));
     if let Err(e) = clickhouse_wsl::install_guard(manager, ch.ch_http_port) {
-        sink(Progress::Log { line: format!("note: the ClickHouse shutdown service was not set up: {e}") });
+        sink(Progress::Log { line: nf!("note: the ClickHouse shutdown service was not set up: {e}") });
     }
     let mut answering = false;
     for _ in 0..60 {
@@ -321,7 +321,7 @@ fn provision_clickhouse_wsl_with(stack: &DeployConfig, manager: &std::path::Path
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
     if !answering {
-        return Err(format!("ClickHouse is installed but does not answer on 127.0.0.1:{}", ch.ch_http_port));
+        return Err(nf!("ClickHouse is installed but does not answer on 127.0.0.1:{}", ch.ch_http_port));
     }
     if !reuse_kept {
         set_aside_clickhouse_history(&ch, delete_old, sink)?;
@@ -350,14 +350,14 @@ fn set_aside_clickhouse_history(ch: &DeployConfig, delete: bool, sink: &Progress
     }
     if delete {
         conn.text(&format!("DROP DATABASE {} SYNC", ch.ch_db))
-            .map_err(|e| format!("delete the earlier ClickHouse history: {e}"))?;
-        sink(Progress::Log { line: "The earlier install's ClickHouse history was deleted.".into() });
+            .map_err(|e| nf!("delete the earlier ClickHouse history: {e}"))?;
+        sink(Progress::Log { line: n!("The earlier install's ClickHouse history was deleted.").into() });
         return Ok(());
     }
     let aside = format!("{}_before_install_{}", ch.ch_db, chrono::Local::now().format("%Y%m%d%H%M"));
     conn.text(&format!("RENAME DATABASE {} TO {}", ch.ch_db, aside))
-        .map_err(|e| format!("set the earlier ClickHouse history aside: {e}"))?;
-    sink(Progress::Log { line: format!("ClickHouse already held SENTIENT history from an earlier install; it is kept as {aside} (listed under Kept)") });
+        .map_err(|e| nf!("set the earlier ClickHouse history aside: {e}"))?;
+    sink(Progress::Log { line: nf!("ClickHouse already held SENTIENT history from an earlier install; it is kept as {aside} (listed under Kept)") });
     Ok(())
 }
 
@@ -370,29 +370,29 @@ fn hash_password(password: &str) -> Result<String, String> {
     argon2::Argon2::default()
         .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())
-        .map_err(|e| format!("hash the administrator password: {e}"))
+        .map_err(|e| nf!("hash the administrator password: {e}"))
 }
 
 /// Install the Platform Manager alone, without SENTIENT: the program, its
 /// shortcuts and (Windows) its Apps & features entry. No installation
 /// record: the manager then offers to install SENTIENT.
 pub fn run_manager_only(shortcuts: Shortcuts, sink: ProgressFn) -> Result<(), String> {
-    step(&sink, "Installing the Platform Manager");
+    step(&sink, n!("Installing the Platform Manager"));
     let manager = self_install::install_manager()?;
-    step(&sink, "Creating shortcuts");
+    step(&sink, n!("Creating shortcuts"));
     self_install::create_manager_shortcuts(&manager, &shortcuts)?;
     self_install::register_manager_entry(&manager);
-    sink(Progress::Done { message: "The Platform Manager is installed.".into() });
+    sink(Progress::Done { message: n!("The Platform Manager is installed.").into() });
     Ok(())
 }
 
 /// Run the install. Each task reports through `sink`; the first failure stops
 /// the run and is returned.
-const STEP_CLICKHOUSE: &str = "Setting up ClickHouse";
-const STEP_SENTIENT: &str = "Installing SENTIENT and its database";
+const STEP_CLICKHOUSE: &str = n!("Setting up ClickHouse");
+const STEP_SENTIENT: &str = n!("Installing SENTIENT and its database");
 
-const STEP_WSL: &str = "Turning on WSL 2";
-const STEP_DOCKER_WSL: &str = "Setting up Docker in WSL 2";
+const STEP_WSL: &str = n!("Turning on WSL 2");
+const STEP_DOCKER_WSL: &str = n!("Setting up Docker in WSL 2");
 
 /// What the install's steps depend on besides the plan.
 #[derive(Clone, Copy)]
@@ -428,42 +428,42 @@ pub fn steps_on(plan: &InstallPlan, host: Host) -> Vec<sentient_installer_core::
     let mut v = Vec::new();
     if plan.bundle.is_none() && plan.engine == Engine::Native {
         if let Some(version) = &plan.download {
-            v.push(PlanStep::new(format!("Downloading SENTIENT {version}")).detail("Checked against its SHA-256 and signature").when(&["Downloading SENTIENT"]).weight(3.));
+            v.push(PlanStep::new(nf!("Downloading SENTIENT {version}")).detail(n!("Checked against its SHA-256 and signature")).when(&[n!("Downloading SENTIENT")]).weight(3.));
         }
     }
     // Setup's own step: from the installed Platform Manager there is
     // nothing to put in place.
     if !host.manager_in_place {
-        v.push(PlanStep::new("Installing the Platform Manager").weight(0.5));
+        v.push(PlanStep::new(n!("Installing the Platform Manager")).weight(0.5));
     }
     let docker_wsl = host.windows && plan.engine == Engine::Docker;
     let hybrid = host.windows && plan.engine == Engine::Native && plan.stack.flavor == Flavor::Clickhouse;
     if (docker_wsl || hybrid) && !host.wsl_ready {
         v.push(
             PlanStep::new(STEP_WSL)
-                .detail("Windows restarts once, and Setup continues after you sign in")
-                .when(&["Turning on the Windows feature", "Updating the WSL kernel", "Downloading the WSL package", "Installing the WSL package"])
+                .detail(n!("Windows restarts once, and Setup continues after you sign in"))
+                .when(&[n!("Turning on the Windows feature"), n!("Updating the WSL kernel"), n!("Downloading the WSL package"), n!("Installing the WSL package")])
                 .weight(2.),
         );
     }
     if hybrid {
-        v.push(PlanStep::new(STEP_CLICKHOUSE).detail("Its own WSL distribution and account").weight(4.));
+        v.push(PlanStep::new(STEP_CLICKHOUSE).detail(n!("Its own WSL distribution and account")).weight(4.));
     }
     if docker_wsl {
         v.push(
             PlanStep::new(STEP_DOCKER_WSL)
-                .detail("SENTIENT's own Ubuntu distribution with Docker Engine")
-                .when(&["Resetting an unresponsive SENTIENT distro", "Taking back the SENTIENT distro", "Downloading Ubuntu", "Creating the SENTIENT WSL distro", "Enabling systemd", "Installing Docker Engine", "Starting Docker"])
+                .detail(n!("SENTIENT's own Ubuntu distribution with Docker Engine"))
+                .when(&[n!("Resetting an unresponsive SENTIENT distro"), n!("Taking back the SENTIENT distro"), n!("Downloading Ubuntu"), n!("Creating the SENTIENT WSL distro"), n!("Enabling systemd"), n!("Installing Docker Engine"), n!("Starting Docker")])
                 .weight(4.),
         );
     }
     v.push(PlanStep::new(STEP_SENTIENT).detail(match plan.engine {
-        Engine::Docker => "The containers, the database and its schema",
-        Engine::Native => "PostgreSQL, the SENTIENT service and its schema",
+        Engine::Docker => n!("The containers, the database and its schema"),
+        Engine::Native => n!("PostgreSQL, the SENTIENT service and its schema"),
     }).weight(6.));
-    v.push(PlanStep::new("Setting the administrator sign-in").detail(plan.admin_email.clone()).weight(0.5));
-    v.push(PlanStep::new("Creating shortcuts").weight(0.5));
-    v.push(PlanStep::new("Saving the installation record").weight(0.3));
+    v.push(PlanStep::new(n!("Setting the administrator sign-in")).detail(plan.admin_email.clone()).weight(0.5));
+    v.push(PlanStep::new(n!("Creating shortcuts")).weight(0.5));
+    v.push(PlanStep::new(n!("Saving the installation record")).weight(0.3));
     v
 }
 
@@ -472,18 +472,18 @@ pub fn steps_on(plan: &InstallPlan, host: Host) -> Vec<sentient_installer_core::
 pub fn screen_steps() -> Vec<sentient_installer_core::progress::PlanStep> {
     use sentient_installer_core::progress::PlanStep;
     vec![
-        PlanStep::new("Installing the Platform Manager").weight(0.5),
-        PlanStep::new(STEP_SENTIENT).detail("PostgreSQL, the SENTIENT service and its schema").when(&["Starting PostgreSQL", "Installing PostgreSQL"]).weight(6.),
-        PlanStep::new("Setting the administrator sign-in").weight(0.5),
-        PlanStep::new("Creating shortcuts").weight(0.5),
-        PlanStep::new("Saving the installation record").weight(0.3),
+        PlanStep::new(n!("Installing the Platform Manager")).weight(0.5),
+        PlanStep::new(STEP_SENTIENT).detail(n!("PostgreSQL, the SENTIENT service and its schema")).when(&[n!("Starting PostgreSQL"), n!("Installing PostgreSQL")]).weight(6.),
+        PlanStep::new(n!("Setting the administrator sign-in")).weight(0.5),
+        PlanStep::new(n!("Creating shortcuts")).weight(0.5),
+        PlanStep::new(n!("Saving the installation record")).weight(0.3),
     ]
 }
 
 /// The Platform Manager alone.
 pub fn manager_only_steps() -> Vec<sentient_installer_core::progress::PlanStep> {
     use sentient_installer_core::progress::PlanStep;
-    vec![PlanStep::new("Installing the Platform Manager"), PlanStep::new("Creating shortcuts")]
+    vec![PlanStep::new(n!("Installing the Platform Manager")), PlanStep::new(n!("Creating shortcuts"))]
 }
 
 pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
@@ -496,7 +496,7 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
     let manager = if self_install::manager_in_place() {
         self_install::manager_exe()
     } else {
-        step(&sink, "Installing the Platform Manager");
+        step(&sink, n!("Installing the Platform Manager"));
         self_install::install_manager()?
     };
     // What is already here, before anything is installed (uninstall removes only what Setup put here).
@@ -529,7 +529,7 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
         // Platform Manager's Start runs it (distro::wake_keepalive).
         let start = (plan.shortcuts.autostart || plan.shortcuts.open_at_signin).then_some(plan.shortcuts.start_delay);
         if let Err(e) = distro::register_keepalive(&distro::forwarded_ports(&plan.stack), start) {
-            sink(Progress::Log { line: format!("note: SENTIENT will not start by itself with Windows: {e}") });
+            sink(Progress::Log { line: nf!("note: SENTIENT will not start by itself with Windows: {e}") });
         }
     }
     let admin_hash = hash_password(&plan.admin_password)?;
@@ -551,9 +551,9 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
             // Other computers reach SENTIENT through Windows Firewall.
             #[cfg(windows)]
             if let Err(e) = native::open_firewall(&cfg) {
-                sink(Progress::Log { line: format!("note: SENTIENT's ports were not opened in Windows Firewall: {e}") });
+                sink(Progress::Log { line: nf!("note: SENTIENT's ports were not opened in Windows Firewall: {e}") });
             }
-            step(&sink, "Setting the administrator sign-in");
+            step(&sink, n!("Setting the administrator sign-in"));
             native::set_admin_account(&cfg, &plan.admin_email, &admin_hash)?;
             // An operator screen needs SENTIENT running after every boot.
             self_install::set_autostart(plan.shortcuts.autostart || plan.shortcuts.open_at_signin, plan.shortcuts.start_delay)?;
@@ -569,7 +569,7 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
                     continue;
                 }
                 if let Err(e) = crate::secrets::save(secret, value) {
-                    sink(Progress::Log { line: format!("note: {e}") });
+                    sink(Progress::Log { line: nf!("note: {e}") });
                 }
             }
         }
@@ -580,12 +580,12 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
                 distro::setup(sink.clone(), &plan.install_dir)?;
             }
             distro::deploy_with(sink.clone(), &stack, plan.existing)?;
-            step(&sink, "Setting the administrator sign-in");
+            step(&sink, n!("Setting the administrator sign-in"));
             distro::set_admin_account(&stack, &plan.admin_email, &admin_hash)?;
         }
     }
 
-    step(&sink, "Creating shortcuts");
+    step(&sink, n!("Creating shortcuts"));
     let url = format!("http://localhost:{}", plan.stack.http_port);
     self_install::create_shortcuts(&manager, &url, &plan.shortcuts)?;
     if plan.shortcuts.kiosk {
@@ -605,17 +605,17 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
         // SENTIENT is installed by now; a refused password should not undo
         // that, it can be entered again in Platform settings, under Startup.
         if let Err(e) = sentient_installer_core::autologin::set(&sink, Some((&plan.shortcuts.auto_signin, &password))) {
-            sink(Progress::Log { line: format!("Automatic sign-in was not turned on: {e} Turn it on in Platform settings, under Startup.") });
+            sink(Progress::Log { line: nf!("Automatic sign-in was not turned on: {e} Turn it on in Platform settings, under Startup.") });
         }
     }
 
     // SENTIENT's Apps & features entry covers the manager installed alone before.
     self_install::remove_manager_entry();
-    step(&sink, "Saving the installation record");
+    step(&sink, n!("Saving the installation record"));
     let json = serde_json::to_string_pretty(&plan.record()).map_err(|e| e.to_string())?;
     self_install::write_record(&crate::installation::record_path(), &json)?;
 
-    sink(Progress::Done { message: format!("SENTIENT is running at {url}") });
+    sink(Progress::Done { message: nf!("SENTIENT is running at {url}") });
     Ok(())
 }
 

@@ -28,10 +28,10 @@ pub enum FileButton {
 /// is SENTIENT's own.
 pub fn choices_for(env: &str) -> Option<&'static [(&'static str, &'static str)]> {
     match env {
-        "RUST_LOG" => Some(&[("Errors only", "error"), ("Normal", "info"), ("Detailed", "debug")]),
-        "AUDIT_LOG_TTL_DAYS" | "NOTIFICATIONS_TTL_DAYS" => Some(&[("Forever", "0"), ("30 days", "30"), ("90 days", "90"), ("1 year", "365")]),
-        "SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS" => Some(&[("Built-in", ""), ("7 days", "604800"), ("30 days", "2592000"), ("90 days", "7776000")]),
-        "SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS" => Some(&[("Built-in", ""), ("1 day", "86400"), ("7 days", "604800"), ("30 days", "2592000")]),
+        "RUST_LOG" => Some(&[(n!("Errors only"), "error"), (n!("Normal"), "info"), (n!("Detailed"), "debug")]),
+        "AUDIT_LOG_TTL_DAYS" | "NOTIFICATIONS_TTL_DAYS" => Some(&[(n!("Forever"), "0"), (n!("30 days"), "30"), (n!("90 days"), "90"), (n!("1 year"), "365")]),
+        "SENTIENT__EVENT_CLEANUP__EVENTS_TTL_SECS" => Some(&[(n!("Built-in"), ""), (n!("7 days"), "604800"), (n!("30 days"), "2592000"), (n!("90 days"), "7776000")]),
+        "SENTIENT__EVENT_CLEANUP__DEBUG_EVENTS_TTL_SECS" => Some(&[(n!("Built-in"), ""), (n!("1 day"), "86400"), (n!("7 days"), "604800"), (n!("30 days"), "2592000")]),
         _ => None,
     }
 }
@@ -48,7 +48,7 @@ pub fn control(setting: &Setting, input: &Entity<InputState>, set: SetFn, file: 
         // A log filter ("info,sqlx=warn") counts by its overall level.
         let level = effective.split(',').next().unwrap_or("").trim().to_string();
         let at = choices.iter().position(|(_, v)| !v.is_empty() && (*v == effective || *v == level)).or_else(|| if now.is_empty() { choices.iter().position(|(_, v)| v.is_empty()) } else { None });
-        let labels: Vec<&str> = choices.iter().map(|(l, _)| *l).collect();
+        let labels: Vec<&str> = choices.iter().map(|(l, _)| crate::i18n::t(l)).collect();
         return ui::chips(&theme, &env, &labels, at, Rc::new(move |i, window, cx| set(choices[i].1, window, cx))).into_any_element();
     }
     match setting.kind() {
@@ -66,8 +66,8 @@ pub fn control(setting: &Setting, input: &Entity<InputState>, set: SetFn, file: 
         }
         kind => {
             let slot = match (kind, file) {
-                (ValueKind::File, FileButton::Choose(f)) => Some(ui::Slot::Button(SharedString::from(format!("file-{env}")), "Choose".into(), f)),
-                (ValueKind::File, FileButton::Check(f)) => Some(ui::Slot::Button(SharedString::from(format!("file-{env}")), "Check".into(), f)),
+                (ValueKind::File, FileButton::Choose(f)) => Some(ui::Slot::Button(SharedString::from(format!("file-{env}")), t!("Choose").into(), f)),
+                (ValueKind::File, FileButton::Check(f)) => Some(ui::Slot::Button(SharedString::from(format!("file-{env}")), t!("Check").into(), f)),
                 _ => unit_of(setting).map(|u| ui::Slot::Unit(u.into())),
             };
             ui::field_input(&theme, input, slot, setting.problem(&input.read(cx).value()), false, window, cx).into_any_element()
@@ -113,15 +113,15 @@ pub fn value_words(setting: &Setting, value: &str) -> String {
         // A log filter ("info,sqlx=warn") is its own words: the level alone
         // would hide the rest.
         if let Some((label, _)) = choices.iter().find(|(_, c)| *c == v) {
-            return label.to_string();
+            return crate::i18n::t(label).to_string();
         }
     }
     if v.is_empty() {
-        return "SENTIENT's own".to_string();
+        return t!("SENTIENT's own").to_string();
     }
     match setting.kind() {
-        ValueKind::Switch if v == "true" => "On".to_string(),
-        ValueKind::Switch if v == "false" => "Off".to_string(),
+        ValueKind::Switch if v == "true" => t!("On").to_string(),
+        ValueKind::Switch if v == "false" => t!("Off").to_string(),
         ValueKind::Number(Some(u)) => {
             let n = v.parse::<u64>().ok();
             let words = match (u, n) {
@@ -130,7 +130,7 @@ pub fn value_words(setting: &Setting, value: &str) -> String {
                 _ => None,
             };
             match words {
-                Some(w) if setting.env.contains("_INTERVAL") => format!("Every {}", w.strip_prefix("1 ").unwrap_or(&w)),
+                Some(w) if setting.env.contains("_INTERVAL") => tf!("Every {}", w.strip_prefix("1 ").unwrap_or(&w)),
                 Some(w) => w,
                 None => format!("{v} {}", ui::unit_word(u)),
             }

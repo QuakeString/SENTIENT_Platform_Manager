@@ -42,7 +42,7 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, String> {
         .enable_all()
         .build()
         .map(|rt| rt.block_on(future))
-        .map_err(|e| format!("start the runtime: {e}"))
+        .map_err(|e| nf!("start the runtime: {e}"))
 }
 
 fn ch_of(setup: &Setup) -> Option<ChConn> {
@@ -85,7 +85,7 @@ pub fn backup(record: &InstallationRecord, output: &Path, sink: ProgressFn) -> R
     let summary = block_on(backup::run(&setup.pg(), &opts, bridge(sink.clone())))?.map_err(|e| e.to_string())?;
     crate::secrets_key::save_beside(record, output, opts.passphrase.as_deref(), &sink);
     sink(Progress::Done {
-        message: format!(
+        message: nf!(
             "Saved {} ({}), checksum {}…",
             summary.output.display(),
             db::human_bytes(summary.archive_bytes as i64),
@@ -108,7 +108,7 @@ pub fn restore_with(record: &InstallationRecord, input: &Path, target: &str, key
     let setup = Setup::current(record)?;
     let live = setup.pg();
     if target == live.dbname {
-        return Err("A restore goes into a new database, not the one SENTIENT uses.".into());
+        return Err(n!("A restore goes into a new database, not the one SENTIENT uses.").into());
     }
     let conn = db::ConnConfig { dbname: target.to_string(), ..live.clone() };
     let ch_target = ch_of(&setup).map(|c| c.with_database(target));
@@ -126,10 +126,10 @@ pub fn restore_with(record: &InstallationRecord, input: &Path, target: &str, key
         ..Default::default()
     };
     block_on(async {
-        sink(Progress::Step { name: format!("Creating the empty database {target}") });
+        sink(Progress::Step { name: nf!("Creating the empty database {target}") });
         db::create_database(&live, target).await.map_err(|e| e.to_string())?;
         if let Some(ch) = &ch_target {
-            sink(Progress::Step { name: format!("Creating the ClickHouse database {target}") });
+            sink(Progress::Step { name: nf!("Creating the ClickHouse database {target}") });
             #[cfg(target_os = "linux")]
             if let Setup::Native(c) = &setup {
                 sentient_installer_core::native_linux::grant_clickhouse(c)?;

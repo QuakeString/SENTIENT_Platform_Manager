@@ -175,24 +175,24 @@ pub fn check(file: &Path, passphrase: Option<&str>) -> Result<sentient_backup_co
         // that says nothing about the file.
         Err(e) if e.to_string().to_lowercase().contains("passphrase") => return Err(e.to_string()),
         Err(e) => {
-            let summary = format!("Damaged: the file cannot be read through ({e}).");
+            let summary = nf!("Damaged: the file cannot be read through ({e}).");
             store_check(file, CheckRecord { at: chrono::Local::now().to_rfc3339(), ok: false, summary: summary.clone() });
             return Err(summary);
         }
     };
     let n = report.members.len() + report.missing.len();
     let summary = if report.ok() {
-        format!("All {n} parts match.")
+        nf!("All {n} parts match.")
     } else {
         let bad: Vec<String> = report
             .members
             .iter()
             .filter(|m| !m.ok)
             .map(|m| m.label.clone())
-            .chain(report.missing.iter().map(|p| format!("{} (missing)", sentient_backup_core::restore::member_label(p))))
-            .chain(report.files.iter().flatten().filter(|(_, ok)| !ok).map(|(f, _)| format!("{f} (does not match its .sha256)")))
+            .chain(report.missing.iter().map(|p| nf!("{} (missing)", sentient_backup_core::restore::member_label(p))))
+            .chain(report.files.iter().flatten().filter(|(_, ok)| !ok).map(|(f, _)| nf!("{f} (does not match its .sha256)")))
             .collect();
-        format!("Damaged: {}.", bad.join(", "))
+        nf!("Damaged: {}.", bad.join(", "))
     };
     store_check(file, CheckRecord { at: chrono::Local::now().to_rfc3339(), ok: report.ok(), summary });
     Ok(report)
@@ -280,14 +280,14 @@ pub fn set_folder(new: &Path, move_old: bool, sink: &ProgressFn) -> Result<Strin
     let mut prefs = BackupPrefs::load();
     let old = prefs.folder.clone();
     if old == new {
-        return Ok("The backup folder is unchanged.".into());
+        return Ok(n!("The backup folder is unchanged.").into());
     }
-    std::fs::create_dir_all(new).map_err(|e| format!("{} cannot be made: {e}", new.display()))?;
+    std::fs::create_dir_all(new).map_err(|e| nf!("{} cannot be made: {e}", new.display()))?;
     check_writable(new).map_err(|why| format!("{}: {why}", new.display()))?;
     let here = list(&old);
     if move_old {
         for e in &here {
-            sink(Progress::Step { name: format!("Moving {}", e.name) });
+            sink(Progress::Step { name: nf!("Moving {}", e.name) });
             move_backup(&e.path, new)?;
         }
     } else if !here.is_empty() && !prefs.old_folders.contains(&old) {
@@ -297,9 +297,9 @@ pub fn set_folder(new: &Path, move_old: bool, sink: &ProgressFn) -> Result<Strin
     prefs.folder = new.to_path_buf();
     prefs.save()?;
     Ok(match (move_old, here.len()) {
-        (_, 0) => format!("Backups now go to {}.", new.display()),
-        (true, n) => format!("Backups now go to {}; {n} moved there.", new.display()),
-        (false, n) => format!("Backups now go to {}; {n} stay in {}.", new.display(), old.display()),
+        (_, 0) => nf!("Backups now go to {}.", new.display()),
+        (true, n) => nf!("Backups now go to {}; {n} moved there.", new.display()),
+        (false, n) => nf!("Backups now go to {}; {n} stay in {}.", new.display(), old.display()),
     })
 }
 
@@ -312,13 +312,13 @@ fn move_backup(base: &Path, folder: &Path) -> Result<(), String> {
         files.push(sidecar);
     }
     for f in &files {
-        let to = folder.join(f.file_name().ok_or("no file name")?);
+        let to = folder.join(f.file_name().ok_or(n!("no file name"))?);
         if std::fs::rename(f, &to).is_err() {
-            std::fs::copy(f, &to).map_err(|e| format!("{} could not be copied: {e}", f.display()))?;
-            std::fs::remove_file(f).map_err(|e| format!("{} could not be removed after copying: {e}", f.display()))?;
+            std::fs::copy(f, &to).map_err(|e| nf!("{} could not be copied: {e}", f.display()))?;
+            std::fs::remove_file(f).map_err(|e| nf!("{} could not be removed after copying: {e}", f.display()))?;
         }
     }
-    let new_base = folder.join(base.file_name().ok_or("no file name")?);
+    let new_base = folder.join(base.file_name().ok_or(n!("no file name"))?);
     if let Some(c) = check_of(base) {
         store_check(&new_base, c);
     }
@@ -341,7 +341,7 @@ fn probe_writable(dir: &Path) -> Result<(), (String, bool)> {
             Ok(())
         }
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err((owner_why(dir), true)),
-        Err(e) if e.raw_os_error() == Some(30) => Err(("the disk is read-only.".into(), false)),
+        Err(e) if e.raw_os_error() == Some(30) => Err((n!("the disk is read-only.").into(), false)),
         Err(e) => Err((e.to_string(), false)),
     }
 }
@@ -352,11 +352,11 @@ fn owner_why(dir: &Path) -> String {
         use std::os::unix::fs::MetadataExt;
         if let Ok(m) = std::fs::metadata(dir) {
             let who = if m.uid() == 0 { "root".to_string() } else { format!("user {}", m.uid()) };
-            return format!("the folder belongs to {who}.");
+            return nf!("the folder belongs to {who}.");
         }
     }
     let _ = dir;
-    "the folder does not allow it.".into()
+    n!("the folder does not allow it.").into()
 }
 
 /// Make `dir` writable for the account `uid` (or the one that asked for
@@ -374,7 +374,7 @@ pub fn make_writable(dir: &Path, uid: Option<u32>) -> Result<(), String> {
         };
         let out = sentient_installer_core::host::host_command("chown").arg(uid.to_string()).arg(dir).output().map_err(|e| e.to_string())?;
         if !out.status.success() {
-            return Err(format!("{} could not be given to user {uid}: {}", dir.display(), String::from_utf8_lossy(&out.stderr).trim()));
+            return Err(nf!("{} could not be given to user {uid}: {}", dir.display(), String::from_utf8_lossy(&out.stderr).trim()));
         }
         let _ = sentient_installer_core::host::host_command("chmod").arg("u+rwx").arg(dir).status();
         Ok(())
@@ -426,7 +426,7 @@ pub struct DirList {
 }
 
 pub fn dir_list(path: &Path) -> Result<DirList, String> {
-    let rd = std::fs::read_dir(path).map_err(|e| format!("{} cannot be opened: {e}", path.display()))?;
+    let rd = std::fs::read_dir(path).map_err(|e| nf!("{} cannot be opened: {e}", path.display()))?;
     let disks = disks();
     let free = free_space_on(&disks, path).unwrap_or(0);
     let mut dirs: Vec<(String, u64)> = rd
@@ -443,16 +443,16 @@ pub fn dir_list(path: &Path) -> Result<DirList, String> {
     let prefs = BackupPrefs::load();
     let mut shortcuts: Vec<(String, PathBuf)> = Vec::new();
     if let Some(h) = home_dir() {
-        shortcuts.push(("Home".into(), h));
+        shortcuts.push((n!("Home").into(), h));
     }
-    shortcuts.push(("Current backup folder".into(), prefs.folder.clone()));
+    shortcuts.push((n!("Current backup folder").into(), prefs.folder.clone()));
     for d in disks.list() {
         let m = d.mount_point().to_path_buf();
         let s = m.to_string_lossy().to_string();
         let usb = d.is_removable() || s.starts_with("/media/") || s.starts_with("/run/media/");
         let interesting = cfg!(windows) || usb || s.starts_with("/mnt/") || s.starts_with("/srv") || s.starts_with("/data");
         if interesting && !shortcuts.iter().any(|(_, p)| *p == m) {
-            shortcuts.push((if usb { "USB disk".into() } else { s.clone() }, m));
+            shortcuts.push((if usb { n!("USB disk").into() } else { s.clone() }, m));
         }
     }
     let (writable, fixable) = match probe_writable(path) {
@@ -527,10 +527,10 @@ fn bridge(sink: ProgressFn) -> bk::ProgressFn {
     })
 }
 
-pub const STEP_WRITE: &str = "Writing the backup";
-pub const STEP_CHECK: &str = "Reading the file back to check it";
-pub const STEP_COPY: &str = "Copying it to the second location";
-pub const STEP_PRUNE: &str = "Removing automatic backups beyond the ones kept";
+pub const STEP_WRITE: &str = n!("Writing the backup");
+pub const STEP_CHECK: &str = n!("Reading the file back to check it");
+pub const STEP_COPY: &str = n!("Copying it to the second location");
+pub const STEP_PRUNE: &str = n!("Removing automatic backups beyond the ones kept");
 
 /// Back up with `prefs` (and `passphrase` for a backup by hand). Blocking.
 pub fn run(record: &InstallationRecord, prefs: &BackupPrefs, passphrase: Option<String>, automatic: bool, sink: ProgressFn) -> Result<Made, String> {
@@ -597,7 +597,7 @@ pub fn run_as(record: &InstallationRecord, prefs: &BackupPrefs, passphrase: Opti
     let report = check(&summary.output, passphrase.as_deref())?;
     let rec = check_of(&summary.output).unwrap_or(CheckRecord { at: String::new(), ok: report.ok(), summary: String::new() });
     if !report.ok() {
-        return Err(format!("The backup was written but does not read back correctly: {}", rec.summary));
+        return Err(nf!("The backup was written but does not read back correctly: {}", rec.summary));
     }
 
     let mut copied_to = None;
@@ -605,7 +605,7 @@ pub fn run_as(record: &InstallationRecord, prefs: &BackupPrefs, passphrase: Opti
         sink(Progress::Step { name: STEP_COPY.into() });
         match add(&summary.output, dest) {
             Ok(p) => copied_to = Some(p),
-            Err(e) => sink(Progress::Log { line: format!("note: the second copy was not made: {e}") }),
+            Err(e) => sink(Progress::Log { line: nf!("note: the second copy was not made: {e}") }),
         }
     }
     if automatic {
@@ -615,7 +615,7 @@ pub fn run_as(record: &InstallationRecord, prefs: &BackupPrefs, passphrase: Opti
             let _ = delete(&old.path);
         }
     }
-    sink(Progress::Done { message: format!("Backup finished and checked: {}", summary.output.display()) });
+    sink(Progress::Done { message: nf!("Backup finished and checked: {}", summary.output.display()) });
     Ok(Made {
         path: summary.output,
         bytes: summary.archive_bytes,
@@ -648,7 +648,7 @@ pub fn apply_schedule(prefs: &BackupPrefs) -> Result<(), String> {
                 .output()
                 .map_err(|e| e.to_string())?;
             if !out.status.success() {
-                return Err(format!("The daily backup could not be scheduled: {}", String::from_utf8_lossy(&out.stderr).trim()));
+                return Err(nf!("The daily backup could not be scheduled: {}", String::from_utf8_lossy(&out.stderr).trim()));
             }
         }
         return Ok(());
@@ -681,7 +681,7 @@ pub fn next_run(prefs: &BackupPrefs) -> Option<String> {
     let (h, m) = prefs.time()?;
     let now = chrono::Local::now();
     let today = now.date_naive().and_hms_opt(h, m, 0)?;
-    Some(if today > now.naive_local() { format!("today {h:02}:{m:02}") } else { format!("tomorrow {h:02}:{m:02}") })
+    Some(if today > now.naive_local() { nf!("today {h:02}:{m:02}") } else { nf!("tomorrow {h:02}:{m:02}") })
 }
 
 /// About how big a backup with `prefs` gets and how long it takes:

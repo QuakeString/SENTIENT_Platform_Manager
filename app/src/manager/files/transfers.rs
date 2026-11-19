@@ -145,7 +145,7 @@ pub fn get(cx: &mut App) -> Entity<Transfers> {
         j.set_details(std::rc::Rc::new(move |cx| {
             let t3 = t2.clone();
             let body = cx.new(|cx| Panel { t: t3.clone(), in_dialog: true, _o: cx.observe(&t3, |_, _, cx| cx.notify()) });
-            crate::modal::open(crate::modal::Modal { title: "Transfers".into(), body: body.into(), width: 440., icon: None, on_close: None }, cx);
+            crate::modal::open(crate::modal::Modal { title: t!("Transfers").into(), body: body.into(), width: 440., icon: None, on_close: None }, cx);
         }));
     });
     cx.set_global(Slot(t.clone()));
@@ -229,7 +229,7 @@ impl Transfers {
             *run = self.items.clone();
         }
         self.job.update(cx, |j, cx| {
-            j.set_label("Copying");
+            j.set_label(t!("Copying"));
             j.start(|_| {
                 std::thread::sleep(std::time::Duration::from_secs(3600));
                 Ok(())
@@ -244,7 +244,7 @@ impl Transfers {
         }
         let shared = self.shared.clone();
         self.job.update(cx, |j, cx| {
-            j.set_label("Copying");
+            j.set_label(t!("Copying"));
             j.start(move |sink| work(shared, sink), cx);
         });
         // Asks and changed folders reach the page while it runs.
@@ -281,7 +281,7 @@ impl Transfers {
         // The count: what is still to copy.
         let n = open.iter().filter(|i| matches!(i.st(), St::Waiting | St::Copying)).count().max(1);
         let pct = if total > 0 { format!(" · {}%", done * 100 / total) } else { String::new() };
-        format!("Copying {n} item{}{pct}", if n == 1 { "" } else { "s" })
+        if n == 1 { tf!("Copying {n} item{pct}") } else { tf!("Copying {n} items{pct}") }
     }
 
     pub fn cancel(&mut self, id: u64, cx: &mut Context<Self>) {
@@ -384,10 +384,10 @@ fn work(shared: Arc<Shared>, sink: ProgressFn) -> Result<(), String> {
         report(&shared);
     }
     if failed > 0 {
-        return Err(if failed == 1 { last_err } else { format!("{failed} copies failed; the last: {last_err}") });
+        return Err(if failed == 1 { last_err } else { nf!("{failed} copies failed; the last: {last_err}") });
     }
-    let skipped = if stopped > 0 { format!(" {stopped} cancelled or skipped.") } else { String::new() };
-    sink(Progress::Done { message: format!("Copied {ok} item{}.{skipped}", if ok == 1 { "" } else { "s" }) });
+    let skipped = if stopped > 0 { tf!(" {stopped} cancelled or skipped.") } else { String::new() };
+    sink(Progress::Done { message: if ok == 1 { nf!("Copied {ok} item.{skipped}") } else { nf!("Copied {ok} items.{skipped}") } });
     Ok(())
 }
 
@@ -403,7 +403,7 @@ fn free_name(dst: &mut dyn Fs, to: &Place, dir: &str, name: &str) -> Result<Stri
             return Ok(cand);
         }
     }
-    Err("No free name for a second copy.".into())
+    Err(n!("No free name for a second copy.").into())
 }
 
 /// Ok(None): copied; Ok(Some(state)): skipped or cancelled.
@@ -427,14 +427,14 @@ pub(crate) fn safe_name(name: &str) -> Result<(), String> {
     let bad = name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']);
     if bad {
         let shown: String = name.chars().map(|c| if c == '\0' { '\u{2400}' } else { c }).collect();
-        return Err(format!("Not copied: the name \"{shown}\" is not a plain file name (it is empty, \".\" or \"..\", or holds /, \\ or a NUL character)."));
+        return Err(tf!("Not copied: the name \"{shown}\" is not a plain file name (it is empty, \".\" or \"..\", or holds /, \\ or a NUL character)."));
     }
     Ok(())
 }
 
 fn copy_item_with(item: &Item, shared: &Shared, src: &mut Box<dyn Fs>, dst: &mut Box<dyn Fs>, tick: &dyn Fn()) -> Result<Option<St>, String> {
     safe_name(&item.name)?;
-    let (is_dir, size, mtime) = src.meta(&item.src)?.ok_or_else(|| format!("{} is not there any more.", item.src))?;
+    let (is_dir, size, mtime) = src.meta(&item.src)?.ok_or_else(|| nf!("{} is not there any more.", item.src))?;
     let mut name = item.name.clone();
     let mut dest = item.to.join(&item.dest_dir, &name);
     let mut replace = false;
@@ -449,7 +449,7 @@ fn copy_item_with(item: &Item, shared: &Shared, src: &mut Box<dyn Fs>, dst: &mut
                     *a = Some(Ask {
                         name: name.clone(),
                         dir: there_dir,
-                        where_: if item.to.is_remote() { "on the server".into() } else { "on this computer".into() },
+                        where_: if item.to.is_remote() { t!("on the server").into() } else { t!("on this computer").into() },
                         there: (there_size, there_time),
                         copying: (size, mtime),
                         rest,
@@ -501,7 +501,7 @@ fn copy_item_with(item: &Item, shared: &Shared, src: &mut Box<dyn Fs>, dst: &mut
     let mut stack = vec![(item.src.clone(), dest.clone())];
     while let Some((s, d)) = stack.pop() {
         if item.cancel.load(Ordering::Relaxed) {
-            return Err("Cancelled".into());
+            return Err(n!("Cancelled").into());
         }
         for e in src.list(&s)?.entries {
             safe_name(&e.name)?;
@@ -567,7 +567,7 @@ fn copy_file(item: &Item, src: &mut Box<dyn Fs>, dst: &mut Box<dyn Fs>, from: &s
     }
     let got = dst.meta(&part)?.map(|m| m.1).unwrap_or(0);
     if got != size {
-        return Err(format!("The size check failed: {} of {} arrived. Copy it again to resume.", bytes_label(got), bytes_label(size)));
+        return Err(nf!("The size check failed: {} of {} arrived. Copy it again to resume.", bytes_label(got), bytes_label(size)));
     }
     if replace {
         dst.remove_tree(dest)?;
@@ -583,7 +583,7 @@ fn pipe(item: &Item, src: &mut dyn Fs, dst: &mut dyn Fs, from: &str, to: &str, o
         let reader = s.spawn(move || src.read(from, offset, size, &mut |d| !cancel.load(Ordering::Relaxed) && tx.send(d.to_vec()).is_ok()));
         let w = dst.write(to, offset, &mut || {
             if cancel.load(Ordering::Relaxed) {
-                return Err("Cancelled".into());
+                return Err(n!("Cancelled").into());
             }
             match rx.recv() {
                 Ok(d) => {
@@ -596,7 +596,7 @@ fn pipe(item: &Item, src: &mut dyn Fs, dst: &mut dyn Fs, from: &str, to: &str, o
         });
         // The writer stopped early: the reader's channel closes with it.
         drop(rx);
-        let r = reader.join().map_err(|_| "The copy stopped unexpectedly.".to_string())?;
+        let r = reader.join().map_err(|_| n!("The copy stopped unexpectedly.").to_string())?;
         w?;
         r
     })
@@ -635,14 +635,14 @@ impl Render for Panel {
             .when(!in_dialog, |h| h.h(px(52.)).px(px(16.)).border_b_1().border_color(theme.border))
             .when(in_dialog, |h| h.pb_2())
             .items_center()
-            .child(div().flex_1().when(!in_dialog, |d| d.font_weight(FontWeight::MEDIUM).child("Transfers")))
-            .child(crate::ui::button("tr-clear").ghost().small().text_color(theme.primary).label("Clear finished").on_click({
+            .child(div().flex_1().when(!in_dialog, |d| d.font_weight(FontWeight::MEDIUM).child(t!("Transfers"))))
+            .child(crate::ui::button("tr-clear").ghost().small().text_color(theme.primary).label(t!("Clear finished")).on_click({
                 let t = t.clone();
                 move |_, _, cx| t.update(cx, |t, cx| t.clear_finished(cx))
             }));
         let mut list = v_flex().id("tr-list").max_h(px(420.)).overflow_y_scroll();
         if items.is_empty() {
-            list = list.child(div().px(px(16.)).py_4().text_sm().text_color(theme.muted_foreground).child("No copies yet."));
+            list = list.child(div().px(px(16.)).py_4().text_sm().text_color(theme.muted_foreground).child(t!("No copies yet.")));
         }
         for (n, i) in items.iter().enumerate() {
             let st = i.st();
@@ -655,16 +655,16 @@ impl Render for Panel {
             let right: AnyElement = match &st {
                 St::Copying | St::Waiting if !i.cancel.load(Ordering::Relaxed) && st == St::Copying => {
                     let (t2, id) = (t.clone(), i.id);
-                    crate::ui::button(SharedString::from(format!("tr-cancel-{}", i.id))).outline().small().label("Cancel").on_click(move |_, _, cx| t2.update(cx, |t, cx| t.cancel(id, cx))).into_any_element()
+                    crate::ui::button(SharedString::from(format!("tr-cancel-{}", i.id))).outline().small().label(t!("Cancel")).on_click(move |_, _, cx| t2.update(cx, |t, cx| t.cancel(id, cx))).into_any_element()
                 }
                 _ => {
                     let w = match &st {
-                        St::Waiting => "Waiting",
-                        St::Copying => "Stopping…",
-                        St::Done(_) => "Done",
-                        St::Failed(_) => "Failed",
-                        St::Cancelled => "Cancelled",
-                        St::Skipped => "Skipped",
+                        St::Waiting => t!("Waiting"),
+                        St::Copying => t!("Stopping…"),
+                        St::Done(_) => t!("Done"),
+                        St::Failed(_) => t!("Failed"),
+                        St::Cancelled => t!("Cancelled"),
+                        St::Skipped => t!("Skipped"),
                     };
                     div().text_sm().text_color(if matches!(st, St::Failed(_)) { theme.danger } else { theme.muted_foreground }).child(w).into_any_element()
                 }
@@ -672,10 +672,10 @@ impl Render for Panel {
             let dest = &i.dest_dir;
             let line = match &st {
                 St::Copying => None,
-                St::Waiting => Some(format!("To {dest}")),
-                St::Done(at) => Some(format!("{} to {dest} · {}", bytes_label(total), time_of(*at))),
+                St::Waiting => Some(tf!("To {dest}")),
+                St::Done(at) => Some(tf!("{} to {dest} · {}", bytes_label(total), time_of(*at))),
                 St::Failed(e) => Some(e.clone()),
-                St::Cancelled | St::Skipped => Some(format!("To {dest}")),
+                St::Cancelled | St::Skipped => Some(tf!("To {dest}")),
             };
             let mut row = v_flex()
                 .px(px(16.))
@@ -700,8 +700,8 @@ impl Render for Panel {
                         h_flex()
                             .text_size(px(12.5))
                             .text_color(theme.muted_foreground)
-                            .child(div().flex_1().child(format!("{} of {}{}", same_unit(done, total), bytes_label(total), rate.map(|r| format!(" · {}/s", bytes_label(r as u64))).unwrap_or_default())))
-                            .when_some(left, |r, s| r.child(if s < 60 { format!("about {s} s left") } else { format!("about {} min left", s.div_ceil(60)) })),
+                            .child(div().flex_1().child(tf!("{} of {}{}", same_unit(done, total), bytes_label(total), rate.map(|r| format!(" · {}/s", bytes_label(r as u64))).unwrap_or_default())))
+                            .when_some(left, |r, s| r.child(if s < 60 { tf!("about {s} s left") } else { tf!("about {} min left", s.div_ceil(60)) })),
                     );
             }
             if let Some(l) = line {
@@ -723,7 +723,7 @@ struct AskView {
 
 fn when_label(bytes: u64, t: Option<i64>) -> String {
     use chrono::TimeZone as _;
-    let at = t.and_then(|t| chrono::Local.timestamp_opt(t, 0).single()).map(|d| format!(" · {}", d.format("%-d %b %H:%M"))).unwrap_or_default();
+    let at = t.and_then(|t| chrono::Local.timestamp_opt(t, 0).single()).map(|d| format!(" · {}", crate::i18n::date(&d, "%-d %b %H:%M"))).unwrap_or_default();
     format!("{}{at}", bytes_label(bytes))
 }
 
@@ -731,7 +731,7 @@ fn open_ask(t: Entity<Transfers>, cx: &mut App) {
     let title = {
         let s = t.read(cx).shared.clone();
         let a = s.ask.lock().ok();
-        a.as_ref().and_then(|a| a.as_ref()).map(|a| format!("{} is already {}", a.name, a.where_)).unwrap_or_default()
+        a.as_ref().and_then(|a| a.as_ref()).map(|a| tf!("{} is already {}", a.name, a.where_)).unwrap_or_default()
     };
     let dir = t.read(cx).shared.ask.lock().ok().and_then(|a| a.as_ref().map(|a| a.dir)).unwrap_or(false);
     let view = cx.new(|_| AskView { t: t.clone(), choice: Choice::Replace, rest: true });
@@ -756,7 +756,7 @@ impl Render for AskView {
         let shared = self.t.read(cx).shared.clone();
         let guard = shared.ask.lock().ok();
         let Some(a) = guard.as_ref().and_then(|g| g.as_ref()) else { return div().into_any_element() };
-        let where_ = if a.where_ == "on the server" { "On the server" } else { "On this computer" };
+        let where_ = if a.where_ == t!("on the server") { t!("On the server") } else { t!("On this computer") };
         let row = |label: &'static str, value: String, line: bool| {
             h_flex()
                 .gap(px(16.))
@@ -767,15 +767,15 @@ impl Render for AskView {
                 )
         };
         let seg = crate::ui::seg_track(&theme)
-            .child(crate::ui::seg_item(&theme, "ask-replace", "Replace", self.choice == Choice::Replace).on_click(cx.listener(|v, _, _, cx| {
+            .child(crate::ui::seg_item(&theme, "ask-replace", t!("Replace"), self.choice == Choice::Replace).on_click(cx.listener(|v, _, _, cx| {
                 v.choice = Choice::Replace;
                 cx.notify();
             })))
-            .child(crate::ui::seg_item(&theme, "ask-both", "Keep both", self.choice == Choice::KeepBoth).on_click(cx.listener(|v, _, _, cx| {
+            .child(crate::ui::seg_item(&theme, "ask-both", t!("Keep both"), self.choice == Choice::KeepBoth).on_click(cx.listener(|v, _, _, cx| {
                 v.choice = Choice::KeepBoth;
                 cx.notify();
             })))
-            .child(crate::ui::seg_item(&theme, "ask-skip", "Skip", self.choice == Choice::Skip).on_click(cx.listener(|v, _, _, cx| {
+            .child(crate::ui::seg_item(&theme, "ask-skip", t!("Skip"), self.choice == Choice::Skip).on_click(cx.listener(|v, _, _, cx| {
                 v.choice = Choice::Skip;
                 cx.notify();
             })));
@@ -783,10 +783,10 @@ impl Render for AskView {
         v_flex()
             .gap(px(10.))
             .child(row(where_, when_label(a.there.0, a.there.1), true))
-            .child(row("Copying", when_label(a.copying.0, a.copying.1), false))
+            .child(row(t!("Copying"), when_label(a.copying.0, a.copying.1), false))
             .child(h_flex().pt_1().child(seg))
             .when(rest > 0, |c| {
-                c.child(Checkbox::new("ask-rest").label(format!("Do the same for the other {rest} item{}", if rest == 1 { "" } else { "s" })).checked(self.rest).on_change(cx.listener(|v, val: &bool, _, cx| {
+                c.child(Checkbox::new("ask-rest").label(if rest == 1 { tf!("Do the same for the other {rest} item") } else { tf!("Do the same for the other {rest} items") }).checked(self.rest).on_change(cx.listener(|v, val: &bool, _, cx| {
                     v.rest = *val;
                     cx.notify();
                 })))
@@ -807,12 +807,12 @@ impl Render for AskFooter {
             .w_full()
             .gap(crate::ui::button_gap())
             .justify_end()
-            .child(crate::ui::probed(crate::ui::button("ask-cancel").outline().label("Cancel copy").on_click(move |_, _, cx| {
+            .child(crate::ui::probed(crate::ui::button("ask-cancel").outline().label(t!("Cancel copy")).on_click(move |_, _, cx| {
                 let t = v1.read(cx).t.clone();
                 crate::modal::close(cx);
                 t.update(cx, |t, cx| t.answer(None, cx));
             })))
-            .child(crate::ui::probed(crate::ui::button("ask-go").primary().label("Continue").on_click(move |_, _, cx| {
+            .child(crate::ui::probed(crate::ui::button("ask-go").primary().label(t!("Continue")).on_click(move |_, _, cx| {
                 let (t, c, rest) = {
                     let v = v2.read(cx);
                     (v.t.clone(), v.choice, v.rest)
@@ -832,7 +832,7 @@ pub fn debug_ask(cx: &mut App) {
     let now = chrono::Local::now().timestamp();
     t.update(cx, |t, cx| {
         if let Ok(mut a) = t.shared.ask.lock() {
-            *a = Some(Ask { name: "sentient.yml".into(), dir: false, where_: "on the server".into(), there: (24_576, Some(now - 3600 * 13)), copying: (26_624, Some(now - 600)), rest: 3, answer: tx });
+            *a = Some(Ask { name: "sentient.yml".into(), dir: false, where_: t!("on the server").into(), there: (24_576, Some(now - 3600 * 13)), copying: (26_624, Some(now - 600)), rest: 3, answer: tx });
         }
         t.asking = true;
         cx.notify();

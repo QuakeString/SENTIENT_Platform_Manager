@@ -46,7 +46,7 @@ pub fn build_profile() -> &'static str {
 /// The version lines About copies for a support request: version, build,
 /// and the system it runs on.
 pub fn version_info() -> String {
-    format!(
+    tf!(
         "SENTIENT Platform Manager {}\nCommit: {}\nBuilt: {} ({})\nSystem: {} {}",
         manager_version(),
         build_commit(),
@@ -324,7 +324,7 @@ fn sentient_offer(all: &[Release], channel: Channel, installed: &str, native: bo
     let candidates = releases::on_channel(all, channel, releases::is_sentient);
     if candidates.is_empty() {
         return match channel {
-            Channel::Nightly => Err("No nightly SENTIENT build is published.".into()),
+            Channel::Nightly => Err(n!("No nightly SENTIENT build is published.").into()),
             _ => Ok(None),
         };
     }
@@ -392,10 +392,10 @@ fn installer_for_this_system(name: &str) -> bool {
 
 /// The steps "Update and restart" shows.
 pub const SELF_UPDATE_STEPS: [&str; 4] =
-    ["Checking the download address", "Downloading", "Checking the file", "Replacing the program and reopening"];
+    [n!("Checking the download address"), n!("Downloading"), n!("Checking the file"), n!("Replacing the program and reopening")];
 
 fn mb(bytes: u64) -> String {
-    format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+    tf!("{:.1} MB", bytes as f64 / 1_000_000.0)
 }
 
 /// Download the Platform Manager `offer` and hand over to it: it replaces
@@ -406,18 +406,18 @@ fn mb(bytes: u64) -> String {
 pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
     #[cfg(not(windows))]
     if let Some(owner) = crate::self_install::owner() {
-        return Err(format!("This Platform Manager was installed with {tool}: update it with {tool} (the new package is on the release page).", tool = owner.tool()));
+        return Err(nf!("This Platform Manager was installed with {tool}: update it with {tool} (the new package is on the release page).", tool = owner.tool()));
     }
     let [address, downloading, checking, replacing] = SELF_UPDATE_STEPS;
     sink(Progress::Step { name: address.into() });
     let asset = offer
         .installer
         .clone()
-        .ok_or_else(|| format!("Platform Manager {} has no installer for this computer. Nothing was changed.", offer.version))?;
+        .ok_or_else(|| nf!("Platform Manager {} has no installer for this computer. Nothing was changed.", offer.version))?;
     let expected = offer
         .sha256
         .clone()
-        .ok_or_else(|| format!("Platform Manager {} has no published checksum, so its download cannot be checked. Nothing was changed.", offer.version))?;
+        .ok_or_else(|| nf!("Platform Manager {} has no published checksum, so its download cannot be checked. Nothing was changed.", offer.version))?;
     let dir = std::env::temp_dir().join(format!("sentient-manager-{}", offer.version));
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let file = dir.join(&asset.name);
@@ -425,14 +425,14 @@ pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
         .get(&asset.browser_download_url)
         .set("User-Agent", "SENTIENT-Platform-Manager")
         .call()
-        .map_err(|e| format!("The download of Platform Manager {} could not start ({e}). Nothing was changed.", offer.version))?;
+        .map_err(|e| nf!("The download of Platform Manager {} could not start ({e}). Nothing was changed.", offer.version))?;
     sink(Progress::Step { name: downloading.into() });
     let mut reader = response.into_reader();
     let mut out = std::fs::File::create(&file).map_err(|e| format!("create {}: {e}", file.display()))?;
     let mut copied: u64 = 0;
     let mut buf = vec![0u8; 256 * 1024];
     let incomplete = |copied: u64| {
-        format!(
+        tf!(
             "The download of Platform Manager {} is incomplete ({} of {}). Nothing was changed.",
             offer.version,
             mb(copied),
@@ -452,7 +452,7 @@ pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
         copied += n as u64;
         if asset.size > 0 {
             sink(Progress::Percent { value: copied as f32 / asset.size as f32 });
-            sink(Progress::Log { line: format!("Downloading {} of {}", mb(copied), mb(asset.size)) });
+            sink(Progress::Log { line: nf!("Downloading {} of {}", mb(copied), mb(asset.size)) });
         }
     }
     drop(out);
@@ -463,7 +463,7 @@ pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
     let actual = manifest::sha256_file(&file)?;
     if actual != expected {
         let _ = std::fs::remove_file(&file);
-        return Err(format!("The downloaded Platform Manager {} is damaged (its checksum does not match the published one). Nothing was changed.", offer.version));
+        return Err(nf!("The downloaded Platform Manager {} is damaged (its checksum does not match the published one). Nothing was changed.", offer.version));
     }
     // Its signature, by crate::signing's rule; refused before it is run.
     let refuse = |e: String| {
@@ -471,11 +471,11 @@ pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
         e
     };
     let signature = match &offer.signature {
-        Some(a) => signing::fetch_signature(&a.browser_download_url).map_err(|e| refuse(format!("The signature of Platform Manager {}: {e}. Nothing was changed.", offer.version)))?,
+        Some(a) => signing::fetch_signature(&a.browser_download_url).map_err(|e| refuse(nf!("The signature of Platform Manager {}: {e}. Nothing was changed.", offer.version)))?,
         None => None,
     };
     let data = std::fs::read(&file).map_err(|e| refuse(format!("read {}: {e}", file.display())))?;
-    let what = format!("Platform Manager {}", offer.version);
+    let what = tf!("Platform Manager {}", offer.version);
     let trust = signing::check(&what, &data, signature.as_deref(), offer.signing_started || signing_started(None, Product::Manager)).map_err(refuse)?;
     drop(data);
     if let Some(w) = trust.warning(&what) {
@@ -483,8 +483,8 @@ pub fn install_manager(offer: &Offer, sink: &ProgressFn) -> Result<(), String> {
     }
     // Windows: the installer's Authenticode signature too, before it runs.
     #[cfg(windows)]
-    if let Some(w) = crate::authenticode::check(&file).map_err(|e| refuse(format!("{what} is not used: {e}. Nothing was changed.")))? {
-        sink(Progress::Log { line: format!("{what}: {w} (allowed until releases are code-signed).") });
+    if let Some(w) = crate::authenticode::check(&file).map_err(|e| refuse(nf!("{what} is not used: {e}. Nothing was changed.")))? {
+        sink(Progress::Log { line: nf!("{what}: {w} (allowed until releases are code-signed).") });
     }
     #[cfg(unix)]
     {

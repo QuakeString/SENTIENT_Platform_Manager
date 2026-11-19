@@ -7,6 +7,7 @@
 
 fn main() {
     embed_agents();
+    bundle_locales();
     build_commit();
     build_date();
     println!("cargo:rerun-if-changed=assets/icon.ico");
@@ -98,4 +99,32 @@ fn civil_date(days: u64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
     format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// The translations (i18n/<code>.json), compressed into the program;
+/// crate::i18n reads one when the language is chosen. en.json is the list of
+/// texts, not a translation, and stays out.
+fn bundle_locales() {
+    use std::io::Write as _;
+    println!("cargo:rerun-if-changed=i18n");
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let mut code = String::from("pub static LOCALES: &[(&str, &[u8])] = &[\n");
+    if std::env::var_os("CARGO_FEATURE_GUI").is_some() {
+        let mut files: Vec<_> = std::fs::read_dir("i18n").map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+        files.sort();
+        for p in files {
+            let Some(name) = p.file_stem().and_then(|s| s.to_str()) else { continue };
+            if p.extension().is_none_or(|e| e != "json") || name == "en" {
+                continue;
+            }
+            let raw = std::fs::read(&p).unwrap();
+            let mut z = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
+            z.write_all(&raw).unwrap();
+            let packed = out.join(format!("i18n-{name}.deflate"));
+            std::fs::write(&packed, z.finish().unwrap()).unwrap();
+            code.push_str(&format!("    ({name:?}, include_bytes!({:?})),\n", packed.display().to_string()));
+        }
+    }
+    code.push_str("];\n");
+    std::fs::write(out.join("i18n_bundle.rs"), code).unwrap();
 }

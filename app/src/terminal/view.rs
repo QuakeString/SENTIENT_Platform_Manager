@@ -487,7 +487,7 @@ impl Render for TermView {
         }
         let screen = div().relative().flex_1().min_h_0().w_full().rounded(px(8.)).bg(bg).overflow_hidden();
         let Some(s) = self.session.clone() else {
-            let msg = self.error.clone().unwrap_or_else(|| "The terminal could not be started.".into());
+            let msg = self.error.clone().unwrap_or_else(|| t!("The terminal could not be started.").into());
             return screen.p(px(PAD)).text_color(hex(FG)).text_size(px(FONT_SIZE)).font_family(FONT_FAMILY).child(msg).into_any_element();
         };
         self.fit(&s);
@@ -525,7 +525,7 @@ impl Render for TermView {
         screen
             .id("term-screen")
             .track_focus(&self.focus)
-            .key_context("Terminal")
+            .key_context(t!("Terminal"))
             .cursor_text()
             .on_key_down(cx.listener(Self::key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
@@ -575,9 +575,9 @@ enum Ask {
 pub fn end_question(running: usize, one_tab: bool) -> Option<String> {
     match (running, one_tab) {
         (0, _) => None,
-        (_, true) => Some("End this terminal session?".into()),
-        (1, false) => Some("End 1 running terminal session?".into()),
-        (n, false) => Some(format!("End {n} running terminal sessions?")),
+        (_, true) => Some(t!("End this terminal session?").into()),
+        (1, false) => Some(t!("End 1 running terminal session?").into()),
+        (n, false) => Some(tf!("End {n} running terminal sessions?")),
     }
 }
 
@@ -698,12 +698,12 @@ impl Render for Deck {
             .tabs
             .iter()
             .enumerate()
-            .map(|(i, v)| format!("{} {}", v.read(cx).shell_name().unwrap_or_else(|| "Terminal".into()), i + 1))
+            .map(|(i, v)| format!("{} {}", v.read(cx).shell_name().unwrap_or_else(|| t!("Terminal").into()), i + 1))
             .collect();
         let active = self.active;
         let question = self.ask.and_then(|a| match a {
-            Ask::All => end_question(self.running(cx), false).map(|q| (q, "End sessions")),
-            Ask::Tab(_) => end_question(1, true).map(|q| (q, "End session")),
+            Ask::All => end_question(self.running(cx), false).map(|q| (q, t!("End sessions"))),
+            Ask::Tab(_) => end_question(1, true).map(|q| (q, t!("End session"))),
         });
         // Over the screen while asking: the question, Cancel, the action.
         let overlay = question.map(|(q, action)| {
@@ -732,7 +732,7 @@ impl Render for Deck {
                             h_flex()
                                 .gap(crate::ui::button_gap())
                                 .justify_end()
-                                .child(crate::ui::probed(crate::ui::button("term-ask-cancel").outline().label("Cancel").on_click(cx.listener(|d, _, w, cx| d.answer(false, w, cx)))))
+                                .child(crate::ui::probed(crate::ui::button("term-ask-cancel").outline().label(t!("Cancel")).on_click(cx.listener(|d, _, w, cx| d.answer(false, w, cx)))))
                                 .child(crate::ui::probed(crate::modal::danger_button(&theme, "term-ask-end", action.into(), cx.listener(|d, _, w, cx| d.answer(true, w, cx))))),
                         ),
                 )
@@ -763,7 +763,7 @@ impl Render for Deck {
                                 .ghost()
                                 .xsmall()
                                 .icon(IconName::Close)
-                                .tooltip("Close this terminal")
+                                .tooltip(t!("Close this terminal"))
                                 .on_click(cx.listener(move |d, _, w, cx| {
                                     cx.stop_propagation();
                                     d.ask_close_tab(i, w, cx);
@@ -800,16 +800,16 @@ impl Render for StatusBar {
             .items_center()
             .text_size(px(13.))
             .child(div().size(px(crate::ui::STATUS_DOT)).rounded_full().bg(rgb(if alive { crate::ui::STATUS_GREEN } else { crate::ui::STATUS_GREY })))
-            .child(div().text_color(theme.foreground).child(if alive { "Connected" } else { "Disconnected" }))
+            .child(div().text_color(theme.foreground).child(if alive { t!("Connected") } else { t!("Disconnected") }))
             .children(shell.map(|s| div().text_color(theme.muted_foreground).child(s)))
             .child(div().flex_1())
-            .child(div().text_color(theme.muted_foreground).whitespace_nowrap().child("Copy Ctrl+Shift+C, paste Ctrl+Shift+V"))
+            .child(div().text_color(theme.muted_foreground).whitespace_nowrap().child(t!("Copy Ctrl+Shift+C, paste Ctrl+Shift+V")))
             .child(crate::ui::probed(
                 crate::ui::button("term-new")
                     .ghost()
                     .small()
                     .icon(IconName::Plus)
-                    .tooltip("Open another terminal")
+                    .tooltip(t!("Open another terminal"))
                     .on_click(move |_, w, cx| {
                         deck.update(cx, |d, cx| d.add(w, cx));
                     }),
@@ -833,7 +833,7 @@ pub fn open(name: &str, target: Target, window: &mut Window, cx: &mut App) {
     if let Some(c) = shown.get(..1) {
         shown = format!("{}{}", c.to_uppercase(), &shown[1..]);
     }
-    crate::modal::open(crate::modal::Modal { title: format!("Terminal: {shown}").into(), body: deck.into(), width: 1100., icon: Some(Icon::new(Lucide::SquareTerminal)), on_close: Some(on_close) }, cx);
+    crate::modal::open(crate::modal::Modal { title: tf!("Terminal: {shown}").into(), body: deck.into(), width: 1100., icon: Some(Icon::new(Lucide::SquareTerminal)), on_close: Some(on_close) }, cx);
     crate::modal::set_footer(footer.into(), cx);
     crate::modal::set_list_body(cx);
     crate::modal::offer_full_screen(cx);

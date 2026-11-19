@@ -45,9 +45,9 @@ pub fn seal(text: &str, passphrase: &str) -> Result<Vec<u8>, String> {
     use std::io::Write as _;
     let enc = age::Encryptor::with_user_passphrase(age::secrecy::Secret::new(passphrase.to_owned()));
     let mut out = Vec::new();
-    let mut w = enc.wrap_output(&mut out).map_err(|e| format!("encrypt the secrets key: {e}"))?;
+    let mut w = enc.wrap_output(&mut out).map_err(|e| nf!("encrypt the secrets key: {e}"))?;
     w.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
-    w.finish().map_err(|e| format!("encrypt the secrets key: {e}"))?;
+    w.finish().map_err(|e| nf!("encrypt the secrets key: {e}"))?;
     Ok(out)
 }
 
@@ -60,16 +60,16 @@ fn is_sealed(bytes: &[u8]) -> bool {
 /// backups, unencrypted ones), the encrypted one opened with `passphrase`.
 pub fn open_key(bytes: &[u8], passphrase: Option<&str>) -> Result<String, String> {
     if !is_sealed(bytes) {
-        return String::from_utf8(bytes.to_vec()).map_err(|_| "the secrets key file is not text".to_string());
+        return String::from_utf8(bytes.to_vec()).map_err(|_| n!("the secrets key file is not text").to_string());
     }
-    let pw = passphrase.ok_or("the secrets key beside the backup is encrypted with the backup's passphrase; give the passphrase")?;
-    let d = match age::Decryptor::new(bytes).map_err(|e| format!("read the secrets key: {e}"))? {
+    let pw = passphrase.ok_or(n!("the secrets key beside the backup is encrypted with the backup's passphrase; give the passphrase"))?;
+    let d = match age::Decryptor::new(bytes).map_err(|e| nf!("read the secrets key: {e}"))? {
         age::Decryptor::Passphrase(d) => d,
-        _ => return Err("the secrets key file is not encrypted with a passphrase".into()),
+        _ => return Err(n!("the secrets key file is not encrypted with a passphrase").into()),
     };
-    let mut r = d.decrypt(&age::secrecy::Secret::new(pw.to_owned()), None).map_err(|_| "the backup's passphrase does not open its secrets key file".to_string())?;
+    let mut r = d.decrypt(&age::secrecy::Secret::new(pw.to_owned()), None).map_err(|_| n!("the backup's passphrase does not open its secrets key file").to_string())?;
     let mut text = String::new();
-    std::io::Read::read_to_string(&mut r, &mut text).map_err(|e| format!("read the secrets key: {e}"))?;
+    std::io::Read::read_to_string(&mut r, &mut text).map_err(|e| nf!("read the secrets key: {e}"))?;
     Ok(text)
 }
 
@@ -152,13 +152,13 @@ pub fn read(record: &InstallationRecord) -> Result<Option<String>, String> {
 
 fn write(record: &InstallationRecord, text: &str, sink: &ProgressFn) -> Result<(), String> {
     match location(record) {
-        Location::Environment => Err("SENTIENT's secrets key is set in its environment (SENTIENT_SECRETS_KEY)".into()),
+        Location::Environment => Err(n!("SENTIENT's secrets key is set in its environment (SENTIENT_SECRETS_KEY)").into()),
         Location::Container(path) => docker_ops::write_app_file(&record.stack, &path, text),
         Location::Linux(path) => write_linux(sink, &path, text),
         Location::File(path) => {
             let tmp = path.with_extension("key.spm-new");
             std::fs::write(&tmp, text).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-            std::fs::rename(&tmp, &path).map_err(|e| format!("replace {}: {e}", path.display()))
+            std::fs::rename(&tmp, &path).map_err(|e| nf!("replace {}: {e}", path.display()))
         }
     }
 }
@@ -176,12 +176,12 @@ fn write_linux(sink: &ProgressFn, path: &str, text: &str) -> Result<(), String> 
 // A native install elsewhere is Windows, whose key is a plain file.
 #[cfg(not(target_os = "linux"))]
 fn read_linux(path: &str) -> Result<Option<String>, String> {
-    Err(format!("{path}: not a Linux installation"))
+    Err(nf!("{path}: not a Linux installation"))
 }
 
 #[cfg(not(target_os = "linux"))]
 fn write_linux(_sink: &ProgressFn, path: &str, _text: &str) -> Result<(), String> {
-    Err(format!("{path}: not a Linux installation"))
+    Err(nf!("{path}: not a Linux installation"))
 }
 
 fn keys(text: &str) -> Vec<[u8; 32]> {
@@ -226,7 +226,7 @@ fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, String> {
         .enable_all()
         .build()
         .map(|rt| rt.block_on(future))
-        .map_err(|e| format!("start the runtime: {e}"))
+        .map_err(|e| nf!("start the runtime: {e}"))
 }
 
 /// The key check stored in a database; `None` if SENTIENT never stored one.
@@ -236,7 +236,7 @@ fn check_value(pg: &ConnConfig) -> Result<Option<String>, String> {
         let row = client
             .query_opt("SELECT json_value FROM admin_settings WHERE key = $1 LIMIT 1", &[&KEY_CHECK_SETTING])
             .await
-            .map_err(|e| format!("read the secrets key check of {}: {e}", pg.dbname))?;
+            .map_err(|e| nf!("read the secrets key check of {}: {e}", pg.dbname))?;
         Ok(row
             .and_then(|r| r.get::<_, Option<String>>(0))
             .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
@@ -258,21 +258,21 @@ pub fn save_beside(record: &InstallationRecord, backup: &Path, passphrase: Optio
             };
             let written = bytes.and_then(|b| write_private(&path, &b).map_err(|e| e.to_string()));
             match (written, passphrase.is_some()) {
-                (Ok(()), true) => log(format!(
+                (Ok(()), true) => log(nf!(
                     "SENTIENT's secrets key: {}, encrypted with the backup's passphrase. It opens the stored passwords in this backup; keep it with the backup.",
                     path.display()
                 )),
-                (Ok(()), false) => log(format!(
+                (Ok(()), false) => log(nf!(
                     "SENTIENT's secrets key: {}, not encrypted (the backup has no passphrase). It opens the stored passwords in this backup; keep it with the backup, and apart from it when the backup leaves this computer.",
                     path.display()
                 )),
-                (Err(e), _) => log(format!("SENTIENT's secrets key was not saved ({e}).")),
+                (Err(e), _) => log(nf!("SENTIENT's secrets key was not saved ({e}).")),
             }
         }
         // A SENTIENT older than its secrets store has no key; one with its key
         // in the environment keeps it there.
-        Ok(None) => log("No secrets key file to save: this SENTIENT has none (a version before its secrets store), or its key is set in its environment (SENTIENT_SECRETS_KEY), which you keep yourself.".into()),
-        Err(e) => log(format!("SENTIENT's secrets key was not saved ({e}).")),
+        Ok(None) => log(n!("No secrets key file to save: this SENTIENT has none (a version before its secrets store), or its key is set in its environment (SENTIENT_SECRETS_KEY), which you keep yourself.").into()),
+        Err(e) => log(nf!("SENTIENT's secrets key was not saved ({e}).")),
     }
 }
 
@@ -288,7 +288,7 @@ pub fn after_restore(live: &ConnConfig, target: &str, backup: &Path, key: Option
     let sealed = bytes.as_deref().is_some_and(is_sealed);
     let key_text = match bytes.as_deref().map(|b| open_key(b, passphrase)) {
         Some(Err(e)) => {
-            sink(Progress::Log { line: format!("{}: {e}. If the stored passwords do not open after the switch, use the key file the backup was made with.", key_path.display()) });
+            sink(Progress::Log { line: nf!("{}: {e}. If the stored passwords do not open after the switch, use the key file the backup was made with.", key_path.display()) });
             return Ok(());
         }
         Some(Ok(t)) => Some(t),
@@ -297,9 +297,9 @@ pub fn after_restore(live: &ConnConfig, target: &str, backup: &Path, key: Option
     if !key_text.as_deref().is_some_and(|k| opens(k, &check)) {
         sink(Progress::Log {
             line: if key_text.is_some() {
-                format!("{} does not open this backup's stored passwords; if they do not open after the switch, use the key file the backup was made with.", key_path.display())
+                nf!("{} does not open this backup's stored passwords; if they do not open after the switch, use the key file the backup was made with.", key_path.display())
             } else {
-                format!("No secrets key beside the backup ({}). If the backup comes from another installation, its stored passwords (mail, SMS, integrations…) open only with its key file.", key_path.display())
+                nf!("No secrets key beside the backup ({}). If the backup comes from another installation, its stored passwords (mail, SMS, integrations…) open only with its key file.", key_path.display())
             },
         });
         return Ok(());
@@ -333,7 +333,7 @@ pub fn after_restore(live: &ConnConfig, target: &str, backup: &Path, key: Option
             .map_err(|e| e.to_string())
     })??;
     sink(Progress::Log {
-        line: format!("The backup's secrets key ({}) goes with it when it is put into service.", path.display()),
+        line: nf!("The backup's secrets key ({}) goes with it when it is put into service.", path.display()),
     });
     Ok(())
 }

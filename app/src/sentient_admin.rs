@@ -19,7 +19,7 @@ use serde::Deserialize;
 use crate::installation::{Engine, InstallationRecord};
 
 /// What the command says when the installed SENTIENT does not have it.
-pub const MISSING: &str = "This SENTIENT version has no administration command (sentient-admin comes with SENTIENT 4.4.0.3). Update SENTIENT first.";
+pub const MISSING: &str = n!("This SENTIENT version has no administration command (sentient-admin comes with SENTIENT 4.4.0.3). Update SENTIENT first.");
 
 /// A system administrator account, as `list-admins --json` reports it.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -88,7 +88,7 @@ pub fn run(record: &InstallationRecord, args: &[String], input: Option<&str>) ->
         }
     };
     cmd.args(args).stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| format!("start sentient-admin: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| nf!("start sentient-admin: {e}"))?;
     if let (Some(text), Some(mut stdin)) = (input, child.stdin.take()) {
         let _ = writeln!(stdin, "{text}");
     }
@@ -112,7 +112,7 @@ fn args(list: &[&str]) -> Vec<String> {
 
 pub fn admins(record: &InstallationRecord) -> Result<Vec<Admin>, String> {
     let out = run(record, &args(&["list-admins", "--json"]), None)?;
-    serde_json::from_str(out.lines().last().unwrap_or("[]")).map_err(|e| format!("unexpected answer from sentient-admin: {e}"))
+    serde_json::from_str(out.lines().last().unwrap_or("[]")).map_err(|e| nf!("unexpected answer from sentient-admin: {e}"))
 }
 
 pub fn reset_password(record: &InstallationRecord, email: &str, password: &str) -> Result<String, String> {
@@ -129,7 +129,7 @@ pub fn sign_out_all(record: &InstallationRecord) -> Result<String, String> {
 
 pub fn retention(record: &InstallationRecord) -> Result<Retention, String> {
     let out = run(record, &args(&["retention", "show", "--json"]), None)?;
-    serde_json::from_str(out.lines().last().unwrap_or("{}")).map_err(|e| format!("unexpected answer from sentient-admin: {e}"))
+    serde_json::from_str(out.lines().last().unwrap_or("{}")).map_err(|e| nf!("unexpected answer from sentient-admin: {e}"))
 }
 
 pub fn set_retention(record: &InstallationRecord, r: Retention) -> Result<String, String> {

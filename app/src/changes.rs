@@ -33,32 +33,32 @@ pub fn all() -> Vec<Change> {
     vec![
         Change {
             id: "clickhouse-clean-stop",
-            text: "ClickHouse is stopped cleanly before Windows shuts down.",
-            step: "Setting up the clean ClickHouse stop",
+            text: t!("ClickHouse is stopped cleanly before Windows shuts down."),
+            step: t!("Setting up the clean ClickHouse stop"),
             restarts: true,
             applies: clickhouse_on_windows,
             run: clickhouse_clean_stop,
         },
         Change {
             id: "start-without-delay",
-            text: "SENTIENT starts without the 2-minute Windows delay.",
-            step: "Registering the services to start without delay",
+            text: t!("SENTIENT starts without the 2-minute Windows delay."),
+            step: t!("Registering the services to start without delay"),
             restarts: false,
             applies: native_windows,
             run: start_without_delay,
         },
         Change {
             id: "windows-firewall",
-            text: "Other computers can reach SENTIENT: its ports are opened in Windows Firewall.",
-            step: "Opening SENTIENT's ports in Windows Firewall",
+            text: t!("Other computers can reach SENTIENT: its ports are opened in Windows Firewall."),
+            step: t!("Opening SENTIENT's ports in Windows Firewall"),
             restarts: false,
             applies: native_windows,
             run: open_firewall,
         },
         Change {
             id: "docker-address-pools",
-            text: "SENTIENT stays reachable after Windows restarts: Docker's networks move out of WSL 2's address range.",
-            step: "Moving Docker's networks out of WSL 2's range",
+            text: t!("SENTIENT stays reachable after Windows restarts: Docker's networks move out of WSL 2's address range."),
+            step: t!("Moving Docker's networks out of WSL 2's range"),
             restarts: true,
             applies: docker_own_distro_windows,
             run: pin_address_pools,
@@ -95,15 +95,15 @@ pub fn planned_steps(changes: &[Change]) -> Vec<String> {
     steps
 }
 
-pub const STOP: &str = "Stopping SENTIENT";
-pub const START: &str = "Starting SENTIENT";
+pub const STOP: &str = n!("Stopping SENTIENT");
+pub const START: &str = n!("Starting SENTIENT");
 
 /// "SENTIENT restarts once (about 1 minute). Data and settings are kept."
 pub fn effect(changes: &[Change]) -> &'static str {
     if changes.iter().any(|c| c.restarts) {
-        "SENTIENT restarts once (about 1 minute). Data and settings are kept."
+        t!("SENTIENT restarts once (about 1 minute). Data and settings are kept.")
     } else {
-        "SENTIENT keeps running. Data and settings are kept."
+        t!("SENTIENT keeps running. Data and settings are kept.")
     }
 }
 
@@ -119,7 +119,7 @@ pub fn apply(mut record: InstallationRecord, sink: &ProgressFn) -> Result<Instal
     if restarts {
         sink(Progress::Step { name: STOP.into() });
         if let Err(e) = record.platform().control(sink.clone(), "stop") {
-            sink(Progress::Log { line: format!("note: {e}") });
+            sink(Progress::Log { line: nf!("note: {e}") });
         }
     }
     let mut failed: Option<String> = None;
@@ -129,7 +129,7 @@ pub fn apply(mut record: InstallationRecord, sink: &ProgressFn) -> Result<Instal
             Ok(()) => record.changes_done.push(change.id.to_string()),
             Err(e) => {
                 sink(Progress::Log { line: format!("{}: {e}", change.step) });
-                failed.get_or_insert(format!("{} could not be done: {e}", change.text.trim_end_matches('.')));
+                failed.get_or_insert(tf!("{} could not be done: {e}", change.text.trim_end_matches('.')));
             }
         }
     }
@@ -139,7 +139,7 @@ pub fn apply(mut record: InstallationRecord, sink: &ProgressFn) -> Result<Instal
     }
     save(&record)?;
     match failed {
-        Some(e) => Err(format!("{e}. SENTIENT is running as before.")),
+        Some(e) => Err(nf!("{e}. SENTIENT is running as before.")),
         None => Ok(record),
     }
 }
@@ -178,11 +178,11 @@ fn clickhouse_on_windows(_: &InstallationRecord) -> bool {
 pub fn clickhouse_clean_stop(record: &InstallationRecord, sink: &ProgressFn) -> Result<(), String> {
     use sentient_installer_core::clickhouse_wsl;
     let password = crate::secrets::get(crate::secrets::Secret::ClickhouseAccount)
-        .ok_or_else(|| "the ClickHouse account's password is not in the secret store".to_string())?;
+        .ok_or_else(|| n!("the ClickHouse account's password is not in the secret store").to_string())?;
     // The work runs as the account with this version of the program.
     let manager = crate::self_install::install_manager()?;
     if let Err(e) = clickhouse_wsl::run_as_account(sink, &password, &manager, "harden", Some(std::time::Duration::from_secs(240))) {
-        sink(Progress::Log { line: format!("note: {e}") });
+        sink(Progress::Log { line: nf!("note: {e}") });
     }
     clickhouse_wsl::register_keepalive(&password)?;
     clickhouse_wsl::install_guard(&manager, record.stack.ch_http_port)?;
@@ -207,9 +207,9 @@ pub fn open_firewall(record: &InstallationRecord, sink: &ProgressFn) -> Result<(
         let added = sentient_installer_core::native::ensure_firewall(&record.native_config())?;
         sink(Progress::Log {
             line: if added {
-                "SENTIENT's ports were opened in Windows Firewall (rule group SENTIENT).".into()
+                n!("SENTIENT's ports were opened in Windows Firewall (rule group SENTIENT).").into()
             } else {
-                "SENTIENT's Windows Firewall rules are in place.".into()
+                n!("SENTIENT's Windows Firewall rules are in place.").into()
             },
         });
     }

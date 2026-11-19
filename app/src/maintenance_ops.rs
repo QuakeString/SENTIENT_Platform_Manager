@@ -39,11 +39,11 @@ pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result
             // This version of the program does the work as the account, so
             // it is put in place first (repair restores it anyway).
             let _ = self_install::install_manager();
-            step(&sink, "Making ClickHouse safe against unclean stops");
+            step(&sink, n!("Making ClickHouse safe against unclean stops"));
             if let Err(e) = clickhouse_wsl::run_as_account(&sink, &password, &self_install::manager_exe(), "harden", Some(std::time::Duration::from_secs(240))) {
-                sink(Progress::Log { line: format!("note: {e}") });
+                sink(Progress::Log { line: nf!("note: {e}") });
             }
-            step(&sink, "Stopping ClickHouse cleanly when Windows shuts down");
+            step(&sink, n!("Stopping ClickHouse cleanly when Windows shuts down"));
             match clickhouse_wsl::register_keepalive(&password)
                 .and_then(|()| clickhouse_wsl::install_guard(&self_install::manager_exe(), record.stack.ch_http_port))
             {
@@ -53,7 +53,7 @@ pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result
                     let _ = std::process::Command::new("schtasks.exe").args(["/end", "/tn", clickhouse_wsl::KEEPALIVE_TASK]).output();
                     let _ = std::process::Command::new("schtasks.exe").args(["/run", "/tn", clickhouse_wsl::KEEPALIVE_TASK]).output();
                 }
-                Err(e) => sink(Progress::Log { line: format!("note: the ClickHouse shutdown service was not set up: {e}") }),
+                Err(e) => sink(Progress::Log { line: nf!("note: the ClickHouse shutdown service was not set up: {e}") }),
             }
         }
     }
@@ -74,7 +74,7 @@ pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result
                 // comes up again on a new network just below).
                 #[cfg(windows)]
                 if let Err(e) = distro::pin_address_pools(&sink, &cfg) {
-                    sink(Progress::Log { line: format!("note: {e}") });
+                    sink(Progress::Log { line: nf!("note: {e}") });
                 }
                 distro::docker_ops::reconfigure(&sink, &cfg)?
             }
@@ -93,22 +93,22 @@ pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result
     // Other computers reach SENTIENT: its Windows Firewall rules, added
     // when one is missing (installs from before them, or removed by hand).
     if let Err(e) = crate::changes::open_firewall(&record, &sink) {
-        sink(Progress::Log { line: format!("note: SENTIENT's ports were not opened in Windows Firewall: {e}") });
+        sink(Progress::Log { line: nf!("note: SENTIENT's ports were not opened in Windows Firewall: {e}") });
     }
     if let Some(mut saved) = InstallationRecord::load() {
         saved.changes_done = crate::changes::all_ids();
         let _ = save_record(&saved);
     }
-    step(&sink, "Restoring the Platform Manager");
+    step(&sink, n!("Restoring the Platform Manager"));
     let message = match self_install::install_manager() {
         Ok(manager) => {
             self_install::restore_menu_entry(&manager);
             self_install::refresh_operator_screen(&sink);
-            "Repaired: SENTIENT is running.".to_string()
+            n!("Repaired: SENTIENT is running.").to_string()
         }
         Err(e) => {
-            sink(Progress::Log { line: format!("The Platform Manager's files were not restored: {e}") });
-            "SENTIENT is running again; the Platform Manager's own files were not restored (see the log). Run Repair again to restore them.".to_string()
+            sink(Progress::Log { line: nf!("The Platform Manager's files were not restored: {e}") });
+            n!("SENTIENT is running again; the Platform Manager's own files were not restored (see the log). Run Repair again to restore them.").to_string()
         }
     };
     sink(Progress::Done { message });
@@ -143,7 +143,7 @@ pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: P
     }
     // The Platform Manager stays (removing it is its own action): only
     // SENTIENT's shortcuts go.
-    step(&sink, "Removing SENTIENT's shortcuts");
+    step(&sink, n!("Removing SENTIENT's shortcuts"));
     self_install::remove_sentient_shortcuts();
     // The kiosk shortcuts (shared and, from earlier managers, per account),
     // and what opening SENTIENT left in each account.
@@ -175,16 +175,16 @@ pub(crate) fn run_uninstall(record: InstallationRecord, keep_data: bool, sink: P
 /// What an uninstall says when it is done. The Platform Manager stays.
 pub(crate) fn uninstall_done(keep_data: bool) -> &'static str {
     if keep_data {
-        "SENTIENT is removed. The database was kept and can be reused by a new install. The Platform Manager stays."
+        n!("SENTIENT is removed. The database was kept and can be reused by a new install. The Platform Manager stays.")
     } else {
-        "SENTIENT and its data are removed. The Platform Manager stays."
+        n!("SENTIENT and its data are removed. The Platform Manager stays.")
     }
 }
 
 /// Remove a Platform Manager installed without SENTIENT: shortcuts, its Apps
 /// & features entry and the program itself (once this process exits).
 pub(crate) fn run_remove_manager(sink: ProgressFn) -> Result<(), String> {
-    step(&sink, "Removing the Platform Manager");
+    step(&sink, n!("Removing the Platform Manager"));
     self_install::remove_shortcuts();
     // Its menu entry, icons and tray autostart.
     crate::shortcuts::remove(crate::shortcuts::Owner::Manager, &[], &sink);
@@ -196,7 +196,7 @@ pub(crate) fn run_remove_manager(sink: ProgressFn) -> Result<(), String> {
     }
     self_install::remove_manager_entry();
     self_install::remove_manager_later();
-    sink(Progress::Done { message: "The Platform Manager is removed.".into() });
+    sink(Progress::Done { message: n!("The Platform Manager is removed.").into() });
     Ok(())
 }
 
@@ -217,13 +217,13 @@ pub(crate) fn nested(sink: &ProgressFn) -> ProgressFn {
     })
 }
 
-pub(crate) const CLOSE_MANAGER: &str = "Closing the open Platform Manager";
-pub(crate) const REPLACE_MANAGER: &str = "Replacing the program";
-pub(crate) const INSTALL_MANAGER: &str = "Installing the Platform Manager";
-pub(crate) const SHORTCUTS: &str = "Adding the Start menu and desktop shortcuts";
+pub(crate) const CLOSE_MANAGER: &str = n!("Closing the open Platform Manager");
+pub(crate) const REPLACE_MANAGER: &str = n!("Replacing the program");
+pub(crate) const INSTALL_MANAGER: &str = n!("Installing the Platform Manager");
+pub(crate) const SHORTCUTS: &str = n!("Adding the Start menu and desktop shortcuts");
 
 pub(crate) fn updating_sentient(version: &str) -> String {
-    format!("Updating SENTIENT to {version}")
+    nf!("Updating SENTIENT to {version}")
 }
 
 

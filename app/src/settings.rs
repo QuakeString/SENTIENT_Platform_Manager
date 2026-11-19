@@ -25,11 +25,11 @@ const LICENSE_SERVER_URL: &str = "LICENSE_SERVER_URL";
 /// SENTIENT's own ports, set on the installation itself (not environment):
 /// `port:http` and the rest.
 pub const PORTS: [(&str, &str); 5] = [
-    ("port:http", "Web (HTTP)"),
+    ("port:http", n!("Web (HTTP)")),
     ("port:mqtt", "MQTT"),
-    ("port:mqtts", "MQTT over TLS"),
+    ("port:mqtts", n!("MQTT over TLS")),
     ("port:coap", "CoAP"),
-    ("port:coaps", "CoAP over DTLS"),
+    ("port:coaps", n!("CoAP over DTLS")),
 ];
 
 fn port_of(stack: &DeployConfig, key: &str) -> u16 {
@@ -154,7 +154,7 @@ pub fn check(values: &HashMap<String, String>) -> Vec<String> {
     for (key, label) in PORTS {
         if let Some(v) = values.get(key).map(|v| v.trim()).filter(|v| !v.is_empty()) {
             if !v.parse::<u16>().is_ok_and(|p| p > 0) {
-                problems.push(format!("{label} port: a port number from 1 to 65535"));
+                problems.push(tf!("{label} port: a port number from 1 to 65535"));
             }
         }
     }
@@ -162,7 +162,7 @@ pub fn check(values: &HashMap<String, String>) -> Vec<String> {
     for (key, label) in PORTS {
         if let Some(v) = values.get(key).map(|v| v.trim()).filter(|v| !v.is_empty()) {
             if used.contains(&v) {
-                problems.push(format!("{label} port: {v} is already used by another of SENTIENT's ports"));
+                problems.push(nf!("{label} port: {v} is already used by another of SENTIENT's ports"));
             }
             used.push(v);
         }
@@ -173,14 +173,14 @@ pub fn check(values: &HashMap<String, String>) -> Vec<String> {
         let is_port = setting.env.ends_with("_PORT");
         if is_port {
             if !value.parse::<u16>().is_ok_and(|p| p > 0) {
-                problems.push(format!("{}: a port number from 1 to 65535", setting.label));
+                problems.push(tf!("{}: a port number from 1 to 65535", setting.label));
             }
         } else if !default.is_empty() && default.chars().all(|c| c.is_ascii_digit()) {
             if value.parse::<u64>().is_err() {
-                problems.push(format!("{}: a whole number", setting.label));
+                problems.push(tf!("{}: a whole number", setting.label));
             }
         } else if matches!(default, "true" | "false") && !matches!(value, "true" | "false") {
-            problems.push(format!("{}: true or false", setting.label));
+            problems.push(tf!("{}: true or false", setting.label));
         }
     }
     problems
@@ -191,9 +191,9 @@ pub fn restarts(old: &DeployConfig, new: &DeployConfig) -> Option<&'static str> 
     if old == new {
         None
     } else if old.pg != new.pg {
-        Some("PostgreSQL and SENTIENT restart")
+        Some(t!("PostgreSQL and SENTIENT restart"))
     } else {
-        Some("SENTIENT restarts")
+        Some(t!("SENTIENT restarts"))
     }
 }
 
@@ -228,7 +228,7 @@ pub fn apply_with(record: InstallationRecord, values: &HashMap<String, String>, 
     }
     let problems = check(values);
     if !problems.is_empty() {
-        return Err(format!("Some values are not valid:\n{}", problems.join("\n")));
+        return Err(nf!("Some values are not valid:\n{}", problems.join("\n")));
     }
     let old = record.clone();
     let mut new = record;
@@ -237,7 +237,7 @@ pub fn apply_with(record: InstallationRecord, values: &HashMap<String, String>, 
         new.stack = with_custom(&new.stack, vars);
     }
     if new.stack == old.stack {
-        sink(Progress::Done { message: "Nothing changed.".into() });
+        sink(Progress::Done { message: n!("Nothing changed.").into() });
         return Ok(new);
     }
     // The record holds no passwords: validate with them filled in.
@@ -247,16 +247,16 @@ pub fn apply_with(record: InstallationRecord, values: &HashMap<String, String>, 
     let pg_changed = old.stack.pg != new.stack.pg;
 
     let failure = match reconfigure(&new, pg_changed, &sink) {
-        Err(e) => Some(format!("The new settings could not be applied ({e})")),
+        Err(e) => Some(tf!("The new settings could not be applied ({e})")),
         Ok(()) => {
-            sink(Progress::Step { name: "Waiting for SENTIENT to answer".into() });
-            (!answers(new.stack.http_port)).then(|| "SENTIENT did not start with the new settings".to_string())
+            sink(Progress::Step { name: n!("Waiting for SENTIENT to answer").into() });
+            (!answers(new.stack.http_port)).then(|| t!("SENTIENT did not start with the new settings").to_string())
         }
     };
     if let Some(why) = failure {
-        sink(Progress::Log { line: format!("{why}; putting the previous ones back") });
+        sink(Progress::Log { line: nf!("{why}; putting the previous ones back") });
         reconfigure(&old, pg_changed, &sink)?;
-        let back = if answers(old.stack.http_port) { "it runs with the previous settings again" } else { "the previous settings are back, but SENTIENT is not answering yet; check Status and Logs" };
+        let back = if answers(old.stack.http_port) { t!("it runs with the previous settings again") } else { t!("the previous settings are back, but SENTIENT is not answering yet; check Status and Logs") };
         return Err(format!("{why}; {back}."));
     }
     let json = serde_json::to_string_pretty(&new).map_err(|e| e.to_string())?;
@@ -264,7 +264,7 @@ pub fn apply_with(record: InstallationRecord, values: &HashMap<String, String>, 
     if old.stack.http_port != new.stack.http_port {
         crate::self_install::refresh_web_shortcuts(&new.url());
     }
-    sink(Progress::Done { message: "The new settings are in effect.".into() });
+    sink(Progress::Done { message: n!("The new settings are in effect.").into() });
     Ok(new)
 }
 

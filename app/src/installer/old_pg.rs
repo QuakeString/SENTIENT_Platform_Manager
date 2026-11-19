@@ -66,7 +66,7 @@ impl Installer {
                         page.old_pg_choice = OldPgChoice::Ask;
                     }
                     Some(f) => page.old_pg = Some(f),
-                    None => page.problem = Some("Could not read the PostgreSQL data folder (the password prompt was closed?).".into()),
+                    None => page.problem = Some(t!("Could not read the PostgreSQL data folder (the password prompt was closed?).").into()),
                 }
                 cx.notify();
             })
@@ -79,22 +79,22 @@ impl Installer {
     pub(super) fn old_pg_panel(&mut self, cx: &mut Context<Self>) -> Option<Div> {
         let found = self.old_pg.clone()?;
         let theme = cx.theme().clone();
-        let want = found.want.map(|w| format!("PostgreSQL {w}")).unwrap_or_else(|| "the new version".into());
+        let want = found.want.map(|w| tf!("PostgreSQL {w}")).unwrap_or_else(|| t!("the new version").into());
         let title = match found.have {
-            Some(h) => format!("PostgreSQL {h} data is on this computer"),
-            None => "PostgreSQL data is already on this computer".into(),
+            Some(h) => tf!("PostgreSQL {h} data is on this computer"),
+            None => t!("PostgreSQL data is already on this computer").into(),
         };
         let dir = found.dir.display().to_string();
         let aside = match found.family {
-            old_pg::Family::Debian => "renamed aside as an old cluster, stopped".to_string(),
-            _ => format!("moved to {dir}.old-<date>"),
+            old_pg::Family::Debian => t!("renamed aside as an old cluster, stopped").to_string(),
+            _ => tf!("moved to {dir}.old-<date>"),
         };
         let kept = match found.family {
-            old_pg::Family::Arch => " The old folder is kept as /var/lib/postgres/olddata.",
-            old_pg::Family::Rhel => " The old folder is kept as /var/lib/pgsql/data-old.",
-            old_pg::Family::Debian => " The old cluster is kept, stopped.",
+            old_pg::Family::Arch => t!(" The old folder is kept as /var/lib/postgres/olddata."),
+            old_pg::Family::Rhel => t!(" The old folder is kept as /var/lib/pgsql/data-old."),
+            old_pg::Family::Debian => t!(" The old cluster is kept, stopped."),
         };
-        let help = format!(
+        let help = tf!(
             "{want} cannot open data made by an older major version, so PostgreSQL would stop at start.\n\
              Upgrade: the databases are copied into {want} (pg_upgrade); nothing is lost.{kept}\n\
              Keep it aside: the folder is {aside}, and SENTIENT starts with an empty database. Nothing is deleted."
@@ -116,23 +116,23 @@ impl Installer {
                         .child(ui::info("old-pg-help".into(), help.into())),
                 )
                 .child(div().text_sm().text_color(theme.muted_foreground).child(match found.have {
-                    Some(_) => format!("In {dir}. {want} will be installed. Choose what Setup does with it:"),
-                    None => format!("In {dir}. If it is from an older version than {want}, Setup does this with it:"),
+                    Some(_) => tf!("In {dir}. {want} will be installed. Choose what Setup does with it:"),
+                    None => tf!("In {dir}. If it is from an older version than {want}, Setup does this with it:"),
                 }))
                 .child(
                     h_flex()
                         .gap_3()
                         .items_stretch()
                         .when(ui::narrow(), |r| r.flex_col())
-                        .child(card("old-pg-upgrade", OldPgChoice::Upgrade, format!("Upgrade it to {want}"), "Keeps every database. Recommended.".into()))
-                        .child(card("old-pg-aside", OldPgChoice::KeepAside, "Keep it aside and start fresh".into(), "Moves the folder away; nothing is deleted.".into())),
+                        .child(card("old-pg-upgrade", OldPgChoice::Upgrade, tf!("Upgrade it to {want}"), t!("Keeps every database. Recommended.").into()))
+                        .child(card("old-pg-aside", OldPgChoice::KeepAside, t!("Keep it aside and start fresh").into(), t!("Moves the folder away; nothing is deleted.").into())),
                 )
                 .when(found.have.is_none(), |p| {
                     p.child(
                         h_flex().child(
                             ui::button("old-pg-look")
                                 .outline()
-                                .label(if self.old_pg_probing { "Looking" } else { "Look inside (asks for the password)" })
+                                .label(if self.old_pg_probing { t!("Looking") } else { t!("Look inside (asks for the password)") })
                                 .disabled(self.old_pg_probing)
                                 .on_click(cx.listener(|this, _, _, cx| this.look_inside_old_pg(cx))),
                         ),

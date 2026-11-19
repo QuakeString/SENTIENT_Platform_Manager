@@ -122,7 +122,7 @@ pub fn tier_label(t: Option<&str>) -> String {
     let mut c = t.chars();
     match c.next() {
         Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(),
-        None => "Licence".into(),
+        None => t!("Licence").into(),
     }
 }
 
@@ -153,7 +153,7 @@ pub fn valid_through(date: Option<&str>, tier: Option<&str>) -> String {
 
 /// "30 Jun 2027".
 pub fn day_label(date: Option<&str>) -> Option<String> {
-    date.and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok()).map(|d| d.format("%-d %b %Y").to_string())
+    date.and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok()).map(|d| crate::i18n::date(&d, "%-d %b %Y"))
 }
 
 /// A number with thousands separators.
@@ -171,97 +171,108 @@ pub fn grouped(n: i64) -> String {
 
 /// The page's limits: label, the limit's key, the usage's key.
 pub const MAIN_LIMITS: [(&str, &str, &str); 5] = [
-    ("Devices", "maxDevices", "devices"),
-    ("Users", "maxUsers", "users"),
-    ("Dashboards", "maxDashboards", "dashboards"),
-    ("Telemetry keys", "maxTelemetryKeys", "telemetryKeys"),
-    ("Rule chains", "maxRuleChains", "ruleChains"),
+    (n!("Devices"), "maxDevices", "devices"),
+    (n!("Users"), "maxUsers", "users"),
+    (n!("Dashboards"), "maxDashboards", "dashboards"),
+    (n!("Telemetry keys"), "maxTelemetryKeys", "telemetryKeys"),
+    (n!("Rule chains"), "maxRuleChains", "ruleChains"),
 ];
 
 /// Every limit SENTIENT has, in its Licence page's words and order.
 pub const ALL_LIMITS: &[(&str, &str, Option<&str>)] = &[
-    ("Tenants", "maxTenants", Some("tenants")),
-    ("Users", "maxUsers", Some("users")),
-    ("Devices", "maxDevices", Some("devices")),
-    ("Assets", "maxAssets", Some("assets")),
-    ("Customers", "maxCustomers", Some("customers")),
-    ("Edges", "maxEdges", Some("edges")),
-    ("Dashboards", "maxDashboards", Some("dashboards")),
-    ("Report templates", "maxReportTemplates", Some("reportTemplates")),
-    ("Report schedules", "maxReportSchedules", Some("reportSchedules")),
-    ("Rule chains", "maxRuleChains", Some("ruleChains")),
-    ("Integrations", "maxIntegrations", Some("integrations")),
-    ("Telemetry keys", "maxTelemetryKeys", Some("telemetryKeys")),
-    ("Attribute keys", "maxAttributeKeys", Some("attributeKeys")),
-    ("Calculated fields", "maxCalculatedFields", None),
-    ("Transport messages a month", "transportMsgLimit", None),
-    ("Transport data points a month", "transportDataPointsLimit", None),
-    ("Stored data points a month", "storageDataPointsLimit", None),
-    ("Rule engine runs a month", "ruleEngineExecutionLimit", None),
-    ("JavaScript runs a month", "jsExecutionLimit", None),
-    ("TBEL runs a month", "tbelExecutionLimit", None),
-    ("Emails a month", "emailLimit", None),
-    ("SMS a month", "smsLimit", None),
-    ("Alarms created a month", "createdAlarmsLimit", None),
-    ("Data point storage days", "maxDpStorageDays", None),
-    ("WebSocket sessions per tenant", "maxWsSessionsPerTenant", None),
-    ("WebSocket sessions per customer", "maxWsSessionsPerCustomer", None),
-    ("WebSocket sessions per user", "maxWsSessionsPerRegularUser", None),
-    ("WebSocket sessions per public user", "maxWsSessionsPerPublicUser", None),
-    ("WebSocket subscriptions per tenant", "maxWsSubscriptionsPerTenant", None),
-    ("WebSocket subscriptions per customer", "maxWsSubscriptionsPerCustomer", None),
-    ("WebSocket subscriptions per user", "maxWsSubscriptionsPerRegularUser", None),
-    ("WebSocket subscriptions per public user", "maxWsSubscriptionsPerPublicUser", None),
-    ("WebSocket queue per session", "wsMsgQueueLimitPerSession", None),
-    ("Telemetry kept (days)", "defaultStorageTtlDays", None),
-    ("Alarms kept (days)", "alarmsTtlDays", None),
-    ("RPC kept (days)", "rpcTtlDays", None),
-    ("Queue statistics kept (days)", "queueStatsTtlDays", None),
-    ("Rule engine errors kept (days)", "ruleEngineExceptionsTtlDays", None),
-    ("Resources", "maxResourcesInBytes", None),
-    ("OTA packages", "maxOtaPackagesInBytes", None),
-    ("Largest resource", "maxResourceSize", None),
-    ("Transport", "transportEnabled", None),
-    ("Database storage", "dbStorageEnabled", None),
-    ("Rule engine", "ruleEngineEnabled", None),
+    (n!("Tenants"), "maxTenants", Some("tenants")),
+    (n!("Users"), "maxUsers", Some("users")),
+    (n!("Devices"), "maxDevices", Some("devices")),
+    (n!("Assets"), "maxAssets", Some("assets")),
+    (n!("Customers"), "maxCustomers", Some("customers")),
+    (n!("Edges"), "maxEdges", Some("edges")),
+    (n!("Dashboards"), "maxDashboards", Some("dashboards")),
+    (n!("Report templates"), "maxReportTemplates", Some("reportTemplates")),
+    (n!("Report schedules"), "maxReportSchedules", Some("reportSchedules")),
+    (n!("Rule chains"), "maxRuleChains", Some("ruleChains")),
+    (n!("Integrations"), "maxIntegrations", Some("integrations")),
+    (n!("Telemetry keys"), "maxTelemetryKeys", Some("telemetryKeys")),
+    (n!("Attribute keys"), "maxAttributeKeys", Some("attributeKeys")),
+    (n!("Calculated fields"), "maxCalculatedFields", None),
+    (n!("Transport messages a month"), "transportMsgLimit", None),
+    (n!("Transport data points a month"), "transportDataPointsLimit", None),
+    (n!("Stored data points a month"), "storageDataPointsLimit", None),
+    (n!("Rule engine runs a month"), "ruleEngineExecutionLimit", None),
+    (n!("JavaScript runs a month"), "jsExecutionLimit", None),
+    (n!("TBEL runs a month"), "tbelExecutionLimit", None),
+    (n!("Emails a month"), "emailLimit", None),
+    (n!("SMS a month"), "smsLimit", None),
+    (n!("Alarms created a month"), "createdAlarmsLimit", None),
+    (n!("Data point storage days"), "maxDpStorageDays", None),
+    (n!("WebSocket sessions per tenant"), "maxWsSessionsPerTenant", None),
+    (n!("WebSocket sessions per customer"), "maxWsSessionsPerCustomer", None),
+    (n!("WebSocket sessions per user"), "maxWsSessionsPerRegularUser", None),
+    (n!("WebSocket sessions per public user"), "maxWsSessionsPerPublicUser", None),
+    (n!("WebSocket subscriptions per tenant"), "maxWsSubscriptionsPerTenant", None),
+    (n!("WebSocket subscriptions per customer"), "maxWsSubscriptionsPerCustomer", None),
+    (n!("WebSocket subscriptions per user"), "maxWsSubscriptionsPerRegularUser", None),
+    (n!("WebSocket subscriptions per public user"), "maxWsSubscriptionsPerPublicUser", None),
+    (n!("WebSocket queue per session"), "wsMsgQueueLimitPerSession", None),
+    (n!("Telemetry kept (days)"), "defaultStorageTtlDays", None),
+    (n!("Alarms kept (days)"), "alarmsTtlDays", None),
+    (n!("RPC kept (days)"), "rpcTtlDays", None),
+    (n!("Queue statistics kept (days)"), "queueStatsTtlDays", None),
+    (n!("Rule engine errors kept (days)"), "ruleEngineExceptionsTtlDays", None),
+    (n!("Resources"), "maxResourcesInBytes", None),
+    (n!("OTA packages"), "maxOtaPackagesInBytes", None),
+    (n!("Largest resource"), "maxResourceSize", None),
+    (n!("Transport"), "transportEnabled", None),
+    (n!("Database storage"), "dbStorageEnabled", None),
+    (n!("Rule engine"), "ruleEngineEnabled", None),
     ("JavaScript", "jsExecutionEnabled", None),
     ("TBEL", "tbelExecutionEnabled", None),
-    ("Email", "emailEnabled", None),
+    (n!("Email"), "emailEnabled", None),
     ("SMS", "smsEnabled", None),
-    ("Alarms", "alarmEnabled", None),
+    (n!("Alarms"), "alarmEnabled", None),
 ];
 
 /// A limit's value in words (SENTIENT's convention: 0 unlimited, below 0
 /// not allowed).
 pub fn limit_text(key: &str, v: &Value) -> String {
     match v {
-        Value::Bool(b) => if *b { "On" } else { "Off" }.into(),
+        Value::Bool(b) => if *b { t!("On") } else { t!("Off") }.into(),
         Value::Number(n) => {
             let n = n.as_i64().unwrap_or(0);
             if n == 0 {
-                "Unlimited".into()
+                t!("Unlimited").into()
             } else if n < 0 {
-                "Not allowed".into()
+                t!("Not allowed").into()
             } else if key.ends_with("InBytes") || key == "maxResourceSize" {
                 crate::dbstatus::bytes_label(n as u64)
             } else {
                 grouped(n)
             }
         }
-        Value::Null => "Not set".into(),
+        Value::Null => t!("Not set").into(),
         other => other.to_string(),
     }
 }
 
-/// The usage key's plain name for the over-limit banner ("ruleChains" → "rule chain").
-pub fn entity_noun(key: &str) -> String {
-    MAIN_LIMITS
-        .iter()
-        .map(|(l, _, u)| (*l, *u))
-        .chain(ALL_LIMITS.iter().filter_map(|(l, _, u)| u.map(|u| (*l, u))))
-        .find(|(_, u)| *u == key)
-        .map(|(l, _)| l.trim_end_matches('s').to_lowercase())
-        .unwrap_or_else(|| key.to_string())
+/// The usage key's plain name for the over-limit banner, translated, as
+/// (one, more than one): "ruleChains" → ("rule chain", "rule chains").
+pub fn entity_noun(key: &str) -> (String, String) {
+    let (one, many) = match key {
+        "tenants" => (t!("tenant"), t!("tenants")),
+        "users" => (t!("user"), t!("users")),
+        "devices" => (t!("device"), t!("devices")),
+        "assets" => (t!("asset"), t!("assets")),
+        "customers" => (t!("customer"), t!("customers")),
+        "edges" => (t!("edge"), t!("edges")),
+        "dashboards" => (t!("dashboard"), t!("dashboards")),
+        "reportTemplates" => (t!("report template"), t!("report templates")),
+        "reportSchedules" => (t!("report schedule"), t!("report schedules")),
+        "ruleChains" => (t!("rule chain"), t!("rule chains")),
+        "integrations" => (t!("integration"), t!("integrations")),
+        "telemetryKeys" => (t!("telemetry key"), t!("telemetry keys")),
+        "attributeKeys" => (t!("attribute key"), t!("attribute keys")),
+        _ => return (key.to_string(), key.to_string()),
+    };
+    (one.to_string(), many.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -291,23 +302,23 @@ pub struct Reply {
 
 impl Reply {
     fn json<T: serde::de::DeserializeOwned>(&self) -> Result<T, String> {
-        serde_json::from_str(&self.body).map_err(|e| format!("SENTIENT gave an answer the Platform Manager does not understand: {e}"))
+        serde_json::from_str(&self.body).map_err(|e| nf!("SENTIENT gave an answer the Platform Manager does not understand: {e}"))
     }
 
     /// SENTIENT's own message, or the status in words.
     fn message(&self) -> String {
         let msg = serde_json::from_str::<Value>(&self.body).ok().and_then(|v| v.get("message").and_then(|m| m.as_str()).map(str::to_string));
         msg.filter(|m| !m.trim().is_empty()).unwrap_or_else(|| match self.status {
-            401 => "SENTIENT refused the sign-in.".into(),
-            403 => "SENTIENT refused: this needs the system administrator.".into(),
-            404 => "This SENTIENT has no licence functions (an older version).".into(),
-            s => format!("SENTIENT answered with an error ({s})."),
+            401 => t!("SENTIENT refused the sign-in.").into(),
+            403 => t!("SENTIENT refused: this needs the system administrator.").into(),
+            404 => t!("This SENTIENT has no licence functions (an older version).").into(),
+            s => tf!("SENTIENT answered with an error ({s})."),
         })
     }
 }
 
 /// The session ended (SENTIENT answered 401 to a call with a token).
-pub const SESSION_ENDED: &str = "The sign-in has ended. Sign in again.";
+pub const SESSION_ENDED: &str = n!("The sign-in has ended. Sign in again.");
 
 /// Make the call against SENTIENT on `port` of this machine. Blocking.
 pub fn call(port: u16, req: &Request) -> Result<Reply, String> {
@@ -315,7 +326,7 @@ pub fn call(port: u16, req: &Request) -> Result<Reply, String> {
     let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(5)).timeout(Duration::from_secs(90)).build();
     let mut r = agent.request(&req.method, &url).set("Accept", "application/json");
     if let Some(t) = &req.token {
-        r = r.set("X-Authorization", &format!("Bearer {t}"));
+        r = r.set("X-Authorization", &tf!("Bearer {t}"));
     }
     let sent = if let Some((name, b64)) = &req.file {
         use base64::Engine as _;
@@ -324,7 +335,7 @@ pub fn call(port: u16, req: &Request) -> Result<Reply, String> {
         let mut body = format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{}\"\r\nContent-Type: application/octet-stream\r\n\r\n", name.replace('"', "")).into_bytes();
         body.extend_from_slice(&bytes);
         body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-        r.set("Content-Type", &format!("multipart/form-data; boundary={boundary}")).send_bytes(&body)
+        r.set("Content-Type", &tf!("multipart/form-data; boundary={boundary}")).send_bytes(&body)
     } else if let Some(b) = &req.body {
         r.set("Content-Type", "application/json").send_string(&b.to_string())
     } else if req.method == "POST" {
@@ -335,7 +346,7 @@ pub fn call(port: u16, req: &Request) -> Result<Reply, String> {
     match sent {
         Ok(resp) => Ok(Reply { status: resp.status(), body: resp.into_string().unwrap_or_default() }),
         Err(ureq::Error::Status(code, resp)) => Ok(Reply { status: code, body: resp.into_string().unwrap_or_default() }),
-        Err(ureq::Error::Transport(_)) => Err(format!("SENTIENT did not answer on port {port}. Is it running?")),
+        Err(ureq::Error::Transport(_)) => Err(nf!("SENTIENT did not answer on port {port}. Is it running?")),
     }
 }
 
@@ -406,7 +417,7 @@ impl Target {
         }
         match self {
             Target::Local(Some(r)) => call(r.stack.http_port, req),
-            Target::Local(None) => Err("SENTIENT isn't installed on this computer.".into()),
+            Target::Local(None) => Err(n!("SENTIENT isn't installed on this computer.").into()),
             Target::Remote(inst) => crate::remote::licence_api(inst, req),
         }
     }
@@ -439,16 +450,16 @@ impl Target {
         })?;
         if reply.status == 401 {
             let m = reply.message();
-            return Err(if m == "Invalid credentials" { "SENTIENT refused this email and password.".into() } else { m });
+            return Err(if m == "Invalid credentials" { n!("SENTIENT refused this email and password.").into() } else { m });
         }
         if !(200..300).contains(&reply.status) {
             return Err(reply.message());
         }
         let v: Value = reply.json()?;
         if v.get("scope").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
-            return Err("This administrator signs in with a second factor (2FA), which the Platform Manager cannot do. Use another system administrator, or SENTIENT's own Licence page.".into());
+            return Err(n!("This administrator signs in with a second factor (2FA), which the Platform Manager cannot do. Use another system administrator, or SENTIENT's own Licence page.").into());
         }
-        let token = v.get("token").and_then(Value::as_str).map(str::to_string).ok_or_else(|| "SENTIENT gave no sign-in token.".to_string())?;
+        let token = v.get("token").and_then(Value::as_str).map(str::to_string).ok_or_else(|| n!("SENTIENT gave no sign-in token.").to_string())?;
         Ok((token, v.get("refreshToken").and_then(Value::as_str).map(str::to_string)))
     }
 
@@ -466,7 +477,7 @@ impl Target {
             return Err(reply.message());
         }
         let v: Value = reply.json()?;
-        let token = v.get("token").and_then(Value::as_str).map(str::to_string).ok_or_else(|| "SENTIENT gave no token.".to_string())?;
+        let token = v.get("token").and_then(Value::as_str).map(str::to_string).ok_or_else(|| n!("SENTIENT gave no token.").to_string())?;
         Ok((token, v.get("refreshToken").and_then(Value::as_str).map(str::to_string)))
     }
 
@@ -494,9 +505,9 @@ impl Target {
                     set_session(&key, &kept.email, &token);
                     peek_session(&key).ok_or_else(String::new)
                 }
-                Err(e) => Err(format!("The saved password was refused: {e}")),
+                Err(e) => Err(nf!("The saved password was refused: {e}")),
             },
-            None => Err("Your sign-in has expired. Sign in again.".into()),
+            None => Err(n!("Your sign-in has expired. Sign in again.").into()),
         }
     }
 
@@ -553,7 +564,7 @@ impl Target {
         let v: Value = self.get(token, "DELETE", if force { "/api/license/force-delete" } else { "/api/license/deactivate" }, None)?;
         let msg = v.get("message").and_then(Value::as_str).unwrap_or("").to_string();
         if v.get("success").and_then(Value::as_bool) == Some(false) {
-            return Err(if msg.is_empty() { "SENTIENT had no active licence to remove.".into() } else { msg });
+            return Err(if msg.is_empty() { n!("SENTIENT had no active licence to remove.").into() } else { msg });
         }
         Ok(msg)
     }
@@ -739,13 +750,13 @@ pub enum TileLicence {
 impl TileLicence {
     pub fn label(self) -> String {
         match self {
-            TileLicence::Active => "Active".into(),
-            TileLicence::EndsIn(0) => "Ends today".into(),
-            TileLicence::EndsIn(1) => "Ends in 1 day".into(),
-            TileLicence::EndsIn(d) => format!("Ends in {d} days"),
-            TileLicence::Expired => "Expired".into(),
-            TileLicence::OverLimit => "Over a limit".into(),
-            TileLicence::None => "None".into(),
+            TileLicence::Active => t!("Active").into(),
+            TileLicence::EndsIn(0) => t!("Ends today").into(),
+            TileLicence::EndsIn(1) => t!("Ends in 1 day").into(),
+            TileLicence::EndsIn(d) => tf!("Ends in {d} days"),
+            TileLicence::Expired => t!("Expired").into(),
+            TileLicence::OverLimit => t!("Over a limit").into(),
+            TileLicence::None => t!("None").into(),
         }
     }
 
@@ -896,6 +907,6 @@ mod tests {
         assert_eq!(grouped(500), "500");
         assert_eq!(limit_text("maxDevices", &serde_json::json!(0)), "Unlimited");
         assert_eq!(limit_text("maxDevices", &serde_json::json!(-1)), "Not allowed");
-        assert_eq!(entity_noun("ruleChains"), "rule chain");
+        assert_eq!(entity_noun("ruleChains"), ("rule chain".to_string(), "rule chains".to_string()));
     }
 }

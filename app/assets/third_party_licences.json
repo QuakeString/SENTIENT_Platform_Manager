@@ -1,5 +1,5 @@
 {
- "cargo_lock": "5e5a49528e9c6bb7",
+ "cargo_lock": "2a182ff71d8e4a86",
  "crates": [
   {
    "name": "accesskit",
@@ -2472,6 +2472,12 @@
    "version": "0.1.1",
    "license": "MIT",
    "repository": "https://github.com/sarah-quinones/pulp/"
+  },
+  {
+   "name": "pure-rust-locales",
+   "version": "0.8.2",
+   "license": "MIT OR Apache-2.0",
+   "repository": "https://github.com/cecton/pure-rust-locales"
   },
   {
    "name": "pxfm",

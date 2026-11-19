@@ -41,7 +41,7 @@ pub fn load_fonts(cx: &mut App) {
 /// its system.
 pub fn remote_target(inst: &Instance) -> view::Target {
     let windows = crate::remote::is_windows(inst);
-    let system = inst.detected.as_ref().map(|d| d.os_name.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| if windows { "Windows".into() } else { "Linux".into() });
+    let system = inst.detected.as_ref().map(|d| d.os_name.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| if windows { t!("Windows").into() } else { t!("Linux").into() });
     let remote = if windows { prompt::windows_remote_command(&inst.host, &system) } else { prompt::linux_remote_command(&inst.host, &system) };
     let (argv, env) = crate::remote::terminal_command(inst, &remote);
     view::Target { spawn: Spawn { argv, env, cwd: None }, shell: windows.then(|| "PowerShell".to_string()) }

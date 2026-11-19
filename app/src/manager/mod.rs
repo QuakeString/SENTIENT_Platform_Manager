@@ -110,19 +110,19 @@ impl Page {
 
     fn title(self) -> &'static str {
         match self {
-            Page::Status => "Status",
-            Page::Logs => "Logs",
-            Page::Files => "Files",
-            Page::Update => "Update",
-            Page::Gateway => "Gateway",
-            Page::Backup => "Backup and restore",
-            Page::Migration => "Migration",
-            Page::Settings => "Platform settings",
-            Page::Repair => "Repair and uninstall",
-            Page::Instances => "Instances",
-            Page::About => "About and preferences",
-            Page::Statistics => "Statistics",
-            Page::Licence => "Licence",
+            Page::Status => t!("Status"),
+            Page::Logs => t!("Logs"),
+            Page::Files => t!("Files"),
+            Page::Update => t!("Update"),
+            Page::Gateway => t!("Gateway"),
+            Page::Backup => t!("Backup and restore"),
+            Page::Migration => t!("Migration"),
+            Page::Settings => t!("Platform settings"),
+            Page::Repair => t!("Repair and uninstall"),
+            Page::Instances => t!("Instances"),
+            Page::About => t!("About and preferences"),
+            Page::Statistics => t!("Statistics"),
+            Page::Licence => t!("Licence"),
         }
     }
 
@@ -469,7 +469,7 @@ impl Manager {
             };
             let on = match &target {
                 crate::movedata::Target::Remote(i) => i.name.clone(),
-                crate::movedata::Target::Local => "This computer".to_string(),
+                crate::movedata::Target::Local => t!("This computer").to_string(),
             };
             movedata::open(target, on, None, _window, cx);
         }
@@ -486,8 +486,8 @@ impl Manager {
             }
             if std::env::var_os("SPM_DEBUG_ERROR_DIALOG").is_some() {
                 crate::ui::show_error_with(
-                    "The server agent could not be updated",
-                    crate::remote::failed("The agent could not be put in place at /opt/sentient-platform-manager (as administrator). The agent there is unchanged.", "sudo: a password is required"),
+                    t!("The server agent could not be updated"),
+                    crate::remote::failed(t!("The agent could not be put in place at /opt/sentient-platform-manager (as administrator). The agent there is unchanged."), n!("sudo: a password is required")),
                     Some(std::rc::Rc::new(|_: &mut App| {})),
                     cx,
                 );
@@ -501,14 +501,14 @@ impl Manager {
                         let row = |label: &'static str, sw: Switch| h_flex().gap_3().items_center().child(div().w(px(200.)).text_sm().child(label)).child(sw);
                         v_flex()
                             .gap_3()
-                            .child(row("Off", Switch::new("s1").checked(false)))
-                            .child(row("On", Switch::new("s2").checked(true)))
-                            .child(row("Off, disabled", Switch::new("s3").checked(false).disabled(true)))
-                            .child(row("On, disabled", Switch::new("s4").checked(true).disabled(true)))
+                            .child(row(t!("Off"), Switch::new("s1").checked(false)))
+                            .child(row(t!("On"), Switch::new("s2").checked(true)))
+                            .child(row(t!("Off, disabled"), Switch::new("s3").checked(false).disabled(true)))
+                            .child(row(t!("On, disabled"), Switch::new("s4").checked(true).disabled(true)))
                     }
                 }
                 let view = cx.new(|_| Sheet);
-                crate::modal::open(crate::modal::Modal { title: "Switches".into(), body: view.into(), width: 360., icon: None, on_close: None }, cx);
+                crate::modal::open(crate::modal::Modal { title: t!("Switches").into(), body: view.into(), width: 360., icon: None, on_close: None }, cx);
             }
             // Screens: the takeover dialog with a canned plan.
             if let Ok(kind) = std::env::var("SPM_DEBUG_TAKEOVER") {
@@ -526,7 +526,7 @@ impl Manager {
                         containers: vec!["sentient".into(), "sentient-postgres".into(), "sentient-clickhouse".into()],
                         image: "quakestring/sentient:4.4.0.1".into(),
                         volumes: vec!["sentient_data".into(), "sentient_pg".into(), "sentient_ch".into()],
-                        ports: vec!["8080 web".into(), "1883 MQTT".into(), "8883 MQTTS".into(), "5683 CoAP".into(), "5684 CoAPS".into()],
+                        ports: vec![t!("8080 web").into(), t!("1883 MQTT").into(), t!("8883 MQTTS").into(), t!("5683 CoAP").into(), t!("5684 CoAPS").into()],
                         extra_env: vec!["SENTIENT_LICENSE_MODE".into(), "RUST_LOG".into()],
                         loopback_port: (kind == "missing").then_some(15432),
                         problems: Vec::new(),
@@ -541,21 +541,21 @@ impl Manager {
                         "password" => {
                             p.needs_password = true;
                             p.db_user = "sentient".into();
-                            p.password_why = "It is not in the containers or the compose file.".into();
+                            p.password_why = t!("It is not in the containers or the compose file.").into();
                         }
                         "chpassword" => {
                             p.needs_ch_password = true;
                             p.ch_user = "sentient".into();
-                            p.ch_password_why = "None of the passwords in the containers or the compose file (nor an empty one) is accepted by ClickHouse.".into();
-                            p.password_from = "SENTIENT's DATABASE_URL".into();
+                            p.ch_password_why = t!("None of the passwords in the containers or the compose file (nor an empty one) is accepted by ClickHouse.").into();
+                            p.password_from = t!("SENTIENT's DATABASE_URL").into();
                         }
-                        "failed" => return Err("ssh: connect to host 10.0.4.12 port 22: Connection timed out".into()),
+                        "failed" => return Err(n!("ssh: connect to host 10.0.4.12 port 22: Connection timed out").into()),
                         "loading" => std::thread::sleep(std::time::Duration::from_secs(60)),
                         _ => {}
                     }
                     Ok(p)
                 };
-                cx.defer(move |cx| takeover::open(std::env::var_os("SPM_DEBUG_TAKEOVER_LOCAL").is_some(), std::sync::Arc::new(plan), std::sync::Arc::new(|ch: bool, pw: String| if pw == "right" { Ok(()) } else { Err(format!("{} refused this password for the user sentient.", if ch { "ClickHouse" } else { "PostgreSQL" })) }), std::rc::Rc::new(|_, _, _: &mut App| {}), None, cx));
+                cx.defer(move |cx| takeover::open(std::env::var_os("SPM_DEBUG_TAKEOVER_LOCAL").is_some(), std::sync::Arc::new(plan), std::sync::Arc::new(|ch: bool, pw: String| if pw == "right" { Ok(()) } else { Err(nf!("{} refused this password for the user sentient.", if ch { "ClickHouse" } else { "PostgreSQL" })) }), std::rc::Rc::new(|_, _, _: &mut App| {}), None, cx));
             }
             if std::env::var_os("SPM_DEBUG_SUDO_PROMPT").is_some() {
                 if let Some(inst) = crate::remote::load().into_iter().next() {
@@ -584,7 +584,7 @@ impl Manager {
                     part("ts_kv", "202610", "202610_33_40_2", 61_000_000),
                     part("ts_kv_dictionary", "tuple()", "all_3_3_0", 12_000),
                 ];
-                status::BrokenParts::open(std::sync::Arc::new(move || Ok(list.clone())), std::sync::Arc::new(|_, _| Ok("ok a\nfailed b: Code: 232. Part b is broken".into())), cx);
+                status::BrokenParts::open(std::sync::Arc::new(move || Ok(list.clone())), std::sync::Arc::new(|_, _| Ok(t!("ok a\nfailed b: Code: 232. Part b is broken").into())), cx);
             }
             // The Uninstall dialog for one deployment (crate::uninstall::FIXTURES),
             // `<name>:done` for its result screen.
@@ -596,7 +596,7 @@ impl Manager {
             }
             if std::env::var_os("SPM_DEBUG_LOG_DIALOG").is_some() {
                 let view = cx.new(|cx| logs::LogView::file(crate::jobs::activity_log(), _window, cx));
-                crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., icon: None, on_close: None }, cx);
+                crate::modal::open(crate::modal::Modal { title: t!("Platform Manager log").into(), body: view.into(), width: 1000., icon: None, on_close: None }, cx);
             }
         }
         // Screens: a job in the progress strip (SPM_DEBUG_STRIP=running|failed|done).
@@ -604,17 +604,17 @@ impl Manager {
         if let Ok(kind) = std::env::var("SPM_DEBUG_STRIP") {
             let job = cx.new(|_| crate::jobs::Job::new());
             job.update(cx, |j, cx| {
-                j.set_label("Stopping ClickHouse on Plant B server");
+                j.set_label(t!("Stopping ClickHouse on Plant B server"));
                 j.start(
                     move |sink| {
-                        sink(sentient_installer_core::progress::Progress::Step { name: "Stopping ClickHouse".into() });
+                        sink(sentient_installer_core::progress::Progress::Step { name: n!("Stopping ClickHouse").into() });
                         sink(sentient_installer_core::progress::Progress::Log { line: "docker compose -p sentient stop clickhouse".into() });
-                        sink(sentient_installer_core::progress::Progress::Log { line: " Container sentient-clickhouse  Stopping".into() });
+                        sink(sentient_installer_core::progress::Progress::Log { line: n!(" Container sentient-clickhouse  Stopping").into() });
                         std::thread::sleep(std::time::Duration::from_secs(if kind == "running" { 600 } else { 6 }));
                         match kind.as_str() {
-                            "failed" => Err("ClickHouse did not stop within 30 seconds.".into()),
+                            "failed" => Err(n!("ClickHouse did not stop within 30 seconds.").into()),
                             _ => {
-                                sink(sentient_installer_core::progress::Progress::Done { message: "ClickHouse is stopped.".into() });
+                                sink(sentient_installer_core::progress::Progress::Done { message: n!("ClickHouse is stopped.").into() });
                                 Ok(())
                             }
                         }
@@ -663,21 +663,21 @@ impl Manager {
         let mut items = Vec::new();
         let (sentient, manager) = self.updates.read(cx).notices();
         if let Some(o) = manager {
-            items.push((format!("Platform Manager {} is available", o.version), Page::Update));
+            items.push((tf!("Platform Manager {} is available", o.version), Page::Update));
         }
         if let Some(o) = sentient {
-            items.push((format!("SENTIENT {} is available", o.version), Page::Update));
+            items.push((tf!("SENTIENT {} is available", o.version), Page::Update));
         }
         if let Some(o) = self.updates.read(cx).gateway_notice() {
-            items.push((format!("Sentient Gateway {} is available", o.version), Page::Gateway));
+            items.push((tf!("Sentient Gateway {} is available", o.version), Page::Gateway));
         }
         let pending = self.record.as_ref().map(|r| crate::changes::pending(r).len()).unwrap_or(0);
         if pending > 0 {
-            items.push((format!("{pending} change{} for this installation waiting", if pending == 1 { "" } else { "s" }), Page::Update));
+            items.push((if pending == 1 { tf!("{pending} change for this installation waiting") } else { tf!("{pending} changes for this installation waiting") }, Page::Update));
         }
         let shown = if self.open_remote.is_some() { self.remote_monitor } else { self.monitor };
         if let Some(m) = shown.filter(|m| m.disk_low()) {
-            items.push((format!("Disk almost full: {} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status));
+            items.push((tf!("Disk almost full: {} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status));
         }
         items
     }
@@ -685,28 +685,28 @@ impl Manager {
     /// What needs attention now, for the bell: (title, detail, page, instance
     /// id, its name, its colour). They go away by themselves.
     fn conditions(&self, cx: &App) -> Vec<(String, String, Page, Option<String>, String, String)> {
-        let local = |t: String, d: String, p: Page| (t, d, p, None, "This computer".to_string(), crate::remote::LOCAL_COLOR.to_string());
+        let local = |t: String, d: String, p: Page| (t, d, p, None, t!("This computer").to_string(), crate::remote::LOCAL_COLOR.to_string());
         let mut out: Vec<_> = Vec::new();
         let (sentient, manager) = self.updates.read(cx).notices();
         if let Some(o) = manager {
-            out.push(local(format!("Platform Manager {} is available", o.version), "Update and restart from the Update page.".into(), Page::Update));
+            out.push(local(tf!("Platform Manager {} is available", o.version), t!("Update and restart from the Update page.").into(), Page::Update));
         }
         if let Some(o) = sentient {
-            out.push(local(format!("SENTIENT {} is available", o.version), "Update from the Update page.".into(), Page::Update));
+            out.push(local(tf!("SENTIENT {} is available", o.version), t!("Update from the Update page.").into(), Page::Update));
         }
         if let Some(o) = self.updates.read(cx).gateway_notice() {
-            out.push(local(format!("Sentient Gateway {} is available", o.version), "Update from the Gateway page.".into(), Page::Gateway));
+            out.push(local(tf!("Sentient Gateway {} is available", o.version), t!("Update from the Gateway page.").into(), Page::Gateway));
         }
         let pending = self.record.as_ref().map(|r| crate::changes::pending(r).len()).unwrap_or(0);
         if pending > 0 {
-            out.push(local(format!("{pending} change{} waiting", if pending == 1 { "" } else { "s" }), "For this installation, on the Update page.".into(), Page::Update));
+            out.push(local(if pending == 1 { tf!("{pending} change waiting") } else { tf!("{pending} changes waiting") }, t!("For this installation, on the Update page.").into(), Page::Update));
         }
         if let Some(m) = self.monitor.filter(|m| m.disk_low()) {
-            out.push(local("Disk almost full".into(), format!("{} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status));
+            out.push(local(t!("Disk almost full").into(), tf!("{} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status));
         }
         if let (Some(id), Some(m)) = (&self.open_remote, self.remote_monitor.filter(|m| m.disk_low())) {
             if let Some(r) = self.remotes.iter().find(|r| &r.id == id) {
-                out.push(("Disk almost full".into(), format!("{} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status, Some(r.id.clone()), r.name.clone(), r.color.clone()));
+                out.push((t!("Disk almost full").into(), tf!("{} free", crate::dbstatus::bytes_label(m.disk_free)), Page::Status, Some(r.id.clone()), r.name.clone(), r.color.clone()));
             }
         }
         out
@@ -743,7 +743,7 @@ impl Manager {
         let now = chrono::Utc::now().timestamp();
         let ago = |at: i64| {
             let m = (now - at).max(0) / 60;
-            if m < 1 { "just now".to_string() } else if m < 60 { format!("{m} min ago") } else if m < 24 * 60 { format!("{} h ago", m / 60) } else { format!("{} d ago", m / (24 * 60)) }
+            if m < 1 { "just now".to_string() } else if m < 60 { tf!("{m} min ago") } else if m < 24 * 60 { tf!("{} h ago", m / 60) } else { tf!("{} d ago", m / (24 * 60)) }
         };
         let strip = self.strip.clone();
         let this = cx.entity().downgrade();
@@ -807,7 +807,7 @@ impl Manager {
                 .justify_center()
                 .rounded(px(5.))
                 .hover(|d| d.bg(theme.danger.opacity(0.12)))
-                .tooltip(crate::ui::tooltip("Clear"))
+                .tooltip(crate::ui::tooltip(t!("Clear")))
                 .child(Icon::new(IconName::Close).size(px(16.)).text_color(theme.muted_foreground))
                 .on_click(move |_, _, cx| {
                     cx.stop_propagation();
@@ -881,11 +881,11 @@ impl Manager {
             .pb_2()
             .gap(crate::ui::button_gap())
             .items_center()
-            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("Notifications"))
-            .when(unread > 0, |h| h.child(crate::ui::probed(crate::ui::button("bell-read").ghost().label("Mark all as read").on_click(move |_, _, cx| s3.update(cx, |s, cx| s.mark_all_read(cx))))))
+            .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(t!("Notifications")))
+            .when(unread > 0, |h| h.child(crate::ui::probed(crate::ui::button("bell-read").ghost().label(t!("Mark all as read")).on_click(move |_, _, cx| s3.update(cx, |s, cx| s.mark_all_read(cx))))))
             .when(!empty, |h| {
                 let close2 = close.clone();
-                h.child(crate::ui::probed(crate::ui::button("bell-clear").ghost().label("Clear all").on_click(move |_, _, cx| {
+                h.child(crate::ui::probed(crate::ui::button("bell-clear").ghost().label(t!("Clear all")).on_click(move |_, _, cx| {
                     s4.update(cx, |s, cx| s.clear(None, cx));
                     let keys = cond_keys.clone();
                     close2
@@ -936,7 +936,7 @@ impl Manager {
                                     .gap_2()
                                     .py_8()
                                     .child(Icon::new(IconName::Bell).size_6().text_color(theme.muted_foreground.opacity(0.6)))
-                                    .child(div().text_sm().text_color(theme.muted_foreground).child("No new notifications"))
+                                    .child(div().text_sm().text_color(theme.muted_foreground).child(t!("No new notifications")))
                                     .into_any_element()
                             } else {
                                 // Short: the list as it is (the panel takes its height).
@@ -989,9 +989,9 @@ impl Manager {
         let fg: Hsla = menu_theme.foreground;
         let muted_fg: Hsla = menu_theme.muted_foreground;
         let (name, address): (String, Option<String>) = match (&remote, &self.record) {
-            (Some(r), _) => (r.name.clone(), Some(format!("{} over SSH", r.host))),
-            (None, Some(r)) => ("This computer".into(), Some(format!("SENTIENT {}", self.running_version.as_deref().unwrap_or(&r.sentient_version)))),
-            (None, None) => ("This computer".into(), None),
+            (Some(r), _) => (r.name.clone(), Some(tf!("{} over SSH", r.host))),
+            (None, Some(r)) => (t!("This computer").into(), Some(tf!("SENTIENT {}", self.running_version.as_deref().unwrap_or(&r.sentient_version)))),
+            (None, None) => (t!("This computer").into(), None),
         };
         let instance = format!("{name} {}", address.clone().unwrap_or_default());
         let light_bar = !dark;
@@ -1011,27 +1011,27 @@ impl Manager {
         let shown_m = if remote.is_some() { self.remote_monitor } else { self.monitor };
         let installed = remote.is_some() || self.record.is_some();
         let (state_dot, state_why): (Hsla, &'static str) = if !installed {
-            (rgb(0x94a3b8).into(), "SENTIENT isn't installed on this computer")
+            (rgb(0x94a3b8).into(), t!("SENTIENT isn't installed on this computer"))
         } else if let Some(p) = remote.as_ref().and_then(|r| server_card::power_state(&r.id)) {
             // Restarted or shut down from the Server card: not answering is
             // expected, never the "does not answer" state.
             match p {
-                server_card::Power::Restarting => (rgb(0xf59e0b).into(), "The server is restarting: reconnecting"),
-                server_card::Power::ShuttingDown => (rgb(0xf59e0b).into(), "The server is shutting down"),
-                server_card::Power::Off => (rgb(0x94a3b8).into(), "The server is off: it was shut down from here"),
+                server_card::Power::Restarting => (rgb(0xf59e0b).into(), t!("The server is restarting: reconnecting")),
+                server_card::Power::ShuttingDown => (rgb(0xf59e0b).into(), t!("The server is shutting down")),
+                server_card::Power::Off => (rgb(0x94a3b8).into(), t!("The server is off: it was shut down from here")),
             }
         } else if remote.is_some() && (self.remote_monitor.is_none() || self.remote_monitor_stale) {
-            (rgb(0x94a3b8).into(), "The server does not answer, or is being read")
+            (rgb(0x94a3b8).into(), t!("The server does not answer, or is being read"))
         } else if serving == Some(false) {
-            (rgb(0xef4444).into(), "SENTIENT is stopped")
+            (rgb(0xef4444).into(), t!("SENTIENT is stopped"))
         } else if shown_m.is_some_and(|m| m.disk_low()) {
-            (rgb(0xf59e0b).into(), "Needs a look: the disk is almost full")
+            (rgb(0xf59e0b).into(), t!("Needs a look: the disk is almost full"))
         } else if serving.is_none() {
-            (rgb(0x94a3b8).into(), "Being checked")
+            (rgb(0x94a3b8).into(), t!("Being checked"))
         } else {
-            (status_green, "SENTIENT runs")
+            (status_green, t!("SENTIENT runs"))
         };
-        let pulse = state_why.starts_with("SENTIENT is stopped") || state_why.starts_with("Needs a look");
+        let pulse = state_why.starts_with(t!("SENTIENT is stopped")) || state_why.starts_with(t!("Needs a look"));
         // The dot changes colour smoothly.
         let state_dot = ui::tween_color("health-dot", state_dot, 300, window);
         self.strip.read(cx).light_bar.set(light_bar);
@@ -1047,7 +1047,7 @@ impl Manager {
         let meter_icon = |label: &str| -> Icon {
             match label {
                 "CPU" => Icon::new(Lucide::Cpu),
-                "Memory" => Icon::new(Lucide::MemoryStick),
+                l if l == "Memory" || l == t!("Memory") => Icon::new(Lucide::MemoryStick),
                 _ => Icon::new(Lucide::HardDrive),
             }
         };
@@ -1095,14 +1095,14 @@ impl Manager {
         let gbf = |b: u64| b as f64 / (1u64 << 30) as f64;
         // (Before the first reading: typical widths, so the placeholders take
         // the room the values will.)
-        let mem_widest = shown.map(|m| eights(format!("{:.1} / {:.0} GB", gbf(m.mem_total), gbf(m.mem_total)))).unwrap_or_else(|| "88.8 / 88 GB".into());
+        let mem_widest = shown.map(|m| eights(tf!("{:.1} / {:.0} GB", gbf(m.mem_total), gbf(m.mem_total)))).unwrap_or_else(|| t!("88.8 / 88 GB").into());
         // On a disk of a terabyte or more, less than a terabyte free reads in GB.
         let disk_widest = shown
             .map(|m| {
-                let total = eights(format!("{} free", crate::dbstatus::bytes_label(m.disk_total)));
-                if m.disk_total >= 1 << 40 && total.len() < "8888.8 GB free".len() { "8888.8 GB free".to_string() } else { total }
+                let total = eights(tf!("{} free", crate::dbstatus::bytes_label(m.disk_total)));
+                if m.disk_total >= 1 << 40 && total.len() < t!("8888.8 GB free").len() { t!("8888.8 GB free").to_string() } else { total }
             })
-            .unwrap_or_else(|| "888.8 GB free".into());
+            .unwrap_or_else(|| t!("888.8 GB free").into());
         // The same room with and without a reading (placeholders before it).
         let (show_cpu, show_mem, show_disk) = {
             // Each: its 18 px icon, the bar (when wide) and the value's slot,
@@ -1135,8 +1135,8 @@ impl Manager {
                 .items_center()
                 .px(px(10.))
                 .when(show_cpu, |r| r.child(slot("CPU", "100%")))
-                .when(show_mem, |r| r.child(slot("Memory", &mem_widest)))
-                .when(show_disk, |r| r.child(slot("Disk", &disk_widest)))
+                .when(show_mem, |r| r.child(slot(t!("Memory"), &mem_widest)))
+                .when(show_disk, |r| r.child(slot(t!("Disk"), &disk_widest)))
         });
         // The bars glide to a new reading.
         // A change of less than a pixel of the bar (METER_W) does not move
@@ -1165,21 +1165,21 @@ impl Manager {
                 .when(show_cpu, |r| r.child(meter("m-cpu", "CPU", "100%", format!("{:.0}%", m.cpu), g_cpu, m.cpu_high())))
                 .when(show_mem, |r| r.child(meter(
                     "m-mem",
-                    "Memory",
+                    t!("Memory"),
                     &mem_widest,
-                    format!("{:.1} / {:.0} GB", gb(m.mem_used), gb(m.mem_total)),
+                    tf!("{:.1} / {:.0} GB", gb(m.mem_used), gb(m.mem_total)),
                     g_mem,
                     m.mem_high(),
                 )))
                 .when(show_disk, |r| r.child(meter(
                     "m-disk",
-                    "Disk",
+                    t!("Disk"),
                     &disk_widest,
-                    format!("{} free", crate::dbstatus::bytes_label(m.disk_free)),
+                    tf!("{} free", crate::dbstatus::bytes_label(m.disk_free)),
                     g_disk,
                     m.disk_low(),
                 )))
-                .tooltip(crate::ui::tooltip("Statistics"))
+                .tooltip(crate::ui::tooltip(t!("Statistics")))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.page = Page::Statistics;
                     cx.notify();
@@ -1315,7 +1315,7 @@ impl Manager {
                     let mut rows = vec![ui::MenuRow::Item {
                         id: "switch-local".into(),
                         icon: Some(Icon::new(Lucide::Monitor).size(px(18.)).into_any_element()),
-                        label: if self.open_remote.is_some() { "Back to this computer".into() } else { "This computer".into() },
+                        label: if self.open_remote.is_some() { t!("Back to this computer").into() } else { t!("This computer").into() },
                         secondary: None,
                         on: self.open_remote.is_none(),
                         click: go(this.clone(), None),
@@ -1352,7 +1352,7 @@ impl Manager {
                             id: SharedString::from(format!("switch-{}", r.id)),
                             icon: Some(div().relative().size(px(10.)).mx(px(3.)).rounded_full().bg(dot).child(ui::layout_probe(probe)).into_any_element()),
                             label: r.name.clone().into(),
-                            secondary: Some(format!("{} over SSH", r.host).into()),
+                            secondary: Some(tf!("{} over SSH", r.host).into()),
                             on: self.open_remote.as_deref() == Some(r.id.as_str()),
                             click: go(this.clone(), Some(r.id.clone())),
                         });
@@ -1362,7 +1362,7 @@ impl Manager {
                     rows.push(ui::MenuRow::Item {
                         id: "switch-manage".into(),
                         icon: Some(Icon::new(Lucide::Settings).size(px(18.)).into_any_element()),
-                        label: "Manage instances".into(),
+                        label: t!("Manage instances").into(),
                         secondary: None,
                         on: false,
                         click: std::rc::Rc::new(move |_, cx| {
@@ -1626,19 +1626,19 @@ impl Manager {
         if let Some(from) = self.updated_from.clone() {
             let this = crate::updates::manager_version();
             let text = if pending > 0 {
-                format!("Platform Manager updated to {this} (from {from}). {pending} change{} for this installation are waiting on the Update screen.", if pending == 1 { "" } else { "s" })
+                if pending == 1 { tf!("Platform Manager updated to {this} (from {from}). {pending} change for this installation is waiting on the Update screen.") } else { tf!("Platform Manager updated to {this} (from {from}). {pending} changes for this installation are waiting on the Update screen.") }
             } else {
-                format!("Platform Manager updated to {this}.")
+                tf!("Platform Manager updated to {this}.")
             };
             col = col.child(
                 bar("notice-updated", crate::ui::Tone::Good, text)
                     .when(pending > 0, |b| {
-                        b.child(crate::ui::probed(crate::ui::button("notice-updated-changes").primary().label("Show the changes").on_click(cx.listener(|this, _, _, cx| {
+                        b.child(crate::ui::probed(crate::ui::button("notice-updated-changes").primary().label(t!("Show the changes")).on_click(cx.listener(|this, _, _, cx| {
                             this.page = Page::Update;
                             cx.notify();
                         }))))
                     })
-                    .child(crate::ui::probed(crate::ui::button("notice-updated-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button("notice-updated-close").ghost().label(t!("Close")).on_click(cx.listener(|this, _, _, cx| {
                         this.updated_from = None;
                         cx.notify();
                     })))),
@@ -1651,9 +1651,9 @@ impl Manager {
                     bar(
                         "notice-found",
                         crate::ui::Tone::Good,
-                        format!("Found SENTIENT {} on this computer with its database, settings and backups. Nothing was changed.", r.sentient_version),
+                        tf!("Found SENTIENT {} on this computer with its database, settings and backups. Nothing was changed.", r.sentient_version),
                     )
-                    .child(crate::ui::probed(crate::ui::button("notice-found-close").ghost().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button("notice-found-close").ghost().label(t!("Close")).on_click(cx.listener(|this, _, _, cx| {
                         this.found_notice = false;
                         cx.notify();
                     })))),
@@ -1665,12 +1665,12 @@ impl Manager {
         if several >= 2 {
             let (mv, sv, gv) = (manager.as_ref().map(|m| m.version.clone()), sentient.as_ref().map(|s| s.version.clone()), gw.as_ref().map(|g| g.version.clone()));
             col = col.child(
-                bar("notice-several", crate::ui::Tone::Neutral, format!("{several} updates available"))
-                    .child(crate::ui::probed(crate::ui::button("notice-several-go").primary().label("View").on_click(cx.listener(|this, _, _, cx| {
+                bar("notice-several", crate::ui::Tone::Neutral, tf!("{several} updates available"))
+                    .child(crate::ui::probed(crate::ui::button("notice-several-go").primary().label(t!("View")).on_click(cx.listener(|this, _, _, cx| {
                         this.page = Page::Update;
                         cx.notify();
                     }))))
-                    .child(crate::ui::probed(crate::ui::button("notice-several-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button("notice-several-later").ghost().label(t!("Not now")).on_click(cx.listener(move |this, _, _, cx| {
                         let (mv, sv, gv) = (mv.clone(), sv.clone(), gv.clone());
                         this.updates.update(cx, |s, cx| {
                             if let Some(v) = mv {
@@ -1692,17 +1692,17 @@ impl Manager {
             (Some(m), Some(s)) => {
                 let (mv, sv) = (m.version.clone(), s.version.clone());
                 col = col.child(
-                    bar("notice-both", crate::ui::Tone::Neutral, format!("Platform Manager {} and SENTIENT {} are available.", m.version, s.version))
+                    bar("notice-both", crate::ui::Tone::Neutral, tf!("Platform Manager {} and SENTIENT {} are available.", m.version, s.version))
                         .when(m.installer.is_some(), |b| {
-                            b.child(crate::ui::probed(crate::ui::button("notice-both-go").primary().label("Update Platform Manager").on_click(cx.listener(|this, _, _, cx| {
+                            b.child(crate::ui::probed(crate::ui::button("notice-both-go").primary().label(t!("Update Platform Manager")).on_click(cx.listener(|this, _, _, cx| {
                                 let page = this.update_page(cx);
                                 page.update(cx, |p, cx| p.start_manager_update(cx));
                                 this.page = Page::Update;
                                 cx.notify();
                             }))))
                         })
-                        .child(crate::ui::probed(crate::ui::button("notice-both-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx)))))
-                        .child(crate::ui::probed(crate::ui::button("notice-both-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("notice-both-notes").ghost().label(t!("What's new")).on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx)))))
+                        .child(crate::ui::probed(crate::ui::button("notice-both-later").ghost().label(t!("Not now")).on_click(cx.listener(move |this, _, _, cx| {
                             let (mv, sv) = (mv.clone(), sv.clone());
                             this.updates.update(cx, |s, cx| {
                                 s.dismiss_manager(mv, cx);
@@ -1715,17 +1715,17 @@ impl Manager {
             (Some(m), None) => {
                 let v = m.version.clone();
                 col = col.child(
-                    bar("notice-manager", crate::ui::Tone::Neutral, format!("Platform Manager {} is available.", m.version))
+                    bar("notice-manager", crate::ui::Tone::Neutral, tf!("Platform Manager {} is available.", m.version))
                         .when(m.installer.is_some(), |b| {
-                            b.child(crate::ui::probed(crate::ui::button("notice-manager-go").primary().label("Update and restart").on_click(cx.listener(|this, _, _, cx| {
+                            b.child(crate::ui::probed(crate::ui::button("notice-manager-go").primary().label(t!("Update and restart")).on_click(cx.listener(|this, _, _, cx| {
                                 let page = this.update_page(cx);
                                 page.update(cx, |p, cx| p.start_manager_update(cx));
                                 this.page = Page::Update;
                                 cx.notify();
                             }))))
                         })
-                        .child(crate::ui::probed(crate::ui::button("notice-manager-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx)))))
-                        .child(crate::ui::probed(crate::ui::button("notice-manager-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("notice-manager-notes").ghost().label(t!("What's new")).on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Manager, cx)))))
+                        .child(crate::ui::probed(crate::ui::button("notice-manager-later").ghost().label(t!("Not now")).on_click(cx.listener(move |this, _, _, cx| {
                             let v = v.clone();
                             this.updates.update(cx, |s, cx| s.dismiss_manager(v, cx));
                         })))),
@@ -1735,13 +1735,13 @@ impl Manager {
             (None, Some(s)) => {
                 let v = s.version.clone();
                 col = col.child(
-                    bar("notice-sentient", crate::ui::Tone::Neutral, format!("SENTIENT {} is available{}.", s.version, dated(&s.date)))
-                        .child(crate::ui::probed(crate::ui::button("notice-sentient-go").primary().label("Update").on_click(cx.listener(|this, _, _, cx| {
+                    bar("notice-sentient", crate::ui::Tone::Neutral, tf!("SENTIENT {} is available{}.", s.version, dated(&s.date)))
+                        .child(crate::ui::probed(crate::ui::button("notice-sentient-go").primary().label(t!("Update")).on_click(cx.listener(|this, _, _, cx| {
                             this.page = Page::Update;
                             cx.notify();
                         }))))
-                        .child(crate::ui::probed(crate::ui::button("notice-sentient-notes").ghost().label("What's new").on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Sentient, cx)))))
-                        .child(crate::ui::probed(crate::ui::button("notice-sentient-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                        .child(crate::ui::probed(crate::ui::button("notice-sentient-notes").ghost().label(t!("What's new")).on_click(cx.listener(|this, _, _, cx| this.whats_new(update::Product::Sentient, cx)))))
+                        .child(crate::ui::probed(crate::ui::button("notice-sentient-later").ghost().label(t!("Not now")).on_click(cx.listener(move |this, _, _, cx| {
                             let v = v.clone();
                             this.updates.update(cx, |s, cx| s.dismiss_sentient(v, cx));
                         })))),
@@ -1752,12 +1752,12 @@ impl Manager {
         if let Some(o) = gw {
             let v = o.version.clone();
             col = col.child(
-                bar("notice-gateway", crate::ui::Tone::Neutral, format!("Sentient Gateway {} is available{}.", o.version, dated(&o.date)))
-                    .child(crate::ui::probed(crate::ui::button("notice-gateway-go").primary().label("Update").on_click(cx.listener(|this, _, _, cx| {
+                bar("notice-gateway", crate::ui::Tone::Neutral, tf!("Sentient Gateway {} is available{}.", o.version, dated(&o.date)))
+                    .child(crate::ui::probed(crate::ui::button("notice-gateway-go").primary().label(t!("Update")).on_click(cx.listener(|this, _, _, cx| {
                         this.page = Page::Gateway;
                         cx.notify();
                     }))))
-                    .child(crate::ui::probed(crate::ui::button("notice-gateway-later").ghost().label("Not now").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button("notice-gateway-later").ghost().label(t!("Not now")).on_click(cx.listener(move |this, _, _, cx| {
                         let v = v.clone();
                         this.updates.update(cx, |s, cx| s.dismiss_gateway(v, cx));
                     })))),
@@ -1869,7 +1869,7 @@ impl Manager {
             .when(open, |b| b.bg(tint.opacity(theme::bar_ctrl_hover(dark))))
             .when(!open, |b| b.hover(move |b| b.bg(tint.opacity(theme::bar_ctrl_hover(dark)))))
             .child(icon_of(choice).size(px(19.)))
-            .when(!open, |b| b.tooltip(crate::ui::tooltip("Theme")))
+            .when(!open, |b| b.tooltip(crate::ui::tooltip(t!("Theme"))))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.theme_open = !this.theme_open;
                 cx.notify();
@@ -1881,9 +1881,9 @@ impl Manager {
                 .map(|c| {
                     let this = this.clone();
                     ui::MenuRow::Item {
-                        id: SharedString::from(format!("theme-{}", c.label())),
+                        id: SharedString::from(format!("theme-{}", crate::i18n::t(c.label()))),
                         icon: Some(icon_of(c).size(px(18.)).into_any_element()),
-                        label: c.label().into(),
+                        label: crate::i18n::t(c.label()).into(),
                         secondary: None,
                         on: c == choice,
                         click: std::rc::Rc::new(move |window, cx| {
@@ -2039,11 +2039,11 @@ impl Manager {
                 return ui::page(&theme, self.page.title(), "")
                     .child(
                         ui::panel(&theme)
-                            .child(div().child(format!("{} is open. This page works on this computer only for now; Status, Logs, Update and Backup and restore work on {}.", r.name, r.name)))
+                            .child(div().child(tf!("{} is open. This page works on this computer only for now; Status, Logs, Update and Backup and restore work on {}.", r.name, r.name)))
                             .child(
                                 h_flex()
                                     .gap_2()
-                                    .child(crate::ui::button("to-instances").primary().label(format!("Go to {}", r.name)).on_click(cx.listener(|this, _, _, cx| {
+                                    .child(crate::ui::button("to-instances").primary().label(tf!("Go to {}", r.name)).on_click(cx.listener(|this, _, _, cx| {
                                         this.page = Page::Instances;
                                         cx.notify();
                                     })))
@@ -2241,7 +2241,7 @@ fn render_timing(page: &str, t0: std::time::Instant, window: &mut Window) {
         let since = since.unwrap_or_else(std::time::Instant::now);
         let (count, total) = (count + 1, total + ms);
         if since.elapsed().as_secs_f64() >= 10. {
-            crate::timing::mark(&format!("renders page={page} n={count} total_ms={total:.1} per_s={:.2}", count as f64 / since.elapsed().as_secs_f64()));
+            crate::timing::mark(&tf!("renders page={page} n={count} total_ms={total:.1} per_s={:.2}", count as f64 / since.elapsed().as_secs_f64()));
             n.set((0, 0., Some(std::time::Instant::now())));
         } else {
             n.set((count, total, Some(since)));
@@ -2435,7 +2435,7 @@ pub(crate) const NAV_W: f32 = 228.;
 
 /// ", released 2026-10-24", or nothing.
 fn dated(date: &str) -> String {
-    if date.is_empty() { String::new() } else { format!(", released {date}") }
+    if date.is_empty() { String::new() } else { tf!(", released {date}") }
 }
 
 /// A condition's key: its instance and title (a new version is news).

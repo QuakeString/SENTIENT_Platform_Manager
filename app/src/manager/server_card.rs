@@ -121,8 +121,8 @@ pub fn read_remote(inst: &crate::remote::Instance) -> Result<ServerInfo, String>
         return Ok(i);
     }
     let out = crate::remote::agent_job(inst, "server-info-json")?;
-    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or_else(|| "The server's Platform Manager answered without its details.".to_string())?;
-    serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or_else(|| n!("The server's Platform Manager answered without its details.").to_string())?;
+    serde_json::from_str(line).map_err(|e| nf!("unexpected answer from the server: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -157,8 +157,8 @@ fn mins(d: Duration) -> String {
     let s = d.as_secs();
     match (s / 60, s % 60) {
         (0, s) => format!("{s} s"),
-        (m, 0) => format!("{m} min"),
-        (m, s) => format!("{m} min {s} s"),
+        (m, 0) => tf!("{m} min"),
+        (m, s) => tf!("{m} min {s} s"),
     }
 }
 
@@ -184,7 +184,7 @@ fn wait_for(host: &dyn PowerHost, sink: &ProgressFn, every: Duration, within: Du
         }
         if gone >= said + Duration::from_secs(30) {
             said = gone;
-            sink(Progress::Log { line: format!("{what}: {} so far, gives up after {}", mins(gone), mins(within)) });
+            sink(Progress::Log { line: nf!("{what}: {} so far, gives up after {}", mins(gone), mins(within)) });
         }
         host.wait(every);
     }
@@ -204,7 +204,7 @@ pub fn restart_flow(host: &dyn PowerHost, name: &str, sink: &ProgressFn) -> Resu
     let before = asked.unwrap_or(sent);
     sink(Progress::Step { name: jp::STEP_WENT_DOWN.into() });
     let mut early: Option<i64> = None;
-    let down = wait_for(host, sink, Duration::from_secs(2), DOWN_WITHIN, "Waiting for the server to go down", || match host.boot() {
+    let down = wait_for(host, sink, Duration::from_secs(2), DOWN_WITHIN, t!("Waiting for the server to go down"), || match host.boot() {
         Err(_) => true,
         // Back already with a new start time: the drop was missed.
         Ok(b) if b != before => {
@@ -214,33 +214,33 @@ pub fn restart_flow(host: &dyn PowerHost, name: &str, sink: &ProgressFn) -> Resu
         Ok(_) => false,
     });
     if !down {
-        return Err(fail(sink, "server-not-down", &format!("{name} did not go down within {}.", mins(DOWN_WITHIN)), "The restart was sent, but the server kept answering with the same start time.", "Look on the server whether a program holds the restart back (an open session asking to save, Windows installing updates), or restart it from its console."));
+        return Err(fail(sink, "server-not-down", &nf!("{name} did not go down within {}.", mins(DOWN_WITHIN)), n!("The restart was sent, but the server kept answering with the same start time."), n!("Look on the server whether a program holds the restart back (an open session asking to save, Windows installing updates), or restart it from its console.")));
     }
     sink(Progress::Step { name: jp::STEP_COMING_BACK.into() });
     let mut boot = early;
-    let back = wait_for(host, sink, Duration::from_secs(5), BACK_WITHIN, "Reconnecting", || {
+    let back = wait_for(host, sink, Duration::from_secs(5), BACK_WITHIN, t!("Reconnecting"), || {
         if boot.is_none() {
             boot = host.boot().ok();
         }
         boot.is_some()
     });
     let Some(boot) = boot.filter(|_| back) else {
-        return Err(fail(sink, "server-not-back", &format!("{name} did not come back within {}.", mins(BACK_WITHIN)), "It went down for the restart and has not answered since.", "Look at its console (the machine's screen, or the cloud provider's or hypervisor's console): it may wait at a boot prompt, a disk check or an update. Once it answers, SENTIENT starts by itself."));
+        return Err(fail(sink, "server-not-back", &nf!("{name} did not come back within {}.", mins(BACK_WITHIN)), n!("It went down for the restart and has not answered since."), n!("Look at its console (the machine's screen, or the cloud provider's or hypervisor's console): it may wait at a boot prompt, a disk check or an update. Once it answers, SENTIENT starts by itself.")));
     };
     sink(Progress::Step { name: jp::STEP_RESTARTED.into() });
     if boot == before {
-        return Err(fail(sink, "server-not-restarted", &format!("{name} answers again, but it did not restart."), "Its start time is the same as before: only the connection dropped.", "Restart it again; if it never restarts, look on the server whether the restart is blocked (systemctl status, or Windows' event log)."));
+        return Err(fail(sink, "server-not-restarted", &nf!("{name} answers again, but it did not restart."), n!("Its start time is the same as before: only the connection dropped."), n!("Restart it again; if it never restarts, look on the server whether the restart is blocked (systemctl status, or Windows' event log).")));
     }
-    sink(Progress::Log { line: format!("Started {}", chrono::DateTime::from_timestamp(boot, 0).map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default()) });
+    sink(Progress::Log { line: nf!("Started {}", chrono::DateTime::from_timestamp(boot, 0).map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default()) });
     sink(Progress::Step { name: jp::STEP_RUNNING.into() });
-    if !wait_for(host, sink, Duration::from_secs(5), RUNNING_WITHIN, "Waiting for SENTIENT and its database", || host.running().unwrap_or(false)) {
-        return Err(fail(sink, "server-sentient-not-running", &format!("SENTIENT or its database did not start within {} after the restart.", mins(RUNNING_WITHIN)), "The server is back, but its services are not all running.", "Open Status: it shows which one is stopped and its log; Start starts it."));
+    if !wait_for(host, sink, Duration::from_secs(5), RUNNING_WITHIN, t!("Waiting for SENTIENT and its database"), || host.running().unwrap_or(false)) {
+        return Err(fail(sink, "server-sentient-not-running", &nf!("SENTIENT or its database did not start within {} after the restart.", mins(RUNNING_WITHIN)), n!("The server is back, but its services are not all running."), n!("Open Status: it shows which one is stopped and its log; Start starts it.")));
     }
     sink(Progress::Step { name: jp::STEP_ANSWERS.into() });
-    if !wait_for(host, sink, Duration::from_secs(5), ANSWERS_WITHIN, "Waiting for SENTIENT to answer", || host.answers().unwrap_or(false)) {
-        return Err(fail(sink, "server-sentient-not-answering", &format!("SENTIENT runs but did not answer within {}.", mins(ANSWERS_WITHIN)), "Its service is up, its web address does not answer yet.", "Open Logs: SENTIENT's log says what it waits for (often the database)."));
+    if !wait_for(host, sink, Duration::from_secs(5), ANSWERS_WITHIN, t!("Waiting for SENTIENT to answer"), || host.answers().unwrap_or(false)) {
+        return Err(fail(sink, "server-sentient-not-answering", &nf!("SENTIENT runs but did not answer within {}.", mins(ANSWERS_WITHIN)), n!("Its service is up, its web address does not answer yet."), n!("Open Logs: SENTIENT's log says what it waits for (often the database).")));
     }
-    sink(Progress::Done { message: format!("{name} restarted; SENTIENT and its database run again.") });
+    sink(Progress::Done { message: nf!("{name} restarted; SENTIENT and its database run again.") });
     Ok(())
 }
 
@@ -250,10 +250,10 @@ pub fn shutdown_flow(host: &dyn PowerHost, name: &str, sink: &ProgressFn) -> Res
     host.prepare(sink)?;
     host.send(false, sink)?;
     sink(Progress::Step { name: crate::jobplan::STEP_WENT_DOWN.into() });
-    if !wait_for(host, sink, Duration::from_secs(2), DOWN_WITHIN, "Waiting for the server to go down", || host.boot().is_err()) {
-        return Err(fail(sink, "server-not-down", &format!("{name} did not go down within {}.", mins(DOWN_WITHIN)), "The shutdown was sent, but the server still answers.", "Look on the server whether a program holds the shutdown back, or shut it down from its console."));
+    if !wait_for(host, sink, Duration::from_secs(2), DOWN_WITHIN, t!("Waiting for the server to go down"), || host.boot().is_err()) {
+        return Err(fail(sink, "server-not-down", &nf!("{name} did not go down within {}.", mins(DOWN_WITHIN)), n!("The shutdown was sent, but the server still answers."), n!("Look on the server whether a program holds the shutdown back, or shut it down from its console.")));
     }
-    sink(Progress::Done { message: format!("{name} is off. Platform Manager cannot switch it on again: someone has to, or use the cloud provider's console.") });
+    sink(Progress::Done { message: nf!("{name} is off. Platform Manager cannot switch it on again: someone has to, or use the cloud provider's console.") });
     Ok(())
 }
 
@@ -270,7 +270,7 @@ fn boot_of(out: &str) -> Option<i64> {
 impl PowerHost for RemoteHost {
     fn prepare(&self, sink: &ProgressFn) -> Result<(), String> {
         if let Err(e) = crate::remote::deploy(&self.inst, sink) {
-            sink(Progress::Log { line: format!("The agent could not be updated: {}", crate::remote::split_failure(&e).0) });
+            sink(Progress::Log { line: nf!("The agent could not be updated: {}", crate::remote::split_failure(&e).0) });
         }
         Ok(())
     }
@@ -280,11 +280,11 @@ impl PowerHost for RemoteHost {
         for l in out.lines().filter(|l| !l.trim_start().starts_with('{') && !l.trim().is_empty()) {
             sink(Progress::Log { line: l.to_string() });
         }
-        boot_of(&out).ok_or_else(|| crate::remote::failed("The server did not confirm the restart was sent.", out.trim()))
+        boot_of(&out).ok_or_else(|| crate::remote::failed(n!("The server did not confirm the restart was sent."), out.trim()))
     }
 
     fn boot(&self) -> Result<i64, String> {
-        crate::remote::agent_job(&self.inst, "server-boot-json").and_then(|o| boot_of(&o).ok_or_else(|| "no start time".to_string()))
+        crate::remote::agent_job(&self.inst, "server-boot-json").and_then(|o| boot_of(&o).ok_or_else(|| n!("no start time").to_string()))
     }
 
     fn running(&self) -> Result<bool, String> {
@@ -340,7 +340,7 @@ impl PowerHost for FakeHost {
         Ok(())
     }
     fn send(&self, _: bool, sink: &ProgressFn) -> Result<i64, String> {
-        sink(Progress::Log { line: "Stopping SENTIENT and its database cleanly".into() });
+        sink(Progress::Log { line: n!("Stopping SENTIENT and its database cleanly").into() });
         *self.sent_at.lock().unwrap() = Some(*self.t.lock().unwrap());
         Ok(1_000)
     }
@@ -349,7 +349,7 @@ impl PowerHost for FakeHost {
             (Some(s), _) if s < Duration::from_secs(6) => Ok(1_000),
             (Some(s), Some(b)) if s >= Duration::from_secs(6 + b) => Ok(if self.new_boot { 2_000 } else { 1_000 }),
             (None, _) => Ok(1_000),
-            _ => Err("ssh: connect to host 192.0.2.10 port 22: Connection refused".into()),
+            _ => Err(n!("ssh: connect to host 192.0.2.10 port 22: Connection refused").into()),
         }
     }
     fn running(&self) -> Result<bool, String> {
@@ -385,10 +385,10 @@ pub enum Action {
 impl Action {
     pub fn title(self, name: &str) -> String {
         match self {
-            Action::Restart => format!("Restarting {name}"),
-            Action::Shutdown => format!("Shutting down {name}"),
-            Action::Docker => format!("Restarting Docker on {name}"),
-            Action::Updates => format!("Installing system updates on {name}"),
+            Action::Restart => tf!("Restarting {name}"),
+            Action::Shutdown => tf!("Shutting down {name}"),
+            Action::Docker => tf!("Restarting Docker on {name}"),
+            Action::Updates => tf!("Installing system updates on {name}"),
         }
     }
 }
@@ -462,11 +462,11 @@ pub fn start(job: &Entity<crate::jobs::Job>, action: Action, inst: Option<crate:
                         }
                         r
                     }
-                    (Action::Restart | Action::Shutdown, None) => Err("This computer is restarted or shut down from its own system.".into()),
+                    (Action::Restart | Action::Shutdown, None) => Err(n!("This computer is restarted or shut down from its own system.").into()),
                     (a, Some(inst)) => {
                         sink(Progress::Step { name: crate::jobplan::CONNECT.into() });
                         if let Err(e) = crate::remote::deploy(&inst, &sink) {
-                            sink(Progress::Log { line: format!("The agent could not be updated: {}", crate::remote::split_failure(&e).0) });
+                            sink(Progress::Log { line: nf!("The agent could not be updated: {}", crate::remote::split_failure(&e).0) });
                         }
                         let args = [if a == Action::Docker { "docker-restart" } else { "system-updates" }];
                         crate::remote::start_job(&inst, &args).and_then(|id| crate::remote::follow(&inst, &id, &sink))
@@ -497,34 +497,35 @@ fn gib(b: u64) -> f32 {
 /// "1 GB", "0.6 GB", "64 GB".
 fn gb_label(b: u64) -> String {
     let g = gib(b);
-    if g >= 10. || (g - g.round()).abs() < 0.05 { format!("{:.0} GB", g.round()) } else { format!("{g:.1} GB") }
+    if g >= 10. || (g - g.round()).abs() < 0.05 { tf!("{:.0} GB", g.round()) } else { tf!("{g:.1} GB") }
 }
 
 /// "41 days", "5 hours", "12 minutes".
 pub fn running_for(secs: i64) -> String {
     let s = secs.max(0);
-    let (n, unit) = if s >= 2 * 86_400 {
-        (s / 86_400, "days")
+    if s >= 2 * 86_400 {
+        tf!("{} days", s / 86_400)
     } else if s >= 86_400 {
-        (1, "day")
+        t!("1 day").to_string()
     } else if s >= 7200 {
-        (s / 3600, "hours")
+        tf!("{} hours", s / 3600)
     } else if s >= 3600 {
-        (1, "hour")
+        t!("1 hour").to_string()
+    } else if s / 60 <= 1 {
+        t!("1 minute").to_string()
     } else {
-        ((s / 60).max(1), if s / 60 == 1 { "minute" } else { "minutes" })
-    };
-    format!("{n} {unit}")
+        tf!("{} minutes", s / 60)
+    }
 }
 
 fn machine_line(i: &ServerInfo) -> (String, String) {
     if i.machine.is_virtual {
         (match &i.machine.hypervisor {
-            Some(h) if h.ends_with("container") => "Container".to_string(),
-            _ => "Virtual machine".to_string(),
+            Some(h) if h.ends_with("container") => t!("Container").to_string(),
+            _ => t!("Virtual machine").to_string(),
         }, i.machine.hypervisor.clone().map(|h| h.trim_end_matches(" container").to_string()).unwrap_or_default())
     } else {
-        ("Physical machine".into(), i.machine.model.clone().unwrap_or_default())
+        (t!("Physical machine").into(), i.machine.model.clone().unwrap_or_default())
     }
 }
 
@@ -597,9 +598,9 @@ fn tag(theme: &gpui_kit::component::Theme, text: &'static str) -> AnyElement {
 
 fn health_pill(theme: &gpui_kit::component::Theme, d: &Disk) -> Option<AnyElement> {
     let p = match d.health() {
-        crate::server_info::Health::Warning => ui::pill(theme, Tone::Bad, "Health warning"),
-        crate::server_info::Health::Worn(w) => ui::pill(theme, Tone::Warn, format!("{w} % worn")),
-        crate::server_info::Health::Healthy => ui::pill(theme, Tone::Good, "Healthy"),
+        crate::server_info::Health::Warning => ui::pill(theme, Tone::Bad, t!("Health warning")),
+        crate::server_info::Health::Worn(w) => ui::pill(theme, Tone::Warn, tf!("{w} % worn")),
+        crate::server_info::Health::Healthy => ui::pill(theme, Tone::Good, t!("Healthy")),
         crate::server_info::Health::NotKnown => return None,
     };
     Some(p.flex_shrink_0().text_size(px(12.)).into_any_element())
@@ -610,7 +611,7 @@ fn health_pill(theme: &gpui_kit::component::Theme, d: &Disk) -> Option<AnyElemen
 fn disk_block(theme: &gpui_kit::component::Theme, id: &str, d: &Disk, details: bool) -> Div {
     let mut extra = Vec::new();
     if details && d.sentient {
-        extra.push(tag(theme, "SENTIENT data"));
+        extra.push(tag(theme, t!("SENTIENT data")));
     }
     if details {
         extra.extend(health_pill(theme, d));
@@ -621,14 +622,14 @@ fn disk_block(theme: &gpui_kit::component::Theme, id: &str, d: &Disk, details: b
             .gap(px(4.))
             .min_w_0()
             .child(spans(theme, format!("{id}-name"), d.name.clone(), kind, Some(theme.muted_foreground), extra))
-            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).whitespace_nowrap().child(format!("Not mounted, {}", bytes_label(d.size))));
+            .child(div().text_size(px(13.)).text_color(theme.muted_foreground).whitespace_nowrap().child(tf!("Not mounted, {}", bytes_label(d.size))));
     }
     v_flex()
         .gap(px(4.))
         .min_w_0()
         .child(spans(theme, format!("{id}-name"), d.name.clone(), kind, None, extra))
         .child(bar(theme, d.used_fraction(), d.nearly_full()))
-        .child(div().text_size(px(13.)).text_color(if d.nearly_full() { warn_color(theme) } else { theme.muted_foreground }).whitespace_nowrap().overflow_hidden().text_ellipsis().child(format!("{} free of {}", bytes_label(d.free.unwrap_or(0)), bytes_label(d.size))))
+        .child(div().text_size(px(13.)).text_color(if d.nearly_full() { warn_color(theme) } else { theme.muted_foreground }).whitespace_nowrap().overflow_hidden().text_ellipsis().child(tf!("{} free of {}", bytes_label(d.free.unwrap_or(0)), bytes_label(d.size))))
 }
 
 /// The card's actions.
@@ -675,22 +676,22 @@ fn header(docker: bool, a: &Actions) -> Div {
     let terminal = div()
         .id("srv-terminal-tip")
         .child(ui::button("srv-terminal").outline().w(px(28.)).h(px(28.)).rounded(px(8.)).icon(Icon::new(Lucide::SquareTerminal).size(px(16.))).disabled(!TERMINAL_READY).on_click(move |_, w, cx| open(w, cx)))
-        .tooltip(crate::ui::tooltip("Open terminal"));
+        .tooltip(crate::ui::tooltip(t!("Open terminal")));
     let items: Vec<ui::RowMenuItem> = menu_entries(a.remote, docker)
         .into_iter()
         .map(|e| match e {
             MenuEntry::Docker => {
                 let f = a.on_docker.clone();
-                ui::RowMenuItem::Item { label: "Restart Docker".into(), icon: Some(IconName::Redo), action: Rc::new(move |w, cx| f(w, cx)) }
+                ui::RowMenuItem::Item { label: t!("Restart Docker").into(), icon: Some(IconName::Redo), action: Rc::new(move |w, cx| f(w, cx)) }
             }
             MenuEntry::Updates => {
                 let f = a.on_updates.clone();
-                ui::RowMenuItem::Item { label: "Install system updates".into(), icon: Some(IconName::ArrowDown), action: Rc::new(move |w, cx| f(w, cx)) }
+                ui::RowMenuItem::Item { label: t!("Install system updates").into(), icon: Some(IconName::ArrowDown), action: Rc::new(move |w, cx| f(w, cx)) }
             }
             MenuEntry::Divider => ui::RowMenuItem::Divider,
             MenuEntry::Shutdown => {
                 let f = a.on_shutdown.clone();
-                ui::RowMenuItem::Danger { label: "Shut down server".into(), icon: IconName::CircleX, action: Rc::new(move |w, cx| f(w, cx)) }
+                ui::RowMenuItem::Danger { label: t!("Shut down server").into(), icon: IconName::CircleX, action: Rc::new(move |w, cx| f(w, cx)) }
             }
         })
         .collect();
@@ -699,7 +700,7 @@ fn header(docker: bool, a: &Actions) -> Div {
         .gap(px(10.))
         .items_center()
         .mb(px(12.))
-        .child(div().flex_shrink_0().font_weight(FontWeight::MEDIUM).child("Server"))
+        .child(div().flex_shrink_0().font_weight(FontWeight::MEDIUM).child(t!("Server")))
         .child(div().flex_1())
         .child(
             h_flex()
@@ -708,9 +709,9 @@ fn header(docker: bool, a: &Actions) -> Div {
                 .items_center()
                 .child(ui::probed(terminal))
                 .when(a.remote, |r| {
-                    r.child(ui::probed(ui::button("srv-restart").outline().w(px(28.)).h(px(28.)).rounded(px(8.)).icon(Icon::new(Lucide::RotateCw).size(px(16.))).tooltip("Restart server").disabled(a.busy).on_click(move |_, w, cx| restart(w, cx))))
+                    r.child(ui::probed(ui::button("srv-restart").outline().w(px(28.)).h(px(28.)).rounded(px(8.)).icon(Icon::new(Lucide::RotateCw).size(px(16.))).tooltip(t!("Restart server")).disabled(a.busy).on_click(move |_, w, cx| restart(w, cx))))
                 })
-                .child(ui::probed(ui::row_menu("srv-menu", "More actions", a.busy, items))),
+                .child(ui::probed(ui::row_menu("srv-menu", t!("More actions"), a.busy, items))),
         )
 }
 
@@ -718,8 +719,8 @@ fn header(docker: bool, a: &Actions) -> Div {
 /// note after Running for); None: nothing waiting.
 pub fn updates_note(updates: Option<u32>, restart_needed: bool) -> Option<String> {
     match updates {
-        Some(1) => Some("1 update waiting".to_string()),
-        Some(n) if n > 1 => Some(format!("{n} updates waiting")),
+        Some(1) => Some(t!("1 update waiting").to_string()),
+        Some(n) if n > 1 => Some(tf!("{n} updates waiting")),
         _ => restart_needed.then(|| "restart needed".to_string()),
     }
 }
@@ -738,8 +739,8 @@ pub fn card(theme: &gpui_kit::component::Theme, info: Option<&Result<ServerInfo,
             return c.child(header(false, &a)).child(
                 v_flex()
                     .gap_3()
-                    .child(div().text_sm().text_color(theme.muted_foreground).child(if old { "The agent on this server is out of date: update it to see the server's details.".to_string() } else { format!("The server's details could not be read. {}", crate::remote::split_failure(e).0) }))
-                    .when(old, |d| d.child(h_flex().justify_end().child(ui::probed(ui::button("srv-agent-update").outline().label("Update agent").disabled(a.busy).on_click(move |_, w, cx| upd(w, cx)))))),
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(if old { t!("The agent on this server is out of date: update it to see the server's details.").to_string() } else { tf!("The server's details could not be read. {}", crate::remote::split_failure(e).0) }))
+                    .when(old, |d| d.child(h_flex().justify_end().child(ui::probed(ui::button("srv-agent-update").outline().label(t!("Update agent")).disabled(a.busy).on_click(move |_, w, cx| upd(w, cx)))))),
             );
         }
         Some(Ok(i)) => i,
@@ -754,39 +755,39 @@ pub fn card(theme: &gpui_kit::component::Theme, info: Option<&Result<ServerInfo,
     };
     // "Virtual machine" and, small, the system ("Ubuntu 22.04").
     let (m, _) = machine_line(info);
-    push("Machine".into(), None, line(theme, "srv-machine", m, info.os.clone(), None).into_any_element(), &mut rows);
+    push(t!("Machine").into(), None, line(theme, "srv-machine", m, info.os.clone(), None).into_any_element(), &mut rows);
     let cpu = live.map(|s| s.cpu).unwrap_or(0.);
-    let cores = if info.cpu.cores == 1 { "1 core".to_string() } else { format!("{} cores", info.cpu.cores) };
+    let cores = if info.cpu.cores == 1 { t!("1 core").to_string() } else { tf!("{} cores", info.cpu.cores) };
     push(
-        "Processor".into(),
+        t!("Processor").into(),
         None,
         v_flex().gap(px(4.)).min_w_0().child(line(theme, "srv-cpu", info.cpu.model.clone(), if live.is_some() { format!("{cores}, {cpu:.0} %") } else { cores }, None)).child(bar(theme, cpu / 100., cpu >= 90.)).into_any_element(),
         &mut rows,
     );
     let (used, total) = live.map(|s| (s.mem_used, s.mem_total)).unwrap_or((0, info.mem_total));
     let mem_f = if total > 0 { used as f32 / total as f32 } else { 0. };
-    let swap = if info.swap_total > 0 { format!("+ {} swap", gb_label(info.swap_total)) } else { String::new() };
+    let swap = if info.swap_total > 0 { tf!("+ {} swap", gb_label(info.swap_total)) } else { String::new() };
     push(
-        "Memory".into(),
+        t!("Memory").into(),
         None,
-        v_flex().gap(px(4.)).min_w_0().child(line(theme, "srv-mem", if live.is_some() { format!("{:.1} of {}", gib(used), gb_label(total)) } else { gb_label(total) }, swap, None)).child(bar(theme, mem_f, mem_f >= 0.9)).into_any_element(),
+        v_flex().gap(px(4.)).min_w_0().child(line(theme, "srv-mem", if live.is_some() { tf!("{:.1} of {}", gib(used), gb_label(total)) } else { gb_label(total) }, swap, None)).child(bar(theme, mem_f, mem_f >= 0.9)).into_any_element(),
         &mut rows,
     );
     if let Some(d) = info.data_disk() {
-        push("Data disk".into(), None, disk_block(theme, "srv-disk-data", d, false).into_any_element(), &mut rows);
+        push(t!("Data disk").into(), None, disk_block(theme, "srv-disk-data", d, false).into_any_element(), &mut rows);
     }
     for (k, d) in info.nearly_full_others().into_iter().enumerate() {
-        push("Nearly full".into(), Some(warn), disk_block(theme, &format!("srv-disk-full-{k}"), d, false).into_any_element(), &mut rows);
+        push(t!("Nearly full").into(), Some(warn), disk_block(theme, &format!("srv-disk-full-{k}"), d, false).into_any_element(), &mut rows);
     }
     let up = chrono::Utc::now().timestamp() - info.boot;
     // The card says the count, or that a restart is needed; All details both.
-    push("Running for".into(), None, line(theme, "srv-up", running_for(up), updates_note(info.updates, info.restart_needed).unwrap_or_default(), None).into_any_element(), &mut rows);
+    push(t!("Running for").into(), None, line(theme, "srv-up", running_for(up), updates_note(info.updates, info.restart_needed).unwrap_or_default(), None).into_any_element(), &mut rows);
     // Amber, only when something needs a look.
     for (k, l) in info.card_attention().into_iter().enumerate() {
-        push(if k == 0 { "Attention".into() } else { "".into() }, Some(warn), line(theme, format!("srv-att-{k}"), l, "", Some(warn)).into_any_element(), &mut rows);
+        push(if k == 0 { t!("Attention").into() } else { "".into() }, Some(warn), line(theme, format!("srv-att-{k}"), l, "", Some(warn)).into_any_element(), &mut rows);
     }
     let details = a.on_details.clone();
-    c.child(v_flex().flex_1().min_w_0().children(rows)).child(h_flex().justify_end().mt(px(14.)).child(ui::probed(ui::button("srv-details").outline().label("All details").on_click(move |_, w, cx| details(w, cx)))))
+    c.child(v_flex().flex_1().min_w_0().children(rows)).child(h_flex().justify_end().mt(px(14.)).child(ui::probed(ui::button("srv-details").outline().label(t!("All details")).on_click(move |_, w, cx| details(w, cx)))))
 }
 
 // ---------------------------------------------------------------------------
@@ -806,7 +807,7 @@ pub fn open_details(name: &str, info: ServerInfo, cx: &mut App) {
     if let Some(c) = shown.get(..1) {
         shown = format!("{}{}", c.to_uppercase(), &shown[1..]);
     }
-    crate::modal::open(crate::modal::Modal { title: format!("Server details: {shown}").into(), body: view.into(), width: 900., icon: Some(Icon::empty().path("icons/server.svg")), on_close: None }, cx);
+    crate::modal::open(crate::modal::Modal { title: tf!("Server details: {shown}").into(), body: view.into(), width: 900., icon: Some(Icon::empty().path("icons/server.svg")), on_close: None }, cx);
     crate::modal::set_footer(footer.into(), cx);
     crate::modal::set_list_body(cx);
     crate::modal::offer_full_screen(cx);
@@ -816,7 +817,7 @@ struct CloseFooter;
 
 impl Render for CloseFooter {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        h_flex().justify_end().child(ui::probed(ui::button("srv-details-close").outline().label("Close").on_click(|_, _, cx| crate::modal::close(cx))))
+        h_flex().justify_end().child(ui::probed(ui::button("srv-details-close").outline().label(t!("Close")).on_click(|_, _, cx| crate::modal::close(cx))))
     }
 }
 
@@ -824,10 +825,10 @@ impl Render for CloseFooter {
 /// second off, amber when not synchronised or more than a second off.
 pub fn clock_word(c: &crate::server_info::Clock) -> (&'static str, Tone) {
     match c.synced {
-        Some(false) => ("Not synced", Tone::Warn),
-        _ if c.out_of_sync() => ("Out of sync", Tone::Warn),
-        Some(true) => ("Synced", Tone::Good),
-        None => ("Not known", Tone::Neutral),
+        Some(false) => (t!("Not synced"), Tone::Warn),
+        _ if c.out_of_sync() => (t!("Out of sync"), Tone::Warn),
+        Some(true) => (t!("Synced"), Tone::Good),
+        None => (t!("Not known"), Tone::Neutral),
     }
 }
 
@@ -862,45 +863,45 @@ impl Render for Details {
             n += 1;
         };
         let (m, note) = machine_line(i);
-        add(&mut hw, "Machine", line(&theme, "sd-machine", m, note, None).into_any_element());
-        let mut cpu_note = vec![if i.cpu.cores == 1 { "1 core".to_string() } else { format!("{} cores", i.cpu.cores) }];
+        add(&mut hw, t!("Machine"), line(&theme, "sd-machine", m, note, None).into_any_element());
+        let mut cpu_note = vec![if i.cpu.cores == 1 { t!("1 core").to_string() } else { tf!("{} cores", i.cpu.cores) }];
         if i.cpu.threads > i.cpu.cores {
-            cpu_note.push(format!("{} threads", i.cpu.threads));
+            cpu_note.push(tf!("{} threads", i.cpu.threads));
         }
         if let Some(t) = i.cpu.temp_c {
             cpu_note.push(format!("{t:.0} °C"));
         }
-        add(&mut hw, "Processor", line(&theme, "sd-cpu", i.cpu.model.clone(), cpu_note.join(", "), None).into_any_element());
-        let swap = if i.swap_total > 0 { format!("+ {} swap, {} used", gb_label(i.swap_total), gb_label(i.swap_used)) } else { "no swap".into() };
-        add(&mut hw, "Memory", line(&theme, "sd-mem", gb_label(i.mem_total), swap, if i.heavy_swap() { Some(warn) } else { None }).into_any_element());
+        add(&mut hw, t!("Processor"), line(&theme, "sd-cpu", i.cpu.model.clone(), cpu_note.join(", "), None).into_any_element());
+        let swap = if i.swap_total > 0 { tf!("+ {} swap, {} used", gb_label(i.swap_total), gb_label(i.swap_used)) } else { "no swap".into() };
+        add(&mut hw, t!("Memory"), line(&theme, "sd-mem", gb_label(i.mem_total), swap, if i.heavy_swap() { Some(warn) } else { None }).into_any_element());
         if i.gpus.is_empty() {
-            add(&mut hw, "Graphics", line(&theme, "sd-gpu-none", "None", "", None).into_any_element());
+            add(&mut hw, t!("Graphics"), line(&theme, "sd-gpu-none", t!("None"), "", None).into_any_element());
         } else {
             let list = v_flex().gap(px(4.)).children(i.gpus.iter().enumerate().map(|(k, g)| line(&theme, format!("sd-gpu-{k}"), g.name.clone(), gpu_mem_note(&g.name, g.mem.map(gb_label)), None)));
-            add(&mut hw, "Graphics", list.into_any_element());
+            add(&mut hw, t!("Graphics"), list.into_any_element());
         }
         let disks = v_flex().gap(px(12.)).min_w_0().children(i.disks.iter().enumerate().map(|(k, d)| disk_block(&theme, &format!("sd-disk-{k}"), d, true)));
-        add(&mut hw, "Disks", disks.into_any_element());
+        add(&mut hw, t!("Disks"), disks.into_any_element());
 
         let mut sys: Vec<Div> = Vec::new();
         let mut add2 = |label: &'static str, v: AnyElement| {
             sys.push(kv_row(&theme, sys.is_empty(), label, None, v));
         };
-        let kernel = i.kernel.clone().map(|k| if i.windows() { k } else { format!("kernel {k}") }).unwrap_or_default();
-        add2("System", line(&theme, "sd-os", i.os.clone(), kernel, None).into_any_element());
+        let kernel = i.kernel.clone().map(|k| if i.windows() { k } else { tf!("kernel {k}") }).unwrap_or_default();
+        add2(t!("System"), line(&theme, "sd-os", i.os.clone(), kernel, None).into_any_element());
         let up = chrono::Utc::now().timestamp() - i.boot;
         add2(
-            "Running for",
+            t!("Running for"),
             line(&theme, "sd-up", running_for(up), match i.clean_restart {
-                Some(true) => "after a clean restart",
-                Some(false) => "after an unclean stop",
+                Some(true) => t!("after a clean restart"),
+                Some(false) => t!("after an unclean stop"),
                 None => "",
             }, None)
             .into_any_element(),
         );
         let mut clock_note = Vec::new();
         if let Some(o) = i.clock.offset {
-            clock_note.push(format!("{} off", crate::server_info::secs_label(o.abs())));
+            clock_note.push(tf!("{} off", crate::server_info::secs_label(o.abs())));
         }
         if let Some(z) = &i.clock.zone {
             clock_note.push(z.clone());
@@ -911,35 +912,35 @@ impl Render for Details {
             Tone::Warn | Tone::Bad => warn,
             Tone::Neutral => theme.muted_foreground,
         };
-        add2("Clock", spans(&theme, "sd-clock", word, clock_note.join(", "), Some(color), Vec::new()).into_any_element());
+        add2(t!("Clock"), spans(&theme, "sd-clock", word, clock_note.join(", "), Some(color), Vec::new()).into_any_element());
         let nets = if i.nets.is_empty() {
-            line(&theme, "sd-net-none", "None", "", None).into_any_element()
+            line(&theme, "sd-net-none", t!("None"), "", None).into_any_element()
         } else {
             v_flex()
                 .gap(px(4.))
                 .children(i.nets.iter().enumerate().map(|(k, n)| {
-                    let speed = n.speed.map(|s| if s >= 1000 && s % 1000 == 0 { format!("{} Gbit/s", s / 1000) } else { format!("{s} Mbit/s") }).unwrap_or_default();
+                    let speed = n.speed.map(|s| if s >= 1000 && s % 1000 == 0 { tf!("{} Gbit/s", s / 1000) } else { tf!("{s} Mbit/s") }).unwrap_or_default();
                     line(&theme, format!("sd-net-{k}"), format!("{} {}", n.name, n.ip.clone().unwrap_or_default()), speed, None)
                 }))
                 .into_any_element()
         };
-        add2("Network", nets);
+        add2(t!("Network"), nets);
         let upd = match (i.updates, i.restart_needed) {
-            (Some(0), false) => line(&theme, "sd-upd", "None waiting", "", None),
-            (None, false) => line(&theme, "sd-upd", "Not known", "", None),
-            (Some(0), true) | (None, true) => spans(&theme, "sd-upd", "Restart needed", "", Some(warn), Vec::new()),
-            (Some(n), r) => spans(&theme, "sd-upd", format!("{n} waiting"), if r { "restart needed" } else { "" }, Some(warn), Vec::new()),
+            (Some(0), false) => line(&theme, "sd-upd", t!("None waiting"), "", None),
+            (None, false) => line(&theme, "sd-upd", t!("Not known"), "", None),
+            (Some(0), true) | (None, true) => spans(&theme, "sd-upd", t!("Restart needed"), "", Some(warn), Vec::new()),
+            (Some(n), r) => spans(&theme, "sd-upd", tf!("{n} waiting"), if r { "restart needed" } else { "" }, Some(warn), Vec::new()),
         };
-        add2("Updates", upd.into_any_element());
+        add2(t!("Updates"), upd.into_any_element());
         let docker = match &i.docker {
             Some(d) => line(&theme, "sd-docker", d.version.clone(), match d.on_boot {
-                Some(true) => "starts on boot",
-                Some(false) => "does not start on boot",
+                Some(true) => t!("starts on boot"),
+                Some(false) => t!("does not start on boot"),
                 None => "",
             }, None),
-            None => line(&theme, "sd-docker", "Not used", "", None),
+            None => line(&theme, "sd-docker", t!("Not used"), "", None),
         };
-        add2("Docker", docker.into_any_element());
+        add2(t!("Docker"), docker.into_any_element());
         let _ = n;
 
         // Two columns when the dialog is wide enough, else one under the other.
@@ -947,9 +948,9 @@ impl Render for Details {
         let dialog_w = if crate::modal::full_screen(cx) { vw - 32. } else { 900f32.min((vw * 0.7).max(480.)).min(vw - 32.) };
         let cols = dialog_w >= 760.;
         let body = if cols {
-            h_flex().items_start().gap(px(40.)).child(section(&theme, "Hardware", hw)).child(section(&theme, "System", sys))
+            h_flex().items_start().gap(px(40.)).child(section(&theme, t!("Hardware"), hw)).child(section(&theme, t!("System"), sys))
         } else {
-            v_flex().gap(px(18.)).child(section(&theme, "Hardware", hw)).child(section(&theme, "System", sys))
+            v_flex().gap(px(18.)).child(section(&theme, t!("Hardware"), hw)).child(section(&theme, t!("System"), sys))
         };
         div()
             .id("srv-details-scroll")
@@ -969,9 +970,9 @@ impl Render for Details {
 pub fn confirm_restart(name: &str, window: &mut Window, cx: &mut App, go: Rc<dyn Fn(&mut App)>) {
     let name = name.to_string();
     crate::modal::alert(window, cx, move |d, _, _| {
-        d.title(format!("Restart {name}?"))
-            .description("The whole server restarts. SENTIENT and its database stop and come back by themselves, usually within 2 minutes. Devices keep their data and send it again once SENTIENT is back.\n\nThe connection to this server returns automatically.")
-            .ok_text("Restart server")
+        d.title(tf!("Restart {name}?"))
+            .description(t!("The whole server restarts. SENTIENT and its database stop and come back by themselves, usually within 2 minutes. Devices keep their data and send it again once SENTIENT is back.\n\nThe connection to this server returns automatically."))
+            .ok_text(t!("Restart server"))
             .on_ok(move |_, _, cx| {
                 go(cx);
                 true
@@ -984,7 +985,7 @@ pub fn confirm_shutdown(name: &str, window: &mut Window, cx: &mut App, go: Rc<dy
     let name = name.to_string();
     let view = cx.new(|cx| ShutdownBody::new(name.clone(), window, cx));
     let footer = cx.new(|cx| ShutdownFooter { _o: cx.observe(&view, |_, _, cx| cx.notify()), body: view.clone(), go });
-    crate::modal::open(crate::modal::Modal { title: format!("Shut down {name}?").into(), body: view.into(), width: 520., icon: Some(Icon::new(IconName::TriangleAlert)), on_close: None }, cx);
+    crate::modal::open(crate::modal::Modal { title: tf!("Shut down {name}?").into(), body: view.into(), width: 520., icon: Some(Icon::new(IconName::TriangleAlert)), on_close: None }, cx);
     crate::modal::set_footer(footer.into(), cx);
 }
 
@@ -1022,8 +1023,8 @@ impl Render for ShutdownBody {
         let theme = cx.theme().clone();
         v_flex()
             .gap_3()
-            .child(div().text_sm().text_color(theme.muted_foreground).child("SENTIENT stops and the server powers off. Platform Manager cannot switch it on again: someone has to, or use the cloud provider's console."))
-            .child(h_flex().flex_wrap().gap_1().text_sm().child("Type").child(div().font_weight(FontWeight::SEMIBOLD).child(self.name.clone())).child("to confirm."))
+            .child(div().text_sm().text_color(theme.muted_foreground).child(t!("SENTIENT stops and the server powers off. Platform Manager cannot switch it on again: someone has to, or use the cloud provider's console.")))
+            .child(h_flex().flex_wrap().gap_1().text_sm().child(t!("Type")).child(div().font_weight(FontWeight::SEMIBOLD).child(self.name.clone())).child(t!("to confirm.")))
             .child(Input::new(&self.input))
     }
 }
@@ -1041,17 +1042,17 @@ impl Render for ShutdownFooter {
         h_flex()
             .gap(ui::button_gap())
             .justify_end()
-            .child(ui::probed(ui::button("srv-shutdown-cancel").outline().label("Cancel").on_click(|_, _, cx| crate::modal::close(cx))))
+            .child(ui::probed(ui::button("srv-shutdown-cancel").outline().label(t!("Cancel")).on_click(|_, _, cx| crate::modal::close(cx))))
             // The solid red action once the name is typed (the toolkit's
             // danger variant is a pale tint that reads as disabled).
             .child(ui::probed(if ok {
-                crate::modal::danger_button(cx.theme(), "srv-shutdown-go", "Shut down server".into(), move |_, _, cx| {
+                crate::modal::danger_button(cx.theme(), "srv-shutdown-go", t!("Shut down server").into(), move |_, _, cx| {
                     crate::modal::close(cx);
                     go(cx);
                 })
                 .into_any_element()
             } else {
-                ui::button("srv-shutdown-go").danger().label("Shut down server").disabled(true).into_any_element()
+                ui::button("srv-shutdown-go").danger().label(t!("Shut down server")).disabled(true).into_any_element()
             }))
     }
 }

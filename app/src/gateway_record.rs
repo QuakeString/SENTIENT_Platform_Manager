@@ -70,7 +70,7 @@ pub fn load() -> Option<GatewayRecord> {
 pub fn save(g: Option<&GatewayRecord>) -> Result<(), String> {
     let path = installation();
     if let Some(mut v) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
-        let obj = v.as_object_mut().ok_or("The installation record is not a JSON object.")?;
+        let obj = v.as_object_mut().ok_or(n!("The installation record is not a JSON object."))?;
         match g {
             Some(g) => {
                 obj.insert("gateway".into(), serde_json::to_value(g).map_err(|e| e.to_string())?);
@@ -102,9 +102,9 @@ pub fn save(g: Option<&GatewayRecord>) -> Result<(), String> {
 /// Manage the gateway found here (status()): record it as it is.
 pub fn adopt() -> Result<String, String> {
     let s = sentient_installer_core::gateway::status();
-    let g = GatewayRecord::of(&s).filter(|_| s.installed).ok_or("There is no Sentient Gateway on this computer.")?;
+    let g = GatewayRecord::of(&s).filter(|_| s.installed).ok_or(n!("There is no Sentient Gateway on this computer."))?;
     save(Some(&g))?;
-    Ok(format!("The Platform Manager now manages the gateway {}. Nothing about it was changed.", g.name))
+    Ok(tf!("The Platform Manager now manages the gateway {}. Nothing about it was changed.", g.name))
 }
 
 #[cfg(test)]

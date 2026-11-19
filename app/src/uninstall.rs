@@ -244,7 +244,7 @@ impl Choice {
     }
 }
 
-const NOT_BY_SETUP: &str = "not installed by Setup";
+const NOT_BY_SETUP: &str = n!("not installed by Setup");
 
 /// The dialog's rows for this computer (or server), in order.
 pub fn rows(f: &Facts) -> Vec<Row> {
@@ -264,66 +264,66 @@ pub fn rows(f: &Facts) -> Vec<Row> {
     let docker = f.engine == Engine::Docker;
     let mut out = Vec::new();
     let sentient = if docker {
-        row(Key::Sentient, None, "SENTIENT container", format!("Container {} and image {}", n.app_container, n.image), f.sizes.sentient, true, "SENTIENT container")
+        row(Key::Sentient, None, t!("SENTIENT container"), tf!("Container {} and image {}", n.app_container, n.image), f.sizes.sentient, true, t!("SENTIENT container"))
     } else {
         let service = if f.windows { "SentientServer" } else { "sentient" };
-        row(Key::Sentient, None, "SENTIENT server", format!("Service {service}, {}", n.install_dir), f.sizes.sentient, true, "SENTIENT server")
+        row(Key::Sentient, None, t!("SENTIENT server"), tf!("Service {service}, {}", n.install_dir), f.sizes.sentient, true, t!("SENTIENT server"))
     };
     out.push(sentient);
     let files = if docker {
-        row(Key::KeepFiles, Some(Key::Sentient), &format!("Keep volume {}", n.vol_data), "File stores and backups".into(), f.sizes.files, true, &format!("volume {}", n.vol_data))
+        row(Key::KeepFiles, Some(Key::Sentient), &tf!("Keep volume {}", n.vol_data), t!("File stores and backups").into(), f.sizes.files, true, &tf!("volume {}", n.vol_data))
     } else {
-        row(Key::KeepFiles, Some(Key::Sentient), "Keep file stores and backups", n.files.clone(), f.sizes.files, true, "file stores and backups")
+        row(Key::KeepFiles, Some(Key::Sentient), t!("Keep file stores and backups"), n.files.clone(), f.sizes.files, true, t!("file stores and backups"))
     };
     if docker {
         out.push(files.clone());
     }
 
     // PostgreSQL.
-    let pg_title = if f.timescale { "PostgreSQL and TimescaleDB" } else { "PostgreSQL" };
+    let pg_title = if f.timescale { t!("PostgreSQL and TimescaleDB") } else { "PostgreSQL" };
     // Stopped: unknown, so off unless switched on (below), never locked.
     let unknown = pg_unknown(f);
     let shared = match &f.pg_others {
-        None => Some("Checking what else PostgreSQL holds…".to_string()),
+        None => Some(t!("Checking what else PostgreSQL holds…").to_string()),
         Some(Err(_)) if unknown => None,
-        Some(Ok(list)) if !list.is_empty() => Some(format!("It also holds {}: another program uses it, so it stays.", and_list(list))),
-        Some(Err(e)) => Some(format!("What else it holds could not be checked, so it stays ({e}).")),
+        Some(Ok(list)) if !list.is_empty() => Some(tf!("It also holds {}: another program uses it, so it stays.", and_list(list))),
+        Some(Err(e)) => Some(tf!("What else it holds could not be checked, so it stays ({e}).")),
         _ => None,
     };
     let by_setup = f.pg_origin != Origin::Before;
     let mut pg = if docker {
-        row(Key::Postgres, None, "PostgreSQL container", "Container and its image".into(), f.sizes.pg_program, true, "PostgreSQL container")
+        row(Key::Postgres, None, t!("PostgreSQL container"), t!("Container and its image").into(), f.sizes.pg_program, true, t!("PostgreSQL container"))
     } else if f.windows {
-        row(Key::Postgres, None, pg_title, format!("Service {} and its program folder; port {}", sentient_installer_core::native::PG_SERVICE, n.pg_port), f.sizes.pg_program, true, pg_title)
+        row(Key::Postgres, None, pg_title, tf!("Service {} and its program folder; port {}", sentient_installer_core::native::PG_SERVICE, n.pg_port), f.sizes.pg_program, true, pg_title)
     } else {
-        let what = if f.timescale { "Both packages and the service" } else { "Package and service" };
-        row(Key::Postgres, None, pg_title, format!("{what}; port {}", n.pg_port), f.sizes.pg_program, true, pg_title)
+        let what = if f.timescale { t!("Both packages and the service") } else { t!("Package and service") };
+        row(Key::Postgres, None, pg_title, tf!("{what}; port {}", n.pg_port), f.sizes.pg_program, true, pg_title)
     };
     if !by_setup {
         pg.detail = NOT_BY_SETUP[..1].to_uppercase() + &NOT_BY_SETUP[1..];
-        pg.why = Some("It was on this computer before Setup. Remove it with your package manager.".into());
+        pg.why = Some(t!("It was on this computer before Setup. Remove it with your package manager.").into());
         pg.bytes = None;
     } else if let Some(why) = shared.clone() {
         pg.why = Some(why);
     } else if unknown {
         pg.default_on = false;
-        pg.extra = Some("PostgreSQL is stopped, so what else it holds could not be checked: it stays unless you switch it on. Switch it on only if no other program keeps databases in it, or start PostgreSQL and open this again to have it checked.".into());
+        pg.extra = Some(t!("PostgreSQL is stopped, so what else it holds could not be checked: it stays unless you switch it on. Switch it on only if no other program keeps databases in it, or start PostgreSQL and open this again to have it checked.").into());
     } else if f.pg_origin == Origin::Unknown {
-        pg.help = Some("This install is from before the Platform Manager recorded what Setup installed. Setup installs PostgreSQL unless one was already there; another program using it would be listed here.".into());
+        pg.help = Some(t!("This install is from before the Platform Manager recorded what Setup installed. Setup installs PostgreSQL unless one was already there; another program using it would be listed here.").into());
     }
     let pg_db = row(
         Key::PgDatabase,
         None,
-        &format!("Database {}", n.db_name),
-        "Drop the database and role SENTIENT created. PostgreSQL itself stays.".into(),
+        &tf!("Database {}", n.db_name),
+        t!("Drop the database and role SENTIENT created. PostgreSQL itself stays.").into(),
         f.sizes.pg_data,
         false,
-        &format!("database {}", n.db_name),
+        &tf!("database {}", n.db_name),
     );
     let keep_pg = if docker {
-        row(Key::KeepPgData, Some(Key::Postgres), &format!("Keep volume {}", n.vol_pg), format!("Database {}", n.db_name), f.sizes.pg_data, true, &format!("volume {}", n.vol_pg))
+        row(Key::KeepPgData, Some(Key::Postgres), &tf!("Keep volume {}", n.vol_pg), tf!("Database {}", n.db_name), f.sizes.pg_data, true, &tf!("volume {}", n.vol_pg))
     } else {
-        row(Key::KeepPgData, Some(Key::Postgres), "Keep its data", n.pg_data.clone(), f.sizes.pg_data, true, "PostgreSQL's data")
+        row(Key::KeepPgData, Some(Key::Postgres), t!("Keep its data"), n.pg_data.clone(), f.sizes.pg_data, true, t!("PostgreSQL's data"))
     };
     if pg.why.is_some() {
         // Setup's database in it can still go.
@@ -338,36 +338,36 @@ pub fn rows(f: &Facts) -> Vec<Row> {
     if f.has_clickhouse {
         let (http, native) = n.ch_ports;
         let mut ch = if docker {
-            row(Key::Clickhouse, None, "ClickHouse container", "Container and its image".into(), f.sizes.ch_program, true, "ClickHouse container")
+            row(Key::Clickhouse, None, t!("ClickHouse container"), t!("Container and its image").into(), f.sizes.ch_program, true, t!("ClickHouse container"))
         } else if f.ch_in_wsl {
-            row(Key::Clickhouse, None, "ClickHouse", "Guard service, keep-alive task, hidden account".into(), f.sizes.ch_program, true, "ClickHouse")
+            row(Key::Clickhouse, None, "ClickHouse", t!("Guard service, keep-alive task, hidden account").into(), f.sizes.ch_program, true, "ClickHouse")
         } else {
-            row(Key::Clickhouse, None, "ClickHouse", format!("Program and service; ports {http}, {native}"), f.sizes.ch_program, true, "ClickHouse")
+            row(Key::Clickhouse, None, "ClickHouse", tf!("Program and service; ports {http}, {native}"), f.sizes.ch_program, true, "ClickHouse")
         };
         let keep_ch = if docker {
-            row(Key::KeepChData, Some(Key::Clickhouse), &format!("Keep volume {}", n.vol_ch), "Telemetry".into(), f.sizes.ch_data, true, &format!("volume {}", n.vol_ch))
+            row(Key::KeepChData, Some(Key::Clickhouse), &tf!("Keep volume {}", n.vol_ch), t!("Telemetry").into(), f.sizes.ch_data, true, &tf!("volume {}", n.vol_ch))
         } else if f.ch_in_wsl {
-            row(Key::KeepChData, Some(Key::Clickhouse), "Keep its data", "Telemetry inside the WSL disk (parked, reused by a later install)".into(), f.sizes.ch_data, true, "ClickHouse's data")
+            row(Key::KeepChData, Some(Key::Clickhouse), t!("Keep its data"), t!("Telemetry inside the WSL disk (parked, reused by a later install)").into(), f.sizes.ch_data, true, t!("ClickHouse's data"))
         } else {
-            row(Key::KeepChData, Some(Key::Clickhouse), "Keep its data", "/var/lib/clickhouse (telemetry)".into(), f.sizes.ch_data, true, "ClickHouse's data")
+            row(Key::KeepChData, Some(Key::Clickhouse), t!("Keep its data"), "/var/lib/clickhouse (telemetry)".into(), f.sizes.ch_data, true, t!("ClickHouse's data"))
         };
         if f.ch_origin == Origin::Before {
-            ch.detail = "Not installed by Setup".into();
-            ch.why = Some("It was on this computer before Setup. Remove it with your package manager.".into());
+            ch.detail = t!("Not installed by Setup").into();
+            ch.why = Some(t!("It was on this computer before Setup. Remove it with your package manager.").into());
             ch.bytes = None;
-            out.push(row(Key::ChDatabase, None, &format!("ClickHouse database {}", n.db_name), "Drop the database and user SENTIENT created. ClickHouse itself stays.".into(), f.sizes.ch_data, false, "ClickHouse database"));
+            out.push(row(Key::ChDatabase, None, &tf!("ClickHouse database {}", n.db_name), t!("Drop the database and user SENTIENT created. ClickHouse itself stays.").into(), f.sizes.ch_data, false, t!("ClickHouse database")));
             out.push(ch);
         } else {
             out.push(ch);
             out.push(keep_ch);
         }
         if f.ch_in_wsl {
-            let mut d = row(Key::WslDistro, Some(Key::Clickhouse), "SENTIENT WSL machine", "Unregister machine sentient and delete its disk".into(), f.sizes.distro, true, "SENTIENT WSL machine");
-            d.help = Some("ClickHouse runs in Docker in this WSL machine, under its own hidden account. Its disk holds ClickHouse's data.".into());
+            let mut d = row(Key::WslDistro, Some(Key::Clickhouse), t!("SENTIENT WSL machine"), t!("Unregister machine sentient and delete its disk").into(), f.sizes.distro, true, t!("SENTIENT WSL machine"));
+            d.help = Some(t!("ClickHouse runs in Docker in this WSL machine, under its own hidden account. Its disk holds ClickHouse's data.").into());
             out.push(d);
-            let mut w = row(Key::Wsl, None, "WSL itself", "Turn the Windows feature off. Windows restarts.".into(), None, false, "WSL");
+            let mut w = row(Key::Wsl, None, t!("WSL itself"), t!("Turn the Windows feature off. Windows restarts.").into(), None, false, "WSL");
             w.why = wsl_guard(f.wsl_origin, &f.other_distros).err();
-            w.extra = Some(if f.other_distros.is_empty() { "Other WSL machines: none".into() } else { format!("Other WSL machines: {}", f.other_distros.join(", ")) });
+            w.extra = Some(if f.other_distros.is_empty() { t!("Other WSL machines: none").into() } else { tf!("Other WSL machines: {}", f.other_distros.join(", ")) });
             out.push(w);
         }
     }
@@ -375,18 +375,18 @@ pub fn rows(f: &Facts) -> Vec<Row> {
         out.push(files);
     }
     if f.gateway {
-        let mut g = row(Key::Gateway, None, "Gateway", "The Sentient Gateway on this computer".into(), None, false, "Gateway");
-        g.help = Some("Its service or container and its program go; its settings stay for a new install.".into());
+        let mut g = row(Key::Gateway, None, t!("Gateway"), t!("The Sentient Gateway on this computer").into(), None, false, t!("Gateway"));
+        g.help = Some(t!("Its service or container and its program go; its settings stay for a new install.").into());
         out.push(g);
     }
     if docker {
-        let mut d = row(Key::Docker, None, "Docker itself", "Not installed by Setup".into(), None, false, "Docker");
-        d.why = Some("Docker is never removed: other programs may use it.".into());
+        let mut d = row(Key::Docker, None, t!("Docker itself"), t!("Not installed by Setup").into(), None, false, t!("Docker"));
+        d.why = Some(t!("Docker is never removed: other programs may use it.").into());
         out.push(d);
     } else {
-        out.push(row(Key::Shortcuts, None, "Shortcuts", if f.windows { "Start menu and desktop".into() } else { "Menu entry and desktop icon".into() }, None, true, "shortcuts"));
+        out.push(row(Key::Shortcuts, None, t!("Shortcuts"), if f.windows { t!("Start menu and desktop").into() } else { t!("Menu entry and desktop icon").into() }, None, true, "shortcuts"));
     }
-    let manager_detail = if f.windows { "Tray icon and program; removed last" } else { "Removed last" };
+    let manager_detail = if f.windows { t!("Tray icon and program; removed last") } else { t!("Removed last") };
     out.push(row(Key::Manager, None, "Platform Manager", manager_detail.into(), f.sizes.manager, false, "Platform Manager"));
     out
 }
@@ -394,12 +394,12 @@ pub fn rows(f: &Facts) -> Vec<Row> {
 /// WSL can go only when Setup turned it on and no other distribution uses it.
 pub fn wsl_guard(origin: Origin, others: &[String]) -> Result<(), String> {
     match origin {
-        Origin::Before => return Err("WSL was on before Setup ran.".into()),
-        Origin::Unknown => return Err("Not recorded whether Setup turned WSL on, so it stays.".into()),
+        Origin::Before => return Err(n!("WSL was on before Setup ran.").into()),
+        Origin::Unknown => return Err(n!("Not recorded whether Setup turned WSL on, so it stays.").into()),
         Origin::Setup => {}
     }
     if !others.is_empty() {
-        return Err(format!("Other WSL machines use it: {}.", others.join(", ")));
+        return Err(nf!("Other WSL machines use it: {}.", others.join(", ")));
     }
     Ok(())
 }
@@ -423,10 +423,10 @@ pub fn rule(key: Key, c: &Choice, rows: &[Row]) -> Option<String> {
     }
     let present = |k: Key| rows.iter().any(|r| r.key == k);
     match key {
-        Key::Postgres | Key::Clickhouse | Key::PgDatabase | Key::ChDatabase if !c.has(Key::Sentient) => Some("SENTIENT uses it: pick SENTIENT too.".into()),
-        Key::Manager if !c.has(Key::Sentient) => Some("SENTIENT stays, and the Platform Manager is how it is managed.".into()),
-        Key::WslDistro if on(Key::KeepChData, c, rows) => Some("It holds ClickHouse's kept data.".into()),
-        Key::Wsl if present(Key::WslDistro) && !on(Key::WslDistro, c, rows) => Some("The SENTIENT WSL machine stays, and it needs WSL.".into()),
+        Key::Postgres | Key::Clickhouse | Key::PgDatabase | Key::ChDatabase if !c.has(Key::Sentient) => Some(t!("SENTIENT uses it: pick SENTIENT too.").into()),
+        Key::Manager if !c.has(Key::Sentient) => Some(t!("SENTIENT stays, and the Platform Manager is how it is managed.").into()),
+        Key::WslDistro if on(Key::KeepChData, c, rows) => Some(t!("It holds ClickHouse's kept data.").into()),
+        Key::Wsl if present(Key::WslDistro) && !on(Key::WslDistro, c, rows) => Some(t!("The SENTIENT WSL machine stays, and it needs WSL.").into()),
         _ => None,
     }
 }
@@ -446,7 +446,7 @@ fn and_list(items: &[String]) -> String {
     match items {
         [] => String::new(),
         [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        [rest @ .., last] => tf!("{} and {last}", rest.join(", ")),
     }
 }
 
@@ -485,14 +485,26 @@ pub fn gone_and_kept(c: &Choice, rows: &[Row]) -> (Vec<String>, Vec<String>, u64
 pub fn summary(c: &Choice, rows: &[Row]) -> (String, String) {
     let (gone, kept, free) = gone_and_kept(c, rows);
     let removes = if gone.is_empty() {
-        "Nothing picked.".to_string()
+        t!("Nothing picked.").to_string()
     } else if free > 0 {
-        format!("Removes: {}. Frees {}.", gone.join(", "), human(free))
+        tf!("Removes: {}. Frees {}.", gone.join(", "), human(free))
     } else {
-        format!("Removes: {}.", gone.join(", "))
+        tf!("Removes: {}.", gone.join(", "))
     };
-    let keeps = format!("Keeps: {}.", if kept.is_empty() { "nothing".to_string() } else { kept.join(", ") });
+    let keeps = tf!("Keeps: {}.", if kept.is_empty() { t!("nothing").to_string() } else { kept.join(", ") });
     (removes, keeps)
+}
+
+/// The result screen's first line: what was removed (and the space freed).
+fn summary_done(c: &Choice, rows: &[Row]) -> String {
+    let (gone, _, free) = gone_and_kept(c, rows);
+    if gone.is_empty() {
+        t!("Nothing picked.").to_string()
+    } else if free > 0 {
+        tf!("Removed: {}. Freed {}.", gone.join(", "), human(free))
+    } else {
+        tf!("Removed: {}.", gone.join(", "))
+    }
 }
 
 /// What a row's size column shows.
@@ -549,7 +561,7 @@ pub fn from_args(args: &[String]) -> Result<Choice, String> {
         Some(list) => {
             for id in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
                 let k = Key::PARTS.into_iter().find(|k| k.id() == id).ok_or_else(|| {
-                    format!("unknown part {id}: use {}", Key::PARTS.iter().filter(|k| **k != Key::Docker).map(|k| k.id()).collect::<Vec<_>>().join(", "))
+                    nf!("unknown part {id}: use {}", Key::PARTS.iter().filter(|k| **k != Key::Docker).map(|k| k.id()).collect::<Vec<_>>().join(", "))
                 })?;
                 c.set(k, true);
             }
@@ -617,7 +629,7 @@ pub fn facts_quick(record: &InstallationRecord) -> Facts {
     let names = Names {
         install_dir: record.install_dir.display().to_string(),
         files: if windows {
-            format!("{}\\data, backups", record.state_dir.display())
+            tf!("{}\\data, backups", record.state_dir.display())
         } else if record.engine == Engine::Docker {
             String::new()
         } else {
@@ -684,7 +696,7 @@ fn unit_file_exists(unit: &str) -> bool {
 /// databases). The dialog keeps PostgreSQL unless the operator switches it
 /// on ([`rows`]). An older Platform Manager reading it sees an error and
 /// keeps PostgreSQL fixed: safe either way.
-pub const PG_STOPPED: &str = "PostgreSQL is stopped, so the databases it holds could not be listed";
+pub const PG_STOPPED: &str = n!("PostgreSQL is stopped, so the databases it holds could not be listed");
 
 /// The other databases in PostgreSQL (Linux native, where it is shared).
 pub fn pg_others(record: &InstallationRecord) -> Result<Vec<String>, String> {
@@ -899,7 +911,7 @@ pub fn run(record: InstallationRecord, c: Choice, facts: Facts, sink: ProgressFn
     let e = effective(&c, &rows);
     for k in c.on.difference(&e.on) {
         if let Some(why) = rule(*k, &c, &rows).filter(|w| !w.is_empty()) {
-            log(&sink, format!("{} stays: {why}", rows.iter().find(|r| r.key == *k).map(|r| r.title.clone()).unwrap_or_default()));
+            log(&sink, tf!("{} stays: {why}", rows.iter().find(|r| r.key == *k).map(|r| r.title.clone()).unwrap_or_default()));
         }
     }
     let pg = pg_action(&e);
@@ -918,16 +930,16 @@ pub fn run(record: InstallationRecord, c: Choice, facts: Facts, sink: ProgressFn
     let mut images: Vec<String> = Vec::new();
 
     if e.has(Key::Gateway) {
-        step(&sink, "Removing the Gateway");
+        step(&sink, t!("Removing the Gateway"));
         let r = sentient_installer_core::gateway::remove(&nested, true, true).map(|msg| {
             let _ = crate::gateway_record::save(None);
             log(&sink, msg);
         });
-        note(r, "The Gateway");
+        note(r, t!("The Gateway"));
     }
 
     if e.has(Key::Sentient) {
-        step(&sink, "Removing SENTIENT");
+        step(&sink, t!("Removing SENTIENT"));
         match record.engine {
             Engine::Native => note(sentient_installer_core::native::remove_sentient_only(nested.clone(), &cfg), "SENTIENT"),
             Engine::Docker if windows => {
@@ -958,7 +970,7 @@ pub fn run(record: InstallationRecord, c: Choice, facts: Facts, sink: ProgressFn
                     }
                 }
                 let files = if record.stack.external.is_some() { Vec::new() } else { vec![record.stack.compose_path(), record.stack.ch_config_path()] };
-                note(run_shell(&nested, &removal::docker_script(&n, &parts, &files)), "SENTIENT's containers");
+                note(run_shell(&nested, &removal::docker_script(&n, &parts, &files)), t!("SENTIENT's containers"));
                 if parts.postgres && (parts.clickhouse || !facts.has_clickhouse) {
                     let _ = std::fs::remove_dir(record.stack.stack_dir());
                 }
@@ -981,20 +993,20 @@ pub fn run(record: InstallationRecord, c: Choice, facts: Facts, sink: ProgressFn
                 sentient_installer_core::clickhouse_wsl::park(&sink, record.stack.ch_http_port);
             }
         } else if let Some(how) = ch {
-            step(&sink, if matches!(how, DbRemoval::StopUsing { .. }) { "Removing SENTIENT's database from ClickHouse" } else { "Removing ClickHouse" });
+            step(&sink, if matches!(how, DbRemoval::StopUsing { .. }) { t!("Removing SENTIENT's database from ClickHouse") } else { t!("Removing ClickHouse") });
             #[cfg(unix)]
             note(removal::run_root(&nested, &removal::linux_clickhouse_script(how, record.stack.ch_native_port, &record.stack.ch_db, &record.stack.ch_user)), "ClickHouse");
         }
         match pg {
             Some(how) if !windows => {
-                step(&sink, if matches!(how, DbRemoval::StopUsing { .. }) { "Removing SENTIENT's database from PostgreSQL" } else { "Removing PostgreSQL" });
+                step(&sink, if matches!(how, DbRemoval::StopUsing { .. }) { t!("Removing SENTIENT's database from PostgreSQL") } else { t!("Removing PostgreSQL") });
                 match Pm::detect() {
                     #[cfg(unix)]
                     Some(pm) => {
                         let script = removal::linux_postgres_script(pm, how, record.stack.pg_port, &record.stack.db_name, &record.stack.db_user, facts.timescale);
                         note(removal::run_root(&nested, &script), "PostgreSQL");
                     }
-                    _ => note(Err("no supported package manager found (apt, pacman, dnf, zypper).".into()), "PostgreSQL"),
+                    _ => note(Err(n!("no supported package manager found (apt, pacman, dnf, zypper).").into()), "PostgreSQL"),
                 }
             }
             #[cfg(windows)]
@@ -1006,17 +1018,17 @@ pub fn run(record: InstallationRecord, c: Choice, facts: Facts, sink: ProgressFn
         }
         // SENTIENT's file stores, backups, logs and service account.
         if e.has(Key::Sentient) && !keep_files {
-            step(&sink, "Removing SENTIENT's file stores and backups");
+            step(&sink, t!("Removing SENTIENT's file stores and backups"));
             #[cfg(unix)]
             if !windows {
                 let state = removal_shq(&record.state_dir.display().to_string());
-                note(removal::run_root(&nested, &format!("rm -rf {state} {LINUX_BACKUPS} /var/log/sentient\nuserdel sentient 2>/dev/null || true\ngroupdel sentient-admin 2>/dev/null || true\ntrue\n")), "SENTIENT's files");
+                note(removal::run_root(&nested, &format!("rm -rf {state} {LINUX_BACKUPS} /var/log/sentient\nuserdel sentient 2>/dev/null || true\ngroupdel sentient-admin 2>/dev/null || true\ntrue\n")), t!("SENTIENT's files"));
             }
             if windows {
                 for d in ["data", "backups", "logs", "downloads"] {
                     let p = record.state_dir.join(d);
                     if p.exists() && std::fs::remove_dir_all(&p).is_err() {
-                        note(Err(format!("{} could not be deleted", p.display())), "SENTIENT's files");
+                        note(Err(nf!("{} could not be deleted", p.display())), t!("SENTIENT's files"));
                     }
                 }
             }
@@ -1035,7 +1047,7 @@ pub fn run(record: InstallationRecord, c: Choice, facts: Facts, sink: ProgressFn
     }
 
     if e.has(Key::Shortcuts) {
-        step(&sink, "Removing SENTIENT's shortcuts");
+        step(&sink, t!("Removing SENTIENT's shortcuts"));
         crate::self_install::remove_sentient_shortcuts();
         sentient_installer_core::kiosk::remove_shortcuts(&sink, &record.state_dir);
         sentient_installer_core::kiosk::remove_user_data(&sink);
@@ -1059,20 +1071,20 @@ pub fn run(record: InstallationRecord, c: Choice, facts: Facts, sink: ProgressFn
         crate::self_install::remove_record(&crate::installation::record_path());
     }
 
-    step(&sink, "Checking that nothing is left");
+    step(&sink, t!("Checking that nothing is left"));
     let expect = expect(&record, &e, &facts, pg, ch, &images);
     let mut checks = removal::verify(&expect, &removal::system_runner, &|p: &Path| p.exists());
     if e.has(Key::Gateway) {
         let left = sentient_installer_core::gateway::status().installed;
         checks.push(Check {
-            what: if left { "The Gateway is still installed".into() } else { "No Gateway".into() },
+            what: if left { t!("The Gateway is still installed").into() } else { t!("No Gateway").into() },
             ok: !left,
             left: left.then(|| "the Gateway".into()),
             fix: left.then(|| if windows { "\"Sentient Platform Manager.exe\" --job gateway-remove --remove-image".into() } else { "sentient-platform-manager --job gateway-remove --remove-image".into() }),
         });
     }
     for p in &problems {
-        log(&sink, format!("note: {p}"));
+        log(&sink, tf!("note: {p}"));
     }
     for ch in &checks {
         sink(Progress::Log { line: ch.encode() });
@@ -1092,7 +1104,7 @@ fn docker_out(args: &[&str]) -> Option<String> {
 }
 
 fn run_shell(sink: &ProgressFn, script: &str) -> Result<(), String> {
-    let out = sentient_installer_core::host::host_command("sh").arg("-c").arg(script).output().map_err(|e| format!("run sh: {e}"))?;
+    let out = sentient_installer_core::host::host_command("sh").arg("-c").arg(script).output().map_err(|e| nf!("run sh: {e}"))?;
     for l in String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()) {
         log(sink, l.trim_start_matches(">> ").to_string());
     }
@@ -1182,15 +1194,14 @@ fn expect(record: &InstallationRecord, e: &Choice, facts: &Facts, pg: Option<DbR
 /// The job's last line.
 pub fn done_message(e: &Choice, rows: &[Row], checks: &[Check], problems: &[String]) -> String {
     let left = checks.iter().filter(|c| !c.ok).count();
-    let (removes, _) = summary(e, rows);
-    let mut m = removes.replacen("Removes: ", "Removed: ", 1).replacen(" Frees ", " Freed ", 1);
+    let mut m = summary_done(e, rows);
     if left > 0 {
-        m.push_str(&format!(" {left} {} left: see the list.", if left == 1 { "thing is" } else { "things are" }));
+        m.push_str(&if left == 1 { tf!(" {left} thing is left: see the list.") } else { tf!(" {left} things are left: see the list.") });
     } else if !problems.is_empty() {
-        m.push_str(" Some steps reported a problem: see the log.");
+        m.push_str(t!(" Some steps reported a problem: see the log."));
     }
     if e.has(Key::Wsl) {
-        m.push_str(" WSL is off after Windows restarts.");
+        m.push_str(t!(" WSL is off after Windows restarts."));
     }
     m
 }
@@ -1210,8 +1221,8 @@ pub fn checked_line(checks: &[Check]) -> Option<String> {
     ports_d.dedup();
     match ports_d.len() {
         0 => {}
-        1 => parts.push(format!("port {} free", ports_d[0])),
-        _ => parts.push(format!("ports {} free", ports_d.join(", "))),
+        1 => parts.push(tf!("port {} free", ports_d[0])),
+        _ => parts.push(tf!("ports {} free", ports_d.join(", "))),
     }
     let units = ok.iter().any(|c| c.what.ends_with(" service") && c.what.starts_with("No "));
     let containers = ok.iter().any(|c| c.what.ends_with(" container"));
@@ -1227,7 +1238,7 @@ pub fn checked_line(checks: &[Check]) -> Option<String> {
     if ok.iter().any(|c| c.what.ends_with(" removed") && !c.what.starts_with("Package ")) {
         parts.push("folders removed".into());
     }
-    Some(format!("Checked: {}", parts.join(", ")))
+    Some(tf!("Checked: {}", parts.join(", ")))
 }
 
 /// The Platform Manager goes last, after the result screen, as the account

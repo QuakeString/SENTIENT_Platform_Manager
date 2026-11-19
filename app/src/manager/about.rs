@@ -28,7 +28,7 @@ pub mod company {
     pub const SUPPORT_EMAIL: &str = "support@invenia.in";
     /// Not confirmed yet.
     pub const DOCS: &str = "https://docs.invenia.in";
-    pub const COPYRIGHT: &str = "Copyright © 2026 INVENIA SYSTEMS and the SENTIENT Authors. All rights reserved.";
+    pub const COPYRIGHT: &str = n!("Copyright © 2026 INVENIA SYSTEMS and the SENTIENT Authors. All rights reserved.");
     /// Its artwork is 70.0 × 14.12 (viewBox).
     pub const LOGO: &str = "logos/invenia-systems.svg";
     pub const LOGO_ASPECT: f32 = 70.000_59 / 14.122_055;
@@ -68,29 +68,29 @@ impl AboutPage {
             })
         };
         let tray_help = if p.show_tray && !crate::bg_app::tray_up(cx) {
-            "This desktop shows no tray icons (on GNOME, the AppIndicator extension adds them): the Platform Manager runs as without a tray."
+            t!("This desktop shows no tray icons (on GNOME, the AppIndicator extension adds them): the Platform Manager runs as without a tray.")
         } else {
-            "An icon by the clock: click it to open or close the window; its menu has the latest notifications, the instances and Exit. The instances are checked in the background."
+            t!("An icon by the clock: click it to open or close the window; its menu has the latest notifications, the instances and Exit. The instances are checked in the background.")
         };
         let mut rows = vec![
-            pref_row(theme, "Show in the system tray", Some(tray_help), Switch::new("bg-tray").checked(p.show_tray).on_click(set(|p, v| p.show_tray = v))).into_any_element(),
+            pref_row(theme, t!("Show in the system tray"), Some(tray_help), Switch::new("bg-tray").checked(p.show_tray).on_click(set(|p, v| p.show_tray = v))).into_any_element(),
             pref_row(
                 theme,
-                "Start at sign-in",
-                Some("In the background, with the tray icon; the window opens when you click it."),
+                t!("Start at sign-in"),
+                Some(t!("In the background, with the tray icon; the window opens when you click it.")),
                 Switch::new("bg-signin").checked(p.show_tray && crate::background::autostart_on()).disabled(!p.show_tray).on_click(set(|p, v| p.start_at_signin = v)),
             )
             .into_any_element(),
             pref_row(
                 theme,
-                "Closing the window quits",
-                Some("Off: closing the window leaves the Platform Manager in the tray. Exit from the tray menu quits."),
+                t!("Closing the window quits"),
+                Some(t!("Off: closing the window leaves the Platform Manager in the tray. Exit from the tray menu quits.")),
                 Switch::new("bg-close").checked(!p.show_tray || p.close_quits).disabled(!p.show_tray).on_click(set(|p, v| p.close_quits = v)),
             )
             .into_any_element(),
         ];
         if let Some(e) = &self.bg_error {
-            rows.push(ui::outcome(theme, Tone::Bad, format!("Could not change starting at sign-in: {e}")).into_any_element());
+            rows.push(ui::outcome(theme, Tone::Bad, tf!("Could not change starting at sign-in: {e}")).into_any_element());
         }
         rows
     }
@@ -136,7 +136,7 @@ impl AboutPage {
         // On the label's line (ui::row_text).
         let value = |t: String| ui::row_text(t).into_any_element();
         let host = company::WEBSITE.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/');
-        let build = format!(
+        let build = tf!(
             "{} · commit {} · built {} · {}",
             crate::updates::manager_version(),
             crate::updates::build_commit(),
@@ -144,11 +144,11 @@ impl AboutPage {
             crate::updates::build_profile()
         );
         let rows = vec![
-            ui::SettingRow::wide("Website", None, link("about-website", host, company::WEBSITE.to_string())),
-            ui::SettingRow::wide("Support", None, link("about-email", company::SUPPORT_EMAIL, format!("mailto:{}", company::SUPPORT_EMAIL))),
+            ui::SettingRow::wide(t!("Website"), None, link("about-website", host, company::WEBSITE.to_string())),
+            ui::SettingRow::wide(t!("Support"), None, link("about-email", company::SUPPORT_EMAIL, format!("mailto:{}", company::SUPPORT_EMAIL))),
             ui::SettingRow::wide(
-                "Build",
-                Some("The version, the commit it was built from, the day it was built and whether it is a release or a debug build. Copy version info puts this on the clipboard for a support request.".into()),
+                t!("Build"),
+                Some(t!("The version, the commit it was built from, the day it was built and whether it is a release or a debug build. Copy version info puts this on the clipboard for a support request.").into()),
                 value(build),
             ),
         ];
@@ -184,19 +184,19 @@ impl AboutPage {
                     .items_center()
                     .border_t_1()
                     .border_color(theme.border)
-                    .child(div().flex_1().min_w(px(200.)).text_size(px(12.)).text_color(theme.muted_foreground).child(company::COPYRIGHT))
+                    .child(div().flex_1().min_w(px(200.)).text_size(px(12.)).text_color(theme.muted_foreground).child(crate::i18n::t(company::COPYRIGHT)))
                     // ml_auto: on a line of their own (a narrow window) the
                     // buttons stay at the right.
                     .child(ui::button_row(vec![
                         crate::ui::button("about-copy-version")
                             .outline()
                             .icon(if self.copied { IconName::Check } else { IconName::Copy })
-                            .label(if self.copied { "Copied" } else { "Copy version info" })
+                            .label(if self.copied { t!("Copied") } else { t!("Copy version info") })
                             .on_click(cx.listener(|this, _, _, cx| this.copy_version_info(cx)))
                             .into_any_element(),
                         crate::ui::button("about-licences")
                             .outline()
-                            .label("Third-party licences")
+                            .label(t!("Third-party licences"))
                             .on_click(|_, _, cx| open_licences(cx))
                             .into_any_element(),
                     ])
@@ -279,15 +279,15 @@ impl Render for AboutPage {
         // Only two pills: "Up to date" or "Update available". Before a check
         // has answered in this run there is no pill and the line says so.
         let state: Option<(Tone, &str)> = match (&u.found, u.manager()) {
-            (_, Some(_)) => Some((Tone::Warn, "Update available")),
-            (Some(f), None) if f.manager.is_ok() => Some((Tone::Good, "Up to date")),
+            (_, Some(_)) => Some((Tone::Warn, t!("Update available"))),
+            (Some(f), None) if f.manager.is_ok() => Some((Tone::Good, t!("Up to date"))),
             _ => None,
         };
         // The version alone until a check has answered, then what it found.
         let checked_line = match (&u.found, u.manager()) {
-            _ if checking => " · checking for updates…".to_string(),
-            (_, Some(o)) => format!(" · {} available", o.version),
-            (Some(f), None) if f.manager.is_ok() => " · up to date".to_string(),
+            _ if checking => t!(" · checking for updates…").to_string(),
+            (_, Some(o)) => tf!(" · {} available", o.version),
+            (Some(f), None) if f.manager.is_ok() => t!(" · up to date").to_string(),
             _ => String::new(),
         };
         let _ = &last;
@@ -305,7 +305,7 @@ impl Render for AboutPage {
                         .flex_1()
                         .min_w(px(200.))
                         .child(div().text_size(px(16.)).font_weight(FontWeight::MEDIUM).child("SENTIENT Platform Manager"))
-                        .child(div().text_sm().text_color(theme.muted_foreground).child(format!("Version {version}{checked_line}"))),
+                        .child(div().text_sm().text_color(theme.muted_foreground).child(tf!("Version {version}{checked_line}"))),
                 )
                 .child(
                     h_flex()
@@ -313,28 +313,28 @@ impl Render for AboutPage {
                         .flex_wrap()
                         .items_center()
                         .when_some(state, |r, (tone, text)| r.child(ui::pill(&theme, tone, text)))
-                        .child(crate::ui::probed(crate::ui::button("about-notes").outline().label("What's new").on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew)))))
+                        .child(crate::ui::probed(crate::ui::button("about-notes").outline().label(t!("What's new")).on_click(cx.listener(|_, _, _, cx| cx.emit(ShowWhatsNew)))))
                         .child(crate::ui::probed(
                             crate::ui::button("about-check")
                                 .outline()
-                                .label(if checking { "Checking" } else { "Check for updates" })
+                                .label(if checking { t!("Checking") } else { t!("Check for updates") })
                                 .disabled(checking)
                                 .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))),
                         )),
                 ),
         );
         let channels = ui::seg_track(&theme).children(Channel::ALL.into_iter().map(|c| {
-            ui::seg_item(&theme, SharedString::from(format!("about-channel-{}", c.label())), c.label(), c == channel)
+            ui::seg_item(&theme, SharedString::from(format!("about-channel-{}", crate::i18n::t(c.label()))), crate::i18n::t(c.label()), c == channel)
                 .on_click(cx.listener(move |this, _, _, cx| this.updates.update(cx, |u, cx| u.set_channel(c, cx))))
         }));
         let checks = ui::seg_track(&theme)
-            .child(ui::seg_item(&theme, "about-daily", "Daily", daily).on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.set_daily(true, cx)))))
-            .child(ui::seg_item(&theme, "about-by-hand", "Manually", !daily).on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.set_daily(false, cx)))));
+            .child(ui::seg_item(&theme, "about-daily", t!("Daily"), daily).on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.set_daily(true, cx)))))
+            .child(ui::seg_item(&theme, "about-by-hand", t!("Manually"), !daily).on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.set_daily(false, cx)))));
         // Appearance (the shell mockup's S7): the theme, and the menu showing
         // the desktop behind the window where the desktop can blur it.
         let choice = crate::theme::Choice::saved();
         let themes = ui::seg_track(&theme).children(crate::theme::Choice::ALL.into_iter().map(|c| {
-            ui::seg_item_with(&theme, SharedString::from(format!("about-theme-{}", c.label())), crate::manager::shell::theme_icon(c), c.label(), c == choice).on_click(cx.listener(move |_, _, window, cx| {
+            ui::seg_item_with(&theme, SharedString::from(format!("about-theme-{}", crate::i18n::t(c.label()))), crate::manager::shell::theme_icon(c), crate::i18n::t(c.label()), c == choice).on_click(cx.listener(move |_, _, window, cx| {
                 crate::theme::choose(c, Some(window), cx);
                 cx.notify();
             }))
@@ -353,40 +353,45 @@ impl Render for AboutPage {
         let appearance = ui::panel(&theme)
             .gap_0()
             .py_1()
-            .child(pref_row(&theme, "Theme", None, themes).border_t_0())
+            .child(pref_row(&theme, t!("Theme"), None, themes).border_t_0())
             .child(pref_row(
                 &theme,
-                "Translucent menu",
-                Some(crate::manager::shell::see_through_why_not().unwrap_or("Shows the desktop blurred behind the menu (KDE Plasma, Hyprland, picom, Windows). On X11 a change shows after the Platform Manager starts again.")),
+                t!("Translucent menu"),
+                Some(crate::manager::shell::see_through_why_not().unwrap_or(t!("Shows the desktop blurred behind the menu (KDE Plasma, Hyprland, picom, Windows). On X11 a change shows after the Platform Manager starts again."))),
                 see_through,
             ));
         let prefs = ui::panel(&theme)
             .gap_0()
             .py_1()
-            .child(pref_row(&theme, "Language", None, {
-                // One list of languages (shell::LANGUAGES), each by its own name.
-                let current = crate::manager::shell::Appearance::get().language;
-                let name = crate::manager::shell::LANGUAGES.iter().find(|(c, _)| *c == current).map(|(_, n)| *n).unwrap_or("English");
+            .child(pref_row(&theme, t!("Language"), Some(t!("The Platform Manager's language. Logs and support files stay in English.")), {
+                // SENTIENT's languages (crate::i18n), each by its own name and
+                // its English one; the computer's own first.
+                let saved = crate::manager::shell::Appearance::get().language;
+                let shown = crate::i18n::current();
+                let name: SharedString = if saved.is_empty() { tf!("{} (this computer's)", shown.native).into() } else { shown.native.into() };
                 { use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem}; crate::ui::button("about-language")
                     .outline()
                     .label(name)
                     .icon(IconName::ChevronDown)
                     .dropdown_menu(move |menu, _, _| {
-                        let mut menu = menu;
-                        for (code, native) in crate::manager::shell::LANGUAGES {
-                            let code = code.to_string();
-                            menu = menu.item(PopupMenuItem::new(*native).checked(code == current).on_click(move |_, window, cx| {
-                                let code = code.clone();
-                                crate::manager::shell::Appearance::set(|a| a.language = code);
-                                window.refresh();
-                                let _ = cx;
-                            }));
+                        let mut menu = menu.scrollable(true).max_h(px(420.)).min_w(px(260.));
+                        let pick = |code: &'static str| move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+                            crate::manager::shell::Appearance::set(|a| a.language = code.to_string());
+                            crate::i18n::set_language(crate::i18n::startup_code(Some(code).filter(|c| !c.is_empty())));
+                            window.refresh();
+                            cx.refresh_windows();
+                        };
+                        menu = menu.item(PopupMenuItem::new(t!("This computer's language")).checked(saved.is_empty()).on_click(pick("")));
+                        menu = menu.separator();
+                        for l in crate::i18n::LANGUAGES {
+                            let label = if l.native == l.english { l.native.to_string() } else { format!("{} · {}", l.native, l.english) };
+                            menu = menu.item(PopupMenuItem::new(label).checked(saved == l.code).on_click(pick(l.code)));
                         }
                         menu
                     }) }
             }).border_t_0())
-            .child(pref_row(&theme, "Update channel", Some("Release candidates arrive earlier and are less tested."), channels))
-            .child(pref_row(&theme, "Check for updates", None, checks))
+            .child(pref_row(&theme, t!("Update channel"), Some(t!("Release candidates arrive earlier and are less tested.")), channels))
+            .child(pref_row(&theme, t!("Check for updates"), None, checks))
             .children(self.background_rows(&theme, cx));
         crate::ui::set_stacked(f32::from(_window.viewport_size().width) < crate::ui::ROW_STACK_W);
         let company = self.company_panel(&theme, cx);
@@ -398,22 +403,22 @@ impl Render for AboutPage {
                     .gap_3()
                     .flex_wrap()
                     .items_stretch()
-                    .child(tile(&theme, "about-log", IconName::File, "Open the log", "Every action and error, with timestamps.").on_click(move |_, window, cx| {
+                    .child(tile(&theme, "about-log", IconName::File, t!("Open the log"), t!("Every action and error, with timestamps.")).on_click(move |_, window, cx| {
                         // In the app, with the Logs page's tools: never an
                         // outside program that may fail silently.
                         let path = log_path.clone();
                         let view = cx.new(|cx| crate::manager::logs::LogView::file(path, window, cx));
-                        crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., icon: None, on_close: None }, cx);
+                        crate::modal::open(crate::modal::Modal { title: t!("Platform Manager log").into(), body: view.into(), width: 1000., icon: None, on_close: None }, cx);
                     }))
                     .child(
-                        tile(&theme, "about-support", IconName::ArrowDown, "Create a support file", if self.making { "Collecting…" } else { "Logs, versions and settings in one file. Passwords are left out." })
+                        tile(&theme, "about-support", IconName::ArrowDown, t!("Create a support file"), if self.making { t!("Collecting…") } else { t!("Logs, versions and settings in one file. Passwords are left out.") })
                             .on_click(cx.listener(|this, _, _, cx| this.make_support_file(cx))),
                     )
-                    .child(tile(&theme, "about-docs", IconName::BookOpen, "Documentation", format!("Guides and help on {}.", company::DOCS.trim_start_matches("https://"))).on_click(|_, _, cx| ui::open_url(company::DOCS, cx))),
+                    .child(tile(&theme, "about-docs", IconName::BookOpen, t!("Documentation"), tf!("Guides and help on {}.", company::DOCS.trim_start_matches("https://"))).on_click(|_, _, cx| ui::open_url(company::DOCS, cx))),
             )
             .children(self.support.as_ref().map(|r| match r {
-                Ok(p) => ui::outcome(&theme, Tone::Good, format!("Support file saved: {}", p.display())).into_any_element(),
-                Err(e) => ui::outcome(&theme, Tone::Bad, format!("The support file could not be made: {e}")).into_any_element(),
+                Ok(p) => ui::outcome(&theme, Tone::Good, tf!("Support file saved: {}", p.display())).into_any_element(),
+                Err(e) => ui::outcome(&theme, Tone::Bad, tf!("The support file could not be made: {e}")).into_any_element(),
             }));
         let caption = |t: &'static str| div().px_0p5().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(t.to_uppercase());
         // The paths: one line each, the middle cut when long, and Copy.
@@ -427,12 +432,12 @@ impl Render for AboutPage {
                 .text_size(px(13.))
                 .text_color(theme.muted_foreground)
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(format!("{label} {}", ui::middle_ellipsis(&path, 64))))
-                .child(crate::ui::button(id).ghost().xsmall().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+                .child(crate::ui::button(id).ghost().xsmall().label(t!("Copy")).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
         };
         let footer = v_flex()
             .gap_0p5()
-            .child(place("copy-installed", "Installed in", crate::self_install::manager_dir().display().to_string()))
-            .child(place("copy-data", "Data in", crate::updates::prefs_dir().display().to_string()));
+            .child(place("copy-installed", t!("Installed in"), crate::self_install::manager_dir().display().to_string()))
+            .child(place("copy-data", t!("Data in"), crate::updates::prefs_dir().display().to_string()));
         v_flex()
             .id("about")
             .flex_1()
@@ -448,10 +453,10 @@ impl Render for AboutPage {
                     .max_w(px(800.))
                     .gap(px(14.))
                     .child(hero)
-                    .child(v_flex().gap_2().child(caption("Appearance")).child(appearance))
-                    .child(v_flex().gap_2().child(caption("Preferences")).child(prefs))
-                    .child(v_flex().gap_2().child(caption("Support")).child(support))
-                    .child(v_flex().gap_2().child(caption("About")).child(company))
+                    .child(v_flex().gap_2().child(caption(t!("Appearance"))).child(appearance))
+                    .child(v_flex().gap_2().child(caption(t!("Preferences"))).child(prefs))
+                    .child(v_flex().gap_2().child(caption(t!("Support"))).child(support))
+                    .child(v_flex().gap_2().child(caption(t!("About"))).child(company))
                     .child(footer),
             )
     }
@@ -466,7 +471,7 @@ impl Render for AboutPage {
 pub fn open_licences(cx: &mut App) {
     let view = cx.new(|_| Licences { scroll: UniformListScrollHandle::new() });
     let footer = cx.new(|_| LicencesFooter);
-    crate::modal::open(crate::modal::Modal { title: "Third-party licences".into(), body: view.into(), width: 820., icon: None, on_close: None }, cx);
+    crate::modal::open(crate::modal::Modal { title: t!("Third-party licences").into(), body: view.into(), width: 820., icon: None, on_close: None }, cx);
     crate::modal::set_footer(footer.into(), cx);
     crate::modal::set_list_body(cx);
 }
@@ -524,10 +529,10 @@ impl Render for Licences {
                     .gap_1()
                     .items_center()
                     .text_sm()
-                    .child(format!("The Platform Manager is built with {count} open-source components."))
+                    .child(div().min_w_0().child(tf!("The Platform Manager is built with {count} open-source components.")))
                     .child(crate::ui::info(
                         "licences-help".into(),
-                        "Each is used under the licence shown (where there is a choice, any one of them). A row opens the component's source, where its licence text is.\n\nThe list is made from the program's dependencies when it is built.".into(),
+                        t!("Each is used under the licence shown (where there is a choice, any one of them). A row opens the component's source, where its licence text is.\n\nThe list is made from the program's dependencies when it is built.").into(),
                     )),
             )
             .child(
@@ -547,9 +552,9 @@ impl Render for Licences {
                             .bg(theme.muted)
                             .border_b_1()
                             .border_color(theme.border)
-                            .child(div().flex_1().min_w(px(LIC_MIN_W)).child(head("Component")))
-                            .child(div().w(px(LIC_VERSION_W)).flex_shrink_0().child(head("Version")))
-                            .child(div().w(px(LIC_LICENCE_W)).min_w(px(LIC_MIN_W)).child(head("Licence"))),
+                            .child(div().flex_1().min_w(px(LIC_MIN_W)).child(head(t!("Component"))))
+                            .child(div().w(px(LIC_VERSION_W)).flex_shrink_0().child(head(t!("Version"))))
+                            .child(div().w(px(LIC_LICENCE_W)).min_w(px(LIC_MIN_W)).child(head(t!("Licence")))),
                     )
                     .child(list),
             )
@@ -560,6 +565,6 @@ struct LicencesFooter;
 
 impl Render for LicencesFooter {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        h_flex().justify_end().child(ui::probed(ui::button("licences-close").outline().label("Close").on_click(|_, _, cx| crate::modal::close(cx))))
+        h_flex().justify_end().child(ui::probed(ui::button("licences-close").outline().label(t!("Close")).on_click(|_, _, cx| crate::modal::close(cx))))
     }
 }

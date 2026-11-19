@@ -31,40 +31,40 @@ impl Shape {
 }
 
 /// The first step of a job on a server: reaching it and its agent.
-pub const CONNECT: &str = "Connect to the server";
+pub const CONNECT: &str = n!("Connect to the server");
 
 pub fn connect() -> PlanStep {
-    PlanStep::new(CONNECT).detail("SSH, and the Platform Manager there brought up to date").weight(0.5)
+    PlanStep::new(CONNECT).detail(n!("SSH, and the Platform Manager there brought up to date")).weight(0.5)
 }
 
 /// A backup with the saved settings (`backups::run`).
 pub fn backup(prefs: &BackupPrefs, automatic: bool, encrypted: bool) -> Vec<PlanStep> {
-    let mut v = vec![PlanStep::new("Connect to the database").detail("Reads what there is to back up").when(&[backups::STEP_WRITE, "Connecting and inspecting"]).weight(0.5)];
-    v.push(PlanStep::new("Dump the database").detail(if prefs.preset == Preset::Configuration { "Configuration only" } else { "Devices, dashboards, users, alarms and settings" }).when(&["Dumping database"]).weight(4.));
+    let mut v = vec![PlanStep::new(n!("Connect to the database")).detail(n!("Reads what there is to back up")).when(&[backups::STEP_WRITE, n!("Connecting and inspecting")]).weight(0.5)];
+    v.push(PlanStep::new(n!("Dump the database")).detail(if prefs.preset == Preset::Configuration { n!("Configuration only") } else { n!("Devices, dashboards, users, alarms and settings") }).when(&[n!("Dumping database")]).weight(4.));
     if prefs.preset == Preset::Everything && prefs.history != History::None {
         let what = match prefs.history {
-            History::LastDays(d) => format!("The last {d} days"),
-            _ => "All of it".into(),
+            History::LastDays(d) => nf!("The last {d} days"),
+            _ => n!("All of it").into(),
         };
-        v.push(PlanStep::new("Copy the telemetry history").detail(what).when(&["Exporting telemetry", "Exporting ClickHouse telemetry"]).weight(4.));
+        v.push(PlanStep::new(n!("Copy the telemetry history")).detail(what).when(&[n!("Exporting telemetry"), n!("Exporting ClickHouse telemetry")]).weight(4.));
     }
     if prefs.preset == Preset::Everything {
-        v.push(PlanStep::new("Archive the file stores").detail("Reports and version control").when(&["Archiving file store"]));
+        v.push(PlanStep::new(n!("Archive the file stores")).detail(n!("Reports and version control")).when(&[n!("Archiving file store")]));
     }
-    let mut how = vec!["Compressed".to_string()];
+    let mut how = vec![n!("Compressed").to_string()];
     if prefs.part_gb > 0 {
-        how.push(format!("split over {} GB", prefs.part_gb));
+        how.push(nf!("split over {} GB", prefs.part_gb));
     }
     if encrypted {
-        how.push("encrypted".into());
+        how.push(n!("encrypted").into());
     }
-    v.push(PlanStep::new("Write the backup file").detail(how.join(", ")).when(&["Writing manifest and archive"]).weight(2.));
-    v.push(PlanStep::new("Read the file back to check it").detail("SHA-256 of every part").when(&[backups::STEP_CHECK]).weight(2.));
+    v.push(PlanStep::new(n!("Write the backup file")).detail(how.join(", ")).when(&[n!("Writing manifest and archive")]).weight(2.));
+    v.push(PlanStep::new(n!("Read the file back to check it")).detail(n!("SHA-256 of every part")).when(&[backups::STEP_CHECK]).weight(2.));
     if let Some(to) = &prefs.copy_to {
-        v.push(PlanStep::new("Copy it to the second location").detail(to.display().to_string()).when(&[backups::STEP_COPY]));
+        v.push(PlanStep::new(n!("Copy it to the second location")).detail(to.display().to_string()).when(&[backups::STEP_COPY]));
     }
     if automatic {
-        v.push(PlanStep::new("Remove older automatic backups").detail(format!("Keeps the newest {}", prefs.keep.max(1))).when(&[backups::STEP_PRUNE]).weight(0.5));
+        v.push(PlanStep::new(n!("Remove older automatic backups")).detail(nf!("Keeps the newest {}", prefs.keep.max(1))).when(&[backups::STEP_PRUNE]).weight(0.5));
     }
     v
 }
@@ -72,11 +72,11 @@ pub fn backup(prefs: &BackupPrefs, automatic: bool, encrypted: bool) -> Vec<Plan
 /// A backup into one file (`backup <file>`, the engine's own steps).
 pub fn backup_file() -> Vec<PlanStep> {
     vec![
-        PlanStep::new("Connect to the database").when(&["Connecting and inspecting"]).weight(0.5),
-        PlanStep::new("Dump the database").when(&["Dumping database"]).weight(4.),
-        PlanStep::new("Copy the telemetry history").when(&["Exporting telemetry", "Exporting ClickHouse telemetry"]).weight(4.),
-        PlanStep::new("Archive the file stores").when(&["Archiving file store"]),
-        PlanStep::new("Write the backup file").when(&["Writing manifest and archive"]).weight(2.),
+        PlanStep::new(n!("Connect to the database")).when(&[n!("Connecting and inspecting")]).weight(0.5),
+        PlanStep::new(n!("Dump the database")).when(&[n!("Dumping database")]).weight(4.),
+        PlanStep::new(n!("Copy the telemetry history")).when(&[n!("Exporting telemetry"), n!("Exporting ClickHouse telemetry")]).weight(4.),
+        PlanStep::new(n!("Archive the file stores")).when(&[n!("Archiving file store")]),
+        PlanStep::new(n!("Write the backup file")).when(&[n!("Writing manifest and archive")]).weight(2.),
     ]
 }
 
@@ -87,14 +87,14 @@ pub fn restore(req: &rf::Request) -> Vec<PlanStep> {
         .into_iter()
         .map(|name| {
             let (detail, weight) = match name.as_str() {
-                rf::STEP_SAFETY => ("Everything, before anything changes".to_string(), 3.),
+                rf::STEP_SAFETY => (n!("Everything, before anything changes").to_string(), 3.),
                 rf::STEP_CHECK => (file.clone(), 1.),
-                rf::STEP_RESTORE => (if req.scope == Scope::Configuration { "Configuration only".into() } else { "PostgreSQL, telemetry and file stores".into() }, 5.),
+                rf::STEP_RESTORE => (if req.scope == Scope::Configuration { n!("Configuration only").into() } else { n!("PostgreSQL, telemetry and file stores").into() }, 5.),
                 rf::STEP_INTO_LIVE => (req.scope.label(), 5.),
-                rf::STEP_KEEP => ("This server's telemetry stays".into(), 2.),
+                rf::STEP_KEEP => (n!("This server's telemetry stays").into(), 2.),
                 rf::STEP_SCHEMA => (String::new(), 1.),
-                rf::STEP_SWITCH => ("SENTIENT restarts on it; the previous data comes back if it does not answer".into(), 2.),
-                rf::STEP_SETTINGS => (format!("{} setting{}", req.use_from_backup.len(), if req.use_from_backup.len() == 1 { "" } else { "s" }), 1.),
+                rf::STEP_SWITCH => (n!("SENTIENT restarts on it; the previous data comes back if it does not answer").into(), 2.),
+                rf::STEP_SETTINGS => (if req.use_from_backup.len() == 1 { nf!("{} setting", req.use_from_backup.len()) } else { nf!("{} settings", req.use_from_backup.len()) }, 1.),
                 _ => (String::new(), 1.),
             };
             PlanStep::new(name).detail(detail).weight(weight)
@@ -107,22 +107,22 @@ pub fn restore(req: &rf::Request) -> Vec<PlanStep> {
 pub fn update(shape: Shape, download: Option<&str>, to: Option<&str>) -> Vec<PlanStep> {
     let mut v = Vec::new();
     if shape.docker {
-        v.push(PlanStep::new("Getting the new SENTIENT image").detail(to.map(|t| format!("SENTIENT {t}")).unwrap_or_default()).weight(3.));
-        v.push(PlanStep::new("Stopping SENTIENT"));
+        v.push(PlanStep::new(n!("Getting the new SENTIENT image")).detail(to.map(|t| nf!("SENTIENT {t}")).unwrap_or_default()).weight(3.));
+        v.push(PlanStep::new(n!("Stopping SENTIENT")));
     } else {
         if let Some(d) = download {
-            v.push(PlanStep::new(format!("Downloading SENTIENT {d}")).detail("Checked against its SHA-256 and signature").when(&["Downloading SENTIENT"]).weight(3.));
+            v.push(PlanStep::new(nf!("Downloading SENTIENT {d}")).detail(n!("Checked against its SHA-256 and signature")).when(&[n!("Downloading SENTIENT")]).weight(3.));
         }
-        v.push(PlanStep::new("Unpacking the new SENTIENT").when(&["Unpacking"]));
-        v.push(PlanStep::new("Stopping SENTIENT").when(&["Stopping"]));
+        v.push(PlanStep::new(n!("Unpacking the new SENTIENT")).when(&[n!("Unpacking")]));
+        v.push(PlanStep::new(n!("Stopping SENTIENT")).when(&[n!("Stopping")]));
     }
-    v.push(PlanStep::new("Checking the new version's database changes (dry run)").detail("Nothing changes if they would fail").weight(2.));
-    v.push(PlanStep::new("Copying the database before the update").detail("Kept until the next update, to go back to").when(&["Copying the database"]).weight(3.));
+    v.push(PlanStep::new(n!("Checking the new version's database changes (dry run)")).detail(n!("Nothing changes if they would fail")).weight(2.));
+    v.push(PlanStep::new(n!("Copying the database before the update")).detail(n!("Kept until the next update, to go back to")).when(&[n!("Copying the database")]).weight(3.));
     if !shape.docker {
-        v.push(PlanStep::new("Replacing the program files"));
+        v.push(PlanStep::new(n!("Replacing the program files")));
     }
-    v.push(PlanStep::new("Applying the database changes").weight(2.));
-    v.push(PlanStep::new("Starting SENTIENT").detail("And checking it stays up").when(&["Starting SENTIENT", "Checking SENTIENT stays up", "Waiting for SENTIENT"]).weight(2.));
+    v.push(PlanStep::new(n!("Applying the database changes")).weight(2.));
+    v.push(PlanStep::new(n!("Starting SENTIENT")).detail(n!("And checking it stays up")).when(&[n!("Starting SENTIENT"), n!("Checking SENTIENT stays up"), n!("Waiting for SENTIENT")]).weight(2.));
     v
 }
 
@@ -130,7 +130,7 @@ pub fn update(shape: Shape, download: Option<&str>, to: Option<&str>) -> Vec<Pla
 /// the update, the update then the new image tag, or the tag alone.
 pub fn docker_to(shape: Shape, to: &str, how: crate::updating::DockerStep) -> Vec<PlanStep> {
     use crate::updating::DockerStep;
-    let tag = PlanStep::new(format!("Setting the image tag to {to}")).detail("The compose file names this release from now on").when(&["Setting the image tag", "Tagging the image SENTIENT runs", "Writing "]);
+    let tag = PlanStep::new(nf!("Setting the image tag to {to}")).detail(n!("The compose file names this release from now on")).when(&[n!("Setting the image tag"), n!("Tagging the image SENTIENT runs"), n!("Writing ")]);
     match how {
         DockerStep::Update | DockerStep::AlreadyRunning => update(shape, None, Some(to)),
         DockerStep::UpdateAndPin => {
@@ -140,7 +140,7 @@ pub fn docker_to(shape: Shape, to: &str, how: crate::updating::DockerStep) -> Ve
         }
         DockerStep::QuickPin => vec![
             tag,
-            PlanStep::new("Starting SENTIENT").detail("Under the new tag, and checking it stays up").when(&["Starting SENTIENT", "Checking SENTIENT stays up", "Waiting for SENTIENT"]).weight(2.),
+            PlanStep::new(n!("Starting SENTIENT")).detail(n!("Under the new tag, and checking it stays up")).when(&[n!("Starting SENTIENT"), n!("Checking SENTIENT stays up"), n!("Waiting for SENTIENT")]).weight(2.),
         ],
     }
 }
@@ -148,53 +148,53 @@ pub fn docker_to(shape: Shape, to: &str, how: crate::updating::DockerStep) -> Ve
 /// Going back to the version the last update replaced.
 pub fn rollback(shape: Shape) -> Vec<PlanStep> {
     vec![
-        PlanStep::new("Stopping SENTIENT").when(&["Stopping"]),
-        PlanStep::new(if shape.docker { "Putting the previous image back" } else { "Putting the previous program files back" }),
-        PlanStep::new("Putting the database from before the update back").detail("The one in use now is kept aside").when(&["Putting the database from before the update back"]).weight(3.),
-        PlanStep::new("Starting SENTIENT").when(&["Starting SENTIENT", "Checking SENTIENT stays up", "Waiting for SENTIENT"]).weight(2.),
+        PlanStep::new(n!("Stopping SENTIENT")).when(&[n!("Stopping")]),
+        PlanStep::new(if shape.docker { n!("Putting the previous image back") } else { n!("Putting the previous program files back") }),
+        PlanStep::new(n!("Putting the database from before the update back")).detail(n!("The one in use now is kept aside")).when(&[n!("Putting the database from before the update back")]).weight(3.),
+        PlanStep::new(n!("Starting SENTIENT")).when(&[n!("Starting SENTIENT"), n!("Checking SENTIENT stays up"), n!("Waiting for SENTIENT")]).weight(2.),
     ]
 }
 
 /// The repair (crate::maintenance_ops::run_repair).
-pub const STEP_REPAIR: &str = "Repairing SENTIENT";
+pub const STEP_REPAIR: &str = n!("Repairing SENTIENT");
 
 pub fn repair(shape: Shape, clickhouse_wsl: bool) -> Vec<PlanStep> {
     let mut v = Vec::new();
     if shape.windows && !shape.docker && clickhouse_wsl {
-        v.push(PlanStep::new("Making ClickHouse safe against unclean stops").when(&["Stopping ClickHouse cleanly"]));
+        v.push(PlanStep::new(n!("Making ClickHouse safe against unclean stops")).when(&[n!("Stopping ClickHouse cleanly")]));
     }
-    v.push(PlanStep::new(STEP_REPAIR).detail(if shape.docker { "Its compose file written again, the containers started" } else { "Its service and configuration written again, then started" }).weight(4.));
-    v.push(PlanStep::new("Restoring the Platform Manager").detail("Its program, menu entry and operator screen"));
+    v.push(PlanStep::new(STEP_REPAIR).detail(if shape.docker { n!("Its compose file written again, the containers started") } else { n!("Its service and configuration written again, then started") }).weight(4.));
+    v.push(PlanStep::new(n!("Restoring the Platform Manager")).detail(n!("Its program, menu entry and operator screen")));
     v
 }
 
 /// The uninstall (crate::maintenance_ops::run_uninstall).
-pub const STEP_UNINSTALL: &str = "Removing SENTIENT";
+pub const STEP_UNINSTALL: &str = n!("Removing SENTIENT");
 
 pub fn uninstall(keep_data: bool) -> Vec<PlanStep> {
     vec![
-        PlanStep::new(STEP_UNINSTALL).detail(if keep_data { "The database is kept for a new install" } else { "With its database and telemetry" }).weight(4.),
-        PlanStep::new("Removing SENTIENT's shortcuts").detail("Menu entries, the operator screen and sign-in"),
+        PlanStep::new(STEP_UNINSTALL).detail(if keep_data { n!("The database is kept for a new install") } else { n!("With its database and telemetry") }).weight(4.),
+        PlanStep::new(n!("Removing SENTIENT's shortcuts")).detail(n!("Menu entries, the operator screen and sign-in")),
     ]
 }
 
 /// The change of database type (crate::migration::run).
 pub fn migration() -> Vec<PlanStep> {
     vec![
-        PlanStep::new("A full backup, history included").when(&["Backing up"]).weight(3.),
-        PlanStep::new("SENTIENT stops").when(&["Stopping", "Preparing ClickHouse", "Preparing the database"]),
-        PlanStep::new("SENTIENT starts on the new type").when(&["Starting SENTIENT on"]).weight(2.),
-        PlanStep::new("The history is copied month by month").when(&["Copying the history"]).weight(4.),
+        PlanStep::new(n!("A full backup, history included")).when(&[n!("Backing up")]).weight(3.),
+        PlanStep::new(n!("SENTIENT stops")).when(&[n!("Stopping"), n!("Preparing ClickHouse"), n!("Preparing the database")]),
+        PlanStep::new(n!("SENTIENT starts on the new type")).when(&[n!("Starting SENTIENT on")]).weight(2.),
+        PlanStep::new(n!("The history is copied month by month")).when(&[n!("Copying the history")]).weight(4.),
     ]
 }
 
 /// Taking over a compose file someone else wrote (crate::adopt).
 pub fn takeover() -> Vec<PlanStep> {
     vec![
-        PlanStep::new("Writing the Platform Manager's compose file").when(&["Writing the Platform Manager's compose file"]),
-        PlanStep::new("Stopping SENTIENT").detail("Its containers are kept until the new ones answer").when(&["Stopping SENTIENT"]),
-        PlanStep::new("Starting SENTIENT from the Platform Manager's compose file").weight(3.),
-        PlanStep::new("Saving the installation record").when(&["Looking at the instance again", "Checking the Platform Manager can reach", "Saving the installation record"]),
+        PlanStep::new(n!("Writing the Platform Manager's compose file")).when(&[n!("Writing the Platform Manager's compose file")]),
+        PlanStep::new(n!("Stopping SENTIENT")).detail(n!("Its containers are kept until the new ones answer")).when(&[n!("Stopping SENTIENT")]),
+        PlanStep::new(n!("Starting SENTIENT from the Platform Manager's compose file")).weight(3.),
+        PlanStep::new(n!("Saving the installation record")).when(&[n!("Looking at the instance again"), n!("Checking the Platform Manager can reach"), n!("Saving the installation record")]),
     ]
 }
 
@@ -206,36 +206,41 @@ pub fn move_steps(moves: &[Move], ov: Option<&Overview>, windows: bool) -> Vec<(
     if windows {
         let to = moves.first().map(|m| m.to.clone()).unwrap_or_default();
         return vec![
-            ("Stop the SENTIENT service".into(), "Stopping SENTIENT".into()),
-            ("Shut down the WSL distribution sentient (wsl --terminate, as sentient-clickhouse)".into(), "Shutting down".into()),
-            (format!("Copy ext4.vhdx to {to} and compare SHA-256"), "Copying".into()),
-            ("Point the distribution at the new file (wsl --manage sentient --move; export and import on WSL before 2.0)".into(), "Pointing".into()),
-            ("Start ClickHouse, then the SENTIENT service".into(), "Starting".into()),
-            ("Check SENTIENT and ClickHouse answer".into(), "Checking".into()),
+            (n!("Stop the SENTIENT service").into(), n!("Stopping SENTIENT").into()),
+            (n!("Shut down the WSL distribution sentient (wsl --terminate, as sentient-clickhouse)").into(), n!("Shutting down").into()),
+            (nf!("Copy ext4.vhdx to {to} and compare SHA-256"), n!("Copying").into()),
+            (n!("Point the distribution at the new file (wsl --manage sentient --move; export and import on WSL before 2.0)").into(), n!("Pointing").into()),
+            (n!("Start ClickHouse, then the SENTIENT service").into(), n!("Starting").into()),
+            (n!("Check SENTIENT and ClickHouse answer").into(), n!("Checking").into()),
         ];
     }
     if stops {
-        v.push(("Stop SENTIENT".to_string(), "Stopping SENTIENT".to_string()));
+        v.push((n!("Stop SENTIENT").to_string(), n!("Stopping SENTIENT").to_string()));
     }
     for m in moves {
-        v.push((format!("Copy {} data to {}", m.store.label(), m.to), format!("Copying {} data", m.store.label())));
+        v.push((nf!("Copy {} data to {}", m.store.label(), m.to), nf!("Copying {} data", m.store.label())));
     }
     for m in moves {
         v.push((
-            if moves.len() == 1 { "Verify sizes and checksums".to_string() } else { format!("Verify {} (sizes and checksums)", m.store.label()) },
-            format!("Verifying {}", m.store.label()),
+            if moves.len() == 1 { n!("Verify sizes and checksums").to_string() } else { nf!("Verify {} (sizes and checksums)", m.store.label()) },
+            nf!("Verifying {}", m.store.label()),
         ));
     }
     for m in moves.iter().filter(|m| m.store != Store::Backups) {
         let vol = ov.and_then(|ov| ov.places.iter().find(|p| p.store == m.store)).map(|p| p.volume.clone()).unwrap_or_default();
-        let key = if vol.is_empty() { format!("Pointing the {}", m.store.label()) } else { format!("Pointing the {vol} volume") };
-        v.push((format!("Point the {} volume at the new folder (bind mount)", if vol.is_empty() { m.store.label() } else { vol.as_str() }), key));
+        let key = if vol.is_empty() { nf!("Pointing the {}", m.store.label()) } else { nf!("Pointing the {vol} volume") };
+        v.push((nf!("Point the {} volume at the new folder (bind mount)", if vol.is_empty() { m.store.label() } else { vol.as_str() }), key));
     }
     if stops {
-        v.push(("Start SENTIENT".to_string(), "Starting SENTIENT".to_string()));
+        v.push((n!("Start SENTIENT").to_string(), n!("Starting SENTIENT").to_string()));
         let dbs: Vec<&str> = moves.iter().filter(|m| m.store.is_database()).map(|m| m.store.label()).collect();
-        let t = if dbs.is_empty() { "Check SENTIENT answers".to_string() } else { format!("Check SENTIENT answers and {} {} the same rows", dbs.join(" and "), if dbs.len() == 1 { "holds" } else { "hold" }) };
-        v.push((t, "Checking SENTIENT answers".to_string()));
+        let t = match dbs.as_slice() {
+            [] => n!("Check SENTIENT answers").to_string(),
+            [one] => nf!("Check SENTIENT answers and {one} holds the same rows"),
+            [a, b] => nf!("Check SENTIENT answers and {a} and {b} hold the same rows"),
+            _ => nf!("Check SENTIENT answers and {} hold the same rows", dbs.join(", ")),
+        };
+        v.push((t, n!("Checking SENTIENT answers").to_string()));
     }
     v
 }
@@ -258,21 +263,21 @@ pub fn changes(pending: &[crate::changes::Change]) -> Vec<PlanStep> {
 /// Restarting a server (crate::manager::server_card): the window drives
 /// these steps itself; the server is down for most of them. The mockup's
 /// six steps, all shown up front.
-pub const STEP_RESTART_SENT: &str = "Restart sent";
-pub const STEP_WENT_DOWN: &str = "Server went down";
-pub const STEP_COMING_BACK: &str = "Waiting for the server to come back";
-pub const STEP_RESTARTED: &str = "Check it really restarted";
-pub const STEP_RUNNING: &str = "SENTIENT and database running";
-pub const STEP_ANSWERS: &str = "SENTIENT answers on its web address";
-pub const STEP_SHUTDOWN_SENT: &str = "Shut down sent";
+pub const STEP_RESTART_SENT: &str = n!("Restart sent");
+pub const STEP_WENT_DOWN: &str = n!("Server went down");
+pub const STEP_COMING_BACK: &str = n!("Waiting for the server to come back");
+pub const STEP_RESTARTED: &str = n!("Check it really restarted");
+pub const STEP_RUNNING: &str = n!("SENTIENT and database running");
+pub const STEP_ANSWERS: &str = n!("SENTIENT answers on its web address");
+pub const STEP_SHUTDOWN_SENT: &str = n!("Shut down sent");
 
 #[cfg_attr(not(feature = "gui"), allow(dead_code))]
 pub fn server_restart(windows: bool) -> Vec<PlanStep> {
     vec![
-        PlanStep::new(STEP_RESTART_SENT).detail(format!("SENTIENT and its database stopped cleanly first, then {}", if windows { "shutdown /r" } else { "systemctl reboot" })).weight(1.),
-        PlanStep::new(STEP_WENT_DOWN).detail("Until the connection really drops").weight(0.5),
-        PlanStep::new(STEP_COMING_BACK).detail("Reconnecting; gives up after 10 min").weight(3.),
-        PlanStep::new(STEP_RESTARTED).detail("Its start time is new").weight(0.5),
+        PlanStep::new(STEP_RESTART_SENT).detail(nf!("SENTIENT and its database stopped cleanly first, then {}", if windows { "shutdown /r" } else { "systemctl reboot" })).weight(1.),
+        PlanStep::new(STEP_WENT_DOWN).detail(n!("Until the connection really drops")).weight(0.5),
+        PlanStep::new(STEP_COMING_BACK).detail(n!("Reconnecting; gives up after 10 min")).weight(3.),
+        PlanStep::new(STEP_RESTARTED).detail(n!("Its start time is new")).weight(0.5),
         PlanStep::new(STEP_RUNNING).weight(2.),
         PlanStep::new(STEP_ANSWERS).weight(1.),
     ]
@@ -282,17 +287,17 @@ pub fn server_restart(windows: bool) -> Vec<PlanStep> {
 #[cfg_attr(not(feature = "gui"), allow(dead_code))]
 pub fn server_shutdown(windows: bool) -> Vec<PlanStep> {
     vec![
-        PlanStep::new(STEP_SHUTDOWN_SENT).detail(format!("SENTIENT and its database stopped cleanly first, then {}", if windows { "shutdown /s" } else { "systemctl poweroff" })),
-        PlanStep::new(STEP_WENT_DOWN).detail("Until the connection really drops").weight(0.5),
+        PlanStep::new(STEP_SHUTDOWN_SENT).detail(nf!("SENTIENT and its database stopped cleanly first, then {}", if windows { "shutdown /s" } else { "systemctl poweroff" })),
+        PlanStep::new(STEP_WENT_DOWN).detail(n!("Until the connection really drops")).weight(0.5),
     ]
 }
 
 /// Restarting Docker (crate::server_ops).
 pub fn docker_restart(sentient_on_docker: bool) -> Vec<PlanStep> {
     use crate::server_ops as so;
-    let mut v = vec![PlanStep::new(so::STEP_DOCKER_RESTART).detail("Its containers stop and start with it"), PlanStep::new(so::STEP_DOCKER_WAIT).weight(0.5)];
+    let mut v = vec![PlanStep::new(so::STEP_DOCKER_RESTART).detail(n!("Its containers stop and start with it")), PlanStep::new(so::STEP_DOCKER_WAIT).weight(0.5)];
     if sentient_on_docker {
-        v.push(PlanStep::new(so::STEP_DOCKER_SENTIENT).detail("Its containers started").weight(2.));
+        v.push(PlanStep::new(so::STEP_DOCKER_SENTIENT).detail(n!("Its containers started")).weight(2.));
     }
     v
 }
@@ -301,7 +306,7 @@ pub fn docker_restart(sentient_on_docker: bool) -> Vec<PlanStep> {
 pub fn system_updates() -> Vec<PlanStep> {
     use crate::server_ops as so;
     vec![
-        PlanStep::new(so::STEP_UPD_LOOK).detail("The package lists read again"),
+        PlanStep::new(so::STEP_UPD_LOOK).detail(n!("The package lists read again")),
         PlanStep::new(so::STEP_UPD_INSTALL).weight(6.),
         PlanStep::new(so::STEP_UPD_CHECK).weight(0.3),
     ]

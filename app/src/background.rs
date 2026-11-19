@@ -51,12 +51,12 @@ pub enum Command {
 /// The taskbar actions (`--action <name>`): the Linux menu entry's Desktop
 /// Actions and the Windows Jump List.
 pub const ACTIONS: [(&str, &str); 6] = [
-    ("open", "Open"),
-    ("statistics", "Statistics"),
-    ("notifications", "Notifications"),
-    ("backup", "Back up this computer now"),
-    ("check-updates", "Check for updates"),
-    ("exit", "Exit"),
+    ("open", n!("Open")),
+    ("statistics", n!("Statistics")),
+    ("notifications", n!("Notifications")),
+    ("backup", n!("Back up this computer now")),
+    ("check-updates", n!("Check for updates")),
+    ("exit", n!("Exit")),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -329,7 +329,7 @@ mod imp {
     }
 
     pub fn set_autostart(on: bool, exe: &Path) -> Result<(), String> {
-        let path = entry().ok_or("no home folder")?;
+        let path = entry().ok_or(n!("no home folder"))?;
         if !on {
             let _ = std::fs::remove_file(&path);
             return Ok(());
@@ -357,7 +357,7 @@ mod imp {
     use std::os::windows::process::CommandExt;
     use std::path::Path;
 
-    const TASK: &str = "SENTIENT Platform Manager (background)";
+    const TASK: &str = t!("SENTIENT Platform Manager (background)");
     const NO_WINDOW: u32 = 0x0800_0000;
 
     pub fn present() -> bool {

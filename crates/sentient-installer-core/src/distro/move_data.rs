@@ -947,10 +947,10 @@ fn verify_one(cfg: &DeployConfig, image: &str, sink: &ProgressFn, l: &Live) -> R
     }
     let mut why = Vec::new();
     if differ > 0 {
-        why.push(format!("{differ} file{} differ{}", if differ == 1 { "" } else { "s" }, if differ == 1 { "s" } else { "" }));
+        why.push(if differ == 1 { format!("{differ} file differs") } else { format!("{differ} files differ") });
     }
     if missing > 0 {
-        why.push(format!("{missing} entr{} missing or extra", if missing == 1 { "y is" } else { "ies are" }));
+        why.push(if missing == 1 { format!("{missing} entry is missing or extra") } else { format!("{missing} entries are missing or extra") });
     }
     let at = if names.is_empty() { String::new() } else { format!(" ({})", names.join(", ")) };
     Err(format!("The copy of {} did not match: {}{at}.", l.m.store.label(), why.join(", ")))
