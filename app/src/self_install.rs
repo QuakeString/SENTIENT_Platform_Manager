@@ -93,11 +93,70 @@ mod imp {
         }
         std::fs::create_dir_all(manager_dir())
             .map_err(|e| format!("create {}: {e}", manager_dir().display()))?;
-        // A running copy cannot be overwritten.
+        // A running copy cannot be overwritten. The ClickHouse shutdown
+        // guard is this program too (a LocalSystem service): taskkill ends
+        // it without its stop handler, so ClickHouse keeps running, and it
+        // is started again below.
+        let guard = sentient_installer_core::clickhouse_wsl::GUARD_SERVICE;
+        let guard_was_running = quiet("sc.exe")
+            .args(["query", guard])
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("RUNNING"));
         let _ = quiet("taskkill").args(["/f", "/im", &format!("{PRODUCT}.exe")]).output();
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        std::fs::copy(&me, &target).map_err(|e| format!("copy to {}: {e}", target.display()))?;
+        let copied = replace_file(&me, &target);
+        if guard_was_running {
+            let _ = quiet("sc.exe").args(["start", guard]).output();
+        }
+        copied.map_err(|e| {
+            let hint = if crate::elevate::is_admin() {
+                ""
+            } else {
+                " This needs administrator rights: open the setup with Run as administrator."
+            };
+            format!("copy to {}: {e}.{hint}", target.display())
+        })?;
         Ok(target)
+    }
+
+    /// Put `from` in place of `to`. Windows lets go of a killed program's
+    /// file a moment after taskkill returns, and a read-only file refuses a
+    /// plain copy ("Access is denied", os error 5, seen on a 0.9.1-rc1 to
+    /// 0.9.3 update): clear the attribute and try again for a few seconds.
+    /// If the file is still held, move it aside (Windows allows renaming a
+    /// running program) and copy to the free name; the old file is deleted
+    /// now or at the next update.
+    fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
+        let aside = to.with_extension("exe.old");
+        let _ = std::fs::remove_file(&aside);
+        let mut last = None;
+        for _ in 0..20 {
+            if let Ok(meta) = std::fs::metadata(to) {
+                let mut perms = meta.permissions();
+                if perms.readonly() {
+                    #[allow(clippy::permissions_set_readonly_false)]
+                    perms.set_readonly(false);
+                    let _ = std::fs::set_permissions(to, perms);
+                }
+            }
+            match std::fs::copy(from, to) {
+                Ok(_) => return Ok(()),
+                Err(e) => last = Some(e),
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        if to.exists() && std::fs::rename(to, &aside).is_ok() {
+            match std::fs::copy(from, to) {
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&aside);
+                    return Ok(());
+                }
+                Err(e) => {
+                    let _ = std::fs::rename(&aside, to);
+                    return Err(e);
+                }
+            }
+        }
+        Err(last.unwrap_or_else(|| std::io::Error::other("copy failed")))
     }
 
     /// A `.lnk` to `target` named `name` in `folder`.

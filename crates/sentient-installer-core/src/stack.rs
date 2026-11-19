@@ -194,13 +194,34 @@ impl PgTuning {
 pub struct ChTuning {
     pub ch_mark_cache_bytes: u64,
     pub ch_uncompressed_cache_bytes: u64,
+    /// Write every new part and every merge through to the disk (ClickHouse
+    /// `fsync_after_insert`, `fsync_part_directory`, fsync after merges).
+    /// Off by default: on a hard disk, and through WSL 2's virtual disk, it
+    /// turned SENTIENT's few inserts a second into a disk that stayed 100 %
+    /// busy. Windows' clean stop (the shutdown guard) is what protects
+    /// ClickHouse's parts there. On with `SENTIENT_CH_FSYNC=1`.
+    pub ch_fsync: bool,
 }
 
 impl Default for ChTuning {
     fn default() -> Self {
-        Self { ch_mark_cache_bytes: 268_435_456, ch_uncompressed_cache_bytes: 134_217_728 }
+        Self { ch_mark_cache_bytes: 268_435_456, ch_uncompressed_cache_bytes: 134_217_728, ch_fsync: fsync_from_env() }
     }
 }
+
+/// `SENTIENT_CH_FSYNC`: 1/true/yes/on turns ClickHouse's write-through on.
+pub fn fsync_from_env() -> bool {
+    std::env::var("SENTIENT_CH_FSYNC")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+/// The three `<merge_tree>` settings `ch_fsync` adds, one per line.
+pub const CH_FSYNC_SETTINGS: [&str; 3] = [
+    "<fsync_after_insert>1</fsync_after_insert>",
+    "<fsync_part_directory>1</fsync_part_directory>",
+    "<min_compressed_bytes_to_fsync_after_merge>1</min_compressed_bytes_to_fsync_after_merge>",
+];
 
 /// How the server reaches ClickHouse.
 #[derive(Clone, Debug)]
@@ -355,15 +376,9 @@ pub fn clickhouse_config_xml(ch: &ChTuning, http_port: Option<u16>, tcp_port: Op
             tcp_port.map(|p| format!("<tcp_port>{p}</tcp_port>\n")).unwrap_or_default(),
         ),
     };
-    // On Windows ClickHouse runs in the WSL2 machine, which Windows can cut
-    // off (a restart that does not wait, a power cut): parts that were only
-    // in the page cache are left empty. Writing them through costs little at
-    // SENTIENT's insert rates.
-    let fsync = if cfg!(windows) {
-        "\n        <fsync_after_insert>1</fsync_after_insert>\n        <fsync_part_directory>1</fsync_part_directory>\n        <min_compressed_bytes_to_fsync_after_merge>1</min_compressed_bytes_to_fsync_after_merge>"
-    } else {
-        ""
-    };
+    // Write-through only when asked for (ChTuning::ch_fsync): it costs
+    // several forced disk writes per insert and per merge.
+    let fsync: String = if ch.ch_fsync { CH_FSYNC_SETTINGS.iter().map(|l| format!("\n        {l}")).collect() } else { String::new() };
     format!(
         r#"<?xml version="1.0"?>
 <clickhouse>
@@ -467,6 +482,22 @@ mod tests {
         let xml = clickhouse_config_xml(&ChTuning::default(), None, None);
         assert!(xml.contains("<max_suspicious_broken_parts>100000</max_suspicious_broken_parts>"));
         assert!(xml.contains("</merge_tree>"));
+    }
+
+    #[test]
+    fn clickhouse_writes_through_only_when_asked() {
+        let off = ChTuning { ch_fsync: false, ..ChTuning::default() };
+        let xml = clickhouse_config_xml(&off, None, None);
+        assert!(!xml.contains("fsync"), "{xml}");
+        let on = ChTuning { ch_fsync: true, ..ChTuning::default() };
+        let xml = clickhouse_config_xml(&on, None, None);
+        for l in CH_FSYNC_SETTINGS {
+            assert!(xml.contains(l), "{l}");
+        }
+        // Still well-formed: the settings sit inside <merge_tree>.
+        let open = xml.find("<merge_tree>").unwrap();
+        let close = xml.find("</merge_tree>").unwrap();
+        assert!(CH_FSYNC_SETTINGS.iter().all(|l| { let i = xml.find(l).unwrap(); open < i && i < close }));
     }
 
     #[test]

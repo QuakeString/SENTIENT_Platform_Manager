@@ -2451,7 +2451,7 @@ mod tests {
         // installer's own job that hardens ClickHouse right after setup,
         // and the gateway page's password: an action the user presses
         // (Linux only; Windows runs Docker Desktop's docker.exe there).
-        let allowed = ["fn wsl_bash_args", "fn docker_exec_args", "\"harden\" =>", "pub fn set_ui_password"];
+        let allowed = ["fn wsl_bash_args", "fn docker_exec_args", "\"harden\" | \"harden-fsync\" =>", "pub fn set_ui_password"];
         let mut found = Vec::new();
         let mut files = Vec::new();
         let mut dirs: Vec<std::path::PathBuf> = roots.iter().filter(|r| r.is_dir()).cloned().collect();
