@@ -7,7 +7,8 @@
 # fails a render where anything reaches into a card's right padding or the
 # page's margin; icons.py checks the rail's badges sit on x = 32; labels.py
 # checks the rail's rows (40 px on a 44 px pitch, 16 px under the brand) and
-# that the current step's label is the size of the others; and no database
+# that the current step's label is the size of the others; buttons.py that
+# every button is the one button size; and no database
 # password field starts empty (its `LAYOUT password <name> empty|set` lines).
 #
 #   tests/layout/setup.sh <app binary> <out dir>
@@ -44,7 +45,7 @@ one() { # step width scale theme variant
   DISPLAY=$d import -window root "$OUT/$name.png" 2>/dev/null
   kill $ap 2>/dev/null; sleep 1; kill -9 $ap 2>/dev/null; kill $xp 2>/dev/null
   rm -rf "$x"
-  { python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" && python3 "$HERE/icons.py" "$OUT/$name.log" && passwords "$OUT/$name.log" && python3 "$HERE/rows.py" "$OUT/$name.log"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
+  { python3 "$HERE/check.py" "$OUT/$name.png" "$OUT/$name.log" "$sc" && python3 "$HERE/icons.py" "$OUT/$name.log" && passwords "$OUT/$name.log" && python3 "$HERE/rows.py" "$OUT/$name.log" && python3 "$HERE/buttons.py" "$OUT/$name.log"; } > "$OUT/$name.result" 2>&1 && echo "ok   $name" || { echo "FAIL $name"; cat "$OUT/$name.result"; }
 }
 passwords() { # log: every database password field reported, none empty
   if ! grep -q '^LAYOUT password ' "$1"; then echo "no LAYOUT password lines in $1"; return 1; fi
@@ -58,4 +59,6 @@ printf '%s\n' "${list[@]}" | xargs -P "$JOBS" -L 1 bash -c 'one "$@"' _ | tee "$
 fails=$(grep -c '^FAIL' "$OUT/summary.txt"); total=$(grep -c -E '^(ok|FAIL)' "$OUT/summary.txt")
 echo "setup layout test: $((total - fails))/$total passed"
 python3 "$HERE/labels.py" "$OUT" | tee "$OUT/labels.txt"; labels=${PIPESTATUS[0]}
-[ "$fails" -eq 0 ] && [ "$labels" -eq 0 ]
+# One button size across every render (each scale and theme).
+python3 "$HERE/buttons.py" "$OUT" | tail -5 | tee "$OUT/buttons.txt"; btns=${PIPESTATUS[0]}
+[ "$fails" -eq 0 ] && [ "$labels" -eq 0 ] && [ "$btns" -eq 0 ]

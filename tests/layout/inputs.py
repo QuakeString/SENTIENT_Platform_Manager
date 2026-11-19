@@ -7,10 +7,11 @@
 - every text input is the toolkit's at its default size: no `.small()`,
   `.xsmall()`, `.large()`, `.with_size(..)` or `.h(..)` on an
   `Input::new(..)` chain;
-- no button set to a height other than the standard (28 px, ui::control_h),
-  except the bars' own controls (crate::theme::BAR_CTRL_H: the top bar and
-  Setup's footer, whose `h` is BAR_CTRL_H, one height of their own
-  across each bar);
+- one button size, no exceptions (crate::theme::BUTTON_H, BUTTON_PAD_X,
+  BUTTON_MIN_W, BUTTON_RADIUS, set by crate::ui::button): no size, height,
+  width, padding, corner or font-size link on a `button(..)` chain, and no
+  `Button::new(..)` outside crate::ui (buttons.py measures every button in
+  every render);
 - a segmented choice and an input box keep the standard height (no `.h(..)`
   on a `seg_track(..)` or `input_box()` chain).
 Prints one line per finding; exits 1 if there is any.
@@ -22,6 +23,7 @@ import sys
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "app", "src")
 STANDARD = 28.0
 SIZE = re.compile(r"^\.(small|xsmall|large|with_size|h|size)\(")
+BUTTON_SIZE = re.compile(r"^\.(small|xsmall|large|with_size|compact|label_box|h|w|size|min_w|min_h|max_w|max_h|px|py|p|pl|pr|pt|pb|rounded|text_size|text_xs|text_sm|text_base|text_lg|line_height|icon_size|(?:h|w|size|min_w|px|py|p|pl|pr|rounded)_[0-9a-z]+)\(")
 
 
 def chain(text, i):
@@ -87,11 +89,11 @@ def main():
                         bad.append(f"{rel}:{line_of(text, m.start())}: input sized off the standard: {link}")
             for m in re.finditer(r"\b(?:ui::)?button\(", text):
                 for link in chain(text, m.end() - 1):
-                    hm = re.match(r"^\.h\(px\(([0-9.]+)\)\)$", link)
-                    if hm and abs(float(hm.group(1)) - STANDARD) > 0.01:
-                        bad.append(f"{rel}:{line_of(text, m.start())}: button {hm.group(1)} px tall, the standard is {STANDARD:.0f}")
-                    elif link.startswith(".h(") and not hm and "BAR_CTRL_H" not in link and not (link == ".h(h)" and rel == os.path.join("installer", "mod.rs")):
-                        bad.append(f"{rel}:{line_of(text, m.start())}: button with a height of its own: {link}")
+                    if BUTTON_SIZE.match(link):
+                        bad.append(f"{rel}:{line_of(text, m.start())}: button sized off the one button size: {link}")
+            if rel != "ui.rs":
+                for m in re.finditer(r"\bButton::new\(", text):
+                    bad.append(f"{rel}:{line_of(text, m.start())}: a button not made by crate::ui::button")
             for m in re.finditer(r"\b(?:seg_track|input_box)\(", text):
                 for link in chain(text, m.end() - 1):
                     if re.match(r"^\.(h|min_h|max_h|size)\(", link):
@@ -99,7 +101,7 @@ def main():
     for b in bad:
         print(b)
     if not bad:
-        print("inputs.py: every input, segmented choice and button is the standard height")
+        print("inputs.py: every input and segmented choice is the standard height, every button the one button size")
     return 1 if bad else 0
 
 
