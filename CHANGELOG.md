@@ -36,6 +36,9 @@ refreshes that repository's Downloads table.
   records for its installer.
 
 ### Fixed
+- Setup's progress bar no longer goes back across the restart that turns
+  on WSL 2 (18 % before it, 4 % after): the run after the restart starts
+  where the bar had got to.
 - Logs on a computer or server with only the gateway (no SENTIENT) said
   "SENTIENT is not installed here". It now shows the gateway's log.
 - The Stable channel offers a final Platform Manager release (0.9.3) even
