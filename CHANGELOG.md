@@ -15,6 +15,26 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Added
+- Install the gateway on a remote Windows server. "Install the gateway" on
+  a Windows server's page (and on an empty Windows server) now works as it
+  does on Linux: the same form, and the Platform Manager on the server
+  downloads the gateway's Windows installer from the SENTIENT releases
+  site, checks it against its published checksum, runs it silently and
+  starts the SentientGateway service. The access token and the page's
+  password reach the server on the agent's standard input and wait in a
+  file only SYSTEM and the Administrators can read until the install takes
+  them; they never appear on a command line or in a log. Installing
+  SENTIENT itself on a remote Windows server is still not supported.
+
+### Changed
+- The access token and passwords an install keeps for a moment on a
+  Windows computer (a remote install's staged secrets, the gateway
+  installer's token file) are readable only by SYSTEM, the Administrators
+  and the account that wrote them, no longer by every user. A gateway
+  release without a `.sha256` file is checked against the checksum GitHub
+  records for its installer.
+
 ### Fixed
 - The Stable channel offers a final Platform Manager release (0.9.3) even
   though the download repository marks it a pre-release; only a version
