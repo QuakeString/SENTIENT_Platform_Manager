@@ -160,7 +160,35 @@ pub fn open_sentient(port: u16, kiosk: bool, cx: &mut App) {
             }
         }
     }
-    open_url(&format!("http://localhost:{port}"), cx);
+    open_web_app(&format!("http://localhost:{port}"), cx);
+}
+
+/// Open SENTIENT's address `url` in a browser that runs its UI. Windows:
+/// the default browser, unless that is Internet Explorer (Windows 10
+/// LTSC's) or none is set: then Edge, Chrome or Firefox, else a message
+/// saying one is needed (sentient_installer_core::kiosk::choose_web_launch).
+/// Elsewhere: [`open_url`].
+pub fn open_web_app(url: &str, cx: &mut App) {
+    #[cfg(windows)]
+    {
+        use sentient_installer_core::kiosk::{self, WebLaunch};
+        let url = url.to_string();
+        cx.spawn(async move |cx| {
+            let launch = cx.background_executor().spawn(async move { kiosk::web_launch() }).await;
+            let _ = cx.update(|cx| match launch {
+                WebLaunch::Default => cx.open_url(&url),
+                WebLaunch::With(browser, exe) => {
+                    if let Err(e) = std::process::Command::new(&exe).args(browser.open_args(&url, false, None)).spawn() {
+                        show_error("Could not open it", format!("{} could not be started to open {url}.\n{e}", browser.label()), cx);
+                    }
+                }
+                WebLaunch::Missing => show_error("No browser for SENTIENT", kiosk::no_browser_message(&url), cx),
+            });
+        })
+        .detach();
+    }
+    #[cfg(not(windows))]
+    open_url(url, cx);
 }
 
 /// What the start delay does, for its (i).

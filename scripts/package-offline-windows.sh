@@ -19,6 +19,7 @@
 #   gateway/SentientGatewaySetup-<v>.exe     gateway
 #   wsl/wsl.<v>.x64.msi                      wsl_msi
 #   wsl/wsl_update_x64.msi                   kernel_msi
+#   browser/googlechromestandaloneenterprise64.msi    chrome_msi (the kiosk's browser)
 #   wsl/ubuntu-noble-wsl-amd64-<date>.rootfs.tar.gz   rootfs
 #   wsl/docker-debs/NN-<pkg>_<ver>_<arch>.deb         deb (pack.json order = install order)
 #   images/<name>.tar.zst                    image (image_ref, image_digest)
@@ -44,6 +45,10 @@
 #                             header = "Authorization: Bearer <token>"
 #                             default ~/.config/sentient-release/github.curl when it exists;
 #                             else anonymous (public downloads, rate limited)
+#   --chrome-sha256 <hex>     the Chrome Enterprise MSI's SHA-256 when Google has
+#                             published a newer one than CHROME_MSI_SHA256 below
+#                             (check it on Windows: Get-AuthenticodeSignature says
+#                             Valid, O=Google LLC), else the build stops
 #   --keep-staging            keep the unzipped folder (hard links into the cache)
 #
 # The release pack MUST be signed with the SENTIENT release key (the one whose
@@ -78,6 +83,15 @@ WSL_MSI_SHA256=2313efc5873e3f8552f42e77f950fabd913c0289078fa89d2100f3421a525eaa
 # Content-MD5 ZV6RfxGC1lrkKnDq2u2LiA==); SHA-256 of that file.
 KERNEL_MSI_URL="https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi"
 KERNEL_MSI_SHA256=4d09c776c8d45f70a202281d18e19be1118f53159b0c217a5274a31ce18525fe
+
+# Google Chrome Enterprise (Kind::ChromeMsi): the kiosk's browser on a
+# computer with none (kiosk.rs CHROME_MSI, which the online install
+# downloads). Unversioned upstream: Google replaces it with every Chrome
+# release, so a new pack needs a new pin (or --chrome-sha256). This one:
+# Last-Modified 2026-11-18 18:12:12 GMT, ETag "71d5109", 175902720 bytes.
+# Setup checks Google's Authenticode signature before it installs it.
+CHROME_MSI_URL="https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi"
+CHROME_MSI_SHA256=3a6e02f372f35dd9f97b4109440c5622e02db4c42406a7fd99d08145a5276ba0
 
 # The Ubuntu 24.04 WSL root file system (Kind::Rootfs). distro.rs ROOTFS_URL
 # is releases/24.04/current/…; current is this dated release (same SHA-256
@@ -121,8 +135,9 @@ while [ $# -gt 0 ]; do
     --work) work=$2; shift 2 ;;
     --out) out=$2; shift 2 ;;
     --github-curl-config) gh_conf=$2; shift 2 ;;
+    --chrome-sha256) CHROME_MSI_SHA256=$2; shift 2 ;;
     --keep-staging) keep_staging=true; shift ;;
-    -h|--help) sed -n '2,55p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,60p' "$0"; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
   esac
 done
@@ -153,7 +168,7 @@ mem_gb=$(( $(awk '/^MemAvailable:/ {print $2}' /proc/meminfo) / 1024 / 1024 ))
 log "work $work: ${free_gb} GB free, ${mem_gb} GB memory available"
 
 cache=$work/cache
-mkdir -p "$cache"/{spm,payload,gateway,wsl,debs,images,meta}
+mkdir -p "$cache"/{spm,payload,gateway,wsl,browser,debs,images,meta}
 
 sha_of() { sha256sum "$1" | awk '{print $1}'; }
 size_of() { stat -c '%s' "$1"; }
@@ -275,6 +290,12 @@ fetch "$WSL_MSI_URL" "$cache/wsl/$wsl_msi" "$WSL_MSI_SHA256"
 fetch "$KERNEL_MSI_URL" "$cache/wsl/wsl_update_x64.msi" "$KERNEL_MSI_SHA256"
 fetch "$ROOTFS_URL" "$cache/wsl/$rootfs" "$ROOTFS_SHA256"
 
+log "Google Chrome Enterprise (the kiosk's browser)"
+chrome_msi=googlechromestandaloneenterprise64.msi
+[[ "$CHROME_MSI_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "--chrome-sha256 is not a SHA-256"
+echo "   (a SHA-256 mismatch here: Google has published a newer Chrome; check it, then pass --chrome-sha256)"
+fetch "$CHROME_MSI_URL" "$cache/browser/$chrome_msi" "$CHROME_MSI_SHA256"
+
 # ---------------------------------------------------------------------------
 # Docker Engine's packages, resolved against that very root file system:
 # it is imported as a throwaway local image, and apt in a --rm container of
@@ -372,7 +393,7 @@ mv "$img_rows.new" "$img_rows"
 pack_name="SPM-offline-installer-${spm_version}-SENTIENT-${sentient_version}-windows-x64"
 stage=$work/staging/$pack_name
 log "Staging $stage (hard links into the cache)"
-rm -rf "$work/staging"; mkdir -p "$stage"/{payload,gateway,wsl/docker-debs,images}
+rm -rf "$work/staging"; mkdir -p "$stage"/{payload,gateway,wsl/docker-debs,browser,images}
 rows=$work/staging/files.tsv   # path, kind, image_ref, image_digest
 : >"$rows"
 put() { # <source> <path in pack> <kind> [image_ref image_digest]
@@ -402,6 +423,7 @@ put "$cache/gateway/$gw_exe" "gateway/$gw_exe" gateway
 put "$cache/wsl/$wsl_msi" "wsl/$wsl_msi" wsl_msi
 put "$cache/wsl/wsl_update_x64.msi" wsl/wsl_update_x64.msi kernel_msi
 put "$cache/wsl/$rootfs" "wsl/$rootfs" rootfs
+put "$cache/browser/$chrome_msi" "browser/$chrome_msi" chrome_msi
 while IFS=$'\t' read -r f _ _ _; do put "$debs/$f" "wsl/docker-debs/$f" deb; done <"$deb_list"
 while IFS=$'\t' read -r ref digest _ f; do put "$cache/images/$f" "images/$f" image "$ref" "$digest"; done <"$img_rows"
 

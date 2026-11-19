@@ -69,7 +69,7 @@ fn the_pack_verifies_with_the_platform_managers_checks() {
         assert!(payload.join(f).is_file(), "payload/{f} missing");
     }
     assert_eq!(std::fs::read_to_string(payload.join("VERSION")).unwrap().trim(), p.sentient_version);
-    for kind in [Kind::Spm, Kind::Payload, Kind::Pg, Kind::Tsdb, Kind::Vcredist, Kind::Gateway, Kind::WslMsi, Kind::KernelMsi, Kind::Rootfs] {
+    for kind in [Kind::Spm, Kind::Payload, Kind::Pg, Kind::Tsdb, Kind::Vcredist, Kind::Gateway, Kind::WslMsi, Kind::KernelMsi, Kind::ChromeMsi, Kind::Rootfs] {
         assert!(opened.file(kind).is_some(), "no {kind:?} file");
     }
 

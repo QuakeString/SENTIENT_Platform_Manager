@@ -197,8 +197,10 @@ pub fn panel(theme: &Theme, check: &PackCheck) -> Div {
                 .gap_2()
                 .text_sm()
                 .child(div().child(format!(
-                    "Signed with the SENTIENT release key; every file matches its checksum. SENTIENT {}, Platform Manager {}{gateway}.",
-                    p.pack.sentient_version, p.pack.spm_version
+                    "{}; every file matches its checksum. SENTIENT {}, Platform Manager {}{gateway}.",
+                    p.key.sentence(),
+                    p.pack.sentient_version,
+                    p.pack.spm_version
                 )))
                 .child(div().text_color(theme.muted_foreground).child("Everything is installed from the pack: nothing is downloaded."))
                 .into_any_element()

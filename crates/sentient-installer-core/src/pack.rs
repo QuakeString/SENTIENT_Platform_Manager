@@ -52,6 +52,9 @@ pub enum Kind {
     WslMsi,
     /// The WSL 2 kernel for an older Windows 10's inbox WSL.
     KernelMsi,
+    /// Google Chrome Enterprise (`googlechromestandaloneenterprise64.msi`):
+    /// the kiosk's browser when the computer has none.
+    ChromeMsi,
     /// The Ubuntu WSL root file system (`wsl --import`).
     Rootfs,
     /// A Docker Engine package for that Ubuntu; installed in list order.
@@ -223,6 +226,32 @@ pub struct Opened {
     pub pack: Pack,
     /// The signature's trusted comment.
     pub signed: String,
+    /// The key the signature was checked against.
+    pub key: SignedBy,
+}
+
+/// Which key verified a pack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignedBy {
+    /// The SENTIENT release key (signing::RELEASE_PUBLIC_KEY).
+    Release,
+    /// Another key: SPM_PACK_TEST_KEY in a debug build, or a test's own.
+    Test,
+}
+
+impl SignedBy {
+    /// The key `key` (a public key, base64) is.
+    pub fn of(key: &str) -> SignedBy {
+        if key.trim() == crate::signing::RELEASE_PUBLIC_KEY.trim() { SignedBy::Release } else { SignedBy::Test }
+    }
+
+    /// The pack card's sentence about the signature.
+    pub fn sentence(self) -> &'static str {
+        match self {
+            SignedBy::Release => "Signed with the SENTIENT release key",
+            SignedBy::Test => "Signed with a TEST key (debug build): not a release pack",
+        }
+    }
 }
 
 /// Open the pack in `dir`: `pack.json` signed with the release key.
@@ -253,7 +282,7 @@ pub fn open_with_key(key: &str, dir: &Path) -> Result<Opened, Refusal> {
     };
     let signed = crate::signing::verify_with(key, &bytes, &signature).map_err(Refusal::BadSignature)?;
     let text = String::from_utf8(bytes).map_err(|_| Refusal::Unreadable("not UTF-8".into()))?;
-    Ok(Opened { dir: dir.to_path_buf(), pack: parse(&text)?, signed })
+    Ok(Opened { dir: dir.to_path_buf(), pack: parse(&text)?, signed, key: SignedBy::of(key) })
 }
 
 /// Where a pack is looked for without asking: the folder of the running
@@ -375,7 +404,7 @@ impl Pack {
         self.files.iter().map(|f| f.size).sum()
     }
 
-    /// "Checking the offline pack: 41 files, 3.2 GB".
+    /// "Checking the offline pack: 42 files, 3.2 GB".
     pub fn check_title(&self) -> String {
         format!("Checking the offline pack: {} files, {}", self.files.len(), size_text(self.total_bytes()))
     }
@@ -496,7 +525,7 @@ impl Opened {
         for name in [PACK_FILE, SIGNATURE_FILE] {
             std::fs::copy(self.dir.join(name), to.join(name)).map_err(|e| format!("copy {name}: {e}"))?;
         }
-        let copy = Opened { dir: to.to_path_buf(), pack: self.pack.clone(), signed: self.signed.clone() };
+        let copy = Opened { dir: to.to_path_buf(), pack: self.pack.clone(), signed: self.signed.clone(), key: self.key };
         for f in self.pack.files.iter().filter(|f| keep(f)) {
             let dest = copy.path_of(f);
             // Already there from an earlier copy, with its size: kept.
@@ -535,6 +564,7 @@ pub fn debug_fake() -> Opened {
         file("gateway/SentientGatewaySetup-4.16.2.exe", 11_000_000, Kind::Gateway, None),
         file("wsl/wsl.2.6.1.0.x64.msi", 240_000_000, Kind::WslMsi, None),
         file("wsl/wsl_update_x64.msi", 17_000_000, Kind::KernelMsi, None),
+        file("browser/googlechromestandaloneenterprise64.msi", 176_000_000, Kind::ChromeMsi, None),
         file("wsl/ubuntu-noble-wsl-amd64-20261101.rootfs.tar.gz", 350_000_000, Kind::Rootfs, None),
         file("images/sentient-4.4.0.4.tar.zst", 450_000_000, Kind::Image, Some("quakestring/sentient:4.4.0.4")),
         file("images/timescaledb-2.26.1-pg18.tar.zst", 500_000_000, Kind::Image, Some("timescale/timescaledb:2.26.1-pg18")),
@@ -561,6 +591,7 @@ pub fn debug_fake() -> Opened {
             files,
         },
         signed: "debug".into(),
+        key: SignedBy::Release,
     }
 }
 
@@ -608,6 +639,7 @@ mod tests {
         let dir = pack_dir("good", true);
         let p = open_with_key(TEST_KEY, &dir).unwrap();
         assert_eq!(p.signed, "pack test");
+        assert_eq!(p.key, SignedBy::Test);
         assert_eq!((p.pack.spm_version.as_str(), p.pack.sentient_version.as_str(), p.pack.gateway_version.as_deref()), ("0.9.4", "4.4.0.4", Some("4.16.2")));
         assert_eq!(p.pack.min_os.windows_build, Some(19044));
         assert_eq!(p.pack.components.docker.as_deref(), Some("28.5.1"));
@@ -617,6 +649,21 @@ mod tests {
         assert_eq!(p.payload_dir(), Some(dir.join("payload")));
         assert_eq!(p.pack.licence_build(), "4.4.0");
         assert_eq!(p.pack.check_title(), "Checking the offline pack: 5 files, 60 bytes");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_card_says_which_key_signed_the_pack() {
+        // A pack verified by a key other than the release key (the debug
+        // SPM_PACK_TEST_KEY) says so; the release key's says that.
+        let dir = pack_dir("whichkey", true);
+        let p = open_with_key(TEST_KEY, &dir).unwrap();
+        assert_eq!(p.key, SignedBy::Test);
+        assert_eq!(p.key.sentence(), "Signed with a TEST key (debug build): not a release pack");
+        assert_eq!(SignedBy::of(crate::signing::RELEASE_PUBLIC_KEY), SignedBy::Release);
+        assert_eq!(SignedBy::of(&format!(" {} ", crate::signing::RELEASE_PUBLIC_KEY)), SignedBy::Release);
+        assert_eq!(SignedBy::Release.sentence(), "Signed with the SENTIENT release key");
+        assert_eq!(SignedBy::of(TEST_KEY), SignedBy::Test);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -755,7 +802,7 @@ mod tests {
         assert_eq!(size_text(515_000_000), "515 MB");
         assert_eq!(size_text(8_400), "8 KB");
         let fake = debug_fake();
-        assert!(fake.pack.check_title().starts_with("Checking the offline pack: 41 files, 3."), "{}", fake.pack.check_title());
+        assert!(fake.pack.check_title().starts_with("Checking the offline pack: 42 files, 3."), "{}", fake.pack.check_title());
         assert!(fake.has_docker());
     }
 }
