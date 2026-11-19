@@ -10,8 +10,10 @@
 //! - `provision`: import the WSL distro, install Docker, start ClickHouse
 //!   from `config.json` (a DeployConfig) in the work directory.
 //! - `unregister`: delete the distro and with it ClickHouse's data.
-//! - `harden`: add the crash-safe ClickHouse settings to an install made
-//!   before them, and restart ClickHouse.
+//! - `harden`: bring the ClickHouse settings of an existing install to this
+//!   version's (crash-safe parts, no write-through) and restart ClickHouse
+//!   when anything changed. `harden-fsync`: the same with write-through on
+//!   (`SENTIENT_CH_FSYNC=1`).
 //! - `move-disk`: move the distro's disk to another folder (Move data to
 //!   another disk).
 
@@ -44,9 +46,9 @@ pub fn run(job: &str) -> i32 {
                 Err(e) => Err(e.to_string()),
             }
         }
-        "harden" => {
+        "harden" | "harden-fsync" => {
             let cfg = DeployConfig::default();
-            let script = sentient_installer_core::clickhouse_wsl::harden_config_script(&cfg.ch_config_path(), &cfg.names().ch);
+            let script = sentient_installer_core::clickhouse_wsl::harden_config_script(&cfg.ch_config_path(), &cfg.names().ch, job == "harden-fsync");
             // A file, not `sh -c`: the script's quotes would not survive
             // Windows' command-line quoting.
             let file = work_dir().join("harden.sh");

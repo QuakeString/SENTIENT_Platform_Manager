@@ -63,6 +63,14 @@ pub fn all() -> Vec<Change> {
             applies: docker_own_distro_windows,
             run: pin_address_pools,
         },
+        Change {
+            id: "clickhouse-no-write-through",
+            text: "ClickHouse no longer forces every write straight to the disk, which kept hard disks 100 % busy.",
+            step: "Turning off ClickHouse's forced disk writes",
+            restarts: true,
+            applies: clickhouse_on_windows,
+            run: clickhouse_no_write_through,
+        },
     ]
 }
 
@@ -181,7 +189,7 @@ pub fn clickhouse_clean_stop(record: &InstallationRecord, sink: &ProgressFn) -> 
         .ok_or_else(|| "the ClickHouse account's password is not in the secret store".to_string())?;
     // The work runs as the account with this version of the program.
     let manager = crate::self_install::install_manager()?;
-    if let Err(e) = clickhouse_wsl::run_as_account(sink, &password, &manager, "harden", Some(std::time::Duration::from_secs(240))) {
+    if let Err(e) = clickhouse_wsl::run_as_account(sink, &password, &manager, clickhouse_wsl::harden_job(), Some(std::time::Duration::from_secs(240))) {
         sink(Progress::Log { line: format!("note: {e}") });
     }
     clickhouse_wsl::register_keepalive(&password)?;
@@ -189,6 +197,24 @@ pub fn clickhouse_clean_stop(record: &InstallationRecord, sink: &ProgressFn) -> 
     // The running keep-alive is the old one, which does not answer a stop.
     let _ = std::process::Command::new("schtasks.exe").args(["/end", "/tn", clickhouse_wsl::KEEPALIVE_TASK]).output();
     let _ = std::process::Command::new("schtasks.exe").args(["/run", "/tn", clickhouse_wsl::KEEPALIVE_TASK]).output();
+    Ok(())
+}
+
+/// Remove the write-through (fsync) settings that 0.8.0-rc11 to 0.9.3 wrote
+/// on Windows (`harden` does it, keeping a copy of the file). SENTIENT and
+/// ClickHouse are stopped around it; the start afterwards brings ClickHouse
+/// back through its keep-alive task with the new settings.
+#[cfg(windows)]
+fn clickhouse_no_write_through(_: &InstallationRecord, sink: &ProgressFn) -> Result<(), String> {
+    use sentient_installer_core::clickhouse_wsl;
+    let password = crate::secrets::get(crate::secrets::Secret::ClickhouseAccount)
+        .ok_or_else(|| "the ClickHouse account's password is not in the secret store".to_string())?;
+    let manager = crate::self_install::install_manager()?;
+    clickhouse_wsl::run_as_account(sink, &password, &manager, clickhouse_wsl::harden_job(), Some(std::time::Duration::from_secs(240)))
+}
+
+#[cfg(not(windows))]
+fn clickhouse_no_write_through(_: &InstallationRecord, _: &ProgressFn) -> Result<(), String> {
     Ok(())
 }
 

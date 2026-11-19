@@ -40,7 +40,7 @@ pub(crate) fn run_repair(record: InstallationRecord, sink: ProgressFn) -> Result
             // it is put in place first (repair restores it anyway).
             let _ = self_install::install_manager();
             step(&sink, "Making ClickHouse safe against unclean stops");
-            if let Err(e) = clickhouse_wsl::run_as_account(&sink, &password, &self_install::manager_exe(), "harden", Some(std::time::Duration::from_secs(240))) {
+            if let Err(e) = clickhouse_wsl::run_as_account(&sink, &password, &self_install::manager_exe(), clickhouse_wsl::harden_job(), Some(std::time::Duration::from_secs(240))) {
                 sink(Progress::Log { line: format!("note: {e}") });
             }
             step(&sink, "Stopping ClickHouse cleanly when Windows shuts down");

@@ -15,6 +15,16 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+### Fixed
+- ClickHouse on Windows no longer forces every write straight to the disk.
+  Since 0.8.0-rc11 it wrote each new part and each merge through to the
+  disk, which kept a hard disk 100 % busy. An update or Repair removes the
+  setting from existing installs (a copy of the old file is kept). Set
+  `SENTIENT_CH_FSYNC=1` to keep it on.
+- Updating the Platform Manager no longer fails with "Access is denied"
+  when its program file is still held for a moment or is read-only, and
+  the ClickHouse shutdown service is started again after the update.
+
 ## [0.9.3] - 2026-11-19
 
 Updates read Docker Hub for Docker installs and check the licence before a SENTIENT update, SENTIENT and the gateway install on Linux servers, native installs check glibc, and many Windows and gateway fixes.

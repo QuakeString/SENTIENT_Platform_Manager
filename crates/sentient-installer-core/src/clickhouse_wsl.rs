@@ -285,21 +285,61 @@ touch "$D/stop.done"
     )
 }
 
-/// Run as root in the distro of an install made before the crash-safe
-/// settings (see stack::clickhouse_config_xml): add them to its ClickHouse
-/// configuration if missing and restart ClickHouse, which then also starts
-/// again when an unclean stop had left it refusing a table.
-pub fn harden_config_script(config_path: &str, container: &str) -> String {
+/// Run as root in the distro: bring an existing install's ClickHouse
+/// configuration to this version's settings and restart ClickHouse when
+/// anything changed (which also starts again a ClickHouse that an unclean
+/// stop had left refusing a table).
+///
+/// - `max_suspicious_broken_parts` is added when missing (installs from
+///   before the clean stop).
+/// - The write-through (fsync) settings are removed, or added when `fsync`
+///   ([`crate::stack::ChTuning::ch_fsync`]). Installs from 0.8.0-rc11 to
+///   0.9.3 got them on Windows, and on a hard disk they kept the disk 100 %
+///   busy. A copy of the file is kept as `<file>.bak-fsync`.
+pub fn harden_config_script(config_path: &str, container: &str, fsync: bool) -> String {
+    let fsync_lines: String = crate::stack::CH_FSYNC_SETTINGS.iter().map(|l| format!("\\n        {l}")).collect();
+    let delete = crate::stack::CH_FSYNC_SETTINGS
+        .iter()
+        .map(|l| format!("/<{}>/d", &l[1..l.find('>').unwrap()]))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let fsync_step = if fsync {
+        format!(
+            r#"if ! grep -q fsync_after_insert "$F"; then
+  sed -i 's#<max_suspicious_broken_parts>100000</max_suspicious_broken_parts>#&{fsync_lines}#' "$F"
+  changed=1
+fi"#
+        )
+    } else {
+        format!(
+            r#"if grep -q fsync "$F"; then
+  cp "$F" "$F.bak-fsync"
+  sed -i '{delete}' "$F"
+  changed=1
+fi"#
+        )
+    };
     format!(
         r#"F='{config_path}'
+changed=0
 systemctl start docker >/dev/null 2>&1
 if ! grep -q max_suspicious_broken_parts "$F"; then
-  sed -i 's#^<clickhouse>#<clickhouse>\n    <merge_tree>\n        <max_suspicious_broken_parts>100000</max_suspicious_broken_parts>\n        <fsync_after_insert>1</fsync_after_insert>\n        <fsync_part_directory>1</fsync_part_directory>\n        <min_compressed_bytes_to_fsync_after_merge>1</min_compressed_bytes_to_fsync_after_merge>\n    </merge_tree>#' "$F"
-  docker restart -t 60 '{container}'
+  sed -i 's#^<clickhouse>#<clickhouse>\n    <merge_tree>\n        <max_suspicious_broken_parts>100000</max_suspicious_broken_parts>\n    </merge_tree>#' "$F"
+  changed=1
 fi
+{fsync_step}
+[ "$changed" = 1 ] && docker restart -t 60 '{container}'
 grep -q max_suspicious_broken_parts "$F"
 "#
     )
+}
+
+/// The agent job that runs [`harden_config_script`]: `harden` leaves the
+/// write-through off, `harden-fsync` turns it on (`SENTIENT_CH_FSYNC=1` in
+/// the Platform Manager that starts the job; the job itself runs as the
+/// ClickHouse account, which does not see that variable).
+pub fn harden_job() -> &'static str {
+    if crate::stack::fsync_from_env() { "harden-fsync" } else { "harden" }
 }
 
 /// `C:\ProgramData\SENTIENT\clickhouse` as WSL sees it:
@@ -635,10 +675,54 @@ mod tests {
 
     #[test]
     fn hardening_adds_the_settings_once() {
-        let s = harden_config_script("/opt/sentient/clickhouse-sentient.xml", "sentient-clickhouse");
+        let s = harden_config_script("/opt/sentient/clickhouse-sentient.xml", "sentient-clickhouse", false);
         assert!(s.contains("if ! grep -q max_suspicious_broken_parts"));
         assert!(s.contains(r"<clickhouse>\n    <merge_tree>"));
-        assert!(s.contains("docker restart -t 60 'sentient-clickhouse'"));
+        assert!(s.contains("[ \"$changed\" = 1 ] && docker restart -t 60 'sentient-clickhouse'"));
+    }
+
+    /// Runs the script's sed and grep steps on real files (no docker).
+    fn run_harden(xml: &str, fsync: bool) -> (String, bool) {
+        let dir = std::env::temp_dir().join(format!("spm-harden-{}-{fsync}-{}", std::process::id(), xml.len()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("c.xml");
+        std::fs::write(&f, xml).unwrap();
+        let s = harden_config_script(f.to_str().unwrap(), "x", fsync)
+            .replace("systemctl start docker", "true")
+            .replace("docker restart -t 60 'x'", "echo RESTARTED");
+        let out = std::process::Command::new("sh").arg("-c").arg(&s).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let restarted = String::from_utf8_lossy(&out.stdout).contains("RESTARTED");
+        (std::fs::read_to_string(&f).unwrap(), restarted)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardening_removes_the_write_through_from_older_installs() {
+        let old = crate::stack::clickhouse_config_xml(&crate::stack::ChTuning { ch_fsync: true, ..Default::default() }, None, None);
+        assert!(old.contains("fsync_after_insert"));
+        let (new, restarted) = run_harden(&old, false);
+        assert!(!new.contains("fsync"), "{new}");
+        assert!(new.contains("<max_suspicious_broken_parts>100000</max_suspicious_broken_parts>\n    </merge_tree>"), "{new}");
+        assert!(restarted);
+        // Second run: nothing to do, no restart.
+        let (again, restarted) = run_harden(&new, false);
+        assert_eq!(again, new);
+        assert!(!restarted);
+        // Asked for: put back, inside <merge_tree>.
+        let (on, restarted) = run_harden(&new, true);
+        assert!(restarted);
+        assert_eq!(on, old);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardening_an_install_from_before_the_clean_stop() {
+        let bare = "<?xml version=\"1.0\"?>\n<clickhouse>\n    <mark_cache_size>1</mark_cache_size>\n</clickhouse>\n";
+        let (new, restarted) = run_harden(bare, false);
+        assert!(restarted);
+        assert!(new.contains("<merge_tree>\n        <max_suspicious_broken_parts>100000</max_suspicious_broken_parts>\n    </merge_tree>"), "{new}");
+        assert!(!new.contains("fsync"));
     }
 
     #[test]
