@@ -443,7 +443,7 @@ impl StatusPage {
             panel,
             db,
             &disk_name(record),
-            Some(crate::dbstatus::growth_per_day()),
+            Some(crate::dbstatus::growth_per_day(&record.installed_at)),
             last_backup,
             DbActions {
                 move_data: (crate::movedata::unsupported(record).is_none()).then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
@@ -1395,7 +1395,7 @@ pub(crate) fn db_details(
         .when_some(growth, |p, growth| p.child(ui::fact(theme, "Growth", match growth {
             Some((per_day, days)) if per_day > 0 => format!("about {} a day over the last {days} day{}", bytes_label(per_day as u64), if days == 1 { "" } else { "s" }),
             Some((_, days)) => format!("not growing over the last {days} day{}", if days == 1 { "" } else { "s" }),
-            None => "measured from tomorrow (one size reading a day)".into(),
+            None => "shown once a day of size readings is kept".into(),
         })))
         .when_some(lasts.clone(), |p, l| p.child(ui::fact(theme, "Disk lasts", format!("{l} at this rate"))));
 
