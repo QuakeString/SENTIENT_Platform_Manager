@@ -357,7 +357,7 @@ mod imp {
     use std::os::windows::process::CommandExt;
     use std::path::Path;
 
-    const TASK: &str = t!("SENTIENT Platform Manager (background)");
+    const TASK: &str = "SENTIENT Platform Manager (background)";
     const NO_WINDOW: u32 = 0x0800_0000;
 
     pub fn present() -> bool {

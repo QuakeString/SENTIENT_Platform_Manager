@@ -556,7 +556,7 @@ pub fn sample_now() -> Result<(), String> {
 
 const UNIT: &str = "sentient-pm-stats";
 #[cfg(windows)]
-const TASK: &str = t!("SENTIENT Platform Manager statistics");
+const TASK: &str = "SENTIENT Platform Manager statistics";
 
 /// Run the sampler once a minute: a system timer as the administrator, a user
 /// timer otherwise (this computer, no password asked), a scheduled task on
