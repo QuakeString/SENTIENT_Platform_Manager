@@ -733,6 +733,8 @@ mod tests {
         assert_eq!(names(&plan(Engine::Native, Flavor::Stock), Host { wsl_ready: false, ..WINDOWS })[0], STEP_SENTIENT);
     }
 
+    // The wizard's placement module is GUI-only; the agent build has none.
+    #[cfg(feature = "gui")]
     /// The wizard's choice (a card on System check, a database) as the
     /// plan it builds (Installer::plan → placement::plan_engine), and the
     /// steps that plan runs on this branch's backend.
@@ -741,6 +743,7 @@ mod tests {
         plan_engine(host, Placement::preset(card, host.windows), flavor).map(|engine| plan(engine, flavor))
     }
 
+    #[cfg(feature = "gui")]
     #[test]
     fn the_choice_on_system_check_makes_the_plan_the_backend_runs() {
         use crate::installer::placement::{Host as On, Why, Wsl, default_engine};
