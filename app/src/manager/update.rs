@@ -76,6 +76,10 @@ pub struct UpdatePage {
     /// (SPM_DEBUG_LICENCE_DIALOG=<version>; "cancelled" in
     /// SPM_DEBUG_LICENCE_SIGNED shows the could-not-be-checked dialog).
     debug_gate: Option<String>,
+    /// Native Linux: this computer's C library and system, read once (an
+    /// update whose server needs a newer glibc is not offered).
+    libc: sentient_installer_core::glibc::Libc,
+    os_name: String,
     _observe: Subscription,
     _observe_updates: Subscription,
     _observe_manager: Subscription,
@@ -134,7 +138,15 @@ impl UpdatePage {
             }
             cx.notify();
         });
+        let native_linux = cfg!(target_os = "linux") && record.as_ref().is_some_and(|r| r.platform().needs_package());
+        let (libc, os_name) = if native_linux {
+            (sentient_installer_core::glibc::local(), sentient_installer_core::glibc::local_os_name())
+        } else {
+            (Default::default(), String::new())
+        };
         let mut page = Self {
+            libc,
+            os_name,
             record,
             package: None,
             accept_breaking: false,
@@ -309,6 +321,18 @@ impl UpdatePage {
             .ok();
         });
         self._tasks.push(task);
+    }
+
+    /// Native Linux: why SENTIENT `version` cannot run on this computer's
+    /// glibc (`min_glibc`: its manifest's, when read; else the release
+    /// table). None: it can, or it is not known.
+    fn glibc_block(&self, version: &str, min_glibc: Option<&str>) -> Option<String> {
+        use sentient_installer_core::glibc;
+        let r = self.record.as_ref()?;
+        if !cfg!(target_os = "linux") || !r.platform().needs_package() {
+            return None;
+        }
+        glibc::decide(version, glibc::min_glibc(min_glibc, version), &self.libc, &self.os_name, glibc::Here::Computer).blocked().map(str::to_string)
     }
 
     /// The picked version, or the newest listed.
@@ -610,11 +634,14 @@ impl UpdatePage {
         let tag = self.record.as_ref().map(|r| sentient_installer_core::distro::docker_ops::image_tag(&r.stack.image).to_string()).unwrap_or_default();
         let floating = docker && !releases::is_numbered(&tag);
         let external = self.record.as_ref().is_some_and(|r| r.stack.external.is_some());
+        // Native Linux: a version this glibc cannot run is not offered.
+        let glibc_why = if movement == Move::Same { None } else { self.glibc_block(&chosen.version, None) };
+        let off = glibc_why.is_some();
         let action = match movement {
             Move::Newer => crate::ui::button("install-version")
                 .primary()
                 .label(format!("Update to {version}"))
-                .disabled(busy)
+                .disabled(busy || off)
                 .on_click(cx.listener(move |this, _, window, cx| {
                     let v = version.clone();
                     let go = this.runs(move |p, cx| p.install_version(v.clone(), cx), cx);
@@ -631,7 +658,7 @@ impl UpdatePage {
             Move::Older => crate::ui::button("install-version")
                 .outline()
                 .label(format!("Go back to {version}"))
-                .disabled(busy)
+                .disabled(busy || off)
                 .on_click(cx.listener(move |this, _, window, cx| {
                     let v = version.clone();
                     let go = this.runs(move |p, cx| p.install_version(v.clone(), cx), cx);
@@ -643,6 +670,7 @@ impl UpdatePage {
         let chosen_pill = (movement != Move::Same).then(|| licence_gate::pill(theme, &read, &licence_version::build_version(None, &chosen.version)));
         let released = if chosen.date.is_empty() { String::new() } else { format!(", released {}", chosen.date) };
         let about = match movement {
+            _ if off => glibc_why.clone().unwrap_or_default(),
             Move::Same if how == Some(crate::updating::DockerStep::QuickPin) => {
                 format!("runs now under the image tag {tag}: only the tag changes, SENTIENT restarts once, no update and no database copy")
             }
@@ -929,7 +957,8 @@ impl UpdatePage {
                     row = row.children(signature_note(theme, o, "sentient"));
                 }
                 // Docker, image not on Docker Hub yet: said instead of the button.
-                match o.blocker().filter(|_| docker) {
+                // Native Linux, a glibc too old for it: said instead of the button.
+                match o.blocker().filter(|_| docker).or_else(|| self.glibc_block(&o.version, o.min_glibc.as_deref())) {
                     Some(why) => row = row.child(div().text_sm().text_color(theme.muted_foreground).child(why)),
                     None => {
                         row = row.child(licence_gate::pill(theme, &self.licence_read(), &o.licence_build())).child(crate::ui::probed(
@@ -1110,7 +1139,9 @@ impl Render for UpdatePage {
         let busy = job.is_running();
         let plain = self.plain_update(cx);
         let up_to_date = plain == Some(crate::updating::PlainUpdate::UpToDate);
-        let can_run = !busy && !up_to_date && (!native || self.package.is_some());
+        // A package folder names its version: one this glibc cannot run is refused.
+        let package_why = self.package.as_deref().and_then(crate::updating::package_version).and_then(|v| self.glibc_block(&v, None));
+        let can_run = !busy && !up_to_date && (!native || self.package.is_some()) && package_why.is_none();
         let update_label = match (&plain, busy) {
             (_, true) => "Updating".to_string(),
             (Some(crate::updating::PlainUpdate::To(v)), _) => format!("Update to {v}"),
@@ -1151,7 +1182,7 @@ impl Render for UpdatePage {
                             let (tag, version) = (o.tag.clone(), o.version.clone());
                             let build = o.licence_build();
                             let offer_pill = licence_gate::pill(&theme, &self.licence_read(), &build);
-                            let unpublished = o.blocker().filter(|_| docker);
+                            let unpublished = o.blocker().filter(|_| docker).or_else(|| self.glibc_block(&o.version, o.min_glibc.as_deref()));
                             v_flex()
                                 .gap_2()
                                 .child(
@@ -1221,13 +1252,17 @@ impl Render for UpdatePage {
                         })),
                 )
                 .child(
-                    h_flex().child(
-                        crate::ui::button("update")
-                            .primary()
-                            .label(update_label)
-                            .disabled(!can_run)
-                            .on_click(cx.listener(|this, _, window, cx| this.gate_run(window, cx))),
-                    ),
+                    h_flex()
+                        .gap(crate::ui::button_gap())
+                        .items_center()
+                        .child(
+                            crate::ui::button("update")
+                                .primary()
+                                .label(update_label)
+                                .disabled(!can_run)
+                                .on_click(cx.listener(|this, _, window, cx| this.gate_run(window, cx))),
+                        )
+                        .when_some(package_why, |r, why| r.child(div().min_w_0().text_sm().text_color(theme.muted_foreground).child(why))),
                 ),
         ))
         .child({

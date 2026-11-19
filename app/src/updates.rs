@@ -182,6 +182,9 @@ pub struct Offer {
     /// native installs and nightlies): what the licence is compared with
     /// (sentient_installer_core::licence_version::build_version).
     pub build_version: Option<String>,
+    /// The manifest's `min_glibc` (read for native installs): the oldest
+    /// glibc its Linux server runs on (sentient_installer_core::glibc).
+    pub min_glibc: Option<String>,
 }
 
 impl Offer {
@@ -207,6 +210,7 @@ impl Offer {
             between: Vec::new(),
             image_missing: false,
             build_version: None,
+            min_glibc: None,
         }
     }
 
@@ -304,6 +308,7 @@ pub fn check_with(channel: Channel, installed: Option<String>, native: bool, for
             between: Vec::new(),
             image_missing: false,
             build_version: None,
+            min_glibc: None,
         };
         return Found {
             sentient: Ok(installed.is_some().then(|| offer("4.4.0.2"))),
@@ -408,6 +413,7 @@ fn docker_offer_in(tags: &[String], channel: Channel, installed: &str) -> Option
         between: Vec::new(),
         image_missing: false,
         build_version: None,
+        min_glibc: None,
     })
 }
 
@@ -438,20 +444,21 @@ fn sentient_offer(all: &[Release], channel: Channel, installed: &str, native: bo
     // A release may carry only some systems' files: the newest that has
     // this computer's (its manifest says, and names the version a nightly is).
     for r in candidates.into_iter().take(5) {
-        let (version, build_version) = if native || r.is_nightly() {
+        let (version, build_version, min_glibc) = if native || r.is_nightly() {
             let m = manifest::fetch(&manifest::release_url(&r.tag_name))?;
             if native && m.wanted().is_err() {
                 continue;
             }
-            (m.version, m.build_version)
+            (m.version, m.build_version, m.min_glibc)
         } else {
-            (r.version(), None)
+            (r.version(), None, None)
         };
         if !releases::is_newer(&version, installed, r.is_nightly()) {
             return Ok(None);
         }
         let mut offer = Offer::from(r, version.clone());
         offer.build_version = build_version;
+        offer.min_glibc = min_glibc;
         offer.unsigned = !r.has_asset(&signing::signature_name("manifest.json"));
         offer.signing_started = signing_started(Some(all), Product::Sentient);
         offer.between = if r.is_nightly() {

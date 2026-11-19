@@ -22,6 +22,8 @@
 use serde::{Deserialize, Serialize};
 use sentient_installer_core::stack::Flavor;
 
+use sentient_installer_core::glibc::{self, GlibcVersion, Libc, NativeGlibc};
+
 use crate::installation::Engine;
 
 /// The tag on an install job's id (`20261119101500-install`).
@@ -78,6 +80,10 @@ pub struct ServerFacts {
     pub native_checks: Vec<FactCheck>,
     #[serde(default)]
     pub docker_checks: Vec<FactCheck>,
+    /// The C library (`ldd --version` on the server): a native SENTIENT
+    /// needs a new enough glibc. Unknown from an agent older than 0.9.3.
+    #[serde(default)]
+    pub libc: sentient_installer_core::glibc::Libc,
 }
 
 impl ServerFacts {
@@ -91,6 +97,17 @@ impl ServerFacts {
 
     fn os(&self) -> &str {
         if self.os_name.is_empty() { "this server" } else { &self.os_name }
+    }
+
+    /// Whether a native SENTIENT `version` (needing glibc `min`) runs on
+    /// the server's C library. Alpine is musl even when the agent did not
+    /// say (an older one).
+    pub fn native_glibc(&self, version: &str, min: Option<GlibcVersion>) -> NativeGlibc {
+        let libc = match &self.libc {
+            Libc::Unknown if self.distro == "alpine" => Libc::Musl { version: String::new() },
+            l => l.clone(),
+        };
+        glibc::decide(version, min, &libc, &self.os_name, glibc::Here::Server)
     }
 }
 
@@ -198,6 +215,7 @@ pub fn gather(ports: &[(u16, String)]) -> ServerFacts {
         mem_total: (mon.mem_total > 0).then_some(mon.mem_total),
         native_checks: if systemd { rows("linux-native") } else { Vec::new() },
         docker_checks: if compose { rows("linux-docker") } else { Vec::new() },
+        libc: glibc::local(),
     }
 }
 
@@ -276,9 +294,10 @@ pub fn debug_facts() -> Option<ServerFacts> {
         docker_version: if docker { "Docker version 27.3.1".into() } else { String::new() },
         compose: docker,
         systemd: true,
-        os_name: "Ubuntu 24.04 LTS".into(),
+        os_name: if std::env::var_os("SPM_DEBUG_GLIBC").is_some() { "Debian GNU/Linux 12 (bookworm)".into() } else { "Ubuntu 24.04 LTS".into() },
         distro: "ubuntu".into(),
         arch: "x86_64".into(),
+        libc: glibc::local(),
         disk_free: Some(433_000_000_000),
         mem_total: Some(15_600_000_000),
         native_checks: vec![
@@ -409,6 +428,26 @@ mod tests {
         let f = facts(true, true, false);
         assert!(engine_offer(&f, Engine::Native, "x").unwrap_err().contains("choose Docker"));
         assert_eq!(default_engine(&f), Engine::Docker);
+    }
+
+    #[test]
+    fn native_is_off_on_an_older_glibc_and_on_alpine() {
+        let min = glibc::min_glibc(Some("2.38"), "4.4.0.3");
+        let mut f = facts(true, true, true);
+        f.libc = Libc::Glibc { version: "2.36".into() };
+        let why = f.native_glibc("4.4.0.3", min);
+        assert!(why.blocked().is_some_and(|t| t.starts_with("SENTIENT 4.4.0.3 needs glibc 2.38 or newer; this server has 2.36 (Debian GNU/Linux 12 (bookworm))")));
+        f.libc = Libc::Glibc { version: "2.39".into() };
+        assert_eq!(f.native_glibc("4.4.0.3", min), NativeGlibc::Allowed);
+        // An agent older than 0.9.3 does not say: a warning, except on Alpine (musl).
+        let old: ServerFacts = serde_json::from_str(r#"{"docker":true,"systemd":true,"os_name":"Debian GNU/Linux 12 (bookworm)","distro":"debian"}"#).unwrap();
+        assert_eq!(old.libc, Libc::Unknown);
+        assert!(matches!(old.native_glibc("4.4.0.3", min), NativeGlibc::Unknown(_)));
+        let alpine = ServerFacts { distro: "alpine".into(), os_name: "Alpine Linux v3.22".into(), ..old };
+        assert!(alpine.native_glibc("4.4.0.3", min).blocked().is_some_and(|t| t.contains("has musl (Alpine Linux v3.22)")));
+        // The agent's answer read back.
+        let json = serde_json::to_string(&ServerFacts { libc: Libc::Glibc { version: "2.36".into() }, ..ServerFacts::default() }).unwrap();
+        assert!(json.contains(r#""libc":{"kind":"glibc","version":"2.36"}"#));
     }
 
     #[test]

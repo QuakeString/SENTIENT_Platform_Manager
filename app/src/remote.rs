@@ -75,6 +75,10 @@ pub struct Detected {
     pub arch: String,
     /// "Docker", "systemd services", "Windows services", "" (none found).
     pub install: String,
+    /// Linux: the C library (`ldd --version`), what a native SENTIENT
+    /// needs a new enough glibc of (sentient_installer_core::glibc).
+    #[serde(default)]
+    pub libc: sentient_installer_core::glibc::Libc,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -505,28 +509,38 @@ pub fn untrust(host: &str, port: u16) {
     let _ = Command::new("ssh-keygen").args(["-R", &pattern, "-f", &known_hosts().display().to_string()]).output();
 }
 
+/// [`detect`]'s Linux answer read: uname, os-release's ID and
+/// PRETTY_NAME, the install found, then `ldd --version` (None: not Linux).
+fn parse_unix_detect(out: &str) -> Option<Detected> {
+    let mut lines = out.lines();
+    let uname = lines.next().unwrap_or("");
+    if !uname.starts_with("Linux") {
+        return None;
+    }
+    let arch = uname.split_whitespace().nth(1).unwrap_or("").to_string();
+    let (id, pretty) = lines.next().unwrap_or("|").split_once('|').unwrap_or(("", ""));
+    let install = match lines.next().unwrap_or("") {
+        "systemd" => "systemd services",
+        "docker" => "Docker",
+        _ => "",
+    };
+    // What is left is `ldd --version` (musl's from its standard error).
+    let libc = sentient_installer_core::glibc::parse_ldd(&lines.collect::<Vec<_>>().join("\n"));
+    Some(Detected { os: Os::Linux, os_name: if pretty.is_empty() { "Linux".into() } else { pretty.into() }, distro: id.into(), arch, install: install.into(), libc })
+}
+
 /// Find out the server's system, processor and SENTIENT install.
 pub fn detect(inst: &Instance, once: Option<&str>) -> Result<Detected, String> {
     let unix = run(
         inst,
         "uname -sm; . /etc/os-release 2>/dev/null; echo \"$ID|$PRETTY_NAME\"; \
          if systemctl is-enabled sentient >/dev/null 2>&1; then echo systemd; \
-         elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx sentient; then echo docker; else echo none; fi",
+         elif docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx sentient; then echo docker; else echo none; fi; \
+         echo; ldd --version 2>&1 | head -n 3",
         once,
     );
-    if let Ok(out) = unix {
-        let mut lines = out.lines();
-        let uname = lines.next().unwrap_or("");
-        if uname.starts_with("Linux") {
-            let arch = uname.split_whitespace().nth(1).unwrap_or("").to_string();
-            let (id, pretty) = lines.next().unwrap_or("|").split_once('|').unwrap_or(("", ""));
-            let install = match lines.next().unwrap_or("") {
-                "systemd" => "systemd services",
-                "docker" => "Docker",
-                _ => "",
-            };
-            return Ok(Detected { os: Os::Linux, os_name: if pretty.is_empty() { "Linux".into() } else { pretty.into() }, distro: id.into(), arch, install: install.into() });
-        }
+    if let Some(d) = unix.ok().as_deref().and_then(parse_unix_detect) {
+        return Ok(d);
     }
     // Windows: OpenSSH Server runs cmd or PowerShell (its DefaultShell);
     // an encoded command reads the same in both (crate::remote::winshell).
@@ -539,7 +553,7 @@ pub fn detect(inst: &Instance, once: Option<&str>) -> Result<Detected, String> {
         a => a.to_string(),
     };
     let install = if l.next() == Some("services") { "Windows services" } else { "" };
-    Ok(Detected { os: Os::Windows, os_name: name, distro: String::new(), arch, install: install.into() })
+    Ok(Detected { os: Os::Windows, os_name: name, distro: String::new(), arch, install: install.into(), libc: Default::default() })
 }
 
 // ---------------------------------------------------------------------------
@@ -2762,6 +2776,24 @@ mod win {
 
 #[cfg(test)]
 mod tests {
+
+    /// What detect reads on a server: Debian 12's answer, as the throwaway
+    /// spm-e2e-debian-12 container gave it, and Alpine's (musl on standard error).
+    #[test]
+    fn detect_reads_the_servers_c_library() {
+        use sentient_installer_core::glibc::Libc;
+        let debian = "Linux x86_64\ndebian|Debian GNU/Linux 12 (bookworm)\nnone\n\nldd (Debian GLIBC 2.36-9+deb12u14) 2.36\nCopyright (C) 2022 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\n";
+        let d = super::parse_unix_detect(debian).unwrap();
+        assert_eq!((d.distro.as_str(), d.os_name.as_str(), d.install.as_str()), ("debian", "Debian GNU/Linux 12 (bookworm)", ""));
+        assert_eq!(d.libc, Libc::Glibc { version: "2.36".into() });
+        let alpine = "Linux x86_64\nalpine|Alpine Linux v3.22\ndocker\n\nmusl libc (x86_64)\nVersion 1.2.5\nDynamic Program Loader\n";
+        let a = super::parse_unix_detect(alpine).unwrap();
+        assert_eq!((a.install.as_str(), a.libc), ("Docker", Libc::Musl { version: "1.2.5".into() }));
+        // A record saved before the field reads as unknown.
+        let old: super::Detected = serde_json::from_str(r#"{"os":"linux","os_name":"Debian","distro":"debian","arch":"x86_64","install":""}"#).unwrap();
+        assert_eq!(old.libc, Libc::Unknown);
+        assert!(super::parse_unix_detect("Windows_NT\n").is_none());
+    }
 
     /// The gateway install's command line (the server's process list, the
     /// job's unit) carries the host, the port and the release, never the

@@ -127,6 +127,15 @@ pub fn download(version: Option<&str>, sink: &ProgressFn) -> Result<(String, Pat
     };
     let (m, trust) = manifest::fetch_signed(&url, started)?;
     m.wanted()?;
+    // Native Linux: a server binary this glibc cannot load is not
+    // downloaded (Setup and the Update page say so before; this covers
+    // every other way here, the agent's install on a server too).
+    if cfg!(target_os = "linux") {
+        use sentient_installer_core::glibc;
+        if let glibc::NativeGlibc::Blocked(why) = glibc::decide(&m.version, m.min_glibc(), &glibc::local(), &glibc::local_os_name(), if cfg!(feature = "gui") { glibc::Here::Computer } else { glibc::Here::Server }) {
+            return Err(why);
+        }
+    }
     if let Some(w) = trust.warning(&format!("SENTIENT {}", m.version)) {
         sink(sentient_installer_core::progress::Progress::Log { line: w });
     }

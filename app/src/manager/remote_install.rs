@@ -98,6 +98,9 @@ pub struct InstallFlow {
     flavor: Flavor,
     /// The newest SENTIENT on this Platform Manager's channel (None while looked for).
     version: Option<Result<Option<String>, String>>,
+    /// That release's manifest `min_glibc`, when it says (None: the
+    /// release table, sentient_installer_core::glibc::min_glibc).
+    min_glibc: Option<String>,
     channel: Channel,
     fields: Fields,
     /// Why Next was refused.
@@ -187,6 +190,7 @@ impl InstallFlow {
             engine: Engine::Native,
             flavor: Flavor::Clickhouse,
             version: None,
+            min_glibc: None,
             channel,
             fields,
             problem: None,
@@ -199,9 +203,24 @@ impl InstallFlow {
         };
         flow.check(cx);
         let t = cx.spawn(async move |this, cx| {
-            let v = cx.background_executor().spawn(async move { crate::updates::newest_sentient(channel) }).await;
+            let (v, min) = cx
+                .background_executor()
+                .spawn(async move {
+                    let v = crate::updates::newest_sentient(channel);
+                    // The glibc its Linux server needs, as its manifest says.
+                    let min = match &v {
+                        Ok(Some(v)) if std::env::var_os("SPM_DEBUG_INSTALL_VERSION").is_none() => {
+                            sentient_installer_core::manifest::fetch(&sentient_installer_core::manifest::release_url(v)).ok().and_then(|m| m.min_glibc)
+                        }
+                        _ => None,
+                    };
+                    (v, min)
+                })
+                .await;
             this.update(cx, |f, cx| {
                 f.version = Some(v);
+                f.min_glibc = min;
+                f.fit_engine_to_glibc();
                 cx.notify();
             })
             .ok();
@@ -265,6 +284,7 @@ impl InstallFlow {
                     }
                 }
                 f.facts = Some(r);
+                f.fit_engine_to_glibc();
                 cx.notify();
             })
             .ok();
@@ -306,6 +326,40 @@ impl InstallFlow {
         self.facts.as_ref().and_then(|r| r.as_ref().ok())
     }
 
+    /// Whether a native SENTIENT (the version installed) runs on the
+    /// server's glibc; Allowed until the facts and the version are read.
+    fn native_glibc(&self) -> sentient_installer_core::glibc::NativeGlibc {
+        use sentient_installer_core::glibc;
+        match (self.facts_got(), self.version_text()) {
+            (Some(f), Some(v)) => {
+                let min = glibc::min_glibc(self.min_glibc.as_deref(), &v);
+                // An agent older than 0.9.3 does not say: what the first
+                // connection read (crate::remote::detect) then.
+                match self.inst.detected.as_ref().map(|d| &d.libc).filter(|l| f.libc == glibc::Libc::Unknown && **l != glibc::Libc::Unknown) {
+                    Some(l) => ServerFacts { libc: l.clone(), ..f.clone() }.native_glibc(&v, min),
+                    None => f.native_glibc(&v, min),
+                }
+            }
+            _ => glibc::NativeGlibc::Allowed,
+        }
+    }
+
+    /// Native cannot run on the server: Docker is chosen when it can be
+    /// (both off: Next says why).
+    fn fit_engine_to_glibc(&mut self) {
+        if self.engine != Engine::Native || self.native_glibc().blocked().is_none() {
+            return;
+        }
+        let Some(f) = self.facts_got() else { return };
+        if rinst::engine_offer(f, Engine::Docker, "").is_ok() {
+            let flavor = if rinst::flavor_offer(f, Engine::Docker, self.flavor).is_err() { Some(rinst::default_flavor(f, Engine::Docker)) } else { None };
+            self.engine = Engine::Docker;
+            if let Some(fl) = flavor {
+                self.flavor = fl;
+            }
+        }
+    }
+
     /// Why the current step cannot be left with Next (None: it can).
     fn validate(&self, cx: &App) -> Result<(), String> {
         let f = &self.fields;
@@ -317,6 +371,12 @@ impl InstallFlow {
                     Some(Ok(facts)) => facts,
                 };
                 rinst::engine_offer(facts, self.engine, &self.inst.name).map_err(|e| headline(&e))?;
+                if self.engine == Engine::Native {
+                    if let Some(why) = self.native_glibc().blocked() {
+                        // Still native after fit_engine_to_glibc: no Docker either.
+                        return Err(sentient_installer_core::glibc::and_no_docker(why, sentient_installer_core::glibc::Here::Server));
+                    }
+                }
                 if facts.checks(self.engine).iter().any(|c| c.blocks()) {
                     return Err("Resolve the items marked “Blocker” on the server first, then check again.".into());
                 }
@@ -679,8 +739,10 @@ impl InstallFlow {
         let theme = cx.theme().clone();
         let name = self.inst.name.clone();
         let facts = self.facts_got();
+        let glibc = self.native_glibc();
+        let glibc_off = glibc.blocked().map(|why| format!("Not on this system\n\n{why}"));
         let card = |engine: Engine, title: &'static str, desc: &'static str, recommended: bool, cx: &mut Context<Self>| -> Stateful<Div> {
-            let off = facts.and_then(|f| rinst::engine_offer(f, engine, &name).err());
+            let off = facts.and_then(|f| rinst::engine_offer(f, engine, &name).err()).or_else(|| glibc_off.clone().filter(|_| engine == Engine::Native));
             let id = if engine == Engine::Native { "rinst-native" } else { "rinst-docker" };
             match off {
                 Some(why) => {
@@ -730,9 +792,15 @@ impl InstallFlow {
                 }))
             }
         };
+        let glibc_notice = match &glibc {
+            sentient_installer_core::glibc::NativeGlibc::Blocked(why) => Some(ui::notice(&theme, Tone::Warn, format!("“In the system” is not available\n{why}"))),
+            sentient_installer_core::glibc::NativeGlibc::Unknown(why) if self.engine == Engine::Native => Some(ui::notice(&theme, Tone::Warn, format!("The C library could not be checked\n{why}"))),
+            _ => None,
+        };
         v_flex()
             .gap(px(ui::GAP))
             .child(ui::card_pair(v_flex().child(native.flex_1()), v_flex().child(docker.flex_1())))
+            .children(glibc_notice)
             .child(rows)
             .child(h_flex().child(crate::ui::button("rinst-recheck").outline().label("Check again").disabled(self.facts.is_none()).on_click(cx.listener(|this, _, _, cx| this.check(cx)))))
     }

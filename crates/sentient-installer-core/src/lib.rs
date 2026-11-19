@@ -21,6 +21,8 @@ pub mod stack;
 pub mod stack_order;
 pub mod gateway;
 pub mod gateway_settings;
+/// Whether a native SENTIENT runs on this Linux's C library (glibc).
+pub mod glibc;
 pub mod kiosk;
 pub mod kept_db;
 /// Whether a SENTIENT licence covers a SENTIENT build (SENTIENT's own rule).

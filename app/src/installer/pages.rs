@@ -459,8 +459,17 @@ impl Installer {
         } else {
             ("Services from the distribution's packages, run by systemd.", "SENTIENT and its databases as containers. Every database type.")
         };
-        let native = choice_card(theme, "engine-native", choice_title(theme, "In the system", true), sys_desc, self.engine == Engine::Native)
-            .on_click(cx.listener(|this, _, _, cx| this.set_engine(Engine::Native, cx)));
+        // Linux: a glibc older than the release needs (or musl) turns the
+        // card off; one that could not be read is a warning only.
+        let glibc = self.native_glibc();
+        let native = match glibc.blocked() {
+            Some(why) => {
+                let title = off_title("In the system", ui::info("engine-native-why".into(), format!("Not on this system\n\n{why}").into()));
+                ui::radio_card_off(theme, "engine-native", title, "Not available on this computer.").relative().child(ui::layout_probe("panel"))
+            }
+            None => choice_card(theme, "engine-native", choice_title(theme, "In the system", true), sys_desc, self.engine == Engine::Native)
+                .on_click(cx.listener(|this, _, _, cx| this.set_engine(Engine::Native, cx))),
+        };
         let docker = if host.windows && host.wsl == Wsl::Unavailable {
             let title = off_title("Docker", ui::info("engine-docker-why".into(), format!("Docker is not possible on this computer\n\n{}", self.wsl_detail()).into()));
             ui::radio_card_off(theme, "engine-docker", title, "Not available on this computer.").relative().child(ui::layout_probe("panel"))
@@ -468,8 +477,14 @@ impl Installer {
             choice_card(theme, "engine-docker", choice_title(theme, "Docker", false), docker_desc, self.engine == Engine::Docker)
                 .on_click(cx.listener(|this, _, _, cx| this.set_engine(Engine::Docker, cx)))
         };
+        let glibc_notice = match &glibc {
+            sentient_installer_core::glibc::NativeGlibc::Blocked(why) => Some(ui::notice(theme, Tone::Warn, format!("“In the system” is not available\n{why}"))),
+            sentient_installer_core::glibc::NativeGlibc::Unknown(why) if self.engine == Engine::Native => Some(ui::notice(theme, Tone::Warn, format!("The C library could not be checked\n{why}"))),
+            _ => None,
+        };
         column()
             .child(pair(native, docker))
+            .children(glibc_notice)
             .child(self.customise(theme, cx))
             .when(host.windows && self.engine == Engine::Docker && host.wsl == Wsl::TurnOn, |c| {
                 c.child(ui::notice(
@@ -508,6 +523,7 @@ impl Installer {
         let host = self.host();
         let current = Placement::preset(self.engine, host.windows);
         let detail = self.wsl_detail();
+        let glibc_off = self.native_glibc().blocked().map(|why| format!("Not on this system\n\n{why}"));
         let rows = PARTS.into_iter().enumerate().map(|(i, part)| {
             let (name, sub, help): (&str, Option<&str>, Option<&str>) = match part {
                 Part::Server => ("SENTIENT server", None, None),
@@ -521,6 +537,9 @@ impl Installer {
             };
             let seg = [(Place::System, "In the system"), (Place::Docker, "Docker")].into_iter().fold(ui::seg_track(theme), |track, (place, label)| {
                 let id = SharedString::from(format!("part-{key}-{}", if place == Place::System { "system" } else { "docker" }));
+                if let (Place::System, Some(why)) = (place, &glibc_off) {
+                    return track.child(ui::seg_item_off(theme, id.clone(), label, ui::info(format!("{id}-why").into(), why.clone().into())));
+                }
                 match placement::segment(host, current, part, place) {
                     Ok(engine) => track.child(ui::seg_item(theme, id, label, current.get(part) == place).on_click(cx.listener(move |this, _, _, cx| this.set_engine(engine, cx)))),
                     Err(why) => track.child(ui::seg_item_off(theme, id.clone(), label, ui::info(format!("{id}-why").into(), why.text(&detail).into()))),
