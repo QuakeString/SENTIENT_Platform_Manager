@@ -14,6 +14,7 @@ use sentient_installer_core::native::safe_update::RollbackPoint;
 use sentient_installer_core::progress::{Progress, ProgressFn};
 
 use crate::installation::{Engine, InstallationRecord};
+use sentient_installer_core::distro::DeployConfig;
 
 fn step(sink: &ProgressFn, name: &str) {
     sink(Progress::Step { name: name.into() });
@@ -55,6 +56,77 @@ fn staged(sink: &ProgressFn, record: &InstallationRecord, package: &Path) -> Res
     if ok { Ok((staging, true)) } else { Err(format!("Could not unpack {}", tar.display())) }
 }
 
+/// The SENTIENT version a Docker install runs, read from its container
+/// (crate::installation::running_version).
+fn running_version(record: &InstallationRecord) -> Option<String> {
+    crate::installation::running_version(record)
+}
+
+/// What moving a Docker install to a chosen release does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DockerStep {
+    /// The update, under the tag the compose file names (its own compose
+    /// file is the operator's, or it names that version already).
+    Update,
+    /// The update, then the compose file names the release's tag, so the
+    /// stack stays on it (an install on `latest`, `dev`, another release).
+    UpdateAndPin,
+    /// It runs that release already under another tag: only the tag
+    /// changes (no database copy, no schema step).
+    QuickPin,
+    /// It runs that release under that tag: nothing to do.
+    AlreadyRunning,
+}
+
+/// `target` is the chosen release, `running` what the container runs (None:
+/// it does not say), `tag` the tag the compose file names, `external`
+/// whether that file is the operator's (rewritten only after the takeover).
+pub fn docker_step(target: &str, running: Option<&str>, tag: &str, external: bool) -> DockerStep {
+    use sentient_installer_core::releases::{Move, movement};
+    let same = running.is_some_and(|r| movement(target, r) == Move::Same);
+    let tagged = tag == target;
+    match (same, tagged || external) {
+        (true, true) => DockerStep::AlreadyRunning,
+        (true, false) => DockerStep::QuickPin,
+        (false, true) => DockerStep::Update,
+        (false, false) => DockerStep::UpdateAndPin,
+    }
+}
+
+/// The tag a Docker roll back writes into the compose file: the release
+/// number the previous image carries (`back`: its SENTIENT_BUILD_VERSION,
+/// else its numbered label), when the compose file is the Platform
+/// Manager's and names another tag. None: the tag stays (the operator's
+/// compose file, or an image that does not say its release).
+pub fn rollback_tag(back: Option<&str>, tag: &str, external: bool) -> Option<String> {
+    back.filter(|v| !external && sentient_installer_core::releases::is_numbered(v) && *v != tag).map(String::from)
+}
+
+/// What "Update SENTIENT" (no version chosen) does on a Docker install.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlainUpdate {
+    /// Pull what the compose tag names (latest, dev, the operator's file).
+    Pull,
+    /// Pinned to a release: update to the newest one, and pin it.
+    To(String),
+    /// Pinned, and the newest release is what runs.
+    UpToDate,
+}
+
+/// `tag` is the compose file's tag, `running` what runs, `newest` the newest
+/// published release (None: not known, e.g. offline).
+pub fn plain_update(tag: &str, external: bool, running: Option<&str>, newest: Option<&str>) -> PlainUpdate {
+    use sentient_installer_core::releases::{Move, is_numbered, movement};
+    if external || !is_numbered(tag) {
+        return PlainUpdate::Pull;
+    }
+    match newest {
+        None => PlainUpdate::Pull,
+        Some(n) if movement(n, running.unwrap_or(tag)) == Move::Newer => PlainUpdate::To(n.to_string()),
+        Some(_) => PlainUpdate::UpToDate,
+    }
+}
+
 /// Update `record` from `package` (native) or the registry (Docker). Returns
 /// the record with its new version, already saved.
 pub fn run(
@@ -75,16 +147,54 @@ pub fn run_to(
     accept_breaking: bool,
     sink: ProgressFn,
 ) -> Result<InstallationRecord, String> {
+    let mut pinned_image: Option<String> = None;
     let (version, message) = match record.engine {
         Engine::Docker => {
             let cfg = distro::docker_ops::with_secrets(&record.stack)?;
-            let report = distro::docker_ops::safe_update_to(sink.clone(), &cfg, target, accept_breaking)?;
-            let message = format!(
-                " The database from before the update is kept as {}{}, until the next update.",
-                report.snapshot,
-                report.previous_image.map(|t| format!(" and the previous image as {t}")).unwrap_or_default()
-            );
-            (distro::docker_ops::image_version(&cfg.image), message)
+            let target_version = target.map(|t| distro::docker_ops::image_tag(t).to_string());
+            let how = match (&target_version, target) {
+                (Some(v), Some(_)) => docker_step(v, running_version(&record).as_deref(), distro::docker_ops::image_tag(&cfg.image), cfg.external.is_some()),
+                _ => DockerStep::Update,
+            };
+            match how {
+                DockerStep::AlreadyRunning => {
+                    return Err(format!("SENTIENT {} is already running.", target_version.unwrap_or_default()));
+                }
+                DockerStep::QuickPin => {
+                    let image = target.unwrap_or_default();
+                    let v = target_version.clone().unwrap_or_default();
+                    let pinned = distro::docker_ops::pin_tag(&sink, &cfg, image)?;
+                    pinned_image = Some(pinned.image);
+                    (Some(v.clone()), format!(" The stack now runs under the image tag {v}, the version it ran already: nothing was updated and the database was not copied."))
+                }
+                DockerStep::Update | DockerStep::UpdateAndPin => {
+                    let report = distro::docker_ops::safe_update_to(sink.clone(), &cfg, target, accept_breaking)?;
+                    let mut message = format!(
+                        " The database from before the update is kept as {}{}, until the next update.",
+                        report.snapshot,
+                        report.previous_image.as_ref().map(|t| format!(" and the previous image as {t}")).unwrap_or_default()
+                    );
+                    if how == DockerStep::UpdateAndPin {
+                        let image = target.unwrap_or_default();
+                        step(&sink, &format!("Setting the image tag to {}", distro::docker_ops::image_tag(image)));
+                        match distro::docker_ops::pin_tag(&sink, &cfg, image) {
+                            Ok(pinned) => {
+                                // The update ran the new image under the old
+                                // tag: that tag names the previous image again.
+                                if let Some(prev) = &report.previous_image {
+                                    distro::docker_ops::retag_image(prev, &cfg.image);
+                                }
+                                message.push_str(&format!(" The compose file now names {}.", pinned.image));
+                                pinned_image = Some(pinned.image);
+                            }
+                            Err(e) => message.push_str(&format!(" The image tag could not be changed ({e}); it still runs as {}.", cfg.image)),
+                        }
+                    }
+                    let shown = DeployConfig { image: pinned_image.clone().unwrap_or_else(|| cfg.image.clone()), ..cfg.clone() };
+                    let version = distro::docker_ops::running_version(&shown).or(target_version.clone()).or_else(|| distro::docker_ops::image_version(&shown.image));
+                    (version, message)
+                }
+            }
         }
         Engine::Native => {
             let package = package.ok_or("Choose the folder of the new SENTIENT package first.")?;
@@ -103,6 +213,10 @@ pub fn run_to(
                 let _ = std::fs::remove_dir_all(&dir);
             }
             let report = result?;
+            // An install from before the Windows Firewall rules gets them.
+            if let Err(e) = crate::changes::open_firewall(&record, &sink) {
+                sink(Progress::Log { line: format!("note: SENTIENT's ports were not opened in Windows Firewall: {e}") });
+            }
             let message = format!(
                 " The database from before the update is kept as {} and the previous program files in {}, until the next update.",
                 report.snapshot,
@@ -114,6 +228,9 @@ pub fn run_to(
     let mut updated = record;
     if let Some(v) = version {
         updated.sentient_version = v;
+    }
+    if let Some(image) = pinned_image {
+        updated.stack.image = image;
     }
     let json = serde_json::to_string_pretty(&updated).map_err(|e| e.to_string())?;
     crate::self_install::write_record(&crate::installation::record_path(), &json)?;
@@ -133,10 +250,50 @@ pub fn rollback_point(record: &InstallationRecord) -> Result<Option<RollbackPoin
 
 /// Go back to the version the last update replaced. Returns the record with
 /// that version, already saved.
+///
+/// Docker: the compose file then names the release the previous image holds
+/// ([`rollback_tag`]), and the tag it named before keeps naming the image
+/// that was rolled back from.
 pub fn rollback(record: InstallationRecord, sink: ProgressFn) -> Result<InstallationRecord, String> {
+    let mut pinned_image: Option<String> = None;
+    let mut running: Option<String> = None;
     let (point, set_aside) = match record.engine {
         Engine::Docker => {
-            let r = distro::docker_ops::rollback(sink.clone(), &distro::docker_ops::with_secrets(&record.stack)?)?;
+            let cfg = distro::docker_ops::with_secrets(&record.stack)?;
+            // The image rolled back from keeps a tag of its own until the
+            // compose file names the previous release (the roll back drops
+            // its own tag for it, which would remove the image).
+            let keep = format!("{}:spm-pin-keep", cfg.image.rsplit_once(':').filter(|(_, t)| !t.contains('/')).map(|(r, _)| r).unwrap_or(&cfg.image));
+            let current = distro::docker_ops::running_image_id(&cfg);
+            if let Some(id) = &current {
+                distro::docker_ops::retag_image(id, &keep);
+            }
+            let r = match distro::docker_ops::rollback(sink.clone(), &cfg) {
+                Ok(r) => r,
+                Err(e) => {
+                    distro::docker_ops::untag_image(&keep);
+                    return Err(e);
+                }
+            };
+            running = distro::docker_ops::running_version(&cfg).or_else(|| r.point.version.clone());
+            let tag = distro::docker_ops::image_tag(&cfg.image);
+            if let Some(v) = rollback_tag(running.as_deref(), tag, cfg.external.is_some()) {
+                let image = crate::maintenance_ops::retag(&cfg.image, &v);
+                step(&sink, &format!("Setting the image tag to {v}"));
+                match distro::docker_ops::pin_tag(&sink, &cfg, &image) {
+                    Ok(p) => {
+                        // The roll back put the previous image under the
+                        // newer release's tag: that tag names its own
+                        // image again.
+                        if current.is_some() {
+                            distro::docker_ops::retag_image(&keep, &cfg.image);
+                        }
+                        pinned_image = Some(p.image);
+                    }
+                    Err(e) => sink(Progress::Log { line: format!("The image tag could not be set to {v} ({e}); it runs as {}.", cfg.image) }),
+                }
+            }
+            distro::docker_ops::untag_image(&keep);
             (r.point, r.set_aside)
         }
         Engine::Native => {
@@ -145,8 +302,11 @@ pub fn rollback(record: InstallationRecord, sink: ProgressFn) -> Result<Installa
         }
     };
     let mut updated = record;
-    if let Some(v) = &point.version {
+    if let Some(v) = running.as_ref().filter(|v| sentient_installer_core::releases::is_numbered(v)).or(point.version.as_ref()) {
         updated.sentient_version = v.clone();
+    }
+    if let Some(image) = pinned_image {
+        updated.stack.image = image;
     }
     let json = serde_json::to_string_pretty(&updated).map_err(|e| e.to_string())?;
     crate::self_install::write_record(&crate::installation::record_path(), &json)?;
@@ -157,4 +317,54 @@ pub fn rollback(record: InstallationRecord, sink: ProgressFn) -> Result<Installa
         ),
     });
     Ok(updated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn docker_moves() {
+        // On latest, running 4.4.0.2: 4.4.0.3 updates and pins.
+        assert_eq!(docker_step("4.4.0.3", Some("4.4.0.2"), "latest", false), DockerStep::UpdateAndPin);
+        // The version it runs: only the tag.
+        assert_eq!(docker_step("4.4.0.2", Some("4.4.0.2"), "latest", false), DockerStep::QuickPin);
+        // Running unknown: the full update, which pins.
+        assert_eq!(docker_step("4.4.0.2", None, "latest", false), DockerStep::UpdateAndPin);
+        // Pinned already.
+        assert_eq!(docker_step("4.4.0.2", Some("4.4.0.2"), "4.4.0.2", false), DockerStep::AlreadyRunning);
+        assert_eq!(docker_step("4.4.0.3", Some("4.4.0.2"), "4.4.0.2", false), DockerStep::UpdateAndPin);
+        // A tag that names the release, running something else: update.
+        assert_eq!(docker_step("4.4.0.3", Some("4.4.0.2"), "4.4.0.3", false), DockerStep::Update);
+        // The operator's compose file: never rewritten here.
+        assert_eq!(docker_step("4.4.0.3", Some("4.4.0.2"), "latest", true), DockerStep::Update);
+        assert_eq!(docker_step("4.4.0.2", Some("4.4.0.2"), "latest", true), DockerStep::AlreadyRunning);
+        // Going back is an update too.
+        assert_eq!(docker_step("4.4.0.1", Some("4.4.0.2"), "dev", false), DockerStep::UpdateAndPin);
+    }
+
+    #[test]
+    fn roll_back_names_the_previous_release() {
+        // Pinned to 4.4.0.3, back to an image that says 4.4.0.2.
+        assert_eq!(rollback_tag(Some("4.4.0.2"), "4.4.0.3", false).as_deref(), Some("4.4.0.2"));
+        // An image that does not say its release (labelled "latest"): the tag stays.
+        assert_eq!(rollback_tag(Some("latest"), "4.4.0.3", false), None);
+        assert_eq!(rollback_tag(None, "4.4.0.3", false), None);
+        // The operator's compose file is not rewritten.
+        assert_eq!(rollback_tag(Some("4.4.0.2"), "latest", true), None);
+        // Already named.
+        assert_eq!(rollback_tag(Some("4.4.0.2"), "4.4.0.2", false), None);
+    }
+
+    #[test]
+    fn a_pinned_install_updates_to_the_newest_release() {
+        assert_eq!(plain_update("4.4.0.2", false, Some("4.4.0.2"), Some("4.4.0.3")), PlainUpdate::To("4.4.0.3".into()));
+        assert_eq!(plain_update("4.4.0.3", false, Some("4.4.0.3"), Some("4.4.0.3")), PlainUpdate::UpToDate);
+        // The container says nothing: the tag stands for it.
+        assert_eq!(plain_update("4.4.0.2", false, None, Some("4.4.0.3")), PlainUpdate::To("4.4.0.3".into()));
+        // Releases not known, latest, or the operator's file: pull the tag.
+        assert_eq!(plain_update("4.4.0.2", false, Some("4.4.0.2"), None), PlainUpdate::Pull);
+        assert_eq!(plain_update("latest", false, Some("4.4.0.2"), Some("4.4.0.3")), PlainUpdate::Pull);
+        assert_eq!(plain_update("4.4.0.2", true, Some("4.4.0.2"), Some("4.4.0.3")), PlainUpdate::Pull);
+    }
 }

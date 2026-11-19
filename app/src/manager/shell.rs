@@ -441,13 +441,13 @@ pub(crate) fn selection(active: &'static str, page: Hsla, line: Hsla, motion: bo
 
 /// The product's name beside its logo on top of the menu: "SENTIENT" and
 /// the app under it (the Platform Manager's menu, Setup's steps).
-pub(crate) fn brand_name(theme: &gpui_kit::component::Theme, app: &'static str) -> Div {
+pub(crate) fn brand_name(theme: &gpui_kit::component::Theme, app: impl Into<SharedString>) -> Div {
     v_flex()
         .flex_1()
         .min_w_0()
         .line_height(px(17.))
         .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child("SENTIENT"))
-        .child(div().text_size(px(10.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.primary).whitespace_nowrap().child(app))
+        .child(div().text_size(px(10.)).font_weight(FontWeight::SEMIBOLD).text_color(theme.primary).whitespace_nowrap().text_ellipsis().overflow_hidden().child(app.into()))
 }
 
 /// The brand logo, the footer's logo and the preferences button.
@@ -521,9 +521,9 @@ impl Manager {
                 .when(on, |r| r.child(selected_probe(id)))
                 .child(div().relative().flex_shrink_0().child(icon.size(px(ICON)).text_color(if on { theme.primary } else { theme.muted_foreground })).child(ui::layout_probe("menu-icon")))
                 .when(!rail, |r| r.child(div().relative().whitespace_nowrap().opacity(names).child(title.clone()).child(ui::layout_probe(if on { "menu-label-on" } else { "menu-label" }))))
-                .when(rail, move |r| r.tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(title.clone()).build(w, cx)))
+                .when(rail, move |r| r.tooltip(crate::ui::tooltip(title.clone())))
         };
-        let items = Page::ALL.into_iter().map(|page| {
+        let items = Page::menu(self.open_gateway_only()).into_iter().map(|page| {
             row(page.id(), page.icon(), page.title().into(), page == current)
                 // Files is new in this release (the mockup's pill).
                 .when(page == Page::Files && !rail, |r| {
@@ -572,6 +572,8 @@ impl Manager {
                 .child(ui::layout_probe("menu-icon"))
                 .when(rail, |d| {
                     d.cursor_pointer()
+                        // In front of the window's drag area (crate::win_caption).
+                        .when(crate::win_caption::enabled(), |d| d.occlude())
                         .on_hover(cx.listener(|this, h: &bool, _, cx| {
                             this.logo_hover = *h;
                             cx.notify();
@@ -588,7 +590,7 @@ impl Manager {
                             this.logo_hover = false;
                             cx.notify();
                         }))
-                        .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Unfold menu").build(w, cx))
+                        .tooltip(crate::ui::tooltip("Unfold menu"))
                 })
                 // The swap cross-fades (150 ms, the app's ease-out): the logo
                 // fades and shrinks a little as the unfold button fades in,
@@ -624,6 +626,8 @@ impl Manager {
                 .items_center()
                 .gap(px(10.))
                 .child(ui::layout_probe("menu-brand"))
+                // Windows: the brand row drags the window too (crate::win_caption).
+                .child(crate::win_caption::drag_layer())
                 // The logo's centre on ICON_X, folded or not.
                 .pl(px(ICON_X - LOGO / 2.))
                 .when(!rail, |r| r.pr(px(10.)))
@@ -634,7 +638,8 @@ impl Manager {
                     .child(
                         div()
                             .id("fold")
-                            .size(px(32.))
+                            .when(crate::win_caption::enabled(), |d| d.occlude())
+                            .size(px(crate::theme::ICON_BUTTON))
                             .flex_shrink_0()
                             .flex()
                             .items_center()
@@ -644,7 +649,7 @@ impl Manager {
                             .text_color(theme.muted_foreground)
                             .hover(|d| d.bg(theme.list_hover))
                             .child(menu_icon("panel-left-close").size(px(ICON)))
-                            .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Fold menu").build(w, cx))
+                            .tooltip(crate::ui::tooltip("Fold menu"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if forced {
                                     this.menu_overlay = false;
@@ -681,7 +686,7 @@ impl Manager {
                 .cursor_pointer()
                 .when(!on, |d| d.hover(|d| d.bg(theme.list_hover)))
                 .child(menu_icon("sliders-horizontal").size(px(ICON)))
-                .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("About and preferences").build(w, cx))
+                .tooltip(crate::ui::tooltip("About and preferences"))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.page = Page::About;
                     this.menu_overlay = false;

@@ -20,7 +20,8 @@
 
 param(
     [Parameter(Mandatory = $true)][string[]]$Path,
-    [switch]$Require
+    [switch]$Require,
+    [string]$Description = "SENTIENT Setup"
 )
 $ErrorActionPreference = "Stop"
 
@@ -33,6 +34,10 @@ function Find-SignTool {
     if (-not $found) { throw "signtool.exe not found: install the Windows SDK (Signing Tools)." }
     return $found.FullName
 }
+
+# Self-signed certificates whose signature counts as verified without a
+# trusted root: INVENIA SYSTEMS (packaging/windows/INVENIA-SYSTEMS-codesign.cer).
+$PinnedThumbprints = @("C7DC8013F1ECD97ED20193F04E56359B17B24CBD")
 
 $timestamp = if ($env:SPM_SIGN_TIMESTAMP_URL) { $env:SPM_SIGN_TIMESTAMP_URL } else { "http://timestamp.digicert.com" }
 $certArgs = $null
@@ -66,12 +71,24 @@ try {
         # A timestamp server can be briefly unavailable: try three times.
         $signed = $false
         for ($i = 1; $i -le 3 -and -not $signed; $i++) {
-            & $signtool sign /fd sha256 /td sha256 /tr $timestamp /d "SENTIENT Setup" @certArgs $p
+            & $signtool sign /fd sha256 /td sha256 /tr $timestamp /d $Description @certArgs $p
             if ($LASTEXITCODE -eq 0) { $signed = $true } else { Start-Sleep -Seconds (5 * $i) }
         }
         if (-not $signed) { throw "Signing $p failed." }
         & $signtool verify /pa /tw $p
-        if ($LASTEXITCODE -ne 0) { throw "$p is signed but its signature does not verify." }
+        if ($LASTEXITCODE -ne 0) {
+            # Our self-signed certificate is in no trusted root, so signtool
+            # cannot build a trusted chain. Accept exactly that, for exactly
+            # the pinned certificate (app/src/authenticode.rs PINNED_SIGNERS):
+            # an intact signature, a timestamp, signer = pinned thumbprint.
+            $sig = Get-AuthenticodeSignature -FilePath $p
+            $pinned = $sig.SignerCertificate -and ($PinnedThumbprints -contains $sig.SignerCertificate.Thumbprint) -and
+                      ($sig.SignerCertificate.Subject -eq $sig.SignerCertificate.Issuer)
+            if (-not ($pinned -and $sig.TimeStamperCertificate -and ($sig.Status -eq "Valid" -or $sig.Status -eq "UnknownError"))) {
+                throw "$p is signed but its signature does not verify ($($sig.Status): $($sig.StatusMessage))."
+            }
+            Write-Host "Signed $p with the pinned self-signed certificate $($sig.SignerCertificate.Thumbprint) (not in this computer's trusted roots)."
+        }
         Write-Host "Signed $p"
     }
 } finally {

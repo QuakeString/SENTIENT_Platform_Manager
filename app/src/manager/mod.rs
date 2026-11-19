@@ -5,22 +5,26 @@
 //! its own view, created the first time it is opened.
 
 mod about;
+
 pub(crate) mod backup;
 pub(crate) mod startup;
 pub(crate) mod files;
 pub(crate) mod folder_chooser;
-mod gateway;
-mod instances;
+pub(crate) mod gateway;
+pub(crate) mod gateway_settings;
+pub(crate) mod instances;
 pub(crate) mod logs;
 pub(crate) mod migration;
 pub(crate) mod movedata;
 pub(crate) mod restore;
 pub(crate) mod remote_pages;
+pub(crate) mod remote_install;
 mod repair;
 mod takeover;
 pub(crate) mod jobview;
 mod licence;
 mod licence_card;
+pub(crate) mod licence_gate;
 pub(crate) mod settings;
 pub(crate) mod server_card;
 pub(crate) mod session;
@@ -28,6 +32,7 @@ pub(crate) mod setup_guide;
 pub(crate) mod shell;
 pub(crate) mod setting_field;
 pub(crate) mod status;
+pub(crate) mod status_store;
 pub(crate) mod stats;
 pub(crate) mod strip;
 pub(crate) mod uninstall_dialog;
@@ -88,6 +93,18 @@ impl Page {
         Page::Licence,
         Page::Settings,
     ];
+
+    /// SENTIENT's own pages: left out of the menu of a server that has
+    /// the gateway and no SENTIENT ([`Page::menu`]).
+    fn needs_sentient(self) -> bool {
+        matches!(self, Page::Backup | Page::Migration | Page::Repair | Page::Licence | Page::Settings)
+    }
+
+    /// The menu's pages for the open instance: a gateway-only server
+    /// (crate::remote::RemoteStatus::gateway_only) without SENTIENT's own.
+    fn menu(gateway_only: bool) -> Vec<Page> {
+        Page::ALL.into_iter().filter(|p| !(gateway_only && p.needs_sentient())).collect()
+    }
 
     fn id(self) -> &'static str {
         match self {
@@ -180,6 +197,9 @@ pub struct Manager {
     /// The sub-flow open over a page, if any (see [`SubFlow`]).
     sub: Option<SubFlow>,
     record: Option<InstallationRecord>,
+    /// Docker: the version this computer's container runs (the record may
+    /// hold its image tag, "latest"), for the top bar.
+    running_version: Option<String>,
     status: Option<Entity<status::StatusPage>>,
     logs: Option<Entity<logs::LogsPage>>,
     update: Option<Entity<update::UpdatePage>>,
@@ -211,6 +231,9 @@ pub struct Manager {
     /// The pages of every remote instance opened in this run, by id: shown
     /// again with what they read, and read again behind it.
     remote_pages: HashMap<String, Entity<remote_pages::RemotePages>>,
+    /// The open server's Install SENTIENT flow, whose step rail stands in
+    /// for the menu: watched, so the rail follows its steps.
+    install_watch: Option<(EntityId, Subscription)>,
     /// Statistics, by instance (None: this computer), kept for the run.
     stats: HashMap<Option<String>, Entity<stats::StatsPage>>,
     /// The Licence page, by instance (None: this computer).
@@ -260,6 +283,9 @@ pub struct Manager {
     /// (movedata::generation): a new opening is a sub-flow of the page it
     /// was opened from.
     move_gen: usize,
+    /// The window's first frame was drawn (its timing mark says whether
+    /// the page showed its data or the loading skeleton).
+    drawn: bool,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -310,6 +336,21 @@ impl Drop for SwitchTiming {
     }
 }
 
+/// The top bar's last readings (this computer's, and each server's), kept
+/// when the window closes while the app runs on: the next window's bar
+/// shows them at once, not its placeholders, and reads them again.
+static KEPT_MONITORS: std::sync::Mutex<Option<(Option<Monitor>, HashMap<String, Monitor>)>> = std::sync::Mutex::new(None);
+
+impl Drop for Manager {
+    fn drop(&mut self) {
+        let mut cache = std::mem::take(&mut self.monitor_cache);
+        if let (Some(id), Some(m)) = (&self.open_remote, self.remote_monitor) {
+            cache.insert(id.clone(), m);
+        }
+        *KEPT_MONITORS.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.monitor, cache));
+    }
+}
+
 /// The bell's events as saved (the tray's menu reads them without a window).
 pub fn saved_events() -> Vec<strip::Event> {
     strip::load_events()
@@ -339,8 +380,15 @@ impl Manager {
         // Control is part of Status now: a session left there opens Status.
         let page_of = |id: &str| if id == "control" { Some(Page::Status) } else { Page::ALL.into_iter().chain([Page::Instances, Page::About]).find(|p| p.id() == id) };
         let page_arg = args.windows(2).find(|w| w[0] == "--page").and_then(|w| page_of(&w[1]));
-        let page = page_arg.or_else(|| saved.page.as_deref().and_then(page_of)).unwrap_or(Page::Status);
-        let record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
+        // After a quit: Status (of the instance left open); a window opened
+        // again while the app kept running: the page it was left on.
+        let page = page_arg.or_else(|| session::page_to_restore(saved.page.as_deref()).as_deref().and_then(page_of)).unwrap_or(Page::Status);
+        // The pg_dump and pg_restore wrappers once per run, with the first
+        // window (writing them runs a shell, ~70 ms on the UI thread): a
+        // window opened again keeps them, a changed record sets them again
+        // (reload).
+        static PG_TOOLS: std::sync::Once = std::sync::Once::new();
+        let record = InstallationRecord::load().inspect(|r| PG_TOOLS.call_once(|| r.use_pg_tools()));
         let installed = record.as_ref().map(|r| r.sentient_version.clone());
         let native = record.as_ref().is_some_and(|r| r.platform().needs_package());
         let updates = cx.new(|cx| UpdateState::new(installed, native, cx));
@@ -360,11 +408,21 @@ impl Manager {
         // One connection per added server, open from now until the
         // Platform Manager quits (crate::remote::conn); made behind the window.
         std::thread::spawn(|| crate::remote::conn::open_all(&crate::remote::load()));
+        // Every server's state, read from now on (their first requests wait
+        // for those connections), and again when the window is focused.
+        let store = status_store::get(cx);
+        let focus = cx.observe_window_activation(_window, |_, window, cx| {
+            if window.is_window_active() {
+                status_store::get(cx).update(cx, |s, cx| s.focused(cx));
+            }
+        });
         // The progress line under the top bar follows the strip.
         let strip = strip::install(cx);
         let subscriptions = vec![
             cx.observe(&updates, |_, _, cx| cx.notify()),
             cx.observe(&strip, |_, _, cx| cx.notify()),
+            cx.observe(&store, |_, _, cx| cx.notify()),
+            focus,
             cx.subscribe(&strip, |this, _, e: &strip::JobEnded, cx| this.after_job(e.instance.clone(), cx)),
         ];
         let updated_from = args.windows(2).find(|w| w[0] == "--updated-from").map(|w| w[1].clone());
@@ -373,6 +431,7 @@ impl Manager {
             page,
             sub: None,
             record,
+            running_version: None,
             status: None,
             logs: None,
             update: None,
@@ -391,6 +450,7 @@ impl Manager {
             open_gen: 0,
             fresh: HashSet::new(),
             remote_pages: HashMap::new(),
+            install_watch: None,
             stats: HashMap::new(),
             licence: HashMap::new(),
             files: HashMap::new(),
@@ -411,11 +471,18 @@ impl Manager {
             updated_from,
             pending: None,
             move_gen: 0,
+            drawn: false,
             found_notice,
             _subscriptions: subscriptions,
             _tasks: Vec::new(),
         };
+        // A window opened again: the bar's last readings at once.
+        if let Some((monitor, cache)) = KEPT_MONITORS.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            manager.monitor = monitor;
+            manager.monitor_cache = cache;
+        }
         manager.start_monitor(cx);
+        manager.refresh_running(cx);
         // Performance probes (tests/layout/perf.sh): go to pages in turn,
         // SPM_DEBUG_GO_PAGES=about:6,status:12 (page:seconds after start).
         #[cfg(debug_assertions)]
@@ -475,9 +542,6 @@ impl Manager {
             }
             manager.bell_open = std::env::var_os("SPM_DEBUG_BELL").is_some();
             manager.switcher_open = std::env::var_os("SPM_DEBUG_SWITCHER").is_some();
-            if manager.switcher_open {
-                manager.instances_page(cx);
-            }
             if std::env::var_os("SPM_DEBUG_ERROR_DIALOG").is_some() {
                 crate::ui::show_error_with(
                     "The server agent could not be updated",
@@ -585,6 +649,9 @@ impl Manager {
             if let Ok(spec) = std::env::var("SPM_DEBUG_UNINSTALL") {
                 uninstall_dialog::open_fixture(&spec, cx);
             }
+            if std::env::var_os("SPM_DEBUG_LICENCES_DIALOG").is_some() {
+                about::open_licences(cx);
+            }
             if std::env::var_os("SPM_DEBUG_LOG_DIALOG").is_some() {
                 let view = cx.new(|cx| logs::LogView::file(crate::jobs::activity_log(), _window, cx));
                 crate::modal::open(crate::modal::Modal { title: "Platform Manager log".into(), body: view.into(), width: 1000., icon: None, on_close: None }, cx);
@@ -632,7 +699,7 @@ impl Manager {
                 continue;
             }
             let r = record.clone();
-            let m = cx.background_executor().spawn(async move { crate::sysmon::from_sample(&crate::stats::local_read(r.as_ref(), std::time::Duration::from_millis(250))) }).await;
+            let m = cx.background_executor().spawn(async move { crate::sysmon::from_sample(&sentient_installer_core::distro::idle::reading(|| crate::stats::local_read(r.as_ref(), std::time::Duration::from_millis(250)))) }).await;
             if this
                 .update(cx, |page, cx| {
                     if page.monitor != Some(m) {
@@ -798,7 +865,7 @@ impl Manager {
                 .justify_center()
                 .rounded(px(5.))
                 .hover(|d| d.bg(theme.danger.opacity(0.12)))
-                .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Clear").build(w, cx))
+                .tooltip(crate::ui::tooltip("Clear"))
                 .child(Icon::new(IconName::Close).size(px(16.)).text_color(theme.muted_foreground))
                 .on_click(move |_, _, cx| {
                     cx.stop_propagation();
@@ -897,7 +964,7 @@ impl Manager {
         // in it (a scrolling child has no height of its own to grow by).
         let full = 52. + n_rows as f32 * 82. > max_h;
         deferred(
-            div().absolute().top(px(theme::BAR_CTRL_H + 10.)).right(px(-6.)).child(
+            div().absolute().top(px(theme::BAR_CTRL_H + 10.)).right(px(-6.)).child(ui::appear(
                 div()
                     .relative()
                     .w(px(w))
@@ -949,7 +1016,8 @@ impl Manager {
                             }),
                     )
                     .child(ui::pointer_up(theme.popover, theme.border, px(w - 26.))),
-            ),
+                "bell-panel-open",
+            )),
         )
         .with_priority(1)
         .into_any_element()
@@ -972,11 +1040,15 @@ impl Manager {
         // Switching instance: the tint cross-fades to the new colour.
         let ic = ui::tween_color("bar-ic", ic, 250, window);
         let bg: Hsla = menu_theme.background.blend(ic.opacity(theme::bar_tint(dark)));
+        // Windows: the bar is the window's caption (crate::win_caption): its
+        // empty part drags the window, its controls block that, and the
+        // minimise, maximise and close buttons end it.
+        let caption = crate::win_caption::enabled();
         let fg: Hsla = menu_theme.foreground;
         let muted_fg: Hsla = menu_theme.muted_foreground;
         let (name, address): (String, Option<String>) = match (&remote, &self.record) {
             (Some(r), _) => (r.name.clone(), Some(format!("{} over SSH", r.host))),
-            (None, Some(r)) => ("This computer".into(), Some(format!("SENTIENT {}", r.sentient_version))),
+            (None, Some(r)) => ("This computer".into(), Some(format!("SENTIENT {}", self.running_version.as_deref().unwrap_or(&r.sentient_version)))),
             (None, None) => ("This computer".into(), None),
         };
         let instance = format!("{name} {}", address.clone().unwrap_or_default());
@@ -1062,7 +1134,9 @@ impl Manager {
         // room, job or not: the monitors are laid out the same either way.
         // The bar's padding, the switcher (dot, name, address, chevron,
         // REMOTE), the theme button and the bell, and the gaps between.
-        let mut room = width - 36. - (text_w(&instance) + 14. + 10. + 16. + 10. + 24. + 14.) - if remote.is_some() { 64. } else { 0. } - (theme::BAR_CTRL_H + 14.) - (theme::BAR_CTRL_H + 14.) - if self.strip.read(cx).active() { strip::CHIP_MIN } else { 0. };
+        let mut room = width - 36. - (text_w(&instance) + 14. + 10. + 16. + 10. + 24. + 14.) - if remote.is_some() { 64. } else { 0. } - (theme::BAR_CTRL_H + 14.) - (theme::BAR_CTRL_H + 14.) - if self.strip.read(cx).active() { strip::CHIP_MIN } else { 0. }
+            // Windows: the caption buttons at the end, flush right (no right padding then).
+            - if caption { crate::win_caption::width() + 14. - 16. } else { 0. };
 
         let mut fits = |need: f32| {
             let ok = room >= need;
@@ -1163,7 +1237,7 @@ impl Manager {
                     g_disk,
                     m.disk_low(),
                 )))
-                .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Statistics").build(w, cx))
+                .tooltip(crate::ui::tooltip("Statistics"))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.page = Page::Statistics;
                     cx.notify();
@@ -1204,10 +1278,11 @@ impl Manager {
             .h(px(shell::BAR_H))
             .flex_shrink_0()
             .pl(px(20.))
-            .pr(px(16.))
+            .pr(px(if caption { 0. } else { 16. }))
             .gap(px(14.))
             .items_center()
             .bg(bg)
+            .child(crate::win_caption::drag_layer())
             .border_b_1()
             .border_color(menu_theme.border)
             .text_color(fg)
@@ -1247,7 +1322,7 @@ impl Manager {
                                     .border_2()
                                     .border_color(menu_theme.background)
                                     .bg(state_dot)
-                                    .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(state_why).build(w, cx))
+                                    .tooltip(crate::ui::tooltip(state_why))
                                     // Turning amber or red: one soft pulse (300 ms).
                                     .when(pulse && !ui::reduce_motion(), |d| {
                                         d.child(
@@ -1276,10 +1351,6 @@ impl Manager {
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.switcher_open = !this.switcher_open;
-                        // The rows' dots: every server's state.
-                        if this.switcher_open {
-                            this.instances_page(cx);
-                        }
                         cx.notify();
                     }));
                 let popover = open.then(|| {
@@ -1310,8 +1381,9 @@ impl Manager {
                     // Instances shows it (the cached status), else what its
                     // open pages last read; grey while not known. The
                     // instance's own colour stays on its card and the bar.
+                    let store = status_store::get(cx);
                     let card_tone = |id: &str, cx: &App| -> Option<ui::Tone> {
-                        if let Some(t) = self.instances.as_ref().and_then(|p| p.read(cx).tone_of(id)) {
+                        if let Some(t) = store.read(cx).tone(id) {
                             return Some(t);
                         }
                         let serving = self.remote_pages.get(id).and_then(|p| p.read(cx).serving()).or_else(|| crate::bg_app::serving(Some(id), cx));
@@ -1319,6 +1391,10 @@ impl Manager {
                     };
                     for r in &self.remotes {
                         let tone = card_tone(&r.id, cx);
+                        crate::timing::once(&format!("switcher-open {}", r.id), &format!("switcher-dot-open id={}", r.id));
+                        if tone.is_some() {
+                            crate::timing::once(&format!("switcher-dot {}", r.id), &format!("switcher-dot-known id={}", r.id));
+                        }
                         let dot: Hsla = match tone {
                             Some(ui::Tone::Good) => status_green,
                             Some(ui::Tone::Warn) => rgb(0xf59e0b).into(),
@@ -1367,16 +1443,17 @@ impl Manager {
                     })))
                     .with_priority(1)
                 });
-                div().relative().min_w_0().flex_shrink(1.).child(chip).children(popover)
+                div().id("switcher-slot").relative().min_w_0().flex_shrink(1.).when(caption, |d| d.occlude()).child(chip).children(popover)
             })
-            // A running job: its chip in the middle of the bar.
-            .child(h_flex().flex_1().min_w_0().overflow_hidden().justify_center().child(self.strip.clone()))
-            .children(monitor)
+            // A running job: its chip in the middle of the bar (the slot
+            // around it drags the window).
+            .child(h_flex().flex_1().min_w_0().overflow_hidden().justify_center().child(if caption { div().id("strip-slot").min_w_0().occlude().child(self.strip.clone()).into_any_element() } else { self.strip.clone().into_any_element() }))
+            .children(monitor.map(|m| m.when(caption, |d| d.occlude())))
             .children(monitor_loading)
-            .child(self.theme_button(ic, cx))
+            .child(div().id("theme-slot").when(caption, |d| d.occlude()).child(self.theme_button(ic, cx)))
             .child(
                 // The bell with an amber count, as in the mockup.
-                div().relative().child(bell).children(bell_panel).when(count > 0, |b| {
+                div().id("bell-slot").relative().when(caption, |d| d.occlude()).child(bell).children(bell_panel).when(count > 0, |b| {
                     b.child(
                         div()
                             .absolute()
@@ -1398,12 +1475,14 @@ impl Manager {
                     )
                 }),
             )
+            // Windows: minimise, maximise, close, in the bar's text colour.
+            .children(crate::win_caption::controls(fg, bg, window))
     }
 
     /// Switch to an instance (None: this computer). Remote instances are
     /// worked on from their card on Instances for now.
-    /// The Instances page, made the first time it is needed (shown, or the
-    /// switcher's state dots): it reads every server's state as it starts.
+    /// The Instances page, made the first time it is shown (the servers'
+    /// states are the store's, read from the start: status_store).
     fn instances_page(&mut self, cx: &mut Context<Self>) -> Entity<instances::InstancesPage> {
         if let Some(p) = &self.instances {
             return p.clone();
@@ -1420,6 +1499,7 @@ impl Manager {
                 this.open_instance(e.0.clone(), cx);
             }));
             self._subscriptions.push(cx.subscribe(&page, |this, _, _: &instances::ListChanged, cx| {
+                status_store::get(cx).update(cx, |s, cx| s.reload_list(cx));
                 let before = std::mem::replace(&mut this.remotes, crate::remote::load());
                 this.prune_kept(&before);
                 if this.open_remote.as_ref().is_some_and(|id| !this.remotes.iter().any(|r| &r.id == id)) {
@@ -1429,6 +1509,15 @@ impl Manager {
             }));
         self.instances = Some(page.clone());
         page
+    }
+
+    /// The page shown has what it read (Status: its state, services and
+    /// database), not its loading skeleton.
+    fn page_has_data(&self, cx: &App) -> bool {
+        match &self.open_remote {
+            Some(id) => self.remote_pages.get(id).is_some_and(|p| p.read(cx).has_data()),
+            None => self.page != Page::Status || self.status.as_ref().is_some_and(|p| p.read(cx).has_data()),
+        }
     }
 
     fn open_instance(&mut self, id: Option<String>, cx: &mut Context<Self>) {
@@ -1595,13 +1684,18 @@ impl Manager {
                 .items_center()
                 .bg(bg)
                 .text_color(fg)
-                .border_b_1()
+                .rounded(px(crate::ui::PANEL_RADIUS))
+                .border_1()
                 .border_color(theme.border)
                 .child(Icon::new(if matches!(tone, crate::ui::Tone::Good) { IconName::CircleCheck } else { IconName::Info }).small())
                 // The buttons never wrap: the text is cut instead.
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().child(text))
         };
-        let mut col = v_flex();
+        // Inset by the page gap like the cards, not a full-width strip from
+        // the menu's edge: there it met the menu's selected row where that
+        // row opens into the page, and its colour and bottom border stood
+        // as a line in the opening (Status, under the top bar).
+        let mut col = v_flex().gap_2().px(px(crate::theme::PAGE_GAP)).pt(px(crate::theme::PAGE_GAP));
         // B3/B4: this run follows a self-update.
         if let Some(from) = self.updated_from.clone() {
             let this = crate::updates::manager_version();
@@ -1746,10 +1840,28 @@ impl Manager {
         Some(col.into_any_element())
     }
 
+    /// Read which version this computer's Docker container runs.
+    fn refresh_running(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone().filter(|r| r.engine == crate::installation::Engine::Docker) else {
+            self.running_version = None;
+            return;
+        };
+        let task = cx.spawn(async move |this, cx| {
+            let v = cx.background_executor().spawn(async move { crate::installation::running_version(&record) }).await;
+            this.update(cx, |m, cx| {
+                m.running_version = v;
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
     /// The record changed (a migration): every screen starts again from it.
     fn reload(&mut self, cx: &mut Context<Self>) {
         let was_installed = self.record.is_some();
         self.record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
+        self.refresh_running(cx);
         if !was_installed {
             // Adopted: every screen was showing "not installed" (Migration
             // stays while it shows the job that just ran; Back reloads it).
@@ -1779,6 +1891,7 @@ impl Manager {
         match instance {
             None => {
                 self.record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
+                self.refresh_running(cx);
                 self.status = None;
                 for page in self.update.clone() {
                     page.update(cx, |p, cx| p.refresh_record(cx));
@@ -1786,8 +1899,19 @@ impl Manager {
                 for page in self.migration.clone() {
                     page.update(cx, |p, cx| p.refresh_record(cx));
                 }
+                // Platform settings reads SENTIENT's accounts again (Start
+                // there opens Status; back on the page it is running).
+                for page in self.settings.clone() {
+                    page.update(cx, |p, cx| p.sentient_changed(cx));
+                }
+                // Statistics of this computer: its Services card.
+                if let Some(page) = self.stats.get(&None).cloned() {
+                    page.update(cx, |p, cx| p.sentient_changed(cx));
+                }
             }
             Some(id) => {
+                // Its card and dot.
+                status_store::get(cx).update(cx, |s, cx| s.refresh(&id, cx));
                 // A kept page of an instance not open now reads again too.
                 if let Some(page) = self.remote_pages.get(&id).cloned() {
                     page.update(cx, |p, cx| p.after_job(cx));
@@ -1830,7 +1954,7 @@ impl Manager {
             .when(open, |b| b.bg(tint.opacity(theme::bar_ctrl_hover(dark))))
             .when(!open, |b| b.hover(move |b| b.bg(tint.opacity(theme::bar_ctrl_hover(dark)))))
             .child(icon_of(choice).size(px(19.)))
-            .when(!open, |b| b.tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Theme").build(window, cx)))
+            .when(!open, |b| b.tooltip(crate::ui::tooltip("Theme")))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.theme_open = !this.theme_open;
                 cx.notify();
@@ -1881,8 +2005,18 @@ impl Manager {
         div().relative().child(button).children(popover)
     }
 
+    /// The open server has the gateway and no SENTIENT (its last status).
+    pub(super) fn open_gateway_only(&self) -> bool {
+        self.open_remote.as_ref().is_some_and(|id| matches!(crate::remote::status_cache::view(id).status, Some(Ok(s)) if s.gateway_only()))
+    }
+
     fn content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let record = self.record.clone();
+        // A page left out of this server's menu (a gateway-only server)
+        // shows its Status instead.
+        if self.page.needs_sentient() && self.open_gateway_only() {
+            self.page = Page::Status;
+        }
         // A sub-flow in its parent page's place while open.
         if let Some(sub) = self.shown_sub().cloned() {
             match sub.kind {
@@ -2100,6 +2234,17 @@ impl Manager {
     }
 }
 
+/// An action a page asks the shell for, as the tray's
+/// ([`Manager::act`]): "control:start" from a page that needs SENTIENT
+/// running (Platform settings).
+static REQUEST: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+
+/// Ask the shell for `action` (see [`REQUEST`]); it runs at the next render.
+pub fn request(action: &'static str, cx: &mut App) {
+    *REQUEST.lock().unwrap_or_else(|e| e.into_inner()) = Some(action);
+    cx.refresh_windows();
+}
+
 impl Manager {
     /// A tray or taskbar action (crate::background::Command::Action).
     pub fn act(&mut self, action: &str, cx: &mut Context<Self>) {
@@ -2170,6 +2315,7 @@ impl Manager {
         if let Some(p) = &self.instances {
             p.update(cx, |p, cx| p.reload_list(cx));
         }
+        status_store::get(cx).update(cx, |s, cx| s.reload_list(cx));
     }
 }
 
@@ -2177,9 +2323,9 @@ impl Render for Manager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t0 = std::time::Instant::now();
         self.take_list_change(cx);
-        // Windows 10: the app's caption and rounded corners (crate::win_frame).
+        // Windows 10: rounded corners and the border (crate::win_frame).
         let root = self.render_root(window, cx).into_any_element();
-        let el = crate::win_frame::frame(crate::mode::AppMode::Manager.window_title(), root, window, cx);
+        let el = crate::win_frame::frame(root, window, cx);
         if crate::timing::on() {
             render_timing(self.page.id(), t0, window);
         }
@@ -2219,9 +2365,21 @@ impl Manager {
         crate::ui::set_side_by_side(width >= crate::ui::SIDE_BY_SIDE_W);
         self.window_h.set(f32::from(window.viewport_size().height));
         stats::set_open(self.page == Page::Statistics);
+        // A page asked for a tray action (request).
+        if let Some(a) = REQUEST.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            self.act(a, cx);
+        }
         // A service row's "Logs" asked for the Logs page.
         if crate::logsource::take_go() {
             self.page = Page::Logs;
+        }
+        // A server's page asked for its Gateway page.
+        if remote_pages::take_go_gateway() {
+            self.page = Page::Gateway;
+        }
+        // An install on a server finished: its Status.
+        if remote_pages::take_go_status() {
+            self.page = Page::Status;
         }
         // Widened past the fold while the menu is open over the page: it
         // becomes the docked, unfolded menu.
@@ -2253,7 +2411,23 @@ impl Manager {
         }
         let menu_w = if Self::folded(width) { shell::MENU_FOLDED_W } else { shell::MENU_W };
         let top = self.top_bar(width - menu_w, window, cx);
-        let nav = self.shell_menu(width, window, cx);
+        // Install SENTIENT open on this server: Setup's step rail in the
+        // menu's place (the top bar and the switcher stay).
+        let server_page = matches!(self.page, Page::Status | Page::Logs | Page::Update | Page::Backup | Page::Settings | Page::Migration | Page::Repair | Page::Gateway);
+        let flow = self.open_remote.as_ref().filter(|_| server_page).and_then(|id| self.remote_pages.get(id)).and_then(|p| p.read(cx).install_flow());
+        let nav = match flow {
+            Some(flow) => {
+                if self.install_watch.as_ref().map(|(id, _)| *id) != Some(flow.entity_id()) {
+                    let sub = cx.observe(&flow, |_, _, cx| cx.notify());
+                    self.install_watch = Some((flow.entity_id(), sub));
+                }
+                flow.update(cx, |f, cx| f.rail(menu_w, cx))
+            }
+            None => {
+                self.install_watch = None;
+                self.shell_menu(width, window, cx)
+            }
+        };
         let notices = self.notices(cx);
         // Frame times while animating (SPM_DEBUG_FRAMES=1, also in release
         // builds, for measuring on a real desktop): the interval since the
@@ -2302,10 +2476,7 @@ impl Manager {
         // Switch timing: each frame after a switch until the page shows
         // its data (render done, and the next frame's start ≈ presented).
         if let Some((t0, n)) = SWITCH_AT.with(|s| s.get()) {
-            let data = match &self.open_remote {
-                Some(id) => self.remote_pages.get(id).is_some_and(|p| p.read(cx).has_data()),
-                None => self.page != Page::Status || self.status.as_ref().is_some_and(|p| p.read(cx).has_data()),
-            };
+            let data = self.page_has_data(cx);
             let ms = t0.elapsed().as_secs_f64() * 1000.;
             eprintln!("SWITCH frame={} render_ms={ms:.2} data={data}", n + 1);
             if data {
@@ -2316,6 +2487,23 @@ impl Manager {
             } else {
                 SWITCH_AT.with(|s| s.set(None));
             }
+        }
+        // The window's first frame: the page with its data (a window
+        // opened again while the app kept running), or the loading skeleton
+        // (a first start). Reopen tests (tests/reopen) read this mark.
+        if !self.drawn {
+            self.drawn = true;
+            let drawn = match &self.open_remote {
+                _ if self.page == Page::Statistics => match self.stats.get(&self.open_remote) {
+                    Some(p) if p.read(cx).has_data() => "data",
+                    _ => "skeleton",
+                },
+                Some(id) => self.remote_pages.get(id).map(|p| p.read(cx).drawn()).unwrap_or("other"),
+                None if self.page == Page::Status => if self.page_has_data(cx) { "data" } else { "skeleton" },
+                None if self.page == Page::Logs => if self.logs.as_ref().is_some_and(|p| p.read(cx).has_data(cx)) { "data" } else { "skeleton" },
+                None => "other",
+            };
+            crate::timing::mark(&format!("page-first-frame page={} instance={} drawn={drawn}", self.page.id(), self.open_remote.as_deref().unwrap_or("local")));
         }
         self.run_pending(cx);
         let layer = crate::modal::layer(window, cx, menu_w, shell::BAR_H);
@@ -2360,20 +2548,9 @@ impl Manager {
                             .bg(cx.theme().muted)
                             .child(top)
                             .children(notices)
-                            .child({
-                                // A new page fades in and rises 6 px.
-                                let page = h_flex().flex_1().min_h_0().w_full().relative().child(content);
-                                if ui::reduce_motion() {
-                                    page.into_any_element()
-                                } else {
-                                    page.with_animation(
-                                        SharedString::from(format!("page-{}", self.page.id())),
-                                        Animation::new(std::time::Duration::from_millis(160)).with_easing(ui::ease_out),
-                                        |el, d| el.opacity(d).top(px(6. * (1. - d))),
-                                    )
-                                    .into_any_element()
-                                }
-                            })
+                            // Pages switch instantly: no fade or rise (the owner's
+                            // choice, 2026-11-17).
+                            .child(h_flex().flex_1().min_h_0().w_full().relative().child(content))
                             // The menu open over the page: a faint scrim on
                             // the page; a click on it closes the menu.
                             .when(self.overlay_t.get() > 0.001, |c| {
@@ -2430,5 +2607,28 @@ mod perf_tests {
         assert_ne!(meter_step(0.5), meter_step(0.5 + 1.0 / METER_W));
         assert_eq!(meter_step(1.0), 1.0);
         assert_eq!(meter_step(0.0), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::Page;
+
+    /// A server with the gateway and no SENTIENT: the gateway's and the
+    /// server's pages stay, SENTIENT's own are left out.
+    #[test]
+    fn a_gateway_only_server_has_no_sentient_pages() {
+        let menu = Page::menu(true);
+        for p in [Page::Status, Page::Statistics, Page::Logs, Page::Files, Page::Gateway] {
+            assert!(menu.contains(&p), "{} missing", p.id());
+        }
+        for p in [Page::Backup, Page::Migration, Page::Repair, Page::Licence, Page::Settings] {
+            assert!(!menu.contains(&p), "{} shown", p.id());
+        }
+        assert_eq!(Page::menu(false), Page::ALL.to_vec());
+        let s = crate::remote::RemoteStatus { gateway: Some(true), ..Default::default() };
+        assert!(s.gateway_only());
+        assert!(!crate::remote::RemoteStatus { installed: true, gateway: Some(true), ..Default::default() }.gateway_only());
+        assert!(!crate::remote::RemoteStatus::default().gateway_only());
     }
 }

@@ -47,6 +47,22 @@ pub fn all() -> Vec<Change> {
             applies: native_windows,
             run: start_without_delay,
         },
+        Change {
+            id: "windows-firewall",
+            text: "Other computers can reach SENTIENT: its ports are opened in Windows Firewall.",
+            step: "Opening SENTIENT's ports in Windows Firewall",
+            restarts: false,
+            applies: native_windows,
+            run: open_firewall,
+        },
+        Change {
+            id: "docker-address-pools",
+            text: "SENTIENT stays reachable after Windows restarts: Docker's networks move out of WSL 2's address range.",
+            step: "Moving Docker's networks out of WSL 2's range",
+            restarts: true,
+            applies: docker_own_distro_windows,
+            run: pin_address_pools,
+        },
     ]
 }
 
@@ -178,6 +194,50 @@ pub fn clickhouse_clean_stop(record: &InstallationRecord, sink: &ProgressFn) -> 
 
 #[cfg(not(windows))]
 pub fn clickhouse_clean_stop(_: &InstallationRecord, _: &ProgressFn) -> Result<(), String> {
+    Ok(())
+}
+
+/// Windows "in the system": SENTIENT's ports open in Windows Firewall, in
+/// the group SENTIENT (native::ensure_firewall), added when a rule is
+/// missing: installs from before 0.9.2-rc3 have none. Also part of Repair
+/// and of an update. Elsewhere nothing.
+pub fn open_firewall(record: &InstallationRecord, sink: &ProgressFn) -> Result<(), String> {
+    #[cfg(windows)]
+    if record.engine == Engine::Native {
+        let added = sentient_installer_core::native::ensure_firewall(&record.native_config())?;
+        sink(Progress::Log {
+            line: if added {
+                "SENTIENT's ports were opened in Windows Firewall (rule group SENTIENT).".into()
+            } else {
+                "SENTIENT's Windows Firewall rules are in place.".into()
+            },
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = (record, sink);
+    Ok(())
+}
+
+#[cfg(windows)]
+fn docker_own_distro_windows(record: &InstallationRecord) -> bool {
+    record.engine == Engine::Docker && record.stack.wsl_distro.is_none() && record.stack.external.is_none()
+}
+
+#[cfg(not(windows))]
+fn docker_own_distro_windows(_: &InstallationRecord) -> bool {
+    false
+}
+
+/// Windows Docker: distro::pin_address_pools (also part of Repair); the
+/// stack comes up again with SENTIENT's start after the changes.
+fn pin_address_pools(record: &InstallationRecord, sink: &ProgressFn) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let cfg = sentient_installer_core::distro::docker_ops::with_secrets(&record.stack)?;
+        sentient_installer_core::distro::pin_address_pools(sink, &cfg)?;
+    }
+    #[cfg(not(windows))]
+    let _ = (record, sink);
     Ok(())
 }
 

@@ -33,6 +33,30 @@ pub fn build_commit() -> &'static str {
     env!("SPM_BUILD_COMMIT")
 }
 
+/// The day this build was made, UTC, YYYY-MM-DD, or "unknown" (build.rs).
+pub fn build_date() -> &'static str {
+    env!("SPM_BUILD_DATE")
+}
+
+/// "release" or "debug": how this program was compiled.
+pub fn build_profile() -> &'static str {
+    if cfg!(debug_assertions) { "debug" } else { "release" }
+}
+
+/// The version lines About copies for a support request: version, build,
+/// and the system it runs on.
+pub fn version_info() -> String {
+    format!(
+        "SENTIENT Platform Manager {}\nCommit: {}\nBuilt: {} ({})\nSystem: {} {}",
+        manager_version(),
+        build_commit(),
+        build_date(),
+        build_profile(),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+}
+
 pub fn manager_version() -> &'static str {
     // Development aid: act as another version (screens that compare them).
     #[cfg(debug_assertions)]
@@ -151,6 +175,23 @@ pub struct Offer {
     /// The notes of every version from the installed one (left out) to this
     /// one, newest first: what updating brings ("What's new").
     pub between: Vec<crate::notes::Notes>,
+    /// A Docker install: the image of this version is not on Docker Hub
+    /// yet, so it cannot be pulled (the screen says so instead of updating).
+    pub image_missing: bool,
+    /// SENTIENT's build version, when its manifest names it (read for
+    /// native installs and nightlies): what the licence is compared with
+    /// (sentient_installer_core::licence_version::build_version).
+    pub build_version: Option<String>,
+    /// The manifest's `min_glibc` (read for native installs): the oldest
+    /// glibc its Linux server runs on (sentient_installer_core::glibc).
+    pub min_glibc: Option<String>,
+}
+
+impl Offer {
+    /// The build version a licence must cover to run this offer.
+    pub fn licence_build(&self) -> String {
+        sentient_installer_core::licence_version::build_version(self.build_version.as_deref(), &self.version)
+    }
 }
 
 impl Offer {
@@ -167,7 +208,15 @@ impl Offer {
             unsigned: false,
             signing_started: false,
             between: Vec::new(),
+            image_missing: false,
+            build_version: None,
+            min_glibc: None,
         }
+    }
+
+    /// Why this offer cannot be taken here (None: it can).
+    pub fn blocker(&self) -> Option<String> {
+        self.image_missing.then(|| sentient_installer_core::dockerhub::not_published(&self.version))
     }
 }
 
@@ -223,6 +272,11 @@ pub struct Found {
     /// installs or updates to it), and the gateway installed here.
     pub gateway: Result<Option<gateway::Offer>, String>,
     pub gateway_installed: Option<String>,
+    /// Only the older Python gateway is here: any release is its update.
+    pub gateway_older: bool,
+    /// The release list is an old one: GitHub refused or could not be
+    /// reached (its note says how old). The offers are from that list.
+    pub stale: Option<sentient_installer_core::fetch_cache::Stale>,
     pub at: u64,
 }
 
@@ -230,6 +284,12 @@ pub struct Found {
 /// `installed` is SENTIENT's version here (None when it is not installed);
 /// `native` says whether this computer needs a package for its system.
 pub fn check(channel: Channel, installed: Option<String>, native: bool) -> Found {
+    check_with(channel, installed, native, false)
+}
+
+/// [`check`]; `force`: "Check for updates" was pressed, so the release list
+/// is asked for again even inside its 30 minutes (at most once a minute).
+pub fn check_with(channel: Channel, installed: Option<String>, native: bool, force: bool) -> Found {
     // Renders: offers without a signature, before signing began
     // ("unsigned") or after ("refused").
     #[cfg(debug_assertions)]
@@ -246,6 +306,9 @@ pub fn check(channel: Channel, installed: Option<String>, native: bool) -> Found
             unsigned: true,
             signing_started: kind == "refused",
             between: Vec::new(),
+            image_missing: false,
+            build_version: None,
+            min_glibc: None,
         };
         return Found {
             sentient: Ok(installed.is_some().then(|| offer("4.4.0.2"))),
@@ -254,18 +317,24 @@ pub fn check(channel: Channel, installed: Option<String>, native: bool) -> Found
             manager_candidate: None,
             gateway: Ok(None),
             gateway_installed: None,
+            gateway_older: false,
+            stale: None,
             at: now(),
         };
     }
     // One list serves both products: they share the repository.
-    let all = releases::fetch(releases::SENTIENT_REPO);
+    let listed = releases::list(releases::SENTIENT_REPO, force);
+    let stale = listed.as_ref().ok().and_then(|l| l.stale.clone());
+    let all = listed.map(|l| l.value);
     let (sentient, sentient_candidate) = match (&installed, &all) {
         (None, _) => (Ok(None), None),
+        // Docker without GitHub's list: the newest image tag.
+        (Some(v), Err(e)) if !native => (docker_offer(channel, v, force).map_err(|_| e.clone()), None),
         (Some(_), Err(e)) => (Err(e.clone()), None),
         (Some(v), Ok(all)) => {
-            let offer = sentient_offer(all, channel, v, native);
+            let offer = sentient_offer(all, channel, v, native, force);
             let candidate = (channel == Channel::Stable)
-                .then(|| sentient_offer(all, Channel::Candidate, v, native).ok().flatten())
+                .then(|| sentient_offer(all, Channel::Candidate, v, native, false).ok().flatten())
                 .flatten()
                 .filter(|c| offer.as_ref().ok().and_then(|o| o.as_ref()).is_none_or(|o| releases::compare(&c.version, &o.version).is_gt()))
                 .map(|c| c.version);
@@ -285,18 +354,86 @@ pub fn check(channel: Channel, installed: Option<String>, native: bool) -> Found
         }
     };
     let here = gateway::status();
+    // Docker (any gateway off Windows, or a container): Docker Hub's tags
+    // stand in when GitHub's list cannot be had.
+    let gateway_docker = !cfg!(windows) || here.kind() == "docker";
+    // Screens: a canned newest gateway (SPM_DEBUG_GATEWAY_OFFER=<version>).
+    #[cfg(debug_assertions)]
+    let gateway_offer = match std::env::var("SPM_DEBUG_GATEWAY_OFFER") {
+        Ok(v) => Ok(Some(gateway::Offer {
+            version: v,
+            date: "2026-11-17".into(),
+            notes: String::new(),
+            page: String::new(),
+            installer: None,
+            checksum: None,
+            image_missing: std::env::var_os("SPM_DEBUG_GATEWAY_NO_IMAGE").is_some(),
+        })),
+        Err(_) => gateway::newest_with(channel, gateway_docker, force),
+    };
+    #[cfg(not(debug_assertions))]
+    let gateway_offer = gateway::newest_with(channel, gateway_docker, force);
     Found {
         sentient,
         manager,
         sentient_candidate,
         manager_candidate,
-        gateway: gateway::newest(channel),
+        gateway: gateway_offer,
+        gateway_older: !here.installed && here.legacy.is_some() && !cfg!(windows),
         gateway_installed: here.installed.then(|| here.version.unwrap_or_default()),
+        stale,
         at: now(),
     }
 }
 
-fn sentient_offer(all: &[Release], channel: Channel, installed: &str, native: bool) -> Result<Option<Offer>, String> {
+/// A Docker install's update when GitHub's list cannot be had: the newest
+/// image tag on the channel (no notes). Not for Nightly: its one tag names
+/// no version to compare.
+fn docker_offer(channel: Channel, installed: &str, force: bool) -> Result<Option<Offer>, String> {
+    if channel == Channel::Nightly {
+        return Err("no nightly from Docker Hub alone".into());
+    }
+    let tags = sentient_installer_core::dockerhub::tags(sentient_installer_core::dockerhub::SENTIENT_IMAGE, force)?;
+    Ok(docker_offer_in(&tags.value, channel, installed))
+}
+
+fn docker_offer_in(tags: &[String], channel: Channel, installed: &str) -> Option<Offer> {
+    let version = sentient_installer_core::dockerhub::newest(tags, channel)?;
+    releases::is_newer(&version, installed, false).then(|| Offer {
+        tag: version.clone(),
+        version,
+        date: String::new(),
+        notes: String::new(),
+        page: String::new(),
+        installer: None,
+        sha256: None,
+        signature: None,
+        unsigned: false,
+        signing_started: false,
+        between: Vec::new(),
+        image_missing: false,
+        build_version: None,
+        min_glibc: None,
+    })
+}
+
+/// The newest SENTIENT on `channel`, for a fresh install on a server
+/// (crate::manager::remote_install), from the release list's cache; Docker
+/// Hub's tags when GitHub's list cannot be had. Its files are checked on
+/// the server, which downloads them (crate::online::download there).
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+pub fn newest_sentient(channel: Channel) -> Result<Option<String>, String> {
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("SPM_DEBUG_INSTALL_VERSION") {
+        return Ok(Some(v));
+    }
+    match releases::list(releases::SENTIENT_REPO, false) {
+        Ok(l) => sentient_offer(&l.value, channel, "0", false, false).map(|o| o.map(|o| o.version)),
+        Err(e) => docker_offer(channel, "0", false).map(|o| o.map(|o| o.version)).map_err(|_| e),
+    }
+}
+
+fn sentient_offer(all: &[Release], channel: Channel, installed: &str, native: bool, force: bool) -> Result<Option<Offer>, String> {
     let candidates = releases::on_channel(all, channel, releases::is_sentient);
     if candidates.is_empty() {
         return match channel {
@@ -307,19 +444,21 @@ fn sentient_offer(all: &[Release], channel: Channel, installed: &str, native: bo
     // A release may carry only some systems' files: the newest that has
     // this computer's (its manifest says, and names the version a nightly is).
     for r in candidates.into_iter().take(5) {
-        let version = if native || r.is_nightly() {
+        let (version, build_version, min_glibc) = if native || r.is_nightly() {
             let m = manifest::fetch(&manifest::release_url(&r.tag_name))?;
             if native && m.wanted().is_err() {
                 continue;
             }
-            m.version
+            (m.version, m.build_version, m.min_glibc)
         } else {
-            r.version()
+            (r.version(), None, None)
         };
         if !releases::is_newer(&version, installed, r.is_nightly()) {
             return Ok(None);
         }
         let mut offer = Offer::from(r, version.clone());
+        offer.build_version = build_version;
+        offer.min_glibc = min_glibc;
         offer.unsigned = !r.has_asset(&signing::signature_name("manifest.json"));
         offer.signing_started = signing_started(Some(all), Product::Sentient);
         offer.between = if r.is_nightly() {
@@ -327,6 +466,12 @@ fn sentient_offer(all: &[Release], channel: Channel, installed: &str, native: bo
         } else {
             crate::notes::between(all, installed, &version, |x| releases::is_sentient(x) && (channel != Channel::Stable || !x.prerelease), Release::version)
         };
+        // A Docker install pulls the image: only once it is published
+        // (unknown, with Docker Hub out of reach, is not held against it).
+        if !native {
+            let tag = if r.is_nightly() { releases::NIGHTLY_TAG } else { version.as_str() };
+            offer.image_missing = sentient_installer_core::dockerhub::tag_exists(sentient_installer_core::dockerhub::SENTIENT_IMAGE, tag, force) == Ok(false);
+        }
         return Ok(Some(offer));
     }
     Ok(None)
@@ -498,7 +643,7 @@ pub fn finish_self_update() -> i32 {
                     let _ = crate::self_install::write_record(&crate::installation::record_path(), &json);
                 }
             }
-            let mut cmd = std::process::Command::new(&path);
+            let mut cmd = crate::self_install::manager_command(std::path::Path::new(&path));
             cmd.arg("--manager");
             if let Some(from) = from {
                 cmd.args(["--updated-from", &from]);
@@ -538,6 +683,8 @@ pub struct UpdateState {
     pub prefs: Prefs,
     pub found: Option<Found>,
     pub checking: bool,
+    /// The next check was asked for by hand ("Check for updates").
+    force_next: bool,
     installed: Option<String>,
     native: bool,
     _tasks: Vec<Task<()>>,
@@ -546,7 +693,7 @@ pub struct UpdateState {
 #[cfg(feature = "gui")]
 impl UpdateState {
     pub fn new(installed: Option<String>, native: bool, cx: &mut Context<Self>) -> Self {
-        let mut state = Self { prefs: Prefs::load(), found: None, checking: false, installed, native, _tasks: Vec::new() };
+        let mut state = Self { prefs: Prefs::load(), found: None, checking: false, force_next: false, installed, native, _tasks: Vec::new() };
         // Due now (start-up), and every quarter of an hour whether a day passed.
         let ticker = cx.spawn(async move |this, cx| loop {
             let due = this.update(cx, |s, _| s.prefs.due() && !s.checking).unwrap_or(false);
@@ -559,15 +706,35 @@ impl UpdateState {
         state
     }
 
+    /// "Check for updates" pressed: the lists are asked for again, even
+    /// inside their 30 minutes (at most once a minute).
+    pub fn check_now(&mut self, cx: &mut Context<Self>) {
+        self.force_next = true;
+        self.check(cx);
+    }
+
     pub fn check(&mut self, cx: &mut Context<Self>) {
         if self.checking {
             return;
         }
         self.checking = true;
         cx.notify();
+        let force = std::mem::take(&mut self.force_next);
         let (channel, installed, native) = (self.prefs.channel, self.installed.clone(), self.native);
         let task = cx.spawn(async move |this, cx| {
-            let found = cx.background_executor().spawn(async move { check(channel, installed, native) }).await;
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    // Docker: what the container runs, not its tag ("latest").
+                    let installed = installed.map(|v| {
+                        crate::installation::InstallationRecord::load()
+                            .filter(|r| r.engine == crate::installation::Engine::Docker)
+                            .map(|r| crate::installation::comparable_version(&r))
+                            .unwrap_or(v)
+                    });
+                    check_with(channel, installed, native, force)
+                })
+                .await;
             this.update(cx, |s, cx| {
                 s.checking = false;
                 if found.sentient.is_ok() || found.manager.is_ok() || found.gateway.is_ok() {
@@ -616,6 +783,10 @@ impl UpdateState {
     /// A newer gateway than the one installed here, not dismissed.
     pub fn gateway_notice(&self) -> Option<gateway::Offer> {
         let f = self.found.as_ref()?;
+        if f.gateway_older {
+            let offer = f.gateway.as_ref().ok()?.as_ref()?;
+            return (self.prefs.dismissed_gateway.as_deref() != Some(&offer.version)).then(|| offer.clone());
+        }
         // An unknown version is never compared (nor called up to date).
         let installed = f.gateway_installed.as_deref().filter(|v| !v.is_empty())?;
         let offer = f.gateway.as_ref().ok()?.as_ref()?;
@@ -641,6 +812,12 @@ impl UpdateState {
         cx.notify();
     }
 
+    /// "Release list from 12 min ago: GitHub is limiting requests from this
+    /// network." when the offers come from an old list.
+    pub fn stale_note(&self) -> Option<String> {
+        self.found.as_ref()?.stale.as_ref().map(|s| s.note())
+    }
+
     pub fn last_checked(&self) -> String {
         if self.prefs.last_check == 0 {
             return "never".into();
@@ -654,7 +831,7 @@ impl UpdateState {
 #[cfg(test)]
 mod manager_offer_tests {
     // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
-    use super::{newest_manager, releases, Channel, Release};
+    use super::{docker_offer_in, newest_manager, releases, Channel, Release};
 
     fn rel(tag: &str, pre: bool) -> Release {
         Release {
@@ -691,6 +868,19 @@ mod manager_offer_tests {
         assert_eq!(offer.version, "0.8.0-rc11");
         assert_eq!(offer.tag, "spm-v0.8.0-rc11");
         assert!(offer.installer.is_some() || !cfg!(any(windows, target_arch = "x86_64")));
+    }
+
+    #[test]
+    fn without_github_a_docker_install_takes_the_newest_image_tag() {
+        let tags: Vec<String> = ["latest", "nightly", "4.4.0.2-rc1", "4.4.0.1", "4.3.0.58"].iter().map(|s| s.to_string()).collect();
+        let o = docker_offer_in(&tags, Channel::Stable, "4.3.0.58").expect("4.4.0.1 is newer");
+        assert_eq!((o.version.as_str(), o.tag.as_str(), o.notes.as_str()), ("4.4.0.1", "4.4.0.1", ""));
+        assert!(o.blocker().is_none());
+        assert_eq!(docker_offer_in(&tags, Channel::Candidate, "4.4.0.1").map(|o| o.version).as_deref(), Some("4.4.0.2-rc1"));
+        assert!(docker_offer_in(&tags, Channel::Stable, "4.4.0.1").is_none());
+        let mut o = o;
+        o.image_missing = true;
+        assert_eq!(o.blocker().as_deref(), Some("4.4.0.1 is released; its Docker image is not published yet."));
     }
 
     #[test]

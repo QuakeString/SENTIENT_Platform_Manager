@@ -577,7 +577,7 @@ fn spans(theme: &gpui_kit::component::Theme, id: impl Into<SharedString>, value:
         .child(div().flex_shrink(0.05).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().when_some(color, |d, c| d.text_color(c)).child(value))
         .when(!note.is_empty(), |d| d.child(div().flex_shrink(1.).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).text_color(theme.muted_foreground).child(note)))
         .children(extra)
-        .when(long, |d| d.tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(full.clone()).build(w, cx)))
+        .when(long, |d| d.tooltip(crate::ui::tooltip(full.clone())))
 }
 
 /// A line's whole text, for its tooltip.
@@ -674,8 +674,8 @@ fn header(docker: bool, a: &Actions) -> Div {
     let open = a.on_terminal.clone();
     let terminal = div()
         .id("srv-terminal-tip")
-        .child(ui::button("srv-terminal").outline().w(px(28.)).h(px(28.)).rounded(px(8.)).icon(Icon::new(Lucide::SquareTerminal).size(px(16.))).disabled(!TERMINAL_READY).on_click(move |_, w, cx| open(w, cx)))
-        .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Open terminal").build(w, cx));
+        .child(ui::button("srv-terminal").outline().icon(Icon::new(Lucide::SquareTerminal).size(px(16.))).disabled(!TERMINAL_READY).on_click(move |_, w, cx| open(w, cx)))
+        .tooltip(crate::ui::tooltip("Open terminal"));
     let items: Vec<ui::RowMenuItem> = menu_entries(a.remote, docker)
         .into_iter()
         .map(|e| match e {
@@ -708,7 +708,7 @@ fn header(docker: bool, a: &Actions) -> Div {
                 .items_center()
                 .child(ui::probed(terminal))
                 .when(a.remote, |r| {
-                    r.child(ui::probed(ui::button("srv-restart").outline().w(px(28.)).h(px(28.)).rounded(px(8.)).icon(Icon::new(Lucide::RotateCw).size(px(16.))).tooltip("Restart server").disabled(a.busy).on_click(move |_, w, cx| restart(w, cx))))
+                    r.child(ui::probed(ui::button("srv-restart").outline().icon(Icon::new(Lucide::RotateCw).size(px(16.))).tooltip("Restart server").disabled(a.busy).on_click(move |_, w, cx| restart(w, cx))))
                 })
                 .child(ui::probed(ui::row_menu("srv-menu", "More actions", a.busy, items))),
         )

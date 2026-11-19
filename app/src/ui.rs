@@ -160,7 +160,35 @@ pub fn open_sentient(port: u16, kiosk: bool, cx: &mut App) {
             }
         }
     }
-    open_url(&format!("http://localhost:{port}"), cx);
+    open_web_app(&format!("http://localhost:{port}"), cx);
+}
+
+/// Open SENTIENT's address `url` in a browser that runs its UI. Windows:
+/// the default browser, unless that is Internet Explorer (Windows 10
+/// LTSC's) or none is set: then Edge, Chrome or Firefox, else a message
+/// saying one is needed (sentient_installer_core::kiosk::choose_web_launch).
+/// Elsewhere: [`open_url`].
+pub fn open_web_app(url: &str, cx: &mut App) {
+    #[cfg(windows)]
+    {
+        use sentient_installer_core::kiosk::{self, WebLaunch};
+        let url = url.to_string();
+        cx.spawn(async move |cx| {
+            let launch = cx.background_executor().spawn(async move { kiosk::web_launch() }).await;
+            let _ = cx.update(|cx| match launch {
+                WebLaunch::Default => cx.open_url(&url),
+                WebLaunch::With(browser, exe) => {
+                    if let Err(e) = std::process::Command::new(&exe).args(browser.open_args(&url, false, None)).spawn() {
+                        show_error("Could not open it", format!("{} could not be started to open {url}.\n{e}", browser.label()), cx);
+                    }
+                }
+                WebLaunch::Missing => show_error("No browser for SENTIENT", kiosk::no_browser_message(&url), cx),
+            });
+        })
+        .detach();
+    }
+    #[cfg(not(windows))]
+    open_url(url, cx);
 }
 
 /// What the start delay does, for its (i).
@@ -176,7 +204,7 @@ pub fn start_delay_row(theme: &Theme, state: &Entity<gpui_kit::component::input:
 /// The start delay with its message when the value cannot be used (a red
 /// border and one line under the row).
 pub fn start_delay_row_checked(theme: &Theme, state: &Entity<gpui_kit::component::input::InputState>, problem: Option<String>) -> Div {
-    use gpui_kit::component::{Sizable as _, button::ButtonVariants as _, IconName};
+    use gpui_kit::component::{button::ButtonVariants as _, IconName};
     v_flex()
         .gap_1()
         .child(
@@ -189,7 +217,7 @@ pub fn start_delay_row_checked(theme: &Theme, state: &Entity<gpui_kit::component
                     if problem.is_some() { i.border_color(theme.danger).focus_bordered(false) } else { i }
                 }))
                 .child(div().text_sm().text_color(theme.muted_foreground).child("seconds"))
-                .child(crate::ui::button("start-delay-help").ghost().xsmall().icon(IconName::Info).tooltip(START_DELAY_HELP)),
+                .child(crate::ui::button("start-delay-help").ghost().icon(IconName::Info).tooltip(START_DELAY_HELP)),
         )
         .when_some(problem, |d, p| d.child(div().text_xs().text_color(theme.danger).child(p)))
 }
@@ -471,6 +499,34 @@ pub fn info(id: SharedString, help: SharedString) -> impl IntoElement {
         .tooltip(move |_, cx| cx.new(|_| InfoTip(help.clone())).into())
 }
 
+/// A lock where a value cannot be changed here, its tooltip saying why
+/// and where to change it (the gateway's SENTIENT-owned settings).
+pub fn lock_tip(id: SharedString, why: SharedString) -> impl IntoElement {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(22.))
+        .flex_shrink_0()
+        .rounded(px(5.))
+        .cursor_default()
+        .hover(|d| d.bg(black().opacity(0.06)))
+        .relative()
+        .child(LockIcon)
+        .child(layout_probe("lock-icon"))
+        .tooltip(move |_, cx| cx.new(|_| InfoTip(why.clone())).into())
+}
+
+#[derive(IntoElement)]
+struct LockIcon;
+
+impl RenderOnce for LockIcon {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Lock).size(px(14.)).text_color(cx.theme().muted_foreground)
+    }
+}
+
 /// The (i) itself, in the muted text colour of its theme.
 #[derive(IntoElement)]
 struct InfoIcon;
@@ -501,7 +557,8 @@ impl Render for InfoTip {
         let longest = self.0.lines().map(|l| l.chars().count()).max().unwrap_or(0) as f32;
         let w = (longest * 6.9 + 22.).clamp(60., 320.);
         let shadow = BoxShadow { color: black().opacity(if dark { 0.45 } else { 0.25 }), offset: point(px(0.), px(4.)), blur_radius: px(12.), spread_radius: px(0.), inset: false };
-        div().pt(px(8.)).pl(px(4.)).child(
+        // Opening: the menu motion (it hangs below the pointer).
+        let tip = div().pt(px(8.)).pl(px(4.)).child(
             gpui_kit::component::v_flex()
                 .w(px(w))
                 .gap(px(6.))
@@ -529,7 +586,8 @@ impl Render for InfoTip {
                         }
                     }))
                 })),
-        )
+        );
+        menu_appear(tip, "info-tip-open", true)
     }
 }
 
@@ -610,6 +668,12 @@ pub const STATUS_GREY: u32 = 0x94a3b8;
 
 pub fn probed(b: impl IntoElement) -> Div {
     div().relative().flex_shrink_0().child(b).child(layout_probe("button"))
+}
+
+/// An input reported to the layout test (`LAYOUT field`): its height and
+/// its centre beside the controls in its row (tests/layout/rows.py).
+pub fn probed_input(input: impl IntoElement) -> Div {
+    div().relative().child(input).child(layout_probe("field"))
 }
 
 /// A page's own notice, directly in the page (never inside a card): an
@@ -897,11 +961,15 @@ pub fn flavor_logos(flavor: sentient_installer_core::stack::Flavor, size: f32) -
 
 /// A segmented choice: one track with the theme's radius and a 1px border,
 /// and segments inside it with equal padding. The chosen segment is filled
-/// with the primary colour. The same height as a standard button.
+/// with the primary colour. The standard control height ([`control_h`]),
+/// border included, so it lines up with the buttons beside it. Reports
+/// `segmented`.
 pub fn seg_track(theme: &Theme) -> Div {
     // The mockup's segmented control: one bordered strip, segments edge to
     // edge, the chosen one tinted with primary text.
-    gpui_kit::component::h_flex()
+    input_box()
+        .relative()
+        .child(layout_probe("segmented"))
         .flex_none()
         .items_center()
         .rounded(theme.radius)
@@ -915,7 +983,7 @@ pub fn seg_track(theme: &Theme) -> Div {
 pub fn seg_item(theme: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, on: bool) -> Stateful<Div> {
     div()
         .id(id)
-        .h(px(30.))
+        .h_full()
         .px(px(11.))
         .flex()
         .items_center()
@@ -925,6 +993,24 @@ pub fn seg_item(theme: &Theme, id: impl Into<ElementId>, label: impl Into<Shared
         .when(on, |d| d.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground).font_weight(FontWeight::MEDIUM))
         .when(!on, |d| d.text_color(theme.muted_foreground).hover(|d| d.bg(theme.list_hover).text_color(theme.foreground)))
         .child(label.into())
+}
+
+/// A segment that can't be picked: greyed on a faint fill, nothing reacts,
+/// and its (i) (`why`, a [`info`]) says why.
+pub fn seg_item_off(theme: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, why: impl IntoElement) -> Stateful<Div> {
+    div()
+        .id(id)
+        .h_full()
+        .pl(px(11.))
+        .pr(px(5.))
+        .flex()
+        .items_center()
+        .gap(px(2.))
+        .text_sm()
+        .whitespace_nowrap()
+        .bg(theme.foreground.opacity(0.05))
+        .child(div().text_color(theme.muted_foreground).opacity(OFF_OPACITY).child(label.into()))
+        .child(why)
 }
 
 /// `seg_item` with a 15 px icon before its label.
@@ -940,14 +1026,53 @@ pub fn box_row() -> Div {
     gpui_kit::component::h_flex().flex_wrap().gap_3().items_stretch()
 }
 
+/// Set once a window draws without a GPU ([`note_renderer`]).
+static SOFTWARE_RENDERER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A window that draws on a software renderer (a virtual machine without a
+/// GPU: Microsoft Basic Render Driver, llvmpipe) draws without motion: GPUI
+/// draws the whole window again for every frame of an animation, and a
+/// job's moving bar and spinner then kept the processor busy for as long as
+/// the job ran, slowing SENTIENT's own start in the same machine (the
+/// 2026-11-18 rc3 VM pass: 99 % while Start ran, its window open).
+pub fn note_renderer(window: &gpui_kit::Window, cx: &mut gpui_kit::App) {
+    if window.gpu_specs().is_some_and(|g| software_renderer(g.is_software_emulated, &g.device_name, &g.driver_name)) {
+        SOFTWARE_RENDERER.store(true, std::sync::atomic::Ordering::Relaxed);
+        cx.set_reduce_motion(true);
+    }
+}
+
+/// Whether a GPU description is a renderer on the processor. GPUI's own
+/// flag is not enough on Windows: DXGI's Microsoft Basic Render Driver
+/// (WARP, the adapter of a virtual machine without a GPU, vendor 0x1414)
+/// does not carry DXGI_ADAPTER_FLAG_SOFTWARE (the 2026-11-18 rc4 VM pass:
+/// the job line still moved and the Platform Manager took 2.7 processors
+/// while Start ran).
+pub fn software_renderer(flagged: bool, device: &str, driver: &str) -> bool {
+    let d = device.to_ascii_lowercase();
+    flagged
+        || d.contains("basic render driver")
+        || d.contains("llvmpipe")
+        || d.contains("softpipe")
+        || d.contains("swiftshader")
+        || d.contains("warp")
+        || driver.contains("0x1414")
+}
+
 /// Whether the desktop asks for less motion (KDE's animation speed at 0,
-/// GNOME's animations off, or SPM_REDUCE_MOTION=1). Read once.
+/// GNOME's animations off, or SPM_REDUCE_MOTION=1; read once), or a window
+/// draws on a software renderer ([`note_renderer`]).
 pub fn reduce_motion() -> bool {
     static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *R.get_or_init(|| {
+    SOFTWARE_RENDERER.load(std::sync::atomic::Ordering::Relaxed) || *R.get_or_init(|| {
         // SPM_REDUCED_MOTION too: the layout tests set that one (and the
         // placeholders' reduced_motion reads it), so both switch it off.
         if std::env::var("SPM_REDUCE_MOTION").is_ok_and(|v| v == "1") || std::env::var_os("SPM_REDUCED_MOTION").is_some() {
+            return true;
+        }
+        // Windows: "Show animations in Windows" off.
+        #[cfg(windows)]
+        if !windows_animations_on() {
             return true;
         }
         #[cfg(target_os = "linux")]
@@ -964,13 +1089,67 @@ pub fn reduce_motion() -> bool {
     })
 }
 
-/// Fade (and rise a little) when shown; `key` restarts it when it changes.
-pub fn appear<E: IntoElement + Styled + 'static>(el: E, key: impl Into<ElementId>, ms: u64) -> AnyElement {
+/// Windows' "Show animations in Windows" (SPI_GETCLIENTAREAANIMATION);
+/// on when it cannot be read.
+#[cfg(windows)]
+fn windows_animations_on() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION};
+    let mut on: windows_sys::core::BOOL = 1;
+    // SAFETY: this action writes one BOOL to the pointer given.
+    let ok = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&mut on as *mut windows_sys::core::BOOL).cast(), 0) };
+    ok == 0 || on != 0
+}
+
+// Popups open with one motion per kind; pages switch instantly (the
+// owner's rule, 2026-11-17). Dialogs and panels (the modal, the bell, the
+// job panel): 180 ms, rising 8 px. Menus and tooltips: 140 ms, 4 px toward
+// their anchor; the toolkit's popup menu (vendor/gpui-component, menu/
+// popup_menu.rs) and its tooltip layer move the same way. Reduce motion
+// draws them in place (here, and through GPUI's flag, set in main).
+// src/popup_gate.rs fails a popup that opens without these.
+pub const APPEAR_MS: u64 = 180;
+pub const APPEAR_RISE: f32 = 8.;
+pub const MENU_APPEAR_MS: u64 = 140;
+pub const MENU_APPEAR_RISE: f32 = 4.;
+
+/// A dialog or panel opening: it fades in, rising 8 px into place. It
+/// plays when the popup is drawn after a frame without it, and again when
+/// `key` changes.
+pub fn appear<E: IntoElement + Styled + 'static>(el: E, key: impl Into<ElementId>) -> AnyElement {
+    motion_in(el, key.into(), APPEAR_MS, APPEAR_RISE)
+}
+
+/// A menu or tooltip opening: a quick fade, moving 4 px toward its anchor.
+/// `below`: it hangs below its anchor (it rises); else above (it drops).
+pub fn menu_appear<E: IntoElement + Styled + 'static>(el: E, key: impl Into<ElementId>, below: bool) -> AnyElement {
+    motion_in(el, key.into(), MENU_APPEAR_MS, if below { MENU_APPEAR_RISE } else { -MENU_APPEAR_RISE })
+}
+
+fn motion_in<E: IntoElement + Styled + 'static>(el: E, key: ElementId, ms: u64, rise: f32) -> AnyElement {
     if reduce_motion() {
         return el.into_any_element();
     }
-    el.with_animation(key, Animation::new(std::time::Duration::from_millis(ms)).with_easing(ease_out_quint()), |el, d| el.opacity(d))
+    el.with_animation(key, Animation::new(std::time::Duration::from_millis(ms)).with_easing(ease_out), move |el, t| el.opacity(t).top(px(rise * (1. - t))))
         .into_any_element()
+}
+
+/// A plain tooltip for a div's `.tooltip(...)`: the toolkit's tooltip,
+/// opening with the menu motion (a button's own `.tooltip("...")` opens
+/// through the toolkit's tooltip layer, which moves the same way).
+pub fn tooltip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let text = text.into();
+    move |window, cx| {
+        let inner = gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx);
+        cx.new(|_| AppearTip(inner)).into()
+    }
+}
+
+struct AppearTip(AnyView);
+
+impl Render for AppearTip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        menu_appear(div().child(self.0.clone()), "tip-open", true)
+    }
 }
 
 /// One choice of several, with a real radio mark, a title and a line about
@@ -983,6 +1162,20 @@ pub fn radio_card(theme: &Theme, id: impl Into<ElementId>, title: impl Into<Shar
 /// `interactive`: it can be picked (a pointer and the hover border); off,
 /// it is drawn faded by the caller and reacts to nothing.
 pub fn radio_card_el(theme: &Theme, id: impl Into<ElementId>, title: AnyElement, desc: impl Into<SharedString>, selected: bool, interactive: bool) -> Stateful<Div> {
+    radio_card_inner(theme, id, title, desc, selected, interactive, 1.)
+}
+
+/// How faded a choice that can't be made is drawn (its (i) is not).
+pub const OFF_OPACITY: f32 = 0.55;
+
+/// A `radio_card` that can't be picked: its mark and line faded, nothing
+/// reacts. The caller fades the title's text and keeps its (i) with the
+/// reason at full strength.
+pub fn radio_card_off(theme: &Theme, id: impl Into<ElementId>, title: AnyElement, desc: impl Into<SharedString>) -> Stateful<Div> {
+    radio_card_inner(theme, id, title, desc, false, false, OFF_OPACITY)
+}
+
+fn radio_card_inner(theme: &Theme, id: impl Into<ElementId>, title: AnyElement, desc: impl Into<SharedString>, selected: bool, interactive: bool, fade: f32) -> Stateful<Div> {
     gpui_kit::component::h_flex()
         .id(id)
         .gap_3()
@@ -1005,7 +1198,8 @@ pub fn radio_card_el(theme: &Theme, id: impl Into<ElementId>, title: AnyElement,
                 .flex()
                 .items_center()
                 .justify_center()
-                .when(selected, |r| r.child(div().size(px(8.)).rounded_full().bg(theme.primary))),
+                .when(selected, |r| r.child(div().size(px(8.)).rounded_full().bg(theme.primary)))
+                .when(fade < 1., |r| r.opacity(fade)),
         )
         .child(
             v_flex()
@@ -1013,7 +1207,7 @@ pub fn radio_card_el(theme: &Theme, id: impl Into<ElementId>, title: AnyElement,
                 .min_w_0()
                 .gap_0p5()
                 .child(title)
-                .child(div().text_sm().text_color(theme.muted_foreground).child(desc.into())),
+                .child(div().text_sm().text_color(theme.muted_foreground).when(fade < 1., |d| d.opacity(fade)).child(desc.into())),
         )
 }
 
@@ -1044,16 +1238,14 @@ pub fn stop_hover(theme: &Theme) -> (Hsla, Hsla, Hsla) {
     (theme.danger.opacity(0.14), theme.danger, theme.danger)
 }
 
-/// A service row's 32 px outline icon button with an 18 px icon and its
+/// A service row's outline icon button (the one icon-button square) with its
 /// name as the tooltip. It hovers teal, or red for Stop.
 pub fn svc_icon_button(theme: &Theme, id: SharedString, icon: gpui_kit::component::Icon, tip: &'static str, enabled: bool, stop: bool) -> gpui_kit::component::button::Button {
-    use gpui_kit::component::{Disableable as _, Sizable as _};
+    use gpui_kit::component::{Disableable as _};
     let (bg, border, fg) = if stop { stop_hover(theme) } else { (theme.primary.opacity(0.12), theme.primary, theme.primary) };
     button(id)
         .outline()
-        .with_size(px(32.))
         .icon(icon)
-        .icon_size(px(18.))
         .tooltip(tip)
         .hover_colors(bg, border, fg)
         .disabled(!enabled)
@@ -1272,23 +1464,132 @@ pub fn popover_menu(theme: &Theme, id: &'static str, width: f32, rows: Vec<MenuR
                 .on_mouse_down_out(move |_, window, cx| on_close(window, cx)),
         )
         .map(|d| if up { d.child(pointer_up(theme.popover, theme.border, pointer_x)) } else { d.child(pointer_down(theme.popover, theme.border, pointer_x)) })
-        // Opening: a quick fade, moving 4 px from its anchor (140 ms).
-        .map(|d| {
-            if reduce_motion() {
-                d.into_any_element()
-            } else {
-                d.with_animation(SharedString::from(format!("{id}-open")), Animation::new(std::time::Duration::from_millis(140)).with_easing(ease_out), move |el, t| {
-                    let off = 4. * (1. - t);
-                    el.opacity(t).top(px(if up { off } else { -off }))
-                })
-                .into_any_element()
-            }
-        })
+        // Opening: the menu motion (140 ms, 4 px toward its anchor).
+        .map(|d| menu_appear(d, SharedString::from(format!("{id}-open")), up))
 }
 
-/// Every button: the toolkit's, with the mockup's medium-weight label.
+// ---------------------------------------------------------------------------
+// Long dropdown menus (the version pickers): open on the side with room and
+// never taller than that room, scrolling the rest
+// ---------------------------------------------------------------------------
+
+/// The tallest a long dropdown menu gets.
+pub const MENU_MAX_H: f32 = 320.;
+/// Kept free between a menu and the window's edge.
+const MENU_MARGIN: f32 = 16.;
+/// The shortest it gets (a window too small for more: the toolkit moves it).
+const MENU_MIN_H: f32 = 120.;
+
+thread_local! {
+    /// Where each fitted dropdown's trigger was last painted: top, bottom
+    /// and the window's height (logical pixels).
+    static MENU_ROOM: std::cell::RefCell<std::collections::HashMap<&'static str, (f32, f32, f32)>> = Default::default();
+}
+
+/// Whether a menu under a trigger at `top`..`bottom` of a `window_h` high
+/// window opens upwards, and its height: below unless it does not fit there
+/// and there is more room above; at most [`MENU_MAX_H`], at most the room.
+pub fn menu_fit(top: f32, bottom: f32, window_h: f32) -> (bool, f32) {
+    let below = window_h - bottom - MENU_MARGIN;
+    let above = top - MENU_MARGIN;
+    let up = below < MENU_MAX_H && above > below;
+    let room = if up { above } else { below };
+    (up, room.min(MENU_MAX_H).max(MENU_MIN_H))
+}
+
+/// `trigger` with a long dropdown menu (`items` adds its entries): it opens
+/// where there is room and scrolls past [`menu_fit`]'s height. `key` names
+/// the trigger (its place is remembered from the last frame).
+pub fn fitted_dropdown(
+    key: &'static str,
+    trigger: gpui_kit::component::button::Button,
+    items: impl Fn(gpui_kit::component::menu::PopupMenu, &mut Window, &mut Context<gpui_kit::component::menu::PopupMenu>) -> gpui_kit::component::menu::PopupMenu + 'static,
+) -> AnyElement {
+    use gpui_kit::base::ElementExt as _;
+    use gpui_kit::component::menu::DropdownMenu as _;
+    let fit = |k: &str| MENU_ROOM.with(|m| m.borrow().get(k).copied()).map(|(t, b, h)| menu_fit(t, b, h));
+    let up = fit(key).is_some_and(|(up, _)| up);
+    let anchor = if up { Anchor::BottomLeft } else { Anchor::TopLeft };
+    let menu = trigger.dropdown_menu_with_anchor(anchor, move |menu, window, cx| {
+        let h = fit(key).map(|(_, h)| h).unwrap_or(MENU_MAX_H);
+        items(menu.max_h(px(h)).scrollable(true), window, cx)
+    });
+    div()
+        .flex_shrink_0()
+        .relative()
+        .child(menu)
+        .on_prepaint(move |b, window, _| {
+            let room = (b.top().as_f32(), b.bottom().as_f32(), window.viewport_size().height.as_f32());
+            MENU_ROOM.with(|m| m.borrow_mut().insert(key, room));
+            // Drawn for the other side (first frame, the trigger moved): draw
+            // again, so the menu opens where there is room.
+            if up != menu_fit(room.0, room.1, room.2).0 {
+                window.refresh();
+            }
+        })
+        .into_any_element()
+}
+
+/// Every button: the toolkit's at the one button size (crate::theme::BUTTON_H
+/// high, BUTTON_PAD_X either side, at least BUTTON_MIN_W wide with a label,
+/// an ICON_BUTTON square with only an icon, BUTTON_RADIUS corners, the
+/// toolkit's text_sm label at medium weight). Call sites never change its
+/// size, padding, corners or font (tests/layout/buttons.py --source).
 pub fn button(id: impl Into<gpui_kit::ElementId>) -> gpui_kit::component::button::Button {
-    gpui_kit::component::button::Button::new(id).font_weight(FontWeight::MEDIUM)
+    use crate::theme::{BUTTON_MIN_W, BUTTON_PAD_X, BUTTON_RADIUS};
+    use gpui_kit::component::Sizable as _;
+    gpui_kit::component::button::Button::new(id)
+        .with_size(gpui_kit::component::Size::Medium)
+        .label_box(px(BUTTON_PAD_X), px(BUTTON_MIN_W))
+        .rounded(px(BUTTON_RADIUS))
+        .font_weight(FontWeight::MEDIUM)
+}
+
+/// A button in a fill of its own (a dialog's red destructive action, an
+/// instance's Open in the instance colour), which the toolkit's variants do
+/// not give: the one button box of crate::ui::button (BUTTON_H, BUTTON_PAD_X,
+/// BUTTON_MIN_W, BUTTON_RADIUS, text_sm at medium weight), reported to the
+/// layout test as a labelled button (`LAYOUT btn label …`).
+pub fn solid_button(id: impl Into<gpui_kit::ElementId>, label: SharedString, bg: Hsla, fg: Hsla, on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
+    use crate::theme::{BUTTON_H, BUTTON_MIN_W, BUTTON_PAD_X, BUTTON_RADIUS};
+    let id = id.into();
+    let probe = cfg!(debug_assertions) && gpui_kit::component::button::LAYOUT_PROBE.load(std::sync::atomic::Ordering::Relaxed);
+    let name = format!("{id:?}");
+    h_flex()
+        .id(id)
+        .relative()
+        .flex_shrink_0()
+        .h(px(BUTTON_H))
+        .min_w(px(BUTTON_MIN_W))
+        .px(px(BUTTON_PAD_X))
+        .justify_center()
+        .items_center()
+        .rounded(px(BUTTON_RADIUS))
+        .bg(bg)
+        .text_color(fg)
+        .text_sm()
+        .font_weight(FontWeight::MEDIUM)
+        .whitespace_nowrap()
+        .cursor_pointer()
+        .hover(|d| d.opacity(0.9))
+        .child(label)
+        .when(probe, move |d| {
+            d.child(
+                div().absolute().inset_0().child(
+                    canvas(
+                        move |b, window, _| {
+                            let (l, r) = (f32::from(b.origin.x), f32::from(b.origin.x + b.size.width));
+                            let (t, bt) = (f32::from(b.origin.y), f32::from(b.origin.y + b.size.height));
+                            let fs = 0.875 * f32::from(window.rem_size());
+                            eprintln!("LAYOUT btn label {l:.2} {r:.2} {t:.2} {bt:.2} {fs:.2} {name}");
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .size_full(),
+                ),
+            )
+        })
+        .on_click(on_click)
 }
 
 /// A bar of coloured parts in a rounded track (the disk's PostgreSQL,
@@ -1411,6 +1712,9 @@ pub fn refresh_button(id: &'static str, busy: bool, window: &mut Window, on: imp
     use gpui_kit::component::Disableable as _;
     let now = std::time::Instant::now();
     let turn = std::time::Duration::from_secs_f32(REFRESH_TURN);
+    // Reduce motion: upright (and not clickable) while it reads, no frames
+    // asked for, and clickable again as soon as the reading ended.
+    let motion = !reduce_motion();
     let start = SPINS.with(|s| {
         let mut s = s.borrow_mut();
         if busy {
@@ -1421,6 +1725,10 @@ pub fn refresh_button(id: &'static str, busy: bool, window: &mut Window, on: imp
         let stop = match stop {
             Some(t) => t,
             None if busy => return Some(start),
+            None if !motion => {
+                s.remove(id);
+                return None;
+            }
             None => {
                 // Busy no more: on at least one turn, to the end of this one.
                 let e = now.duration_since(start).as_secs_f32().max(REFRESH_TURN);
@@ -1436,8 +1744,8 @@ pub fn refresh_button(id: &'static str, busy: bool, window: &mut Window, on: imp
             Some(start)
         }
     });
-    let angle = start.map(|t| (now.duration_since(t).as_secs_f32() % REFRESH_TURN) / REFRESH_TURN * std::f32::consts::TAU).unwrap_or(0.);
-    if start.is_some() {
+    let angle = start.filter(|_| motion).map(|t| (now.duration_since(t).as_secs_f32() % REFRESH_TURN) / REFRESH_TURN * std::f32::consts::TAU).unwrap_or(0.);
+    if start.is_some() && motion {
         window.request_animation_frame();
     }
     button(id)
@@ -1477,7 +1785,7 @@ pub fn open_sentient_button(id: &'static str, serving: bool, on_click: impl Fn(&
         div()
             .id(SharedString::from(format!("{id}-why")))
             .child(button(id).outline().label("Open SENTIENT").disabled(true))
-            .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("SENTIENT is stopped. Start it first.").build(w, cx))
+            .tooltip(crate::ui::tooltip("SENTIENT is stopped. Start it first."))
             .into_any_element()
     }
 }
@@ -1569,17 +1877,14 @@ pub fn layout_probe(name: &'static str) -> impl IntoElement {
 // Skeletons: a page's final layout while its data loads
 // ---------------------------------------------------------------------------
 
-/// Motion off: static placeholders (SPM_REDUCED_MOTION, or GNOME/KDE's
-/// "reduce animations" when it can be read).
+/// Motion off: static placeholders. The same answer as [`reduce_motion`]
+/// (the desktop's choice, SPM_REDUCED_MOTION, or a software renderer):
+/// the placeholders' shimmer once asked for every frame on its own, also
+/// in a virtual machine without a GPU, where each frame is drawn on the
+/// processor (the 2026-11-18 rc5 VM pass: Statistics took 3 of 4
+/// processors while its Server card loaded).
 pub(crate) fn reduced_motion() -> bool {
-    static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *R.get_or_init(|| {
-        std::env::var_os("SPM_REDUCED_MOTION").is_some()
-            || sentient_installer_core::host::host_command("gsettings")
-                .args(["get", "org.gnome.desktop.interface", "enable-animations"])
-                .output()
-                .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "false")
-    })
+    reduce_motion()
 }
 
 /// A placeholder block of `w` × `h` in the muted surface tint, with the
@@ -1783,16 +2088,13 @@ pub enum RowMenuItem {
 }
 
 /// A row's actions behind the three dots: the outlined 28 px button with
-/// the 8 px radius that every list row in SPM uses (Instances, Backup…),
+/// the button radius that every list row in SPM uses (Instances, Backup…),
 /// never a bare chevron.
 pub fn row_menu(id: impl Into<SharedString>, tip: &'static str, disabled: bool, items: Vec<RowMenuItem>) -> impl IntoElement {
     use gpui_kit::component::{Disableable as _, menu::{DropdownMenu as _, PopupMenuItem}};
     let items = std::rc::Rc::new(items);
     button(gpui_kit::ElementId::Name(id.into()))
         .outline()
-        .w(px(28.))
-        .h(px(28.))
-        .rounded(px(8.))
         .icon(gpui_kit::component::Icon::new(gpui_kit::component::IconName::Ellipsis).size(px(18.)))
         .tooltip(tip)
         .disabled(disabled)
@@ -1834,12 +2136,59 @@ pub fn row_menu(id: impl Into<SharedString>, tip: &'static str, disabled: bool, 
 // ---------------------------------------------------------------------------
 
 /// Every field 260 px wide (its unit slot inside it), the current value
-/// 170 px, 18 px between the columns; controls 40 px tall.
+/// 170 px, 18 px between the columns; every control (field, chips,
+/// switch) the standard control height ([`control_h`]).
 pub const FIELD_W: f32 = 260.;
 pub const UNIT_W: f32 = 64.;
 pub const CURRENT_W: f32 = 170.;
 pub const COL_GAP: f32 = 18.;
-pub const CONTROL_H: f32 = 40.;
+/// The one control height in SPM: the toolkit's own input and button at
+/// their default size (`Input::new`, `button(..)`: `Size::Medium`, 2 rem,
+/// 28 px on screen), which every form and page header uses (Add server,
+/// Setup, the database password, Statistics' range and Refresh). Taken
+/// from the toolkit, never a number of our own; the settings field,
+/// chips, switch and every segmented control are [`input_box`]es.
+/// tests/layout/rows.py holds every control sharing a row to it, and
+/// tests/layout/inputs.sh keeps size overrides off inputs and buttons.
+pub fn control_h() -> Length {
+    use gpui_kit::component::StyleSized as _;
+    let mut d = div().input_h(gpui_kit::component::Size::Medium);
+    d.style().size.height.expect("the toolkit's input sets a height")
+}
+
+#[cfg(test)]
+mod control_h_tests {
+
+    #[test]
+    fn a_renderer_on_the_processor_is_known_also_without_dxgi_flag() {
+        // The rc4 VM: DXGI's Basic Render Driver, flag not set, vendor 0x1414.
+        assert!(super::software_renderer(false, "Microsoft Basic Render Driver", "Unknown Vendor (ID: 0x1414)"));
+        assert!(super::software_renderer(false, "llvmpipe (LLVM 17.0.6, 256 bits)", "llvmpipe"));
+        assert!(super::software_renderer(true, "anything", ""));
+        assert!(!super::software_renderer(false, "NVIDIA GeForce RTX 4070", "NVIDIA Corporation"));
+        assert!(!super::software_renderer(false, "Intel(R) UHD Graphics 770", "Intel Corporation"));
+        assert!(!super::software_renderer(false, "Red Hat VirtIO GPU DOD controller", "Unknown Vendor (ID: 0x1AF4)"));
+    }
+
+    use super::control_h;
+    use gpui_kit::{rems, Length};
+
+    /// The standard control height is the toolkit's input and button at
+    /// their default size, 2 rem (28 px on screen; tests/layout/rows.py and
+    /// inputs.py hold every control to that number, so a change here
+    /// changes them too).
+    #[test]
+    fn control_height_is_the_toolkits_default_input_height() {
+        assert_eq!(control_h(), Length::from(rems(2.)));
+    }
+}
+
+/// A box the standard control height ([`control_h`]), for a control drawn
+/// here rather than by the toolkit: the settings field around its Input
+/// and unit slot, the chips, the switch, a segmented choice.
+pub fn input_box() -> Div {
+    h_flex().h(control_h())
+}
 /// Below this window width a row stacks: label, field, current value.
 pub const ROW_STACK_W: f32 = 820.;
 
@@ -1865,7 +2214,8 @@ pub fn unit_word(unit: &str) -> &'static str {
 }
 
 /// A field: the input, 260 px with its 64 px unit slot inside the box (a
-/// line before it, the raised surface, muted 12 px text), 40 px tall; a
+/// line before it, the raised surface, muted 12 px text), the standard control height
+/// with the theme's input radius; a
 /// 1 px red border when `problem` is set, with the message in one 12 px
 /// red line under it. Reports `field-input` (the box) and `field-slot`.
 pub fn field_input(theme: &Theme, state: &Entity<gpui_kit::component::input::InputState>, slot: Option<Slot>, problem: Option<String>, mask: bool, window: &Window, cx: &App) -> Div {
@@ -1888,11 +2238,10 @@ pub fn field_input(theme: &Theme, state: &Entity<gpui_kit::component::input::Inp
         .w(px(FIELD_W))
         .flex_shrink_0()
         .child(
-            h_flex()
+            input_box()
                 .relative()
                 .w_full()
-                .h(px(CONTROL_H))
-                .rounded(px(8.))
+                .rounded(theme.radius)
                 .border_1()
                 .border_color(border)
                 .bg(theme.background)
@@ -1904,13 +2253,13 @@ pub fn field_input(theme: &Theme, state: &Entity<gpui_kit::component::input::Inp
         .when_some(problem, |d, p| d.child(div().text_size(px(12.)).text_color(theme.danger).whitespace_nowrap().overflow_hidden().text_ellipsis().child(p)))
 }
 
-/// A choice of a few values filling the field column, 40 px tall.
+/// A choice of a few values filling the field column, the standard control height.
 pub fn chips(theme: &Theme, id: &str, items: &[&str], selected: Option<usize>, pick: std::rc::Rc<dyn Fn(usize, &mut Window, &mut App)>) -> Div {
-    h_flex()
+    input_box()
+        .relative()
         .w(px(FIELD_W))
         .flex_shrink_0()
-        .h(px(CONTROL_H))
-        .rounded(px(8.))
+        .rounded(theme.radius)
         .border_1()
         .border_color(theme.input)
         .overflow_hidden()
@@ -1927,54 +2276,62 @@ pub fn chips(theme: &Theme, id: &str, items: &[&str], selected: Option<usize>, p
                 .justify_center()
                 .px_1()
                 .when(i > 0, |d| d.border_l_1().border_color(theme.input))
-                .text_size(px(13.))
+                .text_sm()
                 .whitespace_nowrap()
                 .overflow_hidden()
                 .cursor_pointer()
                 .when(on, |d| d.bg(theme.list_active).text_color(theme.primary).font_weight(FontWeight::MEDIUM))
-                .when(!on, |d| d.text_color(theme.muted_foreground).hover(|d| d.bg(theme.secondary)))
+                .when(!on, |d| d.text_color(theme.muted_foreground).hover(|d| d.bg(theme.list_hover)))
                 .child(label.to_string())
                 .on_click(move |_, window, cx| pick(i, window, cx))
         }))
+        .child(layout_probe("field-chips"))
 }
 
-/// On or off in the field column: the switch and its word, 40 px tall.
+/// On or off in the field column: the switch and its word, the standard control height.
 pub fn toggle(theme: &Theme, id: impl Into<ElementId>, on: bool, note: Option<&'static str>, flip: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Div {
-    h_flex()
+    input_box()
+        .relative()
         .w(px(FIELD_W))
         .flex_shrink_0()
-        .h(px(CONTROL_H))
         .gap(px(10.))
         .items_center()
         .child(gpui_kit::component::switch::Switch::new(id).checked(on).on_click(flip))
         .child(div().text_sm().child(if on { "On" } else { "Off" }))
         .when_some(note, |r, n| r.child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(n)))
+        .child(layout_probe("field-control"))
 }
 
-/// The current value column: a small CURRENT caption and the value in
-/// words, cut with an ellipsis and whole in its tooltip.
+/// The current value column, one line on the field's centre line: a muted
+/// "Current" caption and the value in the body text, cut with an
+/// ellipsis and whole in its tooltip. the standard control height beside the field, its
+/// own height when the row is stacked. Reports `current-cell`.
 pub fn current_cell(theme: &Theme, id: impl Into<SharedString>, text: Option<String>) -> Div {
     let id: SharedString = id.into();
-    v_flex()
+    h_flex()
+        .relative()
         .w(px(CURRENT_W))
         .flex_shrink_0()
         .min_w_0()
-        .pt(px(10.))
-        .gap(px(2.))
+        .when(!stacked(), |d| d.h(control_h()))
+        .gap(px(6.))
+        .items_center()
         .when_some(text, |d, t| {
             let tip: SharedString = t.clone().into();
-            d.child(div().text_size(px(11.)).text_color(theme.muted_foreground).opacity(0.8).child("CURRENT")).child(
+            d.child(div().flex_shrink_0().text_size(px(12.)).text_color(theme.muted_foreground).child("Current")).child(
                 div()
                     .id(SharedString::from(format!("cur-{id}")))
-                    .text_size(px(13.))
-                    .text_color(theme.muted_foreground)
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .text_ellipsis()
                     .child(t)
-                    .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx)),
+                    .tooltip(crate::ui::tooltip(tip.clone())),
             )
         })
+        .child(layout_probe("current-cell"))
 }
 
 /// The "Restart" pill beside a setting's name.
@@ -2010,19 +2367,24 @@ pub fn setting_row(theme: &Theme, r: SettingRow, cx: &App) -> Div {
     let stacked = stacked();
     let tint = theme.primary.opacity(if crate::theme::is_dark(cx) { 0.18 } else { 0.12 });
     let label = r.label.clone();
+    // The name's line is a control tall beside the field, so the name, its
+    // (i), the field and the current value share one centre line; the
+    // description runs on under it.
     let lab = v_flex()
         .flex_1()
         .min_w_0()
         .gap(px(2.))
-        .when(!stacked, |d| d.pt(px(9.)))
         .child(
             h_flex()
+                .relative()
+                .when(!stacked, |d| d.min_h(control_h()))
                 .gap(px(6.))
                 .items_center()
                 .min_w_0()
                 .child(div().min_w_0().text_sm().font_weight(FontWeight::MEDIUM).when(r.changed, |d| d.text_color(theme.primary)).child(label.clone()))
                 .when_some(r.help, |d, h| d.child(info(SharedString::from(format!("help-{label}")), h.into())))
-                .when(r.restart, |d| d.child(restart_pill(cx))),
+                .when(r.restart, |d| d.child(restart_pill(cx)))
+                .child(layout_probe("setting-label")),
         )
         .when_some(r.desc, |d, t| d.child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(t)));
     let current = (!r.wide).then(|| current_cell(theme, label.clone(), r.current));
@@ -2036,7 +2398,20 @@ pub fn setting_row(theme: &Theme, r: SettingRow, cx: &App) -> Div {
         .when(r.changed, |d| d.bg(linear_gradient(90., linear_color_stop(tint, 0.), linear_color_stop(tint.opacity(0.), 0.6))))
         .child(lab)
         .child(if r.wide && !stacked { h_flex().flex_shrink_0().w(px(FIELD_W + COL_GAP + CURRENT_W)).child(r.control) } else { h_flex().flex_shrink_0().child(r.control) })
-        .children(current.map(|c| if stacked { c.pt_0() } else { c }))
+        .children(current)
+}
+
+/// A plain value in a row's control column: body text on the name's line
+/// (a line the standard control height, the text centred in it), its own
+/// height when the row is stacked.
+pub fn row_text(text: impl Into<SharedString>) -> Div {
+    div().when(!stacked(), |d| d.min_h(control_h()).flex().items_center()).text_sm().child(text.into())
+}
+
+/// Something smaller than a control beside one in a row (a Reset link):
+/// centred on the control's line.
+pub fn on_control_line(el: impl IntoElement) -> Div {
+    div().h(control_h()).flex().items_center().child(el)
 }
 
 impl SettingRow {
@@ -2073,6 +2448,12 @@ pub fn stacked() -> bool {
 /// The settings card's tabs: on top, each with its count of changes (red
 /// when it holds a field that is not valid); they wrap on a narrow window.
 pub fn card_tabs(theme: &Theme, id: &str, titles: &[&'static str], active: usize, badges: &[(usize, bool)], pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
+    card_tabs_locked(theme, id, titles, active, badges, &[], pick)
+}
+
+/// [`card_tabs`], a small lock after the title of each tab in `locked`
+/// (its values are set elsewhere: the gateway's SENTIENT-owned tabs).
+pub fn card_tabs_locked(theme: &Theme, id: &str, titles: &[&'static str], active: usize, badges: &[(usize, bool)], locked: &[bool], pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
     h_flex()
         .flex_wrap()
         .gap(px(4.))
@@ -2098,6 +2479,9 @@ pub fn card_tabs(theme: &Theme, id: &str, titles: &[&'static str], active: usize
                 .text_color(if on { theme.primary } else { theme.muted_foreground })
                 .when(!on, |d| d.hover(|d| d.text_color(theme.foreground)))
                 .child(*title)
+                .when(locked.get(i).copied().unwrap_or(false), |d| {
+                    d.child(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Lock).size(px(13.)).text_color(theme.muted_foreground))
+                })
                 .when(n > 0 || bad, |d| {
                     d.child(
                         div()
@@ -2221,15 +2605,14 @@ pub fn pending_bar(
                             .overflow_hidden()
                             .text_ellipsis()
                             .child(line)
-                            .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx)),
+                            .tooltip(crate::ui::tooltip(tip.clone())),
                     )
                 }),
         )
-        .child(probed(button(SharedString::from(format!("{id}-discard"))).outline().h(px(CONTROL_H)).label("Discard").on_click(on_discard)))
+        .child(probed(button(SharedString::from(format!("{id}-discard"))).outline().label("Discard").on_click(on_discard)))
         .child(probed(
             button(SharedString::from(format!("{id}-apply")))
                 .primary()
-                .h(px(CONTROL_H))
                 .label(if restart { "Apply and restart" } else { "Apply" })
                 .disabled(invalid > 0 || !can_apply)
                 .on_click(on_apply),
@@ -2312,4 +2695,27 @@ pub fn ask_before_leaving(scope: Option<String>, window: &mut Window, cx: &mut A
 /// Screens: the leave prompt with a canned list (SPM_DEBUG_SETTINGS_PENDING=leave).
 pub fn debug_leave_prompt(scope: Option<String>, window: &mut Window, cx: &mut App) {
     ask_before_leaving(scope, window, cx, std::rc::Rc::new(|_, _| {}));
+}
+
+#[cfg(test)]
+mod menu_fit_tests {
+    use super::{MENU_MAX_H, menu_fit};
+
+    #[test]
+    fn a_long_menu_opens_where_there_is_room_and_fits_there() {
+        // The rc1 VM: 1920x1080 at 150 % (720 logical), the version picker
+        // near the bottom of the Update page. It opens upwards, within the window.
+        let (up, h) = menu_fit(497., 525., 720.);
+        assert!(up);
+        assert!(h <= MENU_MAX_H && h <= 497. - 16.);
+        // Plenty of room below: below, at the full height.
+        assert_eq!(menu_fit(100., 128., 900.), (false, MENU_MAX_H));
+        // Little room either side: the larger side, no taller than its room.
+        let (up, h) = menu_fit(180., 208., 420.);
+        assert!(!up);
+        assert_eq!(h, 420. - 208. - 16.);
+        let (up, h) = menu_fit(250., 278., 420.);
+        assert!(up);
+        assert_eq!(h, 250. - 16.);
+    }
 }

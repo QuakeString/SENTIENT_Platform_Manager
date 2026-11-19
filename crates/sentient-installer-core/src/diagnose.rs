@@ -448,8 +448,22 @@ pub fn collect(error: &str, lines: &[String], cache_dir: Option<&Path>) -> Evide
         if let Some((_, s)) = run("wsl.exe --status") {
             ev.windows.push(format!("wsl --status: {}", s.lines().take(6).collect::<Vec<_>>().join(" | ")));
         }
+        // Which way to turn WSL on: only a wsl.exe that lists
+        // --no-distribution in its help takes `wsl --install --no-distribution`
+        // (the inbox wsl.exe of older Windows 10 builds does not).
+        if let Some((_, s)) = run("wsl.exe --help") {
+            let knows = s.replace('\0', "").contains("--no-distribution");
+            ev.windows.push(format!("{}{}", NO_DISTRIBUTION_MARK, if knows { "yes" } else { "no" }));
+        }
         if let Some((_, s)) = run("wsl.exe -l -v") {
-            ev.windows.push(format!("wsl -l -v: {}", s.replace('\0', "").lines().take(6).collect::<Vec<_>>().join(" | ")));
+            let s = s.replace('\0', "");
+            // Windows without the WSL feature: the old wsl.exe prints its help.
+            let lower = s.to_ascii_lowercase();
+            if lower.contains("usage: wsl.exe") || lower.contains("copyright (c) microsoft") {
+                ev.windows.push("wsl -l -v: WSL is not installed".to_string());
+            } else {
+                ev.windows.push(format!("wsl -l -v: {}", s.lines().take(6).collect::<Vec<_>>().join(" | ")));
+            }
         }
         if let Some((_, s)) = run("Get-Service -Name 'SENTIENT*','postgresql*','sentient*' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name + ' ' + $_.Status }") {
             ev.windows.extend(s.lines().map(|l| format!("service: {l}")));
@@ -528,6 +542,7 @@ pub const RULES: &[Rule] = &[
     Rule { id: "ssh-network", matches: ssh_network },
     Rule { id: "auth-cancelled", matches: auth_cancelled },
     Rule { id: "not-admin", matches: not_admin },
+    Rule { id: "cwd-invalid", matches: cwd_invalid },
     Rule { id: "win-replace-file", matches: win_replace_file },
     Rule { id: "pg-old-major", matches: pg_old_major },
     Rule { id: "port-in-use", matches: port_in_use },
@@ -540,6 +555,7 @@ pub const RULES: &[Rule] = &[
     Rule { id: "clickhouse-memory", matches: clickhouse_memory },
     Rule { id: "clickhouse-limits", matches: clickhouse_limits },
     Rule { id: "wsl-restart", matches: wsl_restart },
+    Rule { id: "wsl-vm-timeout", matches: wsl_vm_timeout },
     Rule { id: "wsl-missing", matches: wsl_missing },
     Rule { id: "wsl-stopped", matches: wsl_stopped },
     Rule { id: "service-failed", matches: service_failed },
@@ -727,6 +743,18 @@ fn not_admin(_: &Evidence, t: &str) -> Option<Diagnosis> {
         "The account the Platform Manager uses on this server is not an administrator.",
         "Its work there (services, databases, files) needs administrator rights, so the server refused it.",
         vec![steps("On the server, add that account to the Administrators group (Windows) or give it sudo rights (Linux); or edit the instance to sign in with an administrator account. Then Refresh.")],
+    )
+}
+
+fn cwd_invalid(_: &Evidence, t: &str) -> Option<Diagnosis> {
+    if !has(t, &["The current directory is invalid"]) {
+        return None;
+    }
+    diag(
+        "cwd-invalid",
+        "The Platform Manager was started from a folder its administrator steps cannot reach.",
+        "A program run during the step had no working folder: the folder the Platform Manager was started from is gone or is on a drive the administrator session does not have (a mapped network drive, a removed USB stick, a deleted or zip-extracted folder). Here initdb could not run postgres.exe -V, so it said postgres was not found although it is there.",
+        vec![steps("Close the Platform Manager, start it again from the Start menu or the desktop shortcut (or copy the installer to a folder on this computer, such as Downloads, and run it from there), then run the step again.")],
     )
 }
 
@@ -988,26 +1016,66 @@ fn clickhouse_limits(ev: &Evidence, t: &str) -> Option<Diagnosis> {
 
 /// WSL turned on in this run: Windows finishes it only after a restart.
 fn wsl_restart(_: &Evidence, t: &str) -> Option<Diagnosis> {
-    if !has(t, &["A restart is required to finish enabling it", "restart is required to finish", "The requested operation requires a reboot", "ERROR_SUCCESS_REBOOT_REQUIRED"]) {
+    if !has(t, &["must restart to finish turning on WSL", "A restart is required to finish enabling it", "restart is required to finish", "The requested operation requires a reboot", "ERROR_SUCCESS_REBOOT_REQUIRED"]) {
         return None;
     }
     diag(
         "wsl-restart",
         "Windows needs a restart to finish turning on WSL.",
-        "ClickHouse runs in Docker inside WSL2 on Windows; WSL was turned on just now and becomes active after a restart.",
+        "On Windows, Docker (and the ClickHouse of PostgreSQL + ClickHouse) runs inside WSL 2; WSL was turned on just now and becomes active after a restart.",
         vec![steps("Restart Windows. Setup carries on by itself after you sign in again (the install continues where it stopped); if it does not, open SENTIENT Setup and Retry.")],
     )
 }
 
-fn wsl_missing(_: &Evidence, t: &str) -> Option<Diagnosis> {
-    if !has(t, &["Windows Subsystem for Linux is not installed", "WSL is not installed", "Windows Subsystem for Linux has no installed distributions", "wsl.exe' is not recognized", "0x8007019e", "WSL_E_WSL_OPTIONAL_COMPONENT_REQUIRED"]) {
+/// The support details' line saying whether this wsl.exe takes
+/// `--install --no-distribution` ("yes" or "no").
+const NO_DISTRIBUTION_MARK: &str = "wsl --install --no-distribution known: ";
+
+/// WSL 2's virtual machine did not answer in time (HCS_E_CONNECTION_TIMEOUT):
+/// WSL is installed and works, its VM was slow to start, typically the
+/// first start right after the WSL 2 kernel was installed, or on a busy
+/// computer. Retrying is the fix, not installing WSL.
+fn wsl_vm_timeout(_: &Evidence, t: &str) -> Option<Diagnosis> {
+    if !has(t, &["a response was not received from the virtual machine or container", "HCS_E_CONNECTION_TIMEOUT", "0x80370109"]) {
         return None;
     }
     diag(
+        "wsl-vm-timeout",
+        "WSL 2's virtual machine did not answer in time.",
+        "WSL is installed. Its virtual machine was slow to start, which happens the first time it starts after the WSL 2 kernel was installed, or when the computer is busy.",
+        vec![
+            steps("Retry: Setup carries on where it stopped."),
+            cmd("If it happens again, stop WSL, then Retry", "wsl --shutdown"),
+            steps("Still failing: restart Windows, then Retry."),
+        ],
+    )
+}
+
+fn wsl_missing(_: &Evidence, t: &str) -> Option<Diagnosis> {
+    // "has no installed distributions" is a working WSL without a distro:
+    // not a missing WSL.
+    if !has(t, &["Windows Subsystem for Linux is not installed", "WSL is not installed", "wsl.exe' is not recognized", "0x8007019e", "WSL_E_WSL_OPTIONAL_COMPONENT_REQUIRED"]) {
+        return None;
+    }
+    // `wsl --install --no-distribution` only where this wsl.exe is known to
+    // take it; an inbox wsl.exe gets the Windows features and the kernel MSI.
+    let knows = t.contains(&format!("{NO_DISTRIBUTION_MARK}yes"));
+    let fixes = if knows {
+        vec![cmd("Install it (as administrator), then restart Windows", "wsl --install --no-distribution"), steps("After the restart, Retry.")]
+    } else {
+        vec![
+            cmd(
+                "Turn on the Windows features (as administrator), then restart Windows",
+                "dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart && dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart",
+            ),
+            steps(format!("After the restart, install Microsoft's WSL 2 kernel ({}) and Retry; Setup also does both when you Retry.", crate::wsl::KERNEL_MSI_X64)),
+        ]
+    };
+    diag(
         "wsl-missing",
         "WSL (the Windows Subsystem for Linux) is not installed.",
-        "ClickHouse runs in Docker inside WSL2 on Windows.",
-        vec![cmd("Install it (as administrator), then restart Windows", "wsl --install --no-distribution"), steps("After the restart, Retry.")],
+        "On Windows, Docker (and the ClickHouse of PostgreSQL + ClickHouse) runs inside WSL 2.",
+        fixes,
     )
 }
 
@@ -1421,6 +1489,42 @@ mod tests {
     fn wsl_needing_a_restart_is_named() {
         let ev = Evidence::from_text("WSL isn't active yet. A restart is required to finish enabling it.", &[]);
         assert_eq!(diagnose(&ev).id, "wsl-restart");
+        // Setup's own words, also when the support details say WSL is not installed yet.
+        let ev = Evidence::from_text("Windows must restart to finish turning on WSL 2.\nWSL is not installed", &[]);
+        assert_eq!(diagnose(&ev).id, "wsl-restart");
+    }
+
+    #[test]
+    fn a_wsl_vm_timeout_is_a_retry_not_a_missing_wsl() {
+        // rc4 on the Windows 10 19044 test VM: the first `wsl --import` after
+        // the kernel MSI, with `wsl -l -v` in the support details.
+        let lines = vec![
+            ">> Installing the WSL 2 kernel".to_string(),
+            ">> Creating the SENTIENT WSL distro".to_string(),
+            "The operation timed out because a response was not received from the virtual machine or container.".to_string(),
+            "wsl -l -v: Windows Subsystem for Linux has no installed distributions.".to_string(),
+            format!("{NO_DISTRIBUTION_MARK}no"),
+        ];
+        let d = diagnose(&Evidence::from_text("wsl --import sentient C:\\Program Files\\SENTIENT\\distro C:\\Program Files\\SENTIENT\\ubuntu.rootfs.tar.gz --version 2 failed", &lines));
+        assert_eq!(d.id, "wsl-vm-timeout");
+        assert!(!format!("{:?}", d.fixes).contains("--no-distribution"));
+        // A working WSL without a distro is not a missing WSL.
+        let ev = Evidence::from_text("wsl exited with 1", &["Windows Subsystem for Linux has no installed distributions.".to_string()]);
+        assert_ne!(diagnose(&ev).id, "wsl-missing");
+    }
+
+    #[test]
+    fn wsl_missing_names_the_command_this_wsl_exe_takes() {
+        let inbox = of("wsl exited with 1", "wsl-not-installed.txt");
+        assert_eq!(inbox.id, "wsl-missing");
+        let text = format!("{:?}", inbox.fixes);
+        assert!(!text.contains("--no-distribution"), "{text}");
+        assert!(text.contains("VirtualMachinePlatform") && text.contains("wsl_update_x64.msi"), "{text}");
+        let mut lines = fixture("wsl-not-installed.txt");
+        lines.push(format!("{NO_DISTRIBUTION_MARK}yes"));
+        let store = diagnose(&Evidence::from_text("wsl exited with 1", &lines));
+        assert_eq!(store.id, "wsl-missing");
+        assert!(format!("{:?}", store.fixes).contains("wsl --install --no-distribution"));
     }
 
     #[test]
@@ -1435,6 +1539,19 @@ mod tests {
         assert_eq!(diagnose(&ev).id, "not-admin");
         let ev = Evidence::from_text("job failed", &["Run this from an elevated prompt (Run as administrator).".to_string()]);
         assert_eq!(diagnose(&ev).id, "not-admin");
+    }
+
+    #[test]
+    fn an_unreachable_start_folder_is_named_not_a_missing_postgres() {
+        // His report (SPM 0.9.1, native Windows install started from Setup).
+        let lines: Vec<String> = [
+            "PostgreSQL already present",
+            "The current directory is invalid.",
+            "initdb: error: program \"postgres\" is needed by initdb but was not found in the same directory as \"C:/PostgreSQL/18/bin/initdb.exe\"",
+        ].iter().map(|s| s.to_string()).collect();
+        let ev = Evidence::from_text("initdb failed: The current directory is invalid. no data was returned by command \"\"C:/PostgreSQL/18/bin/postgres.exe\" -V\"", &lines);
+        let d = diagnose(&ev);
+        assert_eq!(d.id, "cwd-invalid");
     }
 
     #[test]

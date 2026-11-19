@@ -101,7 +101,15 @@ pub struct DbStatus {
     /// (crate::kept), when they could be listed.
     #[serde(default)]
     pub kept_bytes: Option<u64>,
+    /// Not read: SENTIENT is stopped (on Windows its WSL distro, which a
+    /// read never starts; distro::idle). Not a failure: the cards say
+    /// [`STOPPED`] plainly.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopped: bool,
 }
+
+/// What a card says about the database while SENTIENT is stopped.
+pub const STOPPED: &str = "SENTIENT is stopped. The database is read when it runs.";
 
 /// The size query: one row of JSON. Partitioned tables (telemetry history on
 /// stock PostgreSQL) count their partitions.
@@ -526,13 +534,45 @@ pub fn read(record: &InstallationRecord) -> DbStatus {
     }
     let record = record.clone();
     let (tx, rx) = std::sync::mpsc::channel();
+    // A read here is one on that thread too (distro::idle), and a command
+    // left out there (SENTIENT's distro stopped) makes it "stopped".
+    let carried = sentient_installer_core::distro::idle::carry();
     std::thread::spawn(move || {
-        let _ = tx.send(read_now(&record));
+        let hybrid = record.flavor() == Flavor::Clickhouse;
+        let status = carried.run(|| {
+            sentient_installer_core::distro::idle::watch(|| {
+                let st = read_now(&record);
+                // It failed: SENTIENT's database stopped (after a Stop, or
+                // Docker not started) is said plainly, not as the failure.
+                if st.pg_error.is_some() && record.engine == Engine::Docker {
+                    let services = record.platform().snapshot().services;
+                    if pg_stopped(&services, &record.stack.names().pg) {
+                        return stopped(hybrid);
+                    }
+                }
+                st
+            })
+        });
+        let _ = tx.send(status.unwrap_or_else(|| stopped(hybrid)));
     });
     rx.recv_timeout(LIMIT).unwrap_or_else(|_| DbStatus {
         pg_error: Some(format!("No answer within {} seconds.", LIMIT.as_secs())),
         ..Default::default()
     })
+}
+
+/// Whether the stack's PostgreSQL container `pg` is stopped (or the whole
+/// stack is: Docker down lists each container stopped).
+pub fn pg_stopped(services: &[crate::installation::Service], pg: &str) -> bool {
+    match services.iter().find(|s| s.name == pg) {
+        Some(s) => !s.running,
+        None => crate::stats::all_stopped(services),
+    }
+}
+
+/// The reading of a stopped SENTIENT: nothing read, and no error.
+pub fn stopped(hybrid: bool) -> DbStatus {
+    DbStatus { stopped: true, hybrid, ..Default::default() }
 }
 
 fn read_now(record: &InstallationRecord) -> DbStatus {
@@ -713,7 +753,15 @@ struct Sample {
     /// `2026-11-15`
     day: String,
     bytes: u64,
+    /// When it was read (Unix seconds). Samples from before 0.9.3 have
+    /// none and are not used: only the day was kept.
+    #[serde(default)]
+    at: Option<i64>,
 }
+
+/// The shortest real time between the first and the last sample before a
+/// rate is shown.
+const GROWTH_MIN_SECS: i64 = 24 * 3600;
 
 fn samples_path() -> PathBuf {
     crate::updates::prefs_dir().join("database-size.json")
@@ -728,7 +776,7 @@ pub fn record_size(bytes: u64) {
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let mut s = load_samples();
     s.retain(|x| x.day != today);
-    s.push(Sample { day: today, bytes });
+    s.push(Sample { day: today, bytes, at: Some(chrono::Utc::now().timestamp()) });
     s.sort_by(|a, b| a.day.cmp(&b.day));
     let keep = s.len().saturating_sub(60);
     s.drain(..keep);
@@ -740,24 +788,25 @@ pub fn record_size(bytes: u64) {
     }
 }
 
-/// Bytes a day over the last 7 days (or since the first sample, at least
-/// one day back), and over how many days that was measured.
-pub fn growth_per_day() -> Option<(i64, i64)> {
-    growth_of(&load_samples(), chrono::Local::now().date_naive())
+/// Bytes a day over about the last 7 days, and over how many whole days
+/// that was measured. None until the samples of this installation (read
+/// since `installed_at`, RFC 3339) span at least a day of real time.
+pub fn growth_per_day(installed_at: &str) -> Option<(i64, i64)> {
+    let since = chrono::DateTime::parse_from_rfc3339(installed_at).ok().map(|t| t.timestamp());
+    growth_of(&load_samples(), since)
 }
 
-fn growth_of(samples: &[Sample], today: chrono::NaiveDate) -> Option<(i64, i64)> {
-    let parse = |d: &str| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
-    let last = samples.iter().filter_map(|s| parse(&s.day).map(|d| (d, s.bytes))).max_by_key(|(d, _)| *d)?;
-    let week_ago = today - chrono::Duration::days(7);
-    // The oldest sample within the week, else the newest before it.
-    let base = samples
-        .iter()
-        .filter_map(|s| parse(&s.day).map(|d| (d, s.bytes)))
-        .filter(|(d, _)| *d < last.0)
-        .min_by_key(|(d, _)| (*d - week_ago).num_days().abs())?;
-    let days = (last.0 - base.0).num_days();
-    (days >= 1).then(|| ((last.1 as i64 - base.1 as i64) / days, days))
+fn growth_of(samples: &[Sample], since: Option<i64>) -> Option<(i64, i64)> {
+    // Only readings with their time, and none from an earlier installation
+    // (its database is not this one).
+    let timed: Vec<(i64, u64)> = samples.iter().filter_map(|s| Some((s.at?, s.bytes))).filter(|(t, _)| since.is_none_or(|from| *t >= from)).collect();
+    let last = *timed.iter().max_by_key(|(t, _)| *t)?;
+    let week_before = last.0 - 7 * 86_400;
+    // The sample nearest a week before the last one, at least a day before it.
+    let base = *timed.iter().filter(|(t, _)| last.0 - *t >= GROWTH_MIN_SECS).min_by_key(|(t, _)| (*t - week_before).abs())?;
+    let secs = last.0 - base.0;
+    let per_day = (last.1 as i64 - base.1 as i64) * 86_400 / secs;
+    Some((per_day, secs / 86_400))
 }
 
 /// "about 3 years", "about 9 days" until `free` is used at `per_day`.
@@ -838,6 +887,35 @@ pub fn ago_label(rfc3339: &str, now: chrono::DateTime<chrono::Local>) -> String 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_stopped_database_container_is_stopped_not_a_failure() {
+        let svc = |name: &str, running: bool| crate::installation::Service { name: name.into(), running, starting: false, detail: String::new() };
+        // After Stop on Status (the rc5 VM): both exited.
+        assert!(super::pg_stopped(&[svc("sentient", false), svc("sentient-postgres", false)], "sentient-postgres"));
+        // Only PostgreSQL down: stopped too (its failure is not news).
+        assert!(super::pg_stopped(&[svc("sentient", true), svc("sentient-postgres", false)], "sentient-postgres"));
+        // Running: a failure is a failure.
+        assert!(!super::pg_stopped(&[svc("sentient", true), svc("sentient-postgres", true)], "sentient-postgres"));
+        // Not listed: stopped only when everything listed is.
+        assert!(super::pg_stopped(&[svc("sentient", false)], "sentient-postgres"));
+        assert!(!super::pg_stopped(&[], "sentient-postgres"));
+    }
+
+    #[test]
+    fn a_stopped_reading_is_not_an_error_and_crosses_the_agent() {
+        let st = super::stopped(true);
+        assert!(st.stopped && st.hybrid);
+        assert!(st.pg_error.is_none() && st.ch_error.is_none(), "no error to show");
+        let json = serde_json::to_string(&st).unwrap();
+        assert!(json.contains("\"stopped\":true"), "{json}");
+        let back: super::DbStatus = serde_json::from_str(&json).unwrap();
+        assert!(back.stopped);
+        // An older agent's answer (no such field), and a read one: not stopped.
+        let old: super::DbStatus = serde_json::from_str(r#"{"pg":null,"pg_error":"x","ch":null,"ch_error":null,"hybrid":false}"#).unwrap();
+        assert!(!old.stopped);
+        assert!(!serde_json::to_string(&super::DbStatus::default()).unwrap().contains("stopped"));
+    }
 
     #[test]
     fn partition_bounds_give_the_period() {
@@ -928,11 +1006,31 @@ mod tests {
 
     #[test]
     fn growth_is_measured_over_about_a_week() {
-        let s = |d: &str, b: u64| Sample { day: d.into(), bytes: b };
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 15).unwrap();
-        let samples = vec![s("2026-11-01", 0), s("2026-11-08", 1000), s("2026-11-12", 1500), s("2026-11-15", 1700)];
-        assert_eq!(growth_of(&samples, today), Some((100, 7)));
-        assert_eq!(growth_of(&[s("2026-11-15", 1)], today), None);
-        assert_eq!(growth_of(&[s("2026-11-14", 100), s("2026-11-15", 300)], today), Some((200, 1)));
+        const D: i64 = 86_400;
+        let t0 = 1_763_000_000;
+        let s = |at: i64, b: u64| Sample { day: String::new(), bytes: b, at: Some(at) };
+        let samples = vec![s(t0, 0), s(t0 + 7 * D, 1000), s(t0 + 11 * D, 1500), s(t0 + 14 * D, 1700)];
+        assert_eq!(growth_of(&samples, None), Some((100, 7)));
+        assert_eq!(growth_of(&[s(t0, 1)], None), None);
+        assert_eq!(growth_of(&[s(t0, 100), s(t0 + D, 300)], None), Some((200, 1)));
+    }
+
+    #[test]
+    fn growth_needs_a_day_of_this_installation() {
+        const D: i64 = 86_400;
+        let t0 = 1_763_000_000;
+        let s = |at: Option<i64>, b: u64| Sample { day: String::new(), bytes: b, at };
+        // A database created minutes ago, read at 23:58 and again at 00:05:
+        // two calendar days, but minutes of data. No rate.
+        assert_eq!(growth_of(&[s(Some(t0), 100_000_000), s(Some(t0 + 420), 125_000_000)], Some(t0 - 600)), None);
+        // Under a day apart: still none.
+        assert_eq!(growth_of(&[s(Some(t0), 0), s(Some(t0 + D - 1), 500)], None), None);
+        // Readings from an earlier installation do not count.
+        let samples = vec![s(Some(t0 - 2 * D), 0), s(Some(t0), 100_000_000), s(Some(t0 + 600), 125_000_000)];
+        assert_eq!(growth_of(&samples, Some(t0 - 60)), None);
+        // Samples from before 0.9.3 (no time) do not count.
+        assert_eq!(growth_of(&[s(None, 0), s(Some(t0), 900)], None), None);
+        // A day and a half: "1 day", the rate scaled to the real span.
+        assert_eq!(growth_of(&[s(Some(t0), 0), s(Some(t0 + D + D / 2), 300)], None), Some((200, 1)));
     }
 }

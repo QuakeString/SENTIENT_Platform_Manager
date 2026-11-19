@@ -107,6 +107,50 @@ pub fn adopt() -> Result<String, String> {
     Ok(format!("The Platform Manager now manages the gateway {}. Nothing about it was changed.", g.name))
 }
 
+// ---------------------------------------------------------------------------
+// A remote "Install the gateway": its secrets between the two agent jobs
+// ---------------------------------------------------------------------------
+
+/// Where a staged secret (`name`) waits for the job that takes it: as
+/// root, next to the agent's job logs (the file itself root's only); a
+/// per-user agent in its own folder. `gateway-install-secrets` keeps the
+/// access token and the page's password here until `gateway-install
+/// --staged` takes them; `install-secrets` the install's passwords
+/// (crate::remote::install).
+pub(crate) fn staged_path(name: &str) -> std::path::PathBuf {
+    #[cfg(unix)]
+    {
+        if crate::rootjob::is_root() {
+            return std::path::PathBuf::from("/var/lib/sentient-platform-manager").join(name);
+        }
+        std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join(".local/share/sentient-platform-manager").join(name)
+    }
+    #[cfg(not(unix))]
+    {
+        crate::updates::prefs_dir().join(name)
+    }
+}
+
+const GATEWAY_SECRETS: &str = "gateway-install.secret";
+
+/// Keep `s` for the install job, in a file only this account reads (0600).
+pub fn stage_secrets(s: &crate::remote::GatewaySecrets) -> Result<(), String> {
+    stage_secrets_at(&staged_path(GATEWAY_SECRETS), s)
+}
+
+fn stage_secrets_at(path: &std::path::Path, s: &crate::remote::GatewaySecrets) -> Result<(), String> {
+    crate::remote::install::stage_private_at(path, s, "The access token could not be kept for the install")
+}
+
+/// What [`stage_secrets`] kept, removed as it is read.
+pub fn take_staged_secrets() -> Result<crate::remote::GatewaySecrets, String> {
+    take_staged_at(&staged_path(GATEWAY_SECRETS))
+}
+
+fn take_staged_at(path: &std::path::Path) -> Result<crate::remote::GatewaySecrets, String> {
+    crate::remote::install::take_private_at(path).ok_or_else(|| "The access token did not reach the server. Install again.".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +165,20 @@ mod tests {
         assert!(!r.is(&other));
         assert!(!r.is(&Status::default()));
         assert!(GatewayRecord::of(&Status::default()).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_secrets_are_for_this_account_and_taken_once() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("spm-gw-stage-{}", std::process::id()));
+        let path = dir.join("gateway-install.secret");
+        let s = crate::remote::GatewaySecrets { token: "Xk7pQ2mW9rTzL4vB8nYd".into(), ui_password: String::new() };
+        stage_secrets_at(&path, &s).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(take_staged_at(&path).unwrap().token, "Xk7pQ2mW9rTzL4vB8nYd");
+        assert!(!path.exists());
+        assert!(take_staged_at(&path).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

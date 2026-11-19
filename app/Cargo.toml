@@ -6,7 +6,7 @@
 
 [package]
 name = "sentient-platform-manager"
-version = "0.9.1"
+version = "0.9.3"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["The SENTIENT Authors"]
@@ -23,6 +23,7 @@ gui = ["dep:gpui-kit", "dep:ksni", "dep:tray-icon", "dep:png", "dep:notify-rust"
 winresource = "0.1"
 
 [dependencies]
+sha2 = "0.10"   # the pinned code-signing certificate (authenticode.rs)
 # Exact pin: GPUI's API changes between releases (see
 # docs/GPUI_PLATFORM_MANAGER_PLAN.md, Pinned versions).
 gpui-kit = { version = "=0.7.3", optional = true }
@@ -58,7 +59,7 @@ portable-pty = { version = "0.9", optional = true }
 
 # Database password in Windows Credential Manager (see src/secrets.rs).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Security_WinTrust", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_WinTrust", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 raw-window-handle = "0.6"
 
 # The tray (crate::tray): StatusNotifierItem over D-Bus on Linux (KDE, and

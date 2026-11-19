@@ -26,8 +26,11 @@ pub const DISTRO: &str = "sentient";
 pub mod adopt;
 pub mod docker_ops;
 pub mod hosts;
+pub mod idle;
 pub mod move_data;
 pub mod gateway_docker;
+pub mod gateway_legacy;
+pub mod port_forward;
 #[cfg(not(windows))]
 pub mod gateway_native;
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -632,6 +635,44 @@ fn shell_args(bash: &str) -> (String, Vec<String>) {
     ("wsl.exe".into(), wsl_bash_args(&docker_distro(), bash))
 }
 
+/// Program + arguments that run `argv` in `container` (`docker exec -i`),
+/// where Docker runs: on Windows `wsl.exe -d <distro> -u root --exec`
+/// (no shell in between, so nothing in `argv` is expanded; the distro's
+/// shell expanded the `$` of an argument before, see
+/// [`admin_account_cmd`]); on Linux [`shell_args`]' bash (or `sg docker`
+/// right after setup), each argument quoted. Standard input reaches the
+/// program in the container.
+pub fn docker_exec_command(container: &str, argv: &[String]) -> (String, Vec<String>) {
+    #[cfg(windows)]
+    {
+        docker_exec_args(true, &docker_distro(), false, container, argv)
+    }
+    #[cfg(not(windows))]
+    {
+        docker_exec_args(false, "", docker_needs_sg(), container, argv)
+    }
+}
+
+/// [`docker_exec_command`] for `windows` or Linux, the distro and `sg`
+/// given (unit tests build either).
+pub fn docker_exec_args(windows: bool, distro: &str, sg: bool, container: &str, argv: &[String]) -> (String, Vec<String>) {
+    if windows {
+        let mut args: Vec<String> = ["-d", distro, "-u", "root", "--exec", "docker", "exec", "-i", container].iter().map(|s| s.to_string()).collect();
+        args.extend(argv.iter().cloned());
+        return ("wsl.exe".into(), args);
+    }
+    let mut line = format!("exec docker exec -i {}", shell_quote(container));
+    for a in argv {
+        line.push(' ');
+        line.push_str(&shell_quote(a));
+    }
+    if sg {
+        ("sg".into(), vec!["docker".into(), "-c".into(), line])
+    } else {
+        ("bash".into(), vec!["-lc".into(), line])
+    }
+}
+
 /// On Linux: plain bash, or — right after `setup` added the user to the
 /// `docker` group, before they have logged out and in — `sg docker`, which
 /// applies the new group to just this command.
@@ -701,6 +742,9 @@ fn run(sink: &ProgressFn, bash: &str) -> Result<(), String> {
 fn run_stream(sink: &ProgressFn, bash: &str) -> Result<(), String> {
     let (prog, args) = shell_args(bash);
     let argrefs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    if left_out(&argrefs) {
+        return Err(format!("not run: SENTIENT's WSL distro is stopped ({bash})"));
+    }
     exec::stream(sink, &prog, &argrefs).map_err(|e| if e == "Cancelled." { e } else { format!("command failed: {bash} ({e})") })
 }
 
@@ -718,9 +762,28 @@ const RUN_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
 /// The same for quick reads and checks.
 pub(crate) const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Whether a command (`wsl.exe` arguments on Windows) is left out because
+/// it is a read and its distro is stopped: `wsl.exe -d <distro>` starts a
+/// stopped distro, and with it SENTIENT. Noted (idle::note_skipped), so a
+/// watched read says "stopped". Every command that may run in SENTIENT's
+/// distro asks this first (the test `every_distro_command_asks_left_out`).
+/// Linux: never.
+pub fn left_out(args: &[&str]) -> bool {
+    if cfg!(windows) && idle::skip(idle::is_reading(), args, idle::running) {
+        idle::note_skipped();
+        return true;
+    }
+    false
+}
+
 /// A command through the Docker shell, stopped after `limit` on Windows.
 pub(crate) fn shell_output(prog: &str, args: &[&str], limit: std::time::Duration) -> Option<(bool, Vec<u8>, Vec<u8>)> {
     if cfg!(windows) {
+        // A read does not start a stopped distro (idle): it fails, as a
+        // stopped stack's commands do.
+        if left_out(args) {
+            return None;
+        }
         sys::output_wsl(prog, args, limit)
     } else {
         let _ = limit;
@@ -804,7 +867,16 @@ pub fn is_running(http_port: u16) -> bool {
         // non-zero when the connection is refused.
         let url = format!("http://localhost:{http_port}");
         let distro = docker_distro();
-        let inside = sys::output_wsl("wsl.exe", &["-d", &distro, "-u", "root", "--", "curl", "-s", "-o", "/dev/null", "--max-time", "4", &url], std::time::Duration::from_secs(20))
+        // A read does not start a stopped distro (idle): nothing answers.
+        if idle::is_reading() && !idle::running(&distro) {
+            idle::note_skipped();
+            return false;
+        }
+        let curl: [&str; 12] = ["-d", &distro, "-u", "root", "--", "curl", "-s", "-o", "/dev/null", "--max-time", "4", &url];
+        if left_out(&curl) {
+            return false;
+        }
+        let inside = sys::output_wsl("wsl.exe", &curl, std::time::Duration::from_secs(20))
             .map(|(ok, _, _)| ok)
             .unwrap_or(false);
         // The operator's distro may have no curl: WSL forwards the port to
@@ -919,18 +991,53 @@ pub fn deploy_with(sink: ProgressFn, cfg: &DeployConfig, keep_existing: Option<b
     sink(Progress::Step { name: "Starting SENTIENT".into() });
     run_stream(&sink, &cfg.compose_cmd("up -d"))?;
 
-    sink(Progress::Step { name: "Waiting for SENTIENT to become ready".into() });
     let url = format!("http://localhost:{}", cfg.http_port);
-    for i in 0..72 {
+    sink(Progress::Step { name: format!("Waiting for SENTIENT to become ready (its first answer on {url}, up to {} minutes)", FIRST_ANSWER_SECS / 60) });
+    let started = std::time::Instant::now();
+    let mut said = 0;
+    loop {
         bail_if_cancelled!();
         if is_running(cfg.http_port) {
             sink(Progress::Done { message: format!("SENTIENT is running at {url}") });
             return Ok(());
         }
-        sink(Progress::Log { line: format!("waiting for SENTIENT to start… ({}s)", i * 5) });
+        let elapsed = started.elapsed().as_secs();
+        if elapsed >= FIRST_ANSWER_SECS {
+            break;
+        }
+        sink(Progress::Percent { value: elapsed as f32 / FIRST_ANSWER_SECS as f32 });
+        // Every 15 s: how long, and what the container is doing.
+        if elapsed >= said {
+            said = elapsed + 15;
+            let state = run_output(&format!("docker inspect -f '{{{{.State.Status}}}} {{{{.RestartCount}}}}' {} 2>/dev/null", cfg.names().app))
+                .filter(|(ok, _)| *ok)
+                .map(|(_, out)| out.trim().to_string());
+            sink(Progress::Log { line: first_answer_line(elapsed, &url, state.as_deref()) });
+        }
         std::thread::sleep(std::time::Duration::from_secs(5));
     }
-    Err("SENTIENT didn't answer in time. It may still be initializing the database.".into())
+    Err(format!(
+        "SENTIENT did not answer on {url} within {} minutes. It may still be initializing the database: its log (Logs, container {}) says what it is doing.",
+        FIRST_ANSWER_SECS / 60,
+        cfg.names().app
+    ))
+}
+
+/// How long a new install waits for SENTIENT's first answer: the first
+/// start loads its system resources into a new database, which takes
+/// minutes on a small VM (WSL 2 on a 4-core Windows 10 took over 6).
+pub const FIRST_ANSWER_SECS: u64 = 600;
+
+/// The wait's line in the log: elapsed time of the most, what it waits for,
+/// and the container's state (`docker inspect`: "running 0").
+pub fn first_answer_line(elapsed_secs: u64, url: &str, container: Option<&str>) -> String {
+    let at = |s: u64| format!("{}:{:02}", s / 60, s % 60);
+    let state = match container.and_then(|c| c.split_once(' ')) {
+        Some((status, restarts)) if restarts != "0" => format!("; container {status}, restarted {restarts} times"),
+        Some((status, _)) => format!("; container {status}"),
+        None => String::new(),
+    };
+    format!("Waiting for SENTIENT's first answer on {url}: {} of up to {}{state}", at(elapsed_secs), at(FIRST_ANSWER_SECS))
 }
 
 /// Tear down a partial/cancelled deploy: containers, network, volumes, and
@@ -1006,6 +1113,7 @@ pub fn remove_keeping_data(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), S
     if cfg.wsl_distro.is_none() {
         // The data is on the distro's disk: stop it and leave it registered.
         sink(Progress::Step { name: "Stopping the SENTIENT WSL distro (its data is kept)".into() });
+        remove_keepalive(&forwarded_ports(cfg));
         let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
         sink(Progress::Done { message: "SENTIENT was removed; its data volumes were kept.".into() });
         return Ok(());
@@ -1036,6 +1144,7 @@ pub fn uninstall(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     if cfg.wsl_distro.is_none() {
         if distro_present() {
             sink(Progress::Step { name: "Removing the SENTIENT WSL distro and all its data".into() });
+            remove_keepalive(&forwarded_ports(cfg));
             let _ = sys::output("wsl.exe", &["--terminate", DISTRO]);
             let _ = sys::output("wsl.exe", &["--unregister", DISTRO]);
         } else {
@@ -1159,18 +1268,32 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
         sink(Progress::Step { name: "Creating the SENTIENT WSL distro".into() });
         let distro_dir = install_dir.join("distro");
         std::fs::create_dir_all(&distro_dir).ok();
-        wsl_native(&sink, &[
-            "--import", DISTRO,
-            &distro_dir.to_string_lossy(),
-            &rootfs.to_string_lossy(),
-            "--version", "2",
-        ])?;
+        let (dir, tar) = (distro_dir.to_string_lossy(), rootfs.to_string_lossy());
+        let args: [&str; 6] = ["--import", DISTRO, &dir, &tar, "--version", "2"];
+        let mut attempt = 0;
+        loop {
+            match wsl_native_output(&sink, &args) {
+                Ok(()) => break,
+                // The first start of WSL 2's VM right after the kernel was
+                // installed can miss Windows' deadline: once, stop WSL and
+                // import again instead of failing the install.
+                Err((_, output)) if retry_after_vm_timeout(attempt, &output) => {
+                    sink(Progress::Log { line: VM_TIMEOUT_RETRY_LINE.into() });
+                    let _ = sys::output("wsl.exe", &["--shutdown"]);
+                    if distro_present() {
+                        let _ = sys::output("wsl.exe", &["--unregister", DISTRO]);
+                    }
+                    attempt += 1;
+                }
+                Err((e, _)) => return Err(e),
+            }
+        }
         let _ = std::fs::remove_file(&rootfs);
     }
 
     // Verify the distro actually runs a command before configuring it —
     // catches a broken import or a WSL that still needs a Windows restart.
-    if let Err(e) = distro_probe() {
+    if let Err(e) = distro_probe_patient(&sink) {
         return Err(format!(
             "The SENTIENT WSL distro isn't responding ({e}). If you just installed WSL2, restart Windows and try again; otherwise use “Clean up leftovers” and retry."
         ));
@@ -1187,13 +1310,308 @@ fn setup_windows(sink: ProgressFn, install_dir: &Path) -> Result<(), String> {
     run_stream(&sink, "[ -x /usr/bin/docker ] || (curl -fsSL https://get.docker.com | sh)")?;
 
     sink(Progress::Step { name: "Starting Docker".into() });
-    run(&sink, "systemctl enable --now docker")?;
+    // The inbox WSL 2 kernel (5.10) has no nf_tables NAT: Docker's
+    // iptables (nf_tables by default) cannot add its rules there and
+    // dockerd stops. The legacy iptables works on every WSL kernel.
+    run(&sink, IPTABLES_LEGACY_IF_NEEDED)?;
+    // Docker's networks out of WSL 2's range (ADDRESS_POOLS); the
+    // installer may have started Docker already, so it starts again.
+    run(&sink, &address_pools_cmd())?;
+    // A WSL without systemd (Windows 10 builds that cannot run the WSL
+    // package keep the inbox WSL): Docker's own init script.
+    run(&sink, DOCKER_START)?;
+    run(&sink, DOCKER_RESTART)?;
 
-    if is_ready() {
-        sink(Progress::Done { message: "Docker Engine is installed and running.".into() });
-        Ok(())
-    } else {
-        Err("Docker was installed but isn't responding yet. Try the step again.".into())
+    // dockerd takes a few seconds to answer after it was started.
+    for _ in 0..30 {
+        if is_ready() {
+            sink(Progress::Done { message: "Docker Engine is installed and running.".into() });
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    Err("Docker was installed but isn't responding yet. Try the step again.".into())
+}
+
+/// Restart Docker in the distro (systemd, or its init script).
+pub const DOCKER_RESTART: &str = "if [ -d /run/systemd/system ]; then systemctl restart docker; else service docker restart; fi";
+
+/// Docker's own address ranges in SENTIENT's distro. WSL 2 gives the
+/// distro a new 172.16.0.0/12 subnet at every boot; Docker's default
+/// networks come from that range too, so after a reboot the stack's
+/// network could overlap the distro's own (seen on spm-win10-test: WSL
+/// 172.19.128.0/20 against a compose network 172.19.0.0/16). The
+/// container's answers to Windows then stayed on its bridge, and SENTIENT
+/// answered inside the distro but not from Windows or the network.
+pub const ADDRESS_POOLS: &str = r#"{"bip": "10.213.0.1/24", "default-address-pools": [{"base": "10.214.0.0/16", "size": 24}]}"#;
+
+/// Writes ADDRESS_POOLS to /etc/docker/daemon.json unless it already sets
+/// address pools; prints "changed" when it wrote it. Passed as base64: no
+/// quotes to cross wsl.exe.
+pub fn address_pools_cmd() -> String {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(format!("{ADDRESS_POOLS}\n"));
+    format!("mkdir -p /etc/docker; if ! grep -qs default-address-pools /etc/docker/daemon.json; then echo {b64} | base64 -d > /etc/docker/daemon.json && echo changed; fi")
+}
+
+/// An existing install in SENTIENT's own distro (Windows): Docker's
+/// networks moved out of WSL 2's range (ADDRESS_POOLS) when they are not
+/// yet. The stack's containers and network are taken down (its volumes
+/// stay), Docker restarts, and the caller brings the stack up again on a
+/// new network. True when it changed something.
+#[cfg(windows)]
+pub fn pin_address_pools(sink: &ProgressFn, cfg: &DeployConfig) -> Result<bool, String> {
+    if cfg.wsl_distro.is_some() || cfg.external.is_some() {
+        return Ok(false);
+    }
+    let changed = run_output(&address_pools_cmd()).is_some_and(|(ok, out)| ok && out.contains("changed"));
+    if !changed {
+        return Ok(false);
+    }
+    sink(Progress::Log { line: "Docker's networks move out of WSL 2's address range (10.214.0.0/16)".into() });
+    if cfg.stack_defined() {
+        run_stream(sink, &cfg.compose_cmd("down --remove-orphans"))?;
+    }
+    run(sink, DOCKER_RESTART)?;
+    for _ in 0..30 {
+        if is_ready() {
+            return Ok(true);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    Err("Docker did not answer after its restart.".into())
+}
+
+/// Switch the distro to the legacy iptables when the kernel cannot do
+/// what Docker asks of nf_tables (a NAT rule with addrtype), probed with
+/// that very rule and removed again.
+pub const IPTABLES_LEGACY_IF_NEEDED: &str = "if command -v iptables-legacy >/dev/null && ! { iptables-nft -t nat -A PREROUTING -m addrtype --dst-type LOCAL -j RETURN 2>/dev/null && iptables-nft -t nat -D PREROUTING -m addrtype --dst-type LOCAL -j RETURN; }; then update-alternatives --set iptables /usr/sbin/iptables-legacy && update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy && echo 'This WSL kernel has no nf_tables NAT: Docker uses the legacy iptables'; fi";
+
+/// Start Docker in the distro: systemd when WSL booted it, else Docker's
+/// init script (the inbox WSL of older Windows 10 has no systemd).
+pub const DOCKER_START: &str = "if [ -d /run/systemd/system ]; then systemctl enable --now docker; else service docker start; fi";
+
+/// The scheduled task that keeps SENTIENT's distro (and its Docker) up.
+pub const KEEPALIVE_TASK: &str = "SENTIENT Docker";
+
+/// The TCP ports the keep-alive forwards from every address of this
+/// computer to the distro (WSL 2 forwards a published port to Windows'
+/// own localhost only). UDP (CoAP) cannot be forwarded this way.
+pub fn forwarded_ports(cfg: &DeployConfig) -> Vec<u16> {
+    let mut v = vec![cfg.http_port, cfg.mqtt_port, cfg.mqtts_port];
+    v.retain(|p| *p > 0);
+    v.dedup();
+    v
+}
+
+/// What the keep-alive task runs: the distro started (its eth0 address
+/// read, asked again for up to half a minute while the distro starts),
+/// `ports` forwarded from every address of this computer to that address
+/// (it changes at every boot), then Docker started and a process that
+/// never ends, so WSL does not stop the idle distro. A start from the
+/// Platform Manager writes the forward again once the distro is up
+/// ([`port_forward::refresh`]). The wait is `ping`: `timeout` refuses to
+/// run without a console, which a task has not.
+pub fn keepalive_command(distro: &str, ports: &[u16]) -> String {
+    let mut s = String::from("@echo off\r\nrem SENTIENT Docker keep-alive, written by the SENTIENT Platform Manager.\r\nset SENTIENT_IP=\r\nset SENTIENT_TRY=0\r\n:address\r\n");
+    s.push_str(&format!("for /f \"tokens=4\" %%i in ('wsl.exe -d {distro} -u root -- ip -4 -o addr show eth0') do for /f \"delims=/\" %%j in (\"%%i\") do set SENTIENT_IP=%%j\r\n"));
+    s.push_str(&format!("if not defined SENTIENT_IP for /f \"tokens=1\" %%i in ('wsl.exe -d {distro} -u root -- hostname -I') do set SENTIENT_IP=%%i\r\n"));
+    s.push_str("if not defined SENTIENT_IP if %SENTIENT_TRY% lss 10 (set /a SENTIENT_TRY+=1 >nul & ping -n 4 127.0.0.1 >nul & goto address)\r\n");
+    for p in ports {
+        s.push_str(&format!("netsh interface portproxy delete v4tov4 listenport={p} listenaddress=0.0.0.0 >nul 2>&1\r\n"));
+        s.push_str(&format!("if defined SENTIENT_IP netsh interface portproxy add v4tov4 listenport={p} listenaddress=0.0.0.0 connectport={p} connectaddress=%SENTIENT_IP% >nul\r\n"));
+    }
+    s.push_str(&format!("wsl.exe -d {distro} -u root -- sh -c \"{DOCKER_START}; exec sleep infinity\"\r\n"));
+    s
+}
+
+/// The firewall rule that lets other computers reach a forwarded port
+/// (no spaces: one netsh argument).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn firewall_rule(port: u16) -> String {
+    format!("name=SENTIENT-Docker-TCP-{port}")
+}
+
+/// This account as Windows names it (`computer\user`): over SSH
+/// USERDOMAIN says WORKGROUP, which schtasks cannot map.
+#[cfg(windows)]
+fn this_account() -> String {
+    sys::output("whoami.exe", &[])
+        .map(|(_, out, _)| sys::decode(&out).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(sys::account_name)
+}
+
+/// The PowerShell that registers the keep-alive task running `cmd` as
+/// `user` (S4U: no window, nobody needs to sign in). `start`: Some(delay)
+/// starts it when Windows starts, `delay` seconds after (0: at once); None
+/// gives it no trigger at all, so it runs only when the Platform Manager
+/// starts SENTIENT ([`wake_keepalive`]). `start_now` runs it at once.
+pub fn keepalive_task_script(cmd: &str, user: &str, start: Option<u32>, start_now: bool) -> String {
+    let q = |s: &str| s.replace('\'', "''");
+    let trigger = match start {
+        Some(0) => "$r.Trigger = New-ScheduledTaskTrigger -AtStartup; ".to_string(),
+        Some(d) => format!("$t = New-ScheduledTaskTrigger -AtStartup; $t.Delay = 'PT{d}S'; $r.Trigger = $t; "),
+        None => String::new(),
+    };
+    let now = if start_now { format!("Start-ScheduledTask -TaskName '{KEEPALIVE_TASK}'") } else { String::new() };
+    format!(
+        "$ErrorActionPreference='Stop'; $r = @{{ TaskName = '{KEEPALIVE_TASK}'; Action = (New-ScheduledTaskAction -Execute '{cmd}'); Principal = (New-ScheduledTaskPrincipal -UserId '{user}' -LogonType S4U -RunLevel Highest); Settings = (New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries); Force = $true }}; {trigger}Register-ScheduledTask @r | Out-Null; {now}",
+        cmd = q(cmd),
+        user = q(user),
+    )
+}
+
+/// The PowerShell that changes only when the keep-alive task starts
+/// (`start` as in [`keepalive_task_script`]): its action, account and
+/// settings are kept, and a running task keeps running (SENTIENT is not
+/// stopped by changing how it starts).
+pub fn keepalive_start_script(start: Option<u32>) -> String {
+    let trigger = match start {
+        Some(0) => "$r.Trigger = New-ScheduledTaskTrigger -AtStartup; ".to_string(),
+        Some(d) => format!("$t = New-ScheduledTaskTrigger -AtStartup; $t.Delay = 'PT{d}S'; $r.Trigger = $t; "),
+        None => String::new(),
+    };
+    format!(
+        "$ErrorActionPreference='Stop'; $o = Get-ScheduledTask -TaskName '{KEEPALIVE_TASK}'; $was = $o.State -eq 'Running'; $r = @{{ TaskName = '{KEEPALIVE_TASK}'; Action = $o.Actions; Principal = $o.Principal; Settings = $o.Settings; Force = $true }}; {trigger}Register-ScheduledTask @r | Out-Null; if ($was -and (Get-ScheduledTask -TaskName '{KEEPALIVE_TASK}').State -ne 'Running') {{ Start-ScheduledTask -TaskName '{KEEPALIVE_TASK}' }}"
+    )
+}
+
+/// How the keep-alive task starts, from its XML (`schtasks /query /xml`):
+/// (with Windows, delay seconds). No boot trigger, or a disabled one: not
+/// with Windows.
+pub fn keepalive_start_from_xml(xml: &str) -> (bool, u32) {
+    let Some(at) = xml.find("<BootTrigger") else { return (false, crate::native::DEFAULT_START_DELAY_SECS) };
+    let body = &xml[at..];
+    let body = &body[..body.find("</BootTrigger>").unwrap_or(body.len())];
+    if body.contains("<Enabled>false</Enabled>") {
+        return (false, crate::native::DEFAULT_START_DELAY_SECS);
+    }
+    (true, crate::native::task_delay_secs(body).unwrap_or(0))
+}
+
+#[cfg(windows)]
+fn keepalive_cmd_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into())).join("SENTIENT").join("docker-keepalive.cmd")
+}
+
+#[cfg(windows)]
+fn powershell(script: &str, what: &str) -> Result<(), String> {
+    match sys::output_limited("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", script], std::time::Duration::from_secs(60)) {
+        Some((true, _, _)) => Ok(()),
+        Some((false, out, err)) => Err(format!("{what}: {} {}", sys::decode(&err).trim(), sys::decode(&out).trim())),
+        None => Err("could not run powershell.exe".into()),
+    }
+}
+
+/// Windows: keep SENTIENT's distro up, now and (with `start`: Some(delay))
+/// from every boot, `delay` seconds after Windows starts; its TCP `ports`
+/// reachable from other computers. Without `start` the task only runs
+/// when SENTIENT is started (now, and from the Platform Manager).
+#[cfg(windows)]
+pub fn register_keepalive(ports: &[u16], start: Option<u32>) -> Result<(), String> {
+    let cmd = keepalive_cmd_path();
+    if let Some(dir) = cmd.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    }
+    std::fs::write(&cmd, keepalive_command(DISTRO, ports)).map_err(|e| format!("write {}: {e}", cmd.display()))?;
+    for p in ports {
+        let name = firewall_rule(*p);
+        let port = format!("localport={p}");
+        let _ = sys::output("netsh.exe", &["advfirewall", "firewall", "delete", "rule", &name]);
+        let _ = sys::output("netsh.exe", &["advfirewall", "firewall", "add", "rule", &name, "dir=in", "action=allow", "protocol=TCP", &port]);
+    }
+    // S4U through the task scheduler's PowerShell module: `schtasks /np`
+    // asks for the password anyway (and waits for ever without a console).
+    powershell(&keepalive_task_script(&cmd.display().to_string(), &this_account(), start, true), &format!("could not register the task {KEEPALIVE_TASK}"))
+}
+
+/// Windows: whether SENTIENT's distro starts with Windows, and after how
+/// many seconds (the keep-alive task's boot trigger). None: no task (a
+/// stack in the operator's own distro, or none installed).
+#[cfg(windows)]
+pub fn keepalive_start() -> Option<(bool, u32)> {
+    match sys::output("schtasks.exe", &["/query", "/tn", KEEPALIVE_TASK, "/xml"]) {
+        Some((true, out, _)) => Some(keepalive_start_from_xml(&sys::decode(&out))),
+        _ => None,
+    }
+}
+
+/// Windows: start SENTIENT's distro with Windows after `delay_secs`, or
+/// only when SENTIENT is started (`automatic` false: the task stays, without
+/// its boot trigger). A running SENTIENT keeps running.
+#[cfg(windows)]
+pub fn set_keepalive_start(automatic: bool, delay_secs: u32) -> Result<(), String> {
+    if keepalive_start().is_none() {
+        return Err(format!("The task {KEEPALIVE_TASK} that starts SENTIENT is missing. Repair puts it back."));
+    }
+    // A busy computer can take more than a minute just to load the task
+    // scheduler's module: a long limit, and once more when it passes.
+    let script = keepalive_start_script(automatic.then_some(delay_secs));
+    idle::twice("Changing SENTIENT's start at boot (scheduled task)", idle::BOOT_TASK_LIMIT, || {
+        sys::output_limited("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", &script], idle::BOOT_TASK_LIMIT)
+            .map(|(ok, out, err)| (ok, sys::decode(&out), sys::decode(&err)))
+    })
+}
+
+/// Windows: before SENTIENT is started in its own distro, the keep-alive
+/// task runs (it boots the distro, forwards the ports and holds the distro
+/// up): when it does not start with Windows nothing else has run it since
+/// the boot. Waits for Docker to answer. Without the task: nothing.
+///
+/// Then, also when the task already ran, the forwarded ports are pointed at
+/// the distro's address of now ([`port_forward::wake_steps`]): the
+/// distro's address changes with every start of WSL, and a forward to an
+/// earlier one leaves SENTIENT unreachable from other computers while it
+/// runs.
+#[cfg(windows)]
+pub fn wake_keepalive(sink: &ProgressFn, cfg: &DeployConfig) {
+    use port_forward::{Task, WakeStep};
+    if cfg.wsl_distro.is_some() || cfg.external.is_some() {
+        return;
+    }
+    let task = match sys::output("schtasks.exe", &["/query", "/tn", KEEPALIVE_TASK, "/fo", "csv", "/nh"]) {
+        Some((ok, out, _)) => port_forward::task_from_query(ok, &sys::decode(&out)),
+        None => Task::Missing,
+    };
+    for step in port_forward::wake_steps(task) {
+        match step {
+            WakeStep::RunTask => {
+                sink(Progress::Log { line: format!("Starting SENTIENT's WSL distro (task {KEEPALIVE_TASK})") });
+                let _ = sys::output("schtasks.exe", &["/run", "/tn", KEEPALIVE_TASK]);
+            }
+            WakeStep::WaitDocker => {
+                if !(0..60).any(|i| {
+                    if i > 0 {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                    is_ready()
+                }) {
+                    sink(Progress::Log { line: "Docker in SENTIENT's distro did not answer within 2 minutes; starting anyway".into() });
+                }
+            }
+            WakeStep::ForwardPorts => {
+                if let Err(e) = port_forward::refresh(sink, cfg) {
+                    sink(Progress::Log { line: format!("The ports could not be forwarded to SENTIENT's distro: {e}. Other computers may not reach SENTIENT; Repair writes the forward again.") });
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn wake_keepalive(_sink: &ProgressFn, _cfg: &DeployConfig) {}
+
+/// Remove [`register_keepalive`]'s task, end what it runs, and remove its
+/// forwarding and firewall rules for `ports`.
+#[cfg(windows)]
+pub fn remove_keepalive(ports: &[u16]) {
+    let _ = sys::output("schtasks.exe", &["/end", "/tn", KEEPALIVE_TASK]);
+    let _ = sys::output("schtasks.exe", &["/delete", "/tn", KEEPALIVE_TASK, "/f"]);
+    for p in ports {
+        let port = format!("listenport={p}");
+        let _ = sys::output("netsh.exe", &["interface", "portproxy", "delete", "v4tov4", &port, "listenaddress=0.0.0.0"]);
+        let _ = sys::output("netsh.exe", &["advfirewall", "firewall", "delete", "rule", &firewall_rule(*p)]);
     }
 }
 
@@ -1271,7 +1689,7 @@ pub struct ContainerStatus {
 #[derive(serde::Serialize)]
 pub struct StackStatus {
     pub installed: bool, // Docker reachable AND a compose file written
-    pub running: bool,   // the app container is up
+    pub running: bool,   // SENTIENT answers where other computers reach it (distro::answers)
     pub containers: Vec<ContainerStatus>,
 }
 
@@ -1284,42 +1702,71 @@ pub fn status(cfg: &DeployConfig) -> StackStatus {
     #[cfg(not(windows))]
     let present = exec::have("docker");
 
+    // Its distro stopped: SENTIENT is stopped, and asking the distro
+    // anything would start it (idle).
+    #[cfg(windows)]
+    if present && !idle::running(&docker_distro()) {
+        return stopped_distro_status(cfg);
+    }
     let installed = present && cfg.stack_defined();
-    let mut containers = Vec::new();
-    if present {
+    let containers = if present {
         // Only `.Status` — universally supported, unlike `.State` and
         // `--filter` — and derive the state from it ("Up …" == running).
-        if let Some((_, out)) = run_output("docker ps -a --format '{{.Names}}|{{.Status}}'") {
-            for line in out.lines() {
-                if let Some((name, status)) = line.trim().split_once('|') {
-                    if name == n.app || name == n.pg || name == n.ch {
-                        let state = if status.starts_with("Up") { "running" } else { "stopped" };
-                        containers.push(ContainerStatus {
-                            name: name.to_string(),
-                            state: state.to_string(),
-                            status: status.to_string(),
-                        });
-                    }
-                }
-            }
-        }
-    }
-    let container_up = containers.iter().any(|c| c.name == n.app && c.state == "running");
-    let running = installed && (container_up || is_running(cfg.http_port));
+        containers_from_ps(cfg, run_output("docker ps -a --format '{{.Names}}|{{.Status}}'"))
+    } else {
+        Vec::new()
+    };
+    // Running is answering, where other computers reach it (Windows:
+    // through the port forward): a container that is up may still be
+    // starting, or not reachable. A stopped app container is not asked.
+    let app_down = containers.iter().any(|c| c.name == n.app) && !containers.iter().any(|c| c.name == n.app && c.state == "running");
+    let running = installed && !app_down && answers(cfg);
     StackStatus { installed, running, containers }
+}
+
+/// The stack's containers from `docker ps -a` (`name|status` lines). Docker
+/// not answering (not started yet: on Windows its distro just booted, or
+/// the daemon is down): each of the stack's containers stopped, never an
+/// empty list ("0 of 0 running").
+pub fn containers_from_ps(cfg: &DeployConfig, ps: Option<(bool, String)>) -> Vec<ContainerStatus> {
+    let n = cfg.names();
+    match ps {
+        Some((true, out)) => out
+            .lines()
+            .filter_map(|line| line.trim().split_once('|'))
+            .filter(|(name, _)| *name == n.app || *name == n.pg || *name == n.ch)
+            .map(|(name, status)| ContainerStatus { name: name.to_string(), state: if status.starts_with("Up") { "running" } else { "stopped" }.to_string(), status: status.to_string() })
+            .collect(),
+        _ => stack_names(cfg).into_iter().map(|name| ContainerStatus { name, state: "stopped".into(), status: "Not running (Docker is not running)".into() }).collect(),
+    }
+}
+
+/// The stack's own containers: SENTIENT, PostgreSQL, and ClickHouse when
+/// it is the hybrid.
+fn stack_names(cfg: &DeployConfig) -> Vec<String> {
+    let n = cfg.names();
+    let mut names = vec![n.app, n.pg];
+    if cfg.flavor == Flavor::Clickhouse {
+        names.push(n.ch);
+    }
+    names
+}
+
+/// [`status`] while the stack's WSL distro is stopped: installed (its
+/// compose file cannot be looked at without starting the distro; the
+/// installation record says it is there), not running, each container
+/// stopped.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn stopped_distro_status(cfg: &DeployConfig) -> StackStatus {
+    let containers = stack_names(cfg).into_iter().map(|name| ContainerStatus { name, state: "stopped".into(), status: "Not running (its WSL distro is stopped)".into() }).collect();
+    StackStatus { installed: true, running: false, containers }
 }
 
 /// Replace the default sys-admin sign-in inside the stack's PostgreSQL.
 pub fn set_admin_account(cfg: &DeployConfig, email: &str, password_hash: &str) -> Result<(), String> {
     let n = cfg.names();
     let sql = crate::native::admin_account_sql(email, password_hash);
-    let cmd = format!(
-        "docker exec {} psql -U {} -d {} -v ON_ERROR_STOP=1 -qAt -c {}",
-        n.pg,
-        cfg.db_user,
-        cfg.db_name,
-        shell_quote(&sql)
-    );
+    let cmd = admin_account_cmd(&n.pg, &cfg.db_user, &cfg.db_name, &sql);
     match run_output(&cmd) {
         Some((true, _)) => Ok(()),
         _ => Err("could not set the administrator sign-in in the database container".into()),
@@ -1327,6 +1774,17 @@ pub fn set_admin_account(cfg: &DeployConfig, email: &str, password_hash: &str) -
 }
 
 /// Single-quote for bash, which runs every Docker command here.
+/// The command that runs `sql` in the database container. The SQL goes
+/// in as base64 on standard input: on Windows `wsl.exe -- bash -lc …`
+/// runs through the distro's shell first, which expanded the `$` of the
+/// argon2 hash ("$argon2id$v=19$…") and left SENTIENT a hash it could not
+/// read (every sign-in answered 500).
+fn admin_account_cmd(container: &str, user: &str, db: &str, sql: &str) -> String {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(sql);
+    format!("echo {b64} | base64 -d | docker exec -i {container} psql -U {user} -d {db} -v ON_ERROR_STOP=1 -qAt -f -")
+}
+
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -1344,30 +1802,86 @@ pub fn control(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Result<(),
         _ => return Err(format!("unknown action: {action}")),
     };
     sink(Progress::Step { name: label.into() });
+    if action != "stop" {
+        wake_keepalive(&sink, cfg);
+    }
     run_stream(&sink, &cfg.control_cmd(sub))?;
     sink(Progress::Done { message: format!("{label}: done.") });
     Ok(())
 }
 
+/// One step of [`control_stack`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StackStep {
+    /// Bring the distro up and forward the ports to it ([`wake_keepalive`]).
+    Wake,
+    /// A compose command over the whole project.
+    Compose(&'static str),
+    /// Wait until SENTIENT answers where other computers reach it
+    /// ([`answers`]).
+    WaitAnswer,
+}
+
+/// [`control_stack`]'s steps for `action`, in order: a start brings the
+/// distro up and points the forwarded ports at it first, and is reported
+/// done only once SENTIENT answers.
+pub fn stack_steps(action: &str, external: bool) -> Result<Vec<StackStep>, String> {
+    let subs = crate::stack_order::docker_commands(action, external)?;
+    let starts = action != "stop";
+    let mut v = Vec::new();
+    if starts {
+        v.push(StackStep::Wake);
+    }
+    v.extend(subs.into_iter().map(StackStep::Compose));
+    if starts {
+        v.push(StackStep::WaitAnswer);
+    }
+    Ok(v)
+}
+
+/// Whether SENTIENT answers on its web port the way other computers reach
+/// it. Windows, SENTIENT's own distro: on this computer's network address,
+/// through the port forward (Windows' own localhost can be served by WSL's
+/// relay and answer while the forward points at an earlier address of the
+/// distro). Elsewhere [`is_running`].
+pub fn answers(cfg: &DeployConfig) -> bool {
+    if cfg!(windows) && cfg.wsl_distro.is_none() && cfg.external.is_none() {
+        port_forward::answers_from_outside(cfg.http_port)
+    } else {
+        is_running(cfg.http_port)
+    }
+}
+
 /// Start, stop or restart the whole stack: compose over all of the
 /// project's services, which it orders by their dependencies
 /// (crate::stack_order::docker_commands); a start waits for SENTIENT to
-/// answer.
+/// answer ([`stack_steps`]).
 pub fn control_stack(sink: ProgressFn, cfg: &DeployConfig, action: &str) -> Result<(), String> {
-    use crate::stack_order::{docker_commands, wait_until, SENTIENT_READY_SECS};
-    let subs = docker_commands(action, cfg.external.is_some())?;
-    for sub in &subs {
-        sink(Progress::Step { name: if *sub == "stop" { "Stopping SENTIENT and its databases".into() } else { "Starting the databases, then SENTIENT".into() } });
-        run_stream(&sink, &cfg.control_cmd(sub))?;
-    }
-    if action != "stop" {
-        sink(Progress::Step { name: "Waiting for SENTIENT to answer".into() });
-        if !wait_until(SENTIENT_READY_SECS, || crate::native::http_answers(cfg.http_port)) {
-            return Err(format!(
-                "SENTIENT was started but does not answer on port {} after {} minutes. Its log says why.",
-                cfg.http_port,
-                SENTIENT_READY_SECS / 60
-            ));
+    use crate::stack_order::{wait_until, SENTIENT_READY_SECS};
+    for step in stack_steps(action, cfg.external.is_some())? {
+        match step {
+            StackStep::Wake => wake_keepalive(&sink, cfg),
+            StackStep::Compose(sub) => {
+                sink(Progress::Step { name: if sub == "stop" { "Stopping SENTIENT and its databases".into() } else { "Starting the databases, then SENTIENT".into() } });
+                run_stream(&sink, &cfg.control_cmd(sub))?;
+            }
+            StackStep::WaitAnswer => {
+                sink(Progress::Step { name: "Waiting for SENTIENT to answer".into() });
+                if !wait_until(SENTIENT_READY_SECS, || answers(cfg)) {
+                    // Inside the distro it answers: only the way in is missing.
+                    if cfg!(windows) && is_running(cfg.http_port) {
+                        return Err(format!(
+                            "SENTIENT runs, but other computers cannot reach it on port {}: the forward from Windows to SENTIENT's WSL distro does not answer. Start it again, or run Repair.",
+                            cfg.http_port
+                        ));
+                    }
+                    return Err(format!(
+                        "SENTIENT was started but does not answer on port {} after {} minutes. Its log says why.",
+                        cfg.http_port,
+                        SENTIENT_READY_SECS / 60
+                    ));
+                }
+            }
         }
     }
     sink(Progress::Done { message: crate::stack_order::done_message(action, &[]) });
@@ -1384,6 +1898,60 @@ pub fn service_control(sink: ProgressFn, container: &str, action: &str) -> Resul
     run_stream(&sink, &format!("docker {action} {}", shell_quote(container)))?;
     sink(Progress::Done { message: format!("{container}: {action} done.") });
     Ok(())
+}
+
+/// What separates `docker stats`' lines from `docker inspect`'s in
+/// [`container_stats_cmd`]'s output.
+const STATS_SEP: &str = "--sentient-restarts--";
+
+/// One command, where Docker runs, for each container's processor and
+/// memory (`docker stats` lines `name|cpu|memory`) and restarts (`docker
+/// inspect` lines `/name|count`), [`STATS_SEP`] between them.
+pub fn container_stats_cmd(containers: &[String]) -> String {
+    let names = containers.iter().map(|c| shell_quote(c)).collect::<Vec<_>>().join(" ");
+    format!(
+        "docker stats --no-stream --format '{{{{.Name}}}}|{{{{.CPUPerc}}}}|{{{{.MemUsage}}}}' {names} 2>/dev/null; echo {STATS_SEP}; docker inspect --format '{{{{.Name}}}}|{{{{.RestartCount}}}}' {names} 2>/dev/null"
+    )
+}
+
+/// Each container's `docker stats` and `docker inspect` lines (see
+/// [`container_stats_cmd`]), read where Docker runs: on Windows inside
+/// SENTIENT's WSL distro (there is no `docker` on Windows itself), on Linux
+/// through Docker's shell. A read leaves a stopped distro stopped: None,
+/// and the left-out command is noted (idle::note_skipped).
+pub fn container_stats(containers: &[String]) -> Option<(String, String)> {
+    if containers.is_empty() {
+        return Some((String::new(), String::new()));
+    }
+    let (_, out) = run_output(&container_stats_cmd(containers))?;
+    Some(split_container_stats(&out))
+}
+
+/// [`container_stats`]' output, as its two parts.
+pub fn split_container_stats(out: &str) -> (String, String) {
+    match out.split_once(STATS_SEP) {
+        Some((stats, restarts)) => (stats.trim().to_string(), restarts.trim().to_string()),
+        None => (out.trim().to_string(), String::new()),
+    }
+}
+
+/// One container's `docker logs --timestamps` (its last `tail` lines, or
+/// the last 24 hours with `tail` None), stdout and stderr together, read
+/// where Docker runs: on Windows inside SENTIENT's WSL distro (there is no
+/// `docker` on Windows itself; the Logs page read the host's and said
+/// "Could not read", rc6 build 3 VM), on Linux through Docker's shell.
+/// None: it could not be read (a stopped distro is left stopped).
+pub fn container_logs(container: &str, tail: Option<u32>) -> Option<String> {
+    run_output(&container_logs_cmd(container, tail)).map(|(_, out)| out)
+}
+
+/// [`container_logs`]' command.
+pub fn container_logs_cmd(container: &str, tail: Option<u32>) -> String {
+    let range = match tail {
+        Some(n) => format!("--tail {n}"),
+        None => "--since 24h".into(),
+    };
+    format!("docker logs --timestamps {range} {} 2>&1", shell_quote(container))
 }
 
 /// The last `tail` lines of the combined container logs.
@@ -1428,15 +1996,50 @@ pub fn update(sink: ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
 /// *and* a login shell that won't start.
 #[cfg(windows)]
 fn distro_probe() -> Result<(), String> {
-    match sys::output("wsl.exe", &["-d", DISTRO, "-u", "root", "--", "bash", "-lc", "echo ok"]) {
+    let probe = ["-d", DISTRO, "-u", "root", "--", "bash", "-lc", "echo ok"];
+    if left_out(&probe) {
+        return Err("SENTIENT's WSL distro is stopped".into());
+    }
+    match sys::output("wsl.exe", &probe) {
         Some((true, out, _)) if sys::decode(&out).contains("ok") => Ok(()),
-        Some((_, _, err)) => {
-            let e = sys::decode(&err);
+        // The inbox wsl.exe prints its errors on standard output.
+        Some((_, out, err)) => {
+            let e = format!("{} {}", sys::decode(&err).trim(), sys::decode(&out).trim());
             let e = e.trim();
             Err(if e.is_empty() { "no response".into() } else { e.to_string() })
         }
         None => Err("could not run wsl.exe".into()),
     }
+}
+
+/// [`distro_probe`] for a distro just imported: its first start (WSL's
+/// virtual machine starting too, on an older Windows 10 the first time
+/// after the kernel was installed) can fail once, so it is asked again
+/// for up to a minute.
+#[cfg(windows)]
+fn distro_probe_patient(sink: &ProgressFn) -> Result<(), String> {
+    let mut last = String::new();
+    let mut restarted = 0;
+    for attempt in 0..12 {
+        match distro_probe() {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if attempt == 0 {
+                    sink(Progress::Log { line: format!("The new distro did not answer yet ({e}); asking again") });
+                }
+                // Its first start missed WSL's deadline: once, stop WSL so
+                // the next ask starts the VM afresh.
+                if retry_after_vm_timeout(restarted, &e) {
+                    sink(Progress::Log { line: VM_TIMEOUT_RETRY_LINE.into() });
+                    let _ = sys::output("wsl.exe", &["--shutdown"]);
+                    restarted += 1;
+                }
+                last = e;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+    Err(last)
 }
 
 #[cfg(windows)]
@@ -1468,14 +2071,44 @@ fn distro_listed(name: &str) -> bool {
 /// Run a native `wsl.exe` command (UTF-16 output), stream it, error on failure.
 #[cfg(windows)]
 fn wsl_native(sink: &ProgressFn, args: &[&str]) -> Result<(), String> {
+    wsl_native_output(sink, args).map_err(|(e, _)| e)
+}
+
+/// [`wsl_native`], with the command's output on failure (to tell why).
+#[cfg(windows)]
+fn wsl_native_output(sink: &ProgressFn, args: &[&str]) -> Result<(), (String, String)> {
     match sys::output_tracked("wsl.exe", args) {
         Some((ok, out, err)) => {
             exec::emit(sink, &out);
             exec::emit(sink, &err);
-            if ok { Ok(()) } else { Err(format!("wsl {} failed", args.join(" "))) }
+            if ok {
+                Ok(())
+            } else {
+                Err((format!("wsl {} failed", args.join(" ")), format!("{}\n{}", sys::decode(&out), sys::decode(&err))))
+            }
         }
-        None => Err("could not run wsl.exe".into()),
+        None => Err(("could not run wsl.exe".into(), String::new())),
     }
+}
+
+/// The log line of [`retry_after_vm_timeout`]'s one retry.
+#[cfg_attr(not(windows), allow(dead_code))]
+const VM_TIMEOUT_RETRY_LINE: &str =
+    "WSL 2's virtual machine did not answer in time (its first start after the kernel install can be slow); stopping WSL and trying once more";
+
+/// WSL's own words for its VM not answering in time (HCS_E_CONNECTION_TIMEOUT).
+pub(crate) fn is_vm_timeout(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    lower.contains("a response was not received from the virtual machine or container")
+        || lower.contains("hcs_e_connection_timeout")
+        || lower.contains("0x80370109")
+}
+
+/// Whether a failed import or first start is tried again: once (`retries`
+/// done so far is 0), and only when WSL's VM did not answer in time.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn retry_after_vm_timeout(retries: u32, output: &str) -> bool {
+    retries == 0 && is_vm_timeout(output)
 }
 
 /// Parse a Docker size token like "5.243MB", "1.049kB", "128B" into bytes.
@@ -1505,6 +2138,9 @@ fn pull_images(sink: &ProgressFn, cfg: &DeployConfig) -> Result<(), String> {
     use std::time::{Duration, Instant};
 
     let (prog, args) = shell_args(&cfg.compose_cmd("pull --ignore-pull-failures"));
+    if left_out(&args.iter().map(String::as_str).collect::<Vec<_>>()) {
+        return Err("SENTIENT's WSL distro is stopped".into());
+    }
     let mut child = sys::command(&prog)
         .args(&args)
         .stdout(Stdio::piped())
@@ -1646,7 +2282,254 @@ pub(crate) fn download(url: &str, dest: &Path, sink: &ProgressFn) -> Result<(), 
 fn _uses(_: &EnvVar) {}
 
 #[cfg(test)]
+mod keepalive_tests {
+    use super::*;
+
+    #[test]
+    fn the_admin_sql_crosses_any_shell_without_a_dollar_or_quote() {
+        let sql = crate::native::admin_account_sql("ada@example.test", "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA");
+        let cmd = admin_account_cmd("sentient-postgres", "sentient", "sentient", &sql);
+        assert!(!cmd.contains('$') && !cmd.contains('\'') && !cmd.contains('"'));
+        let b64 = cmd.split_whitespace().nth(1).unwrap();
+        use base64::Engine as _;
+        assert_eq!(String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b64).unwrap()).unwrap(), sql);
+        assert!(cmd.ends_with("docker exec -i sentient-postgres psql -U sentient -d sentient -v ON_ERROR_STOP=1 -qAt -f -"));
+    }
+
+    #[test]
+    fn a_command_in_a_container_runs_where_docker_runs() {
+        let argv: Vec<String> = ["/usr/share/sentient/bin/sentient-admin", "unlock", "--email", "o'neil$x@example.test"].iter().map(|s| s.to_string()).collect();
+        // Windows: inside the distro, no shell in between (nothing expanded).
+        let (prog, args) = docker_exec_args(true, "Ubuntu", false, "sentient", &argv);
+        assert_eq!(prog, "wsl.exe");
+        assert_eq!(
+            args,
+            ["-d", "Ubuntu", "-u", "root", "--exec", "docker", "exec", "-i", "sentient", "/usr/share/sentient/bin/sentient-admin", "unlock", "--email", "o'neil$x@example.test"]
+        );
+        // Linux: bash, each argument quoted; `sg docker` right after setup.
+        let (prog, args) = docker_exec_args(false, "", false, "sentient", &argv);
+        assert_eq!(prog, "bash");
+        assert_eq!(args, ["-lc", "exec docker exec -i 'sentient' '/usr/share/sentient/bin/sentient-admin' 'unlock' '--email' 'o'\\''neil$x@example.test'"]);
+        let (prog, args) = docker_exec_args(false, "", true, "sentient", &argv);
+        assert_eq!(prog, "sg");
+        assert_eq!(args[..2], ["docker", "-c"]);
+        assert!(args[2].starts_with("exec docker exec -i 'sentient' "));
+    }
+
+    #[test]
+    fn the_keepalive_forwards_the_tcp_ports_to_the_distro_and_holds_it() {
+        let cfg = DeployConfig::default();
+        let ports = forwarded_ports(&cfg);
+        assert_eq!(ports, vec![cfg.http_port, cfg.mqtt_port, cfg.mqtts_port]);
+        let cmd = keepalive_command("sentient", &ports);
+        assert!(cmd.starts_with("@echo off\r\n"));
+        // eth0's address, hostname -I when ip gives none, asked again
+        // while the distro starts (ping waits: timeout needs a console).
+        assert!(cmd.contains("('wsl.exe -d sentient -u root -- ip -4 -o addr show eth0') do for /f \"delims=/\" %%j in (\"%%i\") do set SENTIENT_IP=%%j"));
+        assert!(cmd.contains("if not defined SENTIENT_IP for /f \"tokens=1\" %%i in ('wsl.exe -d sentient -u root -- hostname -I') do set SENTIENT_IP=%%i"));
+        assert!(cmd.contains("if not defined SENTIENT_IP if %SENTIENT_TRY% lss 10 (set /a SENTIENT_TRY+=1 >nul & ping -n 4 127.0.0.1 >nul & goto address)"));
+        assert!(!cmd.contains("timeout "));
+        assert!(cmd.contains(&format!("listenport={} listenaddress=0.0.0.0 connectport={} connectaddress=%SENTIENT_IP%", cfg.http_port, cfg.http_port)));
+        // The holder comes last: the cmd never ends while the distro runs.
+        assert!(cmd.trim_end().ends_with(&format!("{DOCKER_START}; exec sleep infinity\"")));
+        assert!(cmd.lines().all(|l| !l.contains('\n')));
+        // In order: the address read (with its retry), then every forward,
+        // then Docker and the holder.
+        let at = |needle: &str| cmd.find(needle).unwrap_or_else(|| panic!("{needle} missing"));
+        let read = at(":address");
+        let retry = at("goto address");
+        let first_forward = at("netsh interface portproxy delete");
+        let last_forward = cmd.rfind("connectaddress=%SENTIENT_IP%").unwrap();
+        let holder = at("exec sleep infinity");
+        assert!(read < retry && retry < first_forward && first_forward < last_forward && last_forward < holder);
+        for p in &ports {
+            let del = at(&format!("delete v4tov4 listenport={p} "));
+            let add = at(&format!("add v4tov4 listenport={p} "));
+            assert!(del < add, "port {p}: removed before it is added");
+        }
+    }
+
+    #[test]
+    fn a_start_wakes_and_forwards_before_compose_and_reports_only_once_answered() {
+        use StackStep::*;
+        assert_eq!(stack_steps("start", false).unwrap(), vec![Wake, Compose("up -d"), WaitAnswer]);
+        assert_eq!(stack_steps("start", true).unwrap(), vec![Wake, Compose("start"), WaitAnswer]);
+        assert_eq!(stack_steps("restart", false).unwrap(), vec![Wake, Compose("stop"), Compose("up -d"), WaitAnswer]);
+        // A stop neither wakes the distro nor waits for an answer.
+        assert_eq!(stack_steps("stop", false).unwrap(), vec![Compose("stop")]);
+        assert!(stack_steps("pause", false).is_err());
+    }
+
+    #[test]
+    fn dockers_networks_stay_out_of_wsl2s_range() {
+        let v: serde_json::Value = serde_json::from_str(ADDRESS_POOLS).unwrap();
+        assert_eq!(v["default-address-pools"][0]["base"], "10.214.0.0/16");
+        assert!(v["bip"].as_str().unwrap().starts_with("10."));
+        let cmd = address_pools_cmd();
+        // No quote reaches wsl.exe; an existing pool setting is kept.
+        assert!(!cmd.contains('"') && !cmd.contains('\''));
+        assert!(cmd.contains("grep -qs default-address-pools /etc/docker/daemon.json"));
+        use base64::Engine as _;
+        let b64 = cmd.split("echo ").nth(1).unwrap().split(' ').next().unwrap();
+        let json = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b64).unwrap()).unwrap();
+        assert_eq!(json.trim_end(), ADDRESS_POOLS);
+    }
+
+    #[test]
+    fn the_first_answer_wait_says_how_long_and_what_for() {
+        assert_eq!(FIRST_ANSWER_SECS, 600);
+        let url = "http://localhost:8080";
+        assert_eq!(first_answer_line(85, url, Some("running 0")), "Waiting for SENTIENT's first answer on http://localhost:8080: 1:25 of up to 10:00; container running");
+        assert_eq!(first_answer_line(0, url, None), "Waiting for SENTIENT's first answer on http://localhost:8080: 0:00 of up to 10:00");
+        assert!(first_answer_line(300, url, Some("restarting 3")).ends_with("5:00 of up to 10:00; container restarting, restarted 3 times"));
+    }
+
+    #[test]
+    fn the_start_toggle_and_delay_go_into_the_boot_trigger() {
+        let on = keepalive_task_script(r"C:\ProgramData\SENTIENT\docker-keepalive.cmd", r"PC\o'neil", Some(25), true);
+        assert!(on.contains("$t = New-ScheduledTaskTrigger -AtStartup; $t.Delay = 'PT25S'; $r.Trigger = $t; Register-ScheduledTask @r"));
+        assert!(on.contains("-UserId 'PC\\o''neil' -LogonType S4U"));
+        assert!(on.ends_with(&format!("Start-ScheduledTask -TaskName '{KEEPALIVE_TASK}'")));
+        let at_once = keepalive_task_script("x.cmd", "u", Some(0), true);
+        assert!(at_once.contains("$r.Trigger = New-ScheduledTaskTrigger -AtStartup; Register") && !at_once.contains("Delay"));
+        // Off: the task stays (the Platform Manager's Start runs it), without a trigger.
+        let off = keepalive_task_script("x.cmd", "u", None, false);
+        assert!(!off.contains("Trigger") && off.contains("Register-ScheduledTask @r") && !off.contains("Start-ScheduledTask"));
+        // A change keeps the task's own action and account and a running SENTIENT.
+        let change = keepalive_start_script(Some(90));
+        assert!(change.contains("Action = $o.Actions; Principal = $o.Principal") && change.contains("$t.Delay = 'PT90S'"));
+        assert!(change.contains("if ($was -and"));
+        assert!(!keepalive_start_script(None).contains("Trigger"));
+    }
+
+    #[test]
+    fn the_start_setting_is_read_back_from_the_task() {
+        let task = |triggers: &str| format!("<Task><Triggers>{triggers}</Triggers><Actions><Exec><Command>x</Command></Exec></Actions></Task>");
+        assert_eq!(keepalive_start_from_xml(&task("<BootTrigger><Enabled>true</Enabled><Delay>PT1M30S</Delay></BootTrigger>")), (true, 90));
+        assert_eq!(keepalive_start_from_xml(&task("<BootTrigger><Enabled>true</Enabled></BootTrigger>")), (true, 0));
+        assert!(!keepalive_start_from_xml(&task("<BootTrigger><Enabled>false</Enabled><Delay>PT10S</Delay></BootTrigger>")).0);
+        assert!(!keepalive_start_from_xml(&task("")).0);
+        // Another trigger's delay is not the boot trigger's.
+        assert!(!keepalive_start_from_xml(&task("<LogonTrigger><Delay>PT5S</Delay></LogonTrigger>")).0);
+    }
+
+    #[test]
+    fn a_stopped_distro_is_a_stopped_sentient() {
+        let mut cfg = DeployConfig { flavor: Flavor::Clickhouse, ..Default::default() };
+        let st = stopped_distro_status(&cfg);
+        assert!(st.installed && !st.running);
+        let names: Vec<&str> = st.containers.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["sentient", "sentient-postgres", "sentient-clickhouse"]);
+        assert!(st.containers.iter().all(|c| c.state == "stopped"));
+        cfg.flavor = Flavor::Stock;
+        assert_eq!(stopped_distro_status(&cfg).containers.len(), 2);
+    }
+}
+
+#[cfg(test)]
 mod tests {
+
+    /// A container's log, read where Docker runs: its lines with their
+    /// timestamps, stderr included, the last N or the last day.
+    #[test]
+    fn container_logs_read_through_dockers_shell() {
+        assert_eq!(super::container_logs_cmd("sentient", Some(500)), "docker logs --timestamps --tail 500 'sentient' 2>&1");
+        assert_eq!(super::container_logs_cmd("sentient-postgres", None), "docker logs --timestamps --since 24h 'sentient-postgres' 2>&1");
+    }
+
+    /// Every command that may run in SENTIENT's WSL distro asks
+    /// [`super::left_out`] (or goes through `shell_output`, which does)
+    /// first: a read must never start a stopped distro, and with it
+    /// SENTIENT (the rc5 VM: Platform settings' Data locations card read
+    /// through a path that skipped the check, and booted the distro with
+    /// "Start with Windows" off). Scans this crate and the Platform Manager.
+    #[test]
+    fn every_distro_command_asks_left_out() {
+        let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let roots = [here.join("src"), here.join("../../app/src")];
+        // Builders of the arguments (their callers are checked), the
+        // installer's own job that hardens ClickHouse right after setup,
+        // and the gateway page's password: an action the user presses
+        // (Linux only; Windows runs Docker Desktop's docker.exe there).
+        let allowed = ["fn wsl_bash_args", "fn docker_exec_args", "\"harden\" =>", "pub fn set_ui_password"];
+        let mut found = Vec::new();
+        let mut files = Vec::new();
+        let mut dirs: Vec<std::path::PathBuf> = roots.iter().filter(|r| r.is_dir()).cloned().collect();
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    files.push(p);
+                }
+            }
+        }
+        assert!(files.len() > 50, "the sources were found");
+        for f in files {
+            let text = std::fs::read_to_string(&f).unwrap();
+            let lines: Vec<&str> = text.lines().collect();
+            // Tests at the end are not run by a page.
+            let end = lines.windows(2).position(|w| w[0].trim() == "#[cfg(test)]" && w[1].trim_start().starts_with("mod ")).unwrap_or(lines.len());
+            for (i, l) in lines[..end].iter().enumerate() {
+                let t = l.trim_start();
+                if t.starts_with("//") {
+                    continue;
+                }
+                let from = i.saturating_sub(15);
+                let around = lines[from..(i + 16).min(end)].join("\n");
+                // `-d <distro>` of wsl.exe only (gpasswd -d, psql -d are
+                // the computer's own programs, no distro).
+                let wsl_d = t.contains("[\"-d\",") && (around.contains("wsl") || around.to_lowercase().contains("distro"));
+                let hit = (t.contains("shell_args(") && !t.contains("fn shell_args")) || (t.contains("docker_exec_command") && !t.contains("fn docker_exec_command")) || wsl_d;
+                if !hit {
+                    continue;
+                }
+                if around.contains("left_out(") || around.contains("shell_output(") || allowed.iter().any(|a| around.contains(a)) {
+                    continue;
+                }
+                found.push(format!("{}:{}: {}", f.display(), i + 1, t));
+            }
+        }
+        assert!(found.is_empty(), "a command in the distro without the read guard:\n{}", found.join("\n"));
+        // The guard itself: a read, its distro stopped, is left out.
+        assert!(super::idle::skip(true, &["-d", "sentient", "--", "docker", "ps"], |_| false));
+    }
+
+    #[test]
+    fn docker_not_answering_lists_the_containers_stopped() {
+        use super::{containers_from_ps, DeployConfig};
+        let cfg = DeployConfig::default();
+        let n = cfg.names();
+        // The rc5 VM: the distro up, Docker not started: never "0 of 0".
+        for ps in [None, Some((false, String::new()))] {
+            let list = containers_from_ps(&cfg, ps);
+            assert!(list.len() >= 2, "{}", list.len());
+            assert!(list.iter().all(|c| c.state == "stopped"));
+            assert!(list.iter().any(|c| c.name == n.app) && list.iter().any(|c| c.name == n.pg));
+        }
+        // Docker answers: its lines, others' containers left out.
+        let out = format!("{}|Up 3 minutes\n{}|Exited (0) 1 minute ago\nother|Up 1 hour\n", n.app, n.pg);
+        let list = containers_from_ps(&cfg, Some((true, out)));
+        assert_eq!(list.len(), 2);
+        assert_eq!((list[0].state.as_str(), list[1].state.as_str()), ("running", "stopped"));
+    }
+
+    #[test]
+    fn container_stats_are_one_command_where_docker_runs() {
+        use super::{container_stats, container_stats_cmd, split_container_stats};
+        let cmd = container_stats_cmd(&["sentient".into(), "sentient-postgres".into()]);
+        // One shell line (one wsl.exe on Windows), each name quoted, no tab
+        // (the Docker shell's arguments pass through wsl.exe).
+        assert!(cmd.starts_with("docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 'sentient' 'sentient-postgres'"), "{cmd}");
+        assert!(cmd.contains("docker inspect --format '{{.Name}}|{{.RestartCount}}' 'sentient' 'sentient-postgres'"), "{cmd}");
+        assert!(!cmd.contains('\t'));
+        let (stats, restarts) = split_container_stats("sentient|3.10%|1.2GiB / 7.7GiB\nsentient-postgres|0.50%|160MiB / 7.7GiB\n--sentient-restarts--\n/sentient|0\n/sentient-postgres|2\n");
+        assert_eq!(stats.lines().count(), 2);
+        assert_eq!(restarts, "/sentient|0\n/sentient-postgres|2");
+        // No containers: nothing run.
+        assert_eq!(container_stats(&[]), Some((String::new(), String::new())));
+    }
 
     #[test]
     fn the_runner_picks_the_scoped_then_the_recorded_then_its_own_distro() {
@@ -1839,5 +2722,25 @@ mod tests {
         assert_eq!(cfg.db_name, "x");
         assert_eq!(cfg.flavor, Flavor::Clickhouse);
         assert_eq!(cfg.tuning.db_pool_primary_max, 48);
+    }
+}
+
+#[cfg(test)]
+mod vm_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn a_vm_timeout_is_retried_once_and_nothing_else_is() {
+        // wsl --import on the Windows 10 19044 test VM, right after the kernel MSI.
+        let out = "The operation timed out because a response was not received from the virtual machine or container.\r\n";
+        assert!(retry_after_vm_timeout(0, out));
+        assert!(!retry_after_vm_timeout(1, out), "only once");
+        assert!(retry_after_vm_timeout(0, "Error code: Wsl/Service/CreateInstance/HCS_E_CONNECTION_TIMEOUT"));
+        assert!(retry_after_vm_timeout(0, "Error: 0x80370109"));
+        // Other failures are reported as they are.
+        assert!(!retry_after_vm_timeout(0, "The Windows Subsystem for Linux is not installed."));
+        assert!(!retry_after_vm_timeout(0, "Error: 0x80370102 Please enable the Virtual Machine Platform"));
+        assert!(!retry_after_vm_timeout(0, ""));
+        assert!(!VM_TIMEOUT_RETRY_LINE.to_ascii_lowercase().starts_with("error"));
     }
 }

@@ -14,7 +14,10 @@ same width, scale and theme are grouped; a label's height when selected
 must equal its height unselected within 0.5 px; at a scale that puts the
 text between device pixels (x1.25, x1.75: scale * 2 not whole) within one
 device pixel, since the semibold descender then rounds a pixel differently
-from the medium one at the same font size (rc12-24, agreed with the owner). Rows: a 44 px pitch
+from the medium one at the same font size (rc12-24, agreed with the owner).
+The dots of i and j are left out of the measure: the hinting draws a dot a
+row taller in the semibold than in the medium name with the letters
+themselves the same height ("Licence", x1, 10.00 against 9.49 px). Rows: a 44 px pitch
 (40 px rows, 4 px apart) below the brand row's 16 px clear space.
 Prints findings and exits 1 if there are any.
 """
@@ -42,6 +45,35 @@ def lum(p):
     return 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]
 
 
+DOT = 3.0
+
+
+def specks(d, thr, size):
+    """Ink components (4-connected, difference above thr) whose box is at
+    most size device px tall and wide."""
+    h, w = len(d), len(d[0]) if d else 0
+    seen = [[False] * w for _ in range(h)]
+    out = []
+    for y in range(h):
+        for x in range(w):
+            if seen[y][x] or d[y][x] <= thr:
+                continue
+            comp, stack = [], [(y, x)]
+            seen[y][x] = True
+            while stack:
+                cy, cx = stack.pop()
+                comp.append((cy, cx))
+                for ny, nx in ((cy + 1, cx), (cy - 1, cx), (cy, cx + 1), (cy, cx - 1)):
+                    if 0 <= ny < h and 0 <= nx < w and not seen[ny][nx] and d[ny][nx] > thr:
+                        seen[ny][nx] = True
+                        stack.append((ny, nx))
+            ys = [p[0] for p in comp]
+            xs = [p[1] for p in comp]
+            if max(ys) - min(ys) + 1 <= size and max(xs) - min(xs) + 1 <= size:
+                out.append(comp)
+    return out
+
+
 def ink_height(im, box, sc):
     l, r, t, b = box
     x0, x1, y0, y1 = int(round(l * sc)), int(round(r * sc)), int(round(t * sc)), int(round(b * sc))
@@ -49,7 +81,25 @@ def ink_height(im, box, sc):
     if x1 - x0 < 2 or y1 - y0 < 2:
         return None
     bg = lum(im.getpixel((x0, y0)))
-    cov = [max(abs(lum(im.getpixel((x, y))) - bg) for x in range(x0, x1)) for y in range(y0, y1)]
+    d = [[abs(lum(im.getpixel((x, y))) - bg) for x in range(x0, x1)] for y in range(y0, y1)]
+    # The dots of i and j left out: a dot is a separate speck above the
+    # letter whose weight the hinting draws differently in the semibold
+    # (selected) and the medium name, so "Licence" read 10.00 px selected
+    # against 9.49 px unselected at x1 with its letters the same height
+    # (cap top and baseline on the same rows). Ink parts no taller than
+    # DOT px and no wider than DOT px (logical, either way) are dots.
+    peak = max(max(r) for r in d) if d else 0
+    strong = 0.35 * peak
+    dots = specks(d, strong, DOT * sc)
+    body = {(y, x) for y, r in enumerate(d) for x, v in enumerate(r) if v > strong} - {p for c in dots for p in c}
+    for comp in dots:
+        # The speck and its anti-aliased rim, not the letters' own ink.
+        for (yy, xx) in comp:
+            for ny in (yy - 1, yy, yy + 1):
+                for nx in (xx - 1, xx, xx + 1):
+                    if 0 <= ny < len(d) and 0 <= nx < len(d[0]) and (ny, nx) not in body:
+                        d[ny][nx] = 0
+    cov = [max(row) for row in d]
     peak = max(cov)
     if peak < 40:
         return None

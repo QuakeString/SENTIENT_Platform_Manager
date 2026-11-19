@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Icon, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, Icon, h_flex, v_flex,
     button::ButtonVariants as _,
     checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
@@ -240,6 +240,13 @@ impl LocationsCard {
         me
     }
 
+    /// Read again when the last reading found SENTIENT stopped.
+    pub fn reload_if_stopped(&mut self, cx: &mut Context<Self>) {
+        if matches!(&self.ov, Read::Failed(e) if e == crate::movedata::STOPPED) {
+            self.reload(cx);
+        }
+    }
+
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let t = self.target.clone();
         self._task = Some(cx.spawn(async move |this, cx| {
@@ -310,6 +317,8 @@ impl Render for LocationsCard {
                 }
                 return card;
             }
+            // SENTIENT stopped: a plain line, nothing failed.
+            Read::Failed(e) if e == crate::movedata::STOPPED => return card.child(div().pt_2().text_sm().text_color(theme.muted_foreground).child(e.clone())),
             Read::Failed(e) => return card.child(div().pt_2().text_sm().text_color(theme.danger).child(e.clone())),
             Read::Got(o) => o.clone(),
         };
@@ -333,9 +342,9 @@ impl Render for LocationsCard {
             let (target, on) = (self.target.clone(), self.on.clone());
             let id = SharedString::from(format!("dl-move-{}", store.as_str()));
             let btn = if store == Store::Backups {
-                ui::button(id).outline().small().icon(Icon::new(Lucide::Folder)).label("Change")
+                ui::button(id).outline().icon(Icon::new(Lucide::Folder)).label("Change")
             } else {
-                ui::button(id).outline().small().icon(Icon::empty().path("icons/move-data.svg")).label("Move")
+                ui::button(id).outline().icon(Icon::empty().path("icons/move-data.svg")).label("Move")
             }
             .disabled(!can)
             .when(!can && self.windows, |b| b.tooltip("Not on Windows yet: only ClickHouse's WSL disk moves there."))
@@ -351,7 +360,7 @@ impl Render for LocationsCard {
             let busy = self.removing.as_deref() == Some(o.path.as_str());
             let btn = ui::button(SharedString::from(format!("dl-rm-{i}")))
                 .outline()
-                .small()
+                
                 .icon(Icon::empty().path("icons/trash.svg"))
                 .label("Remove")
                 .loading(busy)
@@ -985,7 +994,7 @@ impl MoveFlow {
                 .font_family(theme.mono_font_family.clone())
                 .text_size(px(13.))
                 .child(text)
-                .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx))
+                .tooltip(crate::ui::tooltip(tip.clone()))
         };
         let fits_help = format!(
             "Whether the disk can hold {} ({}): enough free space for it, and a local disk that is not FAT or read-only. The line under the answer says why.",
@@ -1153,8 +1162,8 @@ impl MoveFlow {
                     .border_t_1()
                     .border_color(theme.border)
                     .child(Icon::empty().path("icons/folder-fill.svg").size_4().text_color(folder_color()))
-                    .child(div().flex_1().child(Input::new(input).small()))
-                    .child(ui::button("md-make").primary().small().label("Use").on_click(cx.listener(move |me, _, _, cx| {
+                    .child(div().flex_1().child(Input::new(input)))
+                    .child(ui::button("md-make").primary().label("Use").on_click(cx.listener(move |me, _, _, cx| {
                         let name = me.picks.get(&s).and_then(|p| p.new_name.as_ref()).map(|i| i.read(cx).value().trim().to_string()).unwrap_or_default();
                         me.new_folder(s, name, cx);
                     }))),

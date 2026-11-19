@@ -59,6 +59,56 @@ pub struct StatusPage {
     _job_observe: Subscription,
 }
 
+/// What this computer's Status read, kept when the window closes while
+/// the Platform Manager keeps running (the tray): a window opened again
+/// draws it at once and reads it again behind it. Memory only; a new start
+/// shows the loading skeleton until the first reading.
+struct Kept {
+    /// The installation it was read for (an installation changed since,
+    /// set up or migrated, is read afresh).
+    record: String,
+    snapshot: Option<Snapshot>,
+    shown_version: Option<String>,
+    gateway: Option<sentient_installer_core::gateway::Status>,
+    db: Option<crate::dbstatus::DbStatus>,
+    db_read_at: Option<String>,
+    found: Option<Vec<Candidate>>,
+    looked: Vec<String>,
+}
+
+static KEPT: std::sync::Mutex<Option<Kept>> = std::sync::Mutex::new(None);
+
+fn record_key(record: Option<&InstallationRecord>) -> String {
+    serde_json::to_string(&record).unwrap_or_default()
+}
+
+/// What Status draws first for `record`: what this run read before (a
+/// window opened again), or None on a cold start, the loading skeleton.
+fn take_kept(kept: &mut Option<Kept>, record: Option<&InstallationRecord>) -> Option<Kept> {
+    kept.take().filter(|k| k.record == record_key(record))
+}
+
+/// The window closed (the app runs on): what Status read stays for the
+/// next window ([`Kept`]).
+impl Drop for StatusPage {
+    fn drop(&mut self) {
+        if self.snapshot.is_none() && self.found.is_none() {
+            return;
+        }
+        let k = Kept {
+            record: record_key(self.record.as_ref()),
+            snapshot: self.snapshot.take(),
+            shown_version: self.shown_version.take(),
+            gateway: self.gateway.take(),
+            db: self.db.take(),
+            db_read_at: self.db_read_at.take(),
+            found: self.found.take(),
+            looked: std::mem::take(&mut self.looked),
+        };
+        *KEPT.lock().unwrap_or_else(|e| e.into_inner()) = Some(k);
+    }
+}
+
 impl EventEmitter<RecordChanged> for StatusPage {}
 
 /// The gateway card's button: show the Gateway screen.
@@ -148,7 +198,7 @@ impl StatusPage {
                     let rec = rec.clone();
                     let (snapshot, version) = cx
                         .background_executor()
-                        .spawn(async move { (platform.snapshot(), crate::headless::shown_version(&rec)) })
+                        .spawn(async move { sentient_installer_core::distro::idle::reading(|| (platform.snapshot(), crate::headless::shown_version(&rec))) })
                         .await;
                     let alive = this
                         .update(cx, |page, cx| {
@@ -227,8 +277,19 @@ impl StatusPage {
             _observe,
             _job_observe,
         };
+        // A window opened again: what this run read before shows at once
+        // (the polls read it again behind it).
+        if let Some(k) = take_kept(&mut KEPT.lock().unwrap_or_else(|e| e.into_inner()), page.record.as_ref()) {
+            page.snapshot = k.snapshot;
+            page.shown_version = k.shown_version;
+            page.gateway = k.gateway;
+            page.db = k.db;
+            page.db_read_at = k.db_read_at;
+            page.found = k.found;
+            page.looked = k.looked;
+        }
         if page.record.is_none() {
-            page.look_for_existing(cx);
+            page.search_existing(cx);
         }
         // The databases are read now and every few minutes, not every few
         // seconds: their sizes change slowly. Where reading asks for the
@@ -257,7 +318,7 @@ impl StatusPage {
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         let task = cx.spawn(async move |this, cx| {
-            let snapshot = cx.background_executor().spawn(async move { record.platform().snapshot() }).await;
+            let snapshot = cx.background_executor().spawn(async move { sentient_installer_core::distro::idle::reading(|| record.platform().snapshot()) }).await;
             this.update(cx, |page, cx| {
                 page.snapshot = Some(snapshot);
                 cx.notify();
@@ -320,7 +381,7 @@ impl StatusPage {
                 .background_executor()
                 .spawn(async move {
                     let _action = ask.then(sentient_installer_core::elevation::user_action);
-                    crate::dbstatus::read(&record)
+                    sentient_installer_core::distro::idle::reading(|| crate::dbstatus::read(&record))
                 })
                 .await;
             this.update(cx, |page, cx| {
@@ -382,7 +443,7 @@ impl StatusPage {
             panel,
             db,
             &disk_name(record),
-            Some(crate::dbstatus::growth_per_day()),
+            Some(crate::dbstatus::growth_per_day(&record.installed_at)),
             last_backup,
             DbActions {
                 move_data: (crate::movedata::unsupported(record).is_none()).then(|| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
@@ -415,6 +476,12 @@ impl StatusPage {
 
     fn look_for_existing(&mut self, cx: &mut Context<Self>) {
         self.found = None;
+        self.search_existing(cx);
+    }
+
+    /// Look for a SENTIENT running here; what was found before stays
+    /// meanwhile.
+    fn search_existing(&mut self, cx: &mut Context<Self>) {
         let task = cx.spawn(async move |this, cx| {
             let search = cx.background_executor().spawn(async move { crate::adopt::search() }).await;
             this.update(cx, |page, cx| {
@@ -620,7 +687,7 @@ impl Render for StatusPage {
         });
 
         let busy = self.job.read(cx).is_running();
-        let running = self.snapshot.as_ref().filter(|s| !s.services.is_empty()).map(|s| Running { serving: s.serving, any_up: s.serving || s.services.iter().any(|v| v.running) });
+        let running = self.snapshot.as_ref().and_then(|s| running_of(s.serving, &s.services.iter().map(|v| v.running).collect::<Vec<_>>(), record.engine == crate::installation::Engine::Docker));
         let this = cx.entity().downgrade();
         let (t1, t2, t3) = (this.clone(), this.clone(), this.clone());
         // Native Linux runs on the distribution's shared PostgreSQL: the
@@ -728,6 +795,12 @@ impl StatusPage {
         let newer = self.updates.read(cx).gateway_notice();
         let (tone, pill, line): (Tone, &str, String) = match &self.gateway {
             None => (Tone::Neutral, "Checking…", String::new()),
+            // The older Python gateway alone: its update to the Rust one.
+            Some(g) if !g.installed && g.legacy.is_some() => (
+                Tone::Neutral,
+                "Update available",
+                format!("The older Python gateway{}", newer.as_ref().map(|o| format!(" · Sentient Gateway {} available", o.version)).unwrap_or_default()),
+            ),
             Some(g) if !g.installed => (Tone::Neutral, "Not installed", "No Sentient Gateway on this computer.".into()),
             Some(g) => (
                 if g.running { Tone::Good } else { Tone::Bad },
@@ -740,7 +813,7 @@ impl StatusPage {
                 ),
             ),
         };
-        let installed = self.gateway.as_ref().is_some_and(|g| g.installed);
+        let installed = self.gateway.as_ref().is_some_and(|g| g.installed || g.legacy.is_some());
         ui::panel(theme)
             .child(h_flex().gap_2().items_center().child(ui::product_logo(ui::Product::Gateway, 24.)).child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway")))
             .child(
@@ -982,6 +1055,18 @@ pub(crate) fn control_buttons(
 /// red. `stop_label` is "Stop…" where Stop asks first. Put them in a
 /// [`ui::card_foot`] (the divider above) with the card's other buttons
 /// after them.
+/// What the Status buttons go by, from a reading: `services` each up or
+/// not. No services read: unknown (no buttons), except for Docker, where
+/// an empty list is a stack that is not up (Windows: SENTIENT's WSL distro
+/// is not running when it does not start with Windows), so Start is offered
+/// (its job starts the distro first, distro::wake_keepalive).
+fn running_of(serving: bool, services: &[bool], docker: bool) -> Option<Running> {
+    if services.is_empty() && !docker {
+        return None;
+    }
+    Some(Running { serving, any_up: serving || services.iter().any(|up| *up) })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn service_buttons(
     theme: &gpui_kit::component::Theme,
@@ -1206,6 +1291,10 @@ pub(crate) fn db_details(
     dark: bool,
 ) -> Div {
     use crate::dbstatus::{CRITICAL_DISK, LOW_DISK, bytes_label, count_label, month_label, plain_table};
+    // SENTIENT stopped: nothing was read, and nothing failed.
+    if db.stopped {
+        return panel.child(div().text_sm().text_color(theme.muted_foreground).child(crate::dbstatus::STOPPED));
+    }
     let mut panel = panel;
         let pg_bytes = db.pg.as_ref().map(|p| p.db_bytes).unwrap_or(0);
     let ch_bytes = db.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0);
@@ -1306,7 +1395,7 @@ pub(crate) fn db_details(
         .when_some(growth, |p, growth| p.child(ui::fact(theme, "Growth", match growth {
             Some((per_day, days)) if per_day > 0 => format!("about {} a day over the last {days} day{}", bytes_label(per_day as u64), if days == 1 { "" } else { "s" }),
             Some((_, days)) => format!("not growing over the last {days} day{}", if days == 1 { "" } else { "s" }),
-            None => "measured from tomorrow (one size reading a day)".into(),
+            None => "shown once a day of size readings is kept".into(),
         })))
         .when_some(lasts.clone(), |p, l| p.child(ui::fact(theme, "Disk lasts", format!("{l} at this rate"))));
 
@@ -1459,7 +1548,47 @@ pub(crate) fn db_details(
     }
 
 #[cfg(test)]
+mod reopen_tests {
+    use super::{record_key, take_kept, InstallationRecord, Kept, Snapshot};
+
+    fn kept(record: Option<&InstallationRecord>) -> Kept {
+        Kept { record: record_key(record), snapshot: Some(Snapshot::default()), shown_version: None, gateway: None, db: None, db_read_at: None, found: None, looked: Vec::new() }
+    }
+
+    /// Cold start: nothing read in this run, the loading skeleton.
+    #[test]
+    fn a_cold_start_has_nothing_to_draw() {
+        assert!(take_kept(&mut None, None).is_none());
+    }
+
+    /// A window opened again: Status draws what it read, at once, once.
+    #[test]
+    fn a_reopened_window_draws_what_was_read() {
+        let mut slot = Some(kept(None));
+        assert!(take_kept(&mut slot, None).is_some_and(|k| k.snapshot.is_some()));
+        assert!(slot.is_none());
+    }
+
+    /// The installation changed meanwhile (set up, migrated): read afresh.
+    #[test]
+    fn another_installation_is_read_afresh() {
+        let mut k = kept(None);
+        k.record = "{\"other\":1}".into();
+        assert!(take_kept(&mut Some(k), None).is_none());
+    }
+}
+
+#[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_docker_stack_with_nothing_up_offers_start() {
+        let r = super::running_of(false, &[], true).expect("Docker: Start offered");
+        assert!(!r.serving && !r.any_up);
+        assert!(super::running_of(false, &[], false).is_none());
+        let r = super::running_of(false, &[true, false], false).unwrap();
+        assert!(r.any_up && !r.serving);
+    }
     use super::{Tone, overall_state};
 
     const APP: &str = "sentient.service";

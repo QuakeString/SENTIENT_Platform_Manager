@@ -250,13 +250,17 @@ fn psql(cfg: &NativeConfig, db: &str, sql: &str) -> Result<String, String> {
     let exe = cfg.pg_bin().join("psql.exe");
     let port = cfg.pg_port.to_string();
     let mut c = sys::command(&exe.to_string_lossy());
+    // -w: never prompt for a password. Without it psql waits on a prompt
+    // forever when the password is empty or not accepted (`--job install`
+    // from a terminal); with it psql fails and the error says why.
     c.env("PGPASSWORD", &cfg.pg_superuser_password)
-        .args(["-h", "127.0.0.1", "-p", &port, "-U", "postgres", "-d", db, "-tAc", sql]);
+        .env("PGCONNECT_TIMEOUT", "10")
+        .args(["-w", "-h", "127.0.0.1", "-p", &port, "-U", "postgres", "-d", db, "-tAc", sql]);
     let o = c.output().map_err(|e| format!("run psql: {e}"))?;
     let out = sys::decode(&o.stdout);
     if !o.status.success() {
         let err = sys::decode(&o.stderr).trim().to_string();
-        if err.contains("password authentication failed") {
+        if err.contains("password authentication failed") || err.contains("no password supplied") {
             return Err(format!(
                 "psql: {err}. This computer's PostgreSQL was kept from an earlier install: enter that install's PostgreSQL admin password."
             ));
@@ -497,11 +501,16 @@ pub fn is_running(http_port: u16) -> bool {
 /// bare TCP connect is not enough: Docker's port proxy accepts connections
 /// while nothing is serving behind it.
 pub fn http_answers(http_port: u16) -> bool {
+    http_answers_on("127.0.0.1", http_port)
+}
+
+/// [`http_answers`] on `host` (an IPv4 address of this computer).
+pub fn http_answers_on(host: &str, http_port: u16) -> bool {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_millis(800))
         .timeout(std::time::Duration::from_secs(3))
         .build();
-    match agent.get(&format!("http://127.0.0.1:{http_port}/")).call() {
+    match agent.get(&format!("http://{host}:{http_port}/")).call() {
         Ok(_) | Err(ureq::Error::Status(_, _)) => true,
         Err(ureq::Error::Transport(_)) => false,
     }
@@ -558,6 +567,18 @@ fn ensure_vc_runtime(sink: &ProgressFn, source: &ArtifactSource, dl: &Path, forc
         ));
     }
     Ok(())
+}
+
+/// PostgreSQL's programs are there and run: initdb starts postgres -V,
+/// so a postgres.exe that does not answer fails the cluster set-up.
+fn pg_binaries_work(bin: &Path) -> bool {
+    if !(bin.join("postgres.exe").exists() && bin.join("initdb.exe").exists()) {
+        return false;
+    }
+    matches!(
+        sys::output_limited(&bin.join("postgres.exe").to_string_lossy(), &["-V"], std::time::Duration::from_secs(30)),
+        Some((true, out, _)) if sys::decode(&out).contains("PostgreSQL")
+    )
 }
 
 /// Run initdb once. The error text is initdb's own output.
@@ -627,7 +648,33 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
     bail_if_cancelled()?;
 
     // ---- PostgreSQL ----
-    if !cfg.pg_bin().join("psql.exe").exists() {
+    // Present means it runs: psql, postgres and initdb are there and
+    // `postgres -V` answers. Missing or broken binaries (an interrupted
+    // copy, an antivirus quarantine) are put back from the archive below;
+    // the data folder is never touched.
+    let pg_present = cfg.pg_bin().join("psql.exe").exists();
+    let pg_works = pg_present && pg_binaries_work(&cfg.pg_bin());
+    if pg_present && !pg_works {
+        log(&sink, "PostgreSQL is there but its programs do not run (postgres -V gave no answer): putting them back from the archive");
+        let zip = obtain(&sink, &cfg.source, PG_ZIP, PG_URL, &dl)?;
+        let tmp = dl.join("pg-extract");
+        let _ = std::fs::remove_dir_all(&tmp);
+        extract_zip(&zip, &tmp)?;
+        let inner = tmp.join("pgsql");
+        for part in ["bin", "lib", "share"] {
+            if inner.join(part).exists() {
+                copy_tree(&inner.join(part), &cfg.pg_dir.join(part))?;
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        if !pg_binaries_work(&cfg.pg_bin()) {
+            return Err(format!(
+                "PostgreSQL's programs in {} do not run (postgres -V gave no answer), also after putting them back. An antivirus may be blocking them.",
+                cfg.pg_bin().display()
+            ));
+        }
+    }
+    if !pg_present {
         step(&sink, &format!("Installing PostgreSQL {PG_VERSION}"));
         let zip = obtain(&sink, &cfg.source, PG_ZIP, PG_URL, &dl)?;
         bail_if_cancelled()?;
@@ -646,7 +693,7 @@ pub fn setup(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         std::fs::rename(&inner, &cfg.pg_dir)
             .map_err(|e| format!("move PostgreSQL into {}: {e}", cfg.pg_dir.display()))?;
         let _ = std::fs::remove_dir_all(&tmp);
-    } else {
+    } else if pg_works {
         log(&sink, "PostgreSQL already present");
     }
     bail_if_cancelled()?;
@@ -1133,8 +1180,12 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
         ]);
     }
     // Streamed: the schema install takes minutes and is otherwise silent.
-    match sys::output_streamed_env(&sink, &installer.to_string_lossy(), &argrefs, &env) {
+    let shown = crate::schema_output::filter(sink.clone());
+    match sys::output_streamed_env(&shown, &installer.to_string_lossy(), &argrefs, &env) {
         Some((true, _, _)) => {}
+        // An existing database: the installer stops at the first row that is
+        // there, and the filter has already logged that as kept.
+        Some((false, _, err)) if crate::schema_output::is_existing_data(&sys::decode(&err)) => {}
         Some((false, _, err)) => {
             // A re-run against an installed database exits non-zero; that is
             // expected on repair/upgrade paths, so log rather than hard-fail and
@@ -1405,6 +1456,7 @@ fn register_uninstall_entry(sink: &ProgressFn, cfg: &NativeConfig) {
     let mut values: Vec<(&str, &str, String)> = vec![
         ("DisplayName", "REG_SZ", "SENTIENT Platform".into()),
         ("Publisher", "REG_SZ", "INVENIA SYSTEMS".into()),
+        ("URLInfoAbout", "REG_SZ", "https://inveniasystems.com".into()),
         ("InstallLocation", "REG_SZ", cfg.install_dir.display().to_string()),
         ("DisplayIcon", "REG_SZ", icon.display().to_string()),
         ("NoModify", "REG_DWORD", "1".into()),
@@ -1907,12 +1959,89 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The Windows Firewall rules' group: SENTIENT's ports, open to other
+/// computers (a service gets no "allow access" prompt, so without them
+/// Windows Firewall drops every connection from the network).
+pub const FIREWALL_GROUP: &str = "SENTIENT";
+
+/// PowerShell that replaces the group's rules with one inbound rule per
+/// port: `tcp` (web, MQTT) and `udp` (CoAP).
+pub fn firewall_script(tcp: &[u16], udp: &[u16]) -> String {
+    let mut s = format!("Remove-NetFirewallRule -Group '{FIREWALL_GROUP}' -ErrorAction SilentlyContinue; ");
+    for (proto, ports) in [("TCP", tcp), ("UDP", udp)] {
+        for p in ports.iter().filter(|p| **p > 0) {
+            s.push_str(&format!(
+                "New-NetFirewallRule -Group '{FIREWALL_GROUP}' -DisplayName 'SENTIENT {proto} {p}' -Direction Inbound -Action Allow -Protocol {proto} -LocalPort {p} | Out-Null; "
+            ));
+        }
+    }
+    s
+}
+
+/// PowerShell that writes the group's rules ([`firewall_script`]) only
+/// when one is missing, off, or for another port, and prints "present" or
+/// "added": what Repair and an update run on an install from before the
+/// rules (idempotent: a second run finds them present).
+pub fn ensure_firewall_script(tcp: &[u16], udp: &[u16]) -> String {
+    let want: Vec<String> = [("TCP", tcp), ("UDP", udp)]
+        .iter()
+        .flat_map(|(proto, ports)| ports.iter().filter(|p| **p > 0).map(move |p| format!("'SENTIENT {proto} {p}'")))
+        .collect();
+    format!(
+        "$want = @({}); $have = @(Get-NetFirewallRule -Group '{FIREWALL_GROUP}' -ErrorAction SilentlyContinue | Where-Object {{ $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' -and $_.Direction -eq 'Inbound' }} | ForEach-Object {{ $_.DisplayName }}); \
+         if (@($want | Where-Object {{ $have -notcontains $_ }}).Count -eq 0 -and $have.Count -eq $want.Count) {{ 'present' }} else {{ {}'added' }}",
+        want.join(", "),
+        firewall_script(tcp, udp)
+    )
+}
+
+/// The ports [`open_firewall`] opens: (TCP: web and MQTT, UDP: CoAP).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn firewall_ports(cfg: &NativeConfig) -> ([u16; 2], [u16; 1]) {
+    ([cfg.http_port, cfg.mqtt_port], [cfg.coap_port])
+}
+
+#[cfg(windows)]
+fn firewall_ps(script: &str) -> Result<String, String> {
+    match sys::output_limited("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", script], std::time::Duration::from_secs(60)) {
+        Some((true, out, _)) => Ok(sys::decode(&out)),
+        Some((false, out, err)) => Err(format!("{} {}", sys::decode(&err).trim(), sys::decode(&out).trim())),
+        None => Err("could not run powershell.exe".into()),
+    }
+}
+
+/// Open SENTIENT's ports in Windows Firewall (web and MQTT over TCP,
+/// CoAP over UDP).
+#[cfg(windows)]
+pub fn open_firewall(cfg: &NativeConfig) -> Result<(), String> {
+    let (tcp, udp) = firewall_ports(cfg);
+    firewall_ps(&firewall_script(&tcp, &udp)).map(|_| ())
+}
+
+/// [`open_firewall`] when a rule is missing (an install from before 0.9.2,
+/// or rules removed by hand); true when it added them.
+#[cfg(windows)]
+pub fn ensure_firewall(cfg: &NativeConfig) -> Result<bool, String> {
+    let (tcp, udp) = firewall_ports(cfg);
+    let out = firewall_ps(&ensure_firewall_script(&tcp, &udp))?;
+    Ok(out.trim().ends_with("added"))
+}
+
+/// Remove [`open_firewall`]'s rules.
+#[cfg(windows)]
+pub fn close_firewall() {
+    let script = format!("Remove-NetFirewallRule -Group '{FIREWALL_GROUP}' -ErrorAction SilentlyContinue");
+    let _ = sys::output_limited("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", &script], std::time::Duration::from_secs(60));
+}
+
 /// Stop and remove the SENTIENT service and its program folders; the
 /// database is left to the caller.
 #[cfg(not(target_os = "linux"))]
 fn remove_platform(sink: &ProgressFn, cfg: &NativeConfig) {
     step(sink, "Stopping and removing the SENTIENT service");
     remove_uninstall_entry();
+    #[cfg(windows)]
+    close_firewall();
     let _ = sc(&["stop", APP_SERVICE]);
     std::thread::sleep(std::time::Duration::from_secs(2));
     let winsw = cfg.install_dir.join("services").join(format!("{APP_SERVICE}.exe"));
@@ -2407,5 +2536,32 @@ mod start_delay_tests {
         assert_eq!(task_delay_secs(&xml("PT1H")), Some(3600));
         assert_eq!(task_delay_secs("<Triggers/>"), None);
         assert_eq!(task_delay_secs(&xml("P1D")), None);
+    }
+}
+
+#[cfg(test)]
+mod firewall_tests {
+    use super::*;
+
+    #[test]
+    fn the_firewall_script_replaces_the_group_with_one_rule_per_port() {
+        let s = firewall_script(&[8080, 1883, 0], &[5683]);
+        assert!(s.starts_with("Remove-NetFirewallRule -Group 'SENTIENT'"));
+        assert!(s.contains("-DisplayName 'SENTIENT TCP 8080' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8080"));
+        assert!(s.contains("-Protocol TCP -LocalPort 1883"));
+        assert!(s.contains("-Protocol UDP -LocalPort 5683"));
+        assert!(!s.contains("LocalPort 0"));
+    }
+
+    #[test]
+    fn repair_and_update_add_the_rules_only_when_one_is_missing() {
+        let s = ensure_firewall_script(&[8080, 1883], &[5683]);
+        assert!(s.starts_with("$want = @('SENTIENT TCP 8080', 'SENTIENT TCP 1883', 'SENTIENT UDP 5683');"));
+        assert!(s.contains("Get-NetFirewallRule -Group 'SENTIENT'"));
+        // Present: nothing is written; else the whole group, then "added".
+        let (check, write) = s.split_once("{ 'present' } else { ").unwrap();
+        assert!(!check.contains("New-NetFirewallRule") && !check.contains("Remove-NetFirewallRule"));
+        assert!(write.starts_with("Remove-NetFirewallRule -Group 'SENTIENT'") && write.ends_with("'added' }"));
+        assert!(write.contains("-Protocol UDP -LocalPort 5683"));
     }
 }

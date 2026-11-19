@@ -8,6 +8,7 @@
 fn main() {
     embed_agents();
     build_commit();
+    build_date();
     println!("cargo:rerun-if-changed=assets/icon.ico");
     println!("cargo:rerun-if-changed=assets/spm-app.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
@@ -40,9 +41,12 @@ fn embed_agents() {
             Some(path) => {
                 println!("cargo:rerun-if-changed={path}");
                 let path = std::fs::canonicalize(&path).unwrap();
-                code.push_str(&format!("pub const {name}: Option<&[u8]> = Some(include_bytes!({:?}));\n", path.display().to_string()));
+                // A `static`, never a `const`: a const is copied into every
+                // codegen unit that uses it, and the shipped rc6 build 3
+                // carried each agent twice (91 of its 163 MB).
+                code.push_str(&format!("pub static {name}: Option<&[u8]> = Some(include_bytes!({:?}));\n", path.display().to_string()));
             }
-            None => code.push_str(&format!("pub const {name}: Option<&[u8]> = None;\n")),
+            None => code.push_str(&format!("pub static {name}: Option<&[u8]> = None;\n")),
         }
     }
     std::fs::write(out, code).unwrap();
@@ -65,4 +69,36 @@ fn build_commit() {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     });
     println!("cargo:rustc-env=SPM_BUILD_COMMIT={}", commit.unwrap_or_else(|| "unknown".into()));
+}
+
+/// The day this build was made (SPM_BUILD_DATE, UTC, YYYY-MM-DD), for
+/// About and the support file. SPM_BUILD_DATE overrides it, else
+/// SOURCE_DATE_EPOCH (reproducible builds), else today. "unknown" when the
+/// clock cannot be read. It is set when this script runs, which is on a new
+/// commit (see build_commit) or a clean build.
+fn build_date() {
+    println!("cargo:rerun-if-env-changed=SPM_BUILD_DATE");
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    let date = std::env::var("SPM_BUILD_DATE").ok().filter(|d| !d.is_empty()).or_else(|| {
+        let secs = match std::env::var("SOURCE_DATE_EPOCH").ok().and_then(|s| s.trim().parse::<u64>().ok()) {
+            Some(s) => s,
+            None => std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs(),
+        };
+        Some(civil_date(secs / 86_400))
+    });
+    println!("cargo:rustc-env=SPM_BUILD_DATE={}", date.unwrap_or_else(|| "unknown".into()));
+}
+
+/// Days since 1970-01-01 as YYYY-MM-DD (Howard Hinnant's civil_from_days).
+fn civil_date(days: u64) -> String {
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
 }

@@ -43,10 +43,43 @@ impl Version {
 /// files (a Docker install can use any, by image tag). Blocking. An error
 /// means the list could not be read: the caller falls back to the latest
 /// release alone.
+///
+/// Docker: only versions whose image is on Docker Hub; without GitHub's
+/// list, Docker Hub's numbered tags alone (no dates or notes). Native:
+/// GitHub's releases that carry this system's files.
 pub fn versions(native: bool) -> Result<Vec<Version>, String> {
-    let all = releases::fetch(releases::SENTIENT_REPO)?;
+    use sentient_installer_core::dockerhub;
+    let all = match releases::fetch(releases::SENTIENT_REPO) {
+        Ok(all) => all,
+        Err(e) if !native => {
+            let tags = dockerhub::tags(dockerhub::SENTIENT_IMAGE, false).map_err(|_| e)?;
+            return Ok(from_tags(&tags.value));
+        }
+        Err(e) => return Err(e),
+    };
     let required = sentient_installer_core::native::required_bundle_files();
-    Ok(pickable(&all, native.then_some(required.as_slice())))
+    let list = pickable(&all, native.then_some(required.as_slice()));
+    if native {
+        return Ok(list);
+    }
+    // Docker Hub not reachable: the list as GitHub has it.
+    Ok(match dockerhub::tags(dockerhub::SENTIENT_IMAGE, false) {
+        Ok(tags) => published(list, &tags.value),
+        Err(_) => list,
+    })
+}
+
+/// The versions whose image tag is published.
+fn published(list: Vec<Version>, tags: &[String]) -> Vec<Version> {
+    list.into_iter().filter(|v| tags.iter().any(|t| *t == v.version)).collect()
+}
+
+/// Docker Hub's plain numbered tags as versions, newest first.
+fn from_tags(tags: &[String]) -> Vec<Version> {
+    sentient_installer_core::dockerhub::on_channel(tags, releases::Channel::Stable)
+        .into_iter()
+        .map(|version| Version { version, date: String::new(), summary: String::new() })
+        .collect()
 }
 
 /// The releases a picker lists: numbered full releases holding `required`
@@ -94,6 +127,15 @@ pub fn download(version: Option<&str>, sink: &ProgressFn) -> Result<(String, Pat
     };
     let (m, trust) = manifest::fetch_signed(&url, started)?;
     m.wanted()?;
+    // Native Linux: a server binary this glibc cannot load is not
+    // downloaded (Setup and the Update page say so before; this covers
+    // every other way here, the agent's install on a server too).
+    if cfg!(target_os = "linux") {
+        use sentient_installer_core::glibc;
+        if let glibc::NativeGlibc::Blocked(why) = glibc::decide(&m.version, m.min_glibc(), &glibc::local(), &glibc::local_os_name(), if cfg!(feature = "gui") { glibc::Here::Computer } else { glibc::Here::Server }) {
+            return Err(why);
+        }
+    }
     if let Some(w) = trust.warning(&format!("SENTIENT {}", m.version)) {
         sink(sentient_installer_core::progress::Progress::Log { line: w });
     }
@@ -142,6 +184,17 @@ mod tests {
         assert_eq!(native, ["4.4.0.1", "4.3.0.57"]);
         let docker: Vec<String> = pickable(&all, None).into_iter().map(|v| v.version).collect();
         assert_eq!(docker, ["4.4.0.1", "4.3.0.58", "4.3.0.57"]);
+    }
+
+    #[test]
+    fn a_docker_picker_lists_only_published_images() {
+        let all = vec![rel("4.4.0.2", false, &["manifest.json"]), rel("4.4.0.1", false, &["manifest.json"]), rel("4.3.0.58", false, &["manifest.json"])];
+        let tags: Vec<String> = ["latest", "4.4.0.1", "4.3.0.58", "nightly"].iter().map(|s| s.to_string()).collect();
+        let got: Vec<String> = published(pickable(&all, None), &tags).into_iter().map(|v| v.version).collect();
+        assert_eq!(got, ["4.4.0.1", "4.3.0.58"]);
+        // Without GitHub: the numbered tags, newest first.
+        let got: Vec<String> = from_tags(&tags).into_iter().map(|v| v.version).collect();
+        assert_eq!(got, ["4.4.0.1", "4.3.0.58"]);
     }
 
     #[test]

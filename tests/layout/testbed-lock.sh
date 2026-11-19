@@ -44,10 +44,13 @@ free_stale() {
 }
 
 free_stale
+# Our mark in the sidecar file: only the run that took the lock clears
+# it (a waiter that gave up used to wipe the holder's record).
+TOKEN="tbl-$$-$RANDOM"
 # The command in its own process group; flock -o keeps the lock out of it.
 # shellcheck disable=SC2016
 setsid flock -o -w "$WAIT" "$LOCK" bash -c '
-  echo "$$ $(date -u +%FT%TZ) $*" > "'"$INFO"'"
+  echo "$$ $(date -u +%FT%TZ) $* #'"$TOKEN"'" > "'"$INFO"'"
   exec timeout --kill-after=30 '"$TIMEOUT"' "$@"
 ' bash "$@" &
 child=$!
@@ -55,6 +58,9 @@ trap 'kill -TERM -- -"$child" 2>/dev/null; sleep 2; kill -KILL -- -"$child" 2>/d
 wait "$child"; rc=$?
 trap - EXIT INT TERM
 [ $rc -eq 124 ] && echo "testbed-lock: '$*' passed its time limit (${TIMEOUT}s) and was stopped" >&2
-[ $rc -eq 1 ] && ! [ -s "$INFO" ] && echo "testbed-lock: could not take the lock within ${WAIT}s" >&2
-: > "$INFO"
+if grep -q " #$TOKEN\$" "$INFO" 2>/dev/null; then
+  : > "$INFO"
+elif [ $rc -eq 1 ]; then
+  echo "testbed-lock: could not take the lock within ${WAIT}s (held by: $(cut -c1-120 "$INFO" 2>/dev/null))" >&2
+fi
 exit $rc

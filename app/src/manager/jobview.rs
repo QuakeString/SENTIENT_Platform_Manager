@@ -59,12 +59,15 @@ pub struct JobView {
     actions: Vec<AnyElement>,
     cancel: Cancel,
     hide_line: Option<fn(&str) -> bool>,
+    /// The job stopped on purpose and goes on later (Windows restarts):
+    /// what its stopped step says instead of a failure.
+    paused: Option<SharedString>,
 }
 
 impl JobView {
     /// `title` names the action ("Backing up DEV-01").
     pub fn new(id: &'static str, title: impl Into<String>, job: &Entity<Job>) -> Self {
-        Self { id, title: title.into(), job: job.clone(), pill: None, result: None, extra: Vec::new(), actions: Vec::new(), cancel: Cancel::Cannot(NO_CANCEL), hide_line: None }
+        Self { id, title: title.into(), job: job.clone(), pill: None, result: None, extra: Vec::new(), actions: Vec::new(), cancel: Cancel::Cannot(NO_CANCEL), hide_line: None, paused: None }
     }
 
     /// A pill of the page's own ("Rolled back") instead of Running/Done/Failed.
@@ -89,6 +92,13 @@ impl JobView {
     /// primary one, at the right end.
     pub fn actions(mut self, actions: impl IntoIterator<Item = AnyElement>) -> Self {
         self.actions.extend(actions);
+        self
+    }
+
+    /// The job stopped on purpose and continues later: its stopped step is
+    /// not shown as failed (no red mark, no red bar) and says `next`.
+    pub fn paused(mut self, next: impl Into<SharedString>) -> Self {
+        self.paused = Some(next.into());
         self
     }
 
@@ -118,7 +128,12 @@ impl JobView {
         let pct = job.overall();
         let elapsed = job.elapsed().map(clock).unwrap_or_default();
         let at = job.current().or_else(|| rows.iter().position(|r| r.state == RowState::Failed));
+        let paused = self.paused.clone().filter(|_| matches!(state, JobState::Failed(_)));
         let nums = match &state {
+            JobState::Failed(_) if paused.is_some() => match at {
+                Some(i) if n > 0 => format!("Continues at step {} of {n} after the restart · {elapsed}", i + 1),
+                _ => format!("Continues after the restart · {elapsed}"),
+            },
             JobState::Done(_) if n > 0 => format!("All {n} steps · {elapsed}"),
             JobState::Done(_) => format!("Finished · {elapsed}"),
             JobState::Failed(_) => match at {
@@ -133,11 +148,16 @@ impl JobView {
         };
         let bar_color = match &state {
             JobState::Done(_) => theme.success_foreground,
-            JobState::Failed(_) => theme.danger,
+            JobState::Failed(_) if paused.is_none() => theme.danger,
             _ => theme.primary,
         };
         let step_pct = job.percent();
         let steps = v_flex().gap_0().children(rows.iter().enumerate().map(|(i, r)| {
+            // Paused: the stopped step waits, it did not fail.
+            if let (Some(next), RowState::Failed) = (&paused, r.state) {
+                let time = r.time().map(clock).unwrap_or_default();
+                return step_row(theme, self.id, i, RowState::Pending, r.step.name.clone(), next.to_string(), time);
+            }
             let sub = match r.state {
                 RowState::Running => {
                     let s = r.sub.clone().map(|s| s.to_string()).unwrap_or_else(|| r.step.detail.clone());
@@ -183,7 +203,7 @@ impl JobView {
                     div()
                         .id(SharedString::from(format!("{}-cancel-why", self.id)))
                         .child(ui::button(SharedString::from(format!("{}-cancel", self.id))).outline().label("Cancel").disabled(true))
-                        .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(why).build(w, cx))
+                        .tooltip(crate::ui::tooltip(why))
                         .into_any_element(),
                 ),
                 Cancel::Hide(on) => foot.push(ui::button(SharedString::from(format!("{}-hide", self.id))).outline().label("Hide").on_click(move |_, w, cx| on(w, cx)).into_any_element()),
@@ -313,11 +333,11 @@ fn log_card(theme: &gpui_kit::component::Theme, id: &'static str, entity: &Entit
                 .items_center()
                 .child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child("Log"))
                 .when_some(kept_note, |r, t| r.child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.)).text_color(theme.muted_foreground).child(t)))
-                .child(ui::probed(ui::button(SharedString::from(format!("{id}-log-copy"))).outline().small().label("Copy").disabled(count == 0).on_click(move |_, _, cx| {
+                .child(ui::probed(ui::button(SharedString::from(format!("{id}-log-copy"))).outline().label("Copy").disabled(count == 0).on_click(move |_, _, cx| {
                     let text = copy_job.read(cx).log_text();
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                 })))
-                .child(ui::probed(ui::button(SharedString::from(format!("{id}-log-save"))).outline().small().label("Save").disabled(count == 0).on_click(move |_, _, cx| save_log(&save_job, cx)))),
+                .child(ui::probed(ui::button(SharedString::from(format!("{id}-log-save"))).outline().label("Save").disabled(count == 0).on_click(move |_, _, cx| save_log(&save_job, cx)))),
         )
         .child(
             div()
@@ -338,7 +358,7 @@ fn log_card(theme: &gpui_kit::component::Theme, id: &'static str, entity: &Entit
                     list.into_any_element()
                 })
                 .when(!follow.get() && count > 0, |d| {
-                    d.child(div().absolute().right(px(14.)).bottom(px(12.)).child(ui::probed(ui::button(SharedString::from(format!("{id}-log-latest"))).primary().small().icon(IconName::ChevronDown).label("Latest").on_click(move |_, _, cx| {
+                    d.child(div().absolute().right(px(14.)).bottom(px(12.)).child(ui::probed(ui::button(SharedString::from(format!("{id}-log-latest"))).primary().icon(IconName::ChevronDown).label("Latest").on_click(move |_, _, cx| {
                         at_end.set(true);
                         let n = jump_job.read(cx).log().len();
                         if n > 0 {

@@ -8,12 +8,13 @@
 //! one, and "Roll back last update" goes back to it.
 
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex, v_flex,
     button::ButtonVariants as _,
     checkbox::Checkbox,
-    menu::{DropdownMenu as _, PopupMenuItem},
+    menu::PopupMenuItem,
 };
 use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -28,6 +29,8 @@ use crate::jobs::{Job, JobState};
 use crate::ui::{self, Tone};
 use crate::updates::UpdateState;
 use sentient_installer_core::releases::Channel;
+use sentient_installer_core::licence_version::{self, Licence, LicenceRead};
+use crate::manager::licence_gate;
 
 pub struct UpdatePage {
     record: Option<InstallationRecord>,
@@ -42,9 +45,17 @@ pub struct UpdatePage {
     versions: Option<Result<Vec<Version>, String>>,
     /// The version picked in the list; None is the newest.
     chosen: Option<String>,
+    /// Docker: the version the container runs (crate::installation::
+    /// running_version), read in the background; None until read or when
+    /// it does not say.
+    running: Option<String>,
     job: Entity<Job>,
     /// Installing a new Platform Manager.
     manager_job: Entity<Job>,
+    /// The gateway on this computer (None while it is read), and its
+    /// update (crate::manager::gateway::gateway_update).
+    gateway: Option<sentient_installer_core::gateway::Status>,
+    gateway_job: Entity<Job>,
     /// Applying the changes for this installation (crate::changes).
     changes_job: Entity<Job>,
     /// The operator chose "Later" for those changes.
@@ -55,6 +66,20 @@ pub struct UpdatePage {
     /// The release notes shown in place of the update rows ("What's new").
     /// The version list and package choice ("Other version").
     show_other: bool,
+    /// The licence's allowed versions, read without a sign-in from
+    /// SENTIENT's database (crate::licence::read_versions); None while read,
+    /// or when it cannot be read that way (then Update signs in first).
+    licence: Option<Licence>,
+    /// What a sign-in from this page found (or that it was cancelled).
+    licence_signed: Option<LicenceRead>,
+    /// Screens: open the licence check of Update on the first frame
+    /// (SPM_DEBUG_LICENCE_DIALOG=<version>; "cancelled" in
+    /// SPM_DEBUG_LICENCE_SIGNED shows the could-not-be-checked dialog).
+    debug_gate: Option<String>,
+    /// Native Linux: this computer's C library and system, read once (an
+    /// update whose server needs a newer glibc is not offered).
+    libc: sentient_installer_core::glibc::Libc,
+    os_name: String,
     _observe: Subscription,
     _observe_updates: Subscription,
     _observe_manager: Subscription,
@@ -98,6 +123,14 @@ impl UpdatePage {
                 u.check(cx);
             }
         });
+        let gateway_job = cx.new(|_| Job::new());
+        let _observe_gateway = cx.observe(&gateway_job, |page: &mut Self, job, cx| {
+            if !job.read(cx).is_running() {
+                page.refresh_gateway(cx);
+                page.updates.update(cx, |u, cx| u.check(cx));
+            }
+            cx.notify();
+        });
         let changes_job = cx.new(|_| Job::new());
         let _observe_changes = cx.observe(&changes_job, |page: &mut Self, job, cx| {
             if !job.read(cx).is_running() {
@@ -105,7 +138,15 @@ impl UpdatePage {
             }
             cx.notify();
         });
+        let native_linux = cfg!(target_os = "linux") && record.as_ref().is_some_and(|r| r.platform().needs_package());
+        let (libc, os_name) = if native_linux {
+            (sentient_installer_core::glibc::local(), sentient_installer_core::glibc::local_os_name())
+        } else {
+            (Default::default(), String::new())
+        };
         let mut page = Self {
+            libc,
+            os_name,
             record,
             package: None,
             accept_breaking: false,
@@ -113,28 +154,166 @@ impl UpdatePage {
             updates,
             versions: None,
             chosen: None,
+            running: None,
             job,
             manager_job,
+            gateway: None,
+            gateway_job,
             changes_job,
             changes_later: false,
             run_title: None,
-            show_other: false,
+            // Renders: the "Other version or package" panel open.
+            show_other: cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_UPDATE_OTHER").is_some(),
+            licence: None,
+            licence_signed: if cfg!(debug_assertions) && std::env::var("SPM_DEBUG_LICENCE_SIGNED").is_ok_and(|v| v == "cancelled") {
+                Some(LicenceRead::Failed("cancelled".into()))
+            } else {
+                None
+            },
+            debug_gate: std::env::var("SPM_DEBUG_LICENCE_DIALOG").ok().filter(|_| cfg!(debug_assertions)),
             _observe,
             _observe_updates,
             _observe_manager,
-            _subs: vec![_observe_changes],
+            _subs: vec![_observe_changes, _observe_gateway],
             _tasks: vec![],
         };
         page.refresh_rollback(cx);
         page.refresh_versions(cx);
+        page.refresh_gateway(cx);
+        page.refresh_licence(cx);
         page
+    }
+
+    /// Read the licence's allowed versions without a sign-in (in the
+    /// background). Native Linux without administrator rights would ask for
+    /// the password: left unread, Update signs in to SENTIENT instead.
+    fn refresh_licence(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone() else { return };
+        if crate::dbstatus::needs_admin(&record) && !crate::rootjob::is_root() {
+            return;
+        }
+        self._tasks.push(cx.spawn(async move |this, cx| {
+            let got = cx.background_executor().spawn(async move { crate::licence::read_versions(&record) }).await;
+            this.update(cx, |p, cx| {
+                p.licence = got;
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// What is known of the licence now (crate::manager::licence_gate).
+    fn licence_read(&self) -> LicenceRead {
+        let key = crate::licence::Target::Local(None).key();
+        match (&self.licence_signed, licence_gate::known(&key, self.licence.as_ref())) {
+            (Some(r @ LicenceRead::Read(_)), _) => r.clone(),
+            (_, k @ LicenceRead::Read(_)) => k,
+            (Some(f), _) => f.clone(),
+            _ => LicenceRead::NotRead,
+        }
+    }
+
+    /// Update to `version` (build version `build`) once the licence check
+    /// allows it: `go` runs the update. Going back (`older`) keeps its own
+    /// confirmation.
+    fn gated(&mut self, version: String, build: String, older: bool, go: Rc<dyn Fn(&mut App)>, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        let older_confirm: Rc<dyn Fn(&mut Window, &mut App)> = {
+            let (this, v) = (this.clone(), version.clone());
+            Rc::new(move |window: &mut Window, cx: &mut App| {
+                this.update(cx, |p, cx| p.confirm_older(v.clone(), window, cx)).ok();
+            })
+        };
+        let read = self.licence_read();
+        let normal: Rc<dyn Fn(&mut Window, &mut App)> = if older {
+            older_confirm.clone()
+        } else {
+            let (installed, v, b, go) = (self.installed(), version.clone(), build.clone(), go.clone());
+            let read = read.clone();
+            Rc::new(move |window: &mut Window, cx: &mut App| {
+                licence_gate::confirm_update("this computer", &v, &installed, &read, &b, go.clone(), window, cx);
+            })
+        };
+        let anyway: Rc<dyn Fn(&mut Window, &mut App)> = if older { older_confirm } else { Rc::new(move |_: &mut Window, cx: &mut App| go(cx)) };
+        let ask = licence_gate::Ask {
+            target: crate::licence::Target::Local(self.record.clone()),
+            place: "this computer".into(),
+            version,
+            build,
+            normal,
+            anyway,
+            learned: Rc::new(move |r, cx| {
+                this.update(cx, |p, cx| {
+                    p.licence_signed = Some(r);
+                    cx.notify();
+                })
+                .ok();
+            }),
+        };
+        licence_gate::guard(Rc::new(ask), read, window, cx);
+    }
+
+    /// A page action as `go` for [`Self::gated`].
+    fn runs(&self, f: impl Fn(&mut Self, &mut Context<Self>) + 'static, cx: &mut Context<Self>) -> Rc<dyn Fn(&mut App)> {
+        let this = cx.entity().downgrade();
+        Rc::new(move |cx: &mut App| {
+            this.update(cx, |p, cx| f(p, cx)).ok();
+        })
+    }
+
+    /// Read the gateway here (in the background).
+    fn refresh_gateway(&mut self, cx: &mut Context<Self>) {
+        self._tasks.push(cx.spawn(async move |this, cx| {
+            let s = cx.background_executor().spawn(async { crate::manager::gateway::local_status() }).await;
+            this.update(cx, |p, cx| {
+                p.gateway = Some(s);
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Update the gateway to the offered release (gateway::update: the
+    /// older Python gateway is carried to the Rust one the same way).
+    fn start_gateway_update(&mut self, cx: &mut Context<Self>) {
+        let Some(offer) = self.updates.read(cx).found.as_ref().and_then(|f| f.gateway.as_ref().ok().cloned().flatten()) else { return };
+        let (older, windows_service) = self.gateway.as_ref().map(|s| (!s.installed && s.legacy.is_some(), s.kind() == "windows-service")).unwrap_or_default();
+        let plan = crate::manager::gateway::update_plan(older, windows_service, &offer.version);
+        self.gateway_job.update(cx, |job, _| job.set_plan(plan));
+        self.gateway_job.update(cx, |job, cx| job.start(move |sink| sentient_installer_core::gateway::update(&sink, &offer), cx));
+        cx.notify();
+    }
+
+    /// Read which version the Docker container runs (the tag may be
+    /// "latest").
+    fn refresh_running(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.record.clone().filter(|r| r.engine == Engine::Docker) else { return };
+        let task = cx.spawn(async move |this, cx| {
+            let running = cx.background_executor().spawn(async move { crate::installation::running_version(&record) }).await;
+            this.update(cx, |page, cx| {
+                page.running = running;
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
     }
 
     fn refresh_versions(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         let native = record.platform().needs_package();
         let task = cx.spawn(async move |this, cx| {
-            let found = cx.background_executor().spawn(async move { crate::online::versions(native) }).await;
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    // Renders: a canned list, SPM_DEBUG_VERSIONS=4.4.0.3,4.4.0.2.
+                    #[cfg(debug_assertions)]
+                    if let Ok(list) = std::env::var("SPM_DEBUG_VERSIONS") {
+                        return Ok(list.split(',').map(|v| Version { version: v.into(), date: "2026-11-17".into(), summary: String::new() }).collect());
+                    }
+                    crate::online::versions(native)
+                })
+                .await;
             this.update(cx, |page, cx| {
                 page.versions = Some(found);
                 cx.notify();
@@ -142,6 +321,18 @@ impl UpdatePage {
             .ok();
         });
         self._tasks.push(task);
+    }
+
+    /// Native Linux: why SENTIENT `version` cannot run on this computer's
+    /// glibc (`min_glibc`: its manifest's, when read; else the release
+    /// table). None: it can, or it is not known.
+    fn glibc_block(&self, version: &str, min_glibc: Option<&str>) -> Option<String> {
+        use sentient_installer_core::glibc;
+        let r = self.record.as_ref()?;
+        if !cfg!(target_os = "linux") || !r.platform().needs_package() {
+            return None;
+        }
+        glibc::decide(version, glibc::min_glibc(min_glibc, version), &self.libc, &self.os_name, glibc::Here::Computer).blocked().map(str::to_string)
     }
 
     /// The picked version, or the newest listed.
@@ -168,8 +359,22 @@ impl UpdatePage {
         self.record.as_ref().map(crate::jobplan::Shape::of).unwrap_or_default()
     }
 
+    /// The version updates compare with: what the container runs (Docker),
+    /// else the recorded one.
     fn installed(&self) -> String {
-        self.record.as_ref().map(|r| r.sentient_version.clone()).unwrap_or_default()
+        self.running.clone().or_else(|| self.record.as_ref().map(|r| r.sentient_version.clone())).unwrap_or_default()
+    }
+
+    /// The version as shown: "4.4.0.3 (image tag latest)".
+    fn shown(&self) -> Option<String> {
+        self.record.as_ref().map(|r| crate::headless::shown_from(r, self.running.as_deref()))
+    }
+
+    /// Docker: what moving to `version` does (crate::updating::docker_step).
+    fn docker_step(&self, version: &str) -> Option<crate::updating::DockerStep> {
+        let r = self.record.as_ref().filter(|r| r.engine == Engine::Docker)?;
+        let tag = sentient_installer_core::distro::docker_ops::image_tag(&r.stack.image);
+        Some(crate::updating::docker_step(version, self.running.as_deref(), tag, r.stack.external.is_some()))
     }
 
     /// Install `version` (a release number, also its tag): pull its image or
@@ -180,7 +385,7 @@ impl UpdatePage {
     }
 
     fn confirm_older(&mut self, version: String, window: &mut Window, cx: &mut Context<Self>) {
-        let installed = self.record.as_ref().map(|r| r.sentient_version.clone()).unwrap_or_default();
+        let installed = self.installed();
         let this = cx.entity().downgrade();
         let text = format!(
             "SENTIENT {version} is older than {installed}, the version installed here. It is installed like an update: \
@@ -205,14 +410,22 @@ impl UpdatePage {
         });
     }
 
-    /// Docker: update to `version` by moving the image to that tag.
+    /// Docker: update to `version` (its image pulled), and the compose file
+    /// then names its tag; the version it runs already only changes the tag
+    /// (crate::updating::docker_step).
     fn run_docker_to(&mut self, version: String, cx: &mut Context<Self>) {
-        let Some(mut record) = self.record.clone() else { return };
-        record.stack.image = retag(&record.stack.image, &version);
+        let Some(record) = self.record.clone() else { return };
+        let target = retag(&record.stack.image, &version);
         let accept = self.accept_breaking;
-        self.plan_run(format!("Updating SENTIENT {} to {version}", self.installed()), crate::jobplan::update(self.shape(), None, Some(&version)), cx);
+        let how = self.docker_step(&version).unwrap_or(crate::updating::DockerStep::Update);
+        let title = if how == crate::updating::DockerStep::QuickPin {
+            format!("Pinning SENTIENT {version} to its image tag")
+        } else {
+            format!("Updating SENTIENT {} to {version}", self.installed())
+        };
+        self.plan_run(title, crate::jobplan::docker_to(self.shape(), &version, how), cx);
         self.job.update(cx, |job, cx| {
-            job.start(move |sink| crate::updating::run(record, None, accept, sink).map(|_| ()), cx)
+            job.start(move |sink| crate::updating::run_to(record, None, Some(&target), accept, sink).map(|_| ()), cx)
         });
     }
 
@@ -242,6 +455,7 @@ impl UpdatePage {
     }
 
     fn refresh_rollback(&mut self, cx: &mut Context<Self>) {
+        self.refresh_running(cx);
         let Some(record) = self.record.clone() else { return };
         self.rollback = None;
         let task = cx.spawn(async move |this, cx| {
@@ -305,7 +519,38 @@ impl UpdatePage {
         .detach();
     }
 
+    /// Docker: what "Update SENTIENT" does (crate::updating::plain_update):
+    /// a pinned install goes to the newest release listed, or the offer.
+    fn plain_update(&self, cx: &App) -> Option<crate::updating::PlainUpdate> {
+        let r = self.record.as_ref().filter(|r| r.engine == Engine::Docker)?;
+        let newest = match &self.versions {
+            Some(Ok(list)) if !list.is_empty() => Some(list[0].version.clone()),
+            // An image not published yet is not pulled.
+            _ => self.updates.read(cx).sentient().filter(|o| !o.image_missing).map(|o| o.version.clone()),
+        };
+        let tag = sentient_installer_core::distro::docker_ops::image_tag(&r.stack.image);
+        Some(crate::updating::plain_update(tag, r.stack.external.is_some(), self.running.as_deref(), newest.as_deref()))
+    }
+
+    /// "Update SENTIENT": the licence check for the version it goes to
+    /// (when known: a package folder names its version), then [`Self::run`].
+    fn gate_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let to = match self.plain_update(cx) {
+            Some(crate::updating::PlainUpdate::To(v)) => Some(v),
+            _ => self.package.as_deref().and_then(crate::updating::package_version),
+        };
+        let go = self.runs(|p, cx| p.run(cx), cx);
+        match to {
+            Some(v) => self.gated(v.clone(), licence_version::build_version(None, &v), false, go, window, cx),
+            None => go(cx),
+        }
+    }
+
     fn run(&mut self, cx: &mut Context<Self>) {
+        if let Some(crate::updating::PlainUpdate::To(v)) = self.plain_update(cx) {
+            self.run_docker_to(v, cx);
+            return;
+        }
         let Some(record) = self.record.clone() else { return };
         let package = self.package.clone();
         let accept = self.accept_breaking;
@@ -349,20 +594,26 @@ impl UpdatePage {
         let Some(Ok(list)) = &self.versions else { return None };
         let chosen = self.chosen_version()?;
         let movement = releases::movement(&chosen.version, installed);
-        let items: Vec<(Version, bool)> = list.iter().map(|v| (v.clone(), v.version == chosen.version)).collect();
+        let how = self.docker_step(&chosen.version);
+        let read = self.licence_read();
+        let items: Vec<(Version, bool, &'static str)> = list
+            .iter()
+            .map(|v| (v.clone(), v.version == chosen.version, licence_gate::menu_note(&read, &licence_version::build_version(None, &v.version))))
+            .collect();
         let installed_owned = installed.to_string();
-        let menu = crate::ui::button("version-pick")
-            .outline()
-            .label(format!("{} ▾", chosen.version))
-            .disabled(busy)
-            .dropdown_menu({
+        // Docker: the entry the container runs (the tag may say "latest").
+        let same_mark = if docker { " (running)" } else { " (installed)" };
+        let menu = crate::ui::fitted_dropdown(
+            "version-pick",
+            crate::ui::button("version-pick").outline().label(format!("{} ▾", chosen.version)).disabled(busy),
+            {
                 let this = cx.entity().downgrade();
                 move |menu, _, _| {
-                    let mut menu = menu.max_h(px(320.)).scrollable(true);
-                    for (v, checked) in &items {
+                    let mut menu = menu;
+                    for (v, checked, note) in &items {
                         let mark = match releases::movement(&v.version, &installed_owned) {
-                            Move::Same => " (installed)",
-                            _ => "",
+                            Move::Same => same_mark,
+                            _ => note,
                         };
                         let this = this.clone();
                         let pick = v.version.clone();
@@ -377,24 +628,58 @@ impl UpdatePage {
                     }
                     menu
                 }
-            });
+            },
+        );
         let version = chosen.version.clone();
+        let tag = self.record.as_ref().map(|r| sentient_installer_core::distro::docker_ops::image_tag(&r.stack.image).to_string()).unwrap_or_default();
+        let floating = docker && !releases::is_numbered(&tag);
+        let external = self.record.as_ref().is_some_and(|r| r.stack.external.is_some());
+        // Native Linux: a version this glibc cannot run is not offered.
+        let glibc_why = if movement == Move::Same { None } else { self.glibc_block(&chosen.version, None) };
+        let off = glibc_why.is_some();
         let action = match movement {
             Move::Newer => crate::ui::button("install-version")
                 .primary()
                 .label(format!("Update to {version}"))
+                .disabled(busy || off)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let v = version.clone();
+                    let go = this.runs(move |p, cx| p.install_version(v.clone(), cx), cx);
+                    this.gated(version.clone(), licence_version::build_version(None, &version), false, go, window, cx);
+                })),
+            // Running it under another tag (latest): only the tag changes.
+            Move::Same if how == Some(crate::updating::DockerStep::QuickPin) => crate::ui::button("install-version")
+                .primary()
+                .label(format!("Pin to {version}"))
                 .disabled(busy)
                 .on_click(cx.listener(move |this, _, _, cx| this.install_version(version.clone(), cx))),
+            Move::Same if docker => crate::ui::button("install-version").outline().label(format!("{version} is running")).disabled(true),
             Move::Same => crate::ui::button("install-version").outline().label(format!("{version} is installed")).disabled(true),
             Move::Older => crate::ui::button("install-version")
                 .outline()
                 .label(format!("Go back to {version}"))
-                .disabled(busy)
-                .on_click(cx.listener(move |this, _, window, cx| this.confirm_older(version.clone(), window, cx))),
+                .disabled(busy || off)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let v = version.clone();
+                    let go = this.runs(move |p, cx| p.install_version(v.clone(), cx), cx);
+                    this.gated(version.clone(), licence_version::build_version(None, &version), true, go, window, cx);
+                })),
         };
+        // Whether the licence covers the picked version (not for the one running).
+        let read = self.licence_read();
+        let chosen_pill = (movement != Move::Same).then(|| licence_gate::pill(theme, &read, &licence_version::build_version(None, &chosen.version)));
+        let released = if chosen.date.is_empty() { String::new() } else { format!(", released {}", chosen.date) };
         let about = match movement {
+            _ if off => glibc_why.clone().unwrap_or_default(),
+            Move::Same if how == Some(crate::updating::DockerStep::QuickPin) => {
+                format!("runs now under the image tag {tag}: only the tag changes, SENTIENT restarts once, no update and no database copy")
+            }
+            Move::Same if floating && external => format!("runs now under the image tag {tag} of your compose file: take the compose file over first (Repair and uninstall) to pin it"),
+            Move::Same => String::new(),
             Move::Older => "older than the installed version: possible only while both use the same database, checked before anything changes".to_string(),
-            _ if docker => format!("pulls quakestring/sentient:{}{}", chosen.version, if chosen.date.is_empty() { String::new() } else { format!(", released {}", chosen.date) }),
+            _ if docker && floating && external => format!("pulls quakestring/sentient:{}{released}; it runs as :{tag}, the tag your compose file names", chosen.version),
+            _ if docker && floating => format!("pulls quakestring/sentient:{}{released}, and the compose file names it instead of :{tag}", chosen.version),
+            _ if docker => format!("pulls quakestring/sentient:{}{released}", chosen.version),
             _ => format!("downloaded from the SENTIENT releases site and checked before use{}", if chosen.date.is_empty() { String::new() } else { format!("; released {}", chosen.date) }),
         };
         Some(
@@ -407,6 +692,7 @@ impl UpdatePage {
                         .child(div().text_sm().child("Version"))
                         .child(menu)
                         .child(action)
+                        .children(chosen_pill)
                         .child(div().min_w_0().text_sm().text_color(theme.muted_foreground).child(about)),
                 )
                 .when(!chosen.summary.is_empty(), |c| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(chosen.summary.clone())))
@@ -431,7 +717,7 @@ impl UpdatePage {
         let u = self.updates.read(cx);
         let (offer, installed, name) = match product {
             Product::Manager => (u.manager().cloned(), crate::updates::manager_version().to_string(), "Platform Manager"),
-            Product::Sentient => (u.sentient().cloned(), self.record.as_ref().map(|r| r.sentient_version.clone()).unwrap_or_default(), "SENTIENT"),
+            Product::Sentient => (u.sentient().cloned(), self.installed(), "SENTIENT"),
         };
         let Some(o) = offer else { return };
         open_notes(name, &installed, &o, cx);
@@ -444,6 +730,13 @@ impl UpdatePage {
         self.manager_job.update(cx, |job, _| job.set_plan(plan));
         self.manager_job.update(cx, |job, cx| job.start(move |sink| crate::updates::install_manager(&offer, &sink).map(|_| ()), cx));
         cx.notify();
+    }
+
+    /// "Update to <offer>": the licence check, then the update.
+    fn gate_offer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(o) = self.updates.read(cx).sentient().cloned() else { return };
+        let go = self.runs(|p, cx| p.start_sentient_update(cx), cx);
+        self.gated(o.version.clone(), o.licence_build(), false, go, window, cx);
     }
 
     /// Update SENTIENT to the offered version.
@@ -568,7 +861,7 @@ impl UpdatePage {
         let last = u.last_checked();
         let found = u.found.clone();
         let this = crate::updates::manager_version();
-        let installed = self.record.as_ref().map(|r| r.sentient_version.clone());
+        let installed = self.shown();
         let mjob = self.manager_job.read(cx);
         let installing = mjob.is_running();
         let mfailed = match mjob.state() {
@@ -583,6 +876,8 @@ impl UpdatePage {
             }))
         }));
 
+        // The offers are from an old release list (GitHub refused): said quietly.
+        let stale = self.updates.read(cx).stale_note();
         // A6/A7: neither product could be checked.
         let unreachable = found.as_ref().and_then(|f| match (&f.manager, &f.sentient) {
             (Err(e), Err(_)) | (Err(e), Ok(None)) if installed.is_none() || f.sentient.is_err() => Some(e.clone()),
@@ -650,7 +945,9 @@ impl UpdatePage {
                 (Some(_), Some(o)) => Offered::Newer(o),
             };
             let (sub, pill) = sentient_summary(inst, state, manager_offer.is_some());
-            let mut row = Self::row(theme, sentient_offer.is_some() && manager_offer.is_none(), "SENTIENT", sub);
+            // Nothing offered: what the licence covers, as a quiet line.
+            let licence_note = sentient_offer.is_none().then(|| licence_gate::row_note(&self.licence_read()));
+            let mut row = product_row_noted(theme, sentient_offer.is_some() && manager_offer.is_none(), ui::Product::Sentient, "SENTIENT", sub, licence_note);
             if let Some((tone, text)) = pill {
                 row = row.child(ui::pill(theme, tone, text));
             }
@@ -661,13 +958,20 @@ impl UpdatePage {
                 if !docker {
                     row = row.children(signature_note(theme, o, "sentient"));
                 }
-                row = row.child(crate::ui::probed(
-                    crate::ui::button("sentient-update")
-                        .primary()
-                        .label(format!("Update to {}", o.version))
-                        .disabled(first || busy || (!docker && o.unsigned && o.signing_started))
-                        .on_click(cx.listener(|this, _, _, cx| this.start_sentient_update(cx))),
-                ));
+                // Docker, image not on Docker Hub yet: said instead of the button.
+                // Native Linux, a glibc too old for it: said instead of the button.
+                match o.blocker().filter(|_| docker).or_else(|| self.glibc_block(&o.version, o.min_glibc.as_deref())) {
+                    Some(why) => row = row.child(div().text_sm().text_color(theme.muted_foreground).child(why)),
+                    None => {
+                        row = row.child(licence_gate::pill(theme, &self.licence_read(), &o.licence_build())).child(crate::ui::probed(
+                            crate::ui::button("sentient-update")
+                                .primary()
+                                .label(format!("Update to {}", o.version))
+                                .disabled(first || busy || (!docker && o.unsigned && o.signing_started))
+                                .on_click(cx.listener(|this, _, window, cx| this.gate_offer(window, cx))),
+                        ));
+                    }
+                }
                 row = row.child(crate::ui::probed(crate::ui::button("sentient-notes").outline().label("What's new").on_click(cx.listener(|this, _, _, cx| this.show_notes(Product::Sentient, cx)))));
             }
             let _ = docker;
@@ -676,6 +980,46 @@ impl UpdatePage {
                 cx.notify();
             }))))
         });
+
+        // The gateway here: its update (the older Python one's too).
+        let gateway_offer = found.as_ref().and_then(|f| f.gateway.as_ref().ok().cloned().flatten());
+        let gateway_checked = found.as_ref().map(|f| f.gateway.is_ok());
+        let gw_busy = self.gateway_job.read(cx).is_running();
+        let gateway_row = self.gateway.as_ref().and_then(|s| {
+            let update = crate::manager::gateway::gateway_update(s, gateway_offer.as_ref(), cfg!(windows));
+            let (sub, pill) = match &update {
+                Some(u) => (u.about.clone(), None),
+                None => crate::manager::gateway::gateway_summary(s, if checking && found.is_none() { None } else { gateway_checked.or(Some(false)) })?,
+            };
+            let mut row = product_row(theme, update.as_ref().is_some_and(|u| u.why.is_none()), ui::Product::Gateway, "Sentient Gateway", sub);
+            if let Some((tone, text)) = pill {
+                row = row.child(ui::pill(theme, tone, text));
+            }
+            if let Some(u) = update {
+                row = row.child(crate::manager::gateway::update_button(theme, "gateway-update", &u, gw_busy, std::rc::Rc::new({
+                    let this = cx.entity().downgrade();
+                    move |_, cx: &mut App| {
+                        this.update(cx, |p, cx| p.start_gateway_update(cx)).ok();
+                    }
+                })));
+            }
+            Some(row)
+        });
+        let gateway_progress = {
+            let j = self.gateway_job.read(cx);
+            let failed = matches!(j.state(), JobState::Failed(_));
+            (j.is_running() || failed || matches!(j.state(), JobState::Done(_))).then(|| {
+                let title = format!("Updating the Sentient Gateway to {}", gateway_offer.as_ref().map(|o| o.version.clone()).unwrap_or_default());
+                let mut acts: Vec<AnyElement> = Vec::new();
+                if !j.is_running() {
+                    acts.push(crate::ui::button("gateway-close").outline().label("Close").on_click(cx.listener(|this, _, _, cx| this.gateway_job.update(cx, |job, cx| job.reset(cx)))).into_any_element());
+                }
+                if failed {
+                    acts.push(crate::ui::button("gateway-retry").primary().label("Try again").on_click(cx.listener(|this, _, _, cx| this.start_gateway_update(cx))).into_any_element());
+                }
+                crate::manager::jobview::JobView::new("gw-update", title, &self.gateway_job).actions(acts).render(cx)
+            })
+        };
 
         // A5: a candidate the Stable channel leaves out.
         let hint = found.as_ref().and_then(|f| {
@@ -704,9 +1048,10 @@ impl UpdatePage {
                             .outline()
                             .label(if checking { "Checking" } else { "Check for updates" })
                             .disabled(checking)
-                            .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))),
+                            .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check_now(cx)))),
                     ),
             )
+            .when_some(stale, |p, n| p.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(n)))
             .when_some(unreachable, |p, e| {
                 p.child(
                     h_flex()
@@ -724,7 +1069,7 @@ impl UpdatePage {
                             "The release page could not be reached. Nothing was changed.".to_string()
                         }))
                         .when(!e.contains("limiting"), |r| {
-                            r.child(crate::ui::probed(crate::ui::button("retry-check").outline().label("Try again").on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx))))))
+                            r.child(crate::ui::probed(crate::ui::button("retry-check").outline().label("Try again").on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check_now(cx))))))
                         })
                         .child(crate::ui::probed(crate::ui::button("from-file").outline().label("Update from a file").on_click(cx.listener(|this, _, _, cx| this.update_from_file(cx))))),
                 )
@@ -732,6 +1077,8 @@ impl UpdatePage {
             .child(manager_row)
             .children(manager_progress)
             .children(sentient_row)
+            .children(gateway_row)
+            .children(gateway_progress)
             .when_some(hint, |p, h| p.child(div().px_3().py_2().rounded(theme.radius).bg(theme.accent).text_sm().child(h)))
             .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(format!("{} Last checked: {last}.", channel.about())))
             .child(
@@ -748,7 +1095,17 @@ impl UpdatePage {
 }
 
 impl Render for UpdatePage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(v) = self.debug_gate.take() {
+            let me = cx.entity().downgrade();
+            window.defer(cx, move |window, cx| {
+                me.update(cx, |p, cx| {
+                    let go = p.runs(|_, _| {}, cx);
+                    p.gated(v.clone(), licence_version::build_version(None, &v), false, go, window, cx);
+                })
+                .ok();
+            });
+        }
         let theme = cx.theme().clone();
         let page = ui::page(
             &theme,
@@ -782,7 +1139,17 @@ impl Render for UpdatePage {
         let native = record.platform().needs_package();
         let job = self.job.read(cx);
         let busy = job.is_running();
-        let can_run = !busy && (!native || self.package.is_some());
+        let plain = self.plain_update(cx);
+        let up_to_date = plain == Some(crate::updating::PlainUpdate::UpToDate);
+        // A package folder names its version: one this glibc cannot run is refused.
+        let package_why = self.package.as_deref().and_then(crate::updating::package_version).and_then(|v| self.glibc_block(&v, None));
+        let can_run = !busy && !up_to_date && (!native || self.package.is_some()) && package_why.is_none();
+        let update_label = match (&plain, busy) {
+            (_, true) => "Updating".to_string(),
+            (Some(crate::updating::PlainUpdate::To(v)), _) => format!("Update to {v}"),
+            (Some(crate::updating::PlainUpdate::UpToDate), _) => "Up to date".to_string(),
+            _ => "Update SENTIENT".to_string(),
+        };
         let outcome = match job.state() {
             JobState::Done(m) => Some((Tone::Good, m.clone())),
             JobState::Failed(m) => Some((Tone::Bad, m.clone())),
@@ -793,8 +1160,8 @@ impl Render for UpdatePage {
         page.when(show_other, |page| page.child(
             ui::panel(&theme)
                 .child(div().font_weight(FontWeight::MEDIUM).child("Other version or package"))
-                .child(ui::fact(&theme, "Installed version", record.sentient_version.clone()))
-                .when_some(self.picker(&theme, &record.sentient_version, record.engine == Engine::Docker, busy, cx), |panel, picker| panel.child(picker))
+                .child(ui::fact(&theme, if record.engine == Engine::Docker { "Running version" } else { "Installed version" }, self.shown().unwrap_or_default()))
+                .when_some(self.picker(&theme, &self.installed(), record.engine == Engine::Docker, busy, cx), |panel, picker| panel.child(picker))
                 .when(!self.has_list(), |panel| panel.child({
                     let u = self.updates.read(cx);
                     let offer = u.sentient().cloned();
@@ -815,6 +1182,9 @@ impl Render for UpdatePage {
                             .into_any_element(),
                         (Some(o), _, _) => {
                             let (tag, version) = (o.tag.clone(), o.version.clone());
+                            let build = o.licence_build();
+                            let offer_pill = licence_gate::pill(&theme, &self.licence_read(), &build);
+                            let unpublished = o.blocker().filter(|_| docker).or_else(|| self.glibc_block(&o.version, o.min_glibc.as_deref()));
                             v_flex()
                                 .gap_2()
                                 .child(
@@ -825,16 +1195,17 @@ impl Render for UpdatePage {
                                             crate::ui::button("download-latest")
                                                 .primary()
                                                 .label(format!("Update to {version}"))
-                                                .disabled(busy)
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    if docker {
-                                                        this.run_docker_to(version.clone(), cx)
-                                                    } else {
-                                                        this.run_download(tag.clone(), cx)
-                                                    }
+                                                .disabled(busy || unpublished.is_some())
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    let (v, t) = (version.clone(), tag.clone());
+                                                    let go = this.runs(move |p, cx| if docker { p.run_docker_to(v.clone(), cx) } else { p.run_download(t.clone(), cx) }, cx);
+                                                    this.gated(version.clone(), build.clone(), false, go, window, cx);
                                                 })),
                                         )
-                                        .child(div().text_sm().text_color(theme.muted_foreground).child(if docker {
+                                        .child(offer_pill)
+                                        .child(div().text_sm().text_color(theme.muted_foreground).child(if let Some(why) = unpublished.clone() {
+                                            why
+                                        } else if docker {
                                             format!("pulls quakestring/sentient:{}{}", o.version, if o.date.is_empty() { String::new() } else { format!(", released {}", o.date) })
                                         } else {
                                             format!("downloaded from the SENTIENT releases site and checked before use{}", if o.date.is_empty() { String::new() } else { format!("; released {}", o.date) })
@@ -883,13 +1254,17 @@ impl Render for UpdatePage {
                         })),
                 )
                 .child(
-                    h_flex().child(
-                        crate::ui::button("update")
-                            .primary()
-                            .label(if busy { "Updating" } else { "Update SENTIENT" })
-                            .disabled(!can_run)
-                            .on_click(cx.listener(|this, _, _, cx| this.run(cx))),
-                    ),
+                    h_flex()
+                        .gap(crate::ui::button_gap())
+                        .items_center()
+                        .child(
+                            crate::ui::button("update")
+                                .primary()
+                                .label(update_label)
+                                .disabled(!can_run)
+                                .on_click(cx.listener(|this, _, window, cx| this.gate_run(window, cx))),
+                        )
+                        .when_some(package_why, |r, why| r.child(div().min_w_0().text_sm().text_color(theme.muted_foreground).child(why))),
                 ),
         ))
         .child({
@@ -954,6 +1329,12 @@ pub(crate) fn sentient_summary(installed: &str, state: Offered, manager_first: b
 /// A product line: logo, name, what is known; the caller adds its label and
 /// buttons on the right. Shared by this computer's and a server's Update.
 pub(crate) fn product_row(theme: &gpui_kit::component::Theme, highlight: bool, logo: ui::Product, title: &'static str, sub: String) -> Div {
+    product_row_noted(theme, highlight, logo, title, sub, None)
+}
+
+/// [`product_row`] with a quiet line under what is known (the SENTIENT
+/// row's licence when no update is offered).
+pub(crate) fn product_row_noted(theme: &gpui_kit::component::Theme, highlight: bool, logo: ui::Product, title: &'static str, sub: String, note: Option<String>) -> Div {
     h_flex()
         .flex_wrap()
         .gap(crate::ui::button_gap())
@@ -970,7 +1351,8 @@ pub(crate) fn product_row(theme: &gpui_kit::component::Theme, highlight: bool, l
                 .min_w(px(220.))
                 .gap_0p5()
                 .child(div().font_weight(FontWeight::MEDIUM).child(title))
-                .child(div().text_sm().text_color(theme.muted_foreground).child(sub)),
+                .child(div().text_sm().text_color(theme.muted_foreground).child(sub))
+                .when_some(note, |c, n| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(n))),
         )
 }
 

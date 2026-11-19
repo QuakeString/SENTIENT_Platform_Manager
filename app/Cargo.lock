@@ -6581,7 +6581,7 @@ dependencies = [
 
 [[package]]
 name = "sentient-platform-manager"
-version = "0.9.1"
+version = "0.9.3"
 dependencies = [
  "aes-gcm",
  "age",
@@ -6601,6 +6601,7 @@ dependencies = [
  "sentient-installer-core",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sysinfo 0.32.1",
  "tar",
  "tokio",

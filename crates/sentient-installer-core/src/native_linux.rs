@@ -542,7 +542,9 @@ pub fn deploy(sink: ProgressFn, cfg: &NativeConfig) -> Result<(), String> {
             String::new()
         },
     ));
-    exec::run_privileged(&sink, &script)?;
+    // The schema installer's "already there" error on a kept database is
+    // shown as a plain line, not a red one.
+    exec::run_privileged(&crate::schema_output::filter(sink.clone()), &script)?;
     bail_if_cancelled()?;
 
     step(&sink, "Starting SENTIENT");

@@ -19,6 +19,8 @@ mod tray;
 #[cfg(all(windows, feature = "gui"))]
 mod win_icon;
 #[cfg(feature = "gui")]
+mod win_caption;
+#[cfg(feature = "gui")]
 mod win_frame;
 mod agent;
 #[cfg(feature = "gui")]
@@ -46,6 +48,8 @@ mod installer {
     #[path = "plan.rs"]
     pub mod plan;
     pub(crate) use plan::{run as run_install, *};
+    #[allow(unused_imports)]
+    pub(crate) use plan::{Host as PlanHost, steps_on as plan_steps_on};
     #[cfg(windows)]
     pub use plan::provision_clickhouse_wsl;
 }
@@ -91,6 +95,8 @@ mod standalone;
 mod support;
 #[cfg(feature = "gui")]
 mod terminal;
+#[cfg(feature = "gui")]
+mod third_party;
 mod server_info;
 mod server_ops;
 mod stats;
@@ -100,6 +106,8 @@ mod theme;
 mod timing;
 #[cfg(feature = "gui")]
 mod ui;
+#[cfg(all(test, feature = "gui"))]
+mod popup_gate;
 mod uninstall;
 mod updates;
 mod updating;
@@ -114,6 +122,28 @@ use mode::AppMode;
 
 fn main() {
     timing::start();
+    // The layout test: every button reports its box (tests/layout/buttons.py).
+    #[cfg(all(debug_assertions, feature = "gui"))]
+    if std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
+        gpui_kit::component::button::LAYOUT_PROBE.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    // Started from a folder that is gone or that this session cannot reach
+    // (a mapped drive the elevated session does not have): work from one
+    // that exists, or every program started later fails.
+    sentient_installer_core::host::ensure_valid_cwd();
+    // Release and image lists last read, beside the manager's other small
+    // files: a new process (a job, the next start) asks GitHub again only
+    // after 30 minutes (sentient_installer_core::fetch_cache).
+    sentient_installer_core::fetch_cache::set_dir(updates::prefs_dir());
+    // The window (not a `--job`, whose relative paths are the caller's):
+    // on Windows always its own folder, whatever started it (Setup, a
+    // shortcut, an update), so its administrator steps can reach it.
+    #[cfg(windows)]
+    if !std::env::args().any(|a| a == "--job") {
+        if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) {
+            let _ = std::env::set_current_dir(dir);
+        }
+    }
     // Agent mode runs as the hidden ClickHouse account: no window, no
     // elevation (that account is not an administrator).
     let args: Vec<String> = std::env::args().collect();
@@ -176,11 +206,14 @@ fn window_options(mode: AppMode, cx: &mut gpui_kit::App) -> WindowOptions {
         .ok()
         .and_then(|v| v.split_once('x').and_then(|(w, h)| Some(gpui_kit::size(px(w.parse().ok()?), px(h.parse().ok()?)))))
         .unwrap_or(size);
+    // Small enough for a half screen, large enough that nothing breaks.
+    // (Setup keeps its steps unfolded beside the page: wider.)
+    let min = if mode == AppMode::Install { gpui_kit::size(px(820.), px(560.)) } else { gpui_kit::size(px(560.), px(480.)) };
     WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size, cx)),
-        // Small enough for a half screen, large enough that nothing breaks.
-        // (Setup keeps its steps unfolded beside the page: wider.)
-        window_min_size: Some(if mode == AppMode::Install { gpui_kit::size(px(820.), px(560.)) } else { gpui_kit::size(px(560.), px(480.)) }),
+        // Centred in the screen's work area and never larger (no part under
+        // the taskbar at 150 %: manager::session::fit_to_work_area).
+        window_bounds: Some(manager::session::centred_bounds(cx, size, min)),
+        window_min_size: Some(min),
         titlebar: Some(TitlebarOptions {
             title: Some(mode.window_title().into()),
             ..Default::default()
@@ -282,6 +315,12 @@ fn gui_main(args: Vec<String>) {
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx| {
         timing::mark("app-run");
         gpui_kit::init(cx);
+        // SPM's reduce-motion reading (KDE, GNOME, SPM_REDUCE_MOTION) for
+        // the toolkit too: its menus, tooltips and every GPUI animation
+        // then draw in place, as ours do.
+        if ui::reduce_motion() {
+            cx.set_reduce_motion(true);
+        }
         timing::mark("kit-init");
         // The servers' connections end with the Platform Manager (crate::remote::conn).
         cx.on_app_quit(|_| async { remote::conn::close_all() }).detach();

@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, IconName, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, IconName, h_flex, v_flex,
     button::ButtonVariants as _,
     checkbox::Checkbox,
     input::{Input, InputState},
@@ -75,6 +75,8 @@ pub struct BackupPage {
     checked: Option<(PathBuf, Option<Result<sentient_backup_core::restore::CheckReport, String>>)>,
     /// Sizes for the estimate: (database, ClickHouse, telemetry history in PostgreSQL), and free disk.
     sizes: Option<(u64, u64, u64, Option<u64>)>,
+    /// The sizes were not read: SENTIENT is stopped (crate::dbstatus::STOPPED).
+    sizes_stopped: bool,
     schedule_time: Entity<InputState>,
     /// Automatic backup is on (its switch).
     auto_on: bool,
@@ -221,6 +223,7 @@ impl BackupPage {
             shown_run: false,
             checked: None,
             sizes: None,
+            sizes_stopped: false,
             schedule_time,
             keep,
             part_gb,
@@ -619,8 +622,9 @@ impl BackupPage {
             return;
         }
         let task = cx.spawn(async move |this, cx| {
-            let st = cx.background_executor().spawn(async move { crate::dbstatus::read(&record) }).await;
+            let st = cx.background_executor().spawn(async move { sentient_installer_core::distro::idle::reading(|| crate::dbstatus::read(&record)) }).await;
             this.update(cx, |page, cx| {
+                page.sizes_stopped = st.stopped;
                 if let Some(pg) = &st.pg {
                     let history = pg.tables.iter().find(|t| t.name == "ts_kv").map(|t| t.bytes).unwrap_or(0);
                     page.sizes = Some((pg.db_bytes, st.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0), history, pg.free_bytes));
@@ -880,7 +884,7 @@ impl BackupPage {
                                 h_flex()
                                     .gap(crate::ui::button_gap())
                                     .child(div().text_sm().font_family(theme.mono_font_family.clone()).child(short))
-                                    .child(crate::ui::button("copy-hash").outline().small().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(whole.clone())))),
+                                    .child(crate::ui::button("copy-hash").outline().label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(whole.clone())))),
                             )
                         } else {
                             brow(theme, "Files", None, div().text_sm().child(format!("{} parts, each with its SHA-256", m.files.len())))
@@ -997,7 +1001,7 @@ fn brow(theme: &gpui_kit::component::Theme, label: &'static str, help: Option<&'
                 .gap_1()
                 .items_center()
                 .child(div().text_sm().child(label))
-                .when_some(help, |c, h| c.child(crate::ui::button(SharedString::from(format!("bhelp-{label}"))).ghost().xsmall().icon(IconName::Info).tooltip(h))),
+                .when_some(help, |c, h| c.child(crate::ui::button(SharedString::from(format!("bhelp-{label}"))).ghost().icon(IconName::Info).tooltip(h))),
         )
         .child(h_flex().flex_shrink_0().ml_auto().max_w(px(460.)).gap_2().items_center().justify_end().child(control))
 }
@@ -1040,7 +1044,7 @@ impl BackupPage {
                 .child(
                     crate::ui::button("auto-time")
                         .ghost()
-                        .small()
+                        
                         .disabled(!on || busy)
                         .label(if on { format!("Every day at {time}") } else { "Off".to_string() })
                         .dropdown_menu(move |menu, _, _| {
@@ -1126,7 +1130,7 @@ impl BackupPage {
                 .items_center()
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().when(p.copy_to.is_some(), |d| d.font_family(theme.mono_font_family.clone()).text_size(px(13.5))).when(p.copy_to.is_none(), |d| d.text_color(theme.muted_foreground)).child(p.copy_to.as_ref().map(|d| d.display().to_string()).unwrap_or_else(|| "Nowhere".into())))
                 .when(p.copy_to.is_some(), |r| {
-                    r.child(crate::ui::button("copy-to-off").ghost().small().label("Stop copying").on_click(cx.listener(|this, _, _, cx| {
+                    r.child(crate::ui::button("copy-to-off").ghost().label("Stop copying").on_click(cx.listener(|this, _, _, cx| {
                         this.prefs.copy_to = None;
                         this.save_prefs(false, cx);
                     })))
@@ -1164,7 +1168,10 @@ impl BackupPage {
             (format!("Estimated file: {} · takes about {} minute{}{free_text}", bytes_label(bytes), mins, if mins == 1 { "" } else { "s" }), low)
         });
         let low = estimate.as_ref().filter(|(_, low)| *low).map(|(t, _)| t.clone());
-        let now_tip = estimate.map(|(t, _)| t).unwrap_or_else(|| "A backup now, with what the card says.".into());
+        let now_tip = estimate.map(|(t, _)| t).unwrap_or_else(|| {
+            // Stopped: its size is read when it runs (a backup starts it).
+            if self.sizes_stopped { format!("A backup now, with what the card says. {}", crate::dbstatus::STOPPED) } else { "A backup now, with what the card says.".into() }
+        });
         let mut list = ui::panel(theme).gap_0().child(
             h_flex()
                 .relative()
@@ -1648,7 +1655,7 @@ pub(crate) fn table_row(theme: &gpui_kit::component::Theme, narrow: bool, i: usi
                 .flex_shrink_0()
                 .font_features(crate::ui::tabular())
                 .child(short_made(&e.made))
-                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(made_tip.clone()).build(window, cx)),
+                .tooltip(crate::ui::tooltip(made_tip.clone())),
         )
         .child(div().w(px(COL_SIZE)).flex_shrink_0().font_features(crate::ui::tabular()).child(crate::dbstatus::bytes_label(e.bytes))))
         .child(
@@ -1657,7 +1664,7 @@ pub(crate) fn table_row(theme: &gpui_kit::component::Theme, narrow: bool, i: usi
                 .w(px(if narrow { COL_CHECK_NARROW } else { COL_CHECK }))
                 .flex_shrink_0()
                 .child(small_pill(theme, tone, text))
-                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)),
+                .tooltip(crate::ui::tooltip(tip.clone())),
         )
         // Restore… and the menu: one button group at the row's end (the
         // header's two columns' width).

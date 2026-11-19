@@ -8,7 +8,11 @@
 //! them when it runs a job as root on Linux, crate::rootjob).
 //!
 //! ```text
-//! --job [--json] install <plan.json>   (unattended install; the wizard's plan)
+//! --job [--json] install <plan.json> [--staged]
+//!                                       (unattended install; the wizard's plan. --staged: its
+//!                                       passwords from install-secrets, the plan file removed)
+//! --job install-secrets                 (an install's passwords, one JSON line on standard input)
+//! --job install-facts-json [<port>:<name>,…] (what can be installed on this server)
 //! --job diagnose-fix <fix json>         (a failure's one-click fix, as the error panel offers it)
 //! --job install-manager [--no-shortcuts] (the Platform Manager alone)
 //! --job remove-manager                  (the Platform Manager installed alone)
@@ -54,10 +58,10 @@ use sentient_installer_core::native::safe_update::RollbackPoint;
 
 use crate::installation::InstallationRecord;
 
-const USAGE: &str = "usage: --job install <plan.json> | diagnose-fix <fix json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | movedata-json | movedata-check <store> <folder> | movedata-estimate <store=folder,…> | move-data <store=folder,…> | move-data-remove-old <folder> | move-data-cancel | \
+const USAGE: &str = "usage: --job install <plan.json> [--staged] | install-secrets (one JSON line on stdin) | install-facts-json [<port>:<name>,…] | diagnose-fix <fix json> | install-manager [--no-shortcuts] | remove-manager | migrate <stock|timescaledb|clickhouse> | resume-migration | migrate-preflight | movedata-json | movedata-check <store> <folder> | movedata-estimate <store=folder,…> | move-data <store=folder,…> | move-data-remove-old <folder> | move-data-cancel | \
 update [<package folder> | --latest | --version <release>] [--accept-breaking] | rollback | rollback-info | backup <file> | restore <file> <database> [<key file>] | \
-use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-if-one [--pg-admin-password-stdin] | add-existing [<n> | --native] [--pg-admin-password-stdin] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> [--stop-shared-pg] | service <start|stop|restart> <name> | uninstall [--delete-data] | uninstall --parts <sentient,postgres,pg-database,clickhouse,ch-database,gateway,shortcuts,wsl-distro,wsl,manager> [--keep-files] [--keep-pg-data] [--keep-ch-data] [--wsl-distro] [--wsl] | uninstall-facts-json | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-file <file> | --request-b64 <base64> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live [system|services|db] | stats-sample | stats-history <seconds> | stats-install | server-info-json | server-boot-json | server-power <reboot|poweroff> | docker-restart | system-updates | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | agent-info | agents | serve | pg-others-json | \
-gateway-status | gateway-install <host> <port> | gateway-update | gateway-control <start|stop|restart> | gateway-remove [--delete-data] [--remove-image] | gateway-adopt
+use-restored <database> | restore-inspect <backup> [--passphrase-file <file> | --passphrase-stdin] | restore-precheck <request.json> [--passphrase-file <file>] | restore-run <request.json> [--passphrase-file <file> | --passphrase-stdin] | restore-history-json | restore-log <id> | restore-cancel | restore-remove-db <name> | backup-list <folder> | find-existing | add-if-one [--pg-admin-password-stdin] | add-existing [<n> | --native] [--pg-admin-password-stdin] | take-over-compose [--compose <file>] [--db-password-file <file>] [--ch-password-file <file>] | takeover-plan [--compose <file>] | takeover-check-password [--clickhouse] --db-password-file <file> | open-at-signin <kiosk|window|off> | auto-signin <account|off> | repair | control <start|stop|restart> [--stop-shared-pg] | service <start|stop|restart> <name> | uninstall [--delete-data] | uninstall --parts <sentient,postgres,pg-database,clickhouse,ch-database,gateway,shortcuts,wsl-distro,wsl,manager> [--keep-files] [--keep-pg-data] [--keep-ch-data] [--wsl-distro] [--wsl] | uninstall-facts-json | apply-settings <file.json> | apply-changes | scheduled-backup | backup-schedule | backup-auto <off|HH:MM> <keep> <everything|last90|configuration> | backup-verify <backup> | backup-delete <backup> | backup-folder <folder> <move|leave> | dir-list <folder> | dir-mkdir <folder> <name> | dir-make-writable <folder> [<uid>] | licence-api --request-stdin | --request-file <file> | admin <sentient-admin args> | replace <backup> [--delete-old] [--passphrase-stdin] | status-json | monitor-json | stats-live [system|services|db] | stats-sample | stats-history <seconds> | stats-install | server-info-json | server-boot-json | server-power <reboot|poweroff> | docker-restart | system-updates | services-json | dbstatus-json | backups-json | settings-json | logs [<lines>] | kept | remove-kept <name> | agent-info | agents | serve | pg-others-json | \
+gateway-status | gateway-install-secrets (one JSON line on stdin) | gateway-install <host> <port> [--version <release>] [--staged] | gateway-update [<version>] | gateway-control <start|stop|restart> | gateway-remove [--delete-data] [--remove-image] | gateway-adopt | gateway-settings-json | gateway-apply <plan.json> | gateway-ui-password (the password on stdin) | gateway-test
 
 Administrator password (native Linux): a job typed in a terminal may ask for it, once for the
 whole job. Started without a terminal (a script, a timer, a service), a job never asks: a step
@@ -179,6 +183,9 @@ fn print_plain(p: Progress) {
     }
 }
 
+/// The start of `gateway-settings-json`'s one line (the JSON follows).
+pub const GW_SETTINGS_LINE: &str = "@@GW-SETTINGS ";
+
 fn json_printer() -> ProgressFn {
     Arc::new(|p| {
         remember(&p);
@@ -198,8 +205,23 @@ pub fn run(args: &[String]) -> i32 {
     code
 }
 
+/// The jobs that only read this computer's state, asked for again and
+/// again (an instance card, the tray, the statistics and their sampler):
+/// on Windows they never start SENTIENT's stopped WSL distro
+/// (sentient_installer_core::distro::idle).
+fn reading_job(args: &[String]) -> bool {
+    let args = if args.first().is_some_and(|a| a == "--json") { &args[1..] } else { args };
+    matches!(
+        args.first().map(String::as_str),
+        Some("status-json" | "monitor-json" | "stats-live" | "stats-sample" | "services-json" | "dbstatus-json" | "gateway-status" | "gateway-settings-json" | "server-info-json")
+    )
+}
+
 fn run_job(args: &[String]) -> i32 {
     attach_console();
+    if reading_job(args) {
+        sentient_installer_core::distro::idle::reading_process();
+    }
     let json = args.first().is_some_and(|a| a == "--json");
     let args = if json { &args[1..] } else { args };
     // Which Platform Manager this is (crate::remote::reuse): read-only, so
@@ -240,14 +262,60 @@ fn run_job(args: &[String]) -> i32 {
         }
     }
     let job = args.first().map(String::as_str).unwrap_or("");
+    // A fresh SENTIENT on this server from a Platform Manager over SSH
+    // (crate::remote::install): what can be installed here, one JSON line
+    // (`install-facts-json [<port>:<name>,…]`, the ports checked free).
+    if job == "install-facts-json" {
+        let ports = args.get(1).map(|a| crate::remote::install::parse_ports(a)).unwrap_or_default();
+        println!("{}", serde_json::to_string(&crate::remote::install::gather(&ports)).unwrap_or_default());
+        return 0;
+    }
+    // Its passwords: one JSON line on standard input, kept in a file only
+    // root reads until `install <plan> --staged` takes them. Never on a
+    // command line or in a log.
+    if job == "install-secrets" {
+        let sink = if json { json_printer() } else { printer() };
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        let r = serde_json::from_str::<crate::installer::InstallSecrets>(line.trim())
+            .map_err(|_| "The passwords did not reach the server.".to_string())
+            .and_then(|s| crate::remote::install::stage(&s));
+        drop(line);
+        return match r {
+            Ok(()) => {
+                sink(Progress::Done { message: "The passwords are on the server.".into() });
+                0
+            }
+            Err(e) => {
+                report_failure(e, json, &sink);
+                1
+            }
+        };
+    }
     if job == "install" {
         let sink = if json { json_printer() } else { printer() };
+        // --staged: a server's install (the plan file without passwords,
+        // removed once read; the passwords from install-secrets), which
+        // declares its steps first for the window that follows it.
+        let staged = args.iter().any(|a| a == "--staged");
         let result = args
             .get(1)
             .ok_or_else(|| USAGE.to_string())
-            .and_then(|path| std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}")))
-            .and_then(|text| serde_json::from_str::<crate::installer::InstallPlan>(&text).map_err(|e| format!("the plan: {e}")))
-            .and_then(|plan| crate::installer::run_install(plan, sink.clone()));
+            .and_then(|path| {
+                if staged {
+                    crate::remote::install::staged_plan(path)
+                } else {
+                    std::fs::read_to_string(path)
+                        .map_err(|e| format!("read {path}: {e}"))
+                        .and_then(|text| serde_json::from_str::<crate::installer::InstallPlan>(&text).map_err(|e| format!("the plan: {e}")))
+                }
+            })
+            .and_then(|plan| {
+                if staged {
+                    sink(Progress::Plan { steps: crate::installer::plan_steps_on(&plan, crate::installer::PlanHost { windows: cfg!(windows), wsl_ready: true, manager_in_place: true }) });
+                }
+                crate::installer::run_install(plan, sink.clone())
+            });
         return match result {
             Ok(()) => 0,
             Err(e) => {
@@ -277,8 +345,9 @@ fn run_job(args: &[String]) -> i32 {
         };
     }
     // The gateway on this computer (crate::manager::gateway's actions):
-    // gateway-status | gateway-install <host> <port> (token in
-    // SPM_GATEWAY_TOKEN, page password in SPM_GATEWAY_PAGE_PASSWORD) |
+    // gateway-status | gateway-install <host> <port> (token and page
+    // password from gateway-install-secrets with --staged, else in
+    // SPM_GATEWAY_TOKEN and SPM_GATEWAY_PAGE_PASSWORD) |
     // gateway-update | gateway-control <start|stop|restart>. Installs and
     // updates to the newest gateway release on the update channel.
     if job.starts_with("gateway-") {
@@ -294,8 +363,12 @@ fn run_job(args: &[String]) -> i32 {
                 // Values with spaces in them are %20-escaped (the line splits on spaces).
                 let esc = |v: Option<String>| v.unwrap_or_default().replace('%', "%25").replace(' ', "%20");
                 let recorded = crate::gateway_record::load().is_some_and(|r| r.is(&s));
+                // Whether Docker is here, for an install's "Runs as" (none
+                // installed yet: the client's version (`docker --version`)
+                // answers without the daemon).
+                let docker = !s.installed && std::process::Command::new("docker").arg("--version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|st| st.success());
                 println!(
-                    "installed={} version={} running={} host={} port={} page={} container={} managed={} kind={} service={} process={} image={} compose={} project={} volumes={} package={} recorded={recorded}",
+                    "installed={} version={} running={} host={} port={} page={} container={} managed={} kind={} service={} process={} image={} compose={} project={} volumes={} package={} recorded={recorded} unreadable={} legacy={} legacy_image={} docker={docker}",
                     s.installed,
                     s.version.unwrap_or_default(),
                     s.running,
@@ -312,6 +385,9 @@ fn run_job(args: &[String]) -> i32 {
                     esc(s.compose_project.clone()),
                     esc(Some(s.volumes.join(","))),
                     esc(s.package.clone()),
+                    s.config_unreadable,
+                    s.legacy.clone().unwrap_or_default(),
+                    esc(s.legacy_image.clone()),
                 );
                 Ok(())
             }
@@ -328,23 +404,79 @@ fn run_job(args: &[String]) -> i32 {
                 })
             }
             "gateway-adopt" => crate::gateway_record::adopt().map(|msg| sink(sentient_installer_core::progress::Progress::Done { message: msg })),
+            // The secrets of a remote "Install the gateway" (crate::manager::
+            // remote_pages): one JSON line on standard input, kept in a file
+            // only this account reads until the install job takes them
+            // (--staged). Never on a command line or in a log.
+            "gateway-install-secrets" => {
+                let mut line = String::new();
+                let _ = std::io::stdin().read_line(&mut line);
+                serde_json::from_str::<crate::remote::GatewaySecrets>(line.trim())
+                    .map_err(|_| "The access token did not reach the server.".to_string())
+                    .and_then(|s| crate::gateway_record::stage_secrets(&s))
+                    .map(|()| sink(sentient_installer_core::progress::Progress::Done { message: "The access token is on the server.".into() }))
+            }
             "gateway-install" => match (args.get(1), args.get(2).and_then(|p| p.parse().ok())) {
-                (Some(host), Some(port)) => newest().and_then(|offer| {
-                    let settings = gateway::Settings {
-                        host: host.clone(),
-                        port,
-                        token: std::env::var("SPM_GATEWAY_TOKEN").unwrap_or_default(),
-                        ui_password: std::env::var("SPM_GATEWAY_PAGE_PASSWORD").unwrap_or_default(),
+                (Some(host), Some(port)) => {
+                    // --staged: what gateway-install-secrets kept (taken and
+                    // removed first, whatever happens next); else the
+                    // environment (a local run by hand).
+                    let secrets = if args.iter().any(|a| a == "--staged") {
+                        crate::gateway_record::take_staged_secrets()
+                    } else {
+                        Ok(crate::remote::GatewaySecrets {
+                            token: std::env::var("SPM_GATEWAY_TOKEN").unwrap_or_default(),
+                            ui_password: std::env::var("SPM_GATEWAY_PAGE_PASSWORD").unwrap_or_default(),
+                        })
                     };
-                    gateway::install(&sink, &offer, &settings)
-                }),
+                    let offer = match args.windows(2).find(|w| w[0] == "--version") {
+                        Some(w) => gateway::release(&w[1]),
+                        None => newest(),
+                    };
+                    secrets.and_then(|secrets| {
+                        offer.and_then(|offer| {
+                            let settings = gateway::Settings { host: host.clone(), port, token: secrets.token, ui_password: secrets.ui_password };
+                            gateway::install(&sink, &offer, &settings)
+                        })
+                    })
+                }
                 _ => Err(USAGE.into()),
             },
-            "gateway-update" => newest().and_then(|offer| gateway::update(&sink, &offer)),
+            // A version: the one the asking Platform Manager showed (any
+            // channel); none: the newest on this computer's channel.
+            "gateway-update" => match args.get(1) {
+                Some(v) => gateway::release(v),
+                None => newest(),
+            }
+            .and_then(|offer| gateway::update(&sink, &offer)),
             "gateway-control" => match args.get(1) {
                 Some(action) => gateway::control(&sink, action),
                 None => Err(USAGE.into()),
             },
+            // The settings card (crate::manager::gateway_settings): its
+            // values without secrets, one line; Apply (a plan file with no
+            // secret in it); the page's password on standard input; the
+            // connection test (it prints nothing of the credentials).
+            "gateway-settings-json" => {
+                sentient_installer_core::distro::gateway_docker::set_cache_dir(crate::updates::prefs_dir());
+                let st = sentient_installer_core::gateway_settings::read(&gateway::status());
+                println!("{}{}", GW_SETTINGS_LINE, serde_json::to_string(&st).unwrap_or_default());
+                Ok(())
+            }
+            "gateway-apply" => match args.get(1) {
+                Some(path) => std::fs::read_to_string(path)
+                    .map_err(|e| format!("read {path}: {e}"))
+                    .and_then(|t| serde_json::from_str::<sentient_installer_core::gateway_settings::ApplyPlan>(&t).map_err(|e| format!("the plan: {e}")))
+                    .and_then(|plan| sentient_installer_core::gateway_settings::apply(&sink, &gateway::status(), &plan)),
+                None => Err(USAGE.into()),
+            },
+            "gateway-ui-password" => {
+                let mut line = String::new();
+                let _ = std::io::stdin().read_line(&mut line);
+                let pw = line.trim_end_matches(['\r', '\n']).to_string();
+                sentient_installer_core::gateway_settings::set_password(&gateway::status(), &pw).map(|m| sink(sentient_installer_core::progress::Progress::Done { message: m }))
+            }
+            "gateway-test" => sentient_installer_core::gateway_settings::test_connection(&gateway::status()).map(|m| sink(sentient_installer_core::progress::Progress::Done { message: m })),
             _ => Err(USAGE.into()),
         };
         return match result {
@@ -526,6 +658,15 @@ fn run_job(args: &[String]) -> i32 {
     // SENTIENT's licence functions, called here for the window
     // (crate::licence): the request in a file, removed once read.
     if job == "licence-api" {
+        // The request on standard input (this version's Platform Manager):
+        // its password never on a command line.
+        if args.iter().any(|a| a == "--request-stdin") {
+            let mut text = String::new();
+            let _ = std::io::stdin().read_line(&mut text);
+            return crate::licence::agent_job_text(Ok(text));
+        }
+        // --request-b64: Platform Managers up to 0.9.2; accepted for one
+        // release more, never sent by this one.
         if let Some(w) = args.windows(2).find(|w| w[0] == "--request-b64") {
             return crate::licence::agent_job_b64(&w[1]);
         }
@@ -888,6 +1029,33 @@ fn run_job(args: &[String]) -> i32 {
             }
             let record = record;
             let mut target: Option<String> = None;
+            // Docker pinned to a release, no version given: the newest
+            // release, pinned (crate::updating::plain_update).
+            let pinned = record.engine == crate::installation::Engine::Docker
+                && record.stack.external.is_none()
+                && sentient_installer_core::releases::is_numbered(sentient_installer_core::distro::docker_ops::image_tag(&record.stack.image));
+            let version = match version {
+                None if pinned => {
+                    let newest = match crate::online::versions(false) {
+                        Ok(list) => list.first().map(|v| v.version.clone()),
+                        Err(e) => {
+                            eprintln!("✗ The releases could not be read ({e}). Choose one with --version.");
+                            return 1;
+                        }
+                    };
+                    let tag = sentient_installer_core::distro::docker_ops::image_tag(&record.stack.image);
+                    let running = crate::installation::running_version(&record);
+                    match crate::updating::plain_update(tag, false, running.as_deref(), newest.as_deref()) {
+                        crate::updating::PlainUpdate::To(v) => Some(v),
+                        crate::updating::PlainUpdate::UpToDate => {
+                            eprintln!("✗ SENTIENT {} is the newest release: nothing to update.", running.as_deref().unwrap_or(tag));
+                            return 1;
+                        }
+                        crate::updating::PlainUpdate::Pull => None,
+                    }
+                }
+                v => v,
+            };
             let mut package = args
                 .iter()
                 .skip(1)
@@ -895,7 +1063,9 @@ fn run_job(args: &[String]) -> i32 {
                 .find(|(i, a)| !a.starts_with("--") && args.get(*i).is_none_or(|prev| prev != "--version"))
                 .map(|(_, a)| PathBuf::from(a));
             if let Some(v) = &version {
-                if let Some(installed) = Some(record.sentient_version.as_str()).filter(|s| !s.is_empty()) {
+                // Docker decides in the update (crate::updating::docker_step):
+                // the version it runs under another tag is pinned to it.
+                if let Some(installed) = Some(record.sentient_version.as_str()).filter(|s| !s.is_empty() && record.platform().needs_package()) {
                     if sentient_installer_core::releases::movement(v, installed) == sentient_installer_core::releases::Move::Same {
                         eprintln!("✗ SENTIENT {v} is already installed.");
                         return 1;
@@ -910,8 +1080,8 @@ fn run_job(args: &[String]) -> i32 {
                         }
                     }
                 } else {
-                    // The chosen release, run under the tag the stack's
-                    // compose file names (it is not rewritten here).
+                    // The chosen release. The compose file then names its
+                    // tag, unless it is the operator's (crate::updating).
                     target = Some(crate::maintenance_ops::retag(&record.stack.image, v));
                 }
             }
@@ -1083,11 +1253,13 @@ fn run_job(args: &[String]) -> i32 {
                 let _ = std::io::stdin().read_line(&mut line);
                 line.trim_end_matches(['\r', '\n']).to_string()
             });
-            crate::sentient_admin::run(&record, &rest, input.as_deref()).map(|out| {
-                for line in out.lines() {
-                    sink(Progress::Log { line: line.to_string() });
-                }
-            })
+            crate::sentient_admin::run(&record, &rest, input.as_deref())
+                .map(|out| {
+                    for line in out.lines() {
+                        sink(Progress::Log { line: line.to_string() });
+                    }
+                })
+                .map_err(|f| f.message())
         }
         // The daily backup (scheduled task or systemd timer).
         "scheduled-backup" => {
@@ -1218,43 +1390,58 @@ fn print_candidates(found: &[crate::adopt::Candidate]) {
     }
 }
 
-/// The SENTIENT version to show. A stack taken over from its own compose file
-/// may record an image tag such as "latest": then the running container's
-/// version label says which SENTIENT it is.
-/// SENTIENT's version as shown: an image tag like "latest" with the real
-/// version from the image's label, "4.4.0.2 (image tag latest)".
+/// SENTIENT's version as shown (crate::installation::version_text): what
+/// the container runs, with the image tag in brackets when that differs,
+/// "4.4.0.3 (image tag latest)". Native: the recorded version. Blocking.
 pub(crate) fn shown_version(record: &InstallationRecord) -> String {
-    let recorded = record.sentient_version.clone();
-    let numbered = recorded.split('.').next().is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
-    if numbered || record.engine != crate::installation::Engine::Docker {
-        return recorded;
+    shown_from(record, crate::installation::running_version(record).as_deref())
+}
+
+/// [`shown_version`] with the running version already read.
+pub(crate) fn shown_from(record: &InstallationRecord, running: Option<&str>) -> String {
+    if record.engine != crate::installation::Engine::Docker {
+        return record.sentient_version.clone();
     }
-    let label = sentient_installer_core::host::host_command("docker")
-        .args(["inspect", "-f", "{{index .Config.Labels \"org.opencontainers.image.version\"}}", &record.stack.names().app])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|v| !v.is_empty() && v != "<no value>" && v != "dev");
-    match label {
-        Some(v) => format!("{v} (image tag {recorded})"),
-        None => format!("version unknown (image tag {recorded})"),
-    }
+    let tag = sentient_installer_core::distro::docker_ops::image_tag(&record.stack.image);
+    crate::installation::version_text(running, &record.sentient_version, tag)
 }
 
 /// This computer's state for the Platform Manager on another computer.
 pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote::RemoteStatus {
+    // A read: SENTIENT's stopped WSL distro stays stopped (Windows).
+    sentient_installer_core::distro::idle::reading(|| status_json_now(record))
+}
+
+fn status_json_now(record: Option<&InstallationRecord>) -> crate::remote::RemoteStatus {
     // The full version, as the window shows it (0.8.0-rc12).
     // The same text as the window's About: version and build.
     let manager_version = format!("{} (build {})", crate::updates::manager_version(), crate::updates::build_commit());
-    let Some(record) = record else { return crate::remote::RemoteStatus { manager_version, ..Default::default() } };
+    let Some(record) = record else {
+        // No SENTIENT here: whether the gateway is (a gateway-only server
+        // shows its own menu, crate::manager).
+        sentient_installer_core::distro::gateway_docker::set_cache_dir(crate::updates::prefs_dir());
+        let gateway = Some(sentient_installer_core::gateway::status().installed);
+        // The disk the gateway buffers on (its Status shows it).
+        let mon = crate::sysmon::sample(std::path::Path::new(if cfg!(windows) { "C:\\" } else { "/" }));
+        let disk_free = (mon.disk_total > 0).then_some(mon.disk_free);
+        return crate::remote::RemoteStatus { manager_version, gateway, disk_free, ..Default::default() };
+    };
+    let running = crate::installation::running_version(record);
     let snap = record.platform().snapshot();
     // Without administrator rights the database's size needs a password
     // prompt (native Linux): leave it out rather than ask.
     let db = if crate::dbstatus::needs_admin(record) && !crate::rootjob::is_root() { crate::dbstatus::DbStatus::default() } else { crate::dbstatus::read(record) };
     // The licence's one-word state, read-only from the database (same
     // rights as the size above).
-    let licence = if crate::dbstatus::needs_admin(record) && !crate::rootjob::is_root() { None } else { crate::licence::read_tile(record) };
+    // And which SENTIENT versions it covers (Update's labels), in the same read.
+    let (licence, licence_versions) = if crate::dbstatus::needs_admin(record) && !crate::rootjob::is_root() {
+        (None, None)
+    } else {
+        match crate::licence::read_db(record) {
+            Some((tile, versions)) => (Some(tile), versions),
+            None => (None, None),
+        }
+    };
     let database_bytes = db.pg.as_ref().map(|p| p.db_bytes + db.ch.as_ref().map(|c| c.disk_bytes).unwrap_or(0));
     let mon = crate::sysmon::sample(&record.state_dir);
     let prefs = crate::backups::BackupPrefs::load();
@@ -1263,7 +1450,9 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
     crate::remote::RemoteStatus {
         installed: snap.installed,
         serving: snap.serving,
-        sentient_version: shown_version(record),
+        sentient_version: shown_from(record, running.as_deref()),
+        running_version: running.clone(),
+        image_tag: (record.engine == crate::installation::Engine::Docker).then(|| sentient_installer_core::distro::docker_ops::image_tag(&record.stack.image).to_string()),
         database: crate::installation::flavor_label(record.flavor()).to_string(),
         database_bytes,
         disk_free: (mon.disk_total > 0).then_some(mon.disk_free),
@@ -1275,7 +1464,9 @@ pub(crate) fn status_json(record: Option<&InstallationRecord>) -> crate::remote:
         vanished_files: record.stack.vanished_files(),
         external_compose: record.engine == crate::installation::Engine::Docker && record.stack.external.is_some(),
         licence,
+        licence_versions,
         wsl_distro: if record.engine == crate::installation::Engine::Docker { record.stack.wsl_distro.clone() } else { None },
+        gateway: None,
     }
 }
 
@@ -1329,4 +1520,26 @@ fn read_request(path: &str) -> Result<crate::restore_flow::Request, String> {
         let _ = std::fs::remove_file(path);
     }
     serde_json::from_str(&text).map_err(|e| format!("the restore request: {e}"))
+}
+
+#[cfg(test)]
+mod reading_tests {
+    use super::reading_job;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_periodic_reads_never_start_the_distro_and_the_actions_do() {
+        for job in ["status-json", "monitor-json", "stats-sample", "services-json", "dbstatus-json", "gateway-status", "server-info-json"] {
+            assert!(reading_job(&args(&[job])), "{job}");
+        }
+        assert!(reading_job(&args(&["stats-live", "services"])));
+        assert!(reading_job(&args(&["--json", "status-json"])));
+        for job in ["control", "repair", "update", "service", "apply-settings", "backup", "uninstall", "gateway-control", "serve"] {
+            assert!(!reading_job(&args(&[job, "start"])), "{job}");
+        }
+        assert!(!reading_job(&[]));
+    }
 }

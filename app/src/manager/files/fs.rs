@@ -120,7 +120,14 @@ pub trait Fs: Send {
     fn broken(&self, _err: &str) -> bool {
         false
     }
+    /// Round trips, bytes in, bytes out over the link so far (a server).
+    fn counters(&self) -> [u64; 3] {
+        [0; 3]
+    }
 }
+
+/// ssh connections the Files page has opened (its timing marks).
+pub static CONNECTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 // -- This computer -----------------------------------------------------------
 
@@ -183,7 +190,9 @@ impl Fs for LocalFs {
         };
         #[cfg(not(unix))]
         let (writable, owner) = (!meta.permissions().readonly(), String::new());
-        Ok(Listing { path: path.to_string(), entries, free: crate::backups::free_space(Path::new(path)), writable, owner })
+        // No free space: the pane shows it for a server only, and listing the
+        // disks took tens of milliseconds a folder (a network mount holds it).
+        Ok(Listing { path: path.to_string(), entries, free: None, writable, owner })
     }
 
     fn meta(&mut self, path: &str) -> Result<Option<(bool, u64, Option<i64>)>, String> {
@@ -300,6 +309,23 @@ fn probe(inst: &Instance) -> Probe {
     p
 }
 
+/// Whether the account may write in a server's folder, and the folder's
+/// owner to name. A Windows server's OpenSSH reports POSIX ids it makes up
+/// (uid 0, no write bits) even for the account's own folders: the read-only
+/// banner said "belongs to root" in its Downloads. There Windows decides on
+/// each write itself (a refused one shows its error) and no owner is named.
+fn folder_access(windows: bool, here: &crate::sftp::Attrs, owner: Option<String>, uid: u32, gids: &[u32]) -> (bool, String) {
+    if windows {
+        return (true, String::new());
+    }
+    let owner = owner.filter(|o| !o.is_empty()).unwrap_or_else(|| if here.uid == Some(0) { "root".into() } else { String::new() });
+    let writable = match (here.uid, here.gid, here.perm) {
+        (Some(o), Some(g), Some(m)) => may_write(uid, gids, o, g, m),
+        _ => true,
+    };
+    (writable, owner)
+}
+
 pub struct RemoteFs {
     s: Sftp,
     p: Probe,
@@ -311,7 +337,14 @@ impl RemoteFs {
     /// Connect as the account, or as administrator (sudo; its password must
     /// be kept already, crate::manager::remote_pages::ask_sudo_password).
     pub fn connect(inst: &Instance, admin: bool) -> Result<RemoteFs, String> {
-        let mut p = if crate::remote::is_windows(inst) { Probe { uid: u32::MAX, ..Default::default() } } else { probe(inst) };
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut p = if crate::remote::is_windows(inst) {
+            Probe { uid: u32::MAX, ..Default::default() }
+        } else {
+            CONNECTIONS.fetch_add(1, Relaxed);
+            probe(inst)
+        };
+        CONNECTIONS.fetch_add(1, Relaxed);
         let (mut cmd, pw) = crate::remote::sftp_command(inst, admin);
         let child = cmd.spawn().map_err(|e| format!("start ssh: {e}"))?;
         let mut s = Sftp::start(child, pw.as_deref())?;
@@ -327,22 +360,22 @@ impl RemoteFs {
 
 impl Fs for RemoteFs {
     fn list(&mut self, path: &str) -> Result<Listing, String> {
-        let here = self.s.stat(path)?;
-        let raw = self.s.list(path)?;
-        // The folder's owner: its long listing in the folder above.
-        let owner = sftp::parent(path)
-            .and_then(|up| self.s.list(&up).ok().and_then(|l| l.into_iter().find(|e| Some(e.name.as_str()) == path.trim_end_matches('/').rsplit('/').next()).map(|e| e.owner)))
-            .unwrap_or_else(|| if here.uid == Some(0) { "root".into() } else { String::new() });
-        let entries = raw
+        // One pipelined read (crate::sftp::Sftp::list_dir): the folder's
+        // attributes, entries with their owners, links followed, free space.
+        let d = self.s.list_dir(path)?;
+        let here = d.attrs;
+        // A Windows server's OpenSSH reports POSIX ids it makes up (uid 0,
+        // no write bits) for folders the account owns: the read-only banner
+        // said "belongs to root" in the account's own Downloads. Windows
+        // decides on each write itself (a refused one shows its error).
+        let windows = crate::remote::is_windows(&self.inst);
+        let (writable, owner) = folder_access(windows, &here, d.owner, self.p.uid, &self.p.gids);
+        let entries = d
+            .entries
             .into_iter()
-            .map(|e| Entry { dir: e.attrs.is_dir(), size: if e.attrs.is_dir() { 0 } else { e.attrs.size.unwrap_or(0) }, mtime: e.attrs.mtime.map(i64::from), owner: e.owner, name: e.name })
+            .map(|e| Entry { dir: e.attrs.is_dir(), size: if e.attrs.is_dir() { 0 } else { e.attrs.size.unwrap_or(0) }, mtime: e.attrs.mtime.map(i64::from), owner: if windows { String::new() } else { e.owner }, name: e.name })
             .collect();
-        let writable = match (here.uid, here.gid, here.perm) {
-            (Some(o), Some(g), Some(m)) => may_write(self.p.uid, &self.p.gids, o, g, m),
-            _ => true,
-        };
-        let free = self.s.free(path);
-        Ok(Listing { path: path.to_string(), entries, free, writable, owner })
+        Ok(Listing { path: path.to_string(), entries, free: d.free, writable, owner })
     }
 
     fn meta(&mut self, path: &str) -> Result<Option<(bool, u64, Option<i64>)>, String> {
@@ -408,6 +441,10 @@ impl Fs for RemoteFs {
 
     fn broken(&self, err: &str) -> bool {
         err.starts_with("The connection to the server broke")
+    }
+
+    fn counters(&self) -> [u64; 3] {
+        self.s.counters()
     }
 }
 
@@ -508,6 +545,18 @@ pub fn open(place: &Place, admin: bool) -> Result<Box<dyn Fs>, String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Windows OpenSSH's made-up ids (uid 0, gid 0, no write bits) never
+    /// make the account's own folder read-only or "root's"; on Linux the
+    /// same attributes do.
+    #[test]
+    fn a_windows_folder_is_never_roots_or_read_only_from_made_up_ids() {
+        let here = crate::sftp::Attrs { uid: Some(0), gid: Some(0), perm: Some(0o40555), ..Default::default() };
+        assert_eq!(super::folder_access(true, &here, None, u32::MAX, &[]), (true, String::new()));
+        assert_eq!(super::folder_access(false, &here, None, 1000, &[1000]), (false, "root".to_string()));
+        let mine = crate::sftp::Attrs { uid: Some(1000), gid: Some(1000), perm: Some(0o40755), ..Default::default() };
+        assert_eq!(super::folder_access(false, &mine, Some("ops".into()), 1000, &[1000]), (true, "ops".to_string()));
+    }
     use super::*;
 
     #[test]

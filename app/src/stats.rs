@@ -55,6 +55,10 @@ pub struct Sample {
     pub boot: i64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub services: Vec<Service>,
+    /// The services were not read: SENTIENT is stopped (on Windows its WSL
+    /// distro, which a read never starts; distro::idle). Not a failure.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub services_stopped: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub db: Option<Db>,
 }
@@ -175,6 +179,7 @@ impl Reader {
             io,
             boot: System::boot_time() as i64,
             services: Vec::new(),
+            services_stopped: false,
             db: None,
         }
     }
@@ -261,6 +266,15 @@ pub fn db_unprompted(record: Option<&InstallationRecord>) -> DbRead {
     db(r).map(DbRead::Read).unwrap_or(DbRead::None)
 }
 
+/// [`services_over`], and whether they were left out because SENTIENT is
+/// stopped (distro::idle: then no list, and `true`).
+pub fn services_read(record: Option<&InstallationRecord>, window: Duration) -> (Vec<Service>, bool) {
+    match sentient_installer_core::distro::idle::watch(|| services_over(record, window)) {
+        sentient_installer_core::distro::idle::Read::Done(list) => (list, false),
+        sentient_installer_core::distro::idle::Read::Stopped => (Vec::new(), true),
+    }
+}
+
 /// Each SENTIENT service's processor (over `window`) and memory. Blocking.
 pub fn services_over(record: Option<&InstallationRecord>, window: Duration) -> Vec<Service> {
     let Some(r) = record else { return Vec::new() };
@@ -280,7 +294,10 @@ pub fn read_part(record: Option<&InstallationRecord>, part: Part) -> Sample {
             let mut r = Reader::new(record);
             r.read(Duration::from_millis(300))
         }
-        Part::Services => Sample { t: chrono::Utc::now().timestamp(), services: services_over(record, Duration::from_secs(1)), ..Default::default() },
+        Part::Services => {
+            let (services, services_stopped) = services_read(record, Duration::from_secs(1));
+            Sample { t: chrono::Utc::now().timestamp(), services, services_stopped, ..Default::default() }
+        }
         Part::Db => Sample {
             t: chrono::Utc::now().timestamp(),
             db: match db_unprompted(record) {
@@ -297,12 +314,16 @@ pub fn read_part(record: Option<&InstallationRecord>, part: Part) -> Sample {
 /// also read the database numbers (never asking for a password).
 pub fn read(record: Option<&InstallationRecord>, window: Duration, with_db: bool) -> Sample {
     let window = window.max(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+    // A read on the caller's thread is one on these too (Windows: no
+    // stopped WSL distro is started, distro::idle).
+    use sentient_installer_core::distro::idle;
+    let carried = idle::carry();
     std::thread::scope(|scope| {
-        let services = scope.spawn(|| services_over(record, window));
-        let db = with_db.then(|| scope.spawn(|| db_unprompted(record)));
+        let services = scope.spawn(|| carried.run(|| services_read(record, window)));
+        let db = with_db.then(|| scope.spawn(|| carried.run(|| db_unprompted(record))));
         let mut reader = Reader::new(record);
         let mut s = reader.read(window);
-        s.services = services.join().unwrap_or_default();
+        (s.services, s.services_stopped) = services.join().unwrap_or_default();
         s.db = match db.map(|h| h.join()) {
             Some(Ok(DbRead::Read(d))) => Some(d),
             _ => None,
@@ -372,10 +393,26 @@ fn unit_names(r: &InstallationRecord) -> Vec<String> {
     r.platform().snapshot().services.into_iter().map(|s| s.name).collect()
 }
 
+/// Whether a Docker stack's containers are all stopped: then SENTIENT is
+/// stopped and its services are not read (`docker stats` would list each
+/// at nothing). None listed: not known, read as before.
+pub fn all_stopped(services: &[crate::installation::Service]) -> bool {
+    !services.is_empty() && services.iter().all(|s| !s.running && !s.starting)
+}
+
 /// Each SENTIENT service's processor and memory use.
 fn services(r: &InstallationRecord, cpu_before: Vec<(String, u64)>, secs: f64, cores: u32) -> Vec<Service> {
     match r.engine {
-        Engine::Docker => docker_services(&unit_names(r)),
+        Engine::Docker => {
+            let list = r.platform().snapshot().services;
+            // Stopped: left out, as a stopped WSL distro's commands are,
+            // so the watched read says SENTIENT is stopped (services_read).
+            if all_stopped(&list) {
+                sentient_installer_core::distro::idle::note_skipped();
+                return Vec::new();
+            }
+            docker_services(&list.into_iter().filter(|s| s.running).map(|s| s.name).collect::<Vec<_>>())
+        }
         Engine::Native if cfg!(windows) => Vec::new(),
         Engine::Native => cpu_before
             .into_iter()
@@ -398,17 +435,12 @@ fn services(r: &InstallationRecord, cpu_before: Vec<(String, u64)>, secs: f64, c
     }
 }
 
+/// The running containers' figures, read where Docker runs (on Windows in
+/// SENTIENT's WSL distro: there is no `docker` on Windows itself, and the
+/// Services card was empty there until 0.9.2-rc5), in one command.
 fn docker_services(names: &[String]) -> Vec<Service> {
-    if names.is_empty() {
-        return Vec::new();
-    }
-    let mut args = vec!["stats", "--no-stream", "--format", "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"];
-    args.extend(names.iter().map(String::as_str));
-    let stats = sentient_installer_core::host::host_command("docker").args(&args).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-    let mut inspect = vec!["inspect", "--format", "{{.Name}}\t{{.RestartCount}}"];
-    inspect.extend(names.iter().map(String::as_str));
-    let restarts = sentient_installer_core::host::host_command("docker").args(&inspect).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-    parse_docker_stats(&stats, &restarts)
+    let Some((stats, restarts)) = sentient_installer_core::distro::container_stats(names) else { return Vec::new() };
+    parse_docker_stats(&stats.replace('|', "\t"), &restarts.replace('|', "\t"))
 }
 
 /// `docker stats` lines (name, "3.10%", "1.2GiB / 7.7GiB") and `docker
@@ -666,10 +698,14 @@ pub fn debug_part(dir: &Path, part: Part) -> Result<Sample, String> {
     match part {
         Part::System => {
             s.services.clear();
+            s.services_stopped = false;
             s.db = None;
         }
         Part::Services => s.db = None,
-        Part::Db => s.services.clear(),
+        Part::Db => {
+            s.services.clear();
+            s.services_stopped = false;
+        }
     }
     Ok(s)
 }
@@ -731,6 +767,33 @@ mod tests {
         assert_eq!(s[0].mem, (1.2 * 1024. * 1024. * 1024.) as u64);
         assert_eq!(parse_size("812MiB"), 812 * 1024 * 1024);
         assert_eq!(parse_size("40kB"), 40_000);
+    }
+
+    #[test]
+    fn windows_docker_services_come_from_the_docker_shell() {
+        // What container_stats answers (through wsl.exe on Windows: '|',
+        // no tab), as the card reads it.
+        let (stats, restarts) = sentient_installer_core::distro::split_container_stats("sentient|3.10%|1.2GiB / 7.7GiB\nsentient-postgres|0.50%|160MiB / 7.7GiB\n--sentient-restarts--\n/sentient|0\n/sentient-postgres|2\n");
+        let s = parse_docker_stats(&stats.replace('|', "\t"), &restarts.replace('|', "\t"));
+        assert_eq!(s.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(), ["sentient", "sentient-postgres"]);
+        assert_eq!(s[1].restarts, Some(2));
+        assert_eq!(s[1].mem, 160 * 1024 * 1024);
+    }
+
+    #[test]
+    fn a_stack_whose_containers_are_all_stopped_is_stopped() {
+        let svc = |running: bool, starting: bool| crate::installation::Service { name: "x".into(), running, starting, detail: String::new() };
+        assert!(all_stopped(&[svc(false, false), svc(false, false)]), "the Windows distro stopped, or every container down");
+        assert!(!all_stopped(&[svc(true, false), svc(false, false)]), "one up: its figures are read");
+        assert!(!all_stopped(&[svc(false, true)]), "starting is not stopped");
+        assert!(!all_stopped(&[]), "nothing listed: not known");
+        // Inside a watched read, a stopped stack is Stopped, not an empty list.
+        let r = sentient_installer_core::distro::idle::watch(|| {
+            if all_stopped(&[svc(false, false)]) {
+                sentient_installer_core::distro::idle::note_skipped();
+            }
+        });
+        assert!(r.is_stopped());
     }
 
     #[test]

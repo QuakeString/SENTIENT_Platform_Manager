@@ -117,7 +117,17 @@ pub fn problems(cx: &App) -> Vec<Problem> {
 
 /// The background part runs (the tray is up and closing does not quit).
 fn keeps_running(cx: &App) -> bool {
-    cx.try_global::<Bg>().is_some_and(|b| b.tray.is_some() && !b.prefs.close_quits)
+    cx.try_global::<Bg>().is_some_and(|b| b.has_tray() && !b.prefs.close_quits)
+}
+
+impl Bg {
+    /// The tray is up, or (reopen tests, a debug build under Xvfb with no
+    /// desktop tray) SPM_DEBUG_FAKE_TRAY behaves as if it were: closing
+    /// the window keeps the app running, and the test opens it again with
+    /// the tray icon's own command (crate::background::listen, `toggle`).
+    fn has_tray(&self) -> bool {
+        self.tray.is_some() || (cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_FAKE_TRAY").is_some())
+    }
 }
 
 /// Start the manager: the background part when the tray is on, and the
@@ -345,7 +355,7 @@ fn show(cx: &mut App) {
     // Closing: quits when asked to; with a job running only minimizes.
     let _ = handle.update(cx, |_, window, cx| {
         window.on_window_should_close(cx, |window, cx| {
-            if cx.try_global::<Bg>().is_some_and(|b| b.prefs.close_quits || b.tray.is_none()) {
+            if cx.try_global::<Bg>().is_some_and(|b| b.prefs.close_quits || !b.has_tray()) {
                 return true;
             }
             if crate::manager::strip::busy(cx) {
@@ -400,7 +410,8 @@ pub fn tray_up(cx: &App) -> bool {
 /// This computer's SENTIENT for the menu: None when not installed.
 fn local_state() -> Option<bool> {
     let record = crate::installation::InstallationRecord::load()?;
-    Some(record.platform().snapshot().serving)
+    // A read: SENTIENT's stopped WSL distro stays stopped (Windows).
+    Some(sentient_installer_core::distro::idle::reading(|| record.platform().snapshot().serving))
 }
 
 fn refresh_tray(cx: &mut App) {
@@ -462,7 +473,9 @@ fn check_instances(cx: &mut App) {
                         if matches!(sc::power_state(&inst.id), Some(Power::Restarting | Power::ShuttingDown)) {
                             continue;
                         }
-                        let status = crate::remote::status(&inst);
+                        // The Instances cards' reading when it is recent (one
+                        // request per server, crate::remote::status_cache).
+                        let status = crate::remote::status_cache::fetch(&inst, Duration::from_secs(30));
                         // Shut down from here: off is not a problem; once it
                         // answers it is on again.
                         if sc::power_state(&inst.id) == Some(Power::Off) {

@@ -6,9 +6,10 @@
 
 mod old_pg;
 mod pages;
+mod placement;
 mod plan;
 
-pub(crate) use plan::{InstallPlan, run as run_install, run_manager_only};
+pub(crate) use plan::{Host as PlanHost, InstallPlan, InstallSecrets, Shortcuts, pinned_image, run as run_install, run_manager_only, steps_on as plan_steps_on};
 
 #[cfg(windows)]
 pub use plan::provision_clickhouse_wsl;
@@ -108,8 +109,17 @@ struct Fields {
 
 pub struct Installer {
     step: usize,
-    /// How SENTIENT runs: always native on Windows; Docker or native on Linux.
+    /// How SENTIENT runs: natively (Windows' default) or in Docker (Linux's
+    /// default; Docker in WSL 2 on Windows).
     engine: Engine,
+    /// Windows: whether Docker in WSL 2 can be chosen (None while read).
+    docker_choice: Option<sentient_installer_core::wsl::DockerChoice>,
+    /// The Windows screens: on Windows, and on screens of a debug build
+    /// (`SPM_DEBUG_WINDOWS_ENGINES`). Texts and choices only; the plan and
+    /// the install follow the real OS.
+    windows: bool,
+    /// System check: the "Customise where each part runs" rows are open.
+    customise_open: bool,
     accepted: bool,
     /// Install the Platform Manager alone, without SENTIENT.
     manager_only: bool,
@@ -123,6 +133,13 @@ pub struct Installer {
     customize: bool,
     groups: Vec<Group>,
     ram_mb: u64,
+    /// Windows: the WSL 2 VM's memory for Docker (this account's
+    /// .wslconfig) and for ClickHouse beside PostgreSQL (its own account's):
+    /// (MB, from .wslconfig's memory=).
+    vm_docker: (u64, bool),
+    vm_clickhouse: (u64, bool),
+    /// What the Customize inputs were last filled with (the recommendation
+    /// then); the recommendation itself follows the choices (recommendation).
     recommended: HashMap<String, String>,
     /// One input per catalog setting, created with the wizard.
     settings: HashMap<String, Entity<InputState>>,
@@ -183,6 +200,10 @@ pub struct Installer {
     pub(crate) old_pg: Option<sentient_installer_core::old_pg::OldPgData>,
     pub(crate) old_pg_choice: sentient_installer_core::old_pg::OldPgChoice,
     old_pg_probing: bool,
+    /// Linux: this computer's C library and system, read once: a native
+    /// SENTIENT needs a glibc as new as its release says (native_glibc).
+    libc: sentient_installer_core::glibc::Libc,
+    os_name: String,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -227,9 +248,10 @@ impl Installer {
             d.http_port = p.stack.http_port;
         }
         let admin_email = resumed.as_ref().map(|p| p.admin_email.clone()).unwrap_or_default();
+        let windows = cfg!(windows) || debug_env("SPM_DEBUG_WINDOWS_ENGINES").is_some();
         let fields = Fields {
-            install_dir: input(window, cx, if cfg!(windows) { r"C:\Program Files\SENTIENT" } else { "/opt/sentient" }),
-            data_dir: input(window, cx, if cfg!(windows) { r"C:\PostgreSQL\18" } else { "" }),
+            install_dir: input(window, cx, if windows { r"C:\Program Files\SENTIENT" } else { "/opt/sentient" }),
+            data_dir: input(window, cx, if windows { r"C:\PostgreSQL\18" } else { "" }),
             pg_db: input(window, cx, &d.db_name),
             pg_user: input(window, cx, &d.db_user),
             // The database passwords start as the default ("sentient"):
@@ -308,7 +330,11 @@ impl Installer {
 
         let mut this = Self {
             step: 0,
-            engine: if cfg!(windows) { Engine::Native } else { Engine::Docker },
+            // "In the system", on Windows and on Linux (placement).
+            engine: placement::default_engine(),
+            docker_choice: None,
+            windows,
+            customise_open: debug_env("SPM_DEBUG_CUSTOMISE").is_some(),
             accepted: false,
             manager_only: false,
             adding_sentient: std::env::args().any(|a| a == "--add-sentient"),
@@ -318,6 +344,8 @@ impl Installer {
             customize: false,
             groups,
             ram_mb,
+            vm_docker: catalog::wsl_vm_mb(ram_mb, true),
+            vm_clickhouse: catalog::wsl_vm_mb(ram_mb, false),
             recommended,
             settings,
             autostart: true,
@@ -345,6 +373,8 @@ impl Installer {
             old_pg: None,
             old_pg_choice: Default::default(),
             old_pg_probing: false,
+            libc: if windows { Default::default() } else { sentient_installer_core::glibc::local() },
+            os_name: if windows { String::new() } else { sentient_installer_core::glibc::local_os_name() },
             earlier: None,
             earlier_done: resumed.is_some(),
             keep_existing: true,
@@ -374,6 +404,10 @@ impl Installer {
             fields.iter().find(|e| e.read(cx).value().trim().is_empty()).cloned().or_else(|| fields.first().cloned())
         });
         this._subscriptions.extend(enter);
+        // The WSL 2 facts first: a screen's engine (SPM_DEBUG_ENGINE_DOCKER)
+        // picks the checks.
+        this.read_docker_choice(cx);
+        this.fit_engine_to_glibc();
         this.run_checks(cx);
         // The error panel's page fixes: another port, or the password
         // prompt again (both run the install again).
@@ -400,6 +434,9 @@ impl Installer {
                         page.sentient_version = format!("{} (downloaded)", m.version).into();
                     }
                     page.online = Some(found);
+                    if page.fit_engine_to_glibc() {
+                        page.run_checks(cx);
+                    }
                     cx.notify();
                 })
                 .ok();
@@ -420,9 +457,23 @@ impl Installer {
         #[cfg(debug_assertions)]
         if let Some(step) = std::env::var("SPM_WIZARD_STEP").ok().and_then(|s| s.parse::<usize>().ok()) {
             this.step = step.min(FINISH);
-            this.flavor = Some(Flavor::Timescaledb);
+            // Screens: SPM_DEBUG_FLAVOR = stock, timescaledb or clickhouse
+            // (TimescaleDB when unset); one this way of running can't
+            // take falls back to ClickHouse.
+            this.flavor = Some(match debug_env("SPM_DEBUG_FLAVOR").as_deref() {
+                Some("stock") => Flavor::Stock,
+                Some("clickhouse") => Flavor::Clickhouse,
+                _ => Flavor::Timescaledb,
+            });
+            if this.flavor.is_some_and(|f| !this.flavors().contains(&f)) {
+                this.flavor = Some(Flavor::Clickhouse);
+            }
             this.loc_per_store = std::env::var_os("SPM_DEBUG_LOC_PG").is_some();
             this.debug_content(window, cx);
+            // Screens: the earlier-install screen (choices, or confirm).
+            if std::env::var_os("SPM_DEBUG_EARLIER").is_some() {
+                this.earlier = Some(cx.new(|cx| crate::earlier::EarlierPage::new(crate::earlier::Found::debug(), cx)));
+            }
             // Screens: a System check row with its commands shown.
             if let Ok(row) = std::env::var("SPM_DEBUG_SYSCHECK_COMMANDS") {
                 this.commands_shown.insert(row);
@@ -442,6 +493,27 @@ impl Installer {
                             sink(sentient_installer_core::progress::Progress::Step { name: "Installing the Platform Manager".into() });
                             sink(sentient_installer_core::progress::Progress::Step { name: "Installing PostgreSQL from your distribution".into() });
                             Err("pkexec exited with 42".into())
+                        },
+                        cx,
+                    )
+                });
+            }
+            // The install stopped for the restart that turns WSL 2 on.
+            if this.step == INSTALL && std::env::var_os("SPM_DEBUG_RESTART").is_some() {
+                this.engine = Engine::Docker;
+                this.install.update(cx, |job, cx| {
+                    use sentient_installer_core::progress::{PlanStep, Progress};
+                    job.set_plan(vec![
+                        PlanStep::new("Installing the Platform Manager").weight(0.5),
+                        PlanStep::new("Turning on WSL 2").detail("Windows restarts once, and Setup continues after you sign in").weight(2.),
+                        PlanStep::new("Setting up Docker in WSL 2").detail("SENTIENT's own Ubuntu distribution with Docker Engine").weight(4.),
+                        PlanStep::new("Installing SENTIENT and its database").detail("The containers, the database and its schema").weight(6.),
+                    ]);
+                    job.start(
+                        |sink| {
+                            sink(Progress::Step { name: "Installing the Platform Manager".into() });
+                            sink(Progress::Step { name: "Turning on WSL 2".into() });
+                            Err(plan::RESTART_REQUIRED.into())
                         },
                         cx,
                     )
@@ -504,6 +576,10 @@ impl Installer {
         let canned = std::env::var_os("SPM_DEBUG_SYSCHECK").is_some() || std::env::var_os("SPM_DEBUG_SETUP_LONG").is_some();
         #[cfg(not(debug_assertions))]
         let canned = false;
+        // Screens: SPM_DEBUG_SYSCHECK=mock, the mockup's rows for each way
+        // of running (debug_mock_checks).
+        let mock = debug_env("SPM_DEBUG_SYSCHECK").as_deref() == Some("mock");
+        let windows = self.windows;
         let pg_dir = std::path::PathBuf::from(self.value(&self.fields.data_dir, cx));
         let task = cx.spawn(async move |this, cx| {
             let look_dir = pg_dir.clone();
@@ -541,14 +617,22 @@ impl Installer {
             let rows = cx
                 .background_executor()
                 .spawn(async move {
-                    let mode = if cfg!(windows) {
+                    let mode = if windows && engine == Engine::Docker {
+                        "windows-docker"
+                    } else if windows {
                         "windows-native"
                     } else if engine == Engine::Docker {
                         "linux-docker"
                     } else {
                         "linux-native"
                     };
-                    let found = if canned { debug_checks() } else { checks::run_for(mode, offline, Some(&ports)) };
+                    let found = if mock {
+                        debug_mock_checks(mode)
+                    } else if canned {
+                        debug_checks()
+                    } else {
+                        checks::run_for(mode, offline, Some(&ports))
+                    };
                     let mut rows = found.into_iter().map(CheckRow::from).collect::<Vec<_>>();
                     // Installing over a running SENTIENT would replace its
                     // configuration (and, on Docker, its passwords).
@@ -709,6 +793,10 @@ impl Installer {
                 Some(Err(e)) => format!("There is no SENTIENT package next to Setup and SENTIENT could not be found online ({e}). Connect to the internet, or unzip the SENTIENT package and run SENTIENT-Setup from that folder, or choose “Only the Platform Manager”."),
                 Some(Ok(_)) => String::new(),
             }),
+            // Still native after the switch to Docker: no Docker either.
+            1 if self.engine == Engine::Native && self.native_glibc().blocked().is_some() => {
+                Err(sentient_installer_core::glibc::and_no_docker(self.native_glibc().blocked().unwrap_or_default(), sentient_installer_core::glibc::Here::Computer))
+            }
             1 => match &self.checks {
                 None => Err("The system check is still running.".into()),
                 Some(rows) if rows.iter().any(|r| r.status == Status::Fail) => {
@@ -716,13 +804,16 @@ impl Installer {
                 }
                 Some(_) => Ok(()),
             },
+            2 if self.engine == Engine::Docker && self.windows => {
+                if self.value(&f.install_dir, cx).is_empty() { Err("The folder is required.".into()) } else { Ok(()) }
+            }
             2 if self.engine == Engine::Docker => self.locations(cx).map(|_| ()),
             2 if self.bundle.is_none() && !self.can_download() => Err(
                 "A native install needs SENTIENT's program files: connect to the internet (they are downloaded), or unzip the SENTIENT package and run SENTIENT-Setup from that folder, or choose Docker, which pulls the image.".into(),
             ),
             2 => {
                 if self.value(&f.install_dir, cx).is_empty()
-                    || (cfg!(windows) && self.value(&f.data_dir, cx).is_empty())
+                    || (self.windows && self.value(&f.data_dir, cx).is_empty())
                 {
                     Err("The folders are required.".into())
                 } else {
@@ -731,10 +822,10 @@ impl Installer {
             }
             3 => match self.flavor {
                 None => Err("Choose a database.".into()),
-                Some(flavor) if !self.flavors().contains(&flavor) => {
-                    Err("That database is not available for the chosen way of running SENTIENT.".into())
-                }
-                Some(_) => Ok(()),
+                Some(flavor) => match placement::flavor_runs(self.host(), self.engine, flavor) {
+                    Ok(_) => Ok(()),
+                    Err(why) => Err(why_line(why)),
+                },
             },
             4 => {
                 for (field, name) in [
@@ -797,16 +888,114 @@ impl Installer {
         }
     }
 
-    /// The databases on offer for this OS and engine.
+    /// The databases that can be chosen for this OS and engine (the others
+    /// are shown greyed, with the reason: placement::flavor_runs).
     fn flavors(&self) -> Vec<Flavor> {
-        match (cfg!(windows), self.engine) {
-            (true, _) | (false, Engine::Docker) => vec![Flavor::Stock, Flavor::Timescaledb, Flavor::Clickhouse],
-            // Distribution packages carry no TimescaleDB.
-            (false, Engine::Native) => vec![Flavor::Stock, Flavor::Clickhouse],
+        [Flavor::Stock, Flavor::Timescaledb, Flavor::Clickhouse]
+            .into_iter()
+            .filter(|f| placement::flavor_runs(self.host(), self.engine, *f).is_ok())
+            .collect()
+    }
+
+    /// The computer the choices are made for (the Windows screens on a
+    /// debug build too).
+    pub(super) fn host(&self) -> placement::Host {
+        use sentient_installer_core::wsl::DockerChoice;
+        placement::Host {
+            windows: self.windows,
+            wsl: match &self.docker_choice {
+                Some(DockerChoice::Ready) => placement::Wsl::Ready,
+                Some(DockerChoice::Unavailable { .. }) => placement::Wsl::Unavailable,
+                // Not read yet: offered, as when it is off (the restart tells).
+                Some(DockerChoice::TurnOnWsl) | None => placement::Wsl::TurnOn,
+            },
         }
     }
 
+    /// Why WSL 2 cannot run here, as read (empty when it can).
+    pub(super) fn wsl_detail(&self) -> String {
+        match &self.docker_choice {
+            Some(sentient_installer_core::wsl::DockerChoice::Unavailable { reason, detail }) => format!("{reason} {detail}"),
+            _ => String::new(),
+        }
+    }
+
+    /// Whether a native SENTIENT (the version Setup installs) runs on this
+    /// Linux's glibc. Windows (and its screens) and "Only the Platform
+    /// Manager" are not checked.
+    pub(super) fn native_glibc(&self) -> sentient_installer_core::glibc::NativeGlibc {
+        use sentient_installer_core::glibc;
+        if cfg!(windows) || self.windows || self.manager_only {
+            return glibc::NativeGlibc::Allowed;
+        }
+        // The release's manifest when it was read online; a package names
+        // only its version (glibc::MIN_GLIBC_BY_RELEASE then).
+        let (version, field) = match (&self.bundle, &self.online) {
+            (None, Some(Ok(m))) => (m.version.clone(), m.min_glibc.clone()),
+            _ => (self.sentient_version.split(' ').next().unwrap_or_default().to_string(), None),
+        };
+        glibc::decide(&version, glibc::min_glibc(field.as_deref(), &version), &self.libc, &self.os_name, glibc::Here::Computer)
+    }
+
+    /// "In the system" cannot run here: Docker is chosen instead (its card
+    /// is off with the reason). True when the choice changed.
+    fn fit_engine_to_glibc(&mut self) -> bool {
+        if self.engine != Engine::Native || self.native_glibc().blocked().is_none() {
+            return false;
+        }
+        if self.windows && self.host().wsl == placement::Wsl::Unavailable {
+            return false;
+        }
+        self.engine = Engine::Docker;
+        if self.flavor.is_some_and(|f| !self.flavors().contains(&f)) {
+            self.flavor = None;
+        }
+        true
+    }
+
+    /// Windows: read whether Docker in WSL 2 can run here (the engine
+    /// cards). Screens: `SPM_DEBUG_WINDOWS_ENGINES` = ready, wsl or novirt
+    /// shows the Windows cards on any system.
+    fn read_docker_choice(&mut self, cx: &mut Context<Self>) {
+        use sentient_installer_core::wsl;
+        #[cfg(debug_assertions)]
+        if let Ok(v) = std::env::var("SPM_DEBUG_WINDOWS_ENGINES") {
+            let facts = match v.as_str() {
+                "ready" => wsl::Facts { ready: true, ..Default::default() },
+                "novirt" => wsl::Facts { virt_firmware: Some(false), hypervisor: Some(false), ..Default::default() },
+                _ => wsl::Facts::default(),
+            };
+            self.docker_choice = Some(wsl::docker_choice(&facts));
+        }
+        // Screens: Docker picked (SPM_DEBUG_ENGINE_DOCKER), on either OS.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("SPM_DEBUG_ENGINE_DOCKER").is_some() && !matches!(self.docker_choice, Some(wsl::DockerChoice::Unavailable { .. })) {
+            self.engine = Engine::Docker;
+        }
+        if !cfg!(windows) || self.docker_choice.is_some() {
+            return;
+        }
+        let task = cx.spawn(async move |this, cx| {
+            let choice = cx.background_executor().spawn(async move { wsl::docker_choice(&wsl::facts()) }).await;
+            this.update(cx, |page, cx| {
+                if matches!(choice, wsl::DockerChoice::Unavailable { .. }) && page.engine == Engine::Docker {
+                    page.set_engine(Engine::Native, cx);
+                }
+                page.docker_choice = Some(choice);
+                cx.notify();
+            })
+            .ok();
+        });
+        self._tasks.push(task);
+    }
+
     fn set_engine(&mut self, engine: Engine, cx: &mut Context<Self>) {
+        if engine == Engine::Docker && self.windows && self.host().wsl == placement::Wsl::Unavailable {
+            return;
+        }
+        if engine == Engine::Native && self.native_glibc().blocked().is_some() {
+            return;
+        }
         if self.engine != engine {
             self.engine = engine;
             if self.flavor.is_some_and(|f| !self.flavors().contains(&f)) {
@@ -920,8 +1109,38 @@ impl Installer {
         }
     }
 
+    /// What the recommendation is sized for (catalog::sizing): on Windows
+    /// the WSL 2 VM's memory where a database runs in WSL 2.
+    pub(super) fn sizing(&self) -> catalog::Sizing {
+        let docker = self.engine == Engine::Docker;
+        let (vm, from_config) = if docker { self.vm_docker } else { self.vm_clickhouse };
+        catalog::sizing(self.windows, docker, self.flavor == Some(Flavor::Clickhouse), self.ram_mb, vm, from_config)
+    }
+
+    /// The recommended configuration for the choices made.
+    pub(super) fn recommendation(&self) -> HashMap<String, String> {
+        catalog::recommended(&self.groups, self.sizing().pg_mb)
+    }
+
+    /// Customize opened: the inputs still holding the recommendation they
+    /// were filled with take the one for the choices made now (a value the
+    /// operator typed stays).
+    fn refill_recommended(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let now = self.recommendation();
+        for (key, value) in &now {
+            let Some(field) = self.settings.get(key) else { continue };
+            let before = self.recommended.get(key).cloned().unwrap_or_default();
+            if field.read(cx).value().as_ref() == before.as_str() && *value != before {
+                let value = value.clone();
+                field.update(cx, |state, cx| state.set_value(value, window, cx));
+            }
+        }
+        self.recommended = now;
+    }
+
     /// The settings that will be written: every catalog setting with a value.
     fn chosen_settings(&self, cx: &App) -> Vec<(String, String)> {
+        let recommended = self.recommendation();
         self.groups
             .iter()
             .flat_map(|g| g.settings.iter())
@@ -929,7 +1148,7 @@ impl Installer {
                 let value = if self.customize {
                     self.value(&self.settings[&s.env], cx)
                 } else {
-                    self.recommended.get(&s.env).cloned().unwrap_or_default()
+                    recommended.get(&s.env).cloned().unwrap_or_default()
                 };
                 (!value.is_empty()).then(|| (s.env.clone(), value))
             })
@@ -966,8 +1185,13 @@ impl Installer {
 
     fn plan(&self, cx: &App) -> Result<plan::InstallPlan, String> {
         let f = &self.fields;
+        let flavor = self.flavor.ok_or("Choose a database.")?;
+        // Where each part runs, on the real OS: the engine the backend
+        // installs with, or why this version refuses the choice.
+        let host = placement::Host { windows: cfg!(windows), ..self.host() };
+        let engine = placement::plan_engine(host, placement::Placement::preset(self.engine, host.windows), flavor).map_err(why_line)?;
         let mut stack = DeployConfig {
-            flavor: self.flavor.ok_or("Choose a database.")?,
+            flavor,
             db_name: self.value(&f.pg_db, cx),
             db_user: self.value(&f.pg_user, cx),
             db_password: self.value(&f.pg_password, cx),
@@ -989,21 +1213,25 @@ impl Installer {
             db_loopback: true,
             ..DeployConfig::default()
         };
-        // Docker pulls the picked version's image instead of :latest.
+        // Docker runs the version being installed under its own tag, never
+        // :latest: the picked one, else the newest found online.
         if self.engine == Engine::Docker && self.bundle.is_none() {
-            if let Some(v) = &self.chosen_version {
-                stack.image = format!("quakestring/sentient:{v}");
-            }
+            let version = self.chosen_version.clone().or_else(|| match &self.online {
+                Some(Ok(m)) => Some(m.version.clone()),
+                _ => None,
+            });
+            stack.image = plan::pinned_image(&stack.image, version.as_deref());
         }
         stack.tuning.instance_id = format!("sentient-{}", native::generate_secret().get(..8).unwrap_or("01"));
-        if self.engine == Engine::Docker {
+        // Windows: the volumes live on the distro's disk, in the program folder.
+        if self.engine == Engine::Docker && !cfg!(windows) {
             stack.locations = self.locations(cx)?;
             if !stack.flavor.uses_clickhouse() {
                 stack.locations.ch = None;
             }
         }
         Ok(plan::InstallPlan {
-            engine: self.engine,
+            engine,
             sentient_version: match (&self.bundle, &self.online) {
                 (None, Some(Ok(m))) => m.version.clone(),
                 _ => self.sentient_version.to_string(),
@@ -1015,6 +1243,8 @@ impl Installer {
             existing: self.existing.as_ref().map(|_| self.keep_existing),
             delete_existing: self.existing.is_some() && !self.keep_existing && self.delete_existing,
             old_pg: self.old_pg_choice,
+            wsl_restarted: false,
+            remote: false,
             admin_email: self.value(&f.admin_email, cx),
             admin_password: self.value(&f.admin_password, cx),
             settings: self.chosen_settings(cx),
@@ -1067,6 +1297,9 @@ impl Installer {
                 .await;
             this.update(cx, |page, cx| {
                 page.online = Some(found);
+                if page.fit_engine_to_glibc() {
+                    page.run_checks(cx);
+                }
                 cx.notify();
             })
             .ok();
@@ -1161,6 +1394,9 @@ impl Installer {
         match self.step {
             FINISH => window.remove_window(),
             SUMMARY => self.start_install(cx),
+            // Stopped for the restart that turns WSL 2 on: restart (the
+            // plan is saved; Setup continues after sign-in).
+            INSTALL if self.restart_required(cx) => plan::restart_now(),
             INSTALL => {
                 // Only reachable when the install failed: try again.
                 if matches!(self.install.read(cx).state(), JobState::Failed(_)) {
@@ -1192,6 +1428,11 @@ impl Installer {
             Engine::Docker => sentient_installer_core::distro::existing_volume(&DeployConfig::default())
                 .map(|v| format!("The Docker volume {v} holds the database of an earlier install.")),
         }
+    }
+
+    /// The install stopped for the restart that turns WSL 2 on.
+    fn restart_required(&self, cx: &App) -> bool {
+        matches!(self.install.read(cx).state(), JobState::Failed(m) if m.as_ref() == plan::RESTART_REQUIRED)
     }
 
     fn go(&mut self, step: usize, cx: &mut Context<Self>) {
@@ -1264,7 +1505,7 @@ impl Installer {
                 field.update(cx, |s, cx| s.set_value(value, window, cx));
             }
         }
-        if self.step == INSTALL {
+        if self.step == INSTALL && std::env::var_os("SPM_DEBUG_RESTART").is_none() {
             self.install.update(cx, |job, cx| {
                 job.set_plan(plan::screen_steps());
                 job.start(
@@ -1369,6 +1610,8 @@ impl Installer {
             .pl(px(shell::ICON_X - shell::LOGO / 2.))
             .pr(px(10.))
             .child(ui::layout_probe("menu-brand"))
+            // Windows: the brand row drags the window (crate::win_caption).
+            .child(crate::win_caption::drag_layer())
             .child(div().relative().size(px(shell::LOGO)).flex_shrink_0().flex().items_center().justify_center().child(ui::product_logo(ui::Product::Sentient, shell::LOGO)).child(ui::layout_probe("menu-icon")))
             .child(shell::brand_name(&theme, "SETUP"));
         v_flex()
@@ -1401,6 +1644,7 @@ impl Installer {
     fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let failed = matches!(self.install.read(cx).state(), JobState::Failed(_));
+        let restart = self.restart_required(cx);
         let again = match self.install.read(cx).state() {
             JobState::Failed(m) => crate::ui::retry_label(m, "Retry"),
             _ => "Retry",
@@ -1409,12 +1653,12 @@ impl Installer {
         let blocked = if self.step < SUMMARY { self.validate(cx).err() } else { None };
         let next_label = match self.step {
             SUMMARY => "Install",
+            INSTALL if restart => "Restart now",
             INSTALL if failed => again,
             INSTALL => "Installing…",
             FINISH => "Close",
             _ => "Next",
         };
-        let h = px(crate::theme::BAR_CTRL_H);
         h_flex()
             .flex_shrink_0()
             .px(px(ui::PAGE_PAD))
@@ -1448,8 +1692,8 @@ impl Installer {
                 bar.child(crate::ui::probed(
                     crate::ui::button("cancel")
                         .outline()
-                        .h(h)
-                        .px_4()
+                        
+                        
                         .label("Cancel")
                         .on_click(cx.listener(|this, _, window, cx| this.confirm_cancel(window, cx))),
                 ))
@@ -1458,8 +1702,8 @@ impl Installer {
                 bar.child(crate::ui::probed(
                     crate::ui::button("back")
                         .outline()
-                        .h(h)
-                        .px_4()
+                        
+                        
                         .label("Back")
                         .on_click(cx.listener(|this, _, _, cx| this.go(this.previous_shown(this.step), cx))),
                 ))
@@ -1467,8 +1711,8 @@ impl Installer {
             .child(crate::ui::probed(
                 crate::ui::button("next")
                     .primary()
-                    .h(h)
-                    .px_5()
+                    
+                    
                     .label(next_label)
                     .disabled((self.step == INSTALL && !failed) || blocked.is_some())
                     .on_click(cx.listener(|this, _, window, cx| this.next(window, cx))),
@@ -1478,16 +1722,19 @@ impl Installer {
 
 impl Render for Installer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Windows 10: the app's caption and rounded corners (crate::win_frame).
+        // Windows 10: rounded corners and the border (crate::win_frame).
         let root = self.render_root(window, cx).into_any_element();
-        crate::win_frame::frame(crate::mode::AppMode::Install.window_title(), root, window, cx)
+        crate::win_frame::frame(root, window, cx)
     }
 }
 
 impl Installer {
     fn render_root(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(earlier) = &self.earlier {
-            return div().size_full().bg(cx.theme().background).child(earlier.clone()).into_any_element();
+            let theme = cx.theme().clone();
+            // Windows: the caption over its top edge (crate::win_caption).
+            let caption = crate::win_caption::overlay(theme.foreground, theme.muted, window);
+            return div().size_full().relative().bg(theme.background).child(earlier.clone()).children(caption).into_any_element();
         }
         // Setup installs on this computer, which the Flatpak build cannot.
         if sentient_installer_core::host::in_flatpak() {
@@ -1530,9 +1777,12 @@ impl Installer {
                     .flex_1()
                     .min_w_0()
                     .h_full()
+                    .relative()
                     .child(
                         v_flex()
-                            .id("page")
+                            // One id per step: a step opens at its top, not
+                            // where the previous one was scrolled to.
+                            .id(SharedString::from(format!("page-{}", self.step)))
                             .relative()
                             .flex_1()
                             .min_h_0()
@@ -1548,16 +1798,103 @@ impl Installer {
                                     .gap_0p5()
                                     .min_h(px(32.))
                                     .justify_center()
+                                    // Clear of the caption buttons (Windows).
+                                    .pr(px((crate::win_caption::width() - ui::PAGE_PAD).max(0.)))
                                     .child(div().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child(self.title(self.step)))
                                     .when_some(subtitle, |c, s| c.child(div().text_sm().text_color(theme.muted_foreground).child(s))),
                             )
                             .child(page),
                     )
-                    .child(footer),
+                    .child(footer)
+                    // Windows: the caption over the page's top edge.
+                    .children(crate::win_caption::overlay(theme.foreground, theme.muted, window)),
             )
             .children(layer)
             .into_any_element()
     }
+}
+
+/// A debug build's screen hook (None in a release build).
+fn debug_env(name: &str) -> Option<String> {
+    if cfg!(debug_assertions) { std::env::var(name).ok() } else { None }
+}
+
+/// The footer's line for a refused choice.
+fn why_line(why: placement::Why) -> String {
+    why.short().to_string()
+}
+
+/// Windows: the System check's WSL 2 row, from what was read about WSL
+/// (wsl::DockerChoice) rather than the bare check's: Docker gets it always;
+/// "In the system" only when WSL 2 cannot run (ClickHouse is not offered).
+fn wsl_row(engine: Engine, choice: Option<&sentient_installer_core::wsl::DockerChoice>) -> Option<CheckRow> {
+    use sentient_installer_core::wsl::DockerChoice;
+    let row = |status: Status, state: &str, detail: String| CheckRow {
+        id: "wsl".into(),
+        label: "WSL 2".into(),
+        detail: detail.into(),
+        status,
+        state: Some(state.to_string().into()),
+        fixes: Vec::new(),
+    };
+    match (engine, choice?) {
+        (_, DockerChoice::Unavailable { reason, .. }) => Some(row(Status::Unknown, "Not possible", format!("{} Docker and ClickHouse are not offered.", reason.trim_end()))),
+        (Engine::Docker, DockerChoice::Ready) => Some(row(Status::Pass, "Ready", "WSL 2 runs. Setup adds its own distribution with Docker Engine.".into())),
+        (Engine::Docker, DockerChoice::TurnOnWsl) => Some(row(Status::Setup, "Will be installed", "Not on yet. Setup turns it on; Windows restarts once.".into())),
+        (Engine::Native, _) => None,
+    }
+}
+
+/// The System check's rows on Windows: the check's own WSL row replaced
+/// by [`wsl_row`].
+fn with_wsl_row(mut rows: Vec<CheckRow>, engine: Engine, choice: Option<&sentient_installer_core::wsl::DockerChoice>) -> Vec<CheckRow> {
+    rows.retain(|r| r.id != "wsl");
+    rows.extend(wsl_row(engine, choice));
+    rows
+}
+
+/// Screens (SPM_DEBUG_SYSCHECK=mock): the mockup's System check rows for
+/// `mode` (docs/mockups/setup-engine.html); the WSL 2 row is added as on
+/// Windows ([`with_wsl_row`]).
+#[cfg(debug_assertions)]
+fn debug_mock_checks(mode: &str) -> Vec<checks::Check> {
+    let row = |id: &str, label: &str, status: Status, state: Option<&str>, detail: &str| checks::Check {
+        id: id.into(),
+        label: label.into(),
+        status,
+        detail: detail.into(),
+        state: state.map(String::from),
+        fixes: Vec::new(),
+    };
+    let (systemd, disk) = (row("systemd", "systemd", Status::Pass, None, "systemd 259 (259.5-1-arch)"), row("disk", "Disk space", Status::Pass, None, "412 GB free."));
+    let windows = || {
+        vec![
+            row("windows", "Windows", Status::Pass, None, "Windows 11 Pro 24H2 (64-bit)."),
+            row("disk", "Disk space", Status::Pass, None, "412 GB free."),
+            row("ports", "Ports", Status::Pass, None, "8080, 1883, 5683 and 5432 are free."),
+        ]
+    };
+    match mode {
+        "windows-native" => {
+            let mut v = windows();
+            v.push(row("postgres", "PostgreSQL 18", Status::Setup, None, "Setup installs it as a Windows service."));
+            v
+        }
+        "windows-docker" => windows(),
+        "linux-docker" => {
+            let mut docker = row("docker-daemon", "Docker daemon", Status::Setup, Some("Will be started"), "Docker is installed but not running. The installer will enable and start it.");
+            docker.fixes = vec![sentient_installer_core::diagnose::Fix::Action { label: "Start Docker".into(), action: sentient_installer_core::diagnose::FixAction::StartDocker }];
+            let mut v = vec![systemd, disk, docker];
+            checks::share_fixes(&mut v);
+            v
+        }
+        _ => vec![systemd, disk, row("postgres", "PostgreSQL", Status::Setup, None, "From the distribution's packages.")],
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_mock_checks(_: &str) -> Vec<checks::Check> {
+    Vec::new()
 }
 
 /// Screens and the layout test (SPM_DEBUG_SYSCHECK=1, or the long
@@ -1589,6 +1926,40 @@ fn debug_checks() -> Vec<checks::Check> {
 #[cfg(not(debug_assertions))]
 fn debug_checks() -> Vec<checks::Check> {
     Vec::new()
+}
+
+#[cfg(test)]
+mod wsl_row_tests {
+    use super::{CheckRow, Engine, Status, with_wsl_row, wsl_row};
+    use sentient_installer_core::wsl::DockerChoice;
+
+    fn unavailable() -> DockerChoice {
+        DockerChoice::Unavailable { reason: "Virtualization is turned off in this computer's firmware.".into(), detail: "Turn it on.".into() }
+    }
+
+    #[test]
+    fn docker_shows_how_wsl_stands_and_native_only_when_it_cannot_run() {
+        let r = wsl_row(Engine::Docker, Some(&DockerChoice::TurnOnWsl)).unwrap();
+        assert!(r.status == Status::Setup && r.state.as_deref() == Some("Will be installed"));
+        assert!(r.detail.contains("Windows restarts once"));
+        assert!(wsl_row(Engine::Docker, Some(&DockerChoice::Ready)).unwrap().status == Status::Pass);
+        assert!(wsl_row(Engine::Native, Some(&DockerChoice::Ready)).is_none());
+        assert!(wsl_row(Engine::Native, Some(&DockerChoice::TurnOnWsl)).is_none());
+        let r = wsl_row(Engine::Native, Some(&unavailable())).unwrap();
+        // Not a blocker: "In the system" still installs.
+        assert!(r.status == Status::Unknown && r.state.as_deref() == Some("Not possible"));
+        assert!(r.detail.ends_with("Docker and ClickHouse are not offered."));
+        assert!(wsl_row(Engine::Docker, None).is_none());
+    }
+
+    #[test]
+    fn the_checks_own_wsl_row_is_replaced() {
+        let old = CheckRow { id: "wsl".into(), label: "WSL2".into(), detail: "Installed.".into(), status: Status::Pass, state: None, fixes: Vec::new() };
+        let rows = with_wsl_row(vec![old], Engine::Docker, Some(&DockerChoice::TurnOnWsl));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label.as_ref(), "WSL 2");
+        assert!(with_wsl_row(vec![], Engine::Native, Some(&DockerChoice::Ready)).is_empty());
+    }
 }
 
 #[cfg(test)]

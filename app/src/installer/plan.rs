@@ -58,9 +58,68 @@ pub struct InstallPlan {
     /// or kept aside (sentient_installer_core::old_pg).
     #[serde(default)]
     pub old_pg: sentient_installer_core::old_pg::OldPgChoice,
+    /// Windows restarted once already to turn WSL 2 on: a WSL that still
+    /// does not run is an error now, not another restart.
+    #[serde(default)]
+    pub wsl_restarted: bool,
+    /// Installed on a server by a Platform Manager over SSH (crate::remote::
+    /// install): the agent that runs it is the server's Platform Manager
+    /// already, and a server has no desktop, so neither is put in place.
+    #[serde(default)]
+    pub remote: bool,
+}
+
+/// The passwords of a plan, apart from it: a plan sent to a server goes
+/// as a file without them, they go on the agent's standard input
+/// (crate::remote::install).
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct InstallSecrets {
+    pub admin: String,
+    pub db: String,
+    pub pg_admin: String,
+    #[serde(default)]
+    pub clickhouse: String,
+}
+
+/// Never printed: a log line or a panic message must not carry them.
+impl std::fmt::Debug for InstallSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("InstallSecrets { .. }")
+    }
+}
+
+/// The image a new Docker install runs: `image` at the tag of `version`
+/// (the release being installed), so it stays on that release; `image` as
+/// it is when no release number is known.
+pub fn pinned_image(image: &str, version: Option<&str>) -> String {
+    match version.map(str::trim).filter(|v| sentient_installer_core::releases::is_numbered(v)) {
+        Some(v) => crate::maintenance_ops::retag(image, v),
+        None => image.to_string(),
+    }
 }
 
 impl InstallPlan {
+    /// The plan without its passwords, and the passwords.
+    pub fn split_secrets(mut self) -> (InstallPlan, InstallSecrets) {
+        let secrets = InstallSecrets {
+            admin: std::mem::take(&mut self.admin_password),
+            db: std::mem::take(&mut self.stack.db_password),
+            pg_admin: std::mem::take(&mut self.pg_superuser_password),
+            clickhouse: std::mem::take(&mut self.stack.ch_password),
+        };
+        self.auto_signin_password.clear();
+        (self, secrets)
+    }
+
+    /// The passwords [`split_secrets`](Self::split_secrets) took, put back.
+    pub fn with_secrets(mut self, s: InstallSecrets) -> InstallPlan {
+        self.admin_password = s.admin;
+        self.stack.db_password = s.db;
+        self.pg_superuser_password = s.pg_admin;
+        self.stack.ch_password = s.clickhouse;
+        self
+    }
+
     /// The wizard's configuration with the chosen settings folded in:
     /// PostgreSQL parameters into `pg`, the licence server into its field,
     /// everything else into `tuning.extra_env`, which every engine writes
@@ -151,7 +210,7 @@ impl InstallPlan {
 
 /// The error `run` returns when Windows must restart to finish enabling
 /// WSL2. The plan is saved first and setup continues after the next logon.
-pub const RESTART_REQUIRED: &str = "Windows must restart to finish enabling WSL2.";
+pub const RESTART_REQUIRED: &str = "Windows must restart to finish turning on WSL 2.";
 
 /// Passwords of a saved plan, kept apart from it: they go to the secret
 /// store (crate::secrets), the rest to a plain file.
@@ -228,18 +287,37 @@ pub fn restart_now() {
         .spawn();
 }
 
+/// WSL 2 turned on, or the run stops for the one restart that finishes
+/// it (the plan saved; Setup continues after the next sign-in). After that
+/// restart a WSL that still does not run is an error. Windows only.
+#[cfg(windows)]
+fn turn_on_wsl(plan: &InstallPlan, sink: &ProgressFn) -> Result<(), String> {
+    use sentient_installer_core::wsl;
+    if wsl::is_ready() {
+        return Ok(());
+    }
+    let outcome = wsl::install(sink.clone());
+    if outcome.ready {
+        return Ok(());
+    }
+    if plan.wsl_restarted {
+        let status = wsl::facts().status;
+        return Err(format!(
+            "WSL 2 still does not run after the restart. {}",
+            wsl::vm_error(&status).unwrap_or_else(|| status.trim().lines().last().unwrap_or("wsl --status gave no answer").to_string())
+        ));
+    }
+    let mut saved = plan.clone();
+    saved.wsl_restarted = true;
+    save_pending(&saved)?;
+    Err(RESTART_REQUIRED.into())
+}
+
 /// ClickHouse in Docker inside WSL2, owned by the hidden account
 /// (sentient_installer_core::clickhouse_wsl). Windows only.
 #[cfg(windows)]
 fn install_clickhouse_wsl(plan: &InstallPlan, manager: &std::path::Path, sink: &ProgressFn) -> Result<(), String> {
-    use sentient_installer_core::wsl;
-    if !wsl::is_ready() {
-        let outcome = wsl::install(sink.clone());
-        if outcome.reboot_required {
-            save_pending(plan)?;
-            return Err(RESTART_REQUIRED.into());
-        }
-    }
+    turn_on_wsl(plan, sink)?;
     // A reinstall over kept data (the PostgreSQL cluster is there) takes
     // ClickHouse's kept history back too; a fresh install starts clean.
     let reuse = plan.existing == Some(true);
@@ -358,9 +436,39 @@ pub fn run_manager_only(shortcuts: Shortcuts, sink: ProgressFn) -> Result<(), St
 const STEP_CLICKHOUSE: &str = "Setting up ClickHouse";
 const STEP_SENTIENT: &str = "Installing SENTIENT and its database";
 
+const STEP_WSL: &str = "Turning on WSL 2";
+const STEP_DOCKER_WSL: &str = "Setting up Docker in WSL 2";
+
+/// What the install's steps depend on besides the plan.
+#[derive(Clone, Copy)]
+pub struct Host {
+    pub windows: bool,
+    /// WSL 2 runs already (Windows).
+    pub wsl_ready: bool,
+    /// Setup runs from the installed Platform Manager.
+    pub manager_in_place: bool,
+}
+
+impl Host {
+    pub fn here(plan: &InstallPlan) -> Self {
+        let windows = cfg!(windows);
+        let needs_wsl = windows && (plan.engine == Engine::Docker || plan.stack.flavor == Flavor::Clickhouse);
+        Host {
+            windows,
+            wsl_ready: !needs_wsl || sentient_installer_core::wsl::is_ready(),
+            manager_in_place: self_install::manager_in_place(),
+        }
+    }
+}
+
 /// The install's steps, declared before it starts (the job view shows them
 /// all; crate::jobplan for the other jobs).
 pub fn steps(plan: &InstallPlan) -> Vec<sentient_installer_core::progress::PlanStep> {
+    steps_on(plan, Host::here(plan))
+}
+
+/// [`steps`] on `host`.
+pub fn steps_on(plan: &InstallPlan, host: Host) -> Vec<sentient_installer_core::progress::PlanStep> {
     use sentient_installer_core::progress::PlanStep;
     let mut v = Vec::new();
     if plan.bundle.is_none() && plan.engine == Engine::Native {
@@ -368,16 +476,40 @@ pub fn steps(plan: &InstallPlan) -> Vec<sentient_installer_core::progress::PlanS
             v.push(PlanStep::new(format!("Downloading SENTIENT {version}")).detail("Checked against its SHA-256 and signature").when(&["Downloading SENTIENT"]).weight(3.));
         }
     }
-    v.push(PlanStep::new("Installing the Platform Manager").weight(0.5));
-    if cfg!(windows) && plan.stack.flavor == Flavor::Clickhouse {
+    // Setup's own step: from the installed Platform Manager there is
+    // nothing to put in place.
+    if !host.manager_in_place && !plan.remote {
+        v.push(PlanStep::new("Installing the Platform Manager").weight(0.5));
+    }
+    let docker_wsl = host.windows && plan.engine == Engine::Docker;
+    let hybrid = host.windows && plan.engine == Engine::Native && plan.stack.flavor == Flavor::Clickhouse;
+    if (docker_wsl || hybrid) && !host.wsl_ready {
+        v.push(
+            PlanStep::new(STEP_WSL)
+                .detail("Windows restarts once, and Setup continues after you sign in")
+                .when(&["Turning on the Windows feature", "Updating the WSL kernel", "Downloading the WSL package", "Installing the WSL package"])
+                .weight(2.),
+        );
+    }
+    if hybrid {
         v.push(PlanStep::new(STEP_CLICKHOUSE).detail("Its own WSL distribution and account").weight(4.));
+    }
+    if docker_wsl {
+        v.push(
+            PlanStep::new(STEP_DOCKER_WSL)
+                .detail("SENTIENT's own Ubuntu distribution with Docker Engine")
+                .when(&["Resetting an unresponsive SENTIENT distro", "Taking back the SENTIENT distro", "Downloading Ubuntu", "Creating the SENTIENT WSL distro", "Enabling systemd", "Installing Docker Engine", "Starting Docker"])
+                .weight(4.),
+        );
     }
     v.push(PlanStep::new(STEP_SENTIENT).detail(match plan.engine {
         Engine::Docker => "The containers, the database and its schema",
         Engine::Native => "PostgreSQL, the SENTIENT service and its schema",
     }).weight(6.));
     v.push(PlanStep::new("Setting the administrator sign-in").detail(plan.admin_email.clone()).weight(0.5));
-    v.push(PlanStep::new("Creating shortcuts").weight(0.5));
+    if !plan.remote {
+        v.push(PlanStep::new("Creating shortcuts").weight(0.5));
+    }
     v.push(PlanStep::new("Saving the installation record").weight(0.3));
     v
 }
@@ -408,15 +540,47 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
             plan.bundle = Some(dir);
         }
     }
-    step(&sink, "Installing the Platform Manager");
-    let manager = self_install::install_manager()?;
+    // On a server the agent itself is the Platform Manager there.
+    let manager = if plan.remote {
+        std::env::current_exe().map_err(|e| format!("locate this program: {e}"))?
+    } else if self_install::manager_in_place() {
+        self_install::manager_exe()
+    } else {
+        step(&sink, "Installing the Platform Manager");
+        self_install::install_manager()?
+    };
     // What is already here, before anything is installed (uninstall removes only what Setup put here).
     crate::uninstall::note_before_install(plan.engine, plan.stack.flavor);
     // ClickHouse first: SENTIENT's schema installer creates its tables there.
     #[cfg(windows)]
-    if plan.stack.flavor == Flavor::Clickhouse {
+    if plan.engine == Engine::Native && plan.stack.flavor == Flavor::Clickhouse {
+        if !sentient_installer_core::wsl::is_ready() {
+            step(&sink, STEP_WSL);
+            turn_on_wsl(&plan, &sink)?;
+        }
         step(&sink, STEP_CLICKHOUSE);
         install_clickhouse_wsl(&plan, &manager, &sink)?;
+    }
+    // Docker in WSL 2: WSL turned on (one restart), then SENTIENT's own
+    // distro with Docker Engine (distro::setup).
+    #[cfg(windows)]
+    if plan.engine == Engine::Docker {
+        if !sentient_installer_core::wsl::is_ready() {
+            step(&sink, STEP_WSL);
+            turn_on_wsl(&plan, &sink)?;
+        }
+        step(&sink, STEP_DOCKER_WSL);
+        distro::setup(sink.clone(), &plan.install_dir)?;
+        // The distro, and with it Docker, stays up: WSL ends a distro
+        // shortly after its last wsl.exe ends, also while Docker runs
+        // there, so this comes before the stack. It starts with Windows,
+        // after the start delay, when the operator chose so (an operator
+        // screen needs it too, as for the native services); otherwise the
+        // Platform Manager's Start runs it (distro::wake_keepalive).
+        let start = (plan.shortcuts.autostart || plan.shortcuts.open_at_signin).then_some(plan.shortcuts.start_delay);
+        if let Err(e) = distro::register_keepalive(&distro::forwarded_ports(&plan.stack), start) {
+            sink(Progress::Log { line: format!("note: SENTIENT will not start by itself with Windows: {e}") });
+        }
     }
     let admin_hash = hash_password(&plan.admin_password)?;
     step(&sink, STEP_SENTIENT);
@@ -434,6 +598,11 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
                 native::prepare_existing(&sink, &cfg, keep, plan.delete_existing)?;
             }
             native::deploy(sink.clone(), &cfg)?;
+            // Other computers reach SENTIENT through Windows Firewall.
+            #[cfg(windows)]
+            if let Err(e) = native::open_firewall(&cfg) {
+                sink(Progress::Log { line: format!("note: SENTIENT's ports were not opened in Windows Firewall: {e}") });
+            }
             step(&sink, "Setting the administrator sign-in");
             native::set_admin_account(&cfg, &plan.admin_email, &admin_hash)?;
             // An operator screen needs SENTIENT running after every boot.
@@ -456,16 +625,21 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
         }
         Engine::Docker => {
             let stack = plan.configured_stack();
-            distro::setup(sink.clone(), &plan.install_dir)?;
+            // Windows set Docker up above, before this step.
+            if !cfg!(windows) {
+                distro::setup(sink.clone(), &plan.install_dir)?;
+            }
             distro::deploy_with(sink.clone(), &stack, plan.existing)?;
             step(&sink, "Setting the administrator sign-in");
             distro::set_admin_account(&stack, &plan.admin_email, &admin_hash)?;
         }
     }
 
-    step(&sink, "Creating shortcuts");
     let url = format!("http://localhost:{}", plan.stack.http_port);
-    self_install::create_shortcuts(&manager, &url, &plan.shortcuts)?;
+    if !plan.remote {
+        step(&sink, "Creating shortcuts");
+        self_install::create_shortcuts(&manager, &url, &plan.shortcuts)?;
+    }
     if plan.shortcuts.kiosk {
         sentient_installer_core::kiosk::create_shortcut(&sink, &manager, &plan.state_dir())?;
         crate::shortcuts::note(crate::shortcuts::Owner::Sentient, sentient_installer_core::kiosk::shortcut_paths());
@@ -495,4 +669,128 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
 
     sink(Progress::Done { message: format!("SENTIENT is running at {url}") });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plan(engine: Engine, flavor: Flavor) -> InstallPlan {
+        InstallPlan {
+            engine,
+            sentient_version: "4.4.0.1".into(),
+            install_dir: PathBuf::from(r"C:\Program Files\SENTIENT"),
+            data_dir: PathBuf::from(r"C:\PostgreSQL\18"),
+            stack: DeployConfig { flavor, ..DeployConfig::default() },
+            pg_superuser_password: String::new(),
+            admin_email: "ada@example.test".into(),
+            admin_password: String::new(),
+            settings: Vec::new(),
+            shortcuts: Shortcuts { autostart: true, desktop_sentient: true, desktop_manager: true, start_menu: true, kiosk: false, open_at_signin: false, auto_signin: String::new(), start_delay: 0 },
+            auto_signin_password: String::new(),
+            bundle: None,
+            download: None,
+            existing: None,
+            delete_existing: false,
+            old_pg: Default::default(),
+            wsl_restarted: false,
+            remote: false,
+        }
+    }
+
+    fn names(plan: &InstallPlan, host: Host) -> Vec<String> {
+        steps_on(plan, host).into_iter().map(|s| s.name).collect()
+    }
+
+    const WINDOWS: Host = Host { windows: true, wsl_ready: true, manager_in_place: true };
+
+    #[test]
+    fn windows_docker_without_wsl_turns_it_on_first() {
+        let p = plan(Engine::Docker, Flavor::Timescaledb);
+        let v = names(&p, Host { wsl_ready: false, ..WINDOWS });
+        assert_eq!(v[..3], [STEP_WSL, STEP_DOCKER_WSL, STEP_SENTIENT]);
+        assert!(!v.contains(&STEP_CLICKHOUSE.to_string()));
+        let wsl = steps_on(&p, Host { wsl_ready: false, ..WINDOWS }).remove(0);
+        assert!(wsl.detail.contains("restarts once"));
+        assert!(wsl.matches("Turning on the Windows feature VirtualMachinePlatform"));
+    }
+
+    #[test]
+    fn windows_docker_with_wsl_sets_up_docker_then_sentient() {
+        let v = names(&plan(Engine::Docker, Flavor::Clickhouse), WINDOWS);
+        assert_eq!(v, [STEP_DOCKER_WSL, STEP_SENTIENT, "Setting the administrator sign-in", "Creating shortcuts", "Saving the installation record"]);
+        let docker = steps_on(&plan(Engine::Docker, Flavor::Clickhouse), WINDOWS).remove(0);
+        assert!(docker.matches("Installing Docker Engine (a few minutes)"));
+        assert!(docker.matches("Downloading Ubuntu base image (~350 MB)"));
+    }
+
+    #[test]
+    fn the_windows_hybrid_keeps_its_clickhouse_step_and_turns_wsl_on_when_missing() {
+        let p = plan(Engine::Native, Flavor::Clickhouse);
+        assert_eq!(names(&p, WINDOWS)[..2], [STEP_CLICKHOUSE, STEP_SENTIENT]);
+        assert_eq!(names(&p, Host { wsl_ready: false, ..WINDOWS })[..2], [STEP_WSL, STEP_CLICKHOUSE]);
+        // Native without ClickHouse never needs WSL.
+        assert_eq!(names(&plan(Engine::Native, Flavor::Stock), Host { wsl_ready: false, ..WINDOWS })[0], STEP_SENTIENT);
+    }
+
+    /// The wizard's choice (a card on System check, a database) as the
+    /// plan it builds (Installer::plan → placement::plan_engine), and the
+    /// steps that plan runs on this branch's backend.
+    fn chosen(host: crate::installer::placement::Host, card: Engine, flavor: Flavor) -> Result<InstallPlan, crate::installer::placement::Why> {
+        use crate::installer::placement::{Placement, plan_engine};
+        plan_engine(host, Placement::preset(card, host.windows), flavor).map(|engine| plan(engine, flavor))
+    }
+
+    #[test]
+    fn the_choice_on_system_check_makes_the_plan_the_backend_runs() {
+        use crate::installer::placement::{Host as On, Why, Wsl, default_engine};
+        let win = On { windows: true, wsl: Wsl::Ready };
+        let win_off = On { windows: true, wsl: Wsl::TurnOn };
+        let win_none = On { windows: true, wsl: Wsl::Unavailable };
+        let linux = On { windows: false, wsl: Wsl::Unavailable };
+        // Windows' default: native services, no WSL at all.
+        let p = chosen(win, default_engine(), Flavor::Timescaledb).unwrap();
+        assert_eq!(p.engine, Engine::Native);
+        assert_eq!(names(&p, Host { wsl_ready: false, ..WINDOWS })[0], STEP_SENTIENT);
+        // Windows Docker: Docker in WSL 2 (turned on first when it is off).
+        let p = chosen(win_off, Engine::Docker, Flavor::Stock).unwrap();
+        assert_eq!(p.engine, Engine::Docker);
+        assert_eq!(names(&p, Host { wsl_ready: false, ..WINDOWS })[..2], [STEP_WSL, STEP_DOCKER_WSL]);
+        // The hybrid: native, ClickHouse in its own WSL distribution.
+        let p = chosen(win, Engine::Native, Flavor::Clickhouse).unwrap();
+        assert_eq!(p.engine, Engine::Native);
+        assert_eq!(names(&p, WINDOWS)[..2], [STEP_CLICKHOUSE, STEP_SENTIENT]);
+        // Without WSL 2: neither Docker nor ClickHouse.
+        assert_eq!(chosen(win_none, Engine::Docker, Flavor::Stock).err(), Some(Why::NeedsWsl));
+        assert_eq!(chosen(win_none, Engine::Native, Flavor::Clickhouse).err(), Some(Why::NeedsWsl));
+        // Linux: in the system is the default; TimescaleDB there is refused.
+        assert_eq!(chosen(linux, default_engine(), Flavor::Clickhouse).unwrap().engine, Engine::Native);
+        assert_eq!(chosen(linux, Engine::Native, Flavor::Timescaledb).err(), Some(Why::NoDistroTimescale));
+        assert_eq!(chosen(linux, Engine::Docker, Flavor::Timescaledb).unwrap().engine, Engine::Docker);
+    }
+
+    #[test]
+    fn linux_docker_has_no_wsl_steps() {
+        let linux = Host { windows: false, wsl_ready: false, manager_in_place: false };
+        let v = names(&plan(Engine::Docker, Flavor::Clickhouse), linux);
+        assert_eq!(v[..2], ["Installing the Platform Manager", STEP_SENTIENT]);
+    }
+
+    #[test]
+    fn a_saved_plan_from_before_this_field_reads_as_not_restarted() {
+        let mut v = serde_json::to_value(plan(Engine::Docker, Flavor::Stock)).unwrap();
+        v.as_object_mut().unwrap().remove("wsl_restarted");
+        let p: InstallPlan = serde_json::from_value(v).unwrap();
+        assert!(!p.wsl_restarted);
+    }
+
+    #[test]
+    fn new_docker_installs_use_the_release_tag() {
+        let default = sentient_installer_core::distro::DeployConfig::default().image;
+        assert_eq!(pinned_image(&default, Some("4.4.0.3")), "quakestring/sentient:4.4.0.3");
+        assert_eq!(pinned_image("registry:5000/sentient:latest", Some("4.4.0.3")), "registry:5000/sentient:4.4.0.3");
+        // No release number known: the image as it is.
+        assert_eq!(pinned_image(&default, None), default);
+        assert_eq!(pinned_image(&default, Some("in this package")), default);
+    }
 }

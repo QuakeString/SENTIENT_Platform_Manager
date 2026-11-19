@@ -10,14 +10,23 @@ pub mod size;
 /// hidden service account so it runs from boot.
 pub mod clickhouse_wsl;
 pub mod distro;
+/// Docker Hub's image tags (offers for Docker installs).
+pub mod dockerhub;
 /// One administrator elevation per job (a root helper fed over a pipe).
 pub mod elevation;
 pub(crate) mod exec;
+/// Release and tag lists asked for at most once per 30 minutes, kept on disk.
+pub mod fetch_cache;
 pub mod stack;
 pub mod stack_order;
 pub mod gateway;
+pub mod gateway_settings;
+/// Whether a native SENTIENT runs on this Linux's C library (glibc).
+pub mod glibc;
 pub mod kiosk;
 pub mod kept_db;
+/// Whether a SENTIENT licence covers a SENTIENT build (SENTIENT's own rule).
+pub mod licence_version;
 /// Native Windows deployment (PostgreSQL + TimescaleDB + the server as a
 /// service) — the no-Docker, no-WSL alternative to [`distro`].
 /// Release manifest: where to fetch the SENTIENT payload and what it must
@@ -35,6 +44,9 @@ pub mod diagnose;
 pub mod native_linux;
 pub mod progress;
 pub mod releases;
+/// The schema installer's output in the job log (an existing database is
+/// not an error).
+pub(crate) mod schema_output;
 /// Uninstall part by part, and the check that nothing is left.
 pub mod removal;
 pub mod signing;
@@ -53,7 +65,7 @@ pub mod privileged {
 mod sys;
 /// Running the computer's own programs, also from inside a Flatpak.
 pub mod host {
-    pub use crate::sys::{flatpak_init, host_argv, host_command, host_command_env, in_flatpak};
+    pub use crate::sys::{decode, ensure_valid_cwd, flatpak_init, host_argv, host_command, host_command_env, in_flatpak, output_limited, safe_dir};
 }
 /// systemd units and port owners, as the System check reads them.
 pub mod units;

@@ -6,7 +6,7 @@
 //! menu chooses which page it shows.
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, h_flex, v_flex,
     button::ButtonVariants as _,
     menu::{DropdownMenu as _, PopupMenuItem},
     input::{Input, InputEvent, InputState},
@@ -29,6 +29,43 @@ pub enum Kind {
     Migration,
     Repair,
     Gateway,
+}
+
+/// The menu asked for the open server's Gateway page (Status's gateway row,
+/// "Install the gateway" on an empty server): crate::manager takes it.
+static GO_GATEWAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn go_gateway(cx: &mut App) {
+    GO_GATEWAY.store(true, std::sync::atomic::Ordering::SeqCst);
+    cx.refresh_windows();
+}
+
+/// Whether a page asked for the Gateway page (once).
+pub(crate) fn take_go_gateway() -> bool {
+    GO_GATEWAY.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// The menu asked for the open server's Status page (Done after an install).
+static GO_STATUS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a page asked for the Status page (once).
+pub(crate) fn take_go_status() -> bool {
+    GO_STATUS.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Installing SENTIENT or the gateway on a Windows server from here is not
+/// built yet (the owner's decision for 0.9.3): both installs say so.
+pub(crate) const WINDOWS_REMOTE_INSTALL: &str = "Remote install is not supported on Windows servers yet.";
+
+/// Why Install SENTIENT cannot start on this server (its tooltip), or None.
+fn install_blocked(inst: &Instance, busy: bool) -> Option<&'static str> {
+    if remote::is_windows(inst) {
+        Some(WINDOWS_REMOTE_INSTALL)
+    } else if busy {
+        Some("Another job is running on this server.")
+    } else {
+        None
+    }
 }
 
 /// The SENTIENT card's Start, Stop and Restart while the page loads.
@@ -279,6 +316,48 @@ fn definite(e: &str) -> bool {
     e == remote::AGENT_OLD || e == remote::NOT_SET_UP || e == remote::NOT_ADDED || needs_sudo_password(e)
 }
 
+/// What a server's pages read, kept when the window closes while the
+/// Platform Manager keeps running (the tray), so a window opened again
+/// draws them at once, as they were, and reads them again behind them.
+/// Memory only: a new start of the Platform Manager shows the loading
+/// skeleton until the server answers (crate::manager::licence keeps its
+/// readings the same way).
+struct Kept {
+    /// The connection the readings came over ([`conn_of`]): an instance
+    /// edited since is read afresh.
+    conn: String,
+    ready: Read<()>,
+    status: Read<RemoteStatus>,
+    services: Read<Vec<RemoteService>>,
+    db: Read<DbStatus>,
+    backups: Read<RemoteBackups>,
+    settings: Read<std::collections::HashMap<String, String>>,
+    gateway: Read<std::collections::HashMap<String, String>>,
+    gw_settings: Read<sentient_installer_core::gateway_settings::GwSettings>,
+    offer: Read<Option<crate::updates::Offer>>,
+    versions: Read<Vec<crate::online::Version>>,
+    restores: Read<Vec<crate::restore_flow::Entry>>,
+    updated_at: Option<String>,
+    auto_add_tried: bool,
+}
+
+/// Each server's [`Kept`], by instance id, for this run.
+static KEPT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Kept>>> = std::sync::LazyLock::new(Default::default);
+
+/// The server an instance reaches: where, and as whom (what is found
+/// there, `detected`, may change as it is read).
+fn conn_of(inst: &Instance) -> String {
+    serde_json::to_string(&(&inst.host, inst.port, &inst.user, &inst.auth, &inst.key_file)).unwrap_or_default()
+}
+
+/// What the pages of `inst` draw first: what this run read before (a
+/// window opened again), or None on a cold start, the loading skeleton.
+/// Taken once: the pages that take it own it from then on.
+fn take_kept(kept: &mut std::collections::HashMap<String, Kept>, inst: &Instance) -> Option<Kept> {
+    let k = kept.remove(&inst.id)?;
+    (k.conn == conn_of(inst)).then_some(k)
+}
+
 /// How long a reading may take before the page says the server does not answer.
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -302,6 +381,17 @@ pub struct RemotePages {
     /// One input per catalog setting, made once the values are read.
     inputs: Vec<(String, Entity<InputState>)>,
     gateway: Read<std::collections::HashMap<String, String>>,
+    /// The Gateway page's settings card (crate::manager::gateway_settings)
+    /// and what it shows (the agent's gateway-settings-json).
+    gw_settings: Read<sentient_installer_core::gateway_settings::GwSettings>,
+    gw_card: Entity<crate::manager::gateway_settings::GatewaySettingsCard>,
+    /// "Install the gateway" on a server without one: the form (shared with
+    /// this computer's page) and what is wrong in it.
+    gw_form: crate::manager::gateway::InstallForm,
+    gw_problem: Option<SharedString>,
+    /// The last job's arguments: a removal or an install of the gateway
+    /// that went through clears the install form.
+    last_args: Vec<String>,
     /// Migration's chosen target (an index into the types other than the one now).
     /// Migration: the type picked to change to (None: the current one).
     target: Option<sentient_installer_core::stack::Flavor>,
@@ -336,6 +426,13 @@ pub struct RemotePages {
     versions: Read<Vec<crate::online::Version>>,
     /// "add-if-one" ran once for this instance.
     auto_add_tried: bool,
+    /// Install SENTIENT (crate::manager::remote_install), while it is open:
+    /// it stands in for every page and its rail for the menu.
+    install: Option<Entity<crate::manager::remote_install::InstallFlow>>,
+    /// An install found running on the server was shown again once.
+    reattach_tried: bool,
+    /// The newest SENTIENT on the update channel, for "Install SENTIENT".
+    newest: Read<Option<String>>,
     /// The server agent update that runs when the server is opened.
     agent_refresh: AgentRefresh,
     /// The sudo password was asked for after the last failure.
@@ -351,6 +448,10 @@ pub struct RemotePages {
     file_checks: std::collections::HashMap<String, Read<bool>>,
     /// A version picked under "Other version", waiting for its confirmation.
     pick: Option<String>,
+    /// What a sign-in from Update found about the licence (or that it was
+    /// cancelled); without one, the agent's reading (RemoteStatus::
+    /// licence_versions) labels the versions (crate::manager::licence_gate).
+    licence_signed: Option<sentient_installer_core::licence_version::LicenceRead>,
     /// This Platform Manager's update channel (shared with the local Update).
     updates: Entity<crate::updates::UpdateState>,
     follow: bool,
@@ -382,10 +483,29 @@ pub struct RemotePages {
 impl RemotePages {
     pub fn new(inst: Instance, kind: Kind, updates: Entity<crate::updates::UpdateState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let job = cx.new(|_| Job::new());
+        let me = cx.entity().downgrade();
+        let gw_card = cx.new(|_| {
+            crate::manager::gateway_settings::GatewaySettingsCard::new(
+                Some(inst.name.clone()),
+                std::rc::Rc::new(move |w, _: &mut Window, cx: &mut App| {
+                    me.update(cx, |p, cx| p.run_gw_work(w, cx)).ok();
+                }),
+            )
+        });
         let vars_search = cx.new(|cx| InputState::new(_window, cx).placeholder("Search settings and variables"));
         let vars_sub = cx.subscribe(&vars_search, |_, _, _: &InputEvent, cx| cx.notify());
+        let gw_form = crate::manager::gateway::InstallForm::new("", 1883, _window, cx);
+        let gw_form_subs: Vec<Subscription> = gw_form.inputs().into_iter().map(|i| cx.subscribe(i, |_, _, _: &InputEvent, cx| cx.notify())).collect();
+        // The gateway's "Update to <v>" follows the newest release found.
+        let updates_sub = cx.observe(&updates, |_, _, cx| cx.notify());
         let subs = vec![
             cx.observe(&job, |this, job, cx| {
+                // The gateway removed or installed there: nothing of the old
+                // token or password stays in the install form.
+                if crate::manager::gateway::clears_form(crate::manager::gateway::job_clears_form(&this.last_args), job.read(cx).state()) {
+                    this.last_args.clear();
+                    this.gw_form.clear();
+                }
                 if !job.read(cx).is_running() {
                     this.svc_busy = None;
                     // An agent update run as a job: its pill follows it.
@@ -450,6 +570,11 @@ impl RemotePages {
             settings: Read::Loading,
             inputs: Vec::new(),
             gateway: Read::Loading,
+            gw_settings: Read::Loading,
+            gw_card,
+            gw_form,
+            gw_problem: None,
+            last_args: Vec::new(),
             target: None,
             migrate_confirm: false,
             // Screens: a canned preflight failure.
@@ -467,11 +592,15 @@ impl RemotePages {
             offer: Read::Loading,
             versions: Read::Loading,
             pick: None,
+            licence_signed: None,
             file_checks: Default::default(),
             log_view: None,
             svc_busy: None,
             settings_tab: super::session::load().settings_tab.filter(|i| *i < 5).unwrap_or(0),
             auto_add_tried: false,
+            install: None,
+            reattach_tried: false,
+            newest: Read::Loading,
             agent_refresh: AgentRefresh::Idle,
             sudo_asked: false,
             updates,
@@ -484,6 +613,8 @@ impl RemotePages {
             _subscriptions: {
                 let mut s = subs;
                 s.push(vars_sub);
+                s.push(updates_sub);
+                s.extend(gw_form_subs);
                 s
             },
             keep_input: None,
@@ -524,9 +655,31 @@ impl RemotePages {
                 }),
             },
         );
+        // A window opened again: what this run read before shows at once
+        // (the reload below reads it again behind it, as for an instance
+        // opened again in the same window).
+        if let Some(k) = take_kept(&mut KEPT.lock().unwrap_or_else(|e| e.into_inner()), &p.inst) {
+            p.seed(k);
+        }
         p.reload(cx);
         p.refresh_agent(cx);
         p
+    }
+
+    fn seed(&mut self, k: Kept) {
+        self.ready = k.ready;
+        self.status = k.status;
+        self.services = k.services;
+        self.db = k.db;
+        self.backups = k.backups;
+        self.settings = k.settings;
+        self.gateway = k.gateway;
+        self.gw_settings = k.gw_settings;
+        self.offer = k.offer;
+        self.versions = k.versions;
+        self.restores = k.restores;
+        self.updated_at = k.updated_at;
+        self.auto_add_tried = k.auto_add_tried;
     }
 
     /// Platform settings: the values read, and the catalog setting of each input.
@@ -643,9 +796,22 @@ impl RemotePages {
         cx.notify();
     }
 
+    /// Reopen tests: what the page draws now: "skeleton" before anything
+    /// was read, "data" with what it read, "state" for the server's answer
+    /// that is not data (not set up, an error).
+    pub fn drawn(&self) -> &'static str {
+        if matches!(self.ready, Read::Loading) {
+            "skeleton"
+        } else if self.has_data() {
+            "data"
+        } else {
+            "state"
+        }
+    }
+
     /// Switch timing (SPM_DEBUG_SWITCH): Status shows what it read.
     pub fn has_data(&self) -> bool {
-        matches!(self.ready, Read::Got(_)) && self.status.got().is_some() && (self.kind != Kind::Status || (self.services.got().is_some() && self.db.got().is_some()))
+        shows_data(self.kind, &self.ready, &self.status, &self.services, &self.db)
     }
 
     /// Another instance is open: the log stops following meanwhile.
@@ -780,6 +946,15 @@ impl RemotePages {
         let inst = self.inst.clone();
         match self.kind {
             Kind::Status => {
+                // A gateway-only server's Status shows its gateway's row:
+                // read only where SENTIENT is not (the last status says).
+                let i4 = inst.clone();
+                let sentient_there = matches!(remote::status_cache::view(&inst.id).status, Some(Ok(ref s)) if s.installed);
+                if !sentient_there {
+                    self.fetch(cx, move || remote::gateway(&i4), |p| &mut p.gateway);
+                    let channel = crate::updates::Prefs::load().channel;
+                    self.fetch(cx, move || crate::updates::newest_sentient(channel), |p| &mut p.newest);
+                }
                 self.fetch(cx, move || remote::status(&inst), |p| &mut p.status);
                 let inst = self.inst.clone();
                 self.fetch(cx, move || remote::services(&inst), |p| &mut p.services);
@@ -790,8 +965,21 @@ impl RemotePages {
             Kind::Update => {
                 let i2 = inst.clone();
                 self.fetch(cx, move || remote::status(&i2), |p| &mut p.status);
+                // The server's gateway and the newest gateway release.
+                let i3 = inst.clone();
+                self.fetch(cx, move || remote::gateway(&i3), |p| &mut p.gateway);
+                self.updates.update(cx, |u, cx| {
+                    if u.found.is_none() {
+                        u.check(cx);
+                    }
+                });
                 let native = inst.detected.as_ref().is_some_and(|d| d.install != "Docker");
                 self.pick = None;
+                // Renders: a version picked from "Other version".
+                #[cfg(debug_assertions)]
+                if let Ok(v) = std::env::var("SPM_DEBUG_REMOTE_PICK") {
+                    self.pick = Some(v);
+                }
                 self.fetch(
                     cx,
                     move || {
@@ -809,9 +997,12 @@ impl RemotePages {
                     move || {
                         #[cfg(debug_assertions)]
                         if std::env::var_os("SPM_DEBUG_REMOTE_OFFER").is_some() {
-                            return Ok(Some(canned_offer()));
+                            // Nothing newer for a server that runs it already.
+                            let running = remote::status(&inst).map(|s| s.comparable_version()).unwrap_or_default();
+                            let offer = canned_offer();
+                            return Ok((sentient_installer_core::releases::movement(&offer.version, &running) == sentient_installer_core::releases::Move::Newer).then_some(offer));
                         }
-                        let installed = remote::status(&inst)?.sentient_version;
+                        let installed = remote::status(&inst)?.comparable_version();
                         let channel = crate::updates::Prefs::load().channel;
                         crate::updates::check(channel, Some(installed), native).sentient
                     },
@@ -843,7 +1034,20 @@ impl RemotePages {
                 self.fetch(cx, move || remote::status(&inst), |p| &mut p.status);
                 self.fetch(cx, move || remote::gateway(&i2), |p| &mut p.gateway);
             }
-            Kind::Gateway => self.fetch(cx, move || remote::gateway(&inst), |p| &mut p.gateway),
+            Kind::Gateway => {
+                // The newest gateway release, for "Update to <v>".
+                self.updates.update(cx, |u, cx| {
+                    if u.found.is_none() {
+                        u.check(cx);
+                    }
+                });
+                let (i2, i3) = (inst.clone(), inst.clone());
+                self.gw_card.update(cx, |c, _| c.reset());
+                self.fetch(cx, move || remote::gateway(&inst), |p| &mut p.gateway);
+                self.fetch(cx, move || remote::gateway_settings(&i2), |p| &mut p.gw_settings);
+                // SENTIENT's web port there, for the card's "Open in SENTIENT".
+                self.fetch(cx, move || remote::status(&i3), |p| &mut p.status)
+            }
         }
     }
 
@@ -1037,6 +1241,7 @@ impl RemotePages {
             self.shown_job = Some(self.kind);
         }
         let inst = self.inst.clone();
+        self.last_args = args.clone();
         self.job_label = Some(format!("{label} on {}", inst.name).into());
         let strip_label = format!("{label} on {}", inst.name);
         let me = cx.entity().downgrade();
@@ -1106,6 +1311,7 @@ impl RemotePages {
             Kind::Backup => "Backup and restore",
             Kind::Repair => "Repair and uninstall",
             Kind::Settings => "Platform settings",
+            Kind::Gateway => "Gateway",
             _ => "the page",
         };
         let title = if self.pending_migrate.is_some() { format!("{label} (the migration follows)") } else { label };
@@ -1180,22 +1386,221 @@ impl RemotePages {
         }
     }
 
-    /// No SENTIENT added on the server yet. Not an error: what was found and
-    /// the one action. Adding writes only the Platform Manager's own record.
+    /// Install SENTIENT on this server (crate::manager::remote_install):
+    /// its flow in place of the pages, its rail in place of the menu.
+    /// `reattach`: the id of an install already running there, shown again.
+    fn open_install(&mut self, reattach: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let me = cx.entity().downgrade();
+        let inst = self.inst.clone();
+        let on_close: std::rc::Rc<dyn Fn(crate::manager::remote_install::Close, &mut Window, &mut App)> = std::rc::Rc::new(move |c, w, cx| {
+            me.update(cx, |p, cx| p.close_install(c, w, cx)).ok();
+        });
+        let flow = cx.new(|cx| {
+            let mut f = crate::manager::remote_install::InstallFlow::new(inst, on_close, window, cx);
+            if let Some(id) = reattach {
+                f.reattach(id, cx);
+            }
+            f
+        });
+        self.install = Some(flow);
+        cx.refresh_windows();
+        cx.notify();
+    }
+
+    fn close_install(&mut self, close: crate::manager::remote_install::Close, _window: &mut Window, cx: &mut Context<Self>) {
+        use crate::manager::remote_install::Close;
+        self.install = None;
+        if let Close::Done(engine) = close {
+            // What the server runs now, as Add server would detect it: the
+            // instance's record is the one the install wrote there, and the
+            // window opens its Status.
+            let mut det = self.inst.detected.clone().unwrap_or_default();
+            det.install = if engine == crate::installation::Engine::Docker { "Docker" } else { "systemd services" }.into();
+            self.inst.detected = Some(det.clone());
+            let mut list = remote::load();
+            if let Some(i) = list.iter_mut().find(|i| i.id == self.inst.id) {
+                i.detected = Some(det);
+            }
+            if let Err(e) = remote::save(&list) {
+                crate::maintenance_ops::log_line(&format!("{}: the instance list was not saved: {e}", self.inst.name));
+            }
+            remote::LIST_CHANGED.store(true, std::sync::atomic::Ordering::SeqCst);
+            GO_STATUS.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.kind = Kind::Status;
+        }
+        self.reload(cx);
+        cx.refresh_windows();
+        cx.notify();
+    }
+
+    /// The flow open on this server, for the menu's place (crate::manager).
+    pub(crate) fn install_flow(&self) -> Option<Entity<crate::manager::remote_install::InstallFlow>> {
+        self.install.clone()
+    }
+
+    /// "Install SENTIENT": the flow, or off with why.
+    fn install_sentient_button(&self, primary: bool, cx: &mut Context<Self>) -> AnyElement {
+        let busy = self.job.read(cx).is_running();
+        let b = crate::ui::button("r-install-sentient").label("Install SENTIENT");
+        let b = if primary { b.primary() } else { b.outline() };
+        match install_blocked(&self.inst, busy) {
+            Some(why) => div().id("r-install-sentient-why").child(b.disabled(true)).tooltip(crate::ui::tooltip(why)).into_any_element(),
+            None => b.on_click(cx.listener(|this, _, window, cx| this.open_install(None, window, cx))).into_any_element(),
+        }
+    }
+
+    /// No SENTIENT on the server yet. Not an error: what the agent found,
+    /// and what can be installed (SENTIENT, the gateway) or added (a
+    /// SENTIENT found there). Adding writes only the Platform Manager's
+    /// own record.
     fn not_added_panel(&self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
         let det = self.inst.detected.clone().unwrap_or_default();
+        let found = !(det.install.is_empty() || det.install.eq_ignore_ascii_case("none"));
+        // The facts the agent already read: the system, Docker (the
+        // gateway's reading says), the disk.
+        let docker = self.gateway.got().and_then(|g| g.get("docker").cloned());
+        let disk = self.status.got().and_then(|s| s.disk_free);
+        let system = [det.os_name.clone(), if det.arch.is_empty() { String::new() } else { format!("({})", det.arch) }].iter().filter(|t| !t.is_empty()).cloned().collect::<Vec<_>>().join(" ");
+        let found_line = h_flex()
+            .gap_4()
+            .flex_wrap()
+            .items_center()
+            .text_sm()
+            .text_color(theme.muted_foreground)
+            .when(!system.is_empty(), |r| r.child(div().text_color(theme.foreground).child(system.clone())))
+            .when_some(docker.filter(|d| d == "true" || d == "false"), |r, d| r.child(format!("Docker: {}", if d == "true" { "yes" } else { "no" })))
+            .when_some(disk, |r, b| r.child(format!("{} free", crate::dbstatus::bytes_label(b))));
+        let version = match &self.newest {
+            Read::Got(Some(v)) => format!("{v}, {}", crate::updates::Prefs::load().channel.label()),
+            Read::Loading => "Looking for the newest…".into(),
+            _ => String::new(),
+        };
+        let gw_version = self.updates.read(cx).found.as_ref().and_then(|f| f.gateway.clone().ok()).flatten().map(|o| o.version).unwrap_or_default();
+        let offer = |logo: ui::Product, name: &'static str, text: &'static str, button: AnyElement, version: String| {
+            v_flex()
+                .flex_1()
+                .gap_2()
+                .p(px(16.))
+                .rounded(px(12.))
+                .bg(theme.muted)
+                .child(h_flex().gap_2().items_center().child(ui::product_logo(logo, 24.)).child(div().font_weight(FontWeight::MEDIUM).child(name)))
+                .child(div().flex_1().text_sm().text_color(theme.muted_foreground).child(text))
+                .child(h_flex().gap_3().items_center().flex_wrap().child(button).when(!version.is_empty(), |r| r.child(div().text_sm().text_color(theme.muted_foreground).child(version))))
+        };
+        let sentient = offer(
+            ui::Product::Sentient,
+            "SENTIENT",
+            "The platform: devices, dashboards, rules and its database. Runs here in Docker or as services.",
+            self.install_sentient_button(true, cx),
+            version,
+        );
+        let gateway = (self.kind != Kind::Gateway).then(|| {
+            offer(
+                ui::Product::Gateway,
+                "Sentient Gateway",
+                "Reads the plant's devices next to this server and sends their data to a SENTIENT, here or elsewhere.",
+                {
+                    let b = crate::ui::button("r-go-gateway").outline().label("Install the gateway").disabled(busy || remote::is_windows(&self.inst)).on_click(|_, _, cx| go_gateway(cx));
+                    if remote::is_windows(&self.inst) {
+                        div().id("r-go-gateway-why").flex_shrink_0().child(b).tooltip(crate::ui::tooltip(WINDOWS_REMOTE_INSTALL)).into_any_element()
+                    } else {
+                        b.into_any_element()
+                    }
+                },
+                gw_version,
+            )
+        });
+        let offers = match gateway {
+            Some(g) => ui::card_pair(sentient, g),
+            None => v_flex().child(sentient),
+        };
+        // Something from SENTIENT was found there: Add existing.
+        let existing = found.then(|| {
+            h_flex()
+                .gap_3()
+                .items_center()
+                .p(px(12.))
+                .rounded(px(12.))
+                .bg(theme.accent)
+                .child(ui::product_logo(ui::Product::Sentient, 22.))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().text_sm().child(format!("SENTIENT runs on this server ({}).", det.install)))
+                        .child(div().text_sm().text_color(theme.muted_foreground).child("Add existing lets the Platform Manager look after it. Nothing on it is changed.")),
+                )
+                .child(crate::ui::button("r-adopt").outline().label("Add existing").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Adding the existing SENTIENT", vec!["add-if-one".into()], cx))))
+        });
         ui::panel(&theme)
-            .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Sentient, 30.)).child(ui::pill(&theme, Tone::Neutral, "Not added")))
-            .child(div().text_sm().text_color(theme.muted_foreground).child(if det.install.is_empty() || det.install.eq_ignore_ascii_case("none") {
-                "The server agent is set up; no SENTIENT on this server is added to the Platform Manager. Add existing finds a SENTIENT that runs on the server (in Docker, or installed some other way). Nothing on it is changed.".to_string()
-            } else {
-                format!("SENTIENT was found on this server ({}). Add existing lets the Platform Manager look after it. Nothing on it is changed.", det.install)
-            }))
-            .child(h_flex().gap_2().child(
-                crate::ui::button("r-adopt").primary().label("Add existing SENTIENT").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Adding the existing SENTIENT", vec!["add-if-one".into()], cx))),
-            ))
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .flex_wrap()
+                    .child(div().font_weight(FontWeight::MEDIUM).child("Nothing from SENTIENT is on this server yet"))
+                    .when(found, |r| r.child(ui::pill(&theme, Tone::Neutral, "SENTIENT found, not added"))),
+            )
+            .child(found_line)
+            .child(offers)
+            .children(existing)
+            .child(div().text_sm().text_color(theme.muted_foreground).child("Either, both, or one now and the other later. Each install has its own steps and can be removed on its own."))
+    }
+
+    /// A server with the gateway and no SENTIENT: the server itself, and
+    /// one quiet row each for the gateway and for SENTIENT.
+    fn gateway_only_status(&self, s: &RemoteStatus, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+        let det = self.inst.detected.clone().unwrap_or_default();
+        let system = [det.os_name.clone(), if det.arch.is_empty() { String::new() } else { format!("({})", det.arch) }].iter().filter(|t| !t.is_empty()).cloned().collect::<Vec<_>>().join(" ");
+        let server = ui::panel(&theme)
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(div().font_weight(FontWeight::MEDIUM).child(self.inst.name.clone()))
+                    .child(ui::pill(&theme, Tone::Good, "Agent connected")),
+            )
+            .child(ui::fact(&theme, "Address", format!("{} over SSH, as {}", self.inst.host, self.inst.user)))
+            .when(!system.is_empty(), |p| p.child(ui::fact(&theme, "System", system.clone())))
+            .when_some(s.disk_free, |p, free| p.child(ui::fact(&theme, "Disk", format!("{} free", crate::dbstatus::bytes_label(free)))))
+            .when(!s.manager_version.is_empty(), |p| p.child(ui::fact(&theme, "Server agent", s.manager_version.clone())));
+        let g = self.gateway.got().cloned().unwrap_or_default();
+        let get = |k: &str| g.get(k).cloned().unwrap_or_default();
+        let running = get("running") == "true";
+        let host = get("host");
+        let detail = match (get("version"), host.is_empty()) {
+            (v, true) if v.is_empty() => String::new(),
+            (v, true) => v,
+            (v, false) if v.is_empty() => format!("sends to {host}:{}", get("port")),
+            (v, false) => format!("{v}, sends to {host}:{}", get("port")),
+        };
+        let row = |logo: ui::Product, name: &'static str, pill: AnyElement, detail: String, action: AnyElement| {
+            h_flex()
+                .gap_3()
+                .items_center()
+                .min_h(px(44.))
+                .child(ui::product_logo(logo, 22.))
+                .child(div().w(px(150.)).flex_shrink_0().child(name))
+                .child(pill)
+                .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(detail))
+                .child(action)
+        };
+        let gw_pill = if self.gateway.got().is_none() {
+            ui::pill(&theme, Tone::Neutral, "Installed")
+        } else if running {
+            ui::pill(&theme, Tone::Good, "Running")
+        } else {
+            ui::pill(&theme, Tone::Bad, "Stopped")
+        };
+        let products = ui::panel(&theme)
+            .gap_0()
+            .child(row(ui::Product::Gateway, "Sentient Gateway", gw_pill.into_any_element(), detail, crate::ui::button("r-st-gateway").ghost().label("Open").on_click(|_, _, cx| go_gateway(cx)).into_any_element()))
+            .child(div().h(px(1.)).bg(theme.border))
+            .child(row(ui::Product::Sentient, "SENTIENT", ui::pill(&theme, Tone::Neutral, "Not installed").into_any_element(), String::new(), self.install_sentient_button(false, cx)));
+        v_flex().gap(px(ui::GAP)).child(server).child(products)
     }
 
     fn status_page(&self, cx: &mut Context<Self>) -> Div {
@@ -1206,6 +1611,7 @@ impl RemotePages {
         match &self.status {
             Read::Loading => return self.skeleton(&theme),
             Read::Failed(e) => col = col.child(Self::failed(&theme, e)).child(services),
+            Read::Got(s) if s.gateway_only() => return self.gateway_only_status(&s.clone(), cx),
             Read::Got(s) if !s.installed => {
                 // Nothing added there yet: only the calm panel, no empty
                 // Services or Database panels.
@@ -1407,6 +1813,67 @@ impl RemotePages {
         v_flex().child(view)
     }
 
+    /// What is known of the server's licence now: a sign-in in this run,
+    /// else what its agent read without one.
+    fn licence_read(&self) -> sentient_installer_core::licence_version::LicenceRead {
+        use sentient_installer_core::licence_version::LicenceRead;
+        let key = crate::licence::Target::Remote(self.inst.clone()).key();
+        let agent = self.status.got().and_then(|s| s.licence_versions.clone());
+        match (&self.licence_signed, crate::manager::licence_gate::known(&key, agent.as_ref())) {
+            (Some(r @ LicenceRead::Read(_)), _) => r.clone(),
+            (_, k @ LicenceRead::Read(_)) => k,
+            (Some(f), _) => f.clone(),
+            _ => LicenceRead::NotRead,
+        }
+    }
+
+    /// Update the server to `version` once the licence check allows it.
+    /// `confirm`: the normal confirmation shows first (the pick bar is one
+    /// already).
+    fn gated_update(&mut self, version: String, build: String, confirm: bool, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::manager::licence_gate;
+        let this = cx.entity().downgrade();
+        let go: std::rc::Rc<dyn Fn(&mut App)> = {
+            let (this, v) = (this.clone(), version.clone());
+            std::rc::Rc::new(move |cx: &mut App| {
+                this.update(cx, |p, cx| {
+                    p.pick = None;
+                    p.run_job("Updating SENTIENT", vec!["update".into(), "--version".into(), v.clone()], cx);
+                })
+                .ok();
+            })
+        };
+        let read = self.licence_read();
+        let installed = self.status.got().map(|s| s.sentient_version.clone()).unwrap_or_default();
+        let place = self.inst.name.clone();
+        let normal: std::rc::Rc<dyn Fn(&mut Window, &mut App)> = {
+            let (go, read, place, v, b) = (go.clone(), read.clone(), place.clone(), version.clone(), build.clone());
+            std::rc::Rc::new(move |window: &mut Window, cx: &mut App| {
+                if confirm {
+                    licence_gate::confirm_update(&place, &v, &installed, &read, &b, go.clone(), window, cx);
+                } else {
+                    go(cx);
+                }
+            })
+        };
+        let ask = licence_gate::Ask {
+            target: crate::licence::Target::Remote(self.inst.clone()),
+            place,
+            version,
+            build,
+            normal,
+            anyway: std::rc::Rc::new(move |_: &mut Window, cx: &mut App| go(cx)),
+            learned: std::rc::Rc::new(move |r, cx| {
+                this.update(cx, |p, cx| {
+                    p.licence_signed = Some(r);
+                    cx.notify();
+                })
+                .ok();
+            }),
+        };
+        licence_gate::guard(std::rc::Rc::new(ask), read, window, cx);
+    }
+
     /// The same layout as this computer's Update: the channel, then one
     /// SENTIENT line with its buttons; the change log opens in a dialog.
     fn update_page(&self, cx: &mut Context<Self>) -> Div {
@@ -1414,6 +1881,10 @@ impl RemotePages {
         let theme = cx.theme().clone();
         let busy = self.job.read(cx).is_running();
         let installed = self.status.got().map(|s| s.sentient_version.clone()).unwrap_or_else(|| "Reading…".into());
+        // What updates compare with: the version the container runs (Docker
+        // on "latest"), and whether its tag can be pinned to a release here.
+        let running = self.status.got().map(|s| s.comparable_version()).unwrap_or_default();
+        let can_pin = self.status.got().is_some_and(|s| s.floating_tag() && !s.external_compose && s.running_version.is_some());
         let channel = self.updates.read(cx).prefs.channel;
         let checking = matches!(self.offer, Read::Loading);
         let channels = ui::seg_track(&theme).children(sentient_installer_core::releases::Channel::ALL.into_iter().map(|c| {
@@ -1433,53 +1904,111 @@ impl RemotePages {
             Read::Got(Some(o)) => Offered::Newer(o),
         };
         let (sub, pill) = sentient_summary(&installed, state, false);
-        let mut row = product_row(&theme, offer.is_some(), ui::Product::Sentient, "SENTIENT", sub);
+        let licence = self.licence_read();
+        // Nothing offered: what the licence covers, as a quiet line.
+        let licence_note = offer.is_none().then(|| crate::manager::licence_gate::row_note(&licence));
+        let mut row = crate::manager::update::product_row_noted(&theme, offer.is_some(), ui::Product::Sentient, "SENTIENT", sub, licence_note);
         if let Some((tone, text)) = pill {
             row = row.child(ui::pill(&theme, tone, text));
         }
         if let Some(o) = &offer {
             let version = o.version.clone();
+            let build = o.licence_build();
             let (o2, inst_v) = (o.clone(), installed.clone());
-            row = row
-                .child(
+            // Docker there, image not on Docker Hub yet; or a native install
+            // whose glibc is older than the release needs: said instead of
+            // the button.
+            let det = self.inst.detected.clone().unwrap_or_default();
+            let native = !det.install.eq_ignore_ascii_case("docker") && !remote::is_windows(&self.inst);
+            let too_old = native
+                .then(|| {
+                    use sentient_installer_core::glibc;
+                    glibc::decide(&o.version, glibc::min_glibc(o.min_glibc.as_deref(), &o.version), &det.libc, &det.os_name, glibc::Here::Server).blocked().map(str::to_string)
+                })
+                .flatten();
+            row = match o.blocker().or(too_old) {
+                Some(why) => row.child(div().text_sm().text_color(theme.muted_foreground).child(why)),
+                None => row.child(crate::manager::licence_gate::pill(&theme, &licence, &build)).child(
                     crate::ui::button("r-update")
                         .primary()
                         .label(format!("Update to {}", o.version))
                         .disabled(busy)
-                        .on_click(cx.listener(move |this, _, _, cx| this.run_job("Updating SENTIENT", vec!["update".into(), "--version".into(), version.clone()], cx))),
-                )
+                        .on_click(cx.listener(move |this, _, window, cx| this.gated_update(version.clone(), build.clone(), true, window, cx))),
+                ),
+            };
+            row = row
                 .child(crate::ui::button("r-notes").outline().label("What's new").on_click(move |_, _, cx| crate::manager::update::open_notes("SENTIENT", &inst_v, &o2, cx)));
         }
-        let versions: Vec<crate::online::Version> = match &self.versions {
-            Read::Got(v) => v.iter().filter(|v| v.version != installed).cloned().collect(),
+        // The running version stays listed only to pin its tag.
+        let versions: Vec<(crate::online::Version, bool, &'static str)> = match &self.versions {
+            Read::Got(v) => v
+                .iter()
+                .filter(|v| can_pin || v.version != running)
+                .map(|v| {
+                    let note = crate::manager::licence_gate::menu_note(&licence, &sentient_installer_core::licence_version::build_version(None, &v.version));
+                    (v.clone(), v.version == running, note)
+                })
+                .collect(),
             _ => Vec::new(),
         };
         let this = cx.entity().downgrade();
-        row = row.child(
-            crate::ui::button("r-other")
-                .outline()
-                .label("Other version")
-                .disabled(busy || versions.is_empty())
-                .dropdown_menu(move |menu, _, _| {
-                    let mut menu = menu;
-                    for v in &versions {
-                        let (t, ver) = (this.clone(), v.version.clone());
-                        menu = menu.item(PopupMenuItem::new(v.label()).on_click(move |_, _, cx| {
-                            t.update(cx, |p, cx| {
-                                p.pick = Some(ver.clone());
-                                cx.notify();
-                            })
-                            .ok();
-                        }));
+        row = row.child(crate::ui::fitted_dropdown(
+            "r-other",
+            crate::ui::button("r-other").outline().label("Other version").disabled(busy || versions.is_empty()),
+            move |menu, _, _| {
+                let mut menu = menu;
+                for (v, is_running, note) in &versions {
+                    let (t, ver) = (this.clone(), v.version.clone());
+                    let label = if *is_running { format!("{} (running)", v.label()) } else { format!("{}{note}", v.label()) };
+                    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                        t.update(cx, |p, cx| {
+                            p.pick = Some(ver.clone());
+                            cx.notify();
+                        })
+                        .ok();
+                    }));
+                }
+                menu
+            },
+        ));
+        // The server's gateway: its update (the older Python one's too), run
+        // there by the same gateway-update job.
+        let gateway_row = match &self.gateway {
+            Read::Got(g) => {
+                let get = |k: &str| g.get(k).cloned().unwrap_or_default();
+                let status = crate::manager::gateway::status_of(&get);
+                let found = self.updates.read(cx).found.as_ref().map(|f| f.gateway.clone());
+                let gw_offer = found.clone().and_then(|r| r.ok()).flatten();
+                let update = crate::manager::gateway::gateway_update(&status, gw_offer.as_ref(), crate::remote::is_windows(&self.inst));
+                let summary = match &update {
+                    Some(u) => Some((u.about.clone(), None)),
+                    None => crate::manager::gateway::gateway_summary(&status, found.as_ref().map(|r| r.is_ok())),
+                };
+                summary.map(|(sub, pill)| {
+                    let mut r = product_row(&theme, update.as_ref().is_some_and(|u| u.why.is_none()), ui::Product::Gateway, "Sentient Gateway", sub);
+                    if let Some((tone, text)) = pill {
+                        r = r.child(ui::pill(&theme, tone, text));
                     }
-                    menu
-                }),
-        );
+                    if let Some(u) = update {
+                        let this = cx.entity().downgrade();
+                        let v = u.version.clone();
+                        r = r.child(crate::manager::gateway::update_button(&theme, "r-gateway-update", &u, busy, std::rc::Rc::new(move |_, cx: &mut App| {
+                            let v = v.clone();
+                            this.update(cx, |p, cx| p.run_job("Updating the gateway", vec!["gateway-update".into(), v], cx)).ok();
+                        })));
+                    }
+                    r
+                })
+            }
+            _ => None,
+        };
         let failed = match &self.offer {
             Read::Failed(e) => Some(e.clone()),
             _ => None,
         };
+        let stale = self.updates.read(cx).stale_note();
         let pick = self.pick.clone();
+        let pin_only = pick.as_deref() == Some(running.as_str());
         ui::panel(&theme)
             .child(
                 h_flex()
@@ -1497,6 +2026,8 @@ impl RemotePages {
                             .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
                     ),
             )
+            // The offers are from an old release list (GitHub refused): said quietly.
+            .when_some(stale, |p, n| p.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(n)))
             .when_some(failed, |p, e| {
                 p.child(ui::outcome(
                     &theme,
@@ -1505,6 +2036,7 @@ impl RemotePages {
                 ))
             })
             .child(row)
+            .children(gateway_row)
             .when_some(pick, |p, v| {
                 let v2 = v.clone();
                 p.child(
@@ -1516,10 +2048,23 @@ impl RemotePages {
                         .py_2()
                         .rounded(theme.radius)
                         .bg(theme.secondary)
-                        .child(div().flex_1().min_w(px(220.)).text_sm().child(format!("Install SENTIENT {v} on this server instead of {installed}?")))
-                        .child(crate::ui::probed(crate::ui::button("r-pick-go").primary().label(format!("Install {v}")).disabled(busy).on_click(cx.listener(move |this, _, _, cx| {
-                            this.pick = None;
-                            this.run_job("Updating SENTIENT", vec!["update".into(), "--version".into(), v2.clone()], cx);
+                        .child(div().flex_1().min_w(px(220.)).text_sm().child(if pin_only {
+                            format!("Keep this server on SENTIENT {v}, the version it runs? Only the image tag changes: no update and no database copy.")
+                        } else if can_pin {
+                            format!("Install SENTIENT {v} on this server instead of {installed}? The compose file then names {v}.")
+                        } else {
+                            format!("Install SENTIENT {v} on this server instead of {installed}?")
+                        }))
+                        // Whether the licence covers it (not for the version running).
+                        .when(!pin_only, |r| r.child(crate::manager::licence_gate::pill(&theme, &licence, &sentient_installer_core::licence_version::build_version(None, &v))))
+                        .child(crate::ui::probed(crate::ui::button("r-pick-go").primary().label(if pin_only { format!("Pin to {v}") } else { format!("Install {v}") }).disabled(busy).on_click(cx.listener(move |this, _, window, cx| {
+                            if pin_only {
+                                this.pick = None;
+                                this.run_job("Pinning SENTIENT's image tag", vec!["update".into(), "--version".into(), v2.clone()], cx);
+                            } else {
+                                let build = sentient_installer_core::licence_version::build_version(None, &v2);
+                                this.gated_update(v2.clone(), build, false, window, cx);
+                            }
                         }))))
                         .child(crate::ui::probed(crate::ui::button("r-pick-no").ghost().label("Cancel").on_click(cx.listener(|this, _, _, cx| {
                             this.pick = None;
@@ -1651,7 +2196,7 @@ impl RemotePages {
                 .child(
                     crate::ui::button("r-auto-time")
                         .ghost()
-                        .small()
+                        
                         .disabled(!on || busy)
                         .label(if on { format!("Every day at {time}") } else { "Off".to_string() })
                         .dropdown_menu(move |menu, _, _| {
@@ -2356,32 +2901,55 @@ impl RemotePages {
         let get = |k: &str| g.get(k).cloned().unwrap_or_default();
         let installed = get("installed") == "true";
         let running = get("running") == "true";
+        // The older Python gateway alone: offered as an update (the same
+        // gateway-update job); beside the Rust one: one line.
+        if !installed && !get("legacy").is_empty() {
+            let status = crate::manager::gateway::status_of(&get);
+            let found = self.updates.read(cx).found.as_ref().map(|f| f.gateway.clone());
+            let offer = found.clone().and_then(|r| r.ok()).flatten();
+            let looking = match &found {
+                Some(Err(e)) => Some(format!("Gateway updates: {e}")),
+                Some(Ok(None)) => Some("No gateway release on this channel.".to_string()),
+                _ => None,
+            };
+            let why = offer.as_ref().and_then(|o| sentient_installer_core::gateway::offer_blocker(&status, o, crate::remote::is_windows(&self.inst)));
+            let this = cx.entity().downgrade();
+            let v = offer.as_ref().map(|o| o.version.clone()).unwrap_or_default();
+            return crate::manager::gateway::legacy_panel(
+                &theme,
+                "r-gw-older",
+                &get("legacy"),
+                Some(get("legacy_image")).filter(|i| !i.is_empty()).as_deref(),
+                offer.as_ref(),
+                looking,
+                why,
+                busy,
+                std::rc::Rc::new(move |_, cx: &mut App| {
+                    let v = v.clone();
+                    this.update(cx, |p, cx| p.run_job("Updating the gateway", vec!["gateway-update".into(), v], cx)).ok();
+                }),
+            );
+        }
+        let legacy = Some(get("legacy")).filter(|n| !n.is_empty()).map(|n| div().text_sm().text_color(theme.muted_foreground).child(crate::manager::gateway::legacy_line(&n, "this server")));
         let mut p = ui::panel(&theme).child(
             h_flex()
                 .gap_3()
+                // A narrow window: the pills go to their own line.
+                .flex_wrap()
                 .items_center()
                 .child(ui::product_logo(ui::Product::Gateway, 24.))
                 .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
-                .child(if !installed { ui::pill(&theme, Tone::Neutral, "Not installed") } else if running { ui::pill(&theme, Tone::Good, "Gateway is running") } else { ui::pill(&theme, Tone::Bad, "Gateway is stopped") }),
+                .child(if !installed { ui::pill(&theme, Tone::Neutral, "Not installed") } else if running { ui::pill(&theme, Tone::Good, "Gateway is running") } else { ui::pill(&theme, Tone::Bad, "Gateway is stopped") })
+                .children({
+                    let s = match &self.gw_settings {
+                        Read::Got(s) => Some(Ok(s.clone())),
+                        _ => None,
+                    };
+                    crate::manager::gateway_settings::connected_pill(&theme, s.as_ref(), running && installed)
+                }),
         );
         if !installed {
-            // The pill says it; the how-to and what was looked for are behind an (i).
-            return ui::panel(&theme).child(
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(ui::product_logo(ui::Product::Gateway, 24.))
-                    .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
-                    .child(ui::pill(&theme, Tone::Neutral, "Not installed"))
-                    .child(ui::info(
-                        "gw-not-installed".into(),
-                        format!(
-                            "Install it with the Platform Manager on the server itself, so its access token stays on the server.\n\nLooked for: {}",
-                            sentient_installer_core::gateway::CHECKS
-                        )
-                        .into(),
-                    )),
-            );
+            return self.gateway_install_panel(&get, busy, cx);
         }
         let kind = get("kind");
         let recorded = get("recorded") == "true";
@@ -2396,6 +2964,7 @@ impl RemotePages {
         let version = get("version");
         let page = get("page");
         p = p
+            .children(legacy)
             .when(!version.is_empty(), |p| p.child(ui::fact(&theme, "Version", version.clone())))
             .when(!kind.is_empty(), |p| p.child(ui::fact(&theme, "Runs as", runs_as.clone())))
             .when(!host.is_empty(), |p| p.child(ui::fact(&theme, "Connects to", format!("{host}:{}", get("port")))))
@@ -2406,14 +2975,23 @@ impl RemotePages {
             .when(!volumes.is_empty(), |p| p.child(ui::fact(&theme, "Volumes", volumes.replace(',', ", "))))
             .when(!page.is_empty(), |p| {
                 p.child(if page == "off" {
-                    ui::fact_help(&theme, "Web page", "Off", "The gateway's own web page is off. In a container it is turned on with ST_GW_UI=on.")
+                    ui::fact_help(&theme, "Web page", "Off", crate::manager::gateway::page_off_help(&kind))
                 } else {
                     ui::fact(&theme, "Web page", page.clone())
                 })
             });
         // A plain process has no service to start it again: no controls.
         let controllable = kind != "process";
-        let updatable = (kind == "docker" && get("managed") == "true") || kind == "windows-service";
+        // "Update to <v>": only with a newer release than the server's
+        // gateway (this computer's channel), and only where an update can
+        // run there; else its reason on the disabled button.
+        let status = crate::manager::gateway::status_of(&get);
+        let offer = match &self.updates.read(cx).found {
+            Some(f) => f.gateway.as_ref().ok().cloned().flatten(),
+            None => None,
+        };
+        let newer = offer.filter(|o| !version.is_empty() && sentient_installer_core::releases::is_newer(&o.version, &version, false));
+        let blocker = newer.as_ref().and_then(|o| sentient_installer_core::gateway::offer_blocker(&status, o, crate::remote::is_windows(&self.inst)));
         let this = cx.entity().downgrade();
         let act = |action: &'static str| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
             let this = this.clone();
@@ -2426,7 +3004,17 @@ impl RemotePages {
         } else {
             Vec::new()
         };
-        p.children(ui::card_actions(
+        // The settings card under the status card (crate::manager::gateway_settings).
+        let base = self.status.got().and_then(|st| st.http_port).map(|port| format!("http://{}:{port}", self.inst.host));
+        let url = crate::manager::gateway_settings::sentient_page(base.as_deref(), Some(host.as_str()).filter(|h| !h.is_empty()), &[self.inst.host.as_str()]);
+        let settings = match &self.gw_settings {
+            Read::Loading => None,
+            Read::Failed(e) => Some(Err(e.clone())),
+            Read::Got(s) => Some(Ok(s.clone())),
+        };
+        self.gw_card.update(cx, |c, _| c.feed(settings, url, busy));
+        let card = self.gw_card.clone();
+        let panel = p.children(ui::card_actions(
             &theme,
             h_flex()
                 .gap(crate::ui::button_gap())
@@ -2448,10 +3036,267 @@ impl RemotePages {
                     cx.refresh_windows();
                 })))
                 .children(services.into_iter().map(crate::ui::probed))
-                .when(updatable, |r| {
-                    r.child(crate::ui::probed(crate::ui::button("r-gw-update").primary().label("Update to the newest").disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into()], cx)))))
+                .when_some(newer, |r, o| {
+                    let v = o.version.clone();
+                    let button = crate::ui::button("r-gw-update")
+                        .primary()
+                        .label(format!("Update to {}", o.version))
+                        .disabled(busy || blocker.is_some())
+                        .on_click(cx.listener(move |this, _, _, cx| this.run_job("Updating the gateway", vec!["gateway-update".into(), v.clone()], cx)));
+                    r.child(crate::ui::probed(match blocker.clone() {
+                        // A disabled button carries its reason as a tooltip.
+                        Some(why) => div().id("r-gw-update-why").child(button).tooltip(crate::ui::tooltip(why)).into_any_element(),
+                        None => button.into_any_element(),
+                    }))
                 }),
-        ))
+        ));
+        v_flex().flex_1().min_h_0().gap(px(ui::GAP)).child(panel.flex_shrink_0()).child(card)
+    }
+
+    /// What the gateway's settings card asks for, on the server: Apply (a
+    /// plan with no secret, put in the account's home and given to the
+    /// agent's gateway-apply) and the password (the agent's
+    /// gateway-ui-password, on its standard input) as the page's job; the
+    /// test in the background.
+    fn run_gw_work(&mut self, work: crate::manager::gateway_settings::Work, cx: &mut Context<Self>) {
+        use crate::manager::gateway_settings::Work;
+        use sentient_installer_core::progress::{PlanStep, Progress};
+        let inst = self.inst.clone();
+        // Screens: a canned server gateway is never changed.
+        let canned = cfg!(debug_assertions) && (std::env::var_os("SPM_DEBUG_REMOTE_GATEWAY").is_some() || std::env::var_os("SPM_DEBUG_REMOTE_GATEWAY_SETTINGS").is_some());
+        if let Work::Test = work {
+            let card = self.gw_card.clone();
+            cx.spawn(async move |_, cx| {
+                let r = if canned { Ok("Screens: a canned gateway; nothing was tested.".to_string()) } else { cx.background_executor().spawn(async move { remote::gateway_test(&inst) }).await };
+                card.update(cx, |c, cx| c.set_test(Some(r), cx));
+            })
+            .detach();
+            return;
+        }
+        if self.job.read(cx).is_running() {
+            let other = self.job_label.clone().map(|l| l.to_string()).unwrap_or_else(|| "another job".into());
+            ui::show_error("The gateway's settings cannot be changed yet", format!("{other} is still running on {}. Try again once it has finished.", inst.name), cx);
+            return;
+        }
+        self.shown_job = Some(Kind::Gateway);
+        match work {
+            Work::Apply(plan) => {
+                self.job_label = Some(format!("Applying the gateway's settings on {}", inst.name).into());
+                let kind = match &self.gw_settings {
+                    Read::Got(s) => s.machine.kind.clone(),
+                    _ => String::new(),
+                };
+                let names = format!("{}. {}", plan.names().join(", "), plan.restart_words(&kind));
+                self.job.update(cx, |job, cx| {
+                    job.set_plan(vec![crate::jobplan::connect(), PlanStep::new("Applying the settings").detail(names).weight(3.), PlanStep::new("Reading the settings back")]);
+                    job.set_label(format!("Applying the gateway's settings on {}", inst.name));
+                    job.set_on_page(true);
+                    job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
+                    job.start(
+                        move |sink| {
+                            sink(Progress::Step { name: crate::jobplan::CONNECT.into() });
+                            if canned {
+                                sink(Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
+                                return Ok(());
+                            }
+                            // As run_job: an agent that could not be brought up to
+                            // date still runs the job when it knows it.
+                            if let Err(e) = remote::deploy(&inst, &sink) {
+                                sink(Progress::Log { line: format!("The agent could not be updated: {}", remote::split_failure(&e).0) });
+                            }
+                            let file = format!("{}/.spm-gateway-apply.json", remote::home(&inst)?);
+                            remote::put_text(&inst, &file, &serde_json::to_string(&plan).map_err(|e| e.to_string())?)?;
+                            sink(Progress::Step { name: "Applying the settings".into() });
+                            let id = remote::start_job(&inst, &["gateway-apply", &file])?;
+                            let r = remote::follow(&inst, &id, &sink);
+                            remote::remove_file(&inst, &file);
+                            r
+                        },
+                        cx,
+                    )
+                });
+            }
+            Work::Password(pw) => {
+                self.job_label = Some(format!("Changing the gateway page's password on {}", inst.name).into());
+                self.job.update(cx, |job, cx| {
+                    job.set_plan(vec![crate::jobplan::connect(), PlanStep::new("Setting the password")]);
+                    job.set_label(format!("Changing the gateway page's password on {}", inst.name));
+                    job.set_on_page(true);
+                    job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
+                    job.start(
+                        move |sink| {
+                            sink(Progress::Step { name: crate::jobplan::CONNECT.into() });
+                            if canned {
+                                sink(Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
+                                return Ok(());
+                            }
+                            if let Err(e) = remote::deploy(&inst, &sink) {
+                                sink(Progress::Log { line: format!("The agent could not be updated: {}", remote::split_failure(&e).0) });
+                            }
+                            sink(Progress::Step { name: "Setting the password".into() });
+                            remote::gateway_ui_password(&inst, &pw).map(|m| sink(Progress::Done { message: m }))
+                        },
+                        cx,
+                    )
+                });
+            }
+            Work::Test => {}
+        }
+        cx.notify();
+    }
+
+    /// No gateway on the server: the install form (crate::manager::gateway::
+    /// InstallForm, as on this computer's page), "Runs as" with only what
+    /// the server can run, and Install.
+    fn gateway_install_panel(&self, get: &dyn Fn(&str) -> String, busy: bool, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+        let windows = remote::is_windows(&self.inst);
+        let docker = match get("docker").as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        };
+        let runs = crate::manager::gateway::install_runs_as(windows, docker, &self.inst.name);
+        let found = self.updates.read(cx).found.as_ref().map(|f| f.gateway.clone());
+        let offer = found.clone().and_then(|r| r.ok()).flatten();
+        // Why Install cannot run (its tooltip): nothing the server runs, an
+        // image not published yet, a release without its Windows installer.
+        let blocker = windows.then(|| WINDOWS_REMOTE_INSTALL.to_string()).or_else(|| runs.clone().err()).or_else(|| {
+            offer.as_ref().and_then(|o| {
+                if o.image_missing && !windows {
+                    Some(sentient_installer_core::dockerhub::not_published(&o.version))
+                } else if windows && o.installer.is_none() {
+                    Some(format!("Gateway {} has no Windows installer.", o.version))
+                } else {
+                    None
+                }
+            })
+        });
+        let runs_row = match runs {
+            Ok(r) => r,
+            Err(why) => ("Docker container (Docker is not on this server)".to_string(), why),
+        };
+        let action = match offer {
+            Some(o) => {
+                let v = o.version.clone();
+                let button = crate::ui::button("r-gw-install")
+                    .primary()
+                    .label("Install the gateway")
+                    .disabled(busy || blocker.is_some())
+                    .on_click(cx.listener(move |this, _, _, cx| this.start_gateway_install(v.clone(), cx)));
+                // What is installed on the left, Install at the card's end.
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .items_center()
+                    .child(div().flex_1().min_w_0().text_sm().text_color(theme.muted_foreground).child(format!(
+                        "Sentient Gateway {}, {}",
+                        o.version,
+                        if windows { "the installer from the SENTIENT releases site, checked before use" } else { "the quakestring/sentient-gateway-rs image, run by Docker" }
+                    )))
+                    .child(match blocker.clone() {
+                        // A disabled button carries its reason as a tooltip.
+                        Some(why) => div().id("r-gw-install-why").flex_shrink_0().child(button).tooltip(crate::ui::tooltip(why)).into_any_element(),
+                        None => div().flex_shrink_0().child(button).into_any_element(),
+                    })
+                    .into_any_element()
+            }
+            None => div()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(match &found {
+                    Some(Err(e)) => format!("The gateway releases could not be read: {e}"),
+                    Some(Ok(_)) => "No gateway release on this channel.".to_string(),
+                    None => "Looking for the newest gateway…".to_string(),
+                })
+                .into_any_element(),
+        };
+        ui::panel(&theme)
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(ui::product_logo(ui::Product::Gateway, 24.))
+                    .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
+                    .child(ui::pill(&theme, Tone::Neutral, "Not installed"))
+                    .child(ui::info("gw-not-installed".into(), format!("Looked for: {}", sentient_installer_core::gateway::CHECKS).into())),
+            )
+            .child(div().text_sm().text_color(theme.muted_foreground).child(
+                "The gateway reads devices next to this server. In SENTIENT, add a gateway device and copy its access token (Manage credentials).",
+            ))
+            .child(self.gw_form.fields(&theme, windows, Some(crate::manager::gateway::REMOTE_TOKEN_HELP), Some(runs_row)))
+            .children(self.gw_problem.clone().map(|p| ui::outcome(&theme, Tone::Bad, p)))
+            .children(ui::card_actions(&theme, action))
+    }
+
+    /// Install: the form's values once, the job on the server's agent with
+    /// the token and the page's password on its standard input
+    /// (crate::remote::gateway_install), never on a command line, in a log
+    /// or in this computer's profile.
+    fn start_gateway_install(&mut self, version: String, cx: &mut Context<Self>) {
+        use sentient_installer_core::progress::{PlanStep, Progress};
+        if self.job.read(cx).is_running() {
+            let other = self.job_label.clone().map(|l| l.to_string()).unwrap_or_else(|| "another job".into());
+            ui::show_error("The gateway cannot be installed yet", format!("{other} is still running on {}. Try again once it has finished.", self.inst.name), cx);
+            return;
+        }
+        let windows = remote::is_windows(&self.inst);
+        let settings = match self.gw_form.settings(cx, windows) {
+            Ok(s) => s,
+            Err(e) => {
+                self.gw_problem = Some(e.into());
+                cx.notify();
+                return;
+            }
+        };
+        self.gw_problem = None;
+        let inst = self.inst.clone();
+        // Screens: a canned server gateway is never changed.
+        let canned = cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_REMOTE_GATEWAY").is_some();
+        let args = remote::gateway_install_args(&settings.host, settings.port, &version);
+        self.last_args = args;
+        self.shown_job = Some(Kind::Gateway);
+        let label = format!("Installing the gateway on {}", inst.name);
+        self.job_label = Some(label.clone().into());
+        let me = cx.entity().downgrade();
+        self.job.update(cx, |job, cx| {
+            let mut plan = vec![crate::jobplan::connect(), PlanStep::new("Sending the access token")];
+            if !windows {
+                plan.push(PlanStep::new(format!("Pulling {}:{version}", sentient_installer_core::gateway::IMAGE)).weight(3.));
+                plan.push(PlanStep::new(format!("Starting Sentient Gateway {version}")));
+            }
+            job.set_plan(plan);
+            job.set_label(label);
+            job.set_on_page(true);
+            job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
+            // Try again: back to the form, the token still in it (it is
+            // cleared only once the install went through).
+            job.set_retry(std::rc::Rc::new(move |cx: &mut App| {
+                me.update(cx, |p, cx| {
+                    p.shown_job = None;
+                    p.job.update(cx, |j, cx| j.reset(cx));
+                    cx.notify();
+                })
+                .ok();
+            }));
+            job.start(
+                move |sink| {
+                    sink(Progress::Step { name: crate::jobplan::CONNECT.into() });
+                    if canned {
+                        sink(Progress::Done { message: "Screens: a canned gateway; nothing was installed.".into() });
+                        return Ok(());
+                    }
+                    if let Err(e) = remote::deploy(&inst, &sink) {
+                        sink(Progress::Log { line: format!("The agent could not be updated: {}", remote::split_failure(&e).0) });
+                    }
+                    sink(Progress::Step { name: "Sending the access token".into() });
+                    let sentient_installer_core::gateway::Settings { host, port, token, ui_password } = settings;
+                    remote::gateway_install(&inst, &host, port, &version, remote::GatewaySecrets { token, ui_password }, &sink)
+                },
+                cx,
+            )
+        });
+        cx.notify();
     }
 
     /// "Remove the Gateway…" on the server: the same dialog as here, then
@@ -2554,6 +3399,7 @@ impl RemotePages {
 
 impl Render for RemotePages {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.gw_form.apply_clear(window, cx);
         let theme = cx.theme().clone();
         let (title, summary) = match self.kind {
             Kind::Status => ("Status", "SENTIENT on this server: its state, services and database."),
@@ -2565,6 +3411,13 @@ impl Render for RemotePages {
             Kind::Repair => ("Repair and uninstall", "Write the services and their configuration again on this server."),
             Kind::Gateway => ("Gateway", "The Sentient Gateway on this server."),
         };
+        let gateway_only = matches!(&self.status, Read::Got(s) if s.gateway_only());
+        let summary = match self.kind {
+            Kind::Status if gateway_only => "This server and what runs on it.",
+            Kind::Status if matches!(&self.status, Read::Got(s) if !s.installed) => "This server: what runs on it, and what can be installed.",
+            Kind::Logs if gateway_only => "The gateway's log and the agent's on this server, newest at the bottom.",
+            _ => summary,
+        };
         // Set up earlier but nothing added: add a lone SENTIENT found there,
         // once (it changes nothing on the server; the agent asks when the
         // choice is real).
@@ -2572,7 +3425,26 @@ impl Render for RemotePages {
         if std::env::var_os("SPM_DEBUG_REMOTE_STATUS").is_some() {
             self.auto_add_tried = true; // canned screens: no server to add on
         }
-        if !self.auto_add_tried && matches!(&self.ready, Read::Got(())) && matches!(&self.status, Read::Got(s) if !s.installed) && !self.job.read(cx).is_running() {
+        // An install running on the server (started earlier, maybe from a
+        // window since closed, or before the connection dropped): shown
+        // again, followed where it is.
+        if self.install.is_none() && !self.reattach_tried && !self.job.read(cx).is_running() {
+            if let Some(id) = self.status.got().and_then(|s| remote::install::running_install(s.running_job.as_deref())).map(str::to_string) {
+                self.reattach_tried = true;
+                self.auto_add_tried = true;
+                self.open_install(Some(id), window, cx);
+            }
+        }
+        // Screens: the flow open on a step (SPM_DEBUG_INSTALL_STEP).
+        #[cfg(debug_assertions)]
+        if std::env::var_os("SPM_DEBUG_INSTALL_STEP").is_some() && self.install.is_none() && !self.reattach_tried && matches!(&self.ready, Read::Got(())) {
+            self.reattach_tried = true;
+            self.open_install(None, window, cx);
+        }
+        if let Some(flow) = &self.install {
+            return flow.clone().into_any_element();
+        }
+        if !self.auto_add_tried && matches!(&self.ready, Read::Got(())) && matches!(&self.status, Read::Got(s) if !s.installed && s.running_job.is_none()) && !self.job.read(cx).is_running() {
             self.auto_add_tried = true;
             self.run_job("Looking for SENTIENT on the server", vec!["add-if-one".into()], cx);
         }
@@ -2581,7 +3453,8 @@ impl Render for RemotePages {
             // While Set up runs or shows its result, only its panel.
             Read::Failed(_) if self.job_label.is_some() => Some(div()),
             Read::Failed(e) => Some(self.gate_panel(e.clone(), cx)),
-            Read::Got(()) if self.kind != Kind::Status && self.kind != Kind::Gateway && matches!(&self.status, Read::Got(s) if !s.installed) => {
+            // A gateway-only server: its Logs are the gateway's and the agent's.
+            Read::Got(()) if self.kind != Kind::Status && self.kind != Kind::Gateway && matches!(&self.status, Read::Got(s) if !s.installed && !(s.gateway_only() && self.kind == Kind::Logs)) => {
                 Some(if self.job_label.is_some() { div() } else { self.not_added_panel(cx) })
             }
             Read::Got(()) => None,
@@ -2665,12 +3538,46 @@ impl Render for RemotePages {
         let reload = crate::ui::refresh_button("remote-reload", self.in_flight > 0, window, move |_, cx| {
             me.update(cx, |this, cx| this.reload(cx)).ok();
         });
-        let reload = h_flex().gap_3().items_center().min_h(px(32.)).children(self.stale_note(&theme, cx)).child(reload);
+        let reload = h_flex().gap_3().items_center().min_h(px(32.)).children(self.stale_note(&theme, cx)).child(crate::ui::probed(reload));
         // Platform settings scroll inside their card (its Apply bar stays at
         // the card's bottom), not the page.
         let page = ui::page_with(&theme, title, summary, reload);
         if fixed { page.overflow_y_hidden().child(body) } else { page.child(body) }.into_any_element()
     }
+}
+
+/// The window closed (the app runs on): what the pages read stays for
+/// the next window ([`Kept`]).
+impl Drop for RemotePages {
+    fn drop(&mut self) {
+        let k = Kept {
+            conn: conn_of(&self.inst),
+            ready: std::mem::replace(&mut self.ready, Read::Loading),
+            status: std::mem::replace(&mut self.status, Read::Loading),
+            services: std::mem::replace(&mut self.services, Read::Loading),
+            db: std::mem::replace(&mut self.db, Read::Loading),
+            backups: std::mem::replace(&mut self.backups, Read::Loading),
+            settings: std::mem::replace(&mut self.settings, Read::Loading),
+            gateway: std::mem::replace(&mut self.gateway, Read::Loading),
+            gw_settings: std::mem::replace(&mut self.gw_settings, Read::Loading),
+            offer: std::mem::replace(&mut self.offer, Read::Loading),
+            versions: std::mem::replace(&mut self.versions, Read::Loading),
+            restores: std::mem::replace(&mut self.restores, Read::Loading),
+            updated_at: self.updated_at.take(),
+            auto_add_tried: self.auto_add_tried,
+        };
+        // Nothing read yet: nothing to keep.
+        if matches!(k.ready, Read::Loading) {
+            return;
+        }
+        KEPT.lock().unwrap_or_else(|e| e.into_inner()).insert(self.inst.id.clone(), k);
+    }
+}
+
+/// Whether a page of `kind` shows what it read rather than its loading
+/// skeleton (Status: the state, the services and the database).
+fn shows_data(kind: Kind, ready: &Read<()>, status: &Read<RemoteStatus>, services: &Read<Vec<RemoteService>>, db: &Read<DbStatus>) -> bool {
+    matches!(ready, Read::Got(_)) && status.got().is_some() && (kind != Kind::Status || (services.got().is_some() && db.got().is_some()))
 }
 
 /// Screens: a canned offer with two versions of notes.
@@ -2694,6 +3601,9 @@ fn canned_offer() -> crate::updates::Offer {
         signature: None,
         unsigned: false,
         signing_started: true,
+        image_missing: false,
+        build_version: None,
+        min_glibc: None,
         between: vec![
             n("4.4.0.2", "2026-11-14", "Request a demo or buy a licence from inside SENTIENT, and editor fixes.", vec![
                 ("Added", vec!["Licence: Request demo licence and Buy licence open dialogs inside SENTIENT."]),
@@ -2701,5 +3611,68 @@ fn canned_offer() -> crate::updates::Offer {
             ]),
             n("4.4.0.1", "2026-11-13", "First release of the 4.4 line.", vec![("Added", vec!["CoAP and LwM2M devices (DTLS, OSCORE).", "18 new widgets."])]),
         ],
+    }
+}
+
+#[cfg(test)]
+mod reopen_tests {
+    use super::{conn_of, shows_data, take_kept, DbStatus, Instance, Kept, Kind, Read, RemoteStatus};
+
+    fn inst(id: &str, host: &str) -> Instance {
+        serde_json::from_value(serde_json::json!({ "id": id, "name": "Plant B", "color": "#6b4fa0", "host": host, "user": "ops" })).unwrap()
+    }
+
+    fn kept(inst: &Instance) -> Kept {
+        Kept {
+            conn: conn_of(inst),
+            ready: Read::Got(()),
+            status: Read::Got(RemoteStatus { installed: true, ..Default::default() }),
+            services: Read::Got(Vec::new()),
+            db: Read::Got(DbStatus::default()),
+            backups: Read::Loading,
+            settings: Read::Loading,
+            gateway: Read::Loading,
+            gw_settings: Read::Loading,
+            offer: Read::Loading,
+            versions: Read::Loading,
+            restores: Read::Loading,
+            updated_at: Some("10:42".into()),
+            auto_add_tried: true,
+        }
+    }
+
+    /// Cold start: nothing read in this run, the loading skeleton.
+    #[test]
+    fn a_cold_start_has_nothing_to_draw() {
+        let mut map = std::collections::HashMap::new();
+        assert!(take_kept(&mut map, &inst("b", "10.0.0.2")).is_none());
+    }
+
+    /// A window opened again: Status draws what it read, at once.
+    #[test]
+    fn a_reopened_window_draws_what_was_read() {
+        let i = inst("b", "10.0.0.2");
+        let mut map = std::collections::HashMap::new();
+        map.insert(i.id.clone(), kept(&i));
+        let k = take_kept(&mut map, &i).expect("kept for the reopened window");
+        assert!(shows_data(Kind::Status, &k.ready, &k.status, &k.services, &k.db));
+        // Taken once: the new pages own it.
+        assert!(map.is_empty());
+    }
+
+    /// The instance was edited meanwhile (another address): read afresh.
+    #[test]
+    fn an_edited_instance_is_read_afresh() {
+        let i = inst("b", "10.0.0.2");
+        let mut map = std::collections::HashMap::new();
+        map.insert(i.id.clone(), kept(&i));
+        assert!(take_kept(&mut map, &inst("b", "10.0.0.9")).is_none());
+    }
+
+    /// Before a reading came back the page shows the skeleton.
+    #[test]
+    fn nothing_read_is_the_skeleton() {
+        assert!(!shows_data(Kind::Status, &Read::Loading, &Read::Loading, &Read::Loading, &Read::Loading));
+        assert!(!shows_data(Kind::Status, &Read::Got(()), &Read::Got(RemoteStatus::default()), &Read::Loading, &Read::Got(DbStatus::default())));
     }
 }

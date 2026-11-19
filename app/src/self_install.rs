@@ -53,6 +53,12 @@ fn default_start_delay() -> u32 {
 
 pub use imp::*;
 
+/// The company website: the About page's link and, on Windows, the Apps &
+/// features entry's. Here, not in the GUI's about module, because the
+/// agent build (no GUI) writes the registry entry too.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const COMPANY_WEBSITE: &str = "https://inveniasystems.com";
+
 #[cfg(windows)]
 mod imp {
     use super::{APP_PATH_KEY, PRODUCT, START_MENU_NAME, Shortcuts};
@@ -190,6 +196,7 @@ mod imp {
             ("DisplayName", "REG_SZ", PRODUCT.to_string()),
             ("DisplayVersion", "REG_SZ", crate::updates::manager_version().to_string()),
             ("Publisher", "REG_SZ", "INVENIA SYSTEMS".to_string()),
+            ("URLInfoAbout", "REG_SZ", crate::self_install::COMPANY_WEBSITE.to_string()),
             ("DisplayIcon", "REG_SZ", exe.clone()),
             ("InstallLocation", "REG_SZ", manager_dir().display().to_string()),
             ("UninstallString", "REG_SZ", format!("\"{exe}\" --uninstall")),
@@ -247,15 +254,34 @@ mod imp {
         let _ = quiet("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).spawn();
     }
 
+    /// SENTIENT in Docker in the Platform Manager's own WSL distro: it
+    /// starts with Windows through the distro's keep-alive task
+    /// (distro::KEEPALIVE_TASK), not through services.
+    fn in_own_distro() -> bool {
+        crate::installation::InstallationRecord::load().is_some_and(|r| {
+            r.engine == crate::installation::Engine::Docker && r.stack.wsl_distro.is_none() && r.stack.external.is_none()
+        })
+    }
+
     /// Start with Windows after `delay` seconds, or by hand
-    /// (native::set_start).
+    /// (native::set_start; in Docker distro::set_keepalive_start).
     pub fn set_autostart(automatic: bool, delay: u32) -> Result<(), String> {
+        if in_own_distro() {
+            return sentient_installer_core::distro::set_keepalive_start(automatic, delay);
+        }
         sentient_installer_core::native::set_start(automatic, delay)
     }
 
     /// Whether SENTIENT starts with Windows, and after how many seconds.
+    /// None: nothing to choose here (a stack in the operator's own WSL
+    /// distro or Docker, which start it themselves).
     pub fn autostart() -> Option<(bool, u32)> {
-        Some(sentient_installer_core::native::start_setting())
+        match crate::installation::InstallationRecord::load() {
+            Some(r) if r.engine == crate::installation::Engine::Docker => {
+                if r.stack.wsl_distro.is_none() && r.stack.external.is_none() { sentient_installer_core::distro::keepalive_start() } else { None }
+            }
+            _ => Some(sentient_installer_core::native::start_setting()),
+        }
     }
 
     /// An install from an earlier Platform Manager starts with Windows'
@@ -263,6 +289,9 @@ mod imp {
     /// Manual ones stay manual.
     pub fn undelay_autostart() {
         use sentient_installer_core::native::APP_SERVICE;
+        if in_own_distro() {
+            return;
+        }
         let delayed = quiet("sc.exe")
             .args(["qc", APP_SERVICE])
             .output()
@@ -652,5 +681,46 @@ mod package_tests {
         assert!(PackageOwner::Dpkg("spm".into()).remove_script().starts_with("apt-get remove -y 'spm'"));
         assert!(PackageOwner::Rpm("spm".into()).remove_script().contains("dnf remove -y 'spm'"));
         assert_eq!(PackageOwner::Dpkg("spm".into()).tool(), "apt");
+    }
+}
+
+/// `Command` for the Platform Manager at `exe`, run in its own folder: never
+/// in the folder this process runs in (Setup's, which the started manager
+/// and its administrator steps may not be able to reach).
+pub fn manager_command(exe: &std::path::Path) -> std::process::Command {
+    let mut c = std::process::Command::new(exe);
+    if let Some(dir) = exe.parent().filter(|d| d.is_dir()) {
+        c.current_dir(dir);
+    }
+    c
+}
+
+/// This program is the installed Platform Manager (it runs from its install
+/// folder): an install started from it has nothing to put in place. Setup
+/// (the downloaded installer, run from anywhere else) does.
+pub fn manager_in_place() -> bool {
+    let canon = |p: std::path::PathBuf| std::fs::canonicalize(&p).unwrap_or(p);
+    match std::env::current_exe() {
+        Ok(me) => same_program(&canon(me), &canon(manager_exe())),
+        Err(_) => false,
+    }
+}
+
+/// Two program paths name the same file (case-insensitively on Windows).
+pub fn same_program(a: &std::path::Path, b: &std::path::Path) -> bool {
+    if cfg!(windows) {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    } else {
+        a == b
+    }
+}
+
+#[cfg(test)]
+mod manager_in_place_tests {
+    #[test]
+    fn the_same_path_is_the_same_program() {
+        use std::path::Path;
+        assert!(super::same_program(Path::new("/opt/sentient-platform-manager/sentient-platform-manager"), Path::new("/opt/sentient-platform-manager/sentient-platform-manager")));
+        assert!(!super::same_program(Path::new("/home/op/Downloads/SENTIENT-Setup-manager-0.9.1-linux-x86_64"), Path::new("/opt/sentient-platform-manager/sentient-platform-manager")));
     }
 }

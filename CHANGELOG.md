@@ -15,6 +15,372 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-11-19
+
+Updates read Docker Hub for Docker installs and check the licence before a SENTIENT update, SENTIENT and the gateway install on Linux servers, native installs check glibc, and many Windows and gateway fixes.
+
+### Added
+- Updates follow how SENTIENT and the gateway are installed: a Docker
+  install is offered a version only once its image is on Docker Hub, and
+  falls back to Docker Hub's tags when the release list cannot be read; a
+  native install needs its package and checksum on the release.
+- Before a SENTIENT update the Platform Manager reads the licence's allowed
+  versions (after a system administrator signs in; the password is never
+  stored). A version the licence does not cover needs a typed confirmation,
+  and the version list shows each version's licence label.
+- Servers: Install SENTIENT and Install the gateway (with or without
+  SENTIENT) on a Linux server, with the same steps as Setup. Remote install
+  on Windows servers is not supported yet and says so.
+- A native install checks the system's glibc against what the release
+  needs; below it only Docker is offered, with the reason.
+
+### Added
+- Code signing with INVENIA SYSTEMS' own (self-signed) certificate, until a
+  public one is bought. An update of the Platform Manager signed with exactly
+  that certificate is accepted on Windows even though no computer trusts it
+  by itself; any other untrusted signer is still refused. From 0.9.4 the
+  Platform Manager is signed; the SENTIENT server programs, the gateway
+  installer and the SENTIENT Client from their next releases.
+  `Trust-INVENIA.ps1` (optional, for managed sites) makes Windows show
+  "Verified publisher: INVENIA SYSTEMS".
+- Gateway: the older Python gateway in Docker is offered an update to the
+  Sentient Gateway ("Update available" on the Gateway page here and on a
+  server, on the Status card and in the notices). The update backs up its
+  configuration volume, stops the older container and keeps it aside,
+  starts the new gateway on the same configuration with the same
+  connection and identity, waits until it is connected to SENTIENT, and
+  only then removes the older container. On any failure the new one is
+  removed and the older one runs again as before. Its (i) lists what does
+  not carry over (custom Python converters, Python code in a
+  configuration, gRPC connectors, a file-storage backlog).
+- Update page and Setup's update choices: a Sentient Gateway line, here
+  and on a server. It shows the newer gateway release and runs the same
+  gateway update with its progress; a gateway that cannot be updated from
+  here is greyed with the reason. The older Python gateway's line carries
+  the (i) on what does not carry over.
+- Gateway in Docker: an update starts the container again with the
+  volumes, host folders and connection settings it has, not fixed ones.
+- Gateway: a settings card under the gateway's status, here and on a
+  server, with the tabs Connection to SENTIENT, Local web page, Connectors,
+  Storage, Logging, Statistics and Advanced, in the look of Platform
+  settings. Every value is read from the gateway's own settings (as
+  administrator for a native gateway, from its container and configuration
+  volume for Docker, through the agent on a server); a token or password
+  shows only as "set" or its last four characters. A gateway that has
+  `--status-json` is asked for its state; an older one is read from its
+  files.
+  - What SENTIENT manages (connectors, storage, logging levels, statistics,
+    remote shell, rate limits) is shown locked, with the reason and, when
+    SENTIENT's address is known, "Open in SENTIENT". The connection is
+    locked while the gateway is connected.
+  - The status card says whether the gateway is connected to SENTIENT.
+  - Local web page: on or off, where it listens, its port, and the
+    administrator password (set through the gateway's own command, on its
+    standard input).
+  - Advanced: restart after a failure, serial ports (the service account's
+    serial group, or a container's devices by their stable names) and
+    environment overrides; Logging: the level before SENTIENT connects.
+  - Apply runs as a job: the gateway's own `--install` and a drop-in of the
+    Platform Manager's for a native service, the container created again
+    with the same volumes and environment, or the Windows service's
+    settings; then the settings are read back.
+  - Test connection checks that SENTIENT's MQTT answers where the gateway
+    connects (TCP, and a TLS handshake when it uses TLS). It does not try
+    the gateway's credentials yet, and says so.
+
+### Changed
+- After quitting, the Platform Manager starts on Status, of the instance that was open last. Closing only the window (the Platform Manager keeps running in the tray) and opening it again still returns to the page it was on.
+
+### Fixed
+- Windows with "Start with Windows" off: opening Platform settings started
+  SENTIENT's WSL distro. Its Data locations card read the Docker volumes
+  through a path that skipped the read guard. Every command that runs in
+  the distro now asks the guard first (a test scans the sources for any
+  that does not), and the card says "SENTIENT is stopped. Where its data
+  is kept is read when it runs."
+- Platform settings with the distro up but Docker not started: the
+  accounts showed a raw "failed to connect to the docker API … docker.sock"
+  error. That is SENTIENT stopped: the plain sentence and Start SENTIENT.
+  While a Start or Restart runs here the row says "SENTIENT is starting…"
+  with no button, and the accounts are read only once SENTIENT answers.
+- Statistics: the Services card said "stopped" for minutes after SENTIENT
+  started. It is read again when a job here ends, and every 5 s while
+  shown and stopped.
+- Status: with Docker not started, Services read "0 of 0 running"; each
+  container is now listed as stopped. After Stop, the Database card said
+  "Could not read PostgreSQL … connection failed" instead of SENTIENT is
+  stopped.
+- Instances: "Up for" showed on a stopped instance; it shows only while
+  SENTIENT runs.
+- Files: the read-only banner says "You can view, but not change
+  anything."
+- The window closed and opened again from the tray (the Platform Manager
+  kept running) showed the loading screen until the server or this
+  computer was read again. It now shows the page it was left on with what
+  was read last, at once, and reads it again behind it: Status and
+  Statistics, on this computer and on a server, and the top bar's
+  processor, memory and disk. Only a new start of the Platform Manager
+  shows the loading screen. The reopened window also draws about 70 ms
+  sooner (the backup tools are set up once per run, not for every window).
+- Windows (a virtual machine without a GPU): Statistics took about 3 of 4
+  processors, on a stopped or a running SENTIENT. The loading placeholders'
+  shimmer asked for a new frame every frame even with motion reduced, and
+  there every frame is drawn on the processor. The placeholders and the
+  Refresh icon now stay still whenever motion is reduced: on a software
+  renderer, and when "Show animations in Windows" is off (now read too).
+- Statistics on Windows: the Server card stayed a loading placeholder for
+  minutes. It waited for Windows Update's count of waiting updates, which
+  can take minutes to search; that count is now searched for behind and
+  shown at the next reading, and Windows' reading itself stops after
+  60 s with a plain reason on the card instead of a placeholder.
+- Statistics on Windows with Docker: the Services card never showed. Its
+  `docker stats` ran on Windows, where there is no `docker`; it now runs
+  inside SENTIENT's WSL distro, in one command, every 6 s instead of
+  every 3. With SENTIENT stopped (its distro or every container) the card
+  says "SENTIENT is stopped. Its services are read when it runs." on
+  Windows and Linux alike.
+- Platform settings: after Start SENTIENT, the General tab kept saying
+  "SENTIENT must be running to read and change its settings." until the
+  Platform Manager was restarted, because the accounts were read only
+  when the page was first opened. They are now read again when a job
+  here ends (Start, Restart, an update), and every 5 s while the page
+  shows and SENTIENT was found stopped (started from the tray, Status or
+  with Windows).
+- Files on a server: opening a folder (double click, Enter, a path-bar
+  segment or a place button) looked like it did nothing, because the
+  page waited for the whole listing before showing anything, and a
+  listing took 12 round trips (the folder's own attributes, the folder
+  above it listed again only to read the owner, each link, one request
+  at a time): about half a second on a 40 ms link. A listing is now one
+  pipelined read of 2 round trips (3 with links), about 85 ms on the
+  same link, and no new connection. Every click moves the path bar at
+  once; until the folder's rows come, the list shows the loading rows
+  the other pages use. Folders read in the last 45 s show at once and
+  are read again behind; after a folder opens, its subfolders (up to 50,
+  one at a time over the same connection, stopped by the next click),
+  and when Files opens, the place buttons' folders and the folders
+  above, are read ahead. The newest click wins; a folder that does not
+  open puts the bar back on the folder before, with the reason under
+  it. This computer's pane no longer lists every disk for each folder.
+  `tests/files/run.sh` clicks each of these on both panes against a real
+  server and checks the times.
+- Platform settings on a Windows Docker installation: the system
+  administrators and the default retention can be read and changed.
+  The page ran `sentient-admin` on Windows, where it is not ("start
+  sentient-admin: program not found"); it now runs in SENTIENT's
+  container inside the WSL distro, as every other Docker command does.
+  On Linux Docker it now goes through Docker's own shell too (`sg docker`
+  right after setup). With SENTIENT stopped the page says "SENTIENT must
+  be running to read and change its settings." with Start SENTIENT, and
+  never starts the stopped WSL distro to ask.
+- SENTIENT stopped (on Windows its WSL distro stopped): the Status page's
+  Database card says "SENTIENT is stopped. The database is read when it
+  runs." in plain text, not "Could not read PostgreSQL: read the stack's
+  compose file: could not run wsl.exe". The same on a server's Status
+  page, in Statistics' Services card ("Its services are read when it
+  runs.") and in Backup's size estimate.
+- Instances and the instance switcher show every server's state at once.
+  The states are read for every added server as the Platform Manager
+  starts, over the connections it opens then. They are read again every 15
+  seconds while a window is open, and when the window is focused again.
+  Before, a server was first read only when Instances or the switcher was
+  opened, and its card and dot took a few seconds to appear. Each server's
+  last state is kept on disk, so a new start shows it at once as
+  "Checking…" until the server answers. A server that stops answering keeps
+  its last state on the card, marked "Not reachable" with the time of its
+  last answer. One request per server at a time; the tray's checks reuse
+  these readings.
+- Windows Docker: reading SENTIENT's state no longer starts its WSL distro.
+  Any command for the distro starts it, and with it SENTIENT, so the Status
+  page started SENTIENT about a minute after it was opened, also with
+  "Start SENTIENT automatically with Windows" off. The Status page, the
+  tray's checks, the statistics and their sampler, the instance cards and
+  what another computer's Platform Manager reads now first look whether
+  the distro is running; when it is not, SENTIENT shows as stopped and the
+  distro stays stopped. Start, Restart, Repair and updates start it as
+  before.
+- Windows Docker: changing "Start SENTIENT automatically with Windows" in
+  Platform settings no longer fails after a minute on a busy computer.
+  Changing the boot task may take 3 minutes and is tried once more when it
+  does not finish; the error names what did not finish.
+- Gateway, Linux without Docker: the Update button says why it is off (a
+  package-installed gateway updates with the system's package manager; one
+  installed by hand with the new version's `--install`), instead of "comes
+  from a compose file". The update job refuses the same cases.
+- Gateway, Linux without Docker: the web page shows its real state (on at
+  127.0.0.1:8642 by default, or what the settings and the service's
+  environment say), not always "Off".
+- Gateway, Linux without Docker: a gateway whose settings folder is closed
+  to this account (`/etc/sentient-gateway`, 0700) no longer looks "Not
+  commissioned". The page says the settings are readable by an
+  administrator only and offers "Read its settings", which reads them as
+  administrator (host, port and page only, never the token).
+- Gateway on Windows: its logs show on the Logs page, from the service's
+  log files (`ProgramData\Sentient Gateway\data\logs`).
+- Gateway in Docker: the container the Platform Manager starts gets the
+  serial adapters it finds (`/dev/serial/by-id/*`, else `ttyUSB*`/`ttyACM*`)
+  with their group, so Modbus RTU works. An update passes them again.
+- Gateway on a server: "Update to <version>" shows only when a newer
+  gateway exists, names the version, and installs exactly that one.
+- Gateway: a container of the older Python gateway is no longer taken for
+  the Rust gateway (an update would have replaced it and lost its
+  configuration).
+
+- Windows "In the system": other computers reach SENTIENT. Setup opens its
+  ports in Windows Firewall (rule group SENTIENT: web and MQTT over TCP,
+  CoAP over UDP). Repair, a SENTIENT update and the Platform Manager's
+  list of changes add the rules to an earlier install when one is missing.
+- Windows Docker: "Start SENTIENT automatically with Windows" and its start
+  delay now decide when the WSL distro starts: the task "SENTIENT Docker"
+  starts at boot after that delay, or, when off, only when SENTIENT is
+  started from the Platform Manager. Startup in Platform settings reads and
+  changes the same task.
+- Windows Docker: SENTIENT stays reachable after Windows restarts. WSL 2
+  gives its VM a new subnet at every boot, which could overlap the stack's
+  Docker network; Docker's networks now come from 10.214.0.0/16. Repair and
+  the Platform Manager's list of changes move an earlier install's network.
+- Windows Docker: with "Start SENTIENT automatically with Windows" off,
+  Start on the Status page is offered after a boot (it was greyed while
+  the WSL distro was not running) and starts the distro first.
+- Windows Docker: every Start and Restart (the Status page, the tray,
+  `control start`) points the forwarded web and MQTT ports at the WSL
+  distro's address of now once the distro is up, also when the task
+  "SENTIENT Docker" already runs, and is done only when SENTIENT answers
+  on this computer's network address, the way other computers reach it.
+  The task itself reads the distro's eth0 address and asks again while
+  the distro starts, instead of leaving the ports unforwarded.
+- Windows Docker: "SENTIENT answers again" and "SENTIENT is running" mean
+  SENTIENT answers on its web port through the forward. They came as soon
+  as its container was up, minutes before other computers could open it.
+- On a computer without a GPU (a virtual machine), the Platform Manager
+  draws without animations: the moving job bar and spinner made it
+  redraw its whole window every frame, kept the processor near 100 % for
+  as long as a job ran and slowed SENTIENT's own start beside it.
+- Windows Docker: PostgreSQL's recommended memory is sized for the WSL 2
+  VM (half the computer's memory, or .wslconfig's memory=), not the whole
+  computer; with ClickHouse beside a Windows PostgreSQL, PostgreSQL is
+  sized for what the ClickHouse VM leaves.
+- On a virtual machine without a GPU, Windows' Microsoft Basic Render
+  Driver now counts as drawing without a GPU too (it does not say so in
+  DXGI's own flag): the job line and spinner stand still and the Platform
+  Manager no longer takes several processors while a job runs.
+- Windows Docker: the first start of WSL 2's virtual machine right after
+  Setup installed the WSL 2 kernel can miss Windows' deadline ("a response
+  was not received from the virtual machine or container"). Setup now
+  stops WSL and creates the distro once more by itself instead of failing;
+  when it does fail, the diagnosis says WSL did not answer in time and to
+  Retry, not that WSL is missing. When WSL is missing, the command offered
+  is the one this Windows takes (the Windows features and the WSL 2 kernel
+  on an inbox WSL, `wsl --install --no-distribution` only where wsl.exe
+  knows it).
+- Repair and a reinstall over a kept database: the schema installer's
+  "duplicate key … tb_user_pkey" is no longer a red error line in the job
+  log. An existing database is the expected case; the log says "The
+  database already has its data; kept as it is". Other schema installer
+  errors stay red.
+### Changed
+- A new Docker install waits up to 10 minutes (was 6) for SENTIENT's first
+  answer, and its log says every 15 seconds how long it has waited and
+  what the container is doing.
+- The Summary on Windows Docker shows CoAP as reachable from this computer
+  only, with an (i) saying why (WSL 2 does not forward UDP).
+- System check: "Check again" only on rows a new check can change, not on
+  "Will be installed" rows.
+- "Remove the earlier install?" has its buttons at the bottom right, as on
+  the other Setup pages.
+
+### Changed
+- Pages switch instantly. The fade and rise on a page change are gone; dialogs and menus keep their open animation.
+- Every popup opens with the same short animation: dialogs, the notifications and job panels rise 8 px as they fade in (180 ms); menus (the instance switcher, the theme menu, the licence menu, every dropdown and the Files context menu) and tooltips fade in moving 4 px toward what opened them (140 ms). Reduce motion turns them off. Dropdown and context menus, and plain tooltips, opened with none before.
+### Added
+- About and preferences (the (i) at the bottom of the menu) has an About
+  block: the INVENIA SYSTEMS logo, the website and support address as
+  links, this build (version, commit, build date, release or debug) and
+  the copyright. Copy version info puts the build lines on the clipboard
+  for a support request; Third-party licences lists the open-source
+  components the Platform Manager is built with and their licences (a row
+  opens the component's source). The list is made by
+  `scripts/third-party-licences.py` from `cargo metadata`, and a test fails
+  when Cargo.lock changes without it.
+### Added
+- Windows Setup offers Docker again: SENTIENT can run "On this computer"
+  (Windows services, the default) or "In Docker" inside WSL 2, in the
+  Platform Manager's own Ubuntu distribution with Docker Engine, started
+  at every boot. Without WSL 2, Setup turns it on first (also on Windows
+  10 builds whose wsl.exe cannot, through DISM and Microsoft's WSL
+  package), Windows restarts once and Setup continues after sign-in. A
+  computer that cannot run WSL 2 (virtualization off) shows the Docker
+  choice greyed, with the reason.
+- Setup's System check asks where SENTIENT runs, on Windows and Linux
+  alike: "In the system" (Windows services, or systemd on Linux; the
+  default and recommended on both, so Linux no longer starts on Docker)
+  or "Docker" (inside WSL 2 on Windows). "Customise where each part runs"
+  shows the place of the SENTIENT server, PostgreSQL (TimescaleDB goes
+  with it) and ClickHouse; running them in different places comes in
+  0.9.3, so those choices are greyed with an (i) for now. On Windows,
+  "In the system" keeps ClickHouse in Docker inside WSL 2, as before.
+  Each database card on the Database step says where it will run, and a
+  database that can't be chosen is greyed with the reason in its (i)
+  instead of hidden (TimescaleDB with systemd on Linux; ClickHouse on a
+  Windows that cannot run WSL 2). Location, Database settings and the
+  Summary's "Runs as" line follow the choice.
+
+### Fixed
+- Windows: the install no longer hangs when the PostgreSQL admin password is missing or not accepted. psql never waits on a password prompt now, so the install stops with a clear error instead.
+- Windows: the window's minimise, maximise and close buttons were
+  invisible on Windows 11 (only the red close button showed on hover), under
+  an empty white caption strip above the top bar. There is no caption strip
+  any more: the buttons sit at the right end of the top bar (Setup and the
+  maintenance window: at the window's top right), drawn by the Platform
+  Manager in the bar's text colour, crisp at every display scale, dimmed
+  while the window is inactive, with Windows 11's hover (grey, red for
+  close). The empty bar moves the window, a double click maximises it, and
+  hovering maximise still opens the snap layouts.
+- Docker: a SENTIENT on the image tag `latest` (or `dev`) showed "latest"
+  as its version, and the Update page could not move it to a release.
+  Status, the top bar and Update now show the version the container really
+  runs (from the image's SENTIENT_BUILD_VERSION, else its version label),
+  with the tag in brackets only when it differs: "4.4.0.2 (image tag
+  latest)". Updates compare with that version, so a `latest` install that
+  runs 4.4.0.2 is offered 4.4.0.3.
+- Update, Other version: the running version is marked "(running)".
+  Choosing a release on a Docker install now also writes that release's tag
+  into the compose file (the update itself is unchanged: backup, pull,
+  database changes, start and check), so the install stays on it. Choosing
+  the version it already runs only changes the tag ("Pin to 4.4.0.3": one
+  restart, no update and no database copy). A stack running from its own
+  compose file keeps its tag until the compose file is taken over. Before,
+  a chosen release ran under the old tag, so a numbered tag could name
+  another release.
+- New Docker installs use the tag of the release being installed, never
+  `latest`.
+- Docker roll back on the Platform Manager's own compose file names the
+  release it went back to: after rolling back from 4.4.0.3, the compose file
+  says 4.4.0.2 again (the release the previous image carries; an image that
+  does not say its release keeps the tag), and :4.4.0.3 still names the
+  4.4.0.3 image.
+- "Update SENTIENT" on a Docker install pinned to a release updates to the
+  newest release and pins it ("Update to 4.4.0.3", or "Up to date"), instead
+  of pulling the tag it is pinned to again. `latest` and a compose file of
+  your own still pull their tag.
+- Windows: installing SENTIENT from the Platform Manager that Setup opened
+  could stop at "initdb: program postgres is needed by initdb but was not
+  found" (with "The current directory is invalid"). The Platform Manager
+  ran in Setup's folder, which its administrator steps could not reach.
+  The window now always runs in its own folder, every program it starts
+  runs in a folder that exists, and this error is named with what to do.
+- Windows: "PostgreSQL already present" now checks that its programs run
+  (postgres -V) and puts them back from the archive when they do not; the
+  data folder is never touched.
+- The support details say "WSL is not installed" instead of wsl.exe's help.
+- Files: double-clicking a folder did not open it when the pointer moved a
+  little between press and release (rows can be dragged, and a drag
+  swallowed the click). The second press now opens the folder. Alt+Up goes
+  to the parent folder too (Backspace already did).
+- Installing SENTIENT from the Platform Manager listed "Installing the
+  Platform Manager" among its steps, although it was already installed:
+  that step is now Setup's only.
+
 ## [0.9.1] - 2026-11-17
 
 Add an existing SENTIENT on a Windows server however it was installed, a built-in terminal, restart and shut down servers, a Server card on Statistics, and Linux packages for Debian, Ubuntu, Fedora, AppImage and Flatpak.

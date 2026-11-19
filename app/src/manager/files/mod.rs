@@ -17,7 +17,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, Icon, IconName, h_flex, v_flex,
     button::ButtonVariants as _,
     input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, PopupMenuItem},
@@ -108,9 +108,17 @@ struct Pane {
     rename: Option<(String, Entity<InputState>)>,
     new_folder: Option<Entity<InputState>>,
     seq: u64,
-    /// Every folder listed in this run, by path: shown at once when it is
-    /// opened again, while it is listed again behind it.
-    seen: std::collections::HashMap<String, Listing>,
+    /// Folders listed (or read ahead) in the last CACHE_FOR, by path: shown
+    /// at once when opened, while they are listed again behind.
+    seen: std::collections::HashMap<String, (Listing, std::time::Instant)>,
+    /// The folder last loaded, while another one loads in its place (the
+    /// path bar already shows the new one): it comes back when that fails.
+    back: Option<Listing>,
+    /// Requests of the page waiting for the connection: reading ahead
+    /// gives way to them.
+    waiting: Arc<std::sync::atomic::AtomicUsize>,
+    /// Reading ahead's round: a navigation moves it on, which stops it.
+    ahead: Arc<std::sync::atomic::AtomicU64>,
     /// A re-list failed while the listing read before still shows.
     stale: Option<String>,
     /// When the listing last came back (HH:MM).
@@ -140,6 +148,9 @@ impl Pane {
             new_folder: None,
             seq: 0,
             seen: Default::default(),
+            back: None,
+            waiting: Default::default(),
+            ahead: Default::default(),
             stale: None,
             updated_at: None,
             cols: COLS,
@@ -157,15 +168,23 @@ impl Pane {
         rows
     }
 
-    /// May change things here.
+    /// May change things here (nothing while a folder loads).
     fn writable(&self) -> bool {
-        self.admin || self.listing.as_ref().is_some_and(|l| l.writable)
+        self.listing.as_ref().is_some_and(|l| self.admin || l.writable)
+    }
+
+    /// A folder's listing from the last CACHE_FOR.
+    fn cached(&self, path: &str) -> Option<Listing> {
+        self.seen.get(path).filter(|(_, at)| at.elapsed() < CACHE_FOR).map(|(l, _)| l.clone())
     }
 
     /// Which of Size, Modified and Owner fit beside a Name of NAME_MIN:
     /// Owner goes first, then Size, then Modified.
     fn shown(&self) -> [bool; 3] {
-        let mut on = [true, true, self.place.is_remote()];
+        // Owner: a Linux server's account names; a Windows server's OpenSSH
+        // gives none (only made-up POSIX ids).
+        let owners = matches!(&self.place, Place::Remote(i) if !crate::remote::is_windows(i));
+        let mut on = [true, true, owners];
         let w = self.width.get();
         if w <= 0. {
             return on;
@@ -290,13 +309,32 @@ impl FilesPage {
         then: impl FnOnce(&mut Self, Result<T, String>, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) {
+        self.run_held(side, None, op, then, cx);
+    }
+
+    /// [`Self::run`], `hold` later (the click test's slow listing).
+    fn run_held<T: Send + 'static>(
+        &mut self,
+        side: usize,
+        hold: Option<std::time::Duration>,
+        op: impl FnOnce(&mut dyn Fs) -> Result<T, String> + Send + 'static,
+        then: impl FnOnce(&mut Self, Result<T, String>, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        use std::sync::atomic::Ordering::SeqCst;
         let p = &self.panes[side];
-        let (conn, place, admin) = (p.conn.clone(), p.place.clone(), p.admin);
+        let (conn, place, admin, waiting) = (p.conn.clone(), p.place.clone(), p.admin, p.waiting.clone());
+        waiting.fetch_add(1, SeqCst);
         let task = cx.spawn(async move |this, cx| {
             let r = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut g = conn.lock().map_err(|_| "The connection is busy.".to_string())?;
+                    if let Some(d) = hold {
+                        std::thread::sleep(d);
+                    }
+                    let g = conn.lock();
+                    waiting.fetch_sub(1, SeqCst);
+                    let mut g = g.map_err(|_| "The connection is busy.".to_string())?;
                     if g.is_none() {
                         *g = Some(fs::open(&place, admin)?);
                     }
@@ -329,7 +367,11 @@ impl FilesPage {
         }
     }
 
-    /// List `path` (empty: home), and pick `select` in it.
+    /// List `path` (empty: home), and pick `select` in it. Another folder
+    /// shows in the path bar at once: its listing from the last CACHE_FOR
+    /// with it, else the skeleton rows until it comes. The newest request
+    /// wins (`seq`); one that fails goes back to the folder last loaded,
+    /// the reason under the bar.
     fn load(&mut self, side: usize, path: String, select: Option<String>, cx: &mut Context<Self>) {
         let pane = &mut self.panes[side];
         if pane.admin && !(path.starts_with(&pane.admin_root) && !path.is_empty()) {
@@ -340,32 +382,56 @@ impl FilesPage {
         let seq = pane.seq;
         pane.loading = true;
         pane.error = None;
-        // A folder listed before shows at once (its selection starts afresh).
-        if let Some(l) = pane.seen.get(&path).filter(|l| pane.listing.as_ref().is_none_or(|c| c.path != l.path)).cloned() {
+        // Reading ahead stops: this request goes first.
+        pane.ahead.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let here = pane.listing.as_ref().is_some_and(|l| l.path == path);
+        if !here && !path.is_empty() {
+            if let Some(l) = pane.listing.take() {
+                pane.back = Some(l);
+            }
             pane.selected.clear();
             pane.anchor = None;
             pane.rename = None;
-            pane.path = l.path.clone();
-            pane.listing = Some(l);
+            pane.path = path.clone();
+            pane.listing = pane.cached(&path);
         }
         let asked = path.clone();
         let first = pane.shortcuts.is_empty();
-        self.run(
+        crate::timing::mark(&format!("files-nav side={side} path={path}"));
+        let t0 = std::time::Instant::now();
+        let conns0 = fs::CONNECTIONS.load(std::sync::atomic::Ordering::Relaxed);
+        self.run_held(
             side,
+            debug_hold(),
             move |f| {
+                let c0 = f.counters();
                 let path = if path.is_empty() { f.home() } else { path };
                 let shortcuts = if first { f.shortcuts() } else { Vec::new() };
-                Ok((f.list(&path)?, shortcuts))
+                let t = std::time::Instant::now();
+                let l = f.list(&path);
+                let c1 = f.counters();
+                Ok((l, shortcuts, [c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2], t.elapsed().as_micros() as u64, t0.elapsed().as_micros() as u64]))
             },
-            move |this, r, cx| {
+            move |this, r: Result<(Result<Listing, String>, Vec<Shortcut>, [u64; 5]), String>, cx| {
+                let r = r.and_then(|(l, s, c)| {
+                    let conns = fs::CONNECTIONS.load(std::sync::atomic::Ordering::Relaxed) - conns0;
+                    crate::timing::mark(&format!("files-listed side={side} ok={} n={} took_ms={} list_ms={} done_ms={} rtts={} bytes_in={} bytes_out={} conns={conns} current={}", l.is_ok(), l.as_ref().map(|l| l.entries.len()).unwrap_or(0), t0.elapsed().as_millis(), c[3] / 1000, c[4] / 1000, c[0], c[1], c[2], this.panes[side].seq == seq));
+                    l.map(|l| (l, s))
+                });
                 let pane = &mut this.panes[side];
                 if pane.seq != seq {
+                    // A newer request: this one is dropped (kept to show
+                    // at once if its folder is opened again).
+                    if let Ok((l, _)) = r {
+                        pane.seen.insert(l.path.clone(), (l, std::time::Instant::now()));
+                    }
                     return;
                 }
                 pane.loading = false;
                 match r {
                     Ok((l, shortcuts)) => {
-                        if !shortcuts.is_empty() {
+                        let first = !shortcuts.is_empty();
+                        if first {
                             pane.shortcuts = shortcuts;
                         }
                         if !pane.path.is_empty() && pane.path != l.path {
@@ -373,6 +439,7 @@ impl FilesPage {
                             pane.anchor = None;
                             pane.rename = None;
                         }
+                        pane.back = None;
                         pane.path = l.path.clone();
                         crate::manager::session::set_files_dir(&pane.place.key(), &l.path);
                         let names: BTreeSet<String> = l.entries.iter().map(|e| e.name.clone()).collect();
@@ -380,24 +447,124 @@ impl FilesPage {
                         if let Some(s) = select.filter(|s| names.contains(s)) {
                             pane.selected = [s].into();
                         }
-                        pane.seen.insert(l.path.clone(), l.clone());
+                        let now = std::time::Instant::now();
+                        pane.seen.insert(l.path.clone(), (l.clone(), now));
                         if !asked.is_empty() && asked != l.path {
-                            pane.seen.insert(asked, l.clone());
+                            pane.seen.insert(asked, (l.clone(), now));
                         }
                         pane.stale = None;
                         pane.updated_at = Some(chrono::Local::now().format("%H:%M").to_string());
+                        // Read ahead: on opening, the place buttons' folders
+                        // and the folders above; every time, the folders in it.
+                        let mut ahead: Vec<String> = Vec::new();
+                        if first {
+                            ahead.extend(pane.shortcuts.iter().map(|(_, _, p)| p.clone()));
+                            ahead.extend(pane.place.crumbs(&l.path).into_iter().map(|(_, p)| p).filter(|p| *p != l.path));
+                        }
+                        ahead.extend(l.entries.iter().filter(|e| e.dir && !e.name.ends_with(".spm-part")).take(AHEAD_MAX).map(|e| pane.place.join(&l.path, &e.name)));
                         pane.listing = Some(l);
+                        this.read_ahead(side, ahead, cx);
                     }
-                    // The folder shown is the one asked for: it stays,
-                    // said softly to be stale.
-                    Err(e) if pane.listing.as_ref().is_some_and(|l| l.path == asked) => pane.stale = Some(e),
-                    Err(e) => pane.error = Some(e),
+                    // The folder shown, listed again, and no other one
+                    // asked: it stays, said softly to be stale.
+                    Err(e) if pane.back.is_none() && pane.listing.as_ref().is_some_and(|l| l.path == asked) => pane.stale = Some(e),
+                    // Back to the folder last loaded; the reason under the bar.
+                    Err(e) => {
+                        pane.seen.remove(&asked);
+                        if let Some(l) = pane.back.take() {
+                            pane.path = l.path.clone();
+                            pane.listing = Some(l);
+                        } else {
+                            pane.listing = None;
+                        }
+                        pane.error = Some(e);
+                    }
                 }
                 cx.notify();
             },
             cx,
         );
         cx.notify();
+    }
+
+    /// Read these folders' listings into the cache behind the page, one at
+    /// a time over the side's connection (never a new one), giving way to
+    /// the page's own requests; a navigation stops it. Folders cached in
+    /// the last CACHE_FOR are skipped.
+    fn read_ahead(&mut self, side: usize, paths: Vec<String>, cx: &mut Context<Self>) {
+        use std::sync::atomic::Ordering::SeqCst;
+        // Click tests: every folder opened uncached (the skeleton rows).
+        if cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_FILES_NO_AHEAD").is_some() {
+            return;
+        }
+        let pane = &self.panes[side];
+        let mut todo: Vec<String> = Vec::new();
+        for p in paths {
+            if pane.cached(&p).is_none() && !todo.contains(&p) {
+                todo.push(p);
+            }
+        }
+        todo.truncate(AHEAD_MAX + 8);
+        if todo.is_empty() {
+            return;
+        }
+        let round = pane.ahead.fetch_add(1, SeqCst) + 1;
+        let (conn, waiting, ahead) = (pane.conn.clone(), pane.waiting.clone(), pane.ahead.clone());
+        let task = cx.spawn(async move |this, cx| {
+            let t0 = std::time::Instant::now();
+            let (mut n, mut tot) = (0usize, [0u64; 3]);
+            let mut i = 0;
+            while i < todo.len() {
+                if ahead.load(SeqCst) != round {
+                    break;
+                }
+                let (conn, waiting, ahead2, path) = (conn.clone(), waiting.clone(), ahead.clone(), todo[i].clone());
+                let r = cx
+                    .background_executor()
+                    .spawn(async move {
+                        // The page's own request goes first.
+                        if waiting.load(SeqCst) > 0 || ahead2.load(SeqCst) != round {
+                            return None;
+                        }
+                        let mut g = conn.lock().ok()?;
+                        if ahead2.load(SeqCst) != round {
+                            return None;
+                        }
+                        let f = g.as_mut()?;
+                        let c0 = f.counters();
+                        let l = f.list(&path);
+                        let c1 = f.counters();
+                        Some((l, [c1[0] - c0[0], c1[1] - c0[1], c1[2] - c0[2]]))
+                    })
+                    .await;
+                let Some((l, c)) = r else {
+                    if ahead.load(SeqCst) != round {
+                        break;
+                    }
+                    cx.background_executor().timer(std::time::Duration::from_millis(30)).await;
+                    continue;
+                };
+                n += 1;
+                for k in 0..3 {
+                    tot[k] += c[k];
+                }
+                if let Ok(l) = l {
+                    let stop = this
+                        .update(cx, |p, _| {
+                            let pane = &mut p.panes[side];
+                            pane.seen.insert(l.path.clone(), (l, std::time::Instant::now()));
+                            pane.ahead.load(SeqCst) != round
+                        })
+                        .unwrap_or(true);
+                    if stop {
+                        break;
+                    }
+                }
+                i += 1;
+            }
+            crate::timing::mark(&format!("files-ahead side={side} folders={n} of={} took_ms={} rtts={} bytes_in={} bytes_out={}", todo.len(), t0.elapsed().as_millis(), tot[0], tot[1], tot[2]));
+        });
+        self._tasks.push(task);
     }
 
     fn reload(&mut self, side: usize, cx: &mut Context<Self>) {
@@ -419,6 +586,22 @@ impl FilesPage {
         }
     }
 
+    /// The second press of a double click on a folder opens it, at once:
+    /// the click itself is lost when the pointer moves more than GPUI's 2 px
+    /// drag threshold between press and release (rows are drag sources),
+    /// which a real hand often does.
+    fn press_row(&mut self, side: usize, i: usize, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !opens_on_press(e.click_count, e.modifiers) {
+            return;
+        }
+        let Some(row) = self.panes[side].rows().into_iter().nth(i) else { return };
+        if row.dir {
+            window.focus(&self.panes[side].focus, cx);
+            self.open_dir(side, &row.name, cx);
+            cx.stop_propagation();
+        }
+    }
+
     /// A row clicked: select it (Ctrl adds, Shift a range); twice opens a folder.
     fn click_row(&mut self, side: usize, i: usize, e: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         let rows = self.panes[side].rows();
@@ -426,10 +609,9 @@ impl FilesPage {
         let pane = &mut self.panes[side];
         window.focus(&pane.focus, cx);
         if e.click_count() >= 2 {
-            if row.dir {
-                let name = row.name.clone();
-                self.open_dir(side, &name, cx);
-            }
+            // Opened on the second press already (press_row): a hand that
+            // moves a little between down and up starts a drag, and the
+            // click then never comes.
             return;
         }
         let m = e.modifiers();
@@ -726,6 +908,7 @@ impl FilesPage {
             "delete" => self.confirm_delete(side, cx),
             "f2" => self.start_rename(side, window, cx),
             "backspace" => self.up(side, cx),
+            "up" if k.modifiers.alt => self.up(side, cx),
             "enter" => {
                 let p = &self.panes[side];
                 if let Some(r) = p.rows().into_iter().find(|r| p.selected.len() == 1 && p.selected.contains(&r.name) && r.dir) {
@@ -738,9 +921,15 @@ impl FilesPage {
     }
 }
 
+/// A press that opens a folder: the second of a double click, without
+/// Shift or Ctrl (those change the selection).
+fn opens_on_press(click_count: usize, m: Modifiers) -> bool {
+    click_count == 2 && !m.shift && !m.control && !m.platform
+}
+
 fn read_only_text(p: &Pane) -> String {
     let owner = p.listing.as_ref().map(|l| l.owner.clone()).filter(|o| !o.is_empty()).unwrap_or_else(|| "another account".into());
-    format!("This folder belongs to {owner}. You can look, but not change anything.")
+    format!("This folder belongs to {owner}. You can view, but not change anything.")
 }
 
 fn folder_color() -> Hsla {
@@ -799,16 +988,18 @@ impl FilesPage {
             .child(crate::ui::probed(
                 crate::ui::button(SharedString::from(format!("f-new-{side}")))
                     .ghost()
-                    .small()
+                    
                     .icon(Icon::empty().path("icons/folder-plus.svg"))
                     .tooltip("New folder")
                     .disabled(!writable)
                     .on_click(cx.listener(move |this, _, window, cx| this.start_new_folder(side, window, cx))),
             ))
-            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-reload-{side}"))).ghost().small().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(move |this, _, _, cx| this.reload(side, cx)))));
+            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-reload-{side}"))).ghost().icon(IconName::RefreshCw).tooltip("Read again").on_click(cx.listener(move |this, _, _, cx| this.reload(side, cx)))));
 
         // Where: the path's parts, each a way back.
         let crumbs = p.place.crumbs(&p.path);
+        let skeleton = p.loading && p.listing.is_none();
+        trace_change(side, "bar", &format!("path={} skeleton={skeleton} rows={} error={}", p.path, rows.len(), p.error.is_some()));
         let last = crumbs.len().saturating_sub(1);
         let bar = h_flex()
             .h(px(34.))
@@ -824,6 +1015,7 @@ impl FilesPage {
                 let sep = (i > 0).then(|| div().text_color(theme.muted_foreground).child("›").into_any_element());
                 let part = div()
                     .id(SharedString::from(format!("f-crumb-{side}-{i}")))
+                    .relative()
                     .flex_shrink_0()
                     .px_1()
                     .rounded(px(4.))
@@ -832,6 +1024,7 @@ impl FilesPage {
                     .when(i == last, |d| d.text_color(theme.foreground).font_weight(FontWeight::MEDIUM))
                     .when(i != last, |d| d.text_color(theme.muted_foreground))
                     .child(name)
+                    .child(probe(format!("files-crumb {side} {i}")))
                     .on_click(cx.listener(move |this, _, _, cx| this.load(side, path.clone(), None, cx)))
                     .into_any_element();
                 sep.into_iter().chain([part])
@@ -854,8 +1047,10 @@ impl FilesPage {
                 .cursor_pointer()
                 .when(on, |c| c.border_color(theme.primary).bg(theme.primary.opacity(0.08)).text_color(theme.primary))
                 .when(!on, |c| c.border_color(theme.border).hover(|c| c.bg(theme.list_hover)))
+                .relative()
                 .child(shortcut_icon(icon).size_3p5())
                 .child(label.clone())
+                .child(probe(format!("files-chip {side} {}", label.replace(' ', "_"))))
                 .on_click(cx.listener(move |this, _, _, cx| this.load(side, path.clone(), None, cx)))
         }));
 
@@ -885,6 +1080,9 @@ impl FilesPage {
             // The layout test checks this part's right padding.
             .child(crate::ui::layout_probe("panel"))
             .child(bar)
+            // A folder that did not open: why, under the bar (the bar is
+            // back on the folder before).
+            .children(p.error.clone().map(|e| div().id(SharedString::from(format!("f-error-{side}"))).text_sm().text_color(theme.danger).child(e)))
             .child(chips)
             .children(banner);
 
@@ -975,24 +1173,22 @@ impl FilesPage {
                     .gap(crate::ui::button_gap())
                     .items_center()
                     .child(file_icon(true).size_4().text_color(folder_color()))
-                    .child(div().flex_1().child(Input::new(input).small()))
-                    .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-make-{side}"))).primary().small().label("Make").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(div().flex_1().child(Input::new(input)))
+                    .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-make-{side}"))).primary().label("Make").on_click(cx.listener(move |this, _, _, cx| {
                         let name = this.panes[side].new_folder.as_ref().map(|i| i.read(cx).value().trim().to_string()).unwrap_or_default();
                         this.make_folder(side, name, cx);
                     }))))
-                    .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-make-no-{side}"))).ghost().small().label("Cancel").on_click(cx.listener(move |this, _, _, cx| {
+                    .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("f-make-no-{side}"))).ghost().label("Cancel").on_click(cx.listener(move |this, _, _, cx| {
                         this.panes[side].new_folder = None;
                         cx.notify();
                     })))),
             );
         }
-        if p.loading && p.listing.is_none() {
+        if skeleton {
             for i in 0..5 {
                 list = list.child(h_flex().h(px(ROW_H)).px(px(PANE_PX)).gap_3().items_center().child(crate::ui::skeleton_line(&theme, format!("f-sk-{side}-{i}"), 180.)).child(div().flex_1()).child(crate::ui::skeleton_line(&theme, format!("f-sk2-{side}-{i}"), 60.)));
             }
-        } else if let Some(e) = &p.error {
-            list = list.child(div().px(px(PANE_PX)).py_3().text_sm().text_color(theme.danger).child(e.clone()));
-        } else if rows.is_empty() && p.new_folder.is_none() && self.transfers.read(cx).copying_into(&p.place.key(), &p.path).is_empty() {
+        } else if p.listing.is_some() && rows.is_empty() && p.new_folder.is_none() && self.transfers.read(cx).copying_into(&p.place.key(), &p.path).is_empty() {
             list = list.child(div().px(px(PANE_PX)).py_3().text_sm().text_color(theme.muted_foreground).child("Nothing here."));
         }
         let me = cx.entity().downgrade();
@@ -1006,7 +1202,7 @@ impl FilesPage {
                 .min_w_0()
                 .child(file_icon(r.dir).size_4().flex_shrink_0().text_color(if r.dir { folder_color() } else { theme.muted_foreground }))
                 .child(match renaming {
-                    Some(input) => div().flex_1().child(Input::new(&input).small()).into_any_element(),
+                    Some(input) => div().flex_1().child(Input::new(&input)).into_any_element(),
                     None => div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(r.name.clone()).into_any_element(),
                 })
                 .into_any_element();
@@ -1023,7 +1219,10 @@ impl FilesPage {
                 .text_sm()
                 .when(on, |r| r.bg(theme.sidebar_accent))
                 .when(!on, |r| r.hover(|r| r.bg(theme.list_hover)))
+                .relative()
                 .child(cols(name_el, size, time, Some(owner)))
+                .child(probe(format!("files-row {side} {}", r.name.replace(' ', "_"))))
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, window, cx| this.press_row(side, i, e, window, cx)))
                 .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| this.click_row(side, i, e, window, cx)))
                 .on_mouse_down(MouseButton::Right, cx.listener(move |this, _, window, cx| {
                     let p = &mut this.panes[side];
@@ -1266,7 +1465,7 @@ impl Render for FilesPage {
             .gap(px(ui::GAP))
             .bg(theme.muted)
             .when(narrow, |p| p.overflow_y_scroll())
-            .child(h_flex().min_h(px(32.)).items_center().child(div().flex_1().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Files")).child(h_flex().gap_3().items_center().children(stale).child(refresh)))
+            .child(h_flex().min_h(px(32.)).items_center().child(div().flex_1().text_size(px(22.)).font_weight(FontWeight::MEDIUM).child("Files")).child(h_flex().gap_3().items_center().children(stale).child(crate::ui::probed(refresh))))
             .child(panes);
         // The short note, bottom centre over the page (fades in).
         let toast = self.toast.as_ref().map(|(text, _)| {
@@ -1307,6 +1506,64 @@ impl FilesPage {
     fn save_layout(&self) {
         crate::manager::session::set_files(self.split, [self.panes[0].cols, self.panes[1].cols]);
     }
+}
+
+/// Click tests: where a crumb, chip or row is (`LAYOUT files-… l r t b`
+/// with SPM_DEBUG_LAYOUT; written when it moves).
+fn probe(name: String) -> AnyElement {
+    if !(cfg!(debug_assertions) && std::env::var_os("SPM_DEBUG_LAYOUT").is_some()) {
+        return div().into_any_element();
+    }
+    canvas(
+        move |b, _, _| {
+            let v = [b.origin.x, b.origin.x + b.size.width, b.origin.y, b.origin.y + b.size.height].map(|x| f32::from(x).round() as i32);
+            static LAST: Mutex<Option<std::collections::HashMap<String, [i32; 4]>>> = Mutex::new(None);
+            let mut g = LAST.lock().unwrap_or_else(|e| e.into_inner());
+            if g.get_or_insert_with(Default::default).insert(name.clone(), v) != Some(v) {
+                eprintln!("LAYOUT {name} {} {} {} {}", v[0], v[1], v[2], v[3]);
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
+    .into_any_element()
+}
+
+/// Click tests: what a pane shows, as a timing mark when it changes
+/// (SPM_DEBUG_TIMING): `TIMING files-bar side=1 path=… skeleton=…`.
+fn trace_change(side: usize, what: &str, now: &str) {
+    if !crate::timing::on() {
+        return;
+    }
+    static LAST: Mutex<[String; 2]> = Mutex::new([String::new(), String::new()]);
+    let mut g = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if g[side] != now {
+        g[side] = now.to_string();
+        drop(g);
+        crate::timing::mark(&format!("files-{what} side={side} {now}"));
+    }
+}
+
+/// How long a folder's listing is shown at once when it is opened again
+/// (then listed again behind it): 45 s, long enough to go back and forth
+/// and to open what was read ahead, short enough that a cached listing is
+/// rarely far from the folder.
+const CACHE_FOR: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// The folders in a folder read ahead after it opens.
+const AHEAD_MAX: usize = 50;
+
+/// Click tests: the next listing held back by the milliseconds written in
+/// the file SPM_DEBUG_FILES_HOLD names (the file is removed).
+fn debug_hold() -> Option<std::time::Duration> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let f = std::env::var_os("SPM_DEBUG_FILES_HOLD")?;
+    let ms: u64 = std::fs::read_to_string(&f).ok()?.trim().parse().ok()?;
+    let _ = std::fs::remove_file(&f);
+    Some(std::time::Duration::from_millis(ms))
 }
 
 /// How long the short note stays.
@@ -1391,6 +1648,17 @@ impl Render for DeleteFooter {
 
 #[cfg(test)]
 mod location_tests {
+    #[test]
+    fn the_second_press_opens_a_folder_but_not_with_shift_or_ctrl() {
+        use gpui_kit::Modifiers;
+        let none = Modifiers::default();
+        assert!(!super::opens_on_press(1, none));
+        assert!(super::opens_on_press(2, none));
+        assert!(!super::opens_on_press(3, none));
+        assert!(!super::opens_on_press(2, Modifiers { shift: true, ..Default::default() }));
+        assert!(!super::opens_on_press(2, Modifiers { control: true, ..Default::default() }));
+    }
+
     use super::os_path;
 
     #[test]

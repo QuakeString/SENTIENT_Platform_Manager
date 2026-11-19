@@ -18,7 +18,7 @@ cd "$(dirname "$0")/../../app/src" || exit 2
 bad=0
 # The pages that run long jobs.
 PAGES="manager/backup.rs manager/restore.rs manager/update.rs manager/movedata.rs manager/repair.rs
-manager/migration.rs manager/remote_pages.rs manager/instances.rs installer/pages.rs installer/mod.rs
+manager/migration.rs manager/remote_pages.rs manager/remote_install.rs manager/instances.rs installer/pages.rs installer/mod.rs
 maintenance.rs earlier.rs manager/server_card.rs"
 for f in $PAGES; do
   [ -f "$f" ] || { echo "missing job page: $f"; bad=1; continue; }

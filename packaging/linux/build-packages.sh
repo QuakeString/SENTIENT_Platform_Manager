@@ -91,6 +91,9 @@ deb_depends() {
   # Wayland client library.
   printf '%s\n' "$line" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$'
   printf '%s\n' libvulkan1 libwayland-client0
+  # Servers are reached with the system's ssh, sftp, ssh-keyscan and
+  # ssh-keygen (crate::remote).
+  printf '%s\n' openssh-client
 }
 
 # rpm capabilities: one soname()(64bit) per NEEDED library, and the newest
@@ -103,6 +106,9 @@ rpm_requires() {
   glibc=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9][0-9.]*' | sort -uV | tail -1)
   [ -n "$glibc" ] && printf 'libc.so.6(%s)(64bit)\n' "$glibc"
   printf '%s\n' 'libvulkan.so.1()(64bit)' 'libwayland-client.so.0()(64bit)'
+  # ssh, sftp, ssh-keyscan, ssh-keygen (crate::remote): openssh-clients on
+  # Fedora/RHEL; the rpm capability names the program.
+  printf '%s\n' '/usr/bin/ssh-keyscan'
 }
 
 yaml_list() { sed 's/.*/  - "&"/'; }
@@ -133,7 +139,7 @@ section: admin
 priority: optional
 maintainer: "INVENIA SYSTEMS <support@invenia.in>"
 vendor: INVENIA SYSTEMS
-homepage: https://github.com/QuakeString/SENTIENT_Platform_Manager
+homepage: https://inveniasystems.com
 license: LicenseRef-SENTIENT-EULA
 description: |-
   SENTIENT Platform Manager

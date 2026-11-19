@@ -1,18 +1,24 @@
 // Copyright © 2016-2026 The SENTIENT Authors
 
-//! Rounded window corners on Windows, at Windows 11's 8 px (DPI-scaled).
+//! The window frame on Windows: no system caption, rounded corners at
+//! Windows 11's 8 px (DPI-scaled).
+//!
+//! Every window opens in GPUI's own title-bar mode (`appears_transparent`):
+//! there is no caption strip, the app's top bar is the caption, with the
+//! minimise, maximise and close buttons at its right end
+//! (crate::win_caption). (The system caption over a GPUI window drew an
+//! empty white strip with invisible buttons on Windows 11.)
 //!
 //! Windows 11 (build 22000 and later) rounds a window itself: each window
-//! asks for it (DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND) and keeps its
-//! native frame and title bar.
+//! asks for it (DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND) and keeps the
+//! system's resize border and shadow.
 //!
 //! Windows 10 has no such attribute, and a window region on a window with
 //! the native frame makes the system drop to the basic, unthemed frame. So
-//! there the window has no frame at all: GPUI's own title-bar mode
-//! (`appears_transparent`), the caption drawn by the app ([`frame`]), and a
-//! window procedure in front of GPUI's ([`win10`]) that makes the whole
-//! window client area, hit-tests the resize edges inside it and clips the
-//! window to a rounded region (square when maximized or snapped).
+//! there the window has no frame at all: a window procedure in front of
+//! GPUI's ([`win10`]) makes the whole window client area, hit-tests the
+//! resize edges inside it and clips the window to a rounded region (square
+//! when maximized or snapped), and [`frame`] draws the 1 px border.
 //!
 //! On Linux every function here is a pass-through.
 
@@ -25,12 +31,17 @@ pub fn open_window<V: Render>(
     cx: &mut App,
     build: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
 ) -> Result<(AnyWindowHandle, Entity<V>)> {
+    // Without a GPU, no motion (crate::ui::note_renderer).
+    let build = move |window: &mut Window, cx: &mut App| {
+        crate::ui::note_renderer(window, cx);
+        build(window, cx)
+    };
     #[cfg(windows)]
     {
+        // GPUI's own title bar mode: the app's top bar is the caption.
+        let title = options.titlebar.as_ref().and_then(|t| t.title.clone());
+        options.titlebar = Some(TitlebarOptions { title, appears_transparent: true, ..Default::default() });
         if win10::active() {
-            // GPUI's own title bar mode: the app draws the caption.
-            let title = options.titlebar.as_ref().and_then(|t| t.title.clone());
-            options.titlebar = Some(TitlebarOptions { title, appears_transparent: true, ..Default::default() });
             // The window procedure goes in front of GPUI's from the window's
             // very first message (WM_NCCALCSIZE comes before CreateWindowEx
             // returns), so GPUI measures the window frameless from the start.
@@ -46,15 +57,15 @@ pub fn open_window<V: Render>(
     gpui_kit::open_window(options, cx, build)
 }
 
-/// The window's root view: on Windows 10 the caption (title, minimize,
-/// maximize, close) over `content`, rounded 8 px with a 1 px border unless
-/// maximized or snapped. Elsewhere `content` as it is.
-pub fn frame(title: &'static str, content: impl IntoElement, window: &mut Window, cx: &mut App) -> AnyElement {
+/// The window's root view: on Windows 10 `content` rounded 8 px with a 1 px
+/// border unless maximized or snapped. Elsewhere `content` as it is (the
+/// caption buttons are in each window's own top bar, crate::win_caption).
+pub fn frame(content: impl IntoElement, window: &mut Window, cx: &mut App) -> AnyElement {
     #[cfg(windows)]
     if win10::active() {
-        return win10::frame(title, content.into_any_element(), window, cx);
+        return win10::frame(content.into_any_element(), window, cx);
     }
-    let _ = (title, window, cx);
+    let _ = (window, cx);
     content.into_any_element()
 }
 
@@ -108,7 +119,7 @@ mod win10 {
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
 
-    use gpui_kit::component::{ActiveTheme, TitleBar, h_flex, v_flex};
+    use gpui_kit::component::ActiveTheme;
     use gpui_kit::prelude::FluentBuilder as _;
     use gpui_kit::*;
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -396,35 +407,21 @@ mod win10 {
     }
 
     // -----------------------------------------------------------------------
-    // The caption and the rounded root
+    // The rounded root
     // -----------------------------------------------------------------------
 
-    pub fn frame(title: &'static str, content: AnyElement, window: &mut Window, cx: &mut App) -> AnyElement {
+    pub fn frame(content: AnyElement, window: &mut Window, cx: &mut App) -> AnyElement {
         let square = super::hwnd_of(window).is_some_and(|h| unsafe { square(h) });
-        let theme = cx.theme().clone();
-        let dark = theme.mode.is_dark();
+        let dark = cx.theme().mode.is_dark();
         // Windows 11's window border: a dark hairline on light windows, a
         // light one on dark windows (its default, accent colour off).
         let border = if dark { hsla(0., 0., 1., 0.12) } else { hsla(0., 0., 0., 0.20) };
-        let active = window.is_window_active();
-        let caption = TitleBar::new()
-            .bg(theme.background)
-            .border_color(theme.border)
-            .child(
-                h_flex()
-                    .h_full()
-                    .items_center()
-                    .text_size(px(12.))
-                    .text_color(if active { theme.foreground } else { theme.muted_foreground })
-                    .child(title),
-            );
-        v_flex()
+        div()
             .size_full()
             .relative()
             .when(!square, |d| d.rounded(px(RADIUS as f32)))
             .overflow_hidden()
-            .child(caption)
-            .child(div().flex_1().min_h_0().w_full().relative().child(content))
+            .child(div().size_full().relative().child(content))
             // The border over everything (a root's own border would sit
             // under its children's backgrounds); it takes no clicks.
             .when(!square, |d| {

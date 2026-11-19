@@ -59,7 +59,12 @@ repo=QuakeString/sentient-release
 api=https://api.github.com/repos/$repo
 token=${GITHUB_TOKEN:-$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')}
 [ -n "$token" ] || { echo "no GitHub token (set GITHUB_TOKEN)" >&2; exit 2; }
-auth=(-H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json")
+# The token goes to curl in a private (0600) config file, never on its
+# command line, where other users could read it in the process list.
+authcfg=$(umask 077; mktemp)
+trap 'rm -f "$authcfg"' EXIT
+printf 'header = "Authorization: Bearer %s"\nheader = "Accept: application/vnd.github+json"\n' "$token" > "$authcfg"
+auth=(-K "$authcfg")
 
 existing=$(curl -fs "${auth[@]}" "$api/releases/tags/$version" || true)
 if [ -n "$existing" ] && ! $add; then
@@ -75,6 +80,20 @@ for f in sentient-payload.tar postgresql-18.6-1-windows-x64-binaries.zip timesca
   [ -f "$dir/$f" ] && files+=("$f")
 done
 [ ${#files[@]} -gt 0 ] || { echo "no release files in $dir" >&2; exit 1; }
+
+# The Windows programs are code-signed (scripts/sign-sentient-payload.sh)
+# whenever this machine has the code-signing certificate: an unsigned
+# Windows server is refused then. SENTIENT_ALLOW_UNSIGNED=1 publishes it
+# anyway (say why in the notes).
+if [ -f "$dir/sentient-payload.tar" ]; then
+  pfx=${SENTIENT_CODESIGN_PFX:-$HOME/.sentient-keys/codesign-selfsigned-2026-11/codesign.pfx}
+  if [ -f "$pfx" ] && [ "${SENTIENT_ALLOW_UNSIGNED:-}" != 1 ]; then
+    "$here/sign-sentient-payload.sh" --check "$dir/sentient-payload.tar" ||
+      { echo "sentient-payload.tar has unsigned programs: run scripts/sign-sentient-payload.sh $dir/sentient-payload.tar first" >&2; exit 1; }
+  elif [ ! -f "$pfx" ]; then
+    echo "warning: no code-signing certificate here ($pfx): the Windows programs are not checked for a signature" >&2
+  fi
+fi
 
 # SHA-256 of the server program in each payload and the Docker image, as
 # JSON lines {"platform", "sha256"}. Read straight from the tar, nothing is
