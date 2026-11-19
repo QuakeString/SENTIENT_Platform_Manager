@@ -75,6 +75,13 @@ pub struct Job {
     state: JobState,
     step: SharedString,
     percent: Option<f32>,
+    /// How far the running step got before its current sub-step began
+    /// (0–1): a sub-step's own percent fills the rest of the step's share,
+    /// so a new sub-step never takes the bar back.
+    row_floor: f32,
+    /// The highest overall percent shown in this run: the bar never goes
+    /// back (a plan replaced, a sub-step starting over).
+    peak: f32,
     /// The last LOG_KEEP lines; `log_total` counts them all.
     log: std::collections::VecDeque<SharedString>,
     log_total: usize,
@@ -133,6 +140,8 @@ impl Job {
             state: JobState::Idle,
             step: SharedString::default(),
             percent: None,
+            row_floor: 0.,
+            peak: 0.,
             log: Default::default(),
             log_total: 0,
             log_file: None,
@@ -185,18 +194,30 @@ impl Job {
     }
 
     /// The whole job, 0–100: each step by its weight, the running one by
-    /// its own percent when it reports one.
+    /// how far it got. Never less than it already showed in this run.
     pub fn overall(&self) -> f32 {
         if matches!(self.state, JobState::Done(_)) {
             return 100.;
         }
+        self.raw_overall().max(self.peak)
+    }
+
+    /// How far the running step is, 0–1: what its earlier sub-steps
+    /// reached, then its current sub-step's percent within the rest.
+    fn row_fraction(&self) -> f32 {
+        let p = self.percent.unwrap_or(0.) / 100.;
+        (self.row_floor + (1. - self.row_floor) * p).clamp(0., 1.)
+    }
+
+    /// [`Self::overall`] as the steps stand now, without the high-water mark.
+    fn raw_overall(&self) -> f32 {
         let total: f32 = self.rows.iter().map(|r| r.step.weight.max(0.)).sum();
         if total <= 0. {
             return self.percent.unwrap_or(0.);
         }
         let done: f32 = self.rows.iter().filter(|r| matches!(r.state, RowState::Done | RowState::Skipped)).map(|r| r.step.weight.max(0.)).sum();
-        let part = match (self.current, self.percent) {
-            (Some(i), Some(p)) if self.rows[i].state == RowState::Running => self.rows[i].step.weight.max(0.) * p / 100.,
+        let part = match self.current {
+            Some(i) if self.rows[i].state == RowState::Running => self.rows[i].step.weight.max(0.) * self.row_fraction(),
             _ => 0.,
         };
         ((done + part) / total * 100.).clamp(0., 100.)
@@ -413,6 +434,8 @@ impl Job {
         self.state = JobState::Running;
         self.step = SharedString::default();
         self.percent = None;
+        self.row_floor = 0.;
+        self.peak = 0.;
         self.log.clear();
         self.log_total = 0;
         self.follow.set(true);
@@ -534,13 +557,17 @@ impl Job {
     }
 
     fn apply(&mut self, progress: Progress) {
+        self.apply_inner(progress);
+        self.peak = self.peak.max(self.raw_overall());
+    }
+
+    fn apply_inner(&mut self, progress: Progress) {
         match progress {
             Progress::Plan { steps } => self.take_plan(steps),
             Progress::Step { name } => {
                 activity(&name);
                 self.steps.push(name.clone().into());
                 self.step = name.clone().into();
-                self.percent = None;
                 self.step_started = Some(std::time::Instant::now());
                 self.push_line(format!(">> {name}").into());
                 self.enter(&name);
@@ -583,6 +610,15 @@ impl Job {
     /// A step started: the planned one it names (never one already
     /// passed), else a step inside the one running.
     fn enter(&mut self, name: &str) {
+        // A sub-step of the running step keeps what the step reached; a new
+        // step starts from nothing.
+        let (before, reached) = (self.current, self.row_fraction());
+        self.enter_row(name);
+        self.row_floor = if self.current.is_some() && self.current == before { reached } else { 0. };
+        self.percent = None;
+    }
+
+    fn enter_row(&mut self, name: &str) {
         let now = std::time::Instant::now();
         if !self.planned {
             // Not declared: each step is added as it starts.
@@ -731,6 +767,43 @@ mod plan_tests {
         j.finish(Err("no".into()));
         assert_eq!(states(&j)[3], RowState::Failed);
         assert!(matches!(j.state(), JobState::Failed(_)));
+    }
+
+    #[test]
+    fn overall_never_goes_back_inside_a_step() {
+        // Setup's "Setting up Docker in WSL 2": a download with its percent,
+        // then the next sub-step without one (36% -> 18% in rc1).
+        let mut j = Job::new();
+        j.apply(Progress::Plan { steps: vec![PlanStep::new("Platform Manager"), PlanStep::new("WSL"), PlanStep::new("Docker").weight(4.), PlanStep::new("SENTIENT")] });
+        j.apply(Progress::Step { name: "Platform Manager".into() });
+        j.apply(Progress::Step { name: "WSL".into() });
+        j.apply(Progress::Step { name: "Docker".into() });
+        j.apply(Progress::Step { name: "Downloading Ubuntu base image".into() });
+        j.apply(Progress::Percent { value: 0.63 });
+        let at_download = j.overall();
+        assert!((at_download - (2. + 4. * 0.63) / 7. * 100.).abs() < 0.1, "{at_download}");
+        // The next sub-step: no percent yet, the step keeps its 63 %.
+        j.apply(Progress::Step { name: "Creating the SENTIENT WSL distro".into() });
+        assert!(j.overall() >= at_download, "{} < {at_download}", j.overall());
+        // Its percent fills the rest of the step's share.
+        j.apply(Progress::Percent { value: 0.5 });
+        let half = (2. + 4. * (0.63 + 0.37 * 0.5)) / 7. * 100.;
+        assert!((j.overall() - half).abs() < 0.1, "{} vs {half}", j.overall());
+        // A percent going back, or a longer plan: the bar stays.
+        let before = j.overall();
+        j.apply(Progress::Percent { value: 0.1 });
+        assert!(j.overall() >= before);
+        j.apply(Progress::Plan { steps: vec![PlanStep::new("More").weight(20.)] });
+        assert!(j.overall() >= before);
+        // The next planned step starts from its own nothing.
+        j.apply(Progress::Step { name: "SENTIENT".into() });
+        assert!(j.overall() >= before);
+        let mut last = 0.;
+        for v in [0.0, 0.2, 0.4, 0.9] {
+            j.apply(Progress::Percent { value: v });
+            assert!(j.overall() >= last);
+            last = j.overall();
+        }
     }
 
     #[test]
