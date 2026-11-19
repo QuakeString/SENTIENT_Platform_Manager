@@ -48,6 +48,8 @@ mod installer {
     #[path = "plan.rs"]
     pub mod plan;
     pub(crate) use plan::{run as run_install, *};
+    #[allow(unused_imports)]
+    pub(crate) use plan::{Host as PlanHost, steps_on as plan_steps_on};
     #[cfg(windows)]
     pub use plan::provision_clickhouse_wsl;
 }
@@ -121,7 +123,7 @@ use mode::AppMode;
 fn main() {
     timing::start();
     // The layout test: every button reports its box (tests/layout/buttons.py).
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, feature = "gui"))]
     if std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
         gpui_kit::component::button::LAYOUT_PROBE.store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -129,6 +131,10 @@ fn main() {
     // (a mapped drive the elevated session does not have): work from one
     // that exists, or every program started later fails.
     sentient_installer_core::host::ensure_valid_cwd();
+    // Release and image lists last read, beside the manager's other small
+    // files: a new process (a job, the next start) asks GitHub again only
+    // after 30 minutes (sentient_installer_core::fetch_cache).
+    sentient_installer_core::fetch_cache::set_dir(updates::prefs_dir());
     // The window (not a `--job`, whose relative paths are the caller's):
     // on Windows always its own folder, whatever started it (Setup, a
     // shortcut, an update), so its administrator steps can reach it.

@@ -62,6 +62,30 @@ pub struct InstallPlan {
     /// does not run is an error now, not another restart.
     #[serde(default)]
     pub wsl_restarted: bool,
+    /// Installed on a server by a Platform Manager over SSH (crate::remote::
+    /// install): the agent that runs it is the server's Platform Manager
+    /// already, and a server has no desktop, so neither is put in place.
+    #[serde(default)]
+    pub remote: bool,
+}
+
+/// The passwords of a plan, apart from it: a plan sent to a server goes
+/// as a file without them, they go on the agent's standard input
+/// (crate::remote::install).
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct InstallSecrets {
+    pub admin: String,
+    pub db: String,
+    pub pg_admin: String,
+    #[serde(default)]
+    pub clickhouse: String,
+}
+
+/// Never printed: a log line or a panic message must not carry them.
+impl std::fmt::Debug for InstallSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("InstallSecrets { .. }")
+    }
 }
 
 /// The image a new Docker install runs: `image` at the tag of `version`
@@ -75,6 +99,27 @@ pub fn pinned_image(image: &str, version: Option<&str>) -> String {
 }
 
 impl InstallPlan {
+    /// The plan without its passwords, and the passwords.
+    pub fn split_secrets(mut self) -> (InstallPlan, InstallSecrets) {
+        let secrets = InstallSecrets {
+            admin: std::mem::take(&mut self.admin_password),
+            db: std::mem::take(&mut self.stack.db_password),
+            pg_admin: std::mem::take(&mut self.pg_superuser_password),
+            clickhouse: std::mem::take(&mut self.stack.ch_password),
+        };
+        self.auto_signin_password.clear();
+        (self, secrets)
+    }
+
+    /// The passwords [`split_secrets`](Self::split_secrets) took, put back.
+    pub fn with_secrets(mut self, s: InstallSecrets) -> InstallPlan {
+        self.admin_password = s.admin;
+        self.stack.db_password = s.db;
+        self.pg_superuser_password = s.pg_admin;
+        self.stack.ch_password = s.clickhouse;
+        self
+    }
+
     /// The wizard's configuration with the chosen settings folded in:
     /// PostgreSQL parameters into `pg`, the licence server into its field,
     /// everything else into `tuning.extra_env`, which every engine writes
@@ -433,7 +478,7 @@ pub fn steps_on(plan: &InstallPlan, host: Host) -> Vec<sentient_installer_core::
     }
     // Setup's own step: from the installed Platform Manager there is
     // nothing to put in place.
-    if !host.manager_in_place {
+    if !host.manager_in_place && !plan.remote {
         v.push(PlanStep::new("Installing the Platform Manager").weight(0.5));
     }
     let docker_wsl = host.windows && plan.engine == Engine::Docker;
@@ -462,7 +507,9 @@ pub fn steps_on(plan: &InstallPlan, host: Host) -> Vec<sentient_installer_core::
         Engine::Native => "PostgreSQL, the SENTIENT service and its schema",
     }).weight(6.));
     v.push(PlanStep::new("Setting the administrator sign-in").detail(plan.admin_email.clone()).weight(0.5));
-    v.push(PlanStep::new("Creating shortcuts").weight(0.5));
+    if !plan.remote {
+        v.push(PlanStep::new("Creating shortcuts").weight(0.5));
+    }
     v.push(PlanStep::new("Saving the installation record").weight(0.3));
     v
 }
@@ -493,7 +540,10 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
             plan.bundle = Some(dir);
         }
     }
-    let manager = if self_install::manager_in_place() {
+    // On a server the agent itself is the Platform Manager there.
+    let manager = if plan.remote {
+        std::env::current_exe().map_err(|e| format!("locate this program: {e}"))?
+    } else if self_install::manager_in_place() {
         self_install::manager_exe()
     } else {
         step(&sink, "Installing the Platform Manager");
@@ -585,9 +635,11 @@ pub fn run(mut plan: InstallPlan, sink: ProgressFn) -> Result<(), String> {
         }
     }
 
-    step(&sink, "Creating shortcuts");
     let url = format!("http://localhost:{}", plan.stack.http_port);
-    self_install::create_shortcuts(&manager, &url, &plan.shortcuts)?;
+    if !plan.remote {
+        step(&sink, "Creating shortcuts");
+        self_install::create_shortcuts(&manager, &url, &plan.shortcuts)?;
+    }
     if plan.shortcuts.kiosk {
         sentient_installer_core::kiosk::create_shortcut(&sink, &manager, &plan.state_dir())?;
         crate::shortcuts::note(crate::shortcuts::Owner::Sentient, sentient_installer_core::kiosk::shortcut_paths());
@@ -642,6 +694,7 @@ mod tests {
             delete_existing: false,
             old_pg: Default::default(),
             wsl_restarted: false,
+            remote: false,
         }
     }
 

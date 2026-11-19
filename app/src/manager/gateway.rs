@@ -35,11 +35,10 @@ pub struct GatewayPage {
     /// The job that runs now: shown under the buttons when it ends.
     action: Option<&'static str>,
     updates: Entity<UpdateState>,
-    host: Entity<InputState>,
-    port: Entity<InputState>,
-    token: Entity<InputState>,
-    password: Entity<InputState>,
-    password2: Entity<InputState>,
+    form: InstallForm,
+    /// A removal or an install runs: once it went through, the form is
+    /// cleared (once).
+    clear_armed: bool,
     problem: Option<SharedString>,
     job: Entity<Job>,
     /// The settings card (crate::manager::gateway_settings), what it shows,
@@ -65,12 +64,7 @@ impl GatewayPage {
         // This SENTIENT's MQTT, the usual place for a gateway on the same computer.
         let port = record.as_ref().map(|r| r.stack.mqtt_port).unwrap_or(1883);
         let sentient_url = record.as_ref().map(|r| r.url());
-        let input = |cx: &mut Context<Self>, window: &mut Window, value: String| cx.new(|cx| InputState::new(window, cx).default_value(value));
-        let host = input(cx, window, "127.0.0.1".into());
-        let port = input(cx, window, port.to_string());
-        let token = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("From SENTIENT: the gateway device, Manage credentials"));
-        let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("8 characters or more"));
-        let password2 = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Again"));
+        let form = InstallForm::new("127.0.0.1", port, window, cx);
         let job = cx.new(|_| Job::new());
         let settings_job = cx.new(|_| Job::new());
         let me = cx.entity().downgrade();
@@ -92,6 +86,14 @@ impl GatewayPage {
                 cx.notify();
             }),
             cx.observe(&job, |page: &mut Self, job, cx| {
+                // The gateway removed (or installed): its old token and
+                // password leave the form.
+                if clears_form(page.clear_armed, job.read(cx).state()) {
+                    page.form.clear();
+                }
+                if !job.read(cx).is_running() {
+                    page.clear_armed = false;
+                }
                 if matches!(job.read(cx).state(), JobState::Done(_) | JobState::Failed(_)) {
                     page.refresh(cx);
                     page.updates.update(cx, |u, cx| u.check(cx));
@@ -100,7 +102,7 @@ impl GatewayPage {
             }),
             cx.observe(&updates, |_, _, cx| cx.notify()),
         ];
-        for i in [&host, &port, &token, &password, &password2] {
+        for i in form.inputs() {
             subs.push(cx.subscribe(i, |_, _, _: &InputEvent, cx| cx.notify()));
         }
         let poll = cx.spawn(async move |this, cx| loop {
@@ -132,11 +134,8 @@ impl GatewayPage {
             record: None,
             action: None,
             updates,
-            host,
-            port,
-            token,
-            password,
-            password2,
+            form,
+            clear_armed: false,
             problem: None,
             job,
             card,
@@ -298,37 +297,17 @@ impl GatewayPage {
         Some(crate::manager::jobview::JobView::new("gw-set-job", title, &self.settings_job).actions([back]).render(cx))
     }
 
-    fn value(&self, state: &Entity<InputState>, cx: &App) -> String {
-        state.read(cx).value().trim().to_string()
-    }
-
     fn install(&mut self, offer: Offer, cx: &mut Context<Self>) {
-        let port: u16 = match self.value(&self.port, cx).parse() {
-            Ok(p) if p > 0 => p,
-            _ => {
-                self.problem = Some("The MQTT port is a number from 1 to 65535.".into());
+        let settings = match self.form.settings(cx, cfg!(windows)) {
+            Ok(s) => s,
+            Err(e) => {
+                self.problem = Some(e.into());
                 return;
             }
         };
-        let host = self.value(&self.host, cx);
-        let token = self.value(&self.token, cx);
-        let (p1, p2) = (self.value(&self.password, cx), self.value(&self.password2, cx));
-        if host.is_empty() || token.is_empty() {
-            self.problem = Some("Enter the platform host and the gateway device's access token.".into());
-            return;
-        }
-        if cfg!(windows) && (!p1.is_empty() || !p2.is_empty()) {
-            if p1.len() < 8 {
-                self.problem = Some("The local page's password needs 8 characters or more.".into());
-                return;
-            }
-            if p1 != p2 {
-                self.problem = Some("The two passwords differ.".into());
-                return;
-            }
-        }
         self.problem = None;
-        let settings = Settings { host, port, token, ui_password: p1 };
+        self.action = Some("install");
+        self.clear_armed = true;
         self.job.update(cx, |job, cx| job.start(move |sink| gateway::install(&sink, &offer, &settings), cx));
     }
 
@@ -379,6 +358,7 @@ impl GatewayPage {
     fn remove(&mut self, keep: bool, image: bool, cx: &mut Context<Self>) {
         let Some(status) = self.status.clone() else { return };
         self.action = Some("remove");
+        self.clear_armed = true;
         // One password prompt for all of it on Linux: a service, or a record
         // to clear, needs root.
         let as_root = cfg!(target_os = "linux") && !crate::rootjob::is_root() && (status.container.is_none() || self.record.is_some());
@@ -584,7 +564,8 @@ pub(crate) fn runs_as(kind: &str, name: &str, managed: bool, recorded: bool) -> 
 }
 
 impl Render for GatewayPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.form.apply_clear(window, cx);
         let theme = cx.theme().clone();
         let page = ui::page(
             &theme,
@@ -593,6 +574,8 @@ impl Render for GatewayPage {
         );
         let u = self.updates.read(cx);
         let newest = u.found.as_ref().map(|f| f.gateway.clone());
+        // The offer is from an old release list (GitHub refused): said quietly.
+        let stale = u.stale_note().filter(|_| matches!(newest, Some(Ok(Some(_)))));
         let channel = u.prefs.channel;
         let job = self.job.read(cx);
         let busy = job.is_running();
@@ -625,7 +608,7 @@ impl Render for GatewayPage {
         let body = if !status.installed && status.legacy.is_some() {
             // The older Python gateway alone: offered as an update.
             let o = offer.clone();
-            let why = o.as_ref().and_then(|o| gateway::update_blocker(&status, &o.version, o.installer.is_some(), cfg!(windows)));
+            let why = o.as_ref().and_then(|o| gateway::offer_blocker(&status, o, cfg!(windows)));
             let looking = match &newest {
                 Some(Err(e)) => Some(format!("Gateway updates: {e}")),
                 Some(Ok(None)) => Some("No gateway release on this channel.".to_string()),
@@ -751,7 +734,7 @@ impl Render for GatewayPage {
                                     .gap_3()
                                     .items_center()
                                     .child({
-                                        let why = gateway::update_blocker(&status, &o.version, o.installer.is_some(), cfg!(windows)).unwrap_or_default();
+                                        let why = gateway::offer_blocker(&status, o, cfg!(windows)).unwrap_or_default();
                                         let blocked = !why.is_empty();
                                         let button = crate::ui::button("gw-update").primary().label(format!("Update to {}", o.version)).disabled(busy || blocked).on_click(cx.listener(move |p, _, _, cx| p.update_to(o2.clone(), cx)));
                                         // A disabled button carries its reason as a tooltip.
@@ -789,36 +772,22 @@ impl Render for GatewayPage {
                         .into_any_element(),
                     (None, None) => div().text_sm().text_color(theme.muted_foreground).child("Looking for gateway updates…").into_any_element(),
                 })
+                .children(stale.clone().map(|n| div().text_size(px(13.)).text_color(theme.muted_foreground).child(n)))
         } else {
-            let field = |label: &'static str, input: Div| {
-                v_flex().gap_1p5().child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(label)).child(input)
-            };
             let o = offer.clone();
             ui::panel(&theme)
                 .child(h_flex().gap_3().items_center().child(ui::product_logo(ui::Product::Gateway, 28.)).child(div().font_weight(FontWeight::MEDIUM).child("No gateway on this computer")))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(
                     "The gateway reads devices next to this computer. In SENTIENT, add a gateway device and copy its access token (Manage credentials).",
                 ))
-                .child(
-                    h_flex()
-                        .gap_3()
-                        .child(field("Platform host (MQTT)", ui::probed_input(Input::new(&self.host))).flex_1())
-                        .child(field("Port", ui::probed_input(Input::new(&self.port))).w_24()),
-                )
-                .child(field("Access token", ui::probed_input(Input::new(&self.token).mask_toggle())))
-                .when(cfg!(windows), |p| {
-                    p.child(
-                        h_flex()
-                            .gap_3()
-                            .child(field("Local page password", div().child(Input::new(&self.password).mask_toggle())).flex_1())
-                            .child(field("Again", div().child(Input::new(&self.password2).mask_toggle())).flex_1()),
-                    )
-                })
+                .child(self.form.fields(&theme, cfg!(windows), None, install_runs_as(cfg!(windows), None, "this computer").ok()))
                 .children(outcome.clone().map(|(tone, m)| ui::outcome(&theme, tone, m)))
                 .children(self.problem.clone().map(|p| ui::outcome(&theme, Tone::Bad, p)))
                 .child(match o {
                     Some(o) => {
                         let label = format!("Install Sentient Gateway {}", o.version);
+                        // Docker pulls the image: not before it is published.
+                        let unpublished = (o.image_missing && !cfg!(windows)).then(|| sentient_installer_core::dockerhub::not_published(&o.version));
                         h_flex()
                             .gap_3()
                             .flex_wrap()
@@ -827,14 +796,15 @@ impl Render for GatewayPage {
                                 crate::ui::button("gw-install")
                                     .primary()
                                     .label(label)
-                                    .disabled(busy || (cfg!(windows) && o.installer.is_none()))
+                                    .disabled(busy || (cfg!(windows) && o.installer.is_none()) || unpublished.is_some())
                                     .on_click(cx.listener(move |p, _, _, cx| p.install(o.clone(), cx))),
                             )
-                            .child(div().text_sm().text_color(theme.muted_foreground).child(if cfg!(windows) {
-                                "the installer from the SENTIENT releases site, checked before use"
-                            } else {
-                                "the quakestring/sentient-gateway-rs image, run by Docker"
+                            .child(div().text_sm().text_color(theme.muted_foreground).child(match unpublished {
+                                Some(why) => why,
+                                None if cfg!(windows) => "the installer from the SENTIENT releases site, checked before use".to_string(),
+                                None => "the quakestring/sentient-gateway-rs image, run by Docker".to_string(),
                             }))
+                            .children(stale.clone().map(|n| div().text_size(px(13.)).text_color(theme.muted_foreground).child(n)))
                             .into_any_element()
                     }
                     None => div()
@@ -865,6 +835,163 @@ impl Render for GatewayPage {
         };
         page.child(body.flex_shrink_0()).children(below)
     }
+}
+
+/// The gateway's install form, here and on a server: the platform it
+/// sends to, the gateway device's access token (masked, with its show
+/// toggle), the local page's password where the gateway has one (Windows),
+/// and how it will run. Its values are read once for the install; after a
+/// removal it is cleared ([`InstallForm::clear`]), so an old token is never
+/// offered again.
+pub(crate) struct InstallForm {
+    pub host: Entity<InputState>,
+    pub port: Entity<InputState>,
+    pub token: Entity<InputState>,
+    pub password: Entity<InputState>,
+    pub password2: Entity<InputState>,
+    default_host: String,
+    default_port: String,
+    /// Cleared at the next draw (InputState needs the window).
+    clear_pending: bool,
+}
+
+/// What [`InstallForm::clear`] puts in each field: the defaults for the
+/// platform, nothing in the token and the passwords.
+pub(crate) fn cleared_values(default_host: &str, default_port: &str) -> [(&'static str, String); 5] {
+    [("host", default_host.to_string()), ("port", default_port.to_string()), ("token", String::new()), ("password", String::new()), ("password2", String::new())]
+}
+
+/// Whether a job's new state clears the install form: a removal or an
+/// install of the gateway (`clearing`) that went through. A failed install
+/// keeps what was typed, for another try.
+pub(crate) fn clears_form(clearing: bool, state: &JobState) -> bool {
+    clearing && matches!(state, JobState::Done(_))
+}
+
+/// A server's job that clears its install form when it went through
+/// ([`clears_form`]): the gateway's removal or install.
+pub(crate) fn job_clears_form(args: &[String]) -> bool {
+    matches!(args.first().map(String::as_str), Some("gateway-remove" | "gateway-install"))
+}
+
+/// The (i) on a server's token: where it goes.
+pub(crate) const REMOTE_TOKEN_HELP: &str = "It travels to the server over the encrypted SSH connection and is written there to a file only root can read. It is not kept on this computer.";
+
+impl InstallForm {
+    /// `host` empty: a placeholder asks for SENTIENT's address.
+    pub fn new(host: &str, port: u16, window: &mut Window, cx: &mut App) -> Self {
+        let h = host.to_string();
+        let host_input = cx.new(|cx| {
+            let i = InputState::new(window, cx).placeholder("SENTIENT's address, as the gateway reaches it");
+            if h.is_empty() { i } else { i.default_value(h.clone()) }
+        });
+        let port_input = cx.new(|cx| InputState::new(window, cx).default_value(port.to_string()));
+        let token = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("From SENTIENT: the gateway device, Manage credentials"));
+        let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("8 characters or more"));
+        let password2 = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Again"));
+        Self { host: host_input, port: port_input, token, password, password2, default_host: host.to_string(), default_port: port.to_string(), clear_pending: false }
+    }
+
+    /// Every input, for the page's subscriptions.
+    pub fn inputs(&self) -> [&Entity<InputState>; 5] {
+        [&self.host, &self.port, &self.token, &self.password, &self.password2]
+    }
+
+    fn value(state: &Entity<InputState>, cx: &App) -> String {
+        state.read(cx).value().trim().to_string()
+    }
+
+    /// The install's settings, or what is wrong in the form. `page_password`:
+    /// the gateway has a local page password to set here (Windows).
+    pub fn settings(&self, cx: &App, page_password: bool) -> Result<Settings, String> {
+        let port: u16 = match Self::value(&self.port, cx).parse() {
+            Ok(p) if p > 0 => p,
+            _ => return Err("The MQTT port is a number from 1 to 65535.".into()),
+        };
+        let host = Self::value(&self.host, cx);
+        let token = Self::value(&self.token, cx);
+        if host.is_empty() || token.is_empty() {
+            return Err("Enter the SENTIENT host and the gateway device's access token.".into());
+        }
+        let (p1, p2) = (Self::value(&self.password, cx), Self::value(&self.password2, cx));
+        if page_password && (!p1.is_empty() || !p2.is_empty()) {
+            if p1.len() < 8 {
+                return Err("The local page's password needs 8 characters or more.".into());
+            }
+            if p1 != p2 {
+                return Err("The two passwords differ.".into());
+            }
+        }
+        Ok(Settings { host, port, token, ui_password: if page_password { p1 } else { String::new() } })
+    }
+
+    /// Empty the token and the passwords and put the platform back to its
+    /// default, at the next draw ([`InstallForm::apply_clear`]).
+    pub fn clear(&mut self) {
+        self.clear_pending = true;
+    }
+
+    /// The draw that follows [`InstallForm::clear`].
+    pub fn apply_clear(&mut self, window: &mut Window, cx: &mut App) {
+        if !std::mem::take(&mut self.clear_pending) {
+            return;
+        }
+        let values = cleared_values(&self.default_host, &self.default_port);
+        for (input, (_, v)) in self.inputs().into_iter().zip(values) {
+            input.update(cx, |s, cx| s.set_value(v, window, cx));
+        }
+    }
+
+    /// The fields: platform and port on one line, the token, the page's
+    /// password (`page_password`), and "Runs as" with what the computer can
+    /// run (`runs_as`, its (i) `runs_help`). `token_help`: the token's (i).
+    pub fn fields(&self, theme: &gpui_kit::component::Theme, page_password: bool, token_help: Option<&'static str>, runs_as: Option<(String, String)>) -> Div {
+        let label = |text: &'static str, help: Option<(&'static str, String)>| {
+            h_flex()
+                .gap_1()
+                .items_center()
+                .h(px(22.))
+                .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(text))
+                .children(help.map(|(id, h)| ui::info(id.into(), h.into())))
+        };
+        let field = |l: Div, input: AnyElement| v_flex().gap_1p5().child(l).child(input);
+        v_flex()
+            .gap_3()
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(field(label("SENTIENT host", None), ui::probed_input(Input::new(&self.host)).into_any_element()).flex_1())
+                    .child(field(label("MQTT port", None), ui::probed_input(Input::new(&self.port)).into_any_element()).w_24()),
+            )
+            .child(field(label("Device access token", token_help.map(|h| ("gw-token-help", h.to_string()))), ui::probed_input(Input::new(&self.token).mask_toggle()).into_any_element()))
+            .when(page_password, |p| {
+                p.child(
+                    h_flex()
+                        .gap_3()
+                        .child(field(label("Local page password", None), div().child(Input::new(&self.password).mask_toggle()).into_any_element()).flex_1())
+                        .child(field(label("Again", None), div().child(Input::new(&self.password2).mask_toggle()).into_any_element()).flex_1()),
+                )
+            })
+            .when_some(runs_as, |p, (value, help)| {
+                p.child(field(label("Runs as", Some(("gw-runs-help", help))), div().text_sm().child(value).into_any_element()))
+            })
+    }
+}
+
+/// What "Runs as" offers for an install, with its (i): only what the
+/// computer can run. `docker`: Docker is there (None: not known, an older
+/// agent). Err: nothing it can run (its reason, for the disabled Install).
+pub(crate) fn install_runs_as(windows: bool, docker: Option<bool>, place: &str) -> Result<(String, String), String> {
+    if windows {
+        return Ok(("Windows service SentientGateway".into(), format!("Only what {place} can run\n\nOn Windows the gateway runs as the service SentientGateway, from its installer.")));
+    }
+    if docker == Some(false) {
+        return Err(format!("Docker is not on {place}. Install Docker Engine there and refresh: the Platform Manager runs the gateway on Linux as a Docker container."));
+    }
+    Ok((
+        format!("Docker container {}", gateway::CONTAINER),
+        format!("Only what {place} can run\n\nOn Linux the Platform Manager runs the gateway as the Docker container {}, its configuration, data and logs in volumes of their own.", gateway::CONTAINER),
+    ))
 }
 
 /// Repair and uninstall's Gateway choice: the gateway found, and its removal.
@@ -993,7 +1120,7 @@ pub(crate) struct GatewayUpdate {
 /// nothing newer). `windows`: the computer it runs on.
 pub(crate) fn gateway_update(s: &Status, offer: Option<&Offer>, windows: bool) -> Option<GatewayUpdate> {
     let o = offer?;
-    let why = gateway::update_blocker(s, &o.version, o.installer.is_some(), windows);
+    let why = gateway::offer_blocker(s, o, windows);
     if !s.installed {
         let name = s.legacy.clone()?;
         return Some(GatewayUpdate {
@@ -1219,6 +1346,9 @@ pub(crate) fn debug_fixture(name: &str) -> Option<&'static str> {
         "native-unreadable" => "installed=true version=4.16.1 running=true page=off kind=service service=sentient-gateway.service program=/usr/bin/sentient-gateway package=sentient-gateway unreadable=true",
         "native-hand" => "installed=true version=4.16.1 running=false host=192.168.10.20 port=1883 page=off kind=service service=example-gw.service program=/usr/local/lib/sentient-gateway/sentient-gateway",
         "windows" => "installed=true version=4.16.1 running=true host=127.0.0.1 port=1883 page=http://127.0.0.1:8642/ managed=true kind=windows-service",
+        // None installed: the install form, with Docker there and without.
+        "none" => "installed=false docker=true",
+        "none-nodocker" => "installed=false docker=false",
         _ => return None,
     })
 }
@@ -1261,7 +1391,7 @@ pub(crate) fn status_of(get: &dyn Fn(&str) -> String) -> Status {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
-    use super::{ADMIN_READ, AdminRead, Offer, Status, gateway_summary, gateway_update, update_plan, legacy_update_help, legacy_version, page_off_help, status_of_line, with_admin_read};
+    use super::{cleared_values, clears_form, install_runs_as, job_clears_form, JobState, ADMIN_READ, AdminRead, Offer, Status, gateway_summary, gateway_update, update_plan, legacy_update_help, legacy_version, page_off_help, status_of_line, with_admin_read};
 
     #[test]
     fn a_status_line_round_trips() {
@@ -1304,9 +1434,38 @@ mod tests {
         assert_eq!((s.installed, s.legacy.as_deref(), s.legacy_image.as_deref()), (false, Some("example-old-gw"), Some("quakestring/sentient-gateway:3.7.10")));
     }
 
+    /// "Remove the Gateway" that went through leaves nothing of the last
+    /// install in the form (an rc6 VM still had the old token there).
+    #[test]
+    fn a_removal_clears_the_install_form() {
+        assert!(clears_form(true, &JobState::Done("Removed.".into())));
+        assert!(!clears_form(true, &JobState::Failed("docker rm failed".into())));
+        assert!(!clears_form(false, &JobState::Done("Started.".into())));
+        let v = cleared_values("127.0.0.1", "1883");
+        let get = |k: &str| v.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone()).unwrap();
+        assert_eq!((get("host").as_str(), get("port").as_str()), ("127.0.0.1", "1883"));
+        for k in ["token", "password", "password2"] {
+            assert!(get(k).is_empty(), "{k}");
+        }
+        // On a server: its removal and its install, nothing else.
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(job_clears_form(&args(&["gateway-remove", "--delete-data"])));
+        assert!(job_clears_form(&args(&["gateway-install", "10.0.0.5", "1883", "--staged"])));
+        assert!(!job_clears_form(&args(&["gateway-control", "stop"])));
+        assert!(!job_clears_form(&[]));
+    }
+
+    #[test]
+    fn runs_as_offers_only_what_the_server_runs() {
+        assert!(install_runs_as(false, Some(true), "PLANT_B").unwrap().0.starts_with("Docker container"));
+        assert!(install_runs_as(false, None, "PLANT_B").is_ok());
+        assert!(install_runs_as(false, Some(false), "PLANT_B").unwrap_err().contains("Docker is not on PLANT_B"));
+        assert!(install_runs_as(true, Some(false), "PLANT_B").unwrap().0.starts_with("Windows service"));
+    }
+
     fn offer(v: &str, installer: bool) -> Offer {
         let asset = sentient_installer_core::releases::Asset { name: format!("SentientGatewaySetup-{v}.exe"), browser_download_url: String::new(), size: 1, digest: None };
-        Offer { version: v.into(), date: "2026-11-17".into(), notes: String::new(), page: String::new(), installer: installer.then_some(asset), checksum: None }
+        Offer { version: v.into(), date: "2026-11-17".into(), notes: String::new(), page: String::new(), installer: installer.then_some(asset), checksum: None, image_missing: false }
     }
 
     #[test]

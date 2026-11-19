@@ -9,7 +9,7 @@ mod pages;
 mod placement;
 mod plan;
 
-pub(crate) use plan::{InstallPlan, run as run_install, run_manager_only};
+pub(crate) use plan::{Host as PlanHost, InstallPlan, InstallSecrets, Shortcuts, pinned_image, run as run_install, run_manager_only, steps_on as plan_steps_on};
 
 #[cfg(windows)]
 pub use plan::provision_clickhouse_wsl;
@@ -1194,6 +1194,7 @@ impl Installer {
             delete_existing: self.existing.is_some() && !self.keep_existing && self.delete_existing,
             old_pg: self.old_pg_choice,
             wsl_restarted: false,
+            remote: false,
             admin_email: self.value(&f.admin_email, cx),
             admin_password: self.value(&f.admin_password, cx),
             settings: self.chosen_settings(cx),

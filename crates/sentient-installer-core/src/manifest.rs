@@ -59,6 +59,13 @@ pub struct Manifest {
     pub released: String,
     #[serde(default)]
     pub notes: String,
+    /// SENTIENT's build version (its `CARGO_PKG_VERSION`, e.g. "4.4.0" for
+    /// release 4.4.0.3): what a licence's allowed versions are compared
+    /// with. The release pipeline should fill it; without it the first three
+    /// components of `version` are used
+    /// (crate::licence_version::build_version).
+    #[serde(default)]
+    pub build_version: Option<String>,
     pub artifacts: Vec<Artifact>,
 }
 

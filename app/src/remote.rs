@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use sentient_installer_core::progress::{Progress, ProgressFn};
 
 pub mod conn;
+pub mod install;
 pub mod reuse;
 pub mod serve;
 #[cfg(feature = "gui")]
@@ -38,7 +39,7 @@ pub mod winshell;
 /// Platform Manager installed on a server is used as the agent only when it
 /// speaks the same jobs (crate::remote::reuse). A build too old to report it
 /// (no `--job agent-info`) counts as 0.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 /// The colours offered for a remote instance (this computer is SENTIENT teal).
 pub const PALETTE: [&str; 6] = ["#6b4fa0", "#b4541a", "#4d7c2a", "#a23b5c", "#8a6d1f", "#c2410c"];
@@ -438,7 +439,7 @@ pub(crate) fn explain(err: &str) -> Option<String> {
 
 /// The server's host keys and their fingerprint, before trusting it.
 pub fn scan(host: &str, port: u16) -> Result<(String, String), String> {
-    let out = Command::new("ssh-keyscan").args(["-p", &port.to_string(), "-T", "8", "-t", "ed25519,ecdsa,rsa", host]).output().map_err(|e| format!("ssh-keyscan: {e}"))?;
+    let out = Command::new("ssh-keyscan").args(["-p", &port.to_string(), "-T", "8", "-t", "ed25519,ecdsa,rsa", host]).output().map_err(|e| missing_ssh("ssh-keyscan", e))?;
     let keys: String = String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()).map(|l| format!("{l}\n")).collect();
     if keys.is_empty() {
         return Err(format!("{host}:{port} did not answer as an SSH server."));
@@ -447,7 +448,7 @@ pub fn scan(host: &str, port: u16) -> Result<(String, String), String> {
     // then RSA; ssh-keyscan's order is not that: the rc6 build 5 VM showed
     // the ECDSA one while the hint named the ed25519 file).
     let line = shown_key(&keys).unwrap_or("");
-    let mut kg = Command::new("ssh-keygen").args(["-lf", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().map_err(|e| format!("ssh-keygen: {e}"))?;
+    let mut kg = Command::new("ssh-keygen").args(["-lf", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().map_err(|e| missing_ssh("ssh-keygen", e))?;
     if let Some(mut s) = kg.stdin.take() {
         use std::io::Write as _;
         let _ = s.write_all(line.as_bytes());
@@ -474,6 +475,16 @@ pub fn host_key_file(keys: &str) -> &'static str {
         Some(k) if k.starts_with("ecdsa-") => "ssh_host_ecdsa_key.pub",
         Some(k) if k.starts_with("ssh-rsa") => "ssh_host_rsa_key.pub",
         _ => "ssh_host_ed25519_key.pub",
+    }
+}
+
+/// A failed start of an OpenSSH program: says so when it is not installed
+/// (a minimal Arch had no ssh-keyscan: "No such file or directory").
+fn missing_ssh(program: &str, e: std::io::Error) -> String {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        format!("OpenSSH is not installed on this computer ({program} was not found). Install the openssh package (openssh-client on Debian and Ubuntu) and try again.")
+    } else {
+        format!("{program}: {e}")
     }
 }
 
@@ -1217,6 +1228,11 @@ pub struct RemoteStatus {
     /// (crate::licence::read_tile); None: not read (an older agent too).
     #[serde(default)]
     pub licence: Option<crate::licence::TileLicence>,
+    /// Which SENTIENT versions the licence covers, read the same way
+    /// (crate::licence::read_versions): Update labels its versions with it
+    /// without a sign-in. None: not read (an older agent too).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub licence_versions: Option<sentient_installer_core::licence_version::Licence>,
     /// Windows: the operator's own WSL distro the Docker stack runs in
     /// (e.g. Ubuntu); None for the Platform Manager's own distro and for
     /// everything else. Jobs for it must run as that Windows account.
@@ -1229,6 +1245,11 @@ pub struct RemoteStatus {
     /// Docker: the image tag the stack runs under ("latest", "4.4.0.3").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_tag: Option<String>,
+    /// No SENTIENT there: whether a Sentient Gateway is (a gateway-only
+    /// server, [`RemoteStatus::gateway_only`]). None: SENTIENT is there,
+    /// or an older agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<bool>,
 }
 
 impl RemoteStatus {
@@ -1236,6 +1257,12 @@ impl RemoteStatus {
     /// older agent sends only that).
     pub fn comparable_version(&self) -> String {
         self.running_version.clone().unwrap_or_else(|| self.sentient_version.clone())
+    }
+
+    /// A server with the gateway and no SENTIENT: its pages are the
+    /// gateway's and the server's (crate::manager::Page::for_gateway_only).
+    pub fn gateway_only(&self) -> bool {
+        !self.installed && self.gateway == Some(true)
     }
 
     /// Docker on a tag that is not a release number (latest, dev): the
@@ -1387,9 +1414,12 @@ pub fn settings(inst: &Instance) -> Result<HashMap<String, String>, String> {
 /// Write `text` to `path` on the server (readable by the owner only).
 pub fn put_text(inst: &Instance, path: &str, text: &str) -> Result<(), String> {
     if is_windows(inst) {
+        // The text on PowerShell's standard input, never in its script: the
+        // script is on the server's command line (-EncodedCommand), and
+        // these files carry passwords (put_secret_file, put_job_file).
         use base64::Engine as _;
         let b = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-        return win::ps(inst, &format!("[IO.File]::WriteAllText('{}', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{b}')))", path.replace('\'', "''"))).map(|_| ());
+        return win::ps_with_input(inst, &windows_put_script(path), &format!("{b}\n")).map(|_| ());
     }
     let cmd = format!("umask 077 && cat > '{}'", path.replace('\'', ""));
     match conn::call(inst, serve::Work::Sh { cmd: cmd.clone(), root: false }, Some(text.to_string())) {
@@ -1406,6 +1436,12 @@ pub fn put_text(inst: &Instance, path: &str, text: &str) -> Result<(), String> {
     }
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
     if out.status.success() { Ok(()) } else { Err(explain(&String::from_utf8_lossy(&out.stderr)).unwrap_or_else(|| String::from_utf8_lossy(&out.stderr).trim().to_string())) }
+}
+
+/// [`put_text`]'s PowerShell on Windows: one line of base64 from its
+/// standard input into `path`.
+fn windows_put_script(path: &str) -> String {
+    format!("$l = [Console]::In.ReadLine(); [IO.File]::WriteAllText('{}', [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($l.Trim())))", path.replace('\'', "''"))
 }
 
 /// The gateway on the server (`gateway-status` there): key → value.
@@ -1578,9 +1614,24 @@ pub fn running_job(inst: &Instance) -> Option<String> {
     if is_windows(inst) {
         return win::running_job(inst);
     }
-    let out = run(inst, &running_script(), None).ok()?;
+    running_of(&run(inst, &running_script(), None).ok()?)
+}
+
+/// The job id in [`running_script`]'s answer (a systemd unit's line, or a
+/// per-user job's name).
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+pub(crate) fn running_of(out: &str) -> Option<String> {
     let w = out.split_whitespace().next()?;
     w.strip_prefix("spm-job-").and_then(|w| w.strip_suffix(".service")).or_else(|| w.strip_prefix("user-job-")).map(str::to_string)
+}
+
+/// A job's id: the time it starts, and `-<tag>` when it has one.
+pub(crate) fn job_id(at: chrono::DateTime<chrono::Utc>, tag: Option<&str>) -> String {
+    let id = at.format("%Y%m%d%H%M%S").to_string();
+    match tag {
+        Some(t) => format!("{id}-{t}"),
+        None => id,
+    }
 }
 
 /// Windows servers whose SENTIENT runs in Docker in the operator's own WSL
@@ -1640,7 +1691,13 @@ pub fn win_run_for(args: &[&str], user_distro: bool) -> WinRun {
 /// Start `--job <args>` on the server, detached from this connection.
 /// Returns the job's id; its progress goes to a file [`follow`] reads.
 pub fn start_job(inst: &Instance, args: &[&str]) -> Result<String, String> {
-    let id = format!("{}", chrono::Utc::now().format("%Y%m%d%H%M%S"));
+    start_job_as(inst, args, None)
+}
+
+/// [`start_job`], its id ending in `-<tag>`: a window opened later knows
+/// from the running job's id what it is (crate::remote::install::JOB_TAG).
+pub fn start_job_as(inst: &Instance, args: &[&str], tag: Option<&str>) -> Result<String, String> {
+    let id = job_id(chrono::Utc::now(), tag);
     if is_windows(inst) {
         let how = win_run_for(args, user_distro(inst).is_some());
         return win::start_job(inst, &id, args, how).map(|_| id);
@@ -1997,33 +2054,102 @@ pub fn check_takeover_password(inst: &Instance, ch: bool, password: &str) -> Res
 
 /// One call to SENTIENT's licence functions on the server, made there by
 /// its agent (crate::licence::agent_job). The request (it may hold the
-/// sign-in token or password) goes in a file only the account reads; the
-/// agent removes it once read, and so does this, in case it never ran.
+/// sign-in password or token) goes on the agent's standard input
+/// (`--request-stdin`), never on its command line, where the server's
+/// process list would show it. An older agent that does not know the flag
+/// gets it in a file only the account reads, removed once read (by the
+/// agent, and by this in case it never ran).
 pub fn licence_api(inst: &Instance, req: &crate::licence::Request) -> Result<crate::licence::Reply, String> {
     let text = serde_json::to_string(req).map_err(|e| e.to_string())?;
-    // One ssh call: the request inline (an agent of this version). A key
-    // file being imported is large: that one still goes as a file, and so
-    // does every request to an older agent (it does not know the flag).
-    if text.len() <= 6000 {
-        use base64::Engine as _;
-        let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-        match spm_job(inst, &format!("licence-api --request-b64 {b64}")) {
-            Ok(out) => {
-                if let Some(line) = out.lines().rev().find(|l| l.trim_start().starts_with('{')) {
-                    return serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"));
-                }
-            }
-            Err(e) if e != AGENT_OLD && !e.contains("usage:") => return Err(e),
-            Err(_) => {}
-        }
+    let answer = |out: &str| -> Result<crate::licence::Reply, String> {
+        let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or_else(|| no_answer(out))?;
+        serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
+    };
+    match job_on_stdin(inst, &licence_stdin_args(), &format!("{text}\n")) {
+        Ok(out) => return answer(&out),
+        Err(e) if e != AGENT_OLD => return Err(e),
+        Err(_) => {}
     }
     let file = format!("{}/.spm-licence-{}", home(inst)?.trim_end_matches('/'), chrono::Utc::now().timestamp_millis());
     put_text(inst, &file, &text)?;
     let out = spm_job(inst, &format!("licence-api --request-file '{}'", file.replace('\'', "")));
     remove_file(inst, &file);
-    let out = out?;
-    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{')).ok_or_else(|| no_answer(&out))?;
-    serde_json::from_str(line).map_err(|e| format!("unexpected answer from the server: {e}"))
+    answer(&out?)
+}
+
+/// The agent's arguments for a licence call: the request itself goes on
+/// its standard input.
+pub(crate) fn licence_stdin_args() -> Vec<String> {
+    vec!["licence-api".into(), "--request-stdin".into()]
+}
+
+/// `--job <argv>` with `input` on the agent's standard input (over the open
+/// connection, else its own ssh call), as administrator where jobs run so:
+/// what it printed, or its error in plain words. A job the agent does not
+/// know is [`AGENT_OLD`].
+fn job_on_stdin(inst: &Instance, argv: &[String], input: &str) -> Result<String, String> {
+    let r = match conn::call(inst, serve::Work::Job(argv.to_vec()), Some(input.to_string())) {
+        Ok((_, r)) if r.code == Some(0) => Ok(r.out),
+        Ok((peer, r)) => Err(agent_failure(inst, !peer.root && inst.user != "root", || sudo_password(inst).is_some(), r.err.trim())),
+        Err(conn::Fail::Err(e)) => Err(e),
+        Err(conn::Fail::PerCall) => {
+            let (ok, out, err) = job_with_input(inst, argv, Some(input))?;
+            if ok {
+                Ok(out)
+            } else {
+                let user = err.contains(USER_MARK);
+                let err = clean_stderr(&err.replace(USER_MARK, ""));
+                Err(agent_failure(inst, user, || sudo_password(inst).is_some(), if err.is_empty() { out.trim() } else { err.trim() }))
+            }
+        }
+    };
+    rights_answer(inst, r).map_err(|e| if e.contains("usage: --job") || e.contains("Unknown job") { AGENT_OLD.to_string() } else { e })
+}
+
+// ---------------------------------------------------------------------------
+// Install the gateway on the server (crate::manager::remote_pages)
+// ---------------------------------------------------------------------------
+
+/// The secrets of a gateway install: they travel on the agent's standard
+/// input (`gateway-install-secrets`) and are written only on the server.
+#[derive(Clone, Serialize, Deserialize, Default)]
+pub struct GatewaySecrets {
+    pub token: String,
+    #[serde(default)]
+    pub ui_password: String,
+}
+
+/// Never printed: a log line or a panic message must not carry them.
+impl std::fmt::Debug for GatewaySecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GatewaySecrets { .. }")
+    }
+}
+
+/// The install job's arguments: what the command line may carry (the
+/// platform's host and port, the release), never a secret ([`GatewaySecrets`]
+/// went ahead on standard input, `--staged` takes them there).
+pub fn gateway_install_args(host: &str, port: u16, version: &str) -> Vec<String> {
+    let mut a = vec!["gateway-install".to_string(), host.to_string(), port.to_string()];
+    if !version.is_empty() {
+        a.push("--version".into());
+        a.push(version.to_string());
+    }
+    a.push("--staged".into());
+    a
+}
+
+/// Install the gateway on the server: the secrets on the agent's standard
+/// input first (kept there in a file only root reads), then the install
+/// as a job of its own, followed to its end. Blocking.
+pub fn gateway_install(inst: &Instance, host: &str, port: u16, version: &str, secrets: GatewaySecrets, sink: &ProgressFn) -> Result<(), String> {
+    let line = serde_json::to_string(&secrets).map_err(|e| e.to_string())?;
+    drop(secrets);
+    job_on_stdin(inst, &["--json".to_string(), "gateway-install-secrets".to_string()], &format!("{line}\n"))?;
+    drop(line);
+    let args = gateway_install_args(host, port, version);
+    let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    start_job(inst, &a).and_then(|id| follow(inst, &id, sink))
 }
 
 /// Whether a migration could start on the server now (crate::migration::
@@ -2352,6 +2478,25 @@ mod win {
         run(inst, &winshell::encoded(script), None)
     }
 
+    /// [`ps`] with `input` on PowerShell's standard input (a secret goes
+    /// there, never into the script, which is on the command line).
+    pub fn ps_with_input(inst: &Instance, script: &str, input: &str) -> Result<String, String> {
+        match conn::call(inst, serve::Work::Ps(winshell::encode(script)), Some(input.to_string())) {
+            Ok((_, r)) => return run_answer(r.code == Some(0), r.out, &r.err),
+            Err(conn::Fail::Err(e)) => return Err(e),
+            Err(conn::Fail::PerCall) => {}
+        }
+        let mut c = ssh(inst, &winshell::encoded(script), None);
+        c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = c.spawn().map_err(|e| format!("start ssh: {e}"))?;
+        if let Some(mut s) = child.stdin.take() {
+            use std::io::Write as _;
+            let _ = s.write_all(input.as_bytes());
+        }
+        let out = child.wait_with_output().map_err(|e| e.to_string())?;
+        run_answer(out.status.success(), String::from_utf8_lossy(&out.stdout).to_string(), &String::from_utf8_lossy(&out.stderr))
+    }
+
     /// `--job <job>` with the agent: over the open connection (its agent is
     /// this Platform Manager's own, at EXE), else through PowerShell, piped
     /// so it waits for a windowed build too, with its errors in the output.
@@ -2617,6 +2762,45 @@ mod win {
 
 #[cfg(test)]
 mod tests {
+
+    /// The gateway install's command line (the server's process list, the
+    /// job's unit) carries the host, the port and the release, never the
+    /// access token or the page's password: they go on standard input.
+    #[test]
+    fn the_gateway_install_argv_has_no_secret() {
+        let token = "Xk7pQ2mW9rTzL4vB8nYd";
+        let pw = "Page-Pw-2718";
+        let secrets = super::GatewaySecrets { token: token.into(), ui_password: pw.into() };
+        let argv = super::gateway_install_args("192.168.2.10", 1883, "4.16.2");
+        assert_eq!(argv, vec!["gateway-install", "192.168.2.10", "1883", "--version", "4.16.2", "--staged"]);
+        assert!(argv.iter().all(|a| !a.contains(token) && !a.contains(pw)), "{argv:?}");
+        // The secrets themselves never print.
+        assert!(!format!("{secrets:?}").contains(token) && !format!("{secrets:?}").contains(pw));
+        // What goes on standard input round-trips on the agent's side.
+        let line = serde_json::to_string(&secrets).unwrap();
+        let back: super::GatewaySecrets = serde_json::from_str(&line).unwrap();
+        assert_eq!((back.token.as_str(), back.ui_password.as_str()), (token, pw));
+    }
+
+    /// A licence call's request (a sign-in password in it) goes on the
+    /// agent's standard input: the command line names only the flag, and
+    /// this Platform Manager never sends the older inline form.
+    #[test]
+    fn the_licence_request_goes_on_stdin() {
+        let argv = super::licence_stdin_args();
+        assert_eq!(argv, vec!["licence-api", "--request-stdin"]);
+        let src = include_str!("remote.rs");
+        assert!(!src.contains(concat!("--request", "-b64")), "remote.rs still sends the request inline");
+    }
+
+    /// A file put on a Windows server: its text on PowerShell's standard
+    /// input, not in the script on the command line.
+    #[test]
+    fn a_windows_file_is_written_from_stdin() {
+        let script = super::windows_put_script("C:\\Users\\ops\\.spm-db-pw-1");
+        assert!(script.contains("[Console]::In.ReadLine()") && script.contains("'C:\\Users\\ops\\.spm-db-pw-1'"), "{script}");
+        assert!(!script.contains("FromBase64String('"));
+    }
 
     /// A Windows server's SFTP path is handed to PowerShell without its
     /// leading slash (Remove-Item read "/C" as a drive).

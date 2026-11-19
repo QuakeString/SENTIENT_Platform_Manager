@@ -614,11 +614,11 @@ impl Render for ActionDialog {
         let click = cx.listener(|d, _, _, cx| d.go(cx));
         let ok_button: AnyElement = if danger {
             let busy = self.busy;
-            ui::solid_button("licence-act-ok", (if busy { "Working…" } else { ok }).into(), theme.danger, gpui_kit::white(), move |e, w, cx| if !busy { click(e, w, cx) })
+            ui::solid_button("licence-act-ok", ok.into(), theme.danger, gpui_kit::white(), move |e, w, cx| if !busy { click(e, w, cx) })
                 .when(busy, |b| b.opacity(0.6))
                 .into_any_element()
         } else {
-            ui::button("licence-act-ok").primary().label(if self.busy { "Working" } else { ok }).disabled(self.busy).on_click(click).into_any_element()
+            ui::button("licence-act-ok").primary().label(ok).disabled(self.busy).on_click(click).into_any_element()
         };
         body.child(
             h_flex()

@@ -10,15 +10,21 @@ pub mod size;
 /// hidden service account so it runs from boot.
 pub mod clickhouse_wsl;
 pub mod distro;
+/// Docker Hub's image tags (offers for Docker installs).
+pub mod dockerhub;
 /// One administrator elevation per job (a root helper fed over a pipe).
 pub mod elevation;
 pub(crate) mod exec;
+/// Release and tag lists asked for at most once per 30 minutes, kept on disk.
+pub mod fetch_cache;
 pub mod stack;
 pub mod stack_order;
 pub mod gateway;
 pub mod gateway_settings;
 pub mod kiosk;
 pub mod kept_db;
+/// Whether a SENTIENT licence covers a SENTIENT build (SENTIENT's own rule).
+pub mod licence_version;
 /// Native Windows deployment (PostgreSQL + TimescaleDB + the server as a
 /// service) — the no-Docker, no-WSL alternative to [`distro`].
 /// Release manifest: where to fetch the SENTIENT payload and what it must

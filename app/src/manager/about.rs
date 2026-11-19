@@ -319,7 +319,7 @@ impl Render for AboutPage {
                                 .outline()
                                 .label(if checking { "Checking" } else { "Check for updates" })
                                 .disabled(checking)
-                                .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check(cx)))),
+                                .on_click(cx.listener(|this, _, _, cx| this.updates.update(cx, |u, cx| u.check_now(cx)))),
                         )),
                 ),
         );

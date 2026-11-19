@@ -222,6 +222,9 @@ pub struct Offer {
     /// The Windows installer and its `.sha256`, when the release has them.
     pub installer: Option<releases::Asset>,
     pub checksum: Option<releases::Asset>,
+    /// Its image ({IMAGE}:<version>) is not on Docker Hub yet: a gateway in
+    /// Docker cannot take it ([`offer_blocker`]). False when not known.
+    pub image_missing: bool,
 }
 
 /// The gateway's releases in the SENTIENT releases repository.
@@ -234,13 +237,56 @@ pub fn version_of(r: &Release) -> String {
     r.tag_name.trim_start_matches("gateway-").to_string()
 }
 
-/// The newest gateway release on `channel` (any, when nothing is installed).
+/// The newest gateway release on `channel` (any, when nothing is installed),
+/// for a gateway the way this computer runs it (Docker except on Windows).
 pub fn newest(channel: releases::Channel) -> Result<Option<Offer>, String> {
-    let all = releases::fetch(releases::SENTIENT_REPO)?;
-    let mut candidates = releases::on_channel(&all, channel, is_gateway);
+    newest_with(channel, !cfg!(windows), false)
+}
+
+/// The newest gateway release on `channel`. Its image is looked up on
+/// Docker Hub (`image_missing`). `docker`: the gateway runs in Docker, so
+/// when GitHub's list cannot be had at all, the newest image tag on the
+/// channel stands in (no notes). `force`: an explicit check.
+pub fn newest_with(channel: releases::Channel, docker: bool, force: bool) -> Result<Option<Offer>, String> {
+    let all = match releases::list(releases::SENTIENT_REPO, force) {
+        Ok(l) => l.value,
+        Err(e) if docker => {
+            let tags = crate::dockerhub::tags(IMAGE, force).map_err(|_| e)?;
+            return Ok(crate::dockerhub::newest(&tags.value, channel).map(|version| Offer {
+                version,
+                date: String::new(),
+                notes: String::new(),
+                page: String::new(),
+                installer: None,
+                checksum: None,
+                image_missing: false,
+            }));
+        }
+        Err(e) => return Err(e),
+    };
+    let Some(mut offer) = newest_in(&all, channel) else { return Ok(None) };
+    // Unknown (Docker Hub not reachable): not held against it.
+    offer.image_missing = crate::dockerhub::tag_exists(IMAGE, &offer.version, force) == Ok(false);
+    Ok(Some(offer))
+}
+
+/// The newest gateway release on `channel` in `all`.
+pub fn newest_in(all: &[Release], channel: releases::Channel) -> Option<Offer> {
+    let mut candidates = releases::on_channel(all, channel, is_gateway);
     // on_channel sorts by the tag; gateway-4.10 vs 4.9 needs the version.
     candidates.sort_by(|a, b| releases::compare(&version_of(b), &version_of(a)));
-    Ok(candidates.first().map(|r| offer_of(r)))
+    candidates.first().map(|r| offer_of(r))
+}
+
+/// Why `offer` cannot go to the gateway found as `s` (None: it can): its
+/// image is not published yet for a gateway in Docker, else
+/// [`update_blocker`]'s reasons.
+pub fn offer_blocker(s: &Status, offer: &Offer, windows: bool) -> Option<String> {
+    let docker = s.kind() == "docker" || (!s.installed && s.legacy.is_some());
+    if offer.image_missing && docker && !windows {
+        return Some(crate::dockerhub::not_published(&offer.version));
+    }
+    update_blocker(s, &offer.version, offer.installer.is_some(), windows)
 }
 
 pub fn status() -> Status {
@@ -293,7 +339,7 @@ pub fn update(sink: &ProgressFn, offer: &Offer) -> Result<(), String> {
         if s.container.is_none() {
             // A service or a program: said, never attempted.
             let _ = sink;
-            return Err(update_blocker(&s, &offer.version, offer.installer.is_some(), false).unwrap_or_else(|| "There is no gateway container to update.".into()));
+            return Err(offer_blocker(&s, offer, false).unwrap_or_else(|| "There is no gateway container to update.".into()));
         }
         crate::distro::gateway_docker::update(sink, &offer.version)
     }
@@ -311,7 +357,7 @@ fn offer_of(r: &Release) -> Offer {
     let v = version_of(r);
     let installer = r.assets.iter().find(|a| a.name == format!("SentientGatewaySetup-{v}.exe")).cloned();
     let checksum = r.assets.iter().find(|a| a.name == format!("SentientGatewaySetup-{v}.exe.sha256")).cloned();
-    Offer { version: v, date: r.date(), notes: r.summary(), page: r.html_url.clone(), installer, checksum }
+    Offer { version: v, date: r.date(), notes: r.summary(), page: r.html_url.clone(), installer, checksum, image_missing: false }
 }
 
 /// Where the Windows service writes its log files, as the gateway resolves
@@ -982,6 +1028,43 @@ mod tests {
         let older = Status { legacy: Some("st-gateway".into()), legacy_image: Some("quakestring/sentient-gateway:latest".into()), ..Status::default() };
         assert_eq!(update_blocker(&older, "4.16.3", false, false), None);
         assert!(update_blocker(&older, "4.16.3", false, true).unwrap().contains("Windows service"));
+    }
+
+    #[test]
+    fn a_release_without_its_image_is_not_offered_to_docker() {
+        let r = Release {
+            tag_name: "gateway-4.16.3".into(),
+            name: None,
+            body: Some("Faster polling.".into()),
+            html_url: String::new(),
+            prerelease: false,
+            draft: false,
+            published_at: Some("2026-11-18T10:00:00Z".into()),
+            assets: vec![],
+        };
+        let all = vec![r, Release { tag_name: "gateway-4.16.2".into(), ..Release::clone(&all_one()) }];
+        let mut offer = newest_in(&all, releases::Channel::Stable).unwrap();
+        assert_eq!(offer.version, "4.16.3");
+        offer.image_missing = true;
+        let ours = Status { installed: true, container: Some(CONTAINER.into()), managed: true, ..Status::default() };
+        assert_eq!(offer_blocker(&ours, &offer, false).as_deref(), Some("4.16.3 is released; its Docker image is not published yet."));
+        // The older Python gateway goes to the image too.
+        let older = Status { legacy: Some("st-gateway".into()), ..Status::default() };
+        assert_eq!(offer_blocker(&older, &offer, false).as_deref(), Some("4.16.3 is released; its Docker image is not published yet."));
+        // A compose container: the image first, not "set it in the file".
+        let compose = Status { managed: false, compose_dir: Some("/srv/example".into()), ..ours.clone() };
+        assert!(offer_blocker(&compose, &offer, false).unwrap().contains("not published"));
+        // A Windows service does not use the image; on Windows the Docker reason stays.
+        let win = Status { installed: true, managed: true, ..Status::default() };
+        assert!(offer_blocker(&win, &offer, true).unwrap().contains("no Windows installer"));
+        assert!(offer_blocker(&ours, &offer, true).unwrap().contains("Windows service"));
+        // Published: the usual answer.
+        offer.image_missing = false;
+        assert_eq!(offer_blocker(&ours, &offer, false), None);
+    }
+
+    fn all_one() -> Release {
+        Release { tag_name: String::new(), name: None, body: None, html_url: String::new(), prerelease: false, draft: false, published_at: None, assets: vec![] }
     }
 
     #[test]
