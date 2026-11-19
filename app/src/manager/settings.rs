@@ -935,6 +935,16 @@ pub(crate) fn row(_theme: &gpui_kit::component::Theme, label: impl Into<SharedSt
 }
 
 /// A plain value in a wide row.
+/// "1 failed sign-in", "3 failed sign-ins": `n` and `one`, plural with an s.
+fn counted(n: i64, one: &str) -> String {
+    if n == 1 { format!("1 {one}") } else { format!("{n} {one}s") }
+}
+
+/// A retention in days for the list of changes: "forever" (0), "1 day", "30 days".
+fn kept_days(d: i64) -> String {
+    if d == 0 { "forever".into() } else { counted(d, "day") }
+}
+
 fn text_value(theme: &gpui_kit::component::Theme, text: impl Into<SharedString>) -> Div {
     ui::row_text(text).text_color(theme.foreground)
 }
@@ -1148,9 +1158,9 @@ impl SettingsPage {
                     let email = a.email.clone().unwrap_or_default();
                     let locked = a.locked_since.is_some();
                     let state = if locked {
-                        format!("Locked after {} failed sign-ins", a.failed_sign_ins)
+                        format!("Locked after {}", counted(a.failed_sign_ins, "failed sign-in"))
                     } else if a.failed_sign_ins > 0 {
-                        format!("Not locked · {} failed sign-ins", a.failed_sign_ins)
+                        format!("Not locked · {}", counted(a.failed_sign_ins, "failed sign-in"))
                     } else {
                         "Not locked".to_string()
                     };
@@ -1345,7 +1355,7 @@ impl SettingsPage {
     fn history_rows(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Vec<ui::SettingRow> {
         const DAYS: [(&str, i64); 5] = [("Forever", 0), ("30 days", 30), ("90 days", 90), ("1 year", 365), ("3 years", 1095)];
         let help = "For tenants that use the default tenant profile (a tenant with its own profile keeps its own). Older values are deleted by SENTIENT's nightly cleanup.";
-        let words = |d: i64| DAYS.iter().find(|(_, x)| *x == d).map(|(l, _)| l.to_string()).unwrap_or_else(|| format!("{d} days"));
+        let words = |d: i64| DAYS.iter().find(|(_, x)| *x == d).map(|(l, _)| l.to_string()).unwrap_or_else(|| counted(d, "day"));
         match &self.retention_now {
             None => vec![row(
                 theme,
@@ -1525,10 +1535,10 @@ impl SettingsPage {
         }
         if let Some(Ok(now)) = &self.retention_now {
             if self.retention_edit.telemetry_days != now.telemetry_days {
-                out.push(format!("Telemetry history: {} to {} days", now.telemetry_days, self.retention_edit.telemetry_days));
+                out.push(format!("Telemetry history: {} to {}", kept_days(now.telemetry_days), kept_days(self.retention_edit.telemetry_days)));
             }
             if self.retention_edit.alarms_days != now.alarms_days {
-                out.push(format!("Alarms: {} to {} days", now.alarms_days, self.retention_edit.alarms_days));
+                out.push(format!("Alarms: {} to {}", kept_days(now.alarms_days), kept_days(self.retention_edit.alarms_days)));
             }
         }
         let n = self.startup.read(cx).pending_count(cx);
@@ -1671,7 +1681,17 @@ pub(crate) fn settings_page(theme: &gpui_kit::component::Theme, title: &'static 
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
-    use super::{PRESET_KEYS, Preset, Retry, STOPPED_RETRY, StartHold, admin_reading, preset_values, stopped_retry};
+    use super::{PRESET_KEYS, Preset, Retry, STOPPED_RETRY, StartHold, admin_reading, counted, kept_days, preset_values, stopped_retry};
+
+    #[test]
+    fn counts_are_singular_for_one() {
+        assert_eq!(counted(1, "failed sign-in"), "1 failed sign-in");
+        assert_eq!(counted(0, "failed sign-in"), "0 failed sign-ins");
+        assert_eq!(counted(5, "failed sign-in"), "5 failed sign-ins");
+        assert_eq!(kept_days(1), "1 day");
+        assert_eq!(kept_days(30), "30 days");
+        assert_eq!(kept_days(0), "forever");
+    }
 
     #[test]
     fn starting_hands_over_to_the_accounts_with_no_stopped_frame() {
