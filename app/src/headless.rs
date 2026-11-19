@@ -928,29 +928,34 @@ fn run_job(args: &[String]) -> i32 {
     }
     // The last lines of SENTIENT's log: logs [<lines>].
     if job == "logs" {
-        let Some(record) = InstallationRecord::load() else {
-            eprintln!("SENTIENT is not installed here.");
+        // A gateway-only server has no SENTIENT installation record but
+        // still has the gateway's log.
+        let record = InstallationRecord::load();
+        let sources = crate::logsource::available(record.as_ref());
+        if sources.is_empty() {
+            eprintln!("Neither SENTIENT nor the gateway is installed here, so there is no log to read.");
             return 2;
-        };
+        }
         let n = args.get(1).and_then(|n| n.parse().ok()).unwrap_or(300);
-        // --sources: which logs this install has (JSON); --source <key>:
+        // --sources: which logs this computer has (JSON); --source <key>:
         // one of them, by its key from that list only; --today: since midnight.
         if args.iter().any(|a| a == "--sources") {
-            println!("{}", serde_json::to_string(&crate::logsource::available(&record)).unwrap_or_default());
+            println!("{}", serde_json::to_string(&sources).unwrap_or_default());
             return 0;
         }
         let today = args.iter().any(|a| a == "--today");
         match args.windows(2).find(|w| w[0] == "--source").map(|w| w[1].as_str()) {
-            Some(key) => match crate::logsource::Source::from_key(key).filter(|s| crate::logsource::available(&record).contains(s)) {
-                Some(src) => return print_log(crate::logsource::read(&record, src, n, today)),
+            Some(key) => match crate::logsource::Source::from_key(key).filter(|s| sources.contains(s)) {
+                Some(src) => return print_log(crate::logsource::read(record.as_ref(), src, n, today)),
                 None => {
                     eprintln!("No such log here: {key}");
                     return 2;
                 }
             },
             // No source named (an older window): SENTIENT's own log, read
-            // by container or service, never through the compose files.
-            None => return print_log(crate::logsource::read(&record, crate::logsource::Source::Sentient, n, today)),
+            // by container or service, never through the compose files;
+            // the gateway's on a gateway-only server.
+            None => return print_log(crate::logsource::read(record.as_ref(), sources[0], n, today)),
         }
     }
     // The Server card's reading and actions (crate::server_ops): no
