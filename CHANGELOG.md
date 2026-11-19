@@ -15,6 +15,25 @@ refreshes that repository's Downloads table.
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-11-19
+
+Updates read Docker Hub for Docker installs and check the licence before a SENTIENT update, SENTIENT and the gateway install on Linux servers, native installs check glibc, and many Windows and gateway fixes.
+
+### Added
+- Updates follow how SENTIENT and the gateway are installed: a Docker
+  install is offered a version only once its image is on Docker Hub, and
+  falls back to Docker Hub's tags when the release list cannot be read; a
+  native install needs its package and checksum on the release.
+- Before a SENTIENT update the Platform Manager reads the licence's allowed
+  versions (after a system administrator signs in; the password is never
+  stored). A version the licence does not cover needs a typed confirmation,
+  and the version list shows each version's licence label.
+- Servers: Install SENTIENT and Install the gateway (with or without
+  SENTIENT) on a Linux server, with the same steps as Setup. Remote install
+  on Windows servers is not supported yet and says so.
+- A native install checks the system's glibc against what the release
+  needs; below it only Docker is offered, with the reason.
+
 ### Added
 - Code signing with INVENIA SYSTEMS' own (self-signed) certificate, until a
   public one is bought. An update of the Platform Manager signed with exactly
