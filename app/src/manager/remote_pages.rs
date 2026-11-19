@@ -1904,11 +1904,13 @@ impl RemotePages {
             Read::Got(Some(o)) => Offered::Newer(o),
         };
         let (sub, pill) = sentient_summary(&installed, state, false);
-        let mut row = product_row(&theme, offer.is_some(), ui::Product::Sentient, "SENTIENT", sub);
+        let licence = self.licence_read();
+        // Nothing offered: what the licence covers, as a quiet line.
+        let licence_note = offer.is_none().then(|| crate::manager::licence_gate::row_note(&licence));
+        let mut row = crate::manager::update::product_row_noted(&theme, offer.is_some(), ui::Product::Sentient, "SENTIENT", sub, licence_note);
         if let Some((tone, text)) = pill {
             row = row.child(ui::pill(&theme, tone, text));
         }
-        let licence = self.licence_read();
         if let Some(o) = &offer {
             let version = o.version.clone();
             let build = o.licence_build();

@@ -78,12 +78,25 @@ pub fn pill(theme: &gpui_kit::component::Theme, read: &LicenceRead, build: &str)
     ui::pill(theme, tone, c.label())
 }
 
-/// The label's words after a version in a menu ("4.5.0.1 · Needs a new licence").
+/// The label's words after a version in a menu ("4.5.0.1 · Needs a new
+/// licence"): every entry but the running one has one, whatever is known.
 pub fn menu_note(read: &LicenceRead, build: &str) -> &'static str {
     match licence_version::coverage(read, build) {
         Coverage::Covered => " · Covered by your licence",
         Coverage::NeedsNew => " · Needs a new licence",
-        _ => "",
+        Coverage::NoLicence => " · No licence installed",
+        Coverage::NotChecked => " · Licence not checked",
+    }
+}
+
+/// The quiet line on the SENTIENT row when no update is offered: what the
+/// installed licence covers ("Licence: covers SENTIENT 4.4").
+pub fn row_note(read: &LicenceRead) -> String {
+    match read {
+        LicenceRead::NotRead | LicenceRead::Failed(_) => "Licence: not checked".into(),
+        LicenceRead::Read(Licence::NotInstalled) => "Licence: none installed".into(),
+        LicenceRead::Read(Licence::Allowed(v)) if v.is_empty() => "Licence: covers no SENTIENT version".into(),
+        LicenceRead::Read(Licence::Allowed(v)) => format!("Licence: covers SENTIENT {}", v.join(", ")),
     }
 }
 
@@ -430,5 +443,34 @@ impl Render for TypedBody {
                     })
                     .child(ui::probed(anyway)),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
+    use super::{menu_note, row_note};
+    use sentient_installer_core::licence_version::{Licence, LicenceRead};
+
+    #[test]
+    fn every_menu_entry_says_what_the_licence_does() {
+        let none = LicenceRead::Read(Licence::NotInstalled);
+        let v44 = LicenceRead::Read(Licence::Allowed(vec!["4.4".into()]));
+        // A fresh install with no licence (the rc1 Windows VM): said, not blank.
+        assert_eq!(menu_note(&none, "4.4.0"), " · No licence installed");
+        assert_eq!(menu_note(&LicenceRead::NotRead, "4.4.0"), " · Licence not checked");
+        assert_eq!(menu_note(&LicenceRead::Failed("cancelled".into()), "4.4.0"), " · Licence not checked");
+        assert_eq!(menu_note(&v44, "4.4.0"), " · Covered by your licence");
+        assert_eq!(menu_note(&v44, "4.5.0"), " · Needs a new licence");
+    }
+
+    #[test]
+    fn the_row_says_what_the_licence_covers() {
+        assert_eq!(row_note(&LicenceRead::Read(Licence::NotInstalled)), "Licence: none installed");
+        assert_eq!(row_note(&LicenceRead::NotRead), "Licence: not checked");
+        assert_eq!(row_note(&LicenceRead::Failed("x".into())), "Licence: not checked");
+        assert_eq!(row_note(&LicenceRead::Read(Licence::Allowed(vec!["4.4".into()]))), "Licence: covers SENTIENT 4.4");
+        assert_eq!(row_note(&LicenceRead::Read(Licence::Allowed(vec!["4.4".into(), "4.3".into()]))), "Licence: covers SENTIENT 4.4, 4.3");
+        assert_eq!(row_note(&LicenceRead::Read(Licence::Allowed(Vec::new()))), "Licence: covers no SENTIENT version");
     }
 }

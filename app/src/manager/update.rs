@@ -945,7 +945,9 @@ impl UpdatePage {
                 (Some(_), Some(o)) => Offered::Newer(o),
             };
             let (sub, pill) = sentient_summary(inst, state, manager_offer.is_some());
-            let mut row = Self::row(theme, sentient_offer.is_some() && manager_offer.is_none(), "SENTIENT", sub);
+            // Nothing offered: what the licence covers, as a quiet line.
+            let licence_note = sentient_offer.is_none().then(|| licence_gate::row_note(&self.licence_read()));
+            let mut row = product_row_noted(theme, sentient_offer.is_some() && manager_offer.is_none(), ui::Product::Sentient, "SENTIENT", sub, licence_note);
             if let Some((tone, text)) = pill {
                 row = row.child(ui::pill(theme, tone, text));
             }
@@ -1327,6 +1329,12 @@ pub(crate) fn sentient_summary(installed: &str, state: Offered, manager_first: b
 /// A product line: logo, name, what is known; the caller adds its label and
 /// buttons on the right. Shared by this computer's and a server's Update.
 pub(crate) fn product_row(theme: &gpui_kit::component::Theme, highlight: bool, logo: ui::Product, title: &'static str, sub: String) -> Div {
+    product_row_noted(theme, highlight, logo, title, sub, None)
+}
+
+/// [`product_row`] with a quiet line under what is known (the SENTIENT
+/// row's licence when no update is offered).
+pub(crate) fn product_row_noted(theme: &gpui_kit::component::Theme, highlight: bool, logo: ui::Product, title: &'static str, sub: String, note: Option<String>) -> Div {
     h_flex()
         .flex_wrap()
         .gap(crate::ui::button_gap())
@@ -1343,7 +1351,8 @@ pub(crate) fn product_row(theme: &gpui_kit::component::Theme, highlight: bool, l
                 .min_w(px(220.))
                 .gap_0p5()
                 .child(div().font_weight(FontWeight::MEDIUM).child(title))
-                .child(div().text_sm().text_color(theme.muted_foreground).child(sub)),
+                .child(div().text_sm().text_color(theme.muted_foreground).child(sub))
+                .when_some(note, |c, n| c.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(n))),
         )
 }
 
