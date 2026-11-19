@@ -2,6 +2,12 @@
 //! features, installs the kernel, and sets the default version to 2. If the
 //! features were newly enabled the system must reboot before WSL works — this is
 //! reported so the installer can drive the reboot-and-resume flow.
+//!
+//! Two phases when a restart is needed: phase 1 only turns the features on
+//! (the caller saves the plan and restarts); phase 2, the same [`install`]
+//! after the restart, installs the WSL package or the WSL 2 kernel. Their
+//! MSIs refuse to install while the features wait for the restart
+//! ([`kernel_timing`]).
 
 use crate::progress::{Progress, ProgressFn};
 #[cfg(windows)]
@@ -74,7 +80,9 @@ pub fn install(sink: ProgressFn) -> WslOutcome {
         // DISM (from Windows' own component store) and the package comes
         // from the pack (ensure_kernel).
         let known = if crate::offline::is_offline() {
-            sink(Progress::Log { line: "Offline pack: turning the Windows features on with DISM; the WSL package comes from the pack".into() });
+            sink(Progress::Log {
+                line: "Offline pack: turning the Windows features on with DISM; the WSL package (or, on an older Windows 10, the WSL 2 kernel) is installed from the pack once they are on".into(),
+            });
             None
         } else {
             run_logged(&sink, "Turning on WSL 2", "wsl.exe", &["--install", "--no-distribution"])
@@ -107,7 +115,8 @@ pub fn install(sink: ProgressFn) -> WslOutcome {
                 restart |= features_pending();
             }
         }
-        if !restart && !is_ready() {
+        let timing = kernel_timing(restart, !restart && is_ready());
+        if timing == KernelTiming::Now {
             ensure_kernel(&sink);
         }
         let _ = sys::output("wsl.exe", &["--set-default-version", "2"]);
@@ -115,10 +124,8 @@ pub fn install(sink: ProgressFn) -> WslOutcome {
         if ready {
             sink(Progress::Done { message: "WSL 2 is turned on.".into() });
         } else {
-            // A kernel needs the features running: fetch it now so the run
-            // after the restart has less to do.
-            if restart {
-                ensure_kernel(&sink);
+            if timing == KernelTiming::AfterRestart {
+                sink(Progress::Log { line: "The WSL package (or the WSL 2 kernel) is installed after the restart: it needs the Windows features running.".into() });
             }
             sink(Progress::Log { line: "WSL 2 is not active yet: Windows must restart to finish turning it on.".into() });
         }
@@ -178,18 +185,33 @@ fn ensure_kernel(sink: &ProgressFn) {
     if kernel_present() {
         return;
     }
-    // Offline: the pack's WSL package (or the kernel for an older Windows
-    // 10); `wsl --update` would go to the Store or GitHub.
+    let build = os_build();
+    // Offline: the pack's WSL package where the online path would install
+    // it, else (or when it fails) the pack's kernel; `wsl --update` would
+    // go to the Store or GitHub.
     if let Some(pack) = crate::offline::pack() {
-        let packaged = os_build().is_none_or(|(build, ubr)| packaged_supported(build, ubr));
-        let (kind, what) = if packaged { (crate::pack::Kind::WslMsi, "the WSL package") } else { (crate::pack::Kind::KernelMsi, "the WSL 2 kernel") };
-        sink(Progress::Step { name: format!("Installing {what} from the offline pack") });
-        let result = match pack.file(kind) {
-            Some(f) => pack.recheck(f).and_then(|path| install_msi_file(sink, &path, what, false)),
-            None => Err(format!("the offline pack has no {what} (a {} file)", if packaged { "wsl_msi" } else { "kernel_msi" })),
-        };
-        if let Err(e) = result {
-            sink(Progress::Log { line: format!("{what} was not installed: {e}") });
+        let has = |w: WslInstall| pack.file(w.kind()).is_some();
+        if let Some(line) = package_unsupported_line(build) {
+            sink(Progress::Log { line });
+        } else if !has(WslInstall::Package) {
+            sink(Progress::Log { line: "The offline pack has no WSL package (a wsl_msi file): the inbox WSL gets the pack's WSL 2 kernel instead".into() });
+        }
+        let order = offline_order(build, has(WslInstall::Package), has(WslInstall::Kernel));
+        if order.is_empty() {
+            sink(Progress::Log { line: "Neither the WSL package nor the WSL 2 kernel was installed: the offline pack has no file for this Windows (wsl_msi or kernel_msi)".into() });
+            return;
+        }
+        for (i, which) in order.iter().enumerate() {
+            let Some(f) = pack.file(which.kind()) else { continue };
+            let what = which.what();
+            let name = f.path.rsplit(['/', '\\']).next().unwrap_or(&f.path).to_string();
+            sink(Progress::Step { name: format!("Installing {what} from the offline pack ({name})") });
+            let next = if i + 1 < order.len() { "; trying the pack's WSL 2 kernel instead" } else { "" };
+            match pack.recheck(f).and_then(|path| install_msi_file(sink, &path, what, false)) {
+                Ok(()) if kernel_present() => return,
+                Ok(()) => sink(Progress::Log { line: format!("{} ({name}) installed, but WSL still finds no kernel{next}", capitalized(what)) }),
+                Err(e) => sink(Progress::Log { line: format!("{} ({name}) was not installed: {e}{next}", capitalized(what)) }),
+            }
         }
         return;
     }
@@ -199,8 +221,7 @@ fn ensure_kernel(sink: &ProgressFn) {
     }
     // The WSL package needs a Windows that runs it; an older Windows 10
     // keeps its inbox WSL and gets Microsoft's kernel for it instead.
-    let packaged = os_build().is_none_or(|(build, ubr)| packaged_supported(build, ubr));
-    if packaged {
+    if preferred(build) == WslInstall::Package {
         sink(Progress::Step { name: "Downloading the WSL package from Microsoft".into() });
         if let Err(e) = install_package(sink) {
             sink(Progress::Log { line: format!("The WSL package was not installed: {e}") });
@@ -208,8 +229,8 @@ fn ensure_kernel(sink: &ProgressFn) {
         if kernel_present() {
             return;
         }
-    } else if let Some((build, ubr)) = os_build() {
-        sink(Progress::Log { line: format!("Windows 10.0.{build}.{ubr} cannot run the WSL package: its inbox WSL gets Microsoft's WSL 2 kernel") });
+    } else if let Some(line) = package_unsupported_line(build) {
+        sink(Progress::Log { line });
     }
     sink(Progress::Step { name: "Downloading the WSL 2 kernel from Microsoft".into() });
     if let Err(e) = install_signed_msi(sink, if cfg!(target_arch = "aarch64") { KERNEL_MSI_ARM64 } else { KERNEL_MSI_X64 }, "sentient-wsl-kernel.msi") {
@@ -227,6 +248,103 @@ pub const KERNEL_MSI_ARM64: &str = "https://wslstorestorage.blob.core.windows.ne
 /// or later. Older builds answer it with WSL_E_OS_NOT_SUPPORTED.
 pub fn packaged_supported(build: u32, ubr: u32) -> bool {
     build >= 22000 || ((build == 19044 || build == 19045) && ubr >= 2311)
+}
+
+/// What WSL 2 gets so that it runs: Microsoft's WSL package or the kernel
+/// for the inbox WSL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WslInstall {
+    /// Microsoft's WSL package (`wsl.<v>.x64.msi`, the Store's WSL): it
+    /// replaces the inbox WSL and carries its own kernel; `wsl --version`
+    /// answers once it is in.
+    Package,
+    /// The WSL 2 kernel (`wsl_update_x64.msi`) for the inbox WSL, whose
+    /// `wsl --version` stays an "Invalid command line option".
+    Kernel,
+}
+
+impl WslInstall {
+    /// As the log names it.
+    pub fn what(self) -> &'static str {
+        match self {
+            WslInstall::Package => "the WSL package",
+            WslInstall::Kernel => "the WSL 2 kernel",
+        }
+    }
+
+    /// The pack's file for it.
+    pub fn kind(self) -> crate::pack::Kind {
+        match self {
+            WslInstall::Package => crate::pack::Kind::WslMsi,
+            WslInstall::Kernel => crate::pack::Kind::KernelMsi,
+        }
+    }
+}
+
+/// The online rule: the WSL package where Windows `build` (build, UBR)
+/// runs it ([`packaged_supported`]; an unknown build tries it), else the
+/// kernel.
+pub fn preferred(build: Option<(u32, u32)>) -> WslInstall {
+    if build.is_none_or(|(b, ubr)| packaged_supported(b, ubr)) { WslInstall::Package } else { WslInstall::Kernel }
+}
+
+/// Offline, what is installed from the pack, in the order tried: as
+/// online, the WSL package first where it runs and the kernel as the
+/// fallback (the package failed, or the pack has none); only the kernel
+/// where the package cannot run. Only what the pack has.
+pub fn offline_order(build: Option<(u32, u32)>, has_package: bool, has_kernel: bool) -> Vec<WslInstall> {
+    let wanted: &[WslInstall] = match preferred(build) {
+        WslInstall::Package => &[WslInstall::Package, WslInstall::Kernel],
+        WslInstall::Kernel => &[WslInstall::Kernel],
+    };
+    wanted
+        .iter()
+        .copied()
+        .filter(|w| match w {
+            WslInstall::Package => has_package,
+            WslInstall::Kernel => has_kernel,
+        })
+        .collect()
+}
+
+/// The log line saying Windows `build` cannot run the WSL package (None:
+/// it can, or the build is unknown).
+pub fn package_unsupported_line(build: Option<(u32, u32)>) -> Option<String> {
+    let (b, ubr) = build?;
+    (!packaged_supported(b, ubr)).then(|| {
+        format!(
+            "Windows 10.0.{b}.{ubr} cannot run the WSL package (it needs Windows 11, or Windows 10 19044/19045 updated to .2311 or later): its inbox WSL gets the WSL 2 kernel"
+        )
+    })
+}
+
+/// When the WSL package or kernel is installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KernelTiming {
+    /// The features run and WSL lacks it: now.
+    Now,
+    /// The features wait for a restart: their MSIs fail before it (msiexec
+    /// refuses), so the run after the restart installs it.
+    AfterRestart,
+    /// WSL 2 runs already.
+    NotNeeded,
+}
+
+/// [`KernelTiming`] from whether a restart is pending and WSL 2 runs.
+pub fn kernel_timing(restart_pending: bool, ready: bool) -> KernelTiming {
+    if restart_pending {
+        KernelTiming::AfterRestart
+    } else if ready {
+        KernelTiming::NotNeeded
+    } else {
+        KernelTiming::Now
+    }
+}
+
+/// "the WSL package" -> "The WSL package".
+fn capitalized(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 /// This Windows' build and update revision.
@@ -344,7 +462,7 @@ fn install_msi_file(sink: &ProgressFn, msi: &std::path::Path, what: &str, remove
     if remove {
         let _ = std::fs::remove_file(&msi);
     }
-    match result {
+    let done = match result {
         Some((true, _, _)) => Ok(()),
         // 3010: installed, a restart finishes it.
         Some((false, out, err)) => {
@@ -352,7 +470,11 @@ fn install_msi_file(sink: &ProgressFn, msi: &std::path::Path, what: &str, remove
             if t.contains("3010") { Ok(()) } else { Err(format!("msiexec failed {}", t.trim())) }
         }
         None => Err("could not run msiexec.exe".into()),
+    };
+    if done.is_ok() {
+        sink(Progress::Log { line: format!("{} is installed", capitalized(what)) });
     }
+    done
 }
 
 /// What Setup knows about this computer's WSL 2, read before the engine
@@ -598,6 +720,58 @@ mod tests {
         assert!(packaged_supported(19045, 5737));
         assert!(!packaged_supported(19041, 9999));
         assert!(packaged_supported(22631, 1));
+    }
+
+    #[test]
+    fn the_wsl_package_is_installed_where_the_online_path_would_install_it() {
+        use WslInstall::{Kernel, Package};
+        // Windows 11, an updated Windows 10 21H2/22H2, an unknown build:
+        // the package, the kernel as the fallback.
+        for build in [Some((22631, 1)), Some((19044, 2311)), Some((19045, 5737)), None] {
+            assert_eq!(preferred(build), Package, "{build:?}");
+            assert_eq!(offline_order(build, true, true), [Package, Kernel], "{build:?}");
+            assert_eq!(package_unsupported_line(build), None, "{build:?}");
+        }
+        // LTSC 2021 as released (the test VM), 20H2 and older: the kernel
+        // only, never the package (WSL_E_OS_NOT_SUPPORTED there).
+        for build in [Some((19044, 1288)), Some((19045, 2310)), Some((19041, 9999)), Some((18363, 1))] {
+            assert_eq!(preferred(build), Kernel, "{build:?}");
+            assert_eq!(offline_order(build, true, true), [Kernel], "{build:?}");
+            assert_eq!(offline_order(build, true, false), [], "{build:?}");
+        }
+        let line = package_unsupported_line(Some((19044, 1288))).unwrap();
+        assert!(line.starts_with("Windows 10.0.19044.1288 cannot run the WSL package"), "{line}");
+        assert!(line.contains(".2311"), "{line}");
+    }
+
+    #[test]
+    fn offline_only_what_the_pack_has_is_tried() {
+        use WslInstall::{Kernel, Package};
+        let w11 = Some((22631, 1));
+        assert_eq!(offline_order(w11, true, false), [Package]);
+        // No package in the pack: its kernel.
+        assert_eq!(offline_order(w11, false, true), [Kernel]);
+        assert_eq!(offline_order(w11, false, false), []);
+        assert_eq!(offline_order(Some((19044, 1288)), false, true), [Kernel]);
+        // The pack's file kinds.
+        assert_eq!(Package.kind(), crate::pack::Kind::WslMsi);
+        assert_eq!(Kernel.kind(), crate::pack::Kind::KernelMsi);
+        assert_eq!(capitalized(Package.what()), "The WSL package");
+        assert_eq!(capitalized(Kernel.what()), "The WSL 2 kernel");
+        // The fake pack carries both.
+        let p = crate::pack::debug_fake();
+        assert_eq!(offline_order(w11, p.file(Package.kind()).is_some(), p.file(Kernel.kind()).is_some()), [Package, Kernel]);
+    }
+
+    #[test]
+    fn nothing_is_installed_before_the_restart_the_features_wait_for() {
+        // Phase 1: the features were just turned on: no MSI (it fails
+        // before the restart), whether WSL answers or not.
+        assert_eq!(kernel_timing(true, false), KernelTiming::AfterRestart);
+        assert_eq!(kernel_timing(true, true), KernelTiming::AfterRestart);
+        // Phase 2 (after the restart), or features that were on already.
+        assert_eq!(kernel_timing(false, false), KernelTiming::Now);
+        assert_eq!(kernel_timing(false, true), KernelTiming::NotNeeded);
     }
 
     #[test]
