@@ -172,7 +172,7 @@ pub fn on_channel<'a>(releases: &'a [Release], channel: Channel, belongs: impl F
         .filter(|r| match channel {
             Channel::Nightly => r.is_nightly(),
             Channel::Candidate => !r.is_nightly(),
-            Channel::Stable => !r.is_nightly() && !r.prerelease,
+            Channel::Stable => is_stable(r),
         })
         .collect();
     out.sort_by(|a, b| compare(&b.version(), &a.version()));
@@ -195,6 +195,21 @@ pub fn is_manager(r: &Release) -> bool {
 /// `spm-v0.8.0-rc11` → `0.8.0-rc11`.
 pub fn manager_version_of(r: &Release) -> String {
     r.tag_name.trim_start_matches(MANAGER_TAG_PREFIX).to_string()
+}
+
+/// Whether the Stable channel offers `r`. A Platform Manager release is
+/// stable by its version: a final version (`spm-v0.9.3`) is, a suffixed one
+/// (`spm-v0.9.4-rc1`) is a candidate, whatever GitHub's pre-release flag
+/// says (the shared repository's releases were all marked pre-release up to
+/// 0.9.3, so SENTIENT keeps "Latest"). Every other release goes by the flag.
+pub fn is_stable(r: &Release) -> bool {
+    if r.is_nightly() {
+        return false;
+    }
+    if is_manager(r) {
+        return !manager_version_of(r).contains('-');
+    }
+    !r.prerelease
 }
 
 /// A plain release number such as `4.4.0.1`: digits in at least three
@@ -350,6 +365,20 @@ mod tests {
             published_at: None,
             assets: vec![],
         }
+    }
+
+    #[test]
+    fn a_final_platform_manager_release_is_stable_even_when_marked_pre_release() {
+        let all = vec![rel("spm-v0.9.1", true), rel("spm-v0.9.3", true), rel("spm-v0.9.4-rc1", true), rel("4.4.1.0", false), rel("4.4.1.1-rc1", true)];
+        let stable: Vec<&str> = on_channel(&all, Channel::Stable, is_manager).iter().map(|r| r.tag_name.as_str()).collect();
+        assert_eq!(stable, ["spm-v0.9.3", "spm-v0.9.1"]);
+        let candidate: Vec<&str> = on_channel(&all, Channel::Candidate, is_manager).iter().map(|r| r.tag_name.as_str()).collect();
+        assert_eq!(candidate[0], "spm-v0.9.4-rc1");
+        // A normal (not pre-release) rc is still a candidate.
+        assert!(!is_stable(&rel("spm-v0.9.4-rc2", false)));
+        // SENTIENT's own releases still go by the flag.
+        let sentient: Vec<&str> = on_channel(&all, Channel::Stable, is_sentient).iter().map(|r| r.tag_name.as_str()).collect();
+        assert_eq!(sentient, ["4.4.1.0"]);
     }
 
     #[test]
