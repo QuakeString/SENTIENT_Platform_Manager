@@ -1684,13 +1684,18 @@ impl Manager {
                 .items_center()
                 .bg(bg)
                 .text_color(fg)
-                .border_b_1()
+                .rounded(px(crate::ui::PANEL_RADIUS))
+                .border_1()
                 .border_color(theme.border)
                 .child(Icon::new(if matches!(tone, crate::ui::Tone::Good) { IconName::CircleCheck } else { IconName::Info }).small())
                 // The buttons never wrap: the text is cut instead.
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_sm().child(text))
         };
-        let mut col = v_flex();
+        // Inset by the page gap like the cards, not a full-width strip from
+        // the menu's edge: there it met the menu's selected row where that
+        // row opens into the page, and its colour and bottom border stood
+        // as a line in the opening (Status, under the top bar).
+        let mut col = v_flex().gap_2().px(px(crate::theme::PAGE_GAP)).pt(px(crate::theme::PAGE_GAP));
         // B3/B4: this run follows a self-update.
         if let Some(from) = self.updated_from.clone() {
             let this = crate::updates::manager_version();
