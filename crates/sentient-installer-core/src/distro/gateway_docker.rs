@@ -1018,6 +1018,9 @@ mod tests {
         assert_eq!(image_version(&all[2]), None);
     }
 
+    // std::os::unix and the #[cfg(unix)] serial_devices_in: Unix only (it
+    // broke the core tests on windows-latest).
+    #[cfg(unix)]
     #[test]
     fn serial_adapters_prefer_their_stable_names() {
         use std::os::unix::fs::MetadataExt as _;
