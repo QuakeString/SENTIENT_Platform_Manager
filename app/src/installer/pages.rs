@@ -7,7 +7,7 @@ use gpui_kit::component::{
     button::ButtonVariants as _,
     checkbox::Checkbox,
     input::{Input, InputState},
-    menu::{DropdownMenu as _, PopupMenuItem},
+    menu::PopupMenuItem,
     scroll::ScrollableElement as _,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -252,14 +252,11 @@ impl Installer {
         let this = cx.entity().downgrade();
         let label = if chosen == list[0].version { format!("{chosen} (newest)") } else { chosen.clone() };
         Some(
-            crate::ui::button("sentient-version")
-                .outline()
-                
-                
-                .label(label)
-                .dropdown_caret(true)
-                .dropdown_menu(move |menu, _, _| {
-                    let mut menu = menu.max_h(px(320.)).scrollable(true);
+            crate::ui::fitted_dropdown(
+                "sentient-version",
+                crate::ui::button("sentient-version").outline().label(label).dropdown_caret(true),
+                move |menu, _, _| {
+                    let mut menu = menu;
                     for v in &list {
                         let this = this.clone();
                         let pick = v.version.clone();
@@ -270,7 +267,8 @@ impl Installer {
                         }));
                     }
                     menu
-                }),
+                },
+            ),
         )
     }
 

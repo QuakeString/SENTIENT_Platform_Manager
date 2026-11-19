@@ -1468,6 +1468,68 @@ pub fn popover_menu(theme: &Theme, id: &'static str, width: f32, rows: Vec<MenuR
         .map(|d| menu_appear(d, SharedString::from(format!("{id}-open")), up))
 }
 
+// ---------------------------------------------------------------------------
+// Long dropdown menus (the version pickers): open on the side with room and
+// never taller than that room, scrolling the rest
+// ---------------------------------------------------------------------------
+
+/// The tallest a long dropdown menu gets.
+pub const MENU_MAX_H: f32 = 320.;
+/// Kept free between a menu and the window's edge.
+const MENU_MARGIN: f32 = 16.;
+/// The shortest it gets (a window too small for more: the toolkit moves it).
+const MENU_MIN_H: f32 = 120.;
+
+thread_local! {
+    /// Where each fitted dropdown's trigger was last painted: top, bottom
+    /// and the window's height (logical pixels).
+    static MENU_ROOM: std::cell::RefCell<std::collections::HashMap<&'static str, (f32, f32, f32)>> = Default::default();
+}
+
+/// Whether a menu under a trigger at `top`..`bottom` of a `window_h` high
+/// window opens upwards, and its height: below unless it does not fit there
+/// and there is more room above; at most [`MENU_MAX_H`], at most the room.
+pub fn menu_fit(top: f32, bottom: f32, window_h: f32) -> (bool, f32) {
+    let below = window_h - bottom - MENU_MARGIN;
+    let above = top - MENU_MARGIN;
+    let up = below < MENU_MAX_H && above > below;
+    let room = if up { above } else { below };
+    (up, room.min(MENU_MAX_H).max(MENU_MIN_H))
+}
+
+/// `trigger` with a long dropdown menu (`items` adds its entries): it opens
+/// where there is room and scrolls past [`menu_fit`]'s height. `key` names
+/// the trigger (its place is remembered from the last frame).
+pub fn fitted_dropdown(
+    key: &'static str,
+    trigger: gpui_kit::component::button::Button,
+    items: impl Fn(gpui_kit::component::menu::PopupMenu, &mut Window, &mut Context<gpui_kit::component::menu::PopupMenu>) -> gpui_kit::component::menu::PopupMenu + 'static,
+) -> AnyElement {
+    use gpui_kit::base::ElementExt as _;
+    use gpui_kit::component::menu::DropdownMenu as _;
+    let fit = |k: &str| MENU_ROOM.with(|m| m.borrow().get(k).copied()).map(|(t, b, h)| menu_fit(t, b, h));
+    let up = fit(key).is_some_and(|(up, _)| up);
+    let anchor = if up { Anchor::BottomLeft } else { Anchor::TopLeft };
+    let menu = trigger.dropdown_menu_with_anchor(anchor, move |menu, window, cx| {
+        let h = fit(key).map(|(_, h)| h).unwrap_or(MENU_MAX_H);
+        items(menu.max_h(px(h)).scrollable(true), window, cx)
+    });
+    div()
+        .flex_shrink_0()
+        .relative()
+        .child(menu)
+        .on_prepaint(move |b, window, _| {
+            let room = (b.top().as_f32(), b.bottom().as_f32(), window.viewport_size().height.as_f32());
+            MENU_ROOM.with(|m| m.borrow_mut().insert(key, room));
+            // Drawn for the other side (first frame, the trigger moved): draw
+            // again, so the menu opens where there is room.
+            if up != menu_fit(room.0, room.1, room.2).0 {
+                window.refresh();
+            }
+        })
+        .into_any_element()
+}
+
 /// Every button: the toolkit's at the one button size (crate::theme::BUTTON_H
 /// high, BUTTON_PAD_X either side, at least BUTTON_MIN_W wide with a label,
 /// an ICON_BUTTON square with only an icon, BUTTON_RADIUS corners, the
@@ -2633,4 +2695,27 @@ pub fn ask_before_leaving(scope: Option<String>, window: &mut Window, cx: &mut A
 /// Screens: the leave prompt with a canned list (SPM_DEBUG_SETTINGS_PENDING=leave).
 pub fn debug_leave_prompt(scope: Option<String>, window: &mut Window, cx: &mut App) {
     ask_before_leaving(scope, window, cx, std::rc::Rc::new(|_, _| {}));
+}
+
+#[cfg(test)]
+mod menu_fit_tests {
+    use super::{MENU_MAX_H, menu_fit};
+
+    #[test]
+    fn a_long_menu_opens_where_there_is_room_and_fits_there() {
+        // The rc1 VM: 1920x1080 at 150 % (720 logical), the version picker
+        // near the bottom of the Update page. It opens upwards, within the window.
+        let (up, h) = menu_fit(497., 525., 720.);
+        assert!(up);
+        assert!(h <= MENU_MAX_H && h <= 497. - 16.);
+        // Plenty of room below: below, at the full height.
+        assert_eq!(menu_fit(100., 128., 900.), (false, MENU_MAX_H));
+        // Little room either side: the larger side, no taller than its room.
+        let (up, h) = menu_fit(180., 208., 420.);
+        assert!(!up);
+        assert_eq!(h, 420. - 208. - 16.);
+        let (up, h) = menu_fit(250., 278., 420.);
+        assert!(up);
+        assert_eq!(h, 250. - 16.);
+    }
 }

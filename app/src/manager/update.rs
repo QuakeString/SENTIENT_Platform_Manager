@@ -14,7 +14,7 @@ use gpui_kit::component::{
     ActiveTheme, Disableable as _, h_flex, v_flex,
     button::ButtonVariants as _,
     checkbox::Checkbox,
-    menu::{DropdownMenu as _, PopupMenuItem},
+    menu::PopupMenuItem,
 };
 use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -603,14 +603,13 @@ impl UpdatePage {
         let installed_owned = installed.to_string();
         // Docker: the entry the container runs (the tag may say "latest").
         let same_mark = if docker { " (running)" } else { " (installed)" };
-        let menu = crate::ui::button("version-pick")
-            .outline()
-            .label(format!("{} ▾", chosen.version))
-            .disabled(busy)
-            .dropdown_menu({
+        let menu = crate::ui::fitted_dropdown(
+            "version-pick",
+            crate::ui::button("version-pick").outline().label(format!("{} ▾", chosen.version)).disabled(busy),
+            {
                 let this = cx.entity().downgrade();
                 move |menu, _, _| {
-                    let mut menu = menu.max_h(px(320.)).scrollable(true);
+                    let mut menu = menu;
                     for (v, checked, note) in &items {
                         let mark = match releases::movement(&v.version, &installed_owned) {
                             Move::Same => same_mark,
@@ -629,7 +628,8 @@ impl UpdatePage {
                     }
                     menu
                 }
-            });
+            },
+        );
         let version = chosen.version.clone();
         let tag = self.record.as_ref().map(|r| sentient_installer_core::distro::docker_ops::image_tag(&r.stack.image).to_string()).unwrap_or_default();
         let floating = docker && !releases::is_numbered(&tag);

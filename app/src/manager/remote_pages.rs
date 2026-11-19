@@ -1952,27 +1952,25 @@ impl RemotePages {
             _ => Vec::new(),
         };
         let this = cx.entity().downgrade();
-        row = row.child(
-            crate::ui::button("r-other")
-                .outline()
-                .label("Other version")
-                .disabled(busy || versions.is_empty())
-                .dropdown_menu(move |menu, _, _| {
-                    let mut menu = menu;
-                    for (v, is_running, note) in &versions {
-                        let (t, ver) = (this.clone(), v.version.clone());
-                        let label = if *is_running { format!("{} (running)", v.label()) } else { format!("{}{note}", v.label()) };
-                        menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
-                            t.update(cx, |p, cx| {
-                                p.pick = Some(ver.clone());
-                                cx.notify();
-                            })
-                            .ok();
-                        }));
-                    }
-                    menu
-                }),
-        );
+        row = row.child(crate::ui::fitted_dropdown(
+            "r-other",
+            crate::ui::button("r-other").outline().label("Other version").disabled(busy || versions.is_empty()),
+            move |menu, _, _| {
+                let mut menu = menu;
+                for (v, is_running, note) in &versions {
+                    let (t, ver) = (this.clone(), v.version.clone());
+                    let label = if *is_running { format!("{} (running)", v.label()) } else { format!("{}{note}", v.label()) };
+                    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                        t.update(cx, |p, cx| {
+                            p.pick = Some(ver.clone());
+                            cx.notify();
+                        })
+                        .ok();
+                    }));
+                }
+                menu
+            },
+        ));
         // The server's gateway: its update (the older Python one's too), run
         // there by the same gateway-update job.
         let gateway_row = match &self.gateway {
