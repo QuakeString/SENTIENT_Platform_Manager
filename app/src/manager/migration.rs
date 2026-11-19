@@ -43,10 +43,10 @@ impl EventEmitter<RecordChanged> for MigrationPage {}
 
 fn describe(flavor: Flavor, windows: bool) -> &'static str {
     match flavor {
-        Flavor::Stock => t!("Everything in PostgreSQL. Simplest; suits small sites."),
-        Flavor::Timescaledb => t!("History compressed and kept in time chunks inside PostgreSQL."),
-        Flavor::Clickhouse if windows => t!("History in ClickHouse (Docker in WSL2), everything else in PostgreSQL. For large sites."),
-        Flavor::Clickhouse => t!("History in ClickHouse, everything else in PostgreSQL. For large sites."),
+        Flavor::Stock => n!("Everything in PostgreSQL. Simplest; suits small sites."),
+        Flavor::Timescaledb => n!("History compressed and kept in time chunks inside PostgreSQL."),
+        Flavor::Clickhouse if windows => n!("History in ClickHouse (Docker in WSL2), everything else in PostgreSQL. For large sites."),
+        Flavor::Clickhouse => n!("History in ClickHouse, everything else in PostgreSQL. For large sites."),
     }
 }
 
@@ -73,7 +73,7 @@ pub(crate) fn type_cards(
             .gap_2()
             .items_center()
             .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child(flavor_label(f)))
-            .when(is_current, |t| t.child(ui::pill(theme, Tone::Neutral, t!("Current")).text_size(px(12.))))
+            .when(is_current, |t| t.child(ui::pill(theme, Tone::Neutral, n!("Current")).text_size(px(12.))))
             .into_any_element();
         let pick = pick.clone();
         ui::radio_card_el(theme, SharedString::from(format!("{id}type-{}", f.as_str())), title, describe(f, windows), selected == Some(f), enabled)
@@ -90,7 +90,7 @@ pub(crate) fn move_data_card(theme: &gpui_kit::component::Theme, id: &str, open:
         .pt(px(10.))
         .border_t_1()
         .border_color(theme.border)
-        .child(div().text_sm().text_color(theme.muted_foreground).child(t!("Data location")))
+        .child(div().text_sm().text_color(theme.muted_foreground).child(n!("Data location")))
         .child(
             h_flex()
                 .gap(px(12.))
@@ -107,19 +107,19 @@ pub(crate) fn move_data_card(theme: &gpui_kit::component::Theme, id: &str, open:
                         .flex_1()
                         .min_w_0()
                         .gap_0p5()
-                        .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child(t!("Move data to another disk")))
-                        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(t!("PostgreSQL, ClickHouse, SENTIENT files or backups, each to its own disk or folder."))),
+                        .child(div().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child(n!("Move data to another disk")))
+                        .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(n!("PostgreSQL, ClickHouse, SENTIENT files or backups, each to its own disk or folder."))),
                 )
-                .child(ui::button(SharedString::from(format!("{id}move-data"))).outline().label(t!("Choose")).on_click(move |_, window, cx| open(window, cx))),
+                .child(ui::button(SharedString::from(format!("{id}move-data"))).outline().label(n!("Choose")).on_click(move |_, window, cx| open(window, cx))),
         )
 }
 
 /// Under the button: why it is off, when it is.
 pub(crate) fn change_hint(theme: &gpui_kit::component::Theme, external: bool, picked: bool) -> Option<Div> {
     let text = if external {
-        t!("Take over the compose file first.")
+        n!("Take over the compose file first.")
     } else if !picked {
-        t!("Pick another type to change to it.")
+        n!("Pick another type to change to it.")
     } else {
         return None;
     };
@@ -132,12 +132,12 @@ pub(crate) fn steps_text(theme: &gpui_kit::component::Theme, clickhouse_on_windo
         .gap_1()
         .text_sm()
         .text_color(theme.muted_foreground)
-        .child(t!("1. A full backup, history included, is written to the backups folder of the installation."))
-        .child(t!("2. SENTIENT stops for about a minute and starts again on the new type."))
-        .child(t!("3. The history from before the switch is then copied month by month while SENTIENT runs; charts fill in as it goes."))
-        .child(t!("4. The old history is kept where it was until you remove it."))
+        .child(n!("1. A full backup, history included, is written to the backups folder of the installation."))
+        .child(n!("2. SENTIENT stops for about a minute and starts again on the new type."))
+        .child(n!("3. The history from before the switch is then copied month by month while SENTIENT runs; charts fill in as it goes."))
+        .child(n!("4. The old history is kept where it was until you remove it."))
         .when(clickhouse_on_windows, |c| {
-            c.child(t!("ClickHouse is installed first (WSL2 and Docker under a hidden service account); if Windows must restart for WSL2, nothing is changed and you start again afterwards."))
+            c.child(n!("ClickHouse is installed first (WSL2 and Docker under a hidden service account); if Windows must restart for WSL2, nothing is changed and you start again afterwards."))
         })
 }
 
@@ -166,7 +166,7 @@ impl MigrationPage {
         #[cfg(debug_assertions)]
         if let Some(mode) = std::env::var("SPM_DEBUG_MIGRATION_JOB").ok().filter(|_| !DEBUG_JOB_RAN.swap(true, std::sync::atomic::Ordering::Relaxed)) {
             let again: std::rc::Rc<dyn Fn(&mut Self, &mut Context<Self>)> = std::rc::Rc::new(|_, _| {});
-            page.run_on_page(t!("Changing the database to PostgreSQL + ClickHouse").into(), move |sink| debug_migration(&mode, &sink), Some(again), cx);
+            page.run_on_page(n!("Changing the database to PostgreSQL + ClickHouse").into(), move |sink| debug_migration(&mode, &sink), Some(again), cx);
         }
         page
     }
@@ -205,20 +205,20 @@ impl MigrationPage {
 
     fn confirm_remove(&mut self, item: Kept, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
-        let text = tf!(
+        let text = nf!(
             "{} {} is deleted. This can't be undone.",
             item.name,
             match item.kind {
-                kept::KeptKind::History => t!("and the history in it"),
-                kept::KeptKind::DatabaseCopy => t!("and everything in that database"),
-                kept::KeptKind::ClickHouse => t!("with its WSL2 distro, its data and the hidden service account"),
-                kept::KeptKind::ClickhouseDatabase => t!("and the ClickHouse history in it"),
+                kept::KeptKind::History => n!("and the history in it"),
+                kept::KeptKind::DatabaseCopy => n!("and everything in that database"),
+                kept::KeptKind::ClickHouse => n!("with its WSL2 distro, its data and the hidden service account"),
+                kept::KeptKind::ClickhouseDatabase => n!("and the ClickHouse history in it"),
             }
         );
         crate::modal::alert(window, cx, move |dialog, _, _| {
             let this = this.clone();
             let item = item.clone();
-            dialog.title(t!("Remove for good?")).description(text.clone()).confirm().ok_text(t!("Remove")).on_ok(move |_, _, cx| {
+            dialog.title(n!("Remove for good?")).description(text.clone()).confirm().ok_text(n!("Remove")).on_ok(move |_, _, cx| {
                 let item = item.clone();
                 this.update(cx, |page, cx| {
                     let Some(record) = page.record.clone() else { return };
@@ -291,7 +291,7 @@ impl MigrationPage {
 
     fn migrate_to(&mut self, target: Flavor, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
-        let title = tf!("Changing the database to {}", flavor_label(target));
+        let title = nf!("Changing the database to {}", flavor_label(target));
         let again: std::rc::Rc<dyn Fn(&mut Self, &mut Context<Self>)> = std::rc::Rc::new(move |p, cx| p.migrate_to(target, cx));
         if crate::rootjob::needed(&record) {
             let args = vec!["migrate".to_string(), target.as_str().to_string()];
@@ -343,7 +343,7 @@ impl MigrationPage {
                 this.update(cx, |page, cx| {
                     let Some(record) = page.record.clone() else { return };
                     page.preflight = crate::manager::remote_pages::Preflight::Idle;
-                    page.run_on_page(t!("Taking over the compose file").into(), move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), creds.db.as_deref(), creds.ch.as_deref(), sink).map(|_| ()), None, cx);
+                    page.run_on_page(n!("Taking over the compose file").into(), move |sink| crate::adopt::take_over_compose(record, compose.as_deref(), creds.db.as_deref(), creds.ch.as_deref(), sink).map(|_| ()), None, cx);
                 })
                 .ok();
             }),
@@ -354,7 +354,7 @@ impl MigrationPage {
 
     fn resume(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
-        let title = t!("Copying the history from before the switch").to_string();
+        let title = n!("Copying the history from before the switch").to_string();
         let again: std::rc::Rc<dyn Fn(&mut Self, &mut Context<Self>)> = std::rc::Rc::new(|p, cx| p.resume(cx));
         if crate::rootjob::needed(&record) {
             let args = vec!["resume-migration".to_string()];
@@ -387,7 +387,7 @@ fn debug_migration(mode: &str, sink: &sentient_installer_core::progress::Progres
     pause();
     sink(Progress::Step { name: n!("Copying the history from before the switch").into() });
     for m in ["2026-08", "2026-09", "2026-10"] {
-        log(&tf!("{m}: copied and checked"));
+        log(&nf!("{m}: copied and checked"));
     }
     match mode {
         "running" => {
@@ -414,7 +414,7 @@ impl MigrationPage {
             return None;
         }
         let this = cx.entity().downgrade();
-        let back = crate::manager::jobview::back_button("mig-job-back", t!("Migration"), move |_, cx| {
+        let back = crate::manager::jobview::back_button("mig-job-back", n!("Migration"), move |_, cx| {
             this.update(cx, |p, cx| {
                 p.shown = None;
                 p.job.update(cx, |j, cx| j.reset(cx));
@@ -423,7 +423,7 @@ impl MigrationPage {
             .ok();
         });
         let retry = match job.state() {
-            JobState::Failed(m) => job.retry().map(|r| crate::ui::button("mig-job-retry").primary().label(crate::ui::retry_label(m, t!("Try again"))).on_click(move |_, _, cx| r(cx)).into_any_element()),
+            JobState::Failed(m) => job.retry().map(|r| crate::ui::button("mig-job-retry").primary().label(crate::ui::retry_label(m, n!("Try again"))).on_click(move |_, _, cx| r(cx)).into_any_element()),
             _ => None,
         };
         // Secondary first, the primary at the right end.
@@ -436,7 +436,7 @@ impl Render for MigrationPage {
         let theme = cx.theme().clone();
         let page = ui::page(
             &theme,
-            t!("Migration"),
+            n!("Migration"),
             "",
         );
         if let Some(view) = self.job_view(cx) {
@@ -457,10 +457,10 @@ impl Render for MigrationPage {
 
         let main = match &targets {
             Err(why) => ui::panel(&theme)
-                .child(ui::fact(&theme, t!("Database"), flavor_label(current)))
+                .child(ui::fact(&theme, n!("Database"), flavor_label(current)))
                 .child(div().text_sm().text_color(theme.muted_foreground).child(*why)),
             Ok(targets) => ui::panel(&theme)
-                .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(t!("Database type")))
+                .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(n!("Database type")))
                 .child({
                     let locked = busy || unfinished.is_some() || external;
                     let this = cx.entity().downgrade();
@@ -483,7 +483,7 @@ impl Render for MigrationPage {
                             r.child(crate::ui::probed(
                                 crate::ui::button("migrate")
                                     .primary()
-                                    .label(chosen.map(|f| tf!("Change to {}", flavor_label(f))).unwrap_or_else(|| t!("Change database").into()))
+                                    .label(chosen.map(|f| nf!("Change to {}", flavor_label(f))).unwrap_or_else(|| n!("Change database").into()))
                                     // Off while the preflight says the change cannot be made.
                                     .disabled(busy || external || chosen.is_none() || unfinished.is_some() || self.preflight != crate::manager::remote_pages::Preflight::Idle)
                                     .loading(self.preflight == crate::manager::remote_pages::Preflight::Checking)
@@ -495,14 +495,14 @@ impl Render for MigrationPage {
                             r.child(crate::ui::probed(
                                 crate::ui::button("migrate-confirm")
                                     .danger()
-                                    .label(t!("Stop SENTIENT and change now"))
+                                    .label(n!("Stop SENTIENT and change now"))
                                     .disabled(busy)
                                     .on_click(cx.listener(|this, _, _, cx| this.start(cx))),
                             ))
                             .child(crate::ui::probed(
                                 crate::ui::button("migrate-cancel")
                                     .ghost()
-                                    .label(t!("Cancel"))
+                                    .label(n!("Cancel"))
                                     .disabled(busy)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.confirm = false;
@@ -513,7 +513,7 @@ impl Render for MigrationPage {
                 )
                 .when(crate::movedata::unsupported(record).is_none(), |p| {
                     p.child(move_data_card(&theme, "", std::rc::Rc::new(|window, cx| {
-                        crate::manager::movedata::open(crate::movedata::Target::Local, t!("This computer"), None, window, cx)
+                        crate::manager::movedata::open(crate::movedata::Target::Local, n!("This computer"), None, window, cx)
                     })))
                 }),
         };
@@ -526,22 +526,22 @@ impl Render for MigrationPage {
         let root_only = crate::rootjob::needed(record) && !self.kept_asked;
         let kept_panel = match &self.kept {
             None => ui::panel(&theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child(t!("Kept after earlier changes")))
-                .child(div().text_sm().text_color(theme.muted_foreground).child(t!("Looking…"))),
+                .child(div().font_weight(FontWeight::MEDIUM).child(n!("Kept after earlier changes")))
+                .child(div().text_sm().text_color(theme.muted_foreground).child(n!("Looking…"))),
             Some(Err(e)) => ui::panel(&theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child(t!("Kept after earlier changes")))
-                .child(div().text_sm().text_color(theme.danger).child(tf!("Could not look: {e}"))),
+                .child(div().font_weight(FontWeight::MEDIUM).child(n!("Kept after earlier changes")))
+                .child(div().text_sm().text_color(theme.danger).child(nf!("Could not look: {e}"))),
             Some(Ok(items)) => ui::panel(&theme)
-                .child(div().font_weight(FontWeight::MEDIUM).child(t!("Kept after earlier changes")))
+                .child(div().font_weight(FontWeight::MEDIUM).child(n!("Kept after earlier changes")))
                 .when(items.is_empty() && !root_only, |p| {
-                    p.child(div().text_sm().text_color(theme.muted_foreground).child(t!("Nothing: no old history and no database copies.")))
+                    p.child(div().text_sm().text_color(theme.muted_foreground).child(n!("Nothing: no old history and no database copies.")))
                 })
                 .when(root_only, |p| {
                     p.child(
                         h_flex().child(
                             crate::ui::button("show-kept")
                                 .outline()
-                                .label(t!("Show (asks for the administrator password)"))
+                                .label(n!("Show (asks for the administrator password)"))
                                 .disabled(busy)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.kept_asked = true;
@@ -552,7 +552,7 @@ impl Render for MigrationPage {
                 })
                 .when(!items.is_empty(), |p| {
                     p.child(div().text_sm().text_color(theme.muted_foreground).child(
-                        t!("Migrations keep the old history and updates keep a copy of the database. Remove them once you are sure you no longer need them."),
+                        n!("Migrations keep the old history and updates keep a copy of the database. Remove them once you are sure you no longer need them."),
                     ))
                 })
                 .children(items.iter().enumerate().map(|(i, item)| {
@@ -572,7 +572,7 @@ impl Render for MigrationPage {
                         .child(
                             crate::ui::button(SharedString::from(format!("remove-{i}")))
                                 .outline()
-                                .label(t!("Remove"))
+                                .label(n!("Remove"))
                                 .disabled(busy)
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.confirm_remove(item_for_click.clone(), window, cx)
@@ -584,8 +584,8 @@ impl Render for MigrationPage {
         page.when_some(unfinished, |p, state| {
             p.child(
                 ui::panel(&theme)
-                    .child(ui::pill(&theme, Tone::Warn, t!("History copy not finished")))
-                    .child(div().text_sm().child(tf!(
+                    .child(ui::pill(&theme, Tone::Warn, n!("History copy not finished")))
+                    .child(div().text_sm().child(nf!(
                         "SENTIENT runs on {} since the switch from {}, but part of the history from before it is still being copied. Continue the copy; months already copied are skipped.",
                         flavor_label(state.to),
                         flavor_label(state.from)
@@ -594,7 +594,7 @@ impl Render for MigrationPage {
                         h_flex().child(
                             crate::ui::button("resume")
                                 .primary()
-                                .label(t!("Continue copying"))
+                                .label(n!("Continue copying"))
                                 .disabled(busy)
                                 .on_click(cx.listener(|this, _, _, cx| this.resume(cx))),
                         ),
@@ -605,8 +605,8 @@ impl Render for MigrationPage {
             page.child(if external {
                 crate::manager::remote_pages::foreign_compose_notice(
                     &theme,
-                    t!("The database type cannot be changed now."),
-                    crate::ui::button("mig-take-over").outline().label(t!("Take over the compose file")).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element(),
+                    n!("The database type cannot be changed now."),
+                    crate::ui::button("mig-take-over").outline().label(n!("Take over the compose file")).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.open_take_over(cx))).into_any_element(),
                 )
             } else {
                 crate::manager::remote_pages::preflight_notice(&theme, &why, None)

@@ -1229,7 +1229,7 @@ impl Installer {
         }
         self.chosen_version = Some(version.clone());
         self.online = None;
-        self.sentient_version = format!("{version} (downloaded)").into();
+        self.sentient_version = tf!("{version} (downloaded)").into();
         cx.notify();
         let native = self.engine == Engine::Native;
         let task = cx.spawn(async move |this, cx| {
@@ -1605,7 +1605,6 @@ impl Installer {
             FINISH => t!("Close"),
             _ => t!("Next"),
         };
-        let h = px(crate::theme::BAR_CTRL_H);
         h_flex()
             .flex_shrink_0()
             .px(px(ui::PAGE_PAD))
@@ -1639,8 +1638,8 @@ impl Installer {
                 bar.child(crate::ui::probed(
                     crate::ui::button("cancel")
                         .outline()
-                        .h(h)
-                        .px_4()
+                        
+                        
                         .label(t!("Cancel"))
                         .on_click(cx.listener(|this, _, window, cx| this.confirm_cancel(window, cx))),
                 ))
@@ -1649,8 +1648,8 @@ impl Installer {
                 bar.child(crate::ui::probed(
                     crate::ui::button("back")
                         .outline()
-                        .h(h)
-                        .px_4()
+                        
+                        
                         .label(t!("Back"))
                         .on_click(cx.listener(|this, _, _, cx| this.go(this.previous_shown(this.step), cx))),
                 ))
@@ -1658,8 +1657,8 @@ impl Installer {
             .child(crate::ui::probed(
                 crate::ui::button("next")
                     .primary()
-                    .h(h)
-                    .px_5()
+                    
+                    
                     .label(next_label)
                     .disabled((self.step == INSTALL && !failed) || blocked.is_some())
                     .on_click(cx.listener(|this, _, window, cx| this.next(window, cx))),

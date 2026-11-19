@@ -406,15 +406,15 @@ impl EarlierPage {
             .border_t_1()
             .border_color(theme.border)
             .child(div().flex_1())
-            .child(crate::ui::probed(crate::ui::button("back").outline().h(px(crate::theme::BAR_CTRL_H)).px_4().label(t!("Back")).on_click(cx.listener(|this, _, _, cx| {
+            .child(crate::ui::probed(crate::ui::button("back").outline().label(t!("Back")).on_click(cx.listener(|this, _, _, cx| {
                 this.screen = Screen::Choices;
                 cx.notify();
             }))))
             .child(crate::ui::probed(
                 crate::ui::button("remove-fresh")
                     .danger()
-                    .h(px(crate::theme::BAR_CTRL_H))
-                    .px_5()
+                    
+                    
                     .label(t!("Remove and install fresh"))
                     .disabled(!self.understood)
                     .on_click(cx.listener(|this, _, _, cx| this.start(Run::Remove, cx))),

@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, Icon, IconName, h_flex, v_flex,
     button::ButtonVariants as _,
     checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
@@ -1373,7 +1373,7 @@ impl RestoreFlow {
                     .items_center()
                     .child(muted(theme, tf!("{} differ · {} are the same", p.settings.len(), p.same)))
                     .when(p.settings.len() > 8, |r| {
-                        r.child(ui::button("rs-show-all").ghost().small().label(if self.show_all { t!("Show fewer") } else { t!("Show all") }).on_click(cx.listener(|f, _, _, cx| {
+                        r.child(ui::button("rs-show-all").ghost().label(if self.show_all { t!("Show fewer") } else { t!("Show all") }).on_click(cx.listener(|f, _, _, cx| {
                             f.show_all = !f.show_all;
                             cx.notify();
                         })))
@@ -1387,7 +1387,7 @@ impl RestoreFlow {
             let key = r.key.clone();
             let choice: AnyElement = match r.kind {
                 SettingKind::Fixed => muted(theme, if self.target.is_server() { t!("This server's") } else { t!("This computer's") }).into_any_element(),
-                SettingKind::Gateway => ui::button(SharedString::from(format!("rs-gw-{key}"))).ghost().small().label(t!("Open Gateway after")).on_click(cx.listener(|f, _, _, cx| f.leave(Some("gateway"), cx))).into_any_element(),
+                SettingKind::Gateway => ui::button(SharedString::from(format!("rs-gw-{key}"))).ghost().label(t!("Open Gateway after")).on_click(cx.listener(|f, _, _, cx| f.leave(Some("gateway"), cx))).into_any_element(),
                 SettingKind::Locked => {
                     licence = Some(r.backup.clone());
                     let mut seg = ui::seg_track(theme);
@@ -2562,7 +2562,7 @@ pub fn history_card(theme: &gpui_kit::component::Theme, target: &Target, entries
                         )
                         .when(!narrow, |r| r.child(div().w(px(160.)).flex_shrink_0().text_size(px(13.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(e.by.clone())))
                         .child(h_flex().w(px(110.)).flex_shrink_0().child(result_pill(theme, e.result)))
-                        .child(h_flex().w(px(56.)).flex_shrink_0().justify_end().child(ui::button(SharedString::from(format!("rh-log-{i}"))).ghost().small().label(t!("Log")).on_click(move |_, _, cx| HistoryDialog::open(t.clone(), e2.clone(), cx)))),
+                        .child(h_flex().w(px(56.)).flex_shrink_0().justify_end().child(ui::button(SharedString::from(format!("rh-log-{i}"))).ghost().label(t!("Log")).on_click(move |_, _, cx| HistoryDialog::open(t.clone(), e2.clone(), cx)))),
                 );
             }
         }

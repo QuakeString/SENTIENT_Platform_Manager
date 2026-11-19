@@ -208,7 +208,7 @@ const UI_CALLEES: &[&str] = &[
 ];
 
 const LOGIC_CALLEES: &[&str] = &[
-    "button", ".id", "id", ".arg", ".args", "Command::new", "var", "var_os", "env::var", "env::var_os", "std::env::var", "set_var", ".join", ".starts_with", ".ends_with",
+    "button", ".id", "id", ".arg", ".args", "Command::new", "var", "var_os", "env::var", "env::var_os", "std::env::var", "set_var", ".join", ".starts_with", ".ends_with", "label_starts", "crate::i18n::label_starts", "i18n::label_starts",
     ".contains", ".strip_prefix", ".strip_suffix", ".split", ".splitn", ".rsplit", ".rsplitn", ".split_once", ".rsplit_once", ".replace", ".replacen", ".find", ".rfind", ".trim_start_matches",
     ".trim_end_matches", ".trim_matches", ".get", ".get_mut", ".remove", ".entry", ".contains_key", "parse_from_str", ".format", ".parse", ".key", ".eq", ".query", ".execute", ".prepare",
     ".query_one", ".query_opt", ".batch_execute", ".simple_query", "Path::new", "PathBuf::from", ".push", ".with_extension", ".set_extension", ".file_name", ".with_file_name", ".matches",

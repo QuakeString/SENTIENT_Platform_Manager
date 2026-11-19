@@ -187,7 +187,7 @@ pub fn start_delay_row(theme: &Theme, state: &Entity<gpui_kit::component::input:
 /// The start delay with its message when the value cannot be used (a red
 /// border and one line under the row).
 pub fn start_delay_row_checked(theme: &Theme, state: &Entity<gpui_kit::component::input::InputState>, problem: Option<String>) -> Div {
-    use gpui_kit::component::{Sizable as _, button::ButtonVariants as _, IconName};
+    use gpui_kit::component::{button::ButtonVariants as _, IconName};
     v_flex()
         .gap_1()
         .child(
@@ -200,7 +200,7 @@ pub fn start_delay_row_checked(theme: &Theme, state: &Entity<gpui_kit::component
                     if problem.is_some() { i.border_color(theme.danger).focus_bordered(false) } else { i }
                 }))
                 .child(div().text_sm().text_color(theme.muted_foreground).child("seconds"))
-                .child(crate::ui::button("start-delay-help").ghost().xsmall().icon(IconName::Info).tooltip(crate::i18n::t(START_DELAY_HELP))),
+                .child(crate::ui::button("start-delay-help").ghost().icon(IconName::Info).tooltip(START_DELAY_HELP)),
         )
         .when_some(problem, |d, p| d.child(div().text_xs().text_color(theme.danger).child(p)))
 }
@@ -480,6 +480,34 @@ pub fn info(id: SharedString, help: SharedString) -> impl IntoElement {
         .child(InfoIcon)
         .child(layout_probe("info-icon"))
         .tooltip(move |_, cx| cx.new(|_| InfoTip(help.clone())).into())
+}
+
+/// A lock where a value cannot be changed here, its tooltip saying why
+/// and where to change it (the gateway's SENTIENT-owned settings).
+pub fn lock_tip(id: SharedString, why: SharedString) -> impl IntoElement {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(22.))
+        .flex_shrink_0()
+        .rounded(px(5.))
+        .cursor_default()
+        .hover(|d| d.bg(black().opacity(0.06)))
+        .relative()
+        .child(LockIcon)
+        .child(layout_probe("lock-icon"))
+        .tooltip(move |_, cx| cx.new(|_| InfoTip(why.clone())).into())
+}
+
+#[derive(IntoElement)]
+struct LockIcon;
+
+impl RenderOnce for LockIcon {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Lock).size(px(14.)).text_color(cx.theme().muted_foreground)
+    }
 }
 
 /// The (i) itself, in the muted text colour of its theme.
@@ -1026,6 +1054,11 @@ pub fn reduce_motion() -> bool {
         if std::env::var("SPM_REDUCE_MOTION").is_ok_and(|v| v == "1") || std::env::var_os("SPM_REDUCED_MOTION").is_some() {
             return true;
         }
+        // Windows: "Show animations in Windows" off.
+        #[cfg(windows)]
+        if !windows_animations_on() {
+            return true;
+        }
         #[cfg(target_os = "linux")]
         {
             let out = |cmd: &str, args: &[&str]| sentient_installer_core::host::host_command(cmd).args(args).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
@@ -1038,6 +1071,17 @@ pub fn reduce_motion() -> bool {
         }
         false
     })
+}
+
+/// Windows' "Show animations in Windows" (SPI_GETCLIENTAREAANIMATION);
+/// on when it cannot be read.
+#[cfg(windows)]
+fn windows_animations_on() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION};
+    let mut on: windows_sys::core::BOOL = 1;
+    // SAFETY: this action writes one BOOL to the pointer given.
+    let ok = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&mut on as *mut windows_sys::core::BOOL).cast(), 0) };
+    ok == 0 || on != 0
 }
 
 // Popups open with one motion per kind; pages switch instantly (the
@@ -1178,16 +1222,14 @@ pub fn stop_hover(theme: &Theme) -> (Hsla, Hsla, Hsla) {
     (theme.danger.opacity(0.14), theme.danger, theme.danger)
 }
 
-/// A service row's 32 px outline icon button with an 18 px icon and its
+/// A service row's outline icon button (the one icon-button square) with its
 /// name as the tooltip. It hovers teal, or red for Stop.
 pub fn svc_icon_button(theme: &Theme, id: SharedString, icon: gpui_kit::component::Icon, tip: &'static str, enabled: bool, stop: bool) -> gpui_kit::component::button::Button {
-    use gpui_kit::component::{Disableable as _, Sizable as _};
+    use gpui_kit::component::{Disableable as _};
     let (bg, border, fg) = if stop { stop_hover(theme) } else { (theme.primary.opacity(0.12), theme.primary, theme.primary) };
     button(id)
         .outline()
-        .with_size(px(32.))
         .icon(icon)
-        .icon_size(px(18.))
         .tooltip(tip)
         .hover_colors(bg, border, fg)
         .disabled(!enabled)
@@ -1410,9 +1452,66 @@ pub fn popover_menu(theme: &Theme, id: &'static str, width: f32, rows: Vec<MenuR
         .map(|d| menu_appear(d, SharedString::from(format!("{id}-open")), up))
 }
 
-/// Every button: the toolkit's, with the mockup's medium-weight label.
+/// Every button: the toolkit's at the one button size (crate::theme::BUTTON_H
+/// high, BUTTON_PAD_X either side, at least BUTTON_MIN_W wide with a label,
+/// an ICON_BUTTON square with only an icon, BUTTON_RADIUS corners, the
+/// toolkit's text_sm label at medium weight). Call sites never change its
+/// size, padding, corners or font (tests/layout/buttons.py --source).
 pub fn button(id: impl Into<gpui_kit::ElementId>) -> gpui_kit::component::button::Button {
-    gpui_kit::component::button::Button::new(id).font_weight(FontWeight::MEDIUM)
+    use crate::theme::{BUTTON_MIN_W, BUTTON_PAD_X, BUTTON_RADIUS};
+    use gpui_kit::component::Sizable as _;
+    gpui_kit::component::button::Button::new(id)
+        .with_size(gpui_kit::component::Size::Medium)
+        .label_box(px(BUTTON_PAD_X), px(BUTTON_MIN_W))
+        .rounded(px(BUTTON_RADIUS))
+        .font_weight(FontWeight::MEDIUM)
+}
+
+/// A button in a fill of its own (a dialog's red destructive action, an
+/// instance's Open in the instance colour), which the toolkit's variants do
+/// not give: the one button box of crate::ui::button (BUTTON_H, BUTTON_PAD_X,
+/// BUTTON_MIN_W, BUTTON_RADIUS, text_sm at medium weight), reported to the
+/// layout test as a labelled button (`LAYOUT btn label …`).
+pub fn solid_button(id: impl Into<gpui_kit::ElementId>, label: SharedString, bg: Hsla, fg: Hsla, on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
+    use crate::theme::{BUTTON_H, BUTTON_MIN_W, BUTTON_PAD_X, BUTTON_RADIUS};
+    let id = id.into();
+    let probe = cfg!(debug_assertions) && gpui_kit::component::button::LAYOUT_PROBE.load(std::sync::atomic::Ordering::Relaxed);
+    let name = format!("{id:?}");
+    h_flex()
+        .id(id)
+        .relative()
+        .flex_shrink_0()
+        .h(px(BUTTON_H))
+        .min_w(px(BUTTON_MIN_W))
+        .px(px(BUTTON_PAD_X))
+        .justify_center()
+        .items_center()
+        .rounded(px(BUTTON_RADIUS))
+        .bg(bg)
+        .text_color(fg)
+        .text_sm()
+        .font_weight(FontWeight::MEDIUM)
+        .whitespace_nowrap()
+        .cursor_pointer()
+        .hover(|d| d.opacity(0.9))
+        .child(label)
+        .when(probe, move |d| {
+            d.child(
+                div().absolute().inset_0().child(
+                    canvas(
+                        move |b, window, _| {
+                            let (l, r) = (f32::from(b.origin.x), f32::from(b.origin.x + b.size.width));
+                            let (t, bt) = (f32::from(b.origin.y), f32::from(b.origin.y + b.size.height));
+                            let fs = 0.875 * f32::from(window.rem_size());
+                            eprintln!("LAYOUT btn label {l:.2} {r:.2} {t:.2} {bt:.2} {fs:.2} {name}");
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .size_full(),
+                ),
+            )
+        })
+        .on_click(on_click)
 }
 
 /// A bar of coloured parts in a rounded track (the disk's PostgreSQL,
@@ -1535,6 +1634,9 @@ pub fn refresh_button(id: &'static str, busy: bool, window: &mut Window, on: imp
     use gpui_kit::component::Disableable as _;
     let now = std::time::Instant::now();
     let turn = std::time::Duration::from_secs_f32(REFRESH_TURN);
+    // Reduce motion: upright (and not clickable) while it reads, no frames
+    // asked for, and clickable again as soon as the reading ended.
+    let motion = !reduce_motion();
     let start = SPINS.with(|s| {
         let mut s = s.borrow_mut();
         if busy {
@@ -1545,6 +1647,10 @@ pub fn refresh_button(id: &'static str, busy: bool, window: &mut Window, on: imp
         let stop = match stop {
             Some(t) => t,
             None if busy => return Some(start),
+            None if !motion => {
+                s.remove(id);
+                return None;
+            }
             None => {
                 // Busy no more: on at least one turn, to the end of this one.
                 let e = now.duration_since(start).as_secs_f32().max(REFRESH_TURN);
@@ -1560,8 +1666,8 @@ pub fn refresh_button(id: &'static str, busy: bool, window: &mut Window, on: imp
             Some(start)
         }
     });
-    let angle = start.map(|t| (now.duration_since(t).as_secs_f32() % REFRESH_TURN) / REFRESH_TURN * std::f32::consts::TAU).unwrap_or(0.);
-    if start.is_some() {
+    let angle = start.filter(|_| motion).map(|t| (now.duration_since(t).as_secs_f32() % REFRESH_TURN) / REFRESH_TURN * std::f32::consts::TAU).unwrap_or(0.);
+    if start.is_some() && motion {
         window.request_animation_frame();
     }
     button(id)
@@ -1693,17 +1799,14 @@ pub fn layout_probe(name: &'static str) -> impl IntoElement {
 // Skeletons: a page's final layout while its data loads
 // ---------------------------------------------------------------------------
 
-/// Motion off: static placeholders (SPM_REDUCED_MOTION, or GNOME/KDE's
-/// "reduce animations" when it can be read).
+/// Motion off: static placeholders. The same answer as [`reduce_motion`]
+/// (the desktop's choice, SPM_REDUCED_MOTION, or a software renderer):
+/// the placeholders' shimmer once asked for every frame on its own, also
+/// in a virtual machine without a GPU, where each frame is drawn on the
+/// processor (the 2026-11-18 rc5 VM pass: Statistics took 3 of 4
+/// processors while its Server card loaded).
 pub(crate) fn reduced_motion() -> bool {
-    static R: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *R.get_or_init(|| {
-        std::env::var_os("SPM_REDUCED_MOTION").is_some()
-            || sentient_installer_core::host::host_command("gsettings")
-                .args(["get", "org.gnome.desktop.interface", "enable-animations"])
-                .output()
-                .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "false")
-    })
+    reduce_motion()
 }
 
 /// A placeholder block of `w` × `h` in the muted surface tint, with the
@@ -1907,16 +2010,13 @@ pub enum RowMenuItem {
 }
 
 /// A row's actions behind the three dots: the outlined 28 px button with
-/// the 8 px radius that every list row in SPM uses (Instances, Backup…),
+/// the button radius that every list row in SPM uses (Instances, Backup…),
 /// never a bare chevron.
 pub fn row_menu(id: impl Into<SharedString>, tip: &'static str, disabled: bool, items: Vec<RowMenuItem>) -> impl IntoElement {
     use gpui_kit::component::{Disableable as _, menu::{DropdownMenu as _, PopupMenuItem}};
     let items = std::rc::Rc::new(items);
     button(gpui_kit::ElementId::Name(id.into()))
         .outline()
-        .w(px(28.))
-        .h(px(28.))
-        .rounded(px(8.))
         .icon(gpui_kit::component::Icon::new(gpui_kit::component::IconName::Ellipsis).size(px(18.)))
         .tooltip(tip)
         .disabled(disabled)
@@ -1975,7 +2075,7 @@ pub const COL_GAP: f32 = 18.;
 pub fn control_h() -> Length {
     use gpui_kit::component::StyleSized as _;
     let mut d = div().input_h(gpui_kit::component::Size::Medium);
-    d.style().size.height.expect("the toolkit's input sets a height")
+    d.style().size.height.expect(t!("the toolkit's input sets a height"))
 }
 
 #[cfg(test)]
@@ -2270,6 +2370,12 @@ pub fn stacked() -> bool {
 /// The settings card's tabs: on top, each with its count of changes (red
 /// when it holds a field that is not valid); they wrap on a narrow window.
 pub fn card_tabs(theme: &Theme, id: &str, titles: &[&'static str], active: usize, badges: &[(usize, bool)], pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
+    card_tabs_locked(theme, id, titles, active, badges, &[], pick)
+}
+
+/// [`card_tabs`], a small lock after the title of each tab in `locked`
+/// (its values are set elsewhere: the gateway's SENTIENT-owned tabs).
+pub fn card_tabs_locked(theme: &Theme, id: &str, titles: &[&'static str], active: usize, badges: &[(usize, bool)], locked: &[bool], pick: std::rc::Rc<dyn Fn(usize, &mut App)>) -> Div {
     h_flex()
         .flex_wrap()
         .gap(px(4.))
@@ -2295,6 +2401,9 @@ pub fn card_tabs(theme: &Theme, id: &str, titles: &[&'static str], active: usize
                 .text_color(if on { theme.primary } else { theme.muted_foreground })
                 .when(!on, |d| d.hover(|d| d.text_color(theme.foreground)))
                 .child(*title)
+                .when(locked.get(i).copied().unwrap_or(false), |d| {
+                    d.child(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Lock).size(px(13.)).text_color(theme.muted_foreground))
+                })
                 .when(n > 0 || bad, |d| {
                     d.child(
                         div()

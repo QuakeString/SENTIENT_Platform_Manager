@@ -222,7 +222,8 @@ pub fn running_version(record: &InstallationRecord) -> Option<String> {
     if let Ok(v) = std::env::var("SPM_DEBUG_RUNNING_VERSION") {
         return Some(v).filter(|v| !v.is_empty());
     }
-    sentient_installer_core::distro::docker_ops::running_version(&record.stack)
+    // A read: SENTIENT's stopped WSL distro stays stopped (Windows).
+    sentient_installer_core::distro::idle::reading(|| sentient_installer_core::distro::docker_ops::running_version(&record.stack))
 }
 
 /// The version updates compare with: what runs, else what was recorded.

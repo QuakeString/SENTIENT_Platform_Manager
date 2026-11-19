@@ -10,8 +10,9 @@ pub(crate) mod backup;
 pub(crate) mod startup;
 pub(crate) mod files;
 pub(crate) mod folder_chooser;
-mod gateway;
-mod instances;
+pub(crate) mod gateway;
+pub(crate) mod gateway_settings;
+pub(crate) mod instances;
 pub(crate) mod logs;
 pub(crate) mod migration;
 pub(crate) mod movedata;
@@ -29,6 +30,7 @@ pub(crate) mod setup_guide;
 pub(crate) mod shell;
 pub(crate) mod setting_field;
 pub(crate) mod status;
+pub(crate) mod status_store;
 pub(crate) mod stats;
 pub(crate) mod strip;
 pub(crate) mod uninstall_dialog;
@@ -264,6 +266,9 @@ pub struct Manager {
     /// (movedata::generation): a new opening is a sub-flow of the page it
     /// was opened from.
     move_gen: usize,
+    /// The window's first frame was drawn (its timing mark says whether
+    /// the page showed its data or the loading skeleton).
+    drawn: bool,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -314,6 +319,21 @@ impl Drop for SwitchTiming {
     }
 }
 
+/// The top bar's last readings (this computer's, and each server's), kept
+/// when the window closes while the app runs on: the next window's bar
+/// shows them at once, not its placeholders, and reads them again.
+static KEPT_MONITORS: std::sync::Mutex<Option<(Option<Monitor>, HashMap<String, Monitor>)>> = std::sync::Mutex::new(None);
+
+impl Drop for Manager {
+    fn drop(&mut self) {
+        let mut cache = std::mem::take(&mut self.monitor_cache);
+        if let (Some(id), Some(m)) = (&self.open_remote, self.remote_monitor) {
+            cache.insert(id.clone(), m);
+        }
+        *KEPT_MONITORS.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.monitor, cache));
+    }
+}
+
 /// The bell's events as saved (the tray's menu reads them without a window).
 pub fn saved_events() -> Vec<strip::Event> {
     strip::load_events()
@@ -343,8 +363,15 @@ impl Manager {
         // Control is part of Status now: a session left there opens Status.
         let page_of = |id: &str| if id == "control" { Some(Page::Status) } else { Page::ALL.into_iter().chain([Page::Instances, Page::About]).find(|p| p.id() == id) };
         let page_arg = args.windows(2).find(|w| w[0] == "--page").and_then(|w| page_of(&w[1]));
-        let page = page_arg.or_else(|| saved.page.as_deref().and_then(page_of)).unwrap_or(Page::Status);
-        let record = InstallationRecord::load().inspect(InstallationRecord::use_pg_tools);
+        // After a quit: Status (of the instance left open); a window opened
+        // again while the app kept running: the page it was left on.
+        let page = page_arg.or_else(|| session::page_to_restore(saved.page.as_deref()).as_deref().and_then(page_of)).unwrap_or(Page::Status);
+        // The pg_dump and pg_restore wrappers once per run, with the first
+        // window (writing them runs a shell, ~70 ms on the UI thread): a
+        // window opened again keeps them, a changed record sets them again
+        // (reload).
+        static PG_TOOLS: std::sync::Once = std::sync::Once::new();
+        let record = InstallationRecord::load().inspect(|r| PG_TOOLS.call_once(|| r.use_pg_tools()));
         let installed = record.as_ref().map(|r| r.sentient_version.clone());
         let native = record.as_ref().is_some_and(|r| r.platform().needs_package());
         let updates = cx.new(|cx| UpdateState::new(installed, native, cx));
@@ -364,11 +391,21 @@ impl Manager {
         // One connection per added server, open from now until the
         // Platform Manager quits (crate::remote::conn); made behind the window.
         std::thread::spawn(|| crate::remote::conn::open_all(&crate::remote::load()));
+        // Every server's state, read from now on (their first requests wait
+        // for those connections), and again when the window is focused.
+        let store = status_store::get(cx);
+        let focus = cx.observe_window_activation(_window, |_, window, cx| {
+            if window.is_window_active() {
+                status_store::get(cx).update(cx, |s, cx| s.focused(cx));
+            }
+        });
         // The progress line under the top bar follows the strip.
         let strip = strip::install(cx);
         let subscriptions = vec![
             cx.observe(&updates, |_, _, cx| cx.notify()),
             cx.observe(&strip, |_, _, cx| cx.notify()),
+            cx.observe(&store, |_, _, cx| cx.notify()),
+            focus,
             cx.subscribe(&strip, |this, _, e: &strip::JobEnded, cx| this.after_job(e.instance.clone(), cx)),
         ];
         let updated_from = args.windows(2).find(|w| w[0] == "--updated-from").map(|w| w[1].clone());
@@ -416,10 +453,16 @@ impl Manager {
             updated_from,
             pending: None,
             move_gen: 0,
+            drawn: false,
             found_notice,
             _subscriptions: subscriptions,
             _tasks: Vec::new(),
         };
+        // A window opened again: the bar's last readings at once.
+        if let Some((monitor, cache)) = KEPT_MONITORS.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            manager.monitor = monitor;
+            manager.monitor_cache = cache;
+        }
         manager.start_monitor(cx);
         manager.refresh_running(cx);
         // Performance probes (tests/layout/perf.sh): go to pages in turn,
@@ -481,9 +524,6 @@ impl Manager {
             }
             manager.bell_open = std::env::var_os("SPM_DEBUG_BELL").is_some();
             manager.switcher_open = std::env::var_os("SPM_DEBUG_SWITCHER").is_some();
-            if manager.switcher_open {
-                manager.instances_page(cx);
-            }
             if std::env::var_os("SPM_DEBUG_ERROR_DIALOG").is_some() {
                 crate::ui::show_error_with(
                     t!("The server agent could not be updated"),
@@ -641,7 +681,7 @@ impl Manager {
                 continue;
             }
             let r = record.clone();
-            let m = cx.background_executor().spawn(async move { crate::sysmon::from_sample(&crate::stats::local_read(r.as_ref(), std::time::Duration::from_millis(250))) }).await;
+            let m = cx.background_executor().spawn(async move { crate::sysmon::from_sample(&sentient_installer_core::distro::idle::reading(|| crate::stats::local_read(r.as_ref(), std::time::Duration::from_millis(250)))) }).await;
             if this
                 .update(cx, |page, cx| {
                     if page.monitor != Some(m) {
@@ -1293,10 +1333,6 @@ impl Manager {
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.switcher_open = !this.switcher_open;
-                        // The rows' dots: every server's state.
-                        if this.switcher_open {
-                            this.instances_page(cx);
-                        }
                         cx.notify();
                     }));
                 let popover = open.then(|| {
@@ -1327,8 +1363,9 @@ impl Manager {
                     // Instances shows it (the cached status), else what its
                     // open pages last read; grey while not known. The
                     // instance's own colour stays on its card and the bar.
+                    let store = status_store::get(cx);
                     let card_tone = |id: &str, cx: &App| -> Option<ui::Tone> {
-                        if let Some(t) = self.instances.as_ref().and_then(|p| p.read(cx).tone_of(id)) {
+                        if let Some(t) = store.read(cx).tone(id) {
                             return Some(t);
                         }
                         let serving = self.remote_pages.get(id).and_then(|p| p.read(cx).serving()).or_else(|| crate::bg_app::serving(Some(id), cx));
@@ -1336,6 +1373,10 @@ impl Manager {
                     };
                     for r in &self.remotes {
                         let tone = card_tone(&r.id, cx);
+                        crate::timing::once(&format!("switcher-open {}", r.id), &format!("switcher-dot-open id={}", r.id));
+                        if tone.is_some() {
+                            crate::timing::once(&format!("switcher-dot {}", r.id), &format!("switcher-dot-known id={}", r.id));
+                        }
                         let dot: Hsla = match tone {
                             Some(ui::Tone::Good) => status_green,
                             Some(ui::Tone::Warn) => rgb(0xf59e0b).into(),
@@ -1422,8 +1463,8 @@ impl Manager {
 
     /// Switch to an instance (None: this computer). Remote instances are
     /// worked on from their card on Instances for now.
-    /// The Instances page, made the first time it is needed (shown, or the
-    /// switcher's state dots): it reads every server's state as it starts.
+    /// The Instances page, made the first time it is shown (the servers'
+    /// states are the store's, read from the start: status_store).
     fn instances_page(&mut self, cx: &mut Context<Self>) -> Entity<instances::InstancesPage> {
         if let Some(p) = &self.instances {
             return p.clone();
@@ -1440,6 +1481,7 @@ impl Manager {
                 this.open_instance(e.0.clone(), cx);
             }));
             self._subscriptions.push(cx.subscribe(&page, |this, _, _: &instances::ListChanged, cx| {
+                status_store::get(cx).update(cx, |s, cx| s.reload_list(cx));
                 let before = std::mem::replace(&mut this.remotes, crate::remote::load());
                 this.prune_kept(&before);
                 if this.open_remote.as_ref().is_some_and(|id| !this.remotes.iter().any(|r| &r.id == id)) {
@@ -1449,6 +1491,15 @@ impl Manager {
             }));
         self.instances = Some(page.clone());
         page
+    }
+
+    /// The page shown has what it read (Status: its state, services and
+    /// database), not its loading skeleton.
+    fn page_has_data(&self, cx: &App) -> bool {
+        match &self.open_remote {
+            Some(id) => self.remote_pages.get(id).is_some_and(|p| p.read(cx).has_data()),
+            None => self.page != Page::Status || self.status.as_ref().is_some_and(|p| p.read(cx).has_data()),
+        }
     }
 
     fn open_instance(&mut self, id: Option<String>, cx: &mut Context<Self>) {
@@ -1825,8 +1876,19 @@ impl Manager {
                 for page in self.migration.clone() {
                     page.update(cx, |p, cx| p.refresh_record(cx));
                 }
+                // Platform settings reads SENTIENT's accounts again (Start
+                // there opens Status; back on the page it is running).
+                for page in self.settings.clone() {
+                    page.update(cx, |p, cx| p.sentient_changed(cx));
+                }
+                // Statistics of this computer: its Services card.
+                if let Some(page) = self.stats.get(&None).cloned() {
+                    page.update(cx, |p, cx| p.sentient_changed(cx));
+                }
             }
             Some(id) => {
+                // Its card and dot.
+                status_store::get(cx).update(cx, |s, cx| s.refresh(&id, cx));
                 // A kept page of an instance not open now reads again too.
                 if let Some(page) = self.remote_pages.get(&id).cloned() {
                     page.update(cx, |p, cx| p.after_job(cx));
@@ -2139,6 +2201,17 @@ impl Manager {
     }
 }
 
+/// An action a page asks the shell for, as the tray's
+/// ([`Manager::act`]): "control:start" from a page that needs SENTIENT
+/// running (Platform settings).
+static REQUEST: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+
+/// Ask the shell for `action` (see [`REQUEST`]); it runs at the next render.
+pub fn request(action: &'static str, cx: &mut App) {
+    *REQUEST.lock().unwrap_or_else(|e| e.into_inner()) = Some(action);
+    cx.refresh_windows();
+}
+
 impl Manager {
     /// A tray or taskbar action (crate::background::Command::Action).
     pub fn act(&mut self, action: &str, cx: &mut Context<Self>) {
@@ -2209,6 +2282,7 @@ impl Manager {
         if let Some(p) = &self.instances {
             p.update(cx, |p, cx| p.reload_list(cx));
         }
+        status_store::get(cx).update(cx, |s, cx| s.reload_list(cx));
     }
 }
 
@@ -2258,6 +2332,10 @@ impl Manager {
         crate::ui::set_side_by_side(width >= crate::ui::SIDE_BY_SIDE_W);
         self.window_h.set(f32::from(window.viewport_size().height));
         stats::set_open(self.page == Page::Statistics);
+        // A page asked for a tray action (request).
+        if let Some(a) = REQUEST.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            self.act(a, cx);
+        }
         // A service row's "Logs" asked for the Logs page.
         if crate::logsource::take_go() {
             self.page = Page::Logs;
@@ -2341,10 +2419,7 @@ impl Manager {
         // Switch timing: each frame after a switch until the page shows
         // its data (render done, and the next frame's start ≈ presented).
         if let Some((t0, n)) = SWITCH_AT.with(|s| s.get()) {
-            let data = match &self.open_remote {
-                Some(id) => self.remote_pages.get(id).is_some_and(|p| p.read(cx).has_data()),
-                None => self.page != Page::Status || self.status.as_ref().is_some_and(|p| p.read(cx).has_data()),
-            };
+            let data = self.page_has_data(cx);
             let ms = t0.elapsed().as_secs_f64() * 1000.;
             eprintln!("SWITCH frame={} render_ms={ms:.2} data={data}", n + 1);
             if data {
@@ -2355,6 +2430,23 @@ impl Manager {
             } else {
                 SWITCH_AT.with(|s| s.set(None));
             }
+        }
+        // The window's first frame: the page with its data (a window
+        // opened again while the app kept running), or the loading skeleton
+        // (a first start). Reopen tests (tests/reopen) read this mark.
+        if !self.drawn {
+            self.drawn = true;
+            let drawn = match &self.open_remote {
+                _ if self.page == Page::Statistics => match self.stats.get(&self.open_remote) {
+                    Some(p) if p.read(cx).has_data() => "data",
+                    _ => "skeleton",
+                },
+                Some(id) => self.remote_pages.get(id).map(|p| p.read(cx).drawn()).unwrap_or("other"),
+                None if self.page == Page::Status => if self.page_has_data(cx) { "data" } else { "skeleton" },
+                None if self.page == Page::Logs => if self.logs.as_ref().is_some_and(|p| p.read(cx).has_data(cx)) { "data" } else { "skeleton" },
+                None => "other",
+            };
+            crate::timing::mark(&format!("page-first-frame page={} instance={} drawn={drawn}", self.page.id(), self.open_remote.as_deref().unwrap_or("local")));
         }
         self.run_pending(cx);
         let layer = crate::modal::layer(window, cx, menu_w, shell::BAR_H);

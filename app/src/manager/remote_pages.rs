@@ -6,7 +6,7 @@
 //! menu chooses which page it shows.
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, h_flex, v_flex,
     button::ButtonVariants as _,
     menu::{DropdownMenu as _, PopupMenuItem},
     input::{Input, InputEvent, InputState},
@@ -279,6 +279,48 @@ fn definite(e: &str) -> bool {
     e == remote::AGENT_OLD || e == remote::NOT_SET_UP || e == remote::NOT_ADDED || needs_sudo_password(e)
 }
 
+/// What a server's pages read, kept when the window closes while the
+/// Platform Manager keeps running (the tray), so a window opened again
+/// draws them at once, as they were, and reads them again behind them.
+/// Memory only: a new start of the Platform Manager shows the loading
+/// skeleton until the server answers (crate::manager::licence keeps its
+/// readings the same way).
+struct Kept {
+    /// The connection the readings came over ([`conn_of`]): an instance
+    /// edited since is read afresh.
+    conn: String,
+    ready: Read<()>,
+    status: Read<RemoteStatus>,
+    services: Read<Vec<RemoteService>>,
+    db: Read<DbStatus>,
+    backups: Read<RemoteBackups>,
+    settings: Read<std::collections::HashMap<String, String>>,
+    gateway: Read<std::collections::HashMap<String, String>>,
+    gw_settings: Read<sentient_installer_core::gateway_settings::GwSettings>,
+    offer: Read<Option<crate::updates::Offer>>,
+    versions: Read<Vec<crate::online::Version>>,
+    restores: Read<Vec<crate::restore_flow::Entry>>,
+    updated_at: Option<String>,
+    auto_add_tried: bool,
+}
+
+/// Each server's [`Kept`], by instance id, for this run.
+static KEPT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Kept>>> = std::sync::LazyLock::new(Default::default);
+
+/// The server an instance reaches: where, and as whom (what is found
+/// there, `detected`, may change as it is read).
+fn conn_of(inst: &Instance) -> String {
+    serde_json::to_string(&(&inst.host, inst.port, &inst.user, &inst.auth, &inst.key_file)).unwrap_or_default()
+}
+
+/// What the pages of `inst` draw first: what this run read before (a
+/// window opened again), or None on a cold start, the loading skeleton.
+/// Taken once: the pages that take it own it from then on.
+fn take_kept(kept: &mut std::collections::HashMap<String, Kept>, inst: &Instance) -> Option<Kept> {
+    let k = kept.remove(&inst.id)?;
+    (k.conn == conn_of(inst)).then_some(k)
+}
+
 /// How long a reading may take before the page says the server does not answer.
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -302,6 +344,10 @@ pub struct RemotePages {
     /// One input per catalog setting, made once the values are read.
     inputs: Vec<(String, Entity<InputState>)>,
     gateway: Read<std::collections::HashMap<String, String>>,
+    /// The Gateway page's settings card (crate::manager::gateway_settings)
+    /// and what it shows (the agent's gateway-settings-json).
+    gw_settings: Read<sentient_installer_core::gateway_settings::GwSettings>,
+    gw_card: Entity<crate::manager::gateway_settings::GatewaySettingsCard>,
     /// Migration's chosen target (an index into the types other than the one now).
     /// Migration: the type picked to change to (None: the current one).
     target: Option<sentient_installer_core::stack::Flavor>,
@@ -382,8 +428,19 @@ pub struct RemotePages {
 impl RemotePages {
     pub fn new(inst: Instance, kind: Kind, updates: Entity<crate::updates::UpdateState>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let job = cx.new(|_| Job::new());
+        let me = cx.entity().downgrade();
+        let gw_card = cx.new(|_| {
+            crate::manager::gateway_settings::GatewaySettingsCard::new(
+                Some(inst.name.clone()),
+                std::rc::Rc::new(move |w, _: &mut Window, cx: &mut App| {
+                    me.update(cx, |p, cx| p.run_gw_work(w, cx)).ok();
+                }),
+            )
+        });
         let vars_search = cx.new(|cx| InputState::new(_window, cx).placeholder(t!("Search settings and variables")));
         let vars_sub = cx.subscribe(&vars_search, |_, _, _: &InputEvent, cx| cx.notify());
+        // The gateway's "Update to <v>" follows the newest release found.
+        let updates_sub = cx.observe(&updates, |_, _, cx| cx.notify());
         let subs = vec![
             cx.observe(&job, |this, job, cx| {
                 if !job.read(cx).is_running() {
@@ -450,6 +507,8 @@ impl RemotePages {
             settings: Read::Loading,
             inputs: Vec::new(),
             gateway: Read::Loading,
+            gw_settings: Read::Loading,
+            gw_card,
             target: None,
             migrate_confirm: false,
             // Screens: a canned preflight failure.
@@ -484,6 +543,7 @@ impl RemotePages {
             _subscriptions: {
                 let mut s = subs;
                 s.push(vars_sub);
+                s.push(updates_sub);
                 s
             },
             keep_input: None,
@@ -524,9 +584,31 @@ impl RemotePages {
                 }),
             },
         );
+        // A window opened again: what this run read before shows at once
+        // (the reload below reads it again behind it, as for an instance
+        // opened again in the same window).
+        if let Some(k) = take_kept(&mut KEPT.lock().unwrap_or_else(|e| e.into_inner()), &p.inst) {
+            p.seed(k);
+        }
         p.reload(cx);
         p.refresh_agent(cx);
         p
+    }
+
+    fn seed(&mut self, k: Kept) {
+        self.ready = k.ready;
+        self.status = k.status;
+        self.services = k.services;
+        self.db = k.db;
+        self.backups = k.backups;
+        self.settings = k.settings;
+        self.gateway = k.gateway;
+        self.gw_settings = k.gw_settings;
+        self.offer = k.offer;
+        self.versions = k.versions;
+        self.restores = k.restores;
+        self.updated_at = k.updated_at;
+        self.auto_add_tried = k.auto_add_tried;
     }
 
     /// Platform settings: the values read, and the catalog setting of each input.
@@ -643,9 +725,22 @@ impl RemotePages {
         cx.notify();
     }
 
+    /// Reopen tests: what the page draws now: "skeleton" before anything
+    /// was read, "data" with what it read, "state" for the server's answer
+    /// that is not data (not set up, an error).
+    pub fn drawn(&self) -> &'static str {
+        if matches!(self.ready, Read::Loading) {
+            "skeleton"
+        } else if self.has_data() {
+            "data"
+        } else {
+            "state"
+        }
+    }
+
     /// Switch timing (SPM_DEBUG_SWITCH): Status shows what it read.
     pub fn has_data(&self) -> bool {
-        matches!(self.ready, Read::Got(_)) && self.status.got().is_some() && (self.kind != Kind::Status || (self.services.got().is_some() && self.db.got().is_some()))
+        shows_data(self.kind, &self.ready, &self.status, &self.services, &self.db)
     }
 
     /// Another instance is open: the log stops following meanwhile.
@@ -790,6 +885,14 @@ impl RemotePages {
             Kind::Update => {
                 let i2 = inst.clone();
                 self.fetch(cx, move || remote::status(&i2), |p| &mut p.status);
+                // The server's gateway and the newest gateway release.
+                let i3 = inst.clone();
+                self.fetch(cx, move || remote::gateway(&i3), |p| &mut p.gateway);
+                self.updates.update(cx, |u, cx| {
+                    if u.found.is_none() {
+                        u.check(cx);
+                    }
+                });
                 let native = inst.detected.as_ref().is_some_and(|d| d.install != "Docker");
                 self.pick = None;
                 // Renders: a version picked from "Other version".
@@ -851,7 +954,20 @@ impl RemotePages {
                 self.fetch(cx, move || remote::status(&inst), |p| &mut p.status);
                 self.fetch(cx, move || remote::gateway(&i2), |p| &mut p.gateway);
             }
-            Kind::Gateway => self.fetch(cx, move || remote::gateway(&inst), |p| &mut p.gateway),
+            Kind::Gateway => {
+                // The newest gateway release, for "Update to <v>".
+                self.updates.update(cx, |u, cx| {
+                    if u.found.is_none() {
+                        u.check(cx);
+                    }
+                });
+                let (i2, i3) = (inst.clone(), inst.clone());
+                self.gw_card.update(cx, |c, _| c.reset());
+                self.fetch(cx, move || remote::gateway(&inst), |p| &mut p.gateway);
+                self.fetch(cx, move || remote::gateway_settings(&i2), |p| &mut p.gw_settings);
+                // SENTIENT's web port there, for the card's "Open in SENTIENT".
+                self.fetch(cx, move || remote::status(&i3), |p| &mut p.status)
+            }
         }
     }
 
@@ -1114,6 +1230,7 @@ impl RemotePages {
             Kind::Backup => t!("Backup and restore"),
             Kind::Repair => t!("Repair and uninstall"),
             Kind::Settings => t!("Platform settings"),
+            Kind::Gateway => t!("Gateway"),
             _ => "the page",
         };
         let title = if self.pending_migrate.is_some() { tf!("{label} (the migration follows)") } else { label };
@@ -1489,6 +1606,37 @@ impl RemotePages {
                     menu
                 }),
         );
+        // The server's gateway: its update (the older Python one's too), run
+        // there by the same gateway-update job.
+        let gateway_row = match &self.gateway {
+            Read::Got(g) => {
+                let get = |k: &str| g.get(k).cloned().unwrap_or_default();
+                let status = crate::manager::gateway::status_of(&get);
+                let found = self.updates.read(cx).found.as_ref().map(|f| f.gateway.clone());
+                let gw_offer = found.clone().and_then(|r| r.ok()).flatten();
+                let update = crate::manager::gateway::gateway_update(&status, gw_offer.as_ref(), crate::remote::is_windows(&self.inst));
+                let summary = match &update {
+                    Some(u) => Some((u.about.clone(), None)),
+                    None => crate::manager::gateway::gateway_summary(&status, found.as_ref().map(|r| r.is_ok())),
+                };
+                summary.map(|(sub, pill)| {
+                    let mut r = product_row(&theme, update.as_ref().is_some_and(|u| u.why.is_none()), ui::Product::Gateway, "Sentient Gateway", sub);
+                    if let Some((tone, text)) = pill {
+                        r = r.child(ui::pill(&theme, tone, text));
+                    }
+                    if let Some(u) = update {
+                        let this = cx.entity().downgrade();
+                        let v = u.version.clone();
+                        r = r.child(crate::manager::gateway::update_button(&theme, "r-gateway-update", &u, busy, std::rc::Rc::new(move |_, cx: &mut App| {
+                            let v = v.clone();
+                            this.update(cx, |p, cx| p.run_job(t!("Updating the gateway"), vec!["gateway-update".into(), v], cx)).ok();
+                        })));
+                    }
+                    r
+                })
+            }
+            _ => None,
+        };
         let failed = match &self.offer {
             Read::Failed(e) => Some(e.clone()),
             _ => None,
@@ -1520,6 +1668,7 @@ impl RemotePages {
                 ))
             })
             .child(row)
+            .children(gateway_row)
             .when_some(pick, |p, v| {
                 let v2 = v.clone();
                 p.child(
@@ -1672,7 +1821,7 @@ impl RemotePages {
                 .child(
                     crate::ui::button("r-auto-time")
                         .ghost()
-                        .small()
+                        
                         .disabled(!on || busy)
                         .label(if on { tf!("Every day at {time}") } else { t!("Off").to_string() })
                         .dropdown_menu(move |menu, _, _| {
@@ -2377,13 +2526,52 @@ impl RemotePages {
         let get = |k: &str| g.get(k).cloned().unwrap_or_default();
         let installed = get("installed") == "true";
         let running = get("running") == "true";
+        // The older Python gateway alone: offered as an update (the same
+        // gateway-update job); beside the Rust one: one line.
+        if !installed && !get("legacy").is_empty() {
+            let status = crate::manager::gateway::status_of(&get);
+            let found = self.updates.read(cx).found.as_ref().map(|f| f.gateway.clone());
+            let offer = found.clone().and_then(|r| r.ok()).flatten();
+            let looking = match &found {
+                Some(Err(e)) => Some(tf!("Gateway updates: {e}")),
+                Some(Ok(None)) => Some(t!("No gateway release on this channel.").to_string()),
+                _ => None,
+            };
+            let why = offer.as_ref().and_then(|o| sentient_installer_core::gateway::update_blocker(&status, &o.version, o.installer.is_some(), crate::remote::is_windows(&self.inst)));
+            let this = cx.entity().downgrade();
+            let v = offer.as_ref().map(|o| o.version.clone()).unwrap_or_default();
+            return crate::manager::gateway::legacy_panel(
+                &theme,
+                "r-gw-older",
+                &get("legacy"),
+                Some(get("legacy_image")).filter(|i| !i.is_empty()).as_deref(),
+                offer.as_ref(),
+                looking,
+                why,
+                busy,
+                std::rc::Rc::new(move |_, cx: &mut App| {
+                    let v = v.clone();
+                    this.update(cx, |p, cx| p.run_job(t!("Updating the gateway"), vec!["gateway-update".into(), v], cx)).ok();
+                }),
+            );
+        }
+        let legacy = Some(get("legacy")).filter(|n| !n.is_empty()).map(|n| div().text_sm().text_color(theme.muted_foreground).child(crate::manager::gateway::legacy_line(&n, "this server")));
         let mut p = ui::panel(&theme).child(
             h_flex()
                 .gap_3()
+                // A narrow window: the pills go to their own line.
+                .flex_wrap()
                 .items_center()
                 .child(ui::product_logo(ui::Product::Gateway, 24.))
-                .child(div().font_weight(FontWeight::MEDIUM).child(t!("Sentient Gateway")))
-                .child(if !installed { ui::pill(&theme, Tone::Neutral, t!("Not installed")) } else if running { ui::pill(&theme, Tone::Good, t!("Gateway is running")) } else { ui::pill(&theme, Tone::Bad, t!("Gateway is stopped")) }),
+                .child(div().font_weight(FontWeight::MEDIUM).child("Sentient Gateway"))
+                .child(if !installed { ui::pill(&theme, Tone::Neutral, t!("Not installed")) } else if running { ui::pill(&theme, Tone::Good, t!("Gateway is running")) } else { ui::pill(&theme, Tone::Bad, t!("Gateway is stopped")) })
+                .children({
+                    let s = match &self.gw_settings {
+                        Read::Got(s) => Some(Ok(s.clone())),
+                        _ => None,
+                    };
+                    crate::manager::gateway_settings::connected_pill(&theme, s.as_ref(), running && installed)
+                }),
         );
         if !installed {
             // The pill says it; the how-to and what was looked for are behind an (i).
@@ -2417,6 +2605,7 @@ impl RemotePages {
         let version = get("version");
         let page = get("page");
         p = p
+            .children(legacy)
             .when(!version.is_empty(), |p| p.child(ui::fact(&theme, t!("Version"), version.clone())))
             .when(!kind.is_empty(), |p| p.child(ui::fact(&theme, t!("Runs as"), runs_as.clone())))
             .when(!host.is_empty(), |p| p.child(ui::fact(&theme, t!("Connects to"), format!("{host}:{}", get("port")))))
@@ -2427,14 +2616,23 @@ impl RemotePages {
             .when(!volumes.is_empty(), |p| p.child(ui::fact(&theme, t!("Volumes"), volumes.replace(',', ", "))))
             .when(!page.is_empty(), |p| {
                 p.child(if page == "off" {
-                    ui::fact_help(&theme, t!("Web page"), t!("Off"), t!("The gateway's own web page is off. In a container it is turned on with ST_GW_UI=on."))
+                    ui::fact_help(&theme, t!("Web page"), t!("Off"), crate::manager::gateway::page_off_help(&kind))
                 } else {
                     ui::fact(&theme, t!("Web page"), page.clone())
                 })
             });
         // A plain process has no service to start it again: no controls.
         let controllable = kind != "process";
-        let updatable = (kind == "docker" && get("managed") == "true") || kind == "windows-service";
+        // "Update to <v>": only with a newer release than the server's
+        // gateway (this computer's channel), and only where an update can
+        // run there; else its reason on the disabled button.
+        let status = crate::manager::gateway::status_of(&get);
+        let offer = match &self.updates.read(cx).found {
+            Some(f) => f.gateway.as_ref().ok().cloned().flatten(),
+            None => None,
+        };
+        let newer = offer.filter(|o| !version.is_empty() && sentient_installer_core::releases::is_newer(&o.version, &version, false));
+        let blocker = newer.as_ref().and_then(|o| sentient_installer_core::gateway::update_blocker(&status, &o.version, o.installer.is_some(), crate::remote::is_windows(&self.inst)));
         let this = cx.entity().downgrade();
         let act = |action: &'static str| -> std::rc::Rc<dyn Fn(&mut Window, &mut App)> {
             let this = this.clone();
@@ -2447,7 +2645,17 @@ impl RemotePages {
         } else {
             Vec::new()
         };
-        p.children(ui::card_actions(
+        // The settings card under the status card (crate::manager::gateway_settings).
+        let base = self.status.got().and_then(|st| st.http_port).map(|port| format!("http://{}:{port}", self.inst.host));
+        let url = crate::manager::gateway_settings::sentient_page(base.as_deref(), Some(host.as_str()).filter(|h| !h.is_empty()), &[self.inst.host.as_str()]);
+        let settings = match &self.gw_settings {
+            Read::Loading => None,
+            Read::Failed(e) => Some(Err(e.clone())),
+            Read::Got(s) => Some(Ok(s.clone())),
+        };
+        self.gw_card.update(cx, |c, _| c.feed(settings, url, busy));
+        let card = self.gw_card.clone();
+        let panel = p.children(ui::card_actions(
             &theme,
             h_flex()
                 .gap(crate::ui::button_gap())
@@ -2469,10 +2677,113 @@ impl RemotePages {
                     cx.refresh_windows();
                 })))
                 .children(services.into_iter().map(crate::ui::probed))
-                .when(updatable, |r| {
-                    r.child(crate::ui::probed(crate::ui::button("r-gw-update").primary().label(t!("Update to the newest")).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.run_job(t!("Updating the gateway"), vec!["gateway-update".into()], cx)))))
+                .when_some(newer, |r, o| {
+                    let v = o.version.clone();
+                    let button = crate::ui::button("r-gw-update")
+                        .primary()
+                        .label(tf!("Update to {}", o.version))
+                        .disabled(busy || blocker.is_some())
+                        .on_click(cx.listener(move |this, _, _, cx| this.run_job(t!("Updating the gateway"), vec!["gateway-update".into(), v.clone()], cx)));
+                    r.child(crate::ui::probed(match blocker.clone() {
+                        // A disabled button carries its reason as a tooltip.
+                        Some(why) => div().id("r-gw-update-why").child(button).tooltip(crate::ui::tooltip(why)).into_any_element(),
+                        None => button.into_any_element(),
+                    }))
                 }),
-        ))
+        ));
+        v_flex().flex_1().min_h_0().gap(px(ui::GAP)).child(panel.flex_shrink_0()).child(card)
+    }
+
+    /// What the gateway's settings card asks for, on the server: Apply (a
+    /// plan with no secret, put in the account's home and given to the
+    /// agent's gateway-apply) and the password (the agent's
+    /// gateway-ui-password, on its standard input) as the page's job; the
+    /// test in the background.
+    fn run_gw_work(&mut self, work: crate::manager::gateway_settings::Work, cx: &mut Context<Self>) {
+        use crate::manager::gateway_settings::Work;
+        use sentient_installer_core::progress::{PlanStep, Progress};
+        let inst = self.inst.clone();
+        // Screens: a canned server gateway is never changed.
+        let canned = cfg!(debug_assertions) && (std::env::var_os("SPM_DEBUG_REMOTE_GATEWAY").is_some() || std::env::var_os("SPM_DEBUG_REMOTE_GATEWAY_SETTINGS").is_some());
+        if let Work::Test = work {
+            let card = self.gw_card.clone();
+            cx.spawn(async move |_, cx| {
+                let r = if canned { Ok("Screens: a canned gateway; nothing was tested.".to_string()) } else { cx.background_executor().spawn(async move { remote::gateway_test(&inst) }).await };
+                card.update(cx, |c, cx| c.set_test(Some(r), cx));
+            })
+            .detach();
+            return;
+        }
+        if self.job.read(cx).is_running() {
+            let other = self.job_label.clone().map(|l| l.to_string()).unwrap_or_else(|| "another job".into());
+            ui::show_error(t!("The gateway's settings cannot be changed yet"), tf!("{other} is still running on {}. Try again once it has finished.", inst.name), cx);
+            return;
+        }
+        self.shown_job = Some(Kind::Gateway);
+        match work {
+            Work::Apply(plan) => {
+                self.job_label = Some(tf!("Applying the gateway's settings on {}", inst.name).into());
+                let kind = match &self.gw_settings {
+                    Read::Got(s) => s.machine.kind.clone(),
+                    _ => String::new(),
+                };
+                let names = format!("{}. {}", plan.names().join(", "), plan.restart_words(&kind));
+                self.job.update(cx, |job, cx| {
+                    job.set_plan(vec![crate::jobplan::connect(), PlanStep::new(n!("Applying the settings")).detail(names).weight(3.), PlanStep::new(n!("Reading the settings back"))]);
+                    job.set_label(tf!("Applying the gateway's settings on {}", inst.name));
+                    job.set_on_page(true);
+                    job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
+                    job.start(
+                        move |sink| {
+                            sink(Progress::Step { name: crate::jobplan::CONNECT.into() });
+                            if canned {
+                                sink(Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
+                                return Ok(());
+                            }
+                            // As run_job: an agent that could not be brought up to
+                            // date still runs the job when it knows it.
+                            if let Err(e) = remote::deploy(&inst, &sink) {
+                                sink(Progress::Log { line: nf!("The agent could not be updated: {}", remote::split_failure(&e).0) });
+                            }
+                            let file = format!("{}/.spm-gateway-apply.json", remote::home(&inst)?);
+                            remote::put_text(&inst, &file, &serde_json::to_string(&plan).map_err(|e| e.to_string())?)?;
+                            sink(Progress::Step { name: n!("Applying the settings").into() });
+                            let id = remote::start_job(&inst, &["gateway-apply", &file])?;
+                            let r = remote::follow(&inst, &id, &sink);
+                            remote::remove_file(&inst, &file);
+                            r
+                        },
+                        cx,
+                    )
+                });
+            }
+            Work::Password(pw) => {
+                self.job_label = Some(tf!("Changing the gateway page's password on {}", inst.name).into());
+                self.job.update(cx, |job, cx| {
+                    job.set_plan(vec![crate::jobplan::connect(), PlanStep::new(n!("Setting the password"))]);
+                    job.set_label(tf!("Changing the gateway page's password on {}", inst.name));
+                    job.set_on_page(true);
+                    job.set_instance(inst.id.clone(), inst.name.clone(), inst.color.clone());
+                    job.start(
+                        move |sink| {
+                            sink(Progress::Step { name: crate::jobplan::CONNECT.into() });
+                            if canned {
+                                sink(Progress::Done { message: "Screens: a canned gateway; nothing was changed.".into() });
+                                return Ok(());
+                            }
+                            if let Err(e) = remote::deploy(&inst, &sink) {
+                                sink(Progress::Log { line: nf!("The agent could not be updated: {}", remote::split_failure(&e).0) });
+                            }
+                            sink(Progress::Step { name: n!("Setting the password").into() });
+                            remote::gateway_ui_password(&inst, &pw).map(|m| sink(Progress::Done { message: m }))
+                        },
+                        cx,
+                    )
+                });
+            }
+            Work::Test => {}
+        }
+        cx.notify();
     }
 
     /// "Remove the Gateway…" on the server: the same dialog as here, then
@@ -2694,6 +3005,40 @@ impl Render for RemotePages {
     }
 }
 
+/// The window closed (the app runs on): what the pages read stays for
+/// the next window ([`Kept`]).
+impl Drop for RemotePages {
+    fn drop(&mut self) {
+        let k = Kept {
+            conn: conn_of(&self.inst),
+            ready: std::mem::replace(&mut self.ready, Read::Loading),
+            status: std::mem::replace(&mut self.status, Read::Loading),
+            services: std::mem::replace(&mut self.services, Read::Loading),
+            db: std::mem::replace(&mut self.db, Read::Loading),
+            backups: std::mem::replace(&mut self.backups, Read::Loading),
+            settings: std::mem::replace(&mut self.settings, Read::Loading),
+            gateway: std::mem::replace(&mut self.gateway, Read::Loading),
+            gw_settings: std::mem::replace(&mut self.gw_settings, Read::Loading),
+            offer: std::mem::replace(&mut self.offer, Read::Loading),
+            versions: std::mem::replace(&mut self.versions, Read::Loading),
+            restores: std::mem::replace(&mut self.restores, Read::Loading),
+            updated_at: self.updated_at.take(),
+            auto_add_tried: self.auto_add_tried,
+        };
+        // Nothing read yet: nothing to keep.
+        if matches!(k.ready, Read::Loading) {
+            return;
+        }
+        KEPT.lock().unwrap_or_else(|e| e.into_inner()).insert(self.inst.id.clone(), k);
+    }
+}
+
+/// Whether a page of `kind` shows what it read rather than its loading
+/// skeleton (Status: the state, the services and the database).
+fn shows_data(kind: Kind, ready: &Read<()>, status: &Read<RemoteStatus>, services: &Read<Vec<RemoteService>>, db: &Read<DbStatus>) -> bool {
+    matches!(ready, Read::Got(_)) && status.got().is_some() && (kind != Kind::Status || (services.got().is_some() && db.got().is_some()))
+}
+
 /// Screens: a canned offer with two versions of notes.
 #[cfg(debug_assertions)]
 fn canned_offer() -> crate::updates::Offer {
@@ -2722,5 +3067,68 @@ fn canned_offer() -> crate::updates::Offer {
             ]),
             n("4.4.0.1", "2026-11-13", t!("First release of the 4.4 line."), vec![(t!("Added"), vec![t!("CoAP and LwM2M devices (DTLS, OSCORE)."), t!("18 new widgets.")])]),
         ],
+    }
+}
+
+#[cfg(test)]
+mod reopen_tests {
+    use super::{conn_of, shows_data, take_kept, DbStatus, Instance, Kept, Kind, Read, RemoteStatus};
+
+    fn inst(id: &str, host: &str) -> Instance {
+        serde_json::from_value(serde_json::json!({ "id": id, "name": "Plant B", "color": "#6b4fa0", "host": host, "user": "ops" })).unwrap()
+    }
+
+    fn kept(inst: &Instance) -> Kept {
+        Kept {
+            conn: conn_of(inst),
+            ready: Read::Got(()),
+            status: Read::Got(RemoteStatus { installed: true, ..Default::default() }),
+            services: Read::Got(Vec::new()),
+            db: Read::Got(DbStatus::default()),
+            backups: Read::Loading,
+            settings: Read::Loading,
+            gateway: Read::Loading,
+            gw_settings: Read::Loading,
+            offer: Read::Loading,
+            versions: Read::Loading,
+            restores: Read::Loading,
+            updated_at: Some("10:42".into()),
+            auto_add_tried: true,
+        }
+    }
+
+    /// Cold start: nothing read in this run, the loading skeleton.
+    #[test]
+    fn a_cold_start_has_nothing_to_draw() {
+        let mut map = std::collections::HashMap::new();
+        assert!(take_kept(&mut map, &inst("b", "10.0.0.2")).is_none());
+    }
+
+    /// A window opened again: Status draws what it read, at once.
+    #[test]
+    fn a_reopened_window_draws_what_was_read() {
+        let i = inst("b", "10.0.0.2");
+        let mut map = std::collections::HashMap::new();
+        map.insert(i.id.clone(), kept(&i));
+        let k = take_kept(&mut map, &i).expect("kept for the reopened window");
+        assert!(shows_data(Kind::Status, &k.ready, &k.status, &k.services, &k.db));
+        // Taken once: the new pages own it.
+        assert!(map.is_empty());
+    }
+
+    /// The instance was edited meanwhile (another address): read afresh.
+    #[test]
+    fn an_edited_instance_is_read_afresh() {
+        let i = inst("b", "10.0.0.2");
+        let mut map = std::collections::HashMap::new();
+        map.insert(i.id.clone(), kept(&i));
+        assert!(take_kept(&mut map, &inst("b", "10.0.0.9")).is_none());
+    }
+
+    /// Before a reading came back the page shows the skeleton.
+    #[test]
+    fn nothing_read_is_the_skeleton() {
+        assert!(!shows_data(Kind::Status, &Read::Loading, &Read::Loading, &Read::Loading, &Read::Loading));
+        assert!(!shows_data(Kind::Status, &Read::Got(()), &Read::Got(RemoteStatus::default()), &Read::Loading, &Read::Got(DbStatus::default())));
     }
 }

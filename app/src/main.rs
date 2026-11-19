@@ -140,6 +140,11 @@ use mode::AppMode;
 
 fn main() {
     timing::start();
+    // The layout test: every button reports its box (tests/layout/buttons.py).
+    #[cfg(all(debug_assertions, feature = "gui"))]
+    if std::env::var_os("SPM_DEBUG_LAYOUT").is_some() {
+        gpui_kit::component::button::LAYOUT_PROBE.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     // Started from a folder that is gone or that this session cannot reach
     // (a mapped drive the elevated session does not have): work from one
     // that exists, or every program started later fails.

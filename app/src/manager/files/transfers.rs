@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable as _, button::ButtonVariants as _, checkbox::Checkbox, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, button::ButtonVariants as _, checkbox::Checkbox, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use sentient_installer_core::progress::{Progress, ProgressFn};
@@ -636,7 +636,7 @@ impl Render for Panel {
             .when(in_dialog, |h| h.pb_2())
             .items_center()
             .child(div().flex_1().when(!in_dialog, |d| d.font_weight(FontWeight::MEDIUM).child(t!("Transfers"))))
-            .child(crate::ui::button("tr-clear").ghost().small().text_color(theme.primary).label(t!("Clear finished")).on_click({
+            .child(crate::ui::button("tr-clear").ghost().text_color(theme.primary).label(t!("Clear finished")).on_click({
                 let t = t.clone();
                 move |_, _, cx| t.update(cx, |t, cx| t.clear_finished(cx))
             }));
@@ -655,7 +655,7 @@ impl Render for Panel {
             let right: AnyElement = match &st {
                 St::Copying | St::Waiting if !i.cancel.load(Ordering::Relaxed) && st == St::Copying => {
                     let (t2, id) = (t.clone(), i.id);
-                    crate::ui::button(SharedString::from(format!("tr-cancel-{}", i.id))).outline().small().label(t!("Cancel")).on_click(move |_, _, cx| t2.update(cx, |t, cx| t.cancel(id, cx))).into_any_element()
+                    crate::ui::button(SharedString::from(format!("tr-cancel-{}", i.id))).outline().label(t!("Cancel")).on_click(move |_, _, cx| t2.update(cx, |t, cx| t.cancel(id, cx))).into_any_element()
                 }
                 _ => {
                     let w = match &st {

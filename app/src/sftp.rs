@@ -4,7 +4,7 @@
 //! the instance's own sign-in settings and known_hosts
 //! (crate::remote::sftp_command), or the server's sftp-server through sudo
 //! for "Open as administrator". Blocking; one request at a time except for
-//! reads and writes, which keep several in flight.
+//! reads, writes and folder listings, which keep several in flight.
 
 use std::collections::VecDeque;
 use std::io::{BufReader, Read, Write};
@@ -76,11 +76,30 @@ pub struct DirEntry {
     pub owner: String,
 }
 
+/// A folder read by [`Sftp::list_dir`].
+pub struct FolderList {
+    /// The folder's own (links followed).
+    pub attrs: Attrs,
+    pub entries: Vec<DirEntry>,
+    /// Its owner's name, from its "." entry (None: the server sent none).
+    pub owner: Option<String>,
+    pub free: Option<u64>,
+}
+
 pub struct Sftp {
     child: Child,
     to: ChildStdin,
     from: BufReader<ChildStdout>,
     next: u32,
+    /// What went over the link: round trips (a wait for an answer after
+    /// sending), bytes in and out. The Files timing marks read them.
+    rtts: u64,
+    bytes_in: u64,
+    bytes_out: u64,
+    sent: bool,
+    /// Answers still to come to requests not waited for (a folder's
+    /// close): read and dropped before the next answer.
+    owed: usize,
 }
 
 /// An error from the server, in plain words, with its status code (2: no
@@ -232,7 +251,7 @@ impl Sftp {
         if let Some(pw) = password {
             writeln!(to, "{pw}").map_err(|e| e.to_string())?;
         }
-        let mut s = Sftp { child, to, from, next: 1 };
+        let mut s = Sftp { child, to, from, next: 1, rtts: 0, bytes_in: 0, bytes_out: 0, sent: false, owed: 0 };
         let mut init = Buf::new(INIT, None);
         init.u32(3);
         if let Err(e) = s.send(init.done()).and_then(|_| s.recv()).and_then(|(t, _)| if t == VERSION { Ok(()) } else { Err(fail(98, n!("The server does not speak SFTP."))) }) {
@@ -255,10 +274,28 @@ impl Sftp {
 
     fn send(&mut self, packet: Vec<u8>) -> R<()> {
         self.to.write_all(&packet)?;
+        self.bytes_out += packet.len() as u64;
+        self.sent = true;
         Ok(())
     }
 
+    /// Round trips, bytes in, bytes out so far.
+    pub fn counters(&self) -> [u64; 3] {
+        [self.rtts, self.bytes_in, self.bytes_out]
+    }
+
     fn recv(&mut self) -> R<(u8, Vec<u8>)> {
+        while self.owed > 0 {
+            self.owed -= 1;
+            self.recv_one()?;
+        }
+        self.recv_one()
+    }
+
+    fn recv_one(&mut self) -> R<(u8, Vec<u8>)> {
+        if std::mem::take(&mut self.sent) {
+            self.rtts += 1;
+        }
         let mut len = [0u8; 4];
         self.from.read_exact(&mut len)?;
         let n = u32::from_be_bytes(len) as usize;
@@ -267,6 +304,7 @@ impl Sftp {
         }
         let mut body = vec![0u8; n];
         self.from.read_exact(&mut body)?;
+        self.bytes_in += 4 + n as u64;
         let kind = body[0];
         body.remove(0);
         Ok((kind, body))
@@ -350,19 +388,80 @@ impl Sftp {
         self.stat_kind(LSTAT, path)
     }
 
-    /// A folder's entries without "." and "..", links resolved to what
-    /// they point at where they can be.
-    pub fn list(&mut self, path: &str) -> R<Vec<DirEntry>> {
-        let id = self.id();
-        let mut b = Buf::new(OPENDIR, Some(id));
-        b.str(path);
-        let h = self.handle(b, path)?;
-        let mut out = Vec::new();
+    /// An answer to request `id` (sftp-server answers in order).
+    fn answer(&mut self, id: u32) -> R<(u8, Vec<u8>)> {
+        let (t, body) = self.recv()?;
+        let mut r = Rd(&body);
+        if r.u32()? != id {
+            return Err(fail(98, t!("The server sent an unexpected answer.")));
+        }
+        Ok((t, r.0.to_vec()))
+    }
+
+    /// A folder as the Files page shows it, in few round trips: its own
+    /// attributes, its free space and the opening of the folder go in one
+    /// write; READDIR requests stay three in flight; the close and the
+    /// stat of each link in one more. The folder's owner comes from its own
+    /// "." entry (no listing of the folder above); the close is not waited
+    /// for. Round trips: 2 up to about 200 entries (one more for each 300
+    /// after), one more when there are links; 12 before for 100 entries.
+    pub fn list_dir(&mut self, path: &str) -> R<FolderList> {
+        let (sid, oid, fid) = (self.id(), self.id(), self.id());
+        let mut st = Buf::new(STAT, Some(sid));
+        st.str(path);
+        let mut od = Buf::new(OPENDIR, Some(oid));
+        od.str(path);
+        let mut fv = Buf::new(EXTENDED, Some(fid));
+        fv.str("statvfs@openssh.com").str(path);
+        self.send([st.done(), od.done(), fv.done()].concat())?;
+        let here = self.answer(sid)?;
+        let opened = self.answer(oid)?;
+        let free = self.answer(fid)?;
+        let h = match opened {
+            (HANDLE, b) => Rd(&b).bytes()?,
+            (STATUS, b) => return Err(Self::status_err(&b, path)),
+            _ => return Err(fail(98, t!("The server sent an unexpected answer."))),
+        };
+        let attrs = match here {
+            (ATTRS, b) => Rd(&b).attrs()?,
+            (t, b) => {
+                let _ = self.close(&h);
+                return Err(if t == STATUS { Self::status_err(&b, path) } else { fail(98, t!("The server sent an unexpected answer.")) });
+            }
+        };
+        let free = match free {
+            (EXTENDED_REPLY, b) => {
+                let mut r = Rd(&b);
+                (|| -> R<u64> {
+                    let _bsize = r.u64()?;
+                    let frsize = r.u64()?;
+                    let (_blocks, _bfree, bavail) = (r.u64()?, r.u64()?, r.u64()?);
+                    Ok(bavail.saturating_mul(frsize))
+                })()
+                .ok()
+            }
+            _ => None,
+        };
+        let (mut entries, mut owner) = (Vec::new(), None);
+        let mut asked: VecDeque<u32> = VecDeque::new();
+        let mut end: Option<Failure> = None;
+        let mut eof = false;
         loop {
-            let id = self.id();
-            let mut b = Buf::new(READDIR, Some(id));
-            b.bytes(&h);
-            let (t, body) = self.call(b)?;
+            // Three at a time, the next three when all are answered (one
+            // round trip covers a folder of up to about 200 entries).
+            if !eof && end.is_none() && asked.is_empty() {
+                let mut wave = Vec::new();
+                for _ in 0..3 {
+                    let id = self.id();
+                    let mut b = Buf::new(READDIR, Some(id));
+                    b.bytes(&h);
+                    wave.extend(b.done());
+                    asked.push_back(id);
+                }
+                self.send(wave)?;
+            }
+            let Some(id) = asked.pop_front() else { break };
+            let (t, body) = self.answer(id)?;
             match t {
                 NAME => {
                     let mut r = Rd(&body);
@@ -370,32 +469,52 @@ impl Sftp {
                         let name = r.string()?;
                         let long = r.string()?;
                         let attrs = r.attrs()?;
-                        if name == "." || name == ".." {
-                            continue;
+                        let who = long.split_whitespace().nth(2).unwrap_or("").to_string();
+                        match name.as_str() {
+                            "." => owner = Some(who),
+                            ".." => {}
+                            _ => entries.push(DirEntry { name, attrs, owner: who }),
                         }
-                        let owner = long.split_whitespace().nth(2).unwrap_or("").to_string();
-                        out.push(DirEntry { name, attrs, owner });
                     }
                 }
                 STATUS => {
                     let code = Rd(&body).u32()?;
                     if code == 1 {
-                        break;
+                        eof = true;
+                    } else if end.is_none() {
+                        end = Some(Self::status_err(&body, path));
                     }
-                    let _ = self.close(&h);
-                    return Err(Self::status_err(&body, path));
                 }
                 _ => return Err(fail(98, n!("The server sent an unexpected answer."))),
             }
         }
-        let _ = self.close(&h);
-        for e in out.iter_mut().filter(|e| e.attrs.is_link()) {
-            let p = join(path, &e.name);
-            if let Ok(a) = self.stat(&p) {
-                e.attrs = a;
+        // The close (its answer not waited for) and the links' targets in
+        // one write.
+        let cid = self.id();
+        let mut cl = Buf::new(CLOSE, Some(cid));
+        cl.bytes(&h);
+        let mut out = cl.done();
+        let mut links = Vec::new();
+        for (i, e) in entries.iter().enumerate().filter(|(_, e)| e.attrs.is_link()) {
+            let id = self.id();
+            let mut b = Buf::new(STAT, Some(id));
+            b.str(&join(path, &e.name));
+            out.extend(b.done());
+            links.push((i, id));
+        }
+        self.send(out)?;
+        self.owed += 1;
+        for (i, id) in links {
+            if let (ATTRS, b) = self.answer(id)? {
+                if let Ok(a) = Rd(&b).attrs() {
+                    entries[i].attrs = a;
+                }
             }
         }
-        Ok(out)
+        if let Some(e) = end {
+            return Err(e);
+        }
+        Ok(FolderList { attrs, entries, owner, free })
     }
 
     fn close(&mut self, h: &[u8]) -> R<()> {
@@ -431,24 +550,6 @@ impl Sftp {
         let mut b = Buf::new(RENAME, Some(id));
         b.str(from).str(to);
         self.expect_status(b, from)
-    }
-
-    /// Free space where `path` is (statvfs@openssh.com), if the server says.
-    pub fn free(&mut self, path: &str) -> Option<u64> {
-        let id = self.id();
-        let mut b = Buf::new(EXTENDED, Some(id));
-        b.str("statvfs@openssh.com").str(path);
-        let (t, body) = self.call(b).ok()?;
-        if t != EXTENDED_REPLY {
-            return None;
-        }
-        let mut r = Rd(&body);
-        let _bsize = r.u64().ok()?;
-        let frsize = r.u64().ok()?;
-        let _blocks = r.u64().ok()?;
-        let _bfree = r.u64().ok()?;
-        let bavail = r.u64().ok()?;
-        Some(bavail.saturating_mul(frsize))
     }
 
     pub fn open(&mut self, path: &str, flags: u32) -> R<Vec<u8>> {
@@ -595,6 +696,63 @@ mod tests {
         assert_eq!(parent("/opt/sentient"), Some("/opt".into()));
         assert_eq!(parent("/opt"), Some("/".into()));
         assert_eq!(parent("/"), None);
+    }
+
+    /// The machine's own sftp-server on a pipe, when it has one.
+    fn local_server() -> Option<Sftp> {
+        let bin = ["/usr/lib/openssh/sftp-server", "/usr/lib/ssh/sftp-server", "/usr/libexec/openssh/sftp-server", "/usr/libexec/sftp-server"].into_iter().find(|p| std::path::Path::new(p).exists())?;
+        let child = std::process::Command::new(bin).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().ok()?;
+        Sftp::start(child, None).ok()
+    }
+
+    #[test]
+    fn a_folder_is_listed_in_two_round_trips_and_three_with_links() {
+        let Some(mut s) = local_server() else {
+            eprintln!("no sftp-server here: skipped");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("spm-list-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("plain")).unwrap();
+        for i in 0..150 {
+            std::fs::write(dir.join("plain").join(format!("f{i:03}")), b"x").unwrap();
+        }
+        std::fs::create_dir(dir.join("plain").join("sub")).unwrap();
+        let p = dir.join("plain").to_string_lossy().to_string();
+        let before = s.counters()[0];
+        let l = s.list_dir(&p).unwrap();
+        assert_eq!(l.entries.len(), 151);
+        assert!(l.entries.iter().any(|e| e.name == "sub" && e.attrs.is_dir()));
+        assert!(!l.entries.iter().any(|e| e.name == "." || e.name == ".."));
+        assert!(l.owner.as_deref().is_some_and(|o| !o.is_empty()), "the owner from the folder's own entry");
+        assert!(l.free.is_some());
+        assert_eq!(s.counters()[0] - before, 2, "round trips for 151 entries");
+        // A link to a folder is a folder; one more round trip.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("plain").join("sub"), dir.join("plain").join("link")).unwrap();
+        let before = s.counters()[0];
+        let l = s.list_dir(&p).unwrap();
+        #[cfg(unix)]
+        {
+            assert!(l.entries.iter().any(|e| e.name == "link" && e.attrs.is_dir()));
+            assert_eq!(s.counters()[0] - before, 3);
+        }
+        let _ = l;
+        // The close was not waited for: the next request still gets its
+        // own answer.
+        assert!(s.stat(&p).unwrap().is_dir());
+        // A folder that is not there: its reason, and the link still works.
+        let gone = s.list_dir(&format!("{p}/nothing")).err().unwrap();
+        assert_eq!(gone.code, 2);
+        assert_eq!(s.list_dir(&p).unwrap().entries.len(), 152);
+        // A big folder: one more round trip for each 300 entries.
+        for i in 0..150 {
+            std::fs::write(dir.join("plain").join(format!("g{i:03}")), b"x").unwrap();
+        }
+        let before = s.counters()[0];
+        assert_eq!(s.list_dir(&p).unwrap().entries.len(), 302);
+        assert_eq!(s.counters()[0] - before, 4, "two waves and the link");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

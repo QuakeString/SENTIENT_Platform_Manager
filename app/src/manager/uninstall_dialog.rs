@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, h_flex, v_flex,
     button::ButtonVariants as _,
     input::{Input, InputEvent, InputState},
     switch::Switch,
@@ -392,7 +392,7 @@ impl UninstallDialog {
                             .pr_3()
                             .pb(px(8.))
                             .child(div().flex_1().min_w_0().px(px(10.)).py(px(8.)).rounded(px(8.)).border_1().border_color(theme.border).bg(theme.secondary).font_family("monospace").text_xs().overflow_hidden().child(fix))
-                            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("un-copy-{i}"))).outline().small().label(if copied { t!("Copied") } else { t!("Copy") }).on_click(cx.listener(move |d, _, _, cx| {
+                            .child(crate::ui::probed(crate::ui::button(SharedString::from(format!("un-copy-{i}"))).outline().label(if copied { t!("Copied") } else { t!("Copy") }).on_click(cx.listener(move |d, _, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(f2.clone()));
                                 d.copied = Some(i);
                                 cx.notify();

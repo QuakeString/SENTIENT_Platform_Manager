@@ -29,6 +29,8 @@ use sentient_installer_core::progress::{Progress, ProgressFn};
 pub mod conn;
 pub mod reuse;
 pub mod serve;
+#[cfg(feature = "gui")]
+pub mod status_cache;
 pub mod winshell;
 
 /// What the agent jobs mean (`--job …`, crate::headless), as one number:
@@ -441,11 +443,14 @@ pub fn scan(host: &str, port: u16) -> Result<(String, String), String> {
     if keys.is_empty() {
         return Err(nf!("{host}:{port} did not answer as an SSH server."));
     }
-    // The fingerprint of the first (strongest) key.
+    // The fingerprint of the strongest key it offers (ed25519, then ECDSA,
+    // then RSA; ssh-keyscan's order is not that: the rc6 build 5 VM showed
+    // the ECDSA one while the hint named the ed25519 file).
+    let line = shown_key(&keys).unwrap_or("");
     let mut kg = Command::new("ssh-keygen").args(["-lf", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().map_err(|e| format!("ssh-keygen: {e}"))?;
     if let Some(mut s) = kg.stdin.take() {
         use std::io::Write as _;
-        let _ = s.write_all(keys.lines().next().unwrap_or("").as_bytes());
+        let _ = s.write_all(line.as_bytes());
     }
     let fp = String::from_utf8_lossy(&kg.wait_with_output().map_err(|e| e.to_string())?.stdout)
         .split_whitespace()
@@ -453,6 +458,23 @@ pub fn scan(host: &str, port: u16) -> Result<(String, String), String> {
         .unwrap_or("")
         .to_string();
     Ok((keys, fp))
+}
+
+/// The key line whose fingerprint the trust step shows: ed25519, then
+/// ECDSA, then RSA.
+pub fn shown_key(keys: &str) -> Option<&str> {
+    let of = |t: &str| keys.lines().find(|l| l.split_whitespace().nth(1).is_some_and(|k| k.starts_with(t)));
+    of("ssh-ed25519").or_else(|| of("ecdsa-")).or_else(|| of("ssh-rsa")).or_else(|| keys.lines().next())
+}
+
+/// The host key file on the server that holds [`shown_key`]'s key:
+/// `ssh_host_ed25519_key.pub`, `…_ecdsa_…`, `…_rsa_…`.
+pub fn host_key_file(keys: &str) -> &'static str {
+    match shown_key(keys).and_then(|l| l.split_whitespace().nth(1)) {
+        Some(k) if k.starts_with("ecdsa-") => "ssh_host_ecdsa_key.pub",
+        Some(k) if k.starts_with("ssh-rsa") => "ssh_host_rsa_key.pub",
+        _ => "ssh_host_ed25519_key.pub",
+    }
 }
 
 /// Trust these host keys from now on.
@@ -561,6 +583,18 @@ pub fn sftp_command(inst: &Instance, admin: bool) -> (Command, Option<String>) {
     (c, pw)
 }
 
+/// A Windows server's SFTP path (`/C:/Users/x`) as Windows names it
+/// (`C:/Users/x`): Remove-Item took the leading `/` for a drive "/C" and
+/// deleting failed (rc6 build 5 VM). Other paths stay as they are.
+pub fn windows_path(p: &str) -> String {
+    let b = p.as_bytes();
+    if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        p[1..].to_string()
+    } else {
+        p.to_string()
+    }
+}
+
 /// Delete a file or a whole folder tree on the server in one command
 /// (Files, after its confirm): `rm -rf` on Linux, as administrator with
 /// `admin`; Remove-Item on Windows. Refuses the root and empty paths.
@@ -570,7 +604,11 @@ pub fn remove_tree(inst: &Instance, path: &str, admin: bool) -> Result<(), Strin
         return Err(nf!("{path} cannot be deleted from here."));
     }
     if is_windows(inst) {
-        return win::ps(inst, &format!("Remove-Item -LiteralPath '{}' -Recurse -Force -ErrorAction Stop", p.replace('\'', "''"))).map(|_| ());
+        let w = windows_path(p);
+        if w.trim_end_matches(['/', '\\']).len() <= 2 {
+            return Err(tf!("{path} cannot be deleted from here."));
+        }
+        return win::ps(inst, &format!("Remove-Item -LiteralPath '{}' -Recurse -Force -ErrorAction Stop", w.replace('\'', "''"))).map(|_| ());
     }
     let cmd = format!("rm -rf -- '{}'", p.replace('\'', "'\\''"));
     if admin && inst.user != "root" { sudo_run(inst, &cmd, None) } else { run(inst, &cmd, None) }.map(|_| ())
@@ -789,7 +827,7 @@ fn deploy_locked(inst: &Instance, sink: &ProgressFn) -> Result<(), String> {
             return Ok(());
         }
         Ok("sudo") if secret(&sudo_key(&inst.id)).is_none() => {
-            return Err(failed(&nf!("{} needs administrator rights on the server: sudo asks for a password.", inst.user), "sudo: a password is required"));
+            return Err(failed(&nf!("{} needs administrator rights on the server: sudo asks for a password.", inst.user), t!("sudo: a password is required")));
         }
         Ok("sudo") => {
             DEBUG_AGENT_UPDATED.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1110,6 +1148,13 @@ pub fn is_not_admin(e: &str) -> bool {
 
 /// The server's state, from its own Platform Manager (`--job status-json`).
 pub fn status(inst: &Instance) -> Result<RemoteStatus, String> {
+    let t0 = std::time::Instant::now();
+    let r = status_now(inst);
+    crate::timing::took(&format!("remote-status id={} ok={}", inst.id, r.is_ok()), t0);
+    r
+}
+
+fn status_now(inst: &Instance) -> Result<RemoteStatus, String> {
     #[cfg(debug_assertions)]
     if let Some(secs) = std::env::var("SPM_DEBUG_REMOTE_SLOW").ok().and_then(|s| s.parse::<u64>().ok()) {
         std::thread::sleep(std::time::Duration::from_secs(secs));
@@ -1367,12 +1412,63 @@ pub fn put_text(inst: &Instance, path: &str, text: &str) -> Result<(), String> {
 pub fn gateway(inst: &Instance) -> Result<HashMap<String, String>, String> {
     #[cfg(debug_assertions)]
     if let Some(t) = std::env::var_os("SPM_DEBUG_REMOTE_GATEWAY") {
-        return Ok(t.to_string_lossy().split([' ', '+']).filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect());
+        // A fixture's name (crate::manager::gateway::debug_fixture) or a line.
+        let t = t.to_string_lossy().into_owned();
+        #[cfg(feature = "gui")]
+        let t = crate::manager::gateway::debug_fixture(&t).map(str::to_string).unwrap_or(t);
+        return Ok(t.split([' ', '+']).filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect());
     }
     let out = spm_job(inst, "gateway-status")?;
     let line = out.lines().rev().find(|l| l.starts_with("installed=")).ok_or(n!("The server's Platform Manager gave no gateway state."))?;
     // Values with spaces come %20-escaped (headless's gateway-status).
     Ok(line.split(' ').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_string(), v.replace("%20", " ").replace("%25", "%"))).collect())
+}
+
+/// The server's gateway settings, without secrets (the agent's
+/// `gateway-settings-json`, crate::manager::gateway_settings).
+pub fn gateway_settings(inst: &Instance) -> Result<sentient_installer_core::gateway_settings::GwSettings, String> {
+    #[cfg(debug_assertions)]
+    if let Some(name) = std::env::var("SPM_DEBUG_REMOTE_GATEWAY_SETTINGS").ok().or_else(|| std::env::var("SPM_DEBUG_REMOTE_GATEWAY").ok()) {
+        #[cfg(feature = "gui")]
+        if let Some(s) = crate::manager::gateway_settings::debug_settings(&name) {
+            return Ok(s);
+        }
+        let _ = name;
+    }
+    let out = spm_job(inst, "gateway-settings-json")?;
+    settings_of_output(&out)
+}
+
+/// The settings line in a `gateway-settings-json` job's output.
+pub fn settings_of_output(out: &str) -> Result<sentient_installer_core::gateway_settings::GwSettings, String> {
+    let line = out.lines().rev().find_map(|l| l.trim().strip_prefix(crate::headless::GW_SETTINGS_LINE).map(str::to_string)).ok_or(t!("The server's Platform Manager gave no gateway settings."))?;
+    serde_json::from_str(&line).map_err(|e| tf!("The gateway settings could not be read: {e}"))
+}
+
+/// Set the server's gateway page password: the agent's
+/// `gateway-ui-password`, the password as one line on its standard input
+/// (never on a command line, in a file or in a log). Waits for the answer.
+pub fn gateway_ui_password(inst: &Instance, password: &str) -> Result<String, String> {
+    let argv: Vec<String> = ["--json", "gateway-ui-password"].iter().map(|a| a.to_string()).collect();
+    let input = Some(format!("{password}\n"));
+    let (ok, out, err) = match conn::call(inst, serve::Work::Job(argv.clone()), input.clone()) {
+        Ok((_, r)) => (r.code == Some(0), r.out, r.err),
+        Err(conn::Fail::Err(e)) => return Err(e),
+        Err(conn::Fail::PerCall) => job_with_input(inst, &argv, input.as_deref())?,
+    };
+    job_answer(ok, &out, &err)
+}
+
+/// Test the server's gateway connection to SENTIENT (the agent's
+/// `gateway-test`; it prints nothing of the credentials).
+pub fn gateway_test(inst: &Instance) -> Result<String, String> {
+    let argv: Vec<String> = ["--json", "gateway-test"].iter().map(|a| a.to_string()).collect();
+    let (ok, out, err) = match conn::call(inst, serve::Work::Job(argv.clone()), None) {
+        Ok((_, r)) => (r.code == Some(0), r.out, r.err),
+        Err(conn::Fail::Err(e)) => return Err(e),
+        Err(conn::Fail::PerCall) => job_with_input(inst, &argv, None)?,
+    };
+    job_answer(ok, &out, &err)
 }
 
 /// The account's home folder on the server.
@@ -2521,6 +2617,29 @@ mod win {
 
 #[cfg(test)]
 mod tests {
+
+    /// A Windows server's SFTP path is handed to PowerShell without its
+    /// leading slash (Remove-Item read "/C" as a drive).
+    #[test]
+    fn a_windows_sftp_path_loses_its_leading_slash() {
+        assert_eq!(super::windows_path("/C:/Users/spmtest/Downloads/x"), "C:/Users/spmtest/Downloads/x");
+        assert_eq!(super::windows_path("C:/Users/x"), "C:/Users/x");
+        assert_eq!(super::windows_path("/home/ops/x"), "/home/ops/x");
+        assert_eq!(super::windows_path("/C:/"), "C:/");
+    }
+
+    /// The trust step shows the ed25519 key when there is one, whatever
+    /// order ssh-keyscan printed them in, and names that key's file.
+    #[test]
+    fn the_shown_host_key_is_the_strongest_and_its_file_matches() {
+        let keys = "vm ecdsa-sha2-nistp256 AAAAE2\nvm ssh-rsa AAAAB3\nvm ssh-ed25519 AAAAC3\n";
+        assert_eq!(super::shown_key(keys), Some("vm ssh-ed25519 AAAAC3"));
+        assert_eq!(super::host_key_file(keys), "ssh_host_ed25519_key.pub");
+        let keys = "vm ssh-rsa AAAAB3\nvm ecdsa-sha2-nistp256 AAAAE2\n";
+        assert_eq!(super::host_key_file(keys), "ssh_host_ecdsa_key.pub");
+        assert_eq!(super::host_key_file("vm ssh-rsa AAAAB3\n"), "ssh_host_rsa_key.pub");
+    }
+
     use super::*;
 
     /// The built-in terminal's ssh: a terminal requested, and the kept

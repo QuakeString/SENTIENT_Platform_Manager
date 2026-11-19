@@ -34,6 +34,33 @@ const HISTORY_EVERY: Duration = Duration::from_secs(60);
 const SECOND_AFTER: Duration = Duration::from_secs(1);
 /// The Server card's reading again this often while shown.
 const SERVER_EVERY: Duration = Duration::from_secs(300);
+/// Live: the Services card again this often (`docker stats` samples for
+/// about two seconds itself; on Windows each reading is a few `wsl.exe`
+/// runs, so not on every live tick).
+const SERVICES_EVERY: Duration = Duration::from_secs(6);
+
+/// One of the page's readers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reader {
+    System,
+    Services,
+    History,
+    Server,
+}
+
+/// How long `reader` sleeps after reading number `round` (0 = the first,
+/// on open) in `range`. Every reader sleeps between readings; none reads
+/// again sooner than a second.
+fn wait_after(reader: Reader, range: Range, round: u32) -> Duration {
+    let live = range == Range::Live;
+    match reader {
+        Reader::System if live && round == 0 => SECOND_AFTER,
+        Reader::System if live => LIVE_EVERY,
+        Reader::Services if live => SERVICES_EVERY,
+        Reader::System | Reader::Services | Reader::History => HISTORY_EVERY,
+        Reader::Server => SERVER_EVERY,
+    }
+}
 
 static OPEN: AtomicBool = AtomicBool::new(false);
 
@@ -41,6 +68,23 @@ static OPEN: AtomicBool = AtomicBool::new(false);
 pub fn set_open(open: bool) {
     OPEN.store(open, Ordering::Relaxed);
 }
+
+/// The Services card's reading.
+#[derive(Debug, Clone, PartialEq)]
+enum Services {
+    List(Vec<crate::stats::Service>),
+    /// SENTIENT is stopped: not read (no failure, nothing started to read).
+    Stopped,
+}
+
+impl Services {
+    fn of(s: &Sample) -> Self {
+        if s.services_stopped { Services::Stopped } else { Services::List(s.services.clone()) }
+    }
+}
+
+/// What the Services card says when SENTIENT is stopped.
+const SERVICES_STOPPED: &str = n!("SENTIENT is stopped. Its services are read when it runs.");
 
 #[derive(Clone)]
 pub enum Source {
@@ -60,7 +104,7 @@ impl Source {
                 if let Some(d) = std::env::var_os("SPM_DEBUG_STATS") {
                     return crate::stats::debug_part(std::path::Path::new(&d), Part::System);
                 }
-                Ok(crate::stats::local_read(r.as_ref(), crate::stats::FIRST_WINDOW))
+                Ok(sentient_installer_core::distro::idle::reading(|| crate::stats::local_read(r.as_ref(), crate::stats::FIRST_WINDOW)))
             }
             Source::Remote(i) => crate::remote::stats_live_part(i, Part::System),
         }
@@ -78,16 +122,19 @@ impl Source {
         }
     }
 
-    fn services(&self) -> Result<Vec<crate::stats::Service>, String> {
+    /// The services, or `Services::Stopped` when SENTIENT is stopped and
+    /// was not asked (distro::idle).
+    fn services(&self) -> Result<Services, String> {
         match self {
             Source::Local(r) => {
                 #[cfg(debug_assertions)]
                 if let Some(d) = std::env::var_os("SPM_DEBUG_STATS") {
-                    return crate::stats::debug_part(std::path::Path::new(&d), Part::Services).map(|s| s.services);
+                    return crate::stats::debug_part(std::path::Path::new(&d), Part::Services).map(|s| Services::of(&s));
                 }
-                Ok(crate::stats::services_over(r.as_ref(), Duration::from_secs(1)))
+                let (list, stopped) = sentient_installer_core::distro::idle::reading(|| crate::stats::services_read(r.as_ref(), Duration::from_secs(1)));
+                Ok(if stopped { Services::Stopped } else { Services::List(list) })
             }
-            Source::Remote(i) => crate::remote::stats_live_part(i, Part::Services).map(|s| s.services),
+            Source::Remote(i) => crate::remote::stats_live_part(i, Part::Services).map(|s| Services::of(&s)),
         }
     }
 
@@ -95,7 +142,7 @@ impl Source {
     /// here, one agent call on a server.
     fn server_info(&self) -> Result<crate::server_info::ServerInfo, String> {
         match self {
-            Source::Local(r) => Ok(crate::server_info::gather(r.as_ref())),
+            Source::Local(r) => crate::server_info::gather_here(r.as_ref()),
             Source::Remote(i) => crate::manager::server_card::read_remote(i),
         }
     }
@@ -162,7 +209,7 @@ pub struct StatsPage {
     /// When a reading last came back (HH:MM).
     updated_at: Option<String>,
     /// Each source fills its own card: None while it is being read.
-    services: Option<Result<Vec<crate::stats::Service>, String>>,
+    services: Option<Result<Services, String>>,
     db: Option<DbRead>,
     /// The server's agent answers whole readings (from before the parts):
     /// services and database come with the processor reading.
@@ -189,11 +236,73 @@ pub struct StatsPage {
     server_job_label: String,
     /// Debug builds: the dialog SPM_DEBUG_SERVER_DIALOG asks for was opened.
     debug_opened: bool,
+    /// When the Services card's last reading came back, and whether one
+    /// is under way outside the poll.
+    services_at: Option<Instant>,
+    services_reading: bool,
+    _services_once: Option<Task<()>>,
+    /// Services read while SENTIENT was stopped: looked at again soon
+    /// while the page shows (crate::manager::settings::stopped_retry).
+    _services_retry: Option<Task<()>>,
     _server_poll: Option<Task<()>>,
     _server_watch: Option<Subscription>,
     _watch: Option<Subscription>,
     _poll: Vec<Task<()>>,
     _tasks: Vec<Task<()>>,
+}
+
+/// What a Statistics page read, kept when the window closes while the
+/// Platform Manager keeps running (the tray): a window opened again draws
+/// it at once and reads it again behind it. Memory only, this run.
+struct Kept {
+    range: Range,
+    live: Vec<Sample>,
+    hist: Option<Result<Vec<Sample>, String>>,
+    live_err: Option<String>,
+    updated_at: Option<String>,
+    services: Option<Result<Services, String>>,
+    db: Option<DbRead>,
+    server: Option<Result<crate::server_info::ServerInfo, String>>,
+}
+
+thread_local! {
+    /// Each source's [`Kept`] ([`Source::key`]).
+    static KEPT: std::cell::RefCell<std::collections::HashMap<String, Kept>> = Default::default();
+}
+
+impl Source {
+    /// Which machine, read how: this computer's installation, or the
+    /// server's address and account (an instance edited since is read
+    /// afresh).
+    fn key(&self) -> String {
+        match self {
+            Source::Local(r) => tf!("local {}", serde_json::to_string(r).unwrap_or_default()),
+            Source::Remote(i) => tf!("remote {}", serde_json::to_string(&(&i.id, &i.host, i.port, &i.user, &i.auth, &i.key_file)).unwrap_or_default()),
+        }
+    }
+}
+
+/// The window closed (the app runs on): what the page read stays for the
+/// next window ([`Kept`]).
+impl Drop for StatsPage {
+    fn drop(&mut self) {
+        if self.live.is_empty() && self.server.is_none() {
+            return;
+        }
+        let k = Kept {
+            range: self.range,
+            live: std::mem::take(&mut self.live),
+            hist: self.hist.take(),
+            live_err: self.live_err.take(),
+            updated_at: self.updated_at.take(),
+            services: self.services.take(),
+            db: self.db.take(),
+            server: self.server.take(),
+        };
+        let key = self.src.key();
+        // (Not while the thread ends: nothing opens again then.)
+        let _ = KEPT.try_with(|m| m.borrow_mut().insert(key, k));
+    }
 }
 
 impl StatsPage {
@@ -221,7 +330,7 @@ impl StatsPage {
             refreshing: false,
             stale: Vec::new(),
             updated_at: None,
-            services: none.then(|| Ok(Vec::new())),
+            services: none.then(|| Ok(Services::List(Vec::new()))),
             db: none.then_some(DbRead::None),
             whole: Arc::new(AtomicBool::new(false)),
             opened: Instant::now(),
@@ -235,12 +344,28 @@ impl StatsPage {
             server_hidden: false,
             server_job_label: String::new(),
             debug_opened: false,
+            services_at: None,
+            services_reading: false,
+            _services_once: None,
+            _services_retry: None,
             _server_poll: None,
             _server_watch: None,
             _watch: None,
             _poll: Vec::new(),
             _tasks: Vec::new(),
         };
+        // A window opened again: what this run read before shows at once
+        // (start and poll_server read it again behind it).
+        if let Some(k) = KEPT.with(|m| m.borrow_mut().remove(&p.src.key())) {
+            p.range = k.range;
+            p.live = k.live;
+            p.hist = k.hist;
+            p.live_err = k.live_err;
+            p.updated_at = k.updated_at;
+            p.services = k.services;
+            p.db = k.db;
+            p.server = k.server;
+        }
         p.start(cx);
         p.poll_server(cx);
         let w = cx.observe(&p.server_job, |p, job, cx| {
@@ -272,7 +397,7 @@ impl StatsPage {
                         break;
                     }
                 }
-                cx.background_executor().timer(SERVER_EVERY).await;
+                cx.background_executor().timer(wait_after(Reader::Server, Range::Live, 1)).await;
             }
         }));
     }
@@ -424,6 +549,12 @@ impl StatsPage {
 
     /// Shown again after another instance was open: what was read stays
     /// and every part is read again behind it.
+    /// Reopen tests: the page shows readings (or why there are none), not
+    /// its loading skeleton.
+    pub fn has_data(&self) -> bool {
+        !self.live.is_empty() || self.live_err.is_some()
+    }
+
     pub fn reshow(&mut self, cx: &mut Context<Self>) {
         self.paused = false;
         self.read_again(cx);
@@ -449,11 +580,11 @@ impl StatsPage {
 
     fn push_live(&mut self, sample: Sample) {
         // An agent from before the parts: its reading carries the rest.
-        if !sample.services.is_empty() || sample.db.is_some() {
+        if !sample.services.is_empty() || sample.services_stopped || sample.db.is_some() {
             self.whole.store(true, Ordering::Relaxed);
         }
         if self.whole.load(Ordering::Relaxed) {
-            self.services = Some(Ok(sample.services.clone()));
+            self.services = Some(Ok(Services::of(&sample)));
             self.db = Some(sample.db.clone().map(DbRead::Read).unwrap_or(DbRead::None));
             self.timing("services");
             self.timing("db");
@@ -470,7 +601,9 @@ impl StatsPage {
     /// Read now and then on the range's rhythm, while the page is shown:
     /// each source on its own, so a slow one never holds the others back.
     fn start(&mut self, cx: &mut Context<Self>) {
-        self.restart(true, cx);
+        // A history kept from the window before stays while it is read again.
+        let clear = self.hist.is_none();
+        self.restart(clear, cx);
     }
 
     /// `clear`: a new range, whose history is not read yet.
@@ -492,7 +625,6 @@ impl StatsPage {
             .ok();
         });
         self._tasks.push(timeout);
-        let every = if range == Range::Live { LIVE_EVERY } else { HISTORY_EVERY };
 
         // Processor, memory, disk, network, uptime.
         let src = self.src.clone();
@@ -522,8 +654,9 @@ impl StatsPage {
                         break;
                     }
                 }
+                let wait = wait_after(Reader::System, range, round);
                 round += 1;
-                cx.background_executor().timer(if round == 1 && range == Range::Live { SECOND_AFTER } else { every }).await;
+                cx.background_executor().timer(wait).await;
             }
         }));
 
@@ -544,6 +677,7 @@ impl StatsPage {
                         if this
                             .update(cx, |p, cx| {
                                 if !p.whole.load(Ordering::Relaxed) {
+                                    p.services_at = Some(Instant::now());
                                     match got {
                                         // A failed re-read keeps what was read.
                                         Err(e) if matches!(p.services, Some(Ok(_))) => p.set_stale("services", Some(e)),
@@ -563,7 +697,7 @@ impl StatsPage {
                             break;
                         }
                     }
-                    cx.background_executor().timer(every).await;
+                    cx.background_executor().timer(wait_after(Reader::Services, range, 1)).await;
                 }
             }));
         }
@@ -600,9 +734,68 @@ impl StatsPage {
                             break;
                         }
                     }
-                    cx.background_executor().timer(HISTORY_EVERY).await;
+                    cx.background_executor().timer(wait_after(Reader::History, range, 1)).await;
                 }
             }));
+        }
+    }
+
+    /// Read the services once now (SENTIENT's state changed, or a stopped
+    /// reading is looked at again), apart from the poll.
+    fn read_services_now(&mut self, cx: &mut Context<Self>) {
+        if self.services_reading || !self.src.has_install() || self.whole.load(Ordering::Relaxed) {
+            return;
+        }
+        self.services_reading = true;
+        self._services_retry = None;
+        let src = self.src.clone();
+        self._services_once = Some(cx.spawn(async move |this, cx| {
+            let got = cx.background_executor().spawn(async move { src.services() }).await;
+            this.update(cx, |p, cx| {
+                p.services_reading = false;
+                p.services_at = Some(Instant::now());
+                match got {
+                    Err(e) if matches!(p.services, Some(Ok(_))) => p.set_stale("services", Some(e)),
+                    got => {
+                        if got.is_ok() {
+                            p.set_stale("services", None);
+                        }
+                        p.services = Some(got);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// SENTIENT's state may have changed (a job here ended: Start, Stop,
+    /// Restart): the Services card is read again now.
+    pub fn sentient_changed(&mut self, cx: &mut Context<Self>) {
+        self.read_services_now(cx);
+    }
+
+    /// Shown with the services left out because SENTIENT was stopped: read
+    /// again when that reading is crate::manager::settings::STOPPED_RETRY
+    /// old, else look again then (a redraw: only while shown).
+    fn services_retry_while_stopped(&mut self, cx: &mut Context<Self>) {
+        use crate::manager::settings::{Retry, stopped_retry};
+        let stopped = matches!(self.services, Some(Ok(Services::Stopped)));
+        match stopped_retry(stopped, self.services_reading, self.services_at, Instant::now()) {
+            Retry::No => {}
+            Retry::Now => self.read_services_now(cx),
+            Retry::After(wait) => {
+                if self._services_retry.is_none() {
+                    self._services_retry = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(wait).await;
+                        this.update(cx, |p, cx| {
+                            p._services_retry = None;
+                            cx.notify();
+                        })
+                        .ok();
+                    }));
+                }
+            }
         }
     }
 
@@ -825,15 +1018,17 @@ impl StatsPage {
             .gap_1()
             .min_w_0()
             .child(
-                // A long title (Tamil, Malayalam) puts "now …" on its own line.
+                // A narrow card shortens the title, never the value or the
+                // High pill, and nothing reaches into the card's padding.
                 h_flex()
                     .flex_wrap()
                     .gap_x_2()
                     .items_center()
-                    .child(div().font_weight(FontWeight::MEDIUM).child(c.title))
-                    .when(c.high, |r| r.child(ui::pill(&theme, ui::Tone::Warn, t!("High")).text_size(px(11.5))))
+                    .min_w_0()
+                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::MEDIUM).child(c.title))
+                    .when(c.high, |r| r.child(ui::pill(&theme, ui::Tone::Warn, t!("High")).text_size(px(11.5)).flex_shrink_0()))
                     .child(div().flex_1())
-                    .child(div().text_size(px(12.)).text_color(theme.muted_foreground).font_features(ui::tabular()).whitespace_nowrap().child(tf!("now {now}"))),
+                    .child(div().flex_shrink_0().text_size(px(12.)).text_color(theme.muted_foreground).font_features(ui::tabular()).whitespace_nowrap().child(tf!("now {now}"))),
             )
             .child(
                 h_flex()
@@ -958,6 +1153,9 @@ fn mini_bar(theme: &gpui_kit::component::Theme, f: f32) -> Div {
 
 impl Render for StatsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.paused {
+            self.services_retry_while_stopped(cx);
+        }
         let theme = cx.theme().clone();
         // The page's own width decides the layout (figures 4 → 2, charts
         // 3 → 2 → 1, Services and Database side by side or stacked).
@@ -1125,7 +1323,14 @@ impl Render for StatsPage {
         // it is read, left out when there is nothing in it.
         let services = match &self.services {
             None => Some(ui::skeleton_card(&theme, "stats-svc", Some(t!("Services")), &["", "", ""])),
-            Some(Ok(list)) if !list.is_empty() => Some(services_panel(&theme, list, self.live.last())),
+            Some(Ok(Services::List(list))) if !list.is_empty() => Some(services_panel(&theme, list, self.live.last())),
+            // Stopped: a plain line in the card (nothing failed).
+            Some(Ok(Services::Stopped)) => Some(
+                ui::panel(&theme)
+                    .min_w_0()
+                    .child(div().font_weight(FontWeight::MEDIUM).child(t!("Services")))
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(crate::i18n::t(SERVICES_STOPPED))),
+            ),
             Some(_) => None,
         };
         // The Server card in the Database card's place (the approved mockup).
@@ -1226,7 +1431,61 @@ fn services_panel(theme: &gpui_kit::component::Theme, list: &[crate::stats::Serv
 
 #[cfg(test)]
 mod tests {
-    use super::{nice, nice_memory, tick};
+    use super::{nice, nice_memory, tick, wait_after, Range, Reader, Services};
+
+    #[test]
+    fn stopped_services_are_looked_at_again_while_shown() {
+        use crate::manager::settings::{stopped_retry, Retry, STOPPED_RETRY};
+        use std::time::{Duration, Instant};
+        // The rc5 VM: "stopped" for 2.5 min after SENTIENT answered. Shown
+        // and stopped, the card reads again 5 s after its last reading
+        // (and at once when a job here ends: sentient_changed).
+        let t0 = Instant::now();
+        assert_eq!(stopped_retry(true, false, Some(t0), t0 + Duration::from_secs(1)), Retry::After(STOPPED_RETRY - Duration::from_secs(1)));
+        assert_eq!(stopped_retry(true, false, Some(t0), t0 + STOPPED_RETRY), Retry::Now);
+        assert_eq!(stopped_retry(false, false, Some(t0), t0 + Duration::from_secs(600)), Retry::No, "a list: the poll keeps it fresh");
+        assert!(matches!(Services::of(&crate::stats::Sample { services_stopped: true, ..Default::default() }), Services::Stopped));
+    }
+
+    #[test]
+    fn every_reader_sleeps_between_readings() {
+        use std::time::Duration;
+        // Live: the figures a second after the first, then every 3 s; the
+        // services every 6 s; the Server card every 5 minutes.
+        assert_eq!(wait_after(Reader::System, Range::Live, 0), Duration::from_secs(1));
+        assert_eq!(wait_after(Reader::System, Range::Live, 1), Duration::from_secs(3));
+        assert_eq!(wait_after(Reader::System, Range::Live, 50), Duration::from_secs(3));
+        assert_eq!(wait_after(Reader::Services, Range::Live, 1), Duration::from_secs(6));
+        assert_eq!(wait_after(Reader::Server, Range::Live, 1), Duration::from_secs(300));
+        // The longer ranges: once a minute.
+        for r in [Reader::System, Reader::Services, Reader::History] {
+            assert_eq!(wait_after(r, Range::Hour, 0), Duration::from_secs(60));
+            assert_eq!(wait_after(r, Range::Week, 3), Duration::from_secs(60));
+        }
+        // Nothing reads in a loop: at least a second between readings, and
+        // the Server card's PowerShell reading (Windows) minutes apart.
+        for range in Range::ALL {
+            for round in 0..5 {
+                for r in [Reader::System, Reader::Services, Reader::History, Reader::Server] {
+                    assert!(wait_after(r, range, round) >= Duration::from_secs(1), "{r:?} {round}");
+                }
+                assert!(wait_after(Reader::Server, range, round) >= Duration::from_secs(60));
+            }
+        }
+    }
+
+    #[test]
+    fn services_left_out_while_stopped_are_their_own_state() {
+        let mut s = crate::stats::Sample { services_stopped: true, ..Default::default() };
+        assert_eq!(Services::of(&s), Services::Stopped);
+        // Across the agent (stats-live services), and from an older one.
+        let back: crate::stats::Sample = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(Services::of(&back), Services::Stopped);
+        s.services_stopped = false;
+        s.services = vec![crate::stats::Service { name: "sentient".into(), ..Default::default() }];
+        assert_eq!(Services::of(&s), Services::List(s.services.clone()));
+        assert!(!serde_json::to_string(&s).unwrap().contains("services_stopped"));
+    }
 
     #[test]
     fn scales_are_round_and_labels_distinct() {

@@ -107,11 +107,27 @@ pub const PAGE_GAP: f32 = 18.;
 /// between a button group and the text or pill beside it.
 pub const BUTTON_GAP: f32 = 12.;
 
+/// The one button, everywhere (pages, dialogs, cards, Setup's steps and
+/// footer, the manager's top bar): crate::ui::button sets it and no call
+/// site changes it (tests/layout/buttons.py --source; the layout
+/// test's buttons.py measures every button in every render).
+/// Height: the standard control height, 2 rem = 28 px (crate::ui::control_h),
+/// so buttons, inputs and selects in one row line up.
+pub const BUTTON_H: f32 = 28.;
+/// Either side of a labelled button's content.
+pub const BUTTON_PAD_X: f32 = 12.;
+/// The narrowest labelled button (OK, Log, Back stay one width).
+pub const BUTTON_MIN_W: f32 = 72.;
+/// Every button's corners, and the top bar's controls'.
+pub const BUTTON_RADIUS: f32 = 8.;
+/// An icon-only button: a square of the button height.
+pub const ICON_BUTTON: f32 = BUTTON_H;
+
 /// The top bar's controls (the instance switcher, the monitors, the theme
-/// button and the bell): one height, one radius, one hover tint (the
-/// instance's colour at this opacity), centred in the 60 px bar.
-pub const BAR_CTRL_H: f32 = 40.;
-pub const BAR_CTRL_RADIUS: f32 = 8.;
+/// button and the bell): the one button height and radius, one hover tint
+/// (the instance's colour at this opacity), centred in the 60 px bar.
+pub const BAR_CTRL_H: f32 = BUTTON_H;
+pub const BAR_CTRL_RADIUS: f32 = BUTTON_RADIUS;
 /// Hover over the bar's controls: the instance's colour at this opacity
 /// over the bar. Weaker in dark, where the same colour reads far stronger
 /// on the dark surface.

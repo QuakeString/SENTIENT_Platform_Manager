@@ -52,13 +52,23 @@ fn local_record() -> Result<InstallationRecord, String> {
     Ok(r)
 }
 
+/// What the Data locations card says while SENTIENT is stopped (on Windows
+/// its WSL distro, which a read never starts).
+pub const STOPPED: &str = n!("SENTIENT is stopped. Where its data is kept is read when it runs.");
+
 pub fn local_overview() -> Result<Overview, String> {
     let r = local_record()?;
     #[cfg(windows)]
     if r.engine == Engine::Native {
         return Ok(crate::movedata_win::overview(&r));
     }
-    move_data::overview(&r.stack, backups_dir().as_deref())
+    // A read: never starts SENTIENT's stopped WSL distro (the rc5 VM: the
+    // card, made with Platform settings, started it with "Start with
+    // Windows" off). Left out: STOPPED.
+    match sentient_installer_core::distro::idle::read(|| move_data::overview(&r.stack, backups_dir().as_deref())) {
+        sentient_installer_core::distro::idle::Read::Done(o) => o,
+        sentient_installer_core::distro::idle::Read::Stopped => Err(STOPPED.into()),
+    }
 }
 
 pub fn local_check(store: Store, path: &str) -> Result<Check, String> {

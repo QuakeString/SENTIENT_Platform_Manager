@@ -94,7 +94,7 @@ pub fn download(version: Option<&str>, sink: &ProgressFn) -> Result<(String, Pat
     };
     let (m, trust) = manifest::fetch_signed(&url, started)?;
     m.wanted()?;
-    if let Some(w) = trust.warning(&format!("SENTIENT {}", m.version)) {
+    if let Some(w) = trust.warning(&tf!("SENTIENT {}", m.version)) {
         sink(sentient_installer_core::progress::Progress::Log { line: w });
     }
     let dir = m.download_package(sink, &downloads_dir(&m.version))?;

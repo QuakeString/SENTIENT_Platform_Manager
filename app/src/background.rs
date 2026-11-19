@@ -257,6 +257,9 @@ pub fn listen(tx: UnboundedSender<Command>) -> bool {
                 }
                 let cmd = match it.next().unwrap_or("show") {
                     "show" => Command::Show,
+                    // Reopen tests: what a click on the tray icon sends.
+                    #[cfg(debug_assertions)]
+                    "toggle" => Command::Toggle,
                     "takeover" => Command::Handover,
                     r => match r.strip_prefix("action ") {
                         Some("exit") => Command::Exit,

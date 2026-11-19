@@ -32,6 +32,48 @@ pub type LoadFn = Arc<dyn Fn(Source, u32, bool) -> Result<String, String> + Send
 /// The sources there are, or why they could not be read.
 pub type SourcesFn = Arc<dyn Fn() -> Result<Vec<Source>, String> + Send + Sync>;
 
+/// What this computer's Logs showed, kept when the window closes while
+/// the Platform Manager keeps running (the tray): a window opened again
+/// draws these lines at once and reads them again behind them. Memory
+/// only, this run.
+struct Kept {
+    /// The installation they were read for ([`record_key`]).
+    key: String,
+    sources: Vec<Source>,
+    pick: Option<Source>,
+    levels: Levels,
+    lines: Vec<Line>,
+    follow: bool,
+}
+
+thread_local! {
+    static KEPT: std::cell::RefCell<Option<Kept>> = const { std::cell::RefCell::new(None) };
+}
+
+fn record_key(record: &InstallationRecord) -> String {
+    serde_json::to_string(record).unwrap_or_default()
+}
+
+/// What this computer's Logs draws first for `key`: the lines this run
+/// showed before (a window opened again), or None on a cold start.
+fn take_kept(kept: &mut Option<Kept>, key: &str) -> Option<Kept> {
+    kept.take().filter(|k| k.key == key)
+}
+
+/// The window closed (the app runs on): the lines shown stay for the next
+/// window ([`Kept`]).
+impl Drop for LogView {
+    fn drop(&mut self) {
+        let Some(key) = self.kept_key.take() else { return };
+        if self.lines.is_empty() {
+            return;
+        }
+        let k = Kept { key, sources: std::mem::take(&mut self.sources), pick: self.pick, levels: self.levels, lines: std::mem::take(&mut self.lines), follow: self.follow };
+        // (Not while the thread ends: nothing opens again then.)
+        let _ = KEPT.try_with(|c| *c.borrow_mut() = Some(k));
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Levels {
     All,
@@ -66,6 +108,9 @@ pub struct LogView {
     /// shows (this computer's Logs page); None: a dialog's, or a server's
     /// (`paused` covers that).
     shown_on: Option<super::Page>,
+    /// This computer's Logs: what it showed is kept for the next window
+    /// under this key ([`Kept`]); None for a dialog's or a server's view.
+    kept_key: Option<String>,
     _poll: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -111,6 +156,7 @@ impl LogView {
             focus: cx.focus_handle(),
             paused: false,
             shown_on: None,
+            kept_key: None,
             _poll: None,
             _subscriptions,
         };
@@ -126,12 +172,32 @@ impl LogView {
 
     /// This computer's logs.
     pub fn local(record: InstallationRecord, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let key = record_key(&record);
         let r1 = record.clone();
         let load: LoadFn = Arc::new(move |s, n, today| Ok(logsource::read(&r1, s, n, today)));
         let sources: SourcesFn = Arc::new(move || Ok(logsource::available(&record)));
         let mut v = Self::new(load, sources, window, cx);
         v.shown_on = Some(super::Page::Logs);
+        // A window opened again: the lines shown before, at once (the
+        // first read, not run yet, reads them again behind them).
+        if let Some(k) = KEPT.with(|c| take_kept(&mut c.borrow_mut(), &key)) {
+            v.sources = k.sources;
+            v.pick = k.pick;
+            v.levels = k.levels;
+            v.lines = k.lines;
+            v.follow = k.follow;
+            if v.follow {
+                v.scroll.scroll_to_bottom();
+            }
+        }
+        v.kept_key = Some(key);
         v
+    }
+
+    /// Reopen tests: the view shows lines (or why it could not read them),
+    /// not its empty "No log lines" before the first read.
+    pub fn has_data(&self) -> bool {
+        !self.lines.is_empty() || self.error.is_some()
     }
 
     /// One log file (the Platform Manager's own log, About → Open the log).
@@ -599,6 +665,12 @@ pub struct LogsPage {
 }
 
 impl LogsPage {
+    /// Reopen tests: the page shows what it read (no installation: its
+    /// "not installed" notice, nothing to read).
+    pub fn has_data(&self, cx: &App) -> bool {
+        self.view.as_ref().is_none_or(|v| v.read(cx).has_data())
+    }
+
     pub fn new(record: Option<InstallationRecord>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let view = record.clone().map(|r| cx.new(|cx| LogView::local(r, window, cx)));
         Self { record, view }
@@ -613,5 +685,34 @@ impl Render for LogsPage {
             (Some(_), Some(v)) => page.child(v.clone()),
             _ => page.child(ui::not_installed(&theme)),
         }
+    }
+}
+
+#[cfg(test)]
+mod reopen_tests {
+    use super::{take_kept, Kept, Levels, Source};
+
+    fn kept(key: &str) -> Kept {
+        Kept { key: key.into(), sources: vec![Source::Sentient], pick: Some(Source::Sentient), levels: Levels::All, lines: Vec::new(), follow: true }
+    }
+
+    /// Cold start: nothing shown in this run, the first read fills the view.
+    #[test]
+    fn a_cold_start_has_nothing_to_draw() {
+        assert!(take_kept(&mut None, "{}").is_none());
+    }
+
+    /// A window opened again: the lines shown before, once.
+    #[test]
+    fn a_reopened_window_draws_the_lines_shown() {
+        let mut slot = Some(kept("rec"));
+        assert!(take_kept(&mut slot, "rec").is_some());
+        assert!(slot.is_none());
+    }
+
+    /// The installation changed meanwhile: read afresh.
+    #[test]
+    fn another_installation_is_read_afresh() {
+        assert!(take_kept(&mut Some(kept("rec")), "other").is_none());
     }
 }

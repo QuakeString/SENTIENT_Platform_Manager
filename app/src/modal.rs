@@ -6,7 +6,7 @@
 //! click on the dim layer close it; the body scrolls between a fixed title
 //! and the buttons the content draws at its bottom.
 
-use gpui_kit::component::{ActiveTheme, IconName, Sizable as _, button::ButtonVariants as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, IconName, button::ButtonVariants as _, h_flex, v_flex};
 use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder as _;
 
@@ -233,13 +233,13 @@ pub fn layer(window: &mut Window, cx: &mut App, page_left: f32, page_top: f32) -
                     r.child(
                         crate::ui::button("modal-full")
                             .ghost()
-                            .small()
+                            
                             .icon(gpui_kit::component::Icon::new(if full.on { gpui_kit::assets::IconName::Minimize } else { gpui_kit::assets::IconName::Maximize }))
                             .tooltip(if full.on { t!("Leave full screen") } else { t!("Full screen") })
                             .on_click(|_, _, cx| toggle_full_screen(cx)),
                     )
                 })
-                .child(crate::ui::button("modal-close").ghost().small().icon(IconName::Close).on_click(|_, window, cx| dismiss(window, cx))),
+                .child(crate::ui::button("modal-close").ghost().icon(IconName::Close).on_click(|_, window, cx| dismiss(window, cx))),
         )
         .child(
             // 20 px around the body (the mockup's dialog); the probe lets the
@@ -357,20 +357,7 @@ pub fn alert(window: &mut Window, cx: &mut App, build: impl FnOnce(Alert, &mut W
 /// as Cancel (the toolkit's danger variant is a pale tint that reads as
 /// disabled).
 pub fn danger_button(theme: &gpui_kit::component::Theme, id: &'static str, label: SharedString, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
-    h_flex()
-        .id(id)
-        .h(px(32.))
-        .px_3()
-        .items_center()
-        .rounded(theme.radius)
-        .bg(theme.danger)
-        .text_color(gpui_kit::white())
-        .text_sm()
-        .font_weight(FontWeight::MEDIUM)
-        .cursor_pointer()
-        .hover(|d| d.opacity(0.9))
-        .child(label)
-        .on_click(on_click)
+    crate::ui::solid_button(id, label, theme.danger, gpui_kit::white(), on_click)
 }
 
 struct AlertBody {

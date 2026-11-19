@@ -49,6 +49,10 @@ pub struct UpdatePage {
     job: Entity<Job>,
     /// Installing a new Platform Manager.
     manager_job: Entity<Job>,
+    /// The gateway on this computer (None while it is read), and its
+    /// update (crate::manager::gateway::gateway_update).
+    gateway: Option<sentient_installer_core::gateway::Status>,
+    gateway_job: Entity<Job>,
     /// Applying the changes for this installation (crate::changes).
     changes_job: Entity<Job>,
     /// The operator chose "Later" for those changes.
@@ -102,6 +106,14 @@ impl UpdatePage {
                 u.check(cx);
             }
         });
+        let gateway_job = cx.new(|_| Job::new());
+        let _observe_gateway = cx.observe(&gateway_job, |page: &mut Self, job, cx| {
+            if !job.read(cx).is_running() {
+                page.refresh_gateway(cx);
+                page.updates.update(cx, |u, cx| u.check(cx));
+            }
+            cx.notify();
+        });
         let changes_job = cx.new(|_| Job::new());
         let _observe_changes = cx.observe(&changes_job, |page: &mut Self, job, cx| {
             if !job.read(cx).is_running() {
@@ -120,6 +132,8 @@ impl UpdatePage {
             running: None,
             job,
             manager_job,
+            gateway: None,
+            gateway_job,
             changes_job,
             changes_later: false,
             run_title: None,
@@ -128,12 +142,36 @@ impl UpdatePage {
             _observe,
             _observe_updates,
             _observe_manager,
-            _subs: vec![_observe_changes],
+            _subs: vec![_observe_changes, _observe_gateway],
             _tasks: vec![],
         };
         page.refresh_rollback(cx);
         page.refresh_versions(cx);
+        page.refresh_gateway(cx);
         page
+    }
+
+    /// Read the gateway here (in the background).
+    fn refresh_gateway(&mut self, cx: &mut Context<Self>) {
+        self._tasks.push(cx.spawn(async move |this, cx| {
+            let s = cx.background_executor().spawn(async { crate::manager::gateway::local_status() }).await;
+            this.update(cx, |p, cx| {
+                p.gateway = Some(s);
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Update the gateway to the offered release (gateway::update: the
+    /// older Python gateway is carried to the Rust one the same way).
+    fn start_gateway_update(&mut self, cx: &mut Context<Self>) {
+        let Some(offer) = self.updates.read(cx).found.as_ref().and_then(|f| f.gateway.as_ref().ok().cloned().flatten()) else { return };
+        let (older, windows_service) = self.gateway.as_ref().map(|s| (!s.installed && s.legacy.is_some(), s.kind() == "windows-service")).unwrap_or_default();
+        let plan = crate::manager::gateway::update_plan(older, windows_service, &offer.version);
+        self.gateway_job.update(cx, |job, _| job.set_plan(plan));
+        self.gateway_job.update(cx, |job, cx| job.start(move |sink| sentient_installer_core::gateway::update(&sink, &offer), cx));
+        cx.notify();
     }
 
     /// Read which version the Docker container runs (the tag may be
@@ -768,6 +806,46 @@ impl UpdatePage {
             }))))
         });
 
+        // The gateway here: its update (the older Python one's too).
+        let gateway_offer = found.as_ref().and_then(|f| f.gateway.as_ref().ok().cloned().flatten());
+        let gateway_checked = found.as_ref().map(|f| f.gateway.is_ok());
+        let gw_busy = self.gateway_job.read(cx).is_running();
+        let gateway_row = self.gateway.as_ref().and_then(|s| {
+            let update = crate::manager::gateway::gateway_update(s, gateway_offer.as_ref(), cfg!(windows));
+            let (sub, pill) = match &update {
+                Some(u) => (u.about.clone(), None),
+                None => crate::manager::gateway::gateway_summary(s, if checking && found.is_none() { None } else { gateway_checked.or(Some(false)) })?,
+            };
+            let mut row = product_row(theme, update.as_ref().is_some_and(|u| u.why.is_none()), ui::Product::Gateway, "Sentient Gateway", sub);
+            if let Some((tone, text)) = pill {
+                row = row.child(ui::pill(theme, tone, text));
+            }
+            if let Some(u) = update {
+                row = row.child(crate::manager::gateway::update_button(theme, "gateway-update", &u, gw_busy, std::rc::Rc::new({
+                    let this = cx.entity().downgrade();
+                    move |_, cx: &mut App| {
+                        this.update(cx, |p, cx| p.start_gateway_update(cx)).ok();
+                    }
+                })));
+            }
+            Some(row)
+        });
+        let gateway_progress = {
+            let j = self.gateway_job.read(cx);
+            let failed = matches!(j.state(), JobState::Failed(_));
+            (j.is_running() || failed || matches!(j.state(), JobState::Done(_))).then(|| {
+                let title = tf!("Updating the Sentient Gateway to {}", gateway_offer.as_ref().map(|o| o.version.clone()).unwrap_or_default());
+                let mut acts: Vec<AnyElement> = Vec::new();
+                if !j.is_running() {
+                    acts.push(crate::ui::button("gateway-close").outline().label(t!("Close")).on_click(cx.listener(|this, _, _, cx| this.gateway_job.update(cx, |job, cx| job.reset(cx)))).into_any_element());
+                }
+                if failed {
+                    acts.push(crate::ui::button("gateway-retry").primary().label(t!("Try again")).on_click(cx.listener(|this, _, _, cx| this.start_gateway_update(cx))).into_any_element());
+                }
+                crate::manager::jobview::JobView::new("gw-update", title, &self.gateway_job).actions(acts).render(cx)
+            })
+        };
+
         // A5: a candidate the Stable channel leaves out.
         let hint = found.as_ref().and_then(|f| {
             let m = f.manager_candidate.as_ref().map(|v| tf!("Platform Manager {v}"));
@@ -823,6 +901,8 @@ impl UpdatePage {
             .child(manager_row)
             .children(manager_progress)
             .children(sentient_row)
+            .children(gateway_row)
+            .children(gateway_progress)
             .when_some(hint, |p, h| p.child(div().px_3().py_2().rounded(theme.radius).bg(theme.accent).text_sm().child(h)))
             .child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(tf!("{} Last checked: {last}.", channel.about())))
             .child(

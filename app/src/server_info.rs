@@ -299,21 +299,66 @@ pub fn secs_label(s: f64) -> String {
 // Reading
 // ---------------------------------------------------------------------------
 
-/// Read this machine (the agent's `server-info-json`, and Statistics on
-/// this computer).
+/// Read this machine for the agent's `server-info-json` (a new process
+/// each time: on Windows it waits for Windows Update's count when that is
+/// not known from the last half hour).
 pub fn gather(record: Option<&InstallationRecord>) -> ServerInfo {
+    gather_with(record, false).0
+}
+
+/// Read this computer for its Statistics page: never waits for Windows
+/// Update's count (searched for behind, kept for the next reading), and
+/// says why when Windows gave no reading within [`WINDOWS_SCRIPT_LIMIT`],
+/// so the Server card shows a reason instead of a placeholder.
+pub fn gather_here(record: Option<&InstallationRecord>) -> Result<ServerInfo, String> {
+    match gather_with(record, true) {
+        (_, Some(e)) => Err(e),
+        (i, None) => Ok(i),
+    }
+}
+
+/// The reading, and why it is empty when it is. `updates_behind`: Windows
+/// Update's count is searched for on a thread of its own (this process
+/// lives on), not waited for.
+fn gather_with(record: Option<&InstallationRecord>, updates_behind: bool) -> (ServerInfo, Option<String>) {
     #[cfg(debug_assertions)]
     if let Some(i) = debug_info() {
-        return i;
+        return (i, None);
     }
     let mut cache = Cache::load();
     #[cfg(windows)]
-    let mut info = windows::gather(record, &mut cache);
+    let (mut info, failed) = windows::gather(record, &mut cache, updates_behind);
     #[cfg(not(windows))]
-    let mut info = linux::gather(record, &mut cache);
+    let (mut info, failed) = {
+        let _ = updates_behind;
+        (linux::gather(record, &mut cache), None)
+    };
     info.at = chrono::Utc::now().timestamp();
+    // The count searched for behind may have been saved meanwhile: kept.
+    if updates_behind {
+        cache.updates = Cache::load().updates.or(cache.updates);
+    }
     cache.save();
-    info
+    (info, failed)
+}
+
+/// How long Windows' reading (one PowerShell run of [`WINDOWS_SCRIPT`]) may
+/// take before it is stopped: the card then says so.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const WINDOWS_SCRIPT_LIMIT: Duration = Duration::from_secs(60);
+/// How long Windows Update's search may take (it can take minutes on a
+/// computer that has not searched for a while).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const WINDOWS_UPDATES_LIMIT: Duration = Duration::from_secs(10 * 60);
+
+/// The Server card's words when Windows gave no reading.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn windows_failed(timed_out: bool) -> String {
+    if timed_out {
+        tf!("Windows did not give this computer's details within {} s. Refresh to try again.", WINDOWS_SCRIPT_LIMIT.as_secs())
+    } else {
+        t!("Windows did not give this computer's details. Refresh to try again.").to_string()
+    }
 }
 
 /// Where SENTIENT keeps its data here (the record's database folder, else
@@ -1168,24 +1213,61 @@ pub const WINDOWS_UPDATES_SCRIPT: &str = "$ErrorActionPreference = 'Stop'; $s = 
 mod windows {
     use super::*;
 
-    pub fn ps(script: &str) -> Option<String> {
-        use std::os::windows::process::CommandExt;
-        let o = std::process::Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", t!("Bypass"), "-Command", script]).creation_flags(0x0800_0000).output().ok()?;
-        Some(String::from_utf8_lossy(&o.stdout).to_string())
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// One PowerShell run, stopped after `limit`: what it printed, and
+    /// whether it was stopped.
+    pub fn ps(script: &str, limit: Duration) -> (Option<String>, bool) {
+        let args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script];
+        match sentient_installer_core::host::output_limited("powershell.exe", &args, limit) {
+            Some((_, out, err)) => (Some(String::from_utf8_lossy(&out).to_string()), String::from_utf8_lossy(&err).contains("did not finish within")),
+            None => (None, false),
+        }
     }
 
-    pub fn gather(record: Option<&InstallationRecord>, cache: &mut Cache) -> ServerInfo {
-        let raw: WinRaw = ps(WINDOWS_SCRIPT).and_then(|t| t.lines().rev().find(|l| l.trim_start().starts_with('{')).and_then(|l| serde_json::from_str(l).ok())).unwrap_or_default();
+    fn count_updates() -> Option<u32> {
+        ps(WINDOWS_UPDATES_SCRIPT, WINDOWS_UPDATES_LIMIT).0.and_then(|t| t.trim().lines().last().and_then(|l| l.trim().parse().ok()))
+    }
+
+    /// A search for Windows Update's count is under way (one at a time).
+    static SEARCHING: AtomicBool = AtomicBool::new(false);
+
+    /// Search for Windows Update's count on a thread of its own, and keep
+    /// it for the next reading.
+    fn count_updates_behind() {
+        if SEARCHING.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        std::thread::spawn(|| {
+            let n = count_updates();
+            let mut cache = Cache::load();
+            cache.updates = Some((chrono::Utc::now().timestamp(), n, false));
+            cache.save();
+            SEARCHING.store(false, Ordering::SeqCst);
+        });
+    }
+
+    /// The reading, and why it is empty when Windows gave nothing.
+    pub fn gather(record: Option<&InstallationRecord>, cache: &mut Cache, updates_behind: bool) -> (ServerInfo, Option<String>) {
+        let (text, timed_out) = ps(WINDOWS_SCRIPT, WINDOWS_SCRIPT_LIMIT);
+        let raw: Option<WinRaw> = text.and_then(|t| t.lines().rev().find(|l| l.trim_start().starts_with('{')).and_then(|l| serde_json::from_str(l).ok()));
+        let failed = raw.is_none().then(|| windows_failed(timed_out));
         let updates = match cache.updates {
             Some((at, n, _)) if Cache::fresh(at, UPDATES_EVERY) => n,
+            // Statistics: the count from before (or none yet) now, the new
+            // one at the next reading.
+            known if updates_behind => {
+                count_updates_behind();
+                known.and_then(|(_, n, _)| n)
+            }
             _ => {
-                let n = ps(WINDOWS_UPDATES_SCRIPT).and_then(|t| t.trim().lines().last().and_then(|l| l.trim().parse().ok()));
+                let n = count_updates();
                 cache.updates = Some((chrono::Utc::now().timestamp(), n, false));
                 n
             }
         };
         let data = data_path(record).map(|p| p.to_string_lossy().to_string());
-        from_windows(raw, data.as_deref(), updates)
+        (from_windows(raw.unwrap_or_default(), data.as_deref(), updates), failed)
     }
 }
 
@@ -1332,6 +1414,14 @@ tmpfs          /run               1000000000   1000000000
         assert_eq!(parse_lspci(lspci), vec!["NVIDIA RTX A2000 12GB".to_string()]);
         assert!(basic_windows_adapter("Microsoft Basic Display Adapter"));
         assert!(!basic_windows_adapter("NVIDIA T400"));
+    }
+
+    #[test]
+    fn windows_gave_nothing_is_a_plain_reason() {
+        // The Server card shows a reason, never a placeholder for minutes.
+        assert!(windows_failed(true).contains("within 60 s"), "{}", windows_failed(true));
+        assert!(!windows_failed(false).contains("within"));
+        assert!(WINDOWS_SCRIPT_LIMIT <= Duration::from_secs(60) && WINDOWS_UPDATES_LIMIT > WINDOWS_SCRIPT_LIMIT);
     }
 
     #[test]

@@ -633,7 +633,7 @@ impl Manager {
                         div()
                             .id("fold")
                             .when(crate::win_caption::enabled(), |d| d.occlude())
-                            .size(px(32.))
+                            .size(px(crate::theme::ICON_BUTTON))
                             .flex_shrink_0()
                             .flex()
                             .items_center()

@@ -19,7 +19,7 @@
 use std::rc::Rc;
 
 use gpui_kit::component::button::ButtonVariants as _;
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use sentient_installer_core::diagnose::{Diagnosis, Fix, FixAction};
@@ -124,7 +124,7 @@ pub(crate) fn command_box_in(theme: &gpui_kit::component::Theme, id: SharedStrin
                 .child(
                     ui::button(id)
                         .ghost()
-                        .small()
+                        
                         .icon(IconName::Copy)
                         .tooltip(t!("Copy the command"))
                         .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))),
@@ -243,7 +243,7 @@ impl Render for DiagnosisView {
                             .child(
                                 ui::button("diag-show-log")
                                     .ghost()
-                                    .small()
+                                    
                                     .label(if show_log { t!("Hide the full log") } else { t!("Show the full log") })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.show_log = !this.show_log;
@@ -253,7 +253,7 @@ impl Render for DiagnosisView {
                             .child(
                                 ui::button("diag-copy-details")
                                     .ghost()
-                                    .small()
+                                    
                                     .label(if copied { t!("Copied") } else { t!("Copy details") })
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         cx.write_to_clipboard(ClipboardItem::new_string(details.clone()));

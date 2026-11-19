@@ -112,6 +112,24 @@ pub fn install(cx: &mut App) -> Entity<Strip> {
     strip
 }
 
+/// Whether a job labelled `label` (of `instance`, None: this computer)
+/// starts SENTIENT: Start or Restart.
+pub fn is_start_label(label: &str, instance: Option<&str>) -> bool {
+    instance.is_none() && (crate::i18n::label_starts(label, "Starting SENTIENT") || crate::i18n::label_starts(label, "Restarting SENTIENT"))
+}
+
+/// SENTIENT on this computer is being started (or restarted) by a job
+/// here now: pages that need it running say so instead of offering Start.
+pub fn starting_here(cx: &App) -> bool {
+    cx.try_global::<StripSlot>().is_some_and(|s| {
+        let s = s.0.read(cx);
+        s.job.as_ref().is_some_and(|j| {
+            let j = j.read(cx);
+            j.is_running() && s.label.as_deref().is_some_and(|l| is_start_label(l, j.instance().map(|i| i.0).as_deref()))
+        })
+    })
+}
+
 /// A small save (a setting, a delete) started (`true`) or ended: the thin
 /// line under the top bar runs meanwhile, with no chip and nothing in the
 /// bell; its page says Saved or what went wrong.

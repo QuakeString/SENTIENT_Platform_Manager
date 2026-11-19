@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Icon, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, Icon, h_flex, v_flex,
     button::ButtonVariants as _,
     checkbox::Checkbox,
     input::{Input, InputEvent, InputState},
@@ -128,7 +128,7 @@ fn muted(theme: &gpui_kit::component::Theme, text: impl Into<SharedString>) -> D
 
 fn store_label(store: Store, windows: bool) -> &'static str {
     match (store, windows) {
-        (Store::Ch, true) => t!("ClickHouse (WSL)"),
+        (Store::Ch, true) => n!("ClickHouse (WSL)"),
         _ => crate::i18n::t(store.label()),
     }
 }
@@ -149,7 +149,7 @@ fn place_detail(ov: &Overview, p: &Place) -> String {
     let mut parts = Vec::new();
     if let Some(d) = disk {
         parts.push(d.mount.clone());
-        parts.push(tf!("{} free", free_label(d.avail)));
+        parts.push(nf!("{} free", free_label(d.avail)));
     }
     if let Some(b) = p.bytes {
         parts.push(size_label(b));
@@ -240,6 +240,13 @@ impl LocationsCard {
         me
     }
 
+    /// Read again when the last reading found SENTIENT stopped.
+    pub fn reload_if_stopped(&mut self, cx: &mut Context<Self>) {
+        if matches!(&self.ov, Read::Failed(e) if e == crate::movedata::STOPPED) {
+            self.reload(cx);
+        }
+    }
+
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let t = self.target.clone();
         self._task = Some(cx.spawn(async move |this, cx| {
@@ -257,10 +264,10 @@ impl LocationsCard {
 
     fn remove(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
-        let text = tf!("{path} and everything in it are deleted. This cannot be undone. The data in use now is not touched.");
+        let text = nf!("{path} and everything in it are deleted. This cannot be undone. The data in use now is not touched.");
         crate::modal::alert(window, cx, move |dialog, _, _| {
             let (this, path) = (this.clone(), path.clone());
-            dialog.title(t!("Remove the old copy?")).description(text.clone()).confirm().ok_text(t!("Remove")).on_ok(move |_, _, cx| {
+            dialog.title(n!("Remove the old copy?")).description(text.clone()).confirm().ok_text(n!("Remove")).on_ok(move |_, _, cx| {
                 let path = path.clone();
                 this.update(cx, |me, cx| me.run_remove(path, cx)).ok();
                 true
@@ -276,7 +283,7 @@ impl LocationsCard {
             this.update(cx, |me, cx| {
                 me.removing = None;
                 if let Err(e) = r {
-                    ui::show_error(t!("The old copy was not removed"), e, cx);
+                    ui::show_error(n!("The old copy was not removed"), e, cx);
                 }
                 me.reload(cx);
             })
@@ -302,19 +309,21 @@ impl Render for LocationsCard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let narrow = ui::narrow();
-        let mut card = ui::panel(&theme).gap_0().child(card_title(t!("Data locations"), None).pb(px(4.)));
+        let mut card = ui::panel(&theme).gap_0().child(card_title(n!("Data locations"), None).pb(px(4.)));
         let ov = match &self.ov {
             Read::Loading => {
-                for (i, l) in ["PostgreSQL", "ClickHouse", t!("SENTIENT files"), t!("Backups")].into_iter().enumerate() {
+                for (i, l) in ["PostgreSQL", "ClickHouse", n!("SENTIENT files"), n!("Backups")].into_iter().enumerate() {
                     card = card.child(card_row(&theme, narrow, l, None, ui::skeleton_line(&theme, format!("dl-sk-{i}"), 260.), None, i == 3));
                 }
                 return card;
             }
-            Read::Failed(e) => return card.child(div().pt_2().text_sm().text_color(theme.danger).child(crate::ui::shown(e.clone()))),
+            // SENTIENT stopped: a plain line, nothing failed.
+            Read::Failed(e) if e == crate::movedata::STOPPED => return card.child(div().pt_2().text_sm().text_color(theme.muted_foreground).child(e.clone())),
+            Read::Failed(e) => return card.child(div().pt_2().text_sm().text_color(theme.danger).child(e.clone())),
             Read::Got(o) => o.clone(),
         };
         if ov.external {
-            card = card.child(div().pt_2().pb_1().text_sm().text_color(theme.muted_foreground).child(t!("SENTIENT runs from a compose file the Platform Manager did not write: take it over first (Repair and uninstall) to move its data.")));
+            card = card.child(div().pt_2().pb_1().text_sm().text_color(theme.muted_foreground).child(n!("SENTIENT runs from a compose file the Platform Manager did not write: take it over first (Repair and uninstall) to move its data.")));
         }
         let n = ov.places.len() + ov.old_copies.len();
         let mut i = 0;
@@ -322,9 +331,9 @@ impl Render for LocationsCard {
             i += 1;
             let label = store_label(p.store, self.windows);
             let help: Option<&'static str> = match (p.store, self.windows) {
-                (Store::Pg, false) => Some(t!("Where each store keeps its data. Each one moves on its own.")),
-                (Store::Pg, true) => Some(t!("The PostgreSQL service's data folder. Moving it on Windows is not available yet.")),
-                (Store::Ch, true) => Some(t!("ClickHouse runs in a WSL distribution of the hidden account sentient-clickhouse. Its disk file is moved whole with wsl --manage sentient --move (or export and import on older WSL).")),
+                (Store::Pg, false) => Some(n!("Where each store keeps its data. Each one moves on its own.")),
+                (Store::Pg, true) => Some(n!("The PostgreSQL service's data folder. Moving it on Windows is not available yet.")),
+                (Store::Ch, true) => Some(n!("ClickHouse runs in a WSL distribution of the hidden account sentient-clickhouse. Its disk file is moved whole with wsl --manage sentient --move (or export and import on older WSL).")),
                 _ => None,
             };
             let value = h_flex().min_w_0().gap_2().items_center().child(mono_value(&theme, p.path.clone())).child(muted(&theme, place_detail(&ov, p)));
@@ -333,27 +342,27 @@ impl Render for LocationsCard {
             let (target, on) = (self.target.clone(), self.on.clone());
             let id = SharedString::from(format!("dl-move-{}", store.as_str()));
             let btn = if store == Store::Backups {
-                ui::button(id).outline().small().icon(Icon::new(Lucide::Folder)).label(t!("Change"))
+                ui::button(id).outline().icon(Icon::new(Lucide::Folder)).label(n!("Change"))
             } else {
-                ui::button(id).outline().small().icon(Icon::empty().path("icons/move-data.svg")).label(t!("Move"))
+                ui::button(id).outline().icon(Icon::empty().path("icons/move-data.svg")).label(n!("Move"))
             }
             .disabled(!can)
-            .when(!can && self.windows, |b| b.tooltip(t!("Not on Windows yet: only ClickHouse's WSL disk moves there.")))
+            .when(!can && self.windows, |b| b.tooltip(n!("Not on Windows yet: only ClickHouse's WSL disk moves there.")))
             .on_click(move |_, window, cx| open(target.clone(), on.clone(), Some(store), window, cx));
             card = card.child(card_row(&theme, narrow, label, help, value, Some(btn.into_any_element()), i == n));
         }
         for o in &ov.old_copies {
             i += 1;
-            let label: &'static str = if o.partial { t!("Partial copy") } else { t!("Old copy") };
-            let what = format!("{} · {}{}", crate::i18n::t(o.store.label()), free_label(o.bytes), o.at.get(..10).map(|d| tf!(" · since {d}")).unwrap_or_default());
+            let label: &'static str = if o.partial { n!("Partial copy") } else { n!("Old copy") };
+            let what = format!("{} · {}{}", crate::i18n::t(o.store.label()), free_label(o.bytes), o.at.get(..10).map(|d| nf!(" · since {d}")).unwrap_or_default());
             let value = h_flex().min_w_0().gap_2().items_center().child(mono_value(&theme, o.path.clone())).child(muted(&theme, what));
             let path = o.path.clone();
             let busy = self.removing.as_deref() == Some(o.path.as_str());
             let btn = ui::button(SharedString::from(format!("dl-rm-{i}")))
                 .outline()
-                .small()
+                
                 .icon(Icon::empty().path("icons/trash.svg"))
-                .label(t!("Remove"))
+                .label(n!("Remove"))
                 .loading(busy)
                 .disabled(self.removing.is_some())
                 .on_click(cx.listener(move |me, _, window, cx| me.remove(path.clone(), window, cx)));
@@ -513,22 +522,22 @@ impl MoveFlow {
     fn verdict(&self, d: &Disk, s: Store) -> (bool, &'static str, Option<String>, Tone) {
         let Some(ov) = self.overview() else { return (false, "", None, Tone::Neutral) };
         if self.place(s).and_then(|p| p.mount.as_ref()) == Some(&d.mount) {
-            return (false, t!("Yes"), Some(tf!("{} is here now", crate::i18n::t(s.label()))), Tone::Neutral);
+            return (false, n!("Yes"), Some(nf!("{} is here now", crate::i18n::t(s.label()))), Tone::Neutral);
         }
         let blocks = move_data::disk_blocks(d, s, self.needed(s), crate::i18n::t(s.label()));
         if let Some(b) = blocks.first() {
             let t = match b.kind {
-                BlockKind::Network => t!("Network disk: not for a database").to_string(),
-                BlockKind::Fat => t!("FAT: no owners or permissions, 4 GB file limit").to_string(),
-                BlockKind::ReadOnly => t!("Read-only").to_string(),
-                BlockKind::TooSmall => t!("Too small").to_string(),
+                BlockKind::Network => n!("Network disk: not for a database").to_string(),
+                BlockKind::Fat => n!("FAT: no owners or permissions, 4 GB file limit").to_string(),
+                BlockKind::ReadOnly => n!("Read-only").to_string(),
+                BlockKind::TooSmall => n!("Too small").to_string(),
                 _ => b.title.clone(),
             };
-            return (true, t!("No"), Some(t), Tone::Bad);
+            return (true, n!("No"), Some(t), Tone::Bad);
         }
         let here: Vec<&str> = ov.places.iter().filter(|p| p.store != s && p.store != Store::Backups && p.mount.as_ref() == Some(&d.mount)).map(|p| crate::i18n::t(p.store.label())).collect();
-        let reason = (!here.is_empty()).then(|| if here.len() == 1 { tf!("{} is here", here.join(" and ")) } else { tf!("{} are here", here.join(" and ")) });
-        (true, t!("Yes"), reason, Tone::Good)
+        let reason = (!here.is_empty()).then(|| if here.len() == 1 { nf!("{} is here", here.join(" and ")) } else { nf!("{} are here", here.join(" and ")) });
+        (true, n!("Yes"), reason, Tone::Good)
     }
 
     fn choose_disk(&mut self, s: Store, mount: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -693,7 +702,7 @@ impl MoveFlow {
 
     fn label(&self) -> String {
         let names: Vec<&str> = self.chosen.iter().map(|s| crate::i18n::t(s.label())).collect();
-        tf!("Moving {}", names.join(" and "))
+        nf!("Moving {}", names.join(" and "))
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
@@ -704,7 +713,7 @@ impl MoveFlow {
         let t = self.target.clone();
         let label = match &t {
             Target::Local => self.label(),
-            Target::Remote(i) => tf!("{} on {}", self.label(), i.name),
+            Target::Remote(i) => nf!("{} on {}", self.label(), i.name),
         };
         // Its steps from the first frame (crate::jobplan).
         let plan = crate::jobplan::move_data(&moves, self.overview(), self.windows);
@@ -734,13 +743,13 @@ impl MoveFlow {
     fn remove_copy(&mut self, paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         let this = cx.entity().downgrade();
         let text = if paths.len() > 1 {
-            tf!("{} and everything in them are deleted. This cannot be undone. The data in use now is not touched.", paths.join(" and "))
+            nf!("{} and everything in them are deleted. This cannot be undone. The data in use now is not touched.", paths.join(" and "))
         } else {
-            tf!("{} and everything in it are deleted. This cannot be undone. The data in use now is not touched.", paths.join(" and "))
+            nf!("{} and everything in it are deleted. This cannot be undone. The data in use now is not touched.", paths.join(" and "))
         };
         crate::modal::alert(window, cx, move |dialog, _, _| {
             let (this, paths) = (this.clone(), paths.clone());
-            dialog.title(t!("Remove the copy?")).description(text.clone()).confirm().ok_text(t!("Remove")).on_ok(move |_, _, cx| {
+            dialog.title(n!("Remove the copy?")).description(text.clone()).confirm().ok_text(n!("Remove")).on_ok(move |_, _, cx| {
                 let paths = paths.clone();
                 this.update(cx, |me, cx| {
                     me.removing = true;
@@ -751,7 +760,7 @@ impl MoveFlow {
                             me.removing = false;
                             match r {
                                 Ok(()) => me.removed = true,
-                                Err(e) => ui::show_error(t!("The copy was not removed"), e, cx),
+                                Err(e) => ui::show_error(n!("The copy was not removed"), e, cx),
                             }
                             if let Some(l) = &me.locations {
                                 l.update(cx, |l, cx| l.reload(cx));
@@ -846,10 +855,10 @@ fn debug_run(moves: &[Move], sink: &sentient_installer_core::progress::ProgressF
     }
     step(nf!("Verifying {} (sizes and checksums)", crate::i18n::t(m.store.label())));
     let ov = crate::movedata::debug::canned();
-    let mut out = Outcome { ended: Ended::Moved, reason: None, failed_step: None, locations: Default::default(), old_copies: ov.old_copies.clone(), backups_dir: None, rows: vec![t!("ClickHouse holds the same 2\u{2009}812\u{2009}440\u{2009}118 rows as before.").into()], down_secs: 44 * 60 };
+    let mut out = Outcome { ended: Ended::Moved, reason: None, failed_step: None, locations: Default::default(), old_copies: ov.old_copies.clone(), backups_dir: None, rows: vec![n!("ClickHouse holds the same 2\u{2009}812\u{2009}440\u{2009}118 rows as before.").into()], down_secs: 44 * 60 };
     if mode == "failed" {
         out.ended = Ended::SwitchedBack;
-        out.failed_step = Some(tf!("Verifying {} (sizes and checksums)", crate::i18n::t(m.store.label())));
+        out.failed_step = Some(nf!("Verifying {} (sizes and checksums)", crate::i18n::t(m.store.label())));
         out.reason = Some("The copy of ClickHouse did not match: 3 files differ (store/ts_kv/all_1_1_0/data.bin, …). /mnt/disk-c reported I/O errors (dmesg: sdd: Medium Error).".into());
         out.old_copies = vec![move_data::OldCopy { store: m.store, path: m.to.clone(), bytes: 612 * (1u64 << 30), at: "2026-11-16T09:12:00+05:30".into(), partial: true }];
         step(n!("Pointing the volumes back at their old places").into());
@@ -873,7 +882,7 @@ fn debug_run(moves: &[Move], sink: &sentient_installer_core::progress::ProgressF
 impl MoveFlow {
     fn title_row(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
         let busy = self.stage == Stage::Run && self.running(cx);
-        ui::back_title(theme, "md-back-title", t!("Move data to another disk"), self.on.clone(), busy, cx.listener(|me, _, _, cx| me.back(cx)))
+        ui::back_title(theme, "md-back-title", n!("Move data to another disk"), self.on.clone(), busy, cx.listener(|me, _, _, cx| me.back(cx)))
     }
 
     fn stepper(&self, theme: &gpui_kit::component::Theme) -> Div {
@@ -884,7 +893,7 @@ impl MoveFlow {
             _ => 3,
         };
         let mut row = h_flex().gap(px(6.)).items_center().text_size(px(13.)).text_color(theme.muted_foreground).whitespace_nowrap();
-        for (i, s) in [t!("What"), t!("Disk"), t!("Folder"), t!("Plan")].into_iter().enumerate() {
+        for (i, s) in [n!("What"), n!("Disk"), n!("Folder"), n!("Plan")].into_iter().enumerate() {
             if i > 0 {
                 row = row.child(div().w(px(18.)).h(px(1.)).bg(theme.border));
             }
@@ -915,13 +924,13 @@ impl MoveFlow {
             // Every action on the right: the secondary ones first, the
             // primary rightmost.
             .child(div().flex_1())
-            .child(crate::ui::probed(ui::button("md-cancel").ghost().label(t!("Cancel")).on_click(|_, _, cx| close(cx))))
-            .child(crate::ui::probed(ui::button("md-back").outline().label(t!("Back")).on_click(cx.listener(|me, _, _, cx| me.back(cx)))))
+            .child(crate::ui::probed(ui::button("md-cancel").ghost().label(n!("Cancel")).on_click(|_, _, cx| close(cx))))
+            .child(crate::ui::probed(ui::button("md-back").outline().label(n!("Back")).on_click(cx.listener(|me, _, _, cx| me.back(cx)))))
             .children(primary.map(ui::probed))
     }
 
     fn what(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
-        let mut card = ui::panel(theme).child(card_title(t!("What to move"), None));
+        let mut card = ui::panel(theme).child(card_title(n!("What to move"), None));
         let Some(ov) = self.overview() else { return card };
         let movable = self.movable();
         for p in &ov.places {
@@ -929,9 +938,9 @@ impl MoveFlow {
             let on = self.chosen.contains(&s);
             let can = movable.contains(&s);
             let where_ = match (s, p.bind) {
-                (Store::Backups, _) => tf!("{} in {} (moves without stopping SENTIENT)", p.bytes.map(free_label).unwrap_or_default(), p.path),
-                (_, false) => tf!("{} in Docker's folder on {}", p.bytes.map(free_label).unwrap_or_default(), p.mount.clone().unwrap_or_else(|| "/".into())),
-                _ => tf!("{} on {}", p.bytes.map(free_label).unwrap_or_default(), p.mount.clone().unwrap_or_else(|| p.path.clone())),
+                (Store::Backups, _) => nf!("{} in {} (moves without stopping SENTIENT)", p.bytes.map(free_label).unwrap_or_default(), p.path),
+                (_, false) => nf!("{} in Docker's folder on {}", p.bytes.map(free_label).unwrap_or_default(), p.mount.clone().unwrap_or_else(|| "/".into())),
+                _ => nf!("{} on {}", p.bytes.map(free_label).unwrap_or_default(), p.mount.clone().unwrap_or_else(|| p.path.clone())),
             };
             card = card.child(
                 h_flex()
@@ -991,7 +1000,7 @@ impl MoveFlow {
                 .child(text)
                 .tooltip(crate::ui::tooltip(tip.clone()))
         };
-        let fits_help = tf!(
+        let fits_help = nf!(
             "Whether the disk can hold {} ({}): enough free space for it, and a local disk that is not FAT or read-only. The line under the answer says why.",
             store_label(s, self.windows),
             size_label(self.needed(s))
@@ -999,12 +1008,12 @@ impl MoveFlow {
         let mut table = v_flex().rounded(px(8.)).border_1().border_color(theme.border).overflow_hidden().child(cols(
             h_flex().id("md-disk-head").h(px(32.)).px(px(10.)).items_center().bg(theme.muted.opacity(0.5)),
             div().into_any_element(),
-            head(t!("Disk")).into_any_element(),
-            head(t!("Mounted at")).into_any_element(),
-            head(t!("Type")).into_any_element(),
-            head(t!("Size")).into_any_element(),
-            head(t!("Free")).into_any_element(),
-            h_flex().gap(px(4.)).items_center().child(head(t!("Fits?"))).child(ui::info("md-fits-help".into(), fits_help.into())).into_any_element(),
+            head(n!("Disk")).into_any_element(),
+            head(n!("Mounted at")).into_any_element(),
+            head(n!("Type")).into_any_element(),
+            head(n!("Size")).into_any_element(),
+            head(n!("Free")).into_any_element(),
+            h_flex().gap(px(4.)).items_center().child(head(n!("Fits?"))).child(ui::info("md-fits-help".into(), fits_help.into())).into_any_element(),
         ));
         for (n, d) in ov.disks.iter().enumerate() {
             let (selectable, answer, reason, tone) = self.verdict(d, s);
@@ -1059,11 +1068,11 @@ impl MoveFlow {
                 verdict.into_any_element(),
             ));
         }
-        let title = if self.windows { tf!("Disk for {}", store_label(s, true)) } else { tf!("Disk for {}", crate::i18n::t(s.label())) };
+        let title = if self.windows { nf!("Disk for {}", store_label(s, true)) } else { nf!("Disk for {}", crate::i18n::t(s.label())) };
         let mut card = ui::panel(theme).child(card_title(title, None)).child(table);
         match self.disk_block(s) {
             Some(b) => card = card.child(self.block(theme, &b, cx)),
-            None => card = card.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(t!("Read from the server (lsblk, df). A network disk or FAT cannot hold a database; each row says why."))),
+            None => card = card.child(div().text_size(px(13.)).text_color(theme.muted_foreground).child(n!("Read from the server (lsblk, df). A network disk or FAT cannot hold a database; each row says why."))),
         }
         card
     }
@@ -1083,7 +1092,7 @@ impl MoveFlow {
             .child(h_flex().gap(px(10.)).items_center().text_size(px(15.)).font_weight(FontWeight::MEDIUM).child(Icon::new(Lucide::CircleX).size(px(18.)).text_color(theme.danger)).child(b.title.clone()))
             .when(!b.why.is_empty(), |c| c.child(div().text_sm().child(b.why.clone())))
             .when(!b.fixes.is_empty(), |c| {
-                c.child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(t!("To fix it")))
+                c.child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(n!("To fix it")))
                     .child(v_flex().gap(px(6.)).pl(px(4.)).text_sm().children(b.fixes.iter().enumerate().map(|(i, f)| h_flex().gap_2().items_start().child(div().flex_shrink_0().text_color(theme.muted_foreground).child(format!("{}.", i + 1))).child(div().flex_1().min_w_0().child(f.clone())))))
             })
             .child(
@@ -1091,8 +1100,8 @@ impl MoveFlow {
                     .gap(crate::ui::button_gap())
                     .flex_wrap()
                     .justify_end()
-                    .when(too_small, |r| r.child(crate::ui::probed(ui::button("md-free-space").outline().icon(Icon::new(Lucide::Folder)).label(t!("Free space in Files")).on_click(|_, _, cx| go("files", cx)))))
-                    .child(crate::ui::probed(ui::button("md-pick-another").primary().label(if matches!(stage, Stage::Folder(_)) { t!("Pick another folder") } else { t!("Pick another disk") }).on_click(cx.listener(move |me, _, _, cx| {
+                    .when(too_small, |r| r.child(crate::ui::probed(ui::button("md-free-space").outline().icon(Icon::new(Lucide::Folder)).label(n!("Free space in Files")).on_click(|_, _, cx| go("files", cx)))))
+                    .child(crate::ui::probed(ui::button("md-pick-another").primary().label(if matches!(stage, Stage::Folder(_)) { n!("Pick another folder") } else { n!("Pick another disk") }).on_click(cx.listener(move |me, _, _, cx| {
                         if let Stage::Disk(i) = me.stage {
                             let s = me.chosen[i];
                             if let Some(p) = me.picks.get_mut(&s) {
@@ -1115,15 +1124,15 @@ impl MoveFlow {
             .items_center()
             // Probed: the layout test takes their edges for buttons, not a
             // row divider broken by the gaps beside the path.
-            .child(crate::ui::probed(ui::button("md-up").outline().icon(Icon::new(Lucide::ChevronLeft)).tooltip(t!("Up one folder")).disabled(up.is_none()).on_click(cx.listener(move |me, _, window, cx| {
+            .child(crate::ui::probed(ui::button("md-up").outline().icon(Icon::new(Lucide::ChevronLeft)).tooltip(n!("Up one folder")).disabled(up.is_none()).on_click(cx.listener(move |me, _, window, cx| {
                 if let Some(u) = up.clone() {
                     me.set_path(s, u.clone(), window, cx);
                     me.list(s, u, cx);
                 }
             }))))
             .child(div().flex_1().min_w_0().font_family(theme.mono_font_family.clone()).child(Input::new(&p.input)))
-            .child(crate::ui::probed(ui::button("md-new").outline().icon(Icon::empty().path("icons/folder-plus.svg")).label(t!("New folder")).on_click(cx.listener(move |me, _, window, cx| {
-                let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("Folder name")));
+            .child(crate::ui::probed(ui::button("md-new").outline().icon(Icon::empty().path("icons/folder-plus.svg")).label(n!("New folder")).on_click(cx.listener(move |me, _, window, cx| {
+                let input = cx.new(|cx| InputState::new(window, cx).placeholder(n!("Folder name")));
                 let sub = cx.subscribe(&input, move |me: &mut Self, input, e: &InputEvent, cx| {
                     if let InputEvent::PressEnter { .. } = e {
                         let name = input.read(cx).value().trim().to_string();
@@ -1144,8 +1153,8 @@ impl MoveFlow {
             .bg(theme.muted.opacity(0.5))
             .text_size(px(12.5))
             .text_color(theme.muted_foreground)
-            .child(div().flex_1().child(t!("Name")))
-            .child(h_flex().w(px(120.)).justify_end().child(t!("Free space")));
+            .child(div().flex_1().child(n!("Name")))
+            .child(h_flex().w(px(120.)).justify_end().child(n!("Free space")));
         let mut rows = v_flex().id("md-rows").max_h(px(5. * 34.)).overflow_y_scroll();
         if let Some(input) = &p.new_name {
             rows = rows.child(
@@ -1158,7 +1167,7 @@ impl MoveFlow {
                     .border_color(theme.border)
                     .child(Icon::empty().path("icons/folder-fill.svg").size_4().text_color(folder_color()))
                     .child(div().flex_1().child(Input::new(input)))
-                    .child(ui::button("md-make").primary().label(t!("Use")).on_click(cx.listener(move |me, _, _, cx| {
+                    .child(ui::button("md-make").primary().label(n!("Use")).on_click(cx.listener(move |me, _, _, cx| {
                         let name = me.picks.get(&s).and_then(|p| p.new_name.as_ref()).map(|i| i.read(cx).value().trim().to_string()).unwrap_or_default();
                         me.new_folder(s, name, cx);
                     }))),
@@ -1173,7 +1182,7 @@ impl MoveFlow {
             Some(Read::Failed(e)) => rows = rows.child(div().px(px(10.)).py_2().border_t_1().border_color(theme.border).text_sm().text_color(theme.danger).child(crate::ui::shown(e.clone()))),
             Some(Read::Got(l)) => {
                 if l.dirs.is_empty() {
-                    rows = rows.child(div().px(px(10.)).py_2().border_t_1().border_color(theme.border).text_sm().text_color(theme.muted_foreground).child(t!("No folders here.")));
+                    rows = rows.child(div().px(px(10.)).py_2().border_t_1().border_color(theme.border).text_sm().text_color(theme.muted_foreground).child(n!("No folders here.")));
                 }
                 for (k, (name, free)) in l.dirs.iter().enumerate() {
                     let full = l.path.join(name).display().to_string();
@@ -1212,19 +1221,19 @@ impl MoveFlow {
         }
         let table = v_flex().rounded(px(8.)).border_1().border_color(theme.border).overflow_hidden().child(header).child(rows);
         let status: AnyElement = match &p.check {
-            None | Some(Read::Loading) => h_flex().gap_2().items_center().text_sm().text_color(theme.muted_foreground).child(t!("Checking the folder…")).into_any_element(),
+            None | Some(Read::Loading) => h_flex().gap_2().items_center().text_sm().text_color(theme.muted_foreground).child(n!("Checking the folder…")).into_any_element(),
             Some(Read::Failed(e)) => out_line(theme, Tone::Bad, e.clone()).into_any_element(),
             Some(Read::Got(c)) if c.ok() => {
-                let mut parts = vec![if c.exists { t!("Empty").to_string() } else { t!("A new folder, made by the move").to_string() }, tf!("writable by {}", crate::i18n::t(s.label()))];
+                let mut parts = vec![if c.exists { n!("Empty").to_string() } else { n!("A new folder, made by the move").to_string() }, nf!("writable by {}", crate::i18n::t(s.label()))];
                 if let Some(d) = &c.disk {
                     parts.push(d.fstype.clone());
-                    parts.push(tf!("{} free, {} needed", free_label(d.avail), free_label(c.needed)));
+                    parts.push(nf!("{} free, {} needed", free_label(d.avail), free_label(c.needed)));
                 }
                 out_line(theme, Tone::Good, parts.join(" · ")).into_any_element()
             }
             Some(Read::Got(c)) => self.block(theme, &c.blocks[0], cx).into_any_element(),
         };
-        ui::panel(theme).child(card_title(tf!("Folder on {mount}"), None)).child(top).child(table).child(status)
+        ui::panel(theme).child(card_title(nf!("Folder on {mount}"), None)).child(top).child(table).child(status)
     }
 
     fn new_folder(&mut self, s: Store, name: String, cx: &mut Context<Self>) {
@@ -1255,14 +1264,14 @@ impl MoveFlow {
         let down_el = |theme: &gpui_kit::component::Theme| -> AnyElement {
             match (&est, down) {
                 (Some(Read::Failed(e)), _) => div().text_color(theme.danger).child(crate::ui::shown(e.clone())).into_any_element(),
-                (_, Some(_)) if !stops => div().child(t!("SENTIENT keeps running")).into_any_element(),
+                (_, Some(_)) if !stops => div().child(n!("SENTIENT keeps running")).into_any_element(),
                 (_, Some(secs)) => h_flex()
                     .gap_x_2()
                     .flex_wrap()
                     .items_center()
                     .child(div().flex_shrink_0().font_weight(FontWeight::SEMIBOLD).child(move_data::about(secs)))
                     .when(moves.len() == 1, |r| {
-                        r.child(div().min_w_0().text_size(px(13.)).text_color(theme.muted_foreground).child(tf!("{} at about {:.0} MB/s, measured on these disks", size_label(self.needed(moves[0].store)), rate.unwrap_or(0.))))
+                        r.child(div().min_w_0().text_size(px(13.)).text_color(theme.muted_foreground).child(nf!("{} at about {:.0} MB/s, measured on these disks", size_label(self.needed(moves[0].store)), rate.unwrap_or(0.))))
                     })
                     .into_any_element(),
                 _ => ui::skeleton_line(theme, "md-est", 180.).into_any_element(),
@@ -1277,37 +1286,37 @@ impl MoveFlow {
                 .iter()
                 .filter(|p| p.store != m.store)
                 .map(|p| match (p.store, p.bind) {
-                    (Store::Pg, true) if self.windows => tf!("PostgreSQL in {}", p.path),
-                    (Store::Pg, true) | (Store::Ch, true) => tf!("{} on {}", crate::i18n::t(p.store.label()), p.mount.clone().unwrap_or_default()),
-                    (s, _) => crate::i18n::t(s.label()).to_string().replace(t!("Backups"), t!("backups")),
+                    (Store::Pg, true) if self.windows => nf!("PostgreSQL in {}", p.path),
+                    (Store::Pg, true) | (Store::Ch, true) => nf!("{} on {}", crate::i18n::t(p.store.label()), p.mount.clone().unwrap_or_default()),
+                    (s, _) => crate::i18n::t(s.label()).to_string().replace(n!("Backups"), n!("backups")),
                 })
                 .collect();
             let named = place.is_some_and(|p| !p.bind);
             let old = if self.windows {
-                tf!("None: WSL moves the disk file itself, so it leaves {from}")
+                nf!("None: WSL moves the disk file itself, so it leaves {from}")
             } else if named {
-                tf!("Kept in Docker's folder on {from} until you remove it")
+                nf!("Kept in Docker's folder on {from} until you remove it")
             } else {
-                tf!("Kept on {from} until you remove it")
+                nf!("Kept on {from} until you remove it")
             };
             let moves_text = if self.windows && m.store == Store::Ch {
-                tf!("The WSL disk ext4.vhdx of the account sentient-clickhouse, {} (the whole file, not only the data)", size_label(self.needed(m.store)))
+                nf!("The WSL disk ext4.vhdx of the account sentient-clickhouse, {} (the whole file, not only the data)", size_label(self.needed(m.store)))
             } else {
-                tf!("{}, {}, from {from}", store_label(m.store, self.windows), size_label(self.needed(m.store)))
+                nf!("{}, {}, from {from}", store_label(m.store, self.windows), size_label(self.needed(m.store)))
             };
             let vol = place.map(|p| p.volume.clone()).unwrap_or_default();
             let steps = plan_steps(&moves, ov, self.windows);
             let other_db = [Store::Pg, Store::Ch].into_iter().find(|s| *s != m.store && m.store.is_database() && self.movable().contains(s));
             let mut card = ui::panel(theme)
-                .child(card_title(tf!("Move {} to {}", store_label(m.store, self.windows), m.to), None))
+                .child(card_title(nf!("Move {} to {}", store_label(m.store, self.windows), m.to), None))
                 .child(
                     v_flex()
-                        .child(kv(theme, true, t!("Moves"), div().child(moves_text)))
-                        .child(kv(theme, false, t!("Stays"), div().child(stays.join(", "))))
-                        .child(kv(theme, false, t!("SENTIENT is down"), down_el(theme)))
-                        .child(kv(theme, false, t!("The old copy"), div().child(old))),
+                        .child(kv(theme, true, n!("Moves"), div().child(moves_text)))
+                        .child(kv(theme, false, n!("Stays"), div().child(stays.join(", "))))
+                        .child(kv(theme, false, n!("SENTIENT is down"), down_el(theme)))
+                        .child(kv(theme, false, n!("The old copy"), div().child(old))),
                 )
-                .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(t!("Steps")))
+                .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(n!("Steps")))
                 .child(v_flex().gap(px(10.)).children(steps.iter().map(|(t, _)| chk(theme, ui::StepMark::Todo, t.clone(), None))));
             let _ = vol;
             if let Some(o) = other_db {
@@ -1315,14 +1324,14 @@ impl MoveFlow {
                     h_flex()
                         .gap(px(10.))
                         .items_center()
-                        .child(Checkbox::new("md-also").label(tf!("Also move {} in the same stop", crate::i18n::t(o.label()))).checked(false).on_change(cx.listener(move |me, v: &bool, _, cx| {
+                        .child(Checkbox::new("md-also").label(nf!("Also move {} in the same stop", crate::i18n::t(o.label()))).checked(false).on_change(cx.listener(move |me, v: &bool, _, cx| {
                             if *v && !me.chosen.contains(&o) {
                                 me.chosen.push(o);
                                 me.stage = Stage::Disk(me.chosen.len() - 1);
                                 cx.notify();
                             }
                         })))
-                        .child(ui::info("md-also-help".into(), t!("Both moves share one stop of SENTIENT; the downtime adds up.").into())),
+                        .child(ui::info("md-also-help".into(), n!("Both moves share one stop of SENTIENT; the downtime adds up.").into())),
                 );
             }
             return card;
@@ -1330,7 +1339,7 @@ impl MoveFlow {
         // Several: a table and the total.
         let est_of = |s: Store| -> String {
             match &est {
-                Some(Read::Got(e)) => e.moves.iter().find(|x| x.0 == s).map(|x| tf!("{} min", x.2.div_ceil(60).max(1))).unwrap_or_default(),
+                Some(Read::Got(e)) => e.moves.iter().find(|x| x.0 == s).map(|x| nf!("{} min", x.2.div_ceil(60).max(1))).unwrap_or_default(),
                 _ => "…".into(),
             }
         };
@@ -1345,10 +1354,10 @@ impl MoveFlow {
         let mut table = v_flex().rounded(px(8.)).border_1().border_color(theme.border).overflow_hidden().text_size(px(13.5)).child(row(
             h_flex().h(px(32.)).px(px(10.)).items_center().bg(theme.muted.opacity(0.5)),
             head("#").into_any_element(),
-            head(t!("Store")).into_any_element(),
-            head(t!("To")).into_any_element(),
-            head(t!("Size")).into_any_element(),
-            head(t!("Copy takes")).into_any_element(),
+            head(n!("Store")).into_any_element(),
+            head(n!("To")).into_any_element(),
+            head(n!("Size")).into_any_element(),
+            head(n!("Copy takes")).into_any_element(),
         ));
         for (k, m) in moves.iter().enumerate() {
             table = table.child(row(
@@ -1362,12 +1371,12 @@ impl MoveFlow {
         }
         let n = moves.len();
         ui::panel(theme)
-            .child(card_title(tf!("{} moves in one stop", if n == 2 { t!("Two").to_string() } else { n.to_string() }), None))
+            .child(card_title(nf!("{} moves in one stop", if n == 2 { n!("Two").to_string() } else { n.to_string() }), None))
             .child(table)
             .child(
                 v_flex()
-                    .child(kv(theme, true, t!("SENTIENT is down"), down_el(theme)))
-                    .child(kv(theme, false, t!("If one fails"), div().child(if n == 2 { t!("Both go back to where they were") } else { t!("All go back to where they were") }))),
+                    .child(kv(theme, true, n!("SENTIENT is down"), down_el(theme)))
+                    .child(kv(theme, false, n!("If one fails"), div().child(if n == 2 { n!("Both go back to where they were") } else { n!("All go back to where they were") }))),
             )
     }
 
@@ -1386,13 +1395,13 @@ impl MoveFlow {
         // nothing then).
         let to_mount = |m: &Move| ov.disks.iter().filter(|d| m.to.starts_with(&d.mount)).max_by_key(|d| d.mount.len()).map(|d| d.mount.clone()).filter(|d| d != "/").unwrap_or_else(|| m.to.clone());
         let title = match (&state, &first, self.moves.len()) {
-            (JobState::Done(_), Some(m), 1) if m.store == Store::Backups => tf!("Backups are in {}", m.to),
-            (JobState::Done(_), Some(m), 1) => tf!("{} runs from {}", what, to_mount(m)),
-            (JobState::Done(_), _, _) => tf!("{what} moved"),
-            (JobState::Failed(_), _, 1) => tf!("{what} was not moved"),
-            (JobState::Failed(_), _, _) => tf!("{what} were not moved"),
-            (_, Some(m), 1) => tf!("Moving {} to {}", what, to_mount(m)),
-            _ => tf!("Moving {what}"),
+            (JobState::Done(_), Some(m), 1) if m.store == Store::Backups => nf!("Backups are in {}", m.to),
+            (JobState::Done(_), Some(m), 1) => nf!("{} runs from {}", what, to_mount(m)),
+            (JobState::Done(_), _, _) => nf!("{what} moved"),
+            (JobState::Failed(_), _, 1) => nf!("{what} was not moved"),
+            (JobState::Failed(_), _, _) => nf!("{what} were not moved"),
+            (_, Some(m), 1) => nf!("Moving {} to {}", what, to_mount(m)),
+            _ => nf!("Moving {what}"),
         };
         let me = cx.entity().downgrade();
         let mut view = crate::manager::jobview::JobView::new("md-run", title, &self.job)
@@ -1402,15 +1411,15 @@ impl MoveFlow {
             })));
         match &state {
             JobState::Done(_) => {
-                let mut text = String::from(t!("SENTIENT answers"));
+                let mut text = String::from(n!("SENTIENT answers"));
                 if let Some(o) = &outcome {
                     if !o.rows.is_empty() {
-                        text = tf!("SENTIENT answers, and {}", o.rows.iter().map(|r| lower_first(r)).collect::<Vec<_>>().join(" "));
+                        text = nf!("SENTIENT answers, and {}", o.rows.iter().map(|r| lower_first(r)).collect::<Vec<_>>().join(" "));
                     } else {
                         text.push('.');
                     }
                     if o.down_secs > 0 {
-                        text = tf!("{} Down for {} min.", text.trim_end(), o.down_secs.div_ceil(60));
+                        text = nf!("{} Down for {} min.", text.trim_end(), o.down_secs.div_ceil(60));
                     }
                 }
                 view = view.result(out_line(theme, Tone::Good, text));
@@ -1426,29 +1435,29 @@ impl MoveFlow {
                     view = view.extra(div().text_size(px(13.)).text_color(theme.muted_foreground).child({
                         let size = size_label(old.iter().map(|c| c.bytes).sum());
                         match (c.path.contains("/spm-moved/"), old.len() > 1) {
-                            (true, false) => tf!("{size} in Docker's folder on {at}. Remove it once SENTIENT has run well for a while."),
-                            (true, true) => tf!("{size} in Docker's folder on {at}. Remove them once SENTIENT has run well for a while."),
-                            (false, false) => tf!("{size} on {at}. Remove it once SENTIENT has run well for a while."),
-                            (false, true) => tf!("{size} on {at}. Remove them once SENTIENT has run well for a while."),
+                            (true, false) => nf!("{size} in Docker's folder on {at}. Remove it once SENTIENT has run well for a while."),
+                            (true, true) => nf!("{size} in Docker's folder on {at}. Remove them once SENTIENT has run well for a while."),
+                            (false, false) => nf!("{size} on {at}. Remove it once SENTIENT has run well for a while."),
+                            (false, true) => nf!("{size} on {at}. Remove them once SENTIENT has run well for a while."),
                         }
                     }));
-                    acts.push(ui::button("md-rm-old").outline().icon(Icon::empty().path("icons/trash.svg")).label(if old.len() > 1 { t!("Remove old copies") } else { t!("Remove old copy") }).loading(self.removing).on_click(cx.listener(move |me, _, window, cx| me.remove_copy(paths.clone(), window, cx))).into_any_element());
+                    acts.push(ui::button("md-rm-old").outline().icon(Icon::empty().path("icons/trash.svg")).label(if old.len() > 1 { n!("Remove old copies") } else { n!("Remove old copy") }).loading(self.removing).on_click(cx.listener(move |me, _, window, cx| me.remove_copy(paths.clone(), window, cx))).into_any_element());
                 }
-                acts.push(ui::button("md-done").primary().label(t!("Done")).on_click(|_, _, cx| close(cx)).into_any_element());
+                acts.push(ui::button("md-done").primary().label(n!("Done")).on_click(|_, _, cx| close(cx)).into_any_element());
                 view = view.actions(acts);
             }
             JobState::Failed(msg) => {
                 let broken = outcome.as_ref().is_some_and(|o| o.ended == Ended::Broken);
-                view = if broken { view.pill(t!("Needs a look"), Tone::Bad) } else { view.pill(t!("Switched back"), Tone::Warn) };
+                view = if broken { view.pill(n!("Needs a look"), Tone::Bad) } else { view.pill(n!("Switched back"), Tone::Warn) };
                 let mut text = outcome.as_ref().and_then(|o| o.reason.clone()).unwrap_or_else(|| msg.to_string());
                 if !broken {
-                    let olds: Vec<String> = self.moves.iter().filter_map(|m| ov.places.iter().find(|p| p.store == m.store)).map(|p| tf!("{} runs from {} as before", crate::i18n::t(p.store.label()), p.mount.clone().unwrap_or_else(|| p.path.clone()))).collect();
+                    let olds: Vec<String> = self.moves.iter().filter_map(|m| ov.places.iter().find(|p| p.store == m.store)).map(|p| nf!("{} runs from {} as before", crate::i18n::t(p.store.label()), p.mount.clone().unwrap_or_else(|| p.path.clone()))).collect();
                     if !olds.is_empty() {
                         text = format!("{} {}", text.trim_end(), olds.join("; ") + ";");
                     }
                     let partial = outcome.as_ref().is_some_and(|o| o.old_copies.iter().any(|c| c.partial));
                     if partial {
-                        text.push_str(t!(" the partial copy is left for a look."));
+                        text.push_str(n!(" the partial copy is left for a look."));
                     } else {
                         text = text.trim_end_matches(';').to_string() + ".";
                     }
@@ -1457,9 +1466,9 @@ impl MoveFlow {
                 let partial: Option<String> = outcome.as_ref().and_then(|o| o.old_copies.iter().find(|c| c.partial && self.moves.iter().any(|m| m.to.trim_end_matches('/') == c.path.trim_end_matches('/')))).map(|c| c.path.clone());
                 let mut acts: Vec<AnyElement> = Vec::new();
                 if let Some(p) = partial.filter(|_| !self.removed) {
-                    acts.push(ui::button("md-rm-partial").outline().icon(Icon::empty().path("icons/trash.svg")).label(t!("Remove the partial copy")).loading(self.removing).on_click(cx.listener(move |me, _, window, cx| me.remove_copy(vec![p.clone()], window, cx))).into_any_element());
+                    acts.push(ui::button("md-rm-partial").outline().icon(Icon::empty().path("icons/trash.svg")).label(n!("Remove the partial copy")).loading(self.removing).on_click(cx.listener(move |me, _, window, cx| me.remove_copy(vec![p.clone()], window, cx))).into_any_element());
                 }
-                acts.push(ui::button("md-try-other").primary().label(t!("Try another disk")).on_click(cx.listener(|me, _, _, cx| me.try_again(cx))).into_any_element());
+                acts.push(ui::button("md-try-other").primary().label(n!("Try another disk")).on_click(cx.listener(|me, _, _, cx| me.try_again(cx))).into_any_element());
                 view = view.actions(acts);
             }
             _ => {}
@@ -1481,7 +1490,7 @@ fn lower_first(s: &str) -> String {
 
 /// A size as the mockup writes it, small ones in KB (free_label says 0 B).
 fn size_label(b: u64) -> String {
-    if b > 0 && b < 1 << 20 { tf!("{} KB", b.div_ceil(1024)) } else { free_label(b) }
+    if b > 0 && b < 1 << 20 { nf!("{} KB", b.div_ceil(1024)) } else { free_label(b) }
 }
 
 fn folder_color() -> Hsla {
@@ -1513,7 +1522,7 @@ impl Render for MoveFlow {
         }
         let page = page.child(self.title_row(&theme, cx)).child(self.stepper(&theme));
         let body: Div = match &self.ov {
-            Read::Loading => ui::panel(&theme).child(card_title(t!("What to move"), None)).children((0..3).map(|i| ui::skeleton_line(&theme, format!("md-sk-{i}"), 320.))),
+            Read::Loading => ui::panel(&theme).child(card_title(n!("What to move"), None)).children((0..3).map(|i| ui::skeleton_line(&theme, format!("md-sk-{i}"), 320.))),
             Read::Failed(e) => ui::panel(&theme).child(out_line(&theme, Tone::Bad, e.clone())),
             Read::Got(_) => match self.stage {
                 Stage::What => self.what(&theme, cx),
@@ -1534,13 +1543,13 @@ impl Render for MoveFlow {
             Stage::Plan => {
                 let stops = self.chosen.iter().any(|s| s.stops());
                 match (stops, self.chosen.len()) {
-                    (false, _) => t!("Move").into(),
-                    (true, 1) => t!("Stop SENTIENT and move").into(),
-                    (true, 2) => t!("Stop SENTIENT and move both").into(),
-                    _ => t!("Stop SENTIENT and move them").into(),
+                    (false, _) => n!("Move").into(),
+                    (true, 1) => n!("Stop SENTIENT and move").into(),
+                    (true, 2) => n!("Stop SENTIENT and move both").into(),
+                    _ => n!("Stop SENTIENT and move them").into(),
                 }
             }
-            _ => t!("Next").into(),
+            _ => n!("Next").into(),
         };
         let primary = ui::button("md-next").primary().label(primary_label).disabled(!can_next).on_click(cx.listener(|me, _, window, cx| me.next(window, cx)));
         page.child(body).child(div().flex_1()).child(self.footer(Some(primary.into_any_element()), cx))

@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 
 use gpui_kit::component::{
-    ActiveTheme, Disableable as _, Sizable as _, h_flex, v_flex,
+    ActiveTheme, Disableable as _, h_flex, v_flex,
     button::ButtonVariants as _,
     input::{Input, InputEvent, InputState},
 };
@@ -162,10 +162,21 @@ pub struct SettingsPage {
     job: Entity<Job>,
     /// System administrators and the default retention, read through
     /// SENTIENT's own command (crate::sentient_admin).
-    admins: Option<Result<Vec<crate::sentient_admin::Admin>, String>>,
-    retention_now: Option<Result<crate::sentient_admin::Retention, String>>,
+    /// `Err(Failure::Stopped)`: SENTIENT is stopped, nothing was asked.
+    admins: Option<Result<Vec<crate::sentient_admin::Admin>, crate::sentient_admin::Failure>>,
+    retention_now: Option<Result<crate::sentient_admin::Retention, crate::sentient_admin::Failure>>,
     retention_edit: crate::sentient_admin::Retention,
     reading_admin: bool,
+    /// "SENTIENT is starting…" held from a start job here until the first
+    /// accounts reading after it came back ([`StartHold`]).
+    start_hold: StartHold,
+    /// When the last reading of the accounts came back.
+    admin_read_at: Option<std::time::Instant>,
+    /// The reading under way (one at a time).
+    _admin_read: Option<Task<()>>,
+    /// SENTIENT was stopped at the last reading: the page looks again
+    /// after [`STOPPED_RETRY`] while it is shown.
+    _admin_retry: Option<Task<()>>,
     /// The account whose password form is open.
     reset_for: Option<String>,
     new_pw: Entity<InputState>,
@@ -245,6 +256,9 @@ impl SettingsPage {
         subscriptions.push(cx.subscribe(&new_name, |_, _, _: &InputEvent, cx| cx.notify()));
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(t!("Search settings and variables")));
         subscriptions.push(cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify()));
+        // A start job here begins or ends: the Accounts row follows it.
+        let strip = crate::manager::strip::install(cx);
+        subscriptions.push(cx.observe(&strip, |_, _, cx| cx.notify()));
         let job = cx.new(|_| Job::new());
         subscriptions.push(cx.observe(&job, |page: &mut Self, job, cx| {
             if matches!(job.read(cx).state(), JobState::Done(_)) {
@@ -264,6 +278,10 @@ impl SettingsPage {
             retention_now: None,
             retention_edit: Default::default(),
             reading_admin: false,
+            start_hold: StartHold::default(),
+            admin_read_at: None,
+            _admin_read: None,
+            _admin_retry: None,
             reset_for: None,
             new_pw,
             repeat_pw,
@@ -388,10 +406,27 @@ impl SettingsPage {
     fn read_admin(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         self.reading_admin = true;
+        self._admin_retry = None;
+        // Data locations read while SENTIENT was stopped: again with it.
+        if let Some(l) = self.locations.clone() {
+            l.update(cx, |l, cx| l.reload_if_stopped(cx));
+        }
+        // A reading begun while a start job still runs may find SENTIENT
+        // not answering yet: it does not end the "starting…" line.
+        let while_starting = crate::manager::strip::starting_here(cx);
         let task = cx.spawn(async move |this, cx| {
             let (admins, retention) = cx
                 .background_executor()
-                .spawn(async move { (crate::sentient_admin::admins(&record), crate::sentient_admin::retention(&record)) })
+                // A read: never starts SENTIENT's stopped WSL distro. Read
+                // only once SENTIENT answers: its database may take
+                // commands while SENTIENT still starts (the rc5 VM: the
+                // accounts showed 22 s before it answered).
+                .spawn(async move {
+                    sentient_installer_core::distro::idle::reading(|| {
+                        let serving = record.platform().snapshot().serving;
+                        admin_reading(serving, || (crate::sentient_admin::admins(&record), crate::sentient_admin::retention(&record)))
+                    })
+                })
                 .await;
             this.update(cx, |page, cx| {
                 if let Ok(r) = &retention {
@@ -400,16 +435,64 @@ impl SettingsPage {
                 page.admins = Some(admins);
                 page.retention_now = Some(retention);
                 page.reading_admin = false;
+                page.start_hold.on_read(while_starting);
+                page.admin_read_at = Some(std::time::Instant::now());
                 cx.notify();
             })
             .ok();
         });
-        self._admin_tasks.push(task);
+        self._admin_read = Some(task);
         cx.notify();
     }
 
+    /// SENTIENT's state may have changed (a job here ended: Start, Restart,
+    /// an update): the accounts are read again, if they were read before
+    /// (a read that asks for the administrator password is not started by
+    /// itself).
+    pub fn sentient_changed(&mut self, cx: &mut Context<Self>) {
+        if self.admins.is_some() && !self.reading_admin {
+            self.read_admin(cx);
+        }
+    }
+
+    /// While shown with SENTIENT stopped at the last reading: read again
+    /// when that reading is [`STOPPED_RETRY`] old (SENTIENT started from
+    /// the tray, the Status page, with Windows), else look again then. The
+    /// look is a redraw of this page, which happens only while it is shown:
+    /// a page left open on another one reads nothing.
+    fn retry_while_stopped(&mut self, cx: &mut Context<Self>) {
+        // Being started here: read when that job ends (sentient_changed).
+        let starting = crate::manager::strip::starting_here(cx);
+        self.start_hold.on_frame(starting);
+        if starting {
+            return;
+        }
+        // The job ended and no reading is under way to end the hold: one now.
+        if self.start_hold.held && !self.reading_admin {
+            self.read_admin(cx);
+            return;
+        }
+        let stopped = matches!(self.admins, Some(Err(crate::sentient_admin::Failure::Stopped)));
+        match stopped_retry(stopped, self.reading_admin, self.admin_read_at, std::time::Instant::now()) {
+            Retry::No => {}
+            Retry::Now => self.read_admin(cx),
+            Retry::After(wait) => {
+                if self._admin_retry.is_none() {
+                    self._admin_retry = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(wait).await;
+                        this.update(cx, |page, cx| {
+                            page._admin_retry = None;
+                            cx.notify();
+                        })
+                        .ok();
+                    }));
+                }
+            }
+        }
+    }
+
     /// Run one administration action (background), then read again.
-    fn admin_action(&mut self, work: impl FnOnce(&InstallationRecord) -> Result<String, String> + Send + 'static, cx: &mut Context<Self>) {
+    fn admin_action(&mut self, work: impl FnOnce(&InstallationRecord) -> Result<String, crate::sentient_admin::Failure> + Send + 'static, cx: &mut Context<Self>) {
         let Some(record) = self.record.clone() else { return };
         self.admin_busy = true;
         self.admin_result = None;
@@ -426,7 +509,9 @@ impl SettingsPage {
                 page.admin_busy = false;
                 page.admin_result = Some(match r {
                     Ok(m) => (Tone::Good, m.lines().last().unwrap_or(t!("Done.")).to_string()),
-                    Err(e) => (Tone::Bad, e),
+                    // Stopped meanwhile: said plainly, not as a failure.
+                    Err(crate::sentient_admin::Failure::Stopped) => (Tone::Neutral, crate::i18n::t(crate::sentient_admin::STOPPED).to_string()),
+                    Err(crate::sentient_admin::Failure::Error(e)) => (Tone::Bad, e),
                 });
                 if page.admin_result.as_ref().is_some_and(|(t, _)| matches!(t, Tone::Good)) {
                     page.reset_for = None;
@@ -771,6 +856,78 @@ impl SettingsPage {
 
 /// A row whose control takes the field and current columns (an account,
 /// a plain value, a set of buttons). Shared with Startup.
+/// The accounts and retention, read by `read` only when SENTIENT answers
+/// (`serving`); else SENTIENT counts as stopped, nothing asked.
+pub(crate) fn admin_reading<A, R>(
+    serving: bool,
+    read: impl FnOnce() -> (Result<A, crate::sentient_admin::Failure>, Result<R, crate::sentient_admin::Failure>),
+) -> (Result<A, crate::sentient_admin::Failure>, Result<R, crate::sentient_admin::Failure>) {
+    if serving { read() } else { (Err(crate::sentient_admin::Failure::Stopped), Err(crate::sentient_admin::Failure::Stopped)) }
+}
+
+/// The hand-over from "SENTIENT is starting…" to the accounts with no
+/// "stopped" frame between them (the rc5 build 5 VM: the start job ended
+/// when SENTIENT answered, a second before the accounts' reading did, and
+/// the row showed "must be running" and Start for that second). Held from
+/// the first frame that sees a start job here until a reading begun after
+/// it ended has come back, whatever it found.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct StartHold {
+    pub held: bool,
+}
+
+impl StartHold {
+    /// A frame: `starting`, a start job here runs.
+    pub fn on_frame(&mut self, starting: bool) {
+        if starting {
+            self.held = true;
+        }
+    }
+
+    /// A reading came back; `while_starting`: it was begun while the job ran.
+    pub fn on_read(&mut self, while_starting: bool) {
+        if !while_starting {
+            self.held = false;
+        }
+    }
+
+    /// Whether the row says "starting…".
+    pub fn shows_starting(&self, starting: bool) -> bool {
+        starting || self.held
+    }
+}
+
+/// What the Accounts row says while a job here starts SENTIENT.
+pub(crate) const STARTING: &str = n!("SENTIENT is starting…");
+
+/// How soon the accounts are read again after SENTIENT was found stopped,
+/// while the page shows: it may be starting (Start here, in the tray, on
+/// the Status page, with Windows). A read of a stopped SENTIENT asks
+/// nothing of it (Windows: one `wsl.exe -l --running`).
+pub(crate) const STOPPED_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// What the page does about a reading of the accounts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Retry {
+    /// Nothing: read, being read, or never read.
+    No,
+    /// Read again now.
+    Now,
+    /// Look again after this long.
+    After(std::time::Duration),
+}
+
+/// [`Retry`] for the last reading: `stopped` (SENTIENT was stopped),
+/// `reading` (one is under way), `last` (when it came back).
+pub(crate) fn stopped_retry(stopped: bool, reading: bool, last: Option<std::time::Instant>, now: std::time::Instant) -> Retry {
+    if !stopped || reading {
+        return Retry::No;
+    }
+    let Some(last) = last else { return Retry::Now };
+    let age = now.saturating_duration_since(last);
+    if age >= STOPPED_RETRY { Retry::Now } else { Retry::After(STOPPED_RETRY - age) }
+}
+
 pub(crate) fn row(_theme: &gpui_kit::component::Theme, label: impl Into<SharedString>, help: Option<String>, changed: bool, control: impl IntoElement) -> ui::SettingRow {
     let mut r = ui::SettingRow::wide(label, help, control);
     r.changed = changed;
@@ -936,7 +1093,19 @@ impl SettingsPage {
     fn admin_section(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> Div {
         let mut rows: Vec<ui::SettingRow> = Vec::new();
         let mut extra: Vec<AnyElement> = Vec::new();
+        // A job here starts SENTIENT: said, and no Start to press again;
+        // read when the job ends (sentient_changed).
+        let starting = self.start_hold.shows_starting(crate::manager::strip::starting_here(cx)) && !matches!(self.admins, Some(Ok(_)));
         match &self.admins {
+            _ if starting => {
+                rows.push(row(
+                    theme,
+                    t!("Accounts"),
+                    Some(t!("For when nobody can sign in. Changes go through SENTIENT's own administration command and are written to its audit log; SENTIENT keeps running.").into()),
+                    false,
+                    ui::row_text(crate::i18n::t(STARTING)).flex_1().min_w_0().text_color(theme.muted_foreground),
+                ));
+            }
             None => {
                 rows.push(row(
                     theme,
@@ -950,7 +1119,30 @@ impl SettingsPage {
                         .when(!self.reading_admin, |r| r.child(crate::ui::probed(crate::ui::button("read-admins").outline().label(t!("Read")).on_click(cx.listener(|this, _, _, cx| this.read_admin(cx)))))),
                 ));
             }
-            Some(Err(e)) => extra.push(ui::outcome(theme, Tone::Warn, e.clone()).into_any_element()),
+            // SENTIENT stopped: a plain line (nothing failed), and Start.
+            // A wide row: the sentence fills the field and current columns
+            // and wraps; the button keeps its size on the sentence's line,
+            // and goes under it when the row is stacked.
+            Some(Err(crate::sentient_admin::Failure::Stopped)) => {
+                let stacked = ui::stacked();
+                // On the name's line: a control tall, the text centred in it
+                // (ui::row_text), the button at the line's top.
+                let line = ui::row_text(crate::i18n::t(crate::sentient_admin::STOPPED)).flex_1().min_w_0().text_color(theme.muted_foreground);
+                let start = div().flex_shrink_0().child(crate::ui::probed(crate::ui::button("admin-start").outline().label(t!("Start SENTIENT")).on_click(|_, _, cx| crate::manager::request("control:start", cx))));
+                let control = if stacked {
+                    v_flex().flex_1().min_w_0().gap_2().items_start().child(line.w_full()).child(start).into_any_element()
+                } else {
+                    h_flex().flex_1().min_w_0().gap(crate::ui::button_gap()).items_start().child(line).child(start).into_any_element()
+                };
+                rows.push(row(
+                    theme,
+                    t!("Accounts"),
+                    Some(t!("For when nobody can sign in. Changes go through SENTIENT's own administration command and are written to its audit log; SENTIENT keeps running.").into()),
+                    false,
+                    control,
+                ));
+            }
+            Some(Err(crate::sentient_admin::Failure::Error(e))) => extra.push(ui::outcome(theme, Tone::Warn, e.clone()).into_any_element()),
             Some(Ok(list)) => {
                 for a in list.iter() {
                     let email = a.email.clone().unwrap_or_default();
@@ -976,8 +1168,10 @@ impl SettingsPage {
                         h_flex()
                             .w_full()
                             .gap(crate::ui::button_gap())
-                            .items_center()
-                            .child(div().flex_1().min_w_0().text_sm().text_color(if locked { theme.danger } else { theme.muted_foreground }).child(format!("{state}{last}")))
+                            // The line wraps under itself; the buttons stay
+                            // on the name's line (as the stopped row's).
+                            .items_start()
+                            .child(ui::row_text(format!("{state}{last}")).flex_1().min_w_0().text_color(if locked { theme.danger } else { theme.muted_foreground }))
                             .when(locked, |r| {
                                 r.child(crate::ui::probed(crate::ui::button(SharedString::from(format!("unlock-{email}"))).outline().label(t!("Unlock")).disabled(self.admin_busy).on_click(cx.listener(move |this, _, _, cx| {
                                     let e = e1.clone();
@@ -1164,7 +1358,7 @@ impl SettingsPage {
                     .child(div().text_sm().text_color(theme.muted_foreground).child(if self.reading_admin { t!("Reading…") } else { t!("Not read.") }))
                     .when(!self.reading_admin, |r| r.child(crate::ui::probed(crate::ui::button("read-retention").outline().label(t!("Read")).on_click(cx.listener(|this, _, _, cx| this.read_admin(cx)))))),
             )],
-            Some(Err(e)) => vec![row(theme, t!("Telemetry history and alarms"), Some(help.into()), false, text_value(theme, e.clone()))],
+            Some(Err(e)) => vec![row(theme, t!("Telemetry history and alarms"), Some(help.into()), false, text_value(theme, e.message()))],
             Some(Ok(now)) => {
                 let now = *now;
                 let edit = self.retention_edit;
@@ -1231,7 +1425,7 @@ impl SettingsPage {
                     let key = s.env.clone();
                     r.label = r.label.clone();
                     r.desc = Some(tf!("{} · set here", s.env));
-                    let reset = crate::ui::button(SharedString::from(format!("reset-{}", s.env))).ghost().xsmall().label(t!("Reset")).on_click(cx.listener(move |this, _, window, cx| {
+                    let reset = crate::ui::button(SharedString::from(format!("reset-{}", s.env))).ghost().label(t!("Reset")).on_click(cx.listener(move |this, _, window, cx| {
                         this.set(&key, "", window, cx);
                         cx.notify();
                     }));
@@ -1392,6 +1586,7 @@ impl Render for SettingsPage {
                 window.defer(cx, |window, cx| ui::debug_leave_prompt(None, window, cx));
             }
         }
+        self.retry_while_stopped(cx);
         let job = self.job.read(cx);
         let busy = job.is_running();
         // Someone else's compose file: the notice, and Apply stays off.
@@ -1476,7 +1671,74 @@ pub(crate) fn settings_page(theme: &gpui_kit::component::Theme, title: &'static 
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's own `test` attribute would shadow the standard one.
-    use super::{PRESET_KEYS, Preset, preset_values};
+    use super::{PRESET_KEYS, Preset, Retry, STOPPED_RETRY, StartHold, admin_reading, preset_values, stopped_retry};
+
+    #[test]
+    fn starting_hands_over_to_the_accounts_with_no_stopped_frame() {
+        let mut h = StartHold::default();
+        assert!(!h.shows_starting(false), "no start: as read");
+        // Start pressed: starting while the job runs.
+        h.on_frame(true);
+        assert!(h.shows_starting(true));
+        // A reading begun during the job (SENTIENT not answering yet) comes
+        // back "stopped": still starting.
+        h.on_read(true);
+        h.on_frame(true);
+        assert!(h.shows_starting(true));
+        // The job ends as SENTIENT answers: the frames before the next
+        // reading returns still say starting (the rc5 b5 flicker).
+        h.on_frame(false);
+        assert!(h.shows_starting(false));
+        h.on_frame(false);
+        assert!(h.shows_starting(false));
+        // The reading begun after the job came back: the accounts (or, if
+        // the start failed, stopped) show from the next frame.
+        h.on_read(false);
+        assert!(!h.shows_starting(false));
+        // Nothing held without a start job.
+        let mut idle = StartHold::default();
+        idle.on_frame(false);
+        idle.on_read(false);
+        assert!(!idle.shows_starting(false));
+    }
+
+    #[test]
+    fn accounts_are_read_only_once_sentient_answers() {
+        use crate::sentient_admin::Failure;
+        let mut asked = false;
+        let (a, r) = admin_reading::<u8, u8>(false, || {
+            asked = true;
+            (Ok(1), Ok(2))
+        });
+        assert!(!asked, "not answering: sentient-admin is not run");
+        assert_eq!((a, r), (Err(Failure::Stopped), Err(Failure::Stopped)));
+        assert_eq!(admin_reading::<u8, u8>(true, || (Ok(1), Ok(2))), (Ok(1), Ok(2)));
+        // A job here starting SENTIENT: the row says so (no Start button).
+        assert!(crate::manager::strip::is_start_label("Starting SENTIENT", None));
+        assert!(crate::manager::strip::is_start_label("Restarting SENTIENT", None));
+        assert!(!crate::manager::strip::is_start_label("Starting SENTIENT on srv", Some("srv")), "a server's start");
+        assert!(!crate::manager::strip::is_start_label("Stopping SENTIENT", None));
+        assert!(!crate::manager::strip::is_start_label("Backing up", None));
+    }
+
+    #[test]
+    fn a_stopped_reading_is_tried_again_while_shown() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        // Read, being read, never read: nothing to do.
+        assert_eq!(stopped_retry(false, false, Some(t0), t0 + Duration::from_secs(60)), Retry::No);
+        assert_eq!(stopped_retry(true, true, Some(t0), t0 + Duration::from_secs(60)), Retry::No, "one reading at a time");
+        // Stopped just now: look again when the reading is STOPPED_RETRY old.
+        assert_eq!(stopped_retry(true, false, Some(t0), t0), Retry::After(STOPPED_RETRY));
+        assert_eq!(stopped_retry(true, false, Some(t0), t0 + Duration::from_secs(2)), Retry::After(STOPPED_RETRY - Duration::from_secs(2)));
+        // Then read again: SENTIENT started meanwhile (Start, the tray, Windows).
+        assert_eq!(stopped_retry(true, false, Some(t0), t0 + STOPPED_RETRY), Retry::Now);
+        assert_eq!(stopped_retry(true, false, Some(t0), t0 + Duration::from_secs(150)), Retry::Now, "the rc5 VM: still stopped 2 minutes after Start");
+        // Stopped with no time (cannot happen, but not stuck): now.
+        assert_eq!(stopped_retry(true, false, None, t0), Retry::Now);
+        // Soon after a Start, not a second-long poll.
+        assert!(STOPPED_RETRY >= Duration::from_secs(3) && STOPPED_RETRY <= Duration::from_secs(10));
+    }
 
     #[test]
     fn presets_set_every_key_and_grow_with_size() {

@@ -30,7 +30,7 @@ use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use futures::StreamExt as _;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::ButtonVariants as _;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -761,7 +761,7 @@ impl Render for Deck {
                         .child(
                             crate::ui::button(("term-tab-close", i))
                                 .ghost()
-                                .xsmall()
+                                
                                 .icon(IconName::Close)
                                 .tooltip(t!("Close this terminal"))
                                 .on_click(cx.listener(move |d, _, w, cx| {
@@ -807,7 +807,7 @@ impl Render for StatusBar {
             .child(crate::ui::probed(
                 crate::ui::button("term-new")
                     .ghost()
-                    .small()
+                    
                     .icon(IconName::Plus)
                     .tooltip(t!("Open another terminal"))
                     .on_click(move |_, w, cx| {
