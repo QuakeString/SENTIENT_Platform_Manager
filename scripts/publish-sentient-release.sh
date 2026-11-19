@@ -56,7 +56,12 @@ repo=QuakeString/sentient-release
 api=https://api.github.com/repos/$repo
 token=${GITHUB_TOKEN:-$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')}
 [ -n "$token" ] || { echo "no GitHub token (set GITHUB_TOKEN)" >&2; exit 2; }
-auth=(-H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json")
+# The token goes to curl in a private (0600) config file, never on its
+# command line, where other users could read it in the process list.
+authcfg=$(umask 077; mktemp)
+trap 'rm -f "$authcfg"' EXIT
+printf 'header = "Authorization: Bearer %s"\nheader = "Accept: application/vnd.github+json"\n' "$token" > "$authcfg"
+auth=(-K "$authcfg")
 
 existing=$(curl -fs "${auth[@]}" "$api/releases/tags/$version" || true)
 if [ -n "$existing" ] && ! $add; then

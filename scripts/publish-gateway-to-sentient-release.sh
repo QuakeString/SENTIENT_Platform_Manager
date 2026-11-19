@@ -22,7 +22,12 @@ dst=QuakeString/sentient-release
 tag=gateway-$version
 token=${GITHUB_TOKEN:-$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')}
 [ -n "$token" ] || { echo "no GitHub token (set GITHUB_TOKEN)" >&2; exit 2; }
-auth=(-H "Authorization: Bearer $token" -H "Accept: application/vnd.github+json")
+# The token goes to curl in a private (0600) config file, never on its
+# command line, where other users could read it in the process list.
+authcfg=$(umask 077; mktemp)
+trap 'rm -f "$authcfg"' EXIT
+printf 'header = "Authorization: Bearer %s"\nheader = "Accept: application/vnd.github+json"\n' "$token" > "$authcfg"
+auth=(-K "$authcfg")
 
 python3 "$here/release-notes.py" check "$gw/CHANGELOG.md" "$version"
 if curl -fs "${auth[@]}" "https://api.github.com/repos/$dst/releases/tags/$tag" >/dev/null; then
@@ -30,7 +35,7 @@ if curl -fs "${auth[@]}" "https://api.github.com/repos/$dst/releases/tags/$tag" 
 fi
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+trap 'rm -rf "$work" "$authcfg"' EXIT
 exe="$gw/target/installer/SentientGatewaySetup-$version.exe"
 [ -f "$exe" ] || { echo "missing $exe (packaging/windows/build.sh)" >&2; exit 1; }
 cp "$exe" "$work/"
